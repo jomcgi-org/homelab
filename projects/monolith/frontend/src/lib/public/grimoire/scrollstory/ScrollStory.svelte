@@ -39,7 +39,7 @@
   import { transcript, isPlaceholder } from "./data/transcript.js";
   import {
     libraryHref,
-    exploreHref,
+    worldHref,
     chatHref,
   } from "$lib/public/grimoire/api.js";
 
@@ -1061,7 +1061,7 @@
         </div>
         <div class="ctas" bind:this={ctasEl}>
           <a class="cta primary" href={chatHref()}>Ask the Grimoire</a>
-          <a class="cta ghost" href={exploreHref()}>Wander the graph</a>
+          <a class="cta ghost" href={worldHref()}>Wander the graph</a>
           <a class="cta ghost" href={libraryHref()}>Browse the library</a>
         </div>
       </div>
@@ -1213,7 +1213,7 @@
         </div>
         <div class="ctas static-ctas">
           <a class="cta primary" href={chatHref()}>Ask the Grimoire</a>
-          <a class="cta ghost" href={exploreHref()}>Wander the graph</a>
+          <a class="cta ghost" href={worldHref()}>Wander the graph</a>
           <a class="cta ghost" href={libraryHref()}>Browse the library</a>
         </div>
       </div>

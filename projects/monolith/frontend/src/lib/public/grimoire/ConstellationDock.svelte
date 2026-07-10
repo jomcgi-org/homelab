@@ -13,6 +13,7 @@
   // Hidden entirely while the constellation is empty so it never occupies
   // space with nothing to show.
   import { constellationStore } from "./constellation-store.js";
+  import { worldHref } from "./api.js";
   import MiniConstellation from "./MiniConstellation.svelte";
 
   let state = $state({ nodes: [], ids: new Set(), edges: [] });
@@ -32,10 +33,6 @@
   function typeVar(entityType) {
     const type = TYPE_ALLOWLIST.test(entityType ?? "") ? entityType : "class";
     return `var(--grim-type-${type}, currentColor)`;
-  }
-
-  function worldEntityHref(id) {
-    return `/app/grimoire/world?e=${encodeURIComponent(id)}`;
   }
 
   function toggle() {
@@ -76,7 +73,7 @@
             <li>
               <a
                 class="dock-item"
-                href={worldEntityHref(n.id)}
+                href={worldHref(n.id)}
                 style="--dock-item-color: {typeVar(n.entity_type)}"
               >
                 <span class="dock-dot"></span>
