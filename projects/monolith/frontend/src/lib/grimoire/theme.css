@@ -81,6 +81,16 @@
   --grim-type-action: var(--grim-type-class);
   --grim-type-rule: var(--grim-type-class);
   --grim-type-table: var(--grim-type-class);
+
+  /* Generated-cover palette: muted, parchment-compatible hues for books with
+   * no cover_chunk_id. Picked from a hash of book_id (see library page's
+   * hashHue helper), never the semantic entity-type colors above. */
+  --grim-cover-1: #8a9bb0;
+  --grim-cover-2: #b0967e;
+  --grim-cover-3: #8fae94;
+  --grim-cover-4: #ab8fa8;
+  --grim-cover-5: #b0a26f;
+  --grim-cover-6: #7fa3ab;
 }
 
 /* ── Focus ────────────────────────────────────────────────────
