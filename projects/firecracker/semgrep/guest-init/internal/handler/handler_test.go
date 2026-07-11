@@ -71,6 +71,33 @@ func TestHandlerBadBodyReturnsError(t *testing.T) {
 	}
 }
 
+// TestNewFullRoundTrip verifies NewFull uses the same decode/scan/encode path as
+// New: a valid body is decoded, the full-scan func is called, and its result is
+// returned as JSON. NewFull takes a ScanFunc directly (the subprocess path is a
+// closure, not a Scanner).
+func TestNewFullRoundTrip(t *testing.T) {
+	want := vsockproto.Finding{Path: "b.py", Line: 5, Col: 5, RuleID: "taint.x", Severity: "ERROR", Message: "cross-file"}
+	h := NewFull(func(_ vsockproto.ScanRequest) (vsockproto.ScanResult, error) {
+		return vsockproto.ScanResult{Findings: []vsockproto.Finding{want}}, nil
+	})
+
+	resp, err := call(t, h, `{"files":[{"path":"b.py","content":"x=1\n"}]}`)
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if resp.Status != 200 {
+		t.Errorf("status %d, want 200", resp.Status)
+	}
+
+	var got vsockproto.ScanResult
+	if err := json.Unmarshal(resp.Body, &got); err != nil {
+		t.Fatalf("unmarshal response body: %v", err)
+	}
+	if len(got.Findings) != 1 || got.Findings[0] != want {
+		t.Errorf("findings %+v, want [%+v]", got.Findings, want)
+	}
+}
+
 // TestHandlerScanErrorLandsInErrors verifies that a scanner error goes into
 // ScanResult.Errors at HTTP 200 rather than propagating as a handler error,
 // matching the partial-results semantics of the legacy scan-port RPC.

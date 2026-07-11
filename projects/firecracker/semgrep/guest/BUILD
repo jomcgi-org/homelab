@@ -40,6 +40,37 @@ tar(
     ],
 )
 
+# semgrep-full-guest-init (PID 1 of the semgrep-full workload), cross-compiled per
+# arch, layered alongside the warm init at /usr/local/bin. Same image; the
+# semgrep-full workload selects this via its harnessInit.
+platform_transition_filegroup(
+    name = "semgrep_full_guest_init_amd64_bin",
+    srcs = ["//projects/firecracker/semgrep/guest-init/cmd-full"],
+    target_platform = "@rules_go//go/toolchain:linux_amd64",
+)
+
+tar(
+    name = "semgrep_full_guest_init_tar_amd64",
+    srcs = [":semgrep_full_guest_init_amd64_bin"],
+    mtree = [
+        "./usr/local/bin/semgrep-full-guest-init type=file content=$(execpath :semgrep_full_guest_init_amd64_bin) mode=0755 uid=0 gid=0",
+    ],
+)
+
+platform_transition_filegroup(
+    name = "semgrep_full_guest_init_arm64_bin",
+    srcs = ["//projects/firecracker/semgrep/guest-init/cmd-full"],
+    target_platform = "@rules_go//go/toolchain:linux_arm64",
+)
+
+tar(
+    name = "semgrep_full_guest_init_tar_arm64",
+    srcs = [":semgrep_full_guest_init_arm64_bin"],
+    mtree = [
+        "./usr/local/bin/semgrep-full-guest-init type=file content=$(execpath :semgrep_full_guest_init_arm64_bin) mode=0755 uid=0 gid=0",
+    ],
+)
+
 apko_image(
     name = "image",
     config = "apko.yaml",
@@ -49,6 +80,7 @@ apko_image(
     multiarch_tars = [
         "//bazel/semgrep/guest:engine_tar",
         ":semgrep_guest_init_tar",
+        ":semgrep_full_guest_init_tar",
     ],
     repository = "ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest",
     tars = ["//bazel/semgrep/guest:rules_tar"],
