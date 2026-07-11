@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/jomcgi/homelab/projects/firecracker/semgrep/guest-init/internal/cliout"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
@@ -112,63 +113,10 @@ func (d *Driver) Scan(req vsockproto.ScanRequest) (vsockproto.ScanResult, error)
 	}
 
 	// line is a bufio.Reader-owned slice reused by the next ReadBytes call, so
-	// copy it before it outlives this Scan call (parseCliOutput stashes it in
-	// ScanResult.RawCliOutput).
-	return parseCliOutput(append([]byte(nil), line...))
-}
-
-// cliOutput is the shape of standard `semgrep --json` cli_output that the
-// scan-server prints. Severity is already the ERROR/WARNING/INFO string (no
-// LSP 1-4 mapping); start.line/col are 1-based.
-type cliOutput struct {
-	Results []struct {
-		CheckID string `json:"check_id"`
-		Path    string `json:"path"`
-		Start   struct {
-			Line int `json:"line"`
-			Col  int `json:"col"`
-		} `json:"start"`
-		Extra struct {
-			Message  string `json:"message"`
-			Severity string `json:"severity"`
-		} `json:"extra"`
-	} `json:"results"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
-}
-
-// parseCliOutput decodes one line of `semgrep --json` cli_output into a
-// vsockproto.ScanResult: it flattens Results into vsockproto.Finding (the
-// legacy, backward-compatible shape) and also preserves the verbatim input
-// bytes in RawCliOutput, so consumers that need full match metadata
-// (fingerprints, end positions, dataflow) are not limited to the flattened
-// fields. line is copied into RawCliOutput as-is (the caller owns it after
-// this call, so pass a copy if the source buffer may be reused).
-func parseCliOutput(line []byte) (vsockproto.ScanResult, error) {
-	var out cliOutput
-	if err := json.Unmarshal(line, &out); err != nil {
-		return vsockproto.ScanResult{}, fmt.Errorf("decode cli_output: %w", err)
-	}
-
-	var res vsockproto.ScanResult
-	res.RawCliOutput = json.RawMessage(line)
-	for _, r := range out.Results {
-		res.Findings = append(res.Findings, vsockproto.Finding{
-			Path:     r.Path,
-			Line:     r.Start.Line,
-			Col:      r.Start.Col,
-			RuleID:   r.CheckID,
-			Severity: r.Extra.Severity,
-			Message:  r.Extra.Message,
-		})
-	}
-	for _, e := range out.Errors {
-		if e.Message != "" {
-			res.Errors = append(res.Errors, e.Message)
-		}
-	}
-	return res, nil
+	// copy it before it outlives this Scan call (cliout.Parse stashes it in
+	// ScanResult.RawCliOutput). No stripPrefix: the scan-server already
+	// returns paths matching the request's file values.
+	return cliout.Parse(append([]byte(nil), line...), "")
 }
 
 // Close shuts the child down.
