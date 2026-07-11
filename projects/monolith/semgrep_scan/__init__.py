@@ -31,8 +31,10 @@ def register(app: FastAPI) -> None:
     domains' registration.
     """
     from semgrep_scan.perf_router import router as perf_router
+    from semgrep_scan.perf_webhook import router as perf_webhook_router
     from semgrep_scan.router import internal_router, router
 
     app.include_router(router)
     app.include_router(internal_router)
     app.include_router(perf_router)
+    app.include_router(perf_webhook_router)

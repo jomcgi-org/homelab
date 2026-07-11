@@ -191,6 +191,20 @@ spec:
                   name: {{ include "monolith.fullname" . }}-semgrep-app
                   key: GITHUB_SEMGREP_WEBHOOK_SECRET
                   optional: true
+            # HMAC secret for the Semgrep AppSec Platform scan webhook
+            # (semgrep_scan/perf_webhook.py). Semgrep signs the body with it
+            # (X-Semgrep-Signature-256) so we capture every managed scan's
+            # runtime findings-independently. Same semgrep vault item, field
+            # SEMGREP_WEBHOOK_SECRET; Joe sets the identical value in the Semgrep
+            # webhook config. Optional so an older vault item without the field
+            # does not block the pod (the webhook then 401s, the fail-closed
+            # default).
+            - name: SEMGREP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-semgrep-app
+                  key: SEMGREP_WEBHOOK_SECRET
+                  optional: true
             {{- if .Values.chat.enabled }}
             # Real GitHub API token for the webhook's changed-file fetch. The
             # monolith's own GITHUB_TOKEN env is a kloak: placeholder (guest
