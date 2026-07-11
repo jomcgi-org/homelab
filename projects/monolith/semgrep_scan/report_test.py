@@ -3,8 +3,17 @@
 The relay now builds the App's ``out.Finding`` upload payload DIRECTLY from the
 guest's cli_output (no rule loading, no ``RuleMatch``, no source materialization).
 The guest's syntactic ``extra.fingerprint`` is carried straight through as both
-``syntactic_id`` and ``match_based_id``. The fixture in ``testdata/`` is a real
-one-finding cli_output captured from the pinned semgrep==1.168.0 Pro engine.
+``syntactic_id`` and ``match_based_id``.
+
+Two fixtures in ``testdata/``:
+  * ``pr_cli_output.json`` -- a synthetic one-finding cli_output used for the
+    precise field-mapping assertions (exact fingerprint/check_id/position).
+  * ``real_cli_output.json`` -- a REAL 8-finding fc-invoke capture whose
+    ``extra.dataflow_trace`` is a MIX of dict and literal ``null`` (4 each). This
+    is the load-bearing regression fixture for the live serialization bug: the
+    atd ``out.*.from_json`` raises on a None-valued optional, so building +
+    serializing all 8 must succeed with no error. A synthetic single-finding
+    fixture missed this because it had a non-None dataflow_trace.
 
 No network happens here. The dry_run path is genuinely network-free (report.py
 stubs scan_response instead of calling the real start_scan, and skips the
@@ -28,6 +37,7 @@ from semgrep_scan import report
 
 _TESTDATA = Path(__file__).parent / "testdata"
 _CLI_OUTPUT = (_TESTDATA / "pr_cli_output.json").read_text()
+_REAL_CLI_OUTPUT = (_TESTDATA / "real_cli_output.json").read_text()
 
 # The guest's syntactic fingerprint for the single finding in the captured
 # cli_output. The relay carries this through verbatim as syntactic_id AND
@@ -101,6 +111,84 @@ def test_ignored_finding_goes_to_ignores_not_findings():
     assert len(ci_scan_results.findings) == 0
     assert len(ci_scan_results.ignores) == 1
     assert ci_scan_results.ignores[0].match_based_id == _EXPECTED_FINGERPRINT
+
+
+def test_real_cli_output_with_null_optionals_serializes_cleanly():
+    """LIVE-BUG REGRESSION: a real 8-finding fc-invoke capture whose
+    ``extra.dataflow_trace`` is null on half the results must map to 8 out.Finding
+    objects that serialize through the App-payload build with NO error.
+
+    Before the fix the mapping handed the literal ``null`` dataflow_trace to
+    ``out.MatchDataflowTrace.from_json``, which raised ``incompatible JSON value
+    where type 'MatchDataflowTrace' was expected: 'None'``. The fix omits
+    None-valued optionals so from_json never sees a None, and to_json omits the
+    key so the App-payload carries no null for an optional."""
+    cli = json.loads(_REAL_CLI_OUTPUT)
+    # Sanity: the fixture genuinely exercises the null-optional case.
+    dft_none = sum(
+        1 for r in cli["results"] if r["extra"].get("dataflow_trace") is None
+    )
+    dft_dict = sum(
+        1 for r in cli["results"] if isinstance(r["extra"].get("dataflow_trace"), dict)
+    )
+    assert dft_none == 4 and dft_dict == 4, "fixture must mix null and dict dft"
+
+    # Build must not raise, and all 8 findings must serialize.
+    ci_scan_results, findings_count = report._build_ci_scan_results(
+        _REAL_CLI_OUTPUT, _COMMIT_DATE
+    )
+    assert findings_count == 8
+    assert len(ci_scan_results.findings) == 8
+
+    blob = ci_scan_results.to_json()
+    assert len(blob["findings"]) == 8
+    # Every finding carries its guest fingerprint into both id fields.
+    for finding in blob["findings"]:
+        assert finding["syntactic_id"]
+        assert finding["match_based_id"] == finding["syntactic_id"]
+
+    # The null-dataflow findings must NOT carry a dataflow_trace key at all (a
+    # present null is exactly what tripped the App's re-parse); the non-null ones
+    # keep theirs.
+    keyed = sum(1 for f in blob["findings"] if "dataflow_trace" in f)
+    assert keyed == 4
+    assert all(
+        f["dataflow_trace"] is not None
+        for f in blob["findings"]
+        if "dataflow_trace" in f
+    )
+
+
+def test_real_cli_output_findings_reparse_like_the_app():
+    """The App backend re-parses the uploaded blob via out.CiScanResults.from_json.
+    Round-tripping the built payload through from_json must NOT raise -- this is the
+    exact code path (Finding.from_json -> MatchDataflowTrace.from_json) that failed
+    live."""
+    import semgrep.semgrep_interfaces.semgrep_output_v1 as out
+
+    ci_scan_results, _ = report._build_ci_scan_results(_REAL_CLI_OUTPUT, _COMMIT_DATE)
+    blob = ci_scan_results.to_json()
+    # Must not raise on any of the 8 findings (4 with null dataflow_trace).
+    reparsed = out.CiScanResults.from_json(blob)
+    assert len(reparsed.findings) == 8
+
+
+def test_real_cli_output_dry_run_assembles_payload():
+    """The full relay dry_run path assembles the real 8-finding payload with no
+    network and no serialization error."""
+    result = asyncio.run(
+        report.report_pr_scan(
+            repo="jomcgi/homelab",
+            branch="feat/test",
+            commit="0" * 40,
+            pr_id="42",
+            raw_cli_output=_REAL_CLI_OUTPUT,
+            dry_run=True,
+        )
+    )
+    assert result["ok"] is True
+    assert result["error"] is None
+    assert result["findings_reported"] == 8
 
 
 def test_report_pr_scan_dry_run_assembles_payload():

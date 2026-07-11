@@ -1,0 +1,787 @@
+{
+  "version": "1.161.0",
+  "results": [
+    {
+      "check_id": "etc.semgrep.rules.pro-python.python.lang.security.dangerous-system-call.dangerous-system-call",
+      "path": "proof/relay_test.py",
+      "start": { "line": 5, "col": 5, "offset": 82 },
+      "end": { "line": 5, "col": 17, "offset": 94 },
+      "extra": {
+        "metavars": {},
+        "message": "Found user-controlled data used in a system call. This could allow a malicious actor to execute commands. Use the 'subprocess' module instead, which is easier to use without accidentally exposing a command injection vulnerability.",
+        "metadata": {
+          "source-rule-url": "https://bandit.readthedocs.io/en/latest/plugins/b605_start_process_with_a_shell.html",
+          "cwe": [
+            "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+          ],
+          "owasp": [
+            "A01:2017 - Injection",
+            "A03:2021 - Injection",
+            "A05:2025 - Injection"
+          ],
+          "references": [
+            "https://semgrep.dev/docs/cheat-sheets/python-command-injection/"
+          ],
+          "asvs": {
+            "section": "V5: Validation, Sanitization and Encoding Verification Requirements",
+            "control_id": "5.2.4 Dyanmic Code Execution Features",
+            "control_url": "https://github.com/OWASP/ASVS/blob/master/4.0/en/0x13-V5-Validation-Sanitization-Encoding.md#v52-sanitization-and-sandboxing-requirements",
+            "version": "4"
+          },
+          "category": "security",
+          "technology": ["python"],
+          "confidence": "MEDIUM",
+          "cwe2022-top25": true,
+          "cwe2021-top25": true,
+          "subcategory": ["vuln"],
+          "likelihood": "HIGH",
+          "impact": "HIGH",
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Command Injection"],
+          "source": "https://semgrep.dev/r/python.lang.security.dangerous-system-call.dangerous-system-call",
+          "shortlink": "https://sg.run/k0W7",
+          "semgrep.dev": {
+            "rule": {
+              "r_id": 27272,
+              "rv_id": 1263527,
+              "rule_id": "5rUoP1",
+              "version_id": "2KTv2Zn",
+              "url": "https://semgrep.dev/playground/r/2KTv2Zn/python.lang.security.dangerous-system-call.dangerous-system-call",
+              "origin": "community"
+            }
+          }
+        },
+        "severity": "ERROR",
+        "fingerprint": "e87d5aafc594ca50633314e5c5d176d32c01db08c025c03babd999f7439a9c7976dc54d8b3d19868611f495d9cdd0c7e6e4abb61f3f7d470cd4585c2ba75c7cd_0",
+        "lines": "    os.system(c)",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "dataflow_trace": {
+          "taint_source": [
+            "CliLoc",
+            [
+              {
+                "path": "proof/relay_test.py",
+                "start": { "line": 8, "col": 9, "offset": 129 },
+                "end": { "line": 8, "col": 35, "offset": 155 }
+              },
+              "request.args.get('cmd','')"
+            ]
+          ],
+          "intermediate_vars": [
+            {
+              "location": {
+                "path": "proof/relay_test.py",
+                "start": { "line": 8, "col": 5, "offset": 125 },
+                "end": { "line": 8, "col": 8, "offset": 128 }
+              },
+              "content": "cmd"
+            }
+          ],
+          "taint_sink": [
+            "CliCall",
+            [
+              [
+                {
+                  "path": "proof/relay_test.py",
+                  "start": { "line": 9, "col": 5, "offset": 160 },
+                  "end": { "line": 9, "col": 11, "offset": 166 }
+                },
+                "run_it"
+              ],
+              [
+                {
+                  "location": {
+                    "path": "proof/relay_test.py",
+                    "start": { "line": 4, "col": 12, "offset": 74 },
+                    "end": { "line": 4, "col": 13, "offset": 75 }
+                  },
+                  "content": "c"
+                }
+              ],
+              [
+                "CliLoc",
+                [
+                  {
+                    "path": "proof/relay_test.py",
+                    "start": { "line": 5, "col": 5, "offset": 82 },
+                    "end": { "line": 5, "col": 17, "offset": 94 }
+                  },
+                  "os.system(c)"
+                ]
+              ]
+            ]
+          ]
+        },
+        "engine_kind": [
+          "PRO_REQUIRED",
+          {
+            "interproc_taint": true,
+            "interfile_taint": false,
+            "proprietary_language": false
+          }
+        ]
+      }
+    },
+    {
+      "check_id": "etc.semgrep.rules.python.no-os-system",
+      "path": "proof/relay_test.py",
+      "start": { "line": 5, "col": 5, "offset": 82 },
+      "end": { "line": 5, "col": 17, "offset": 94 },
+      "extra": {
+        "metavars": {},
+        "message": "Use subprocess.run() with list args instead.",
+        "metadata": { "category": "security" },
+        "severity": "ERROR",
+        "fingerprint": "400973f56a7000e16bac9ef7cf4ca92fc1a8126cbc9a540a5ed096e5b08e46157628be1adba2154f22479ee3818c5a62bfef34053bacf043eca6d113cfc7b7db_0",
+        "lines": "    os.system(c)",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "PRO"
+      }
+    },
+    {
+      "check_id": "etc.semgrep.rules.pro-python.python.flask.file.tainted-path-traversal-stdlib-flask.tainted-path-traversal-stdlib-flask",
+      "path": "proof/relay_test.py",
+      "start": { "line": 5, "col": 15, "offset": 92 },
+      "end": { "line": 5, "col": 16, "offset": 93 },
+      "extra": {
+        "metavars": {
+          "$1": {
+            "start": { "line": 1, "col": 1, "offset": 0 },
+            "end": { "line": 1, "col": 5, "offset": 4 },
+            "abstract_content": "args"
+          },
+          "$SINK": {
+            "start": { "line": 5, "col": 15, "offset": 92 },
+            "end": { "line": 5, "col": 16, "offset": 93 },
+            "abstract_content": "c"
+          },
+          "$PROPERTY": {
+            "start": { "line": 8, "col": 17, "offset": 137 },
+            "end": { "line": 8, "col": 21, "offset": 141 },
+            "abstract_content": "args"
+          }
+        },
+        "message": "The application builds a file path from potentially untrusted data, which can lead to a path traversal vulnerability. An attacker can manipulate the path which the application uses to access files. If the application does not validate user input and sanitize file paths, sensitive files such as configuration or user data can be accessed, potentially creating or overwriting files. In Flask apps, consider using the Werkzeug util `werkzeug.utils.secure_filename()` to sanitize paths and filenames.",
+        "metadata": {
+          "likelihood": "MEDIUM",
+          "impact": "HIGH",
+          "confidence": "HIGH",
+          "category": "security",
+          "subcategory": ["vuln"],
+          "cwe": [
+            "CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+          ],
+          "cwe2020-top25": true,
+          "cwe2021-top25": true,
+          "cwe2022-top25": true,
+          "display-name": "Path Traversal with Flask",
+          "functional-categories": [
+            "file::sink::file-access::fileinput",
+            "file::sink::file-access::io",
+            "file::sink::file-access::linecache",
+            "file::sink::file-access::os",
+            "file::sink::file-access::shutil",
+            "file::sink::file-access::stdlib",
+            "file::sink::file-access::stdlib2",
+            "file::sink::file-access::stdlib3",
+            "file::sink::file-access::tempfile",
+            "web::source::cookie::flask",
+            "web::source::form-data::flask",
+            "web::source::form-data::flask-wtf",
+            "web::source::form-data::wtforms",
+            "web::source::header::flask",
+            "web::source::http-body::flask",
+            "web::source::url-path-params::flask",
+            "web::source::url-query-string::flask"
+          ],
+          "owasp": [
+            "A01:2021 - Broken Access Control",
+            "A01:2025 - Broken Access Control",
+            "A05:2017 - Broken Access Control"
+          ],
+          "references": [
+            "https://flask.palletsprojects.com/en/2.3.x/patterns/fileuploads/",
+            "https://owasp.org/Top10/2025/A01_2025-Broken_Access_Control/",
+            "https://owasp.org/Top10/A01_2021-Broken_Access_Control",
+            "https://owasp.org/www-community/attacks/Path_Traversal",
+            "https://portswigger.net/web-security/file-path-traversal",
+            "https://werkzeug.palletsprojects.com/en/3.0.x/utils/#werkzeug.utils.secure_filename"
+          ],
+          "release": "ga",
+          "technology": [
+            "codecs",
+            "fileaccess",
+            "fileinput",
+            "flask",
+            "flask-wtf",
+            "io",
+            "linecache",
+            "os",
+            "shutil",
+            "stdlib",
+            "stdlib2",
+            "stdlib3",
+            "tempfile",
+            "web",
+            "wtforms"
+          ],
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Path Traversal"],
+          "source": "https://semgrep.dev/r/python.flask.file.tainted-path-traversal-stdlib-flask.tainted-path-traversal-stdlib-flask",
+          "shortlink": "https://sg.run/6J4gW",
+          "semgrep.dev": {
+            "rule": {
+              "r_id": 116515,
+              "rv_id": 1414825,
+              "rule_id": "2ZUzRLQ",
+              "version_id": "2KTRoO4",
+              "url": "https://semgrep.dev/playground/r/2KTRoO4/python.flask.file.tainted-path-traversal-stdlib-flask.tainted-path-traversal-stdlib-flask",
+              "origin": "pro_rules"
+            }
+          }
+        },
+        "severity": "ERROR",
+        "fingerprint": "625e079016a71bfae190cd56ba75f2ac635847ddd38245cce584a978bc8bcb55973929b43bdf6c916d75818111bd65237320fcde9fe3e759e81e3cf3cbf90dc3_0",
+        "lines": "    os.system(c)",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "dataflow_trace": {
+          "taint_source": [
+            "CliLoc",
+            [
+              {
+                "path": "proof/relay_test.py",
+                "start": { "line": 8, "col": 9, "offset": 129 },
+                "end": { "line": 8, "col": 21, "offset": 141 }
+              },
+              "request.args"
+            ]
+          ],
+          "intermediate_vars": [
+            {
+              "location": {
+                "path": "proof/relay_test.py",
+                "start": { "line": 8, "col": 5, "offset": 125 },
+                "end": { "line": 8, "col": 8, "offset": 128 }
+              },
+              "content": "cmd"
+            }
+          ],
+          "taint_sink": [
+            "CliCall",
+            [
+              [
+                {
+                  "path": "proof/relay_test.py",
+                  "start": { "line": 9, "col": 5, "offset": 160 },
+                  "end": { "line": 9, "col": 11, "offset": 166 }
+                },
+                "run_it"
+              ],
+              [
+                {
+                  "location": {
+                    "path": "proof/relay_test.py",
+                    "start": { "line": 4, "col": 12, "offset": 74 },
+                    "end": { "line": 4, "col": 13, "offset": 75 }
+                  },
+                  "content": "c"
+                }
+              ],
+              [
+                "CliLoc",
+                [
+                  {
+                    "path": "proof/relay_test.py",
+                    "start": { "line": 5, "col": 15, "offset": 92 },
+                    "end": { "line": 5, "col": 16, "offset": 93 }
+                  },
+                  "c"
+                ]
+              ]
+            ]
+          ]
+        },
+        "engine_kind": [
+          "PRO_REQUIRED",
+          {
+            "interproc_taint": true,
+            "interfile_taint": false,
+            "proprietary_language": false
+          }
+        ]
+      }
+    },
+    {
+      "check_id": "etc.semgrep.rules.pro-python.python.flask.os.tainted-os-command-stdlib-flask.tainted-os-command-stdlib-flask",
+      "path": "proof/relay_test.py",
+      "start": { "line": 5, "col": 15, "offset": 92 },
+      "end": { "line": 5, "col": 16, "offset": 93 },
+      "extra": {
+        "metavars": {
+          "$1": {
+            "start": { "line": 1, "col": 1, "offset": 0 },
+            "end": { "line": 1, "col": 5, "offset": 4 },
+            "abstract_content": "args"
+          },
+          "$FUNC": {
+            "start": { "line": 5, "col": 8, "offset": 85 },
+            "end": { "line": 5, "col": 14, "offset": 91 },
+            "abstract_content": "system"
+          },
+          "$SINK": {
+            "start": { "line": 5, "col": 15, "offset": 92 },
+            "end": { "line": 5, "col": 16, "offset": 93 },
+            "abstract_content": "c"
+          },
+          "$PROPERTY": {
+            "start": { "line": 8, "col": 17, "offset": 137 },
+            "end": { "line": 8, "col": 21, "offset": 141 },
+            "abstract_content": "args"
+          }
+        },
+        "message": "Untrusted input might be injected into a command executed by the application, which can lead to a command injection vulnerability. An attacker can execute arbitrary commands, potentially gaining complete control of the system. To prevent this vulnerability, avoid executing OS commands with user input. If this is unavoidable, validate and sanitize the input, and use safe methods for executing the commands.",
+        "metadata": {
+          "likelihood": "MEDIUM",
+          "impact": "HIGH",
+          "confidence": "HIGH",
+          "category": "security",
+          "subcategory": ["vuln"],
+          "cwe": [
+            "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+          ],
+          "cwe2020-top25": true,
+          "cwe2021-top25": true,
+          "cwe2022-top25": true,
+          "display-name": "OS Command Injection with Flask",
+          "functional-categories": [
+            "os::sink::command::commands",
+            "os::sink::command::os",
+            "os::sink::command::popen2",
+            "os::sink::command::stdlib",
+            "os::sink::command::stdlib2",
+            "os::sink::command::stdlib3",
+            "os::sink::command::subprocess",
+            "web::source::cookie::flask",
+            "web::source::form-data::flask",
+            "web::source::form-data::flask-wtf",
+            "web::source::form-data::wtforms",
+            "web::source::header::flask",
+            "web::source::http-body::flask",
+            "web::source::url-path-params::flask",
+            "web::source::url-query-string::flask"
+          ],
+          "owasp": [
+            "A01:2017 - Injection",
+            "A03:2021 - Injection",
+            "A05:2025 - Injection"
+          ],
+          "references": [
+            "https://docs.python.org/3/library/os.html",
+            "https://docs.python.org/3/library/subprocess.html#subprocess.Popen",
+            "https://owasp.org/Top10/2025/A05_2025-Injection/",
+            "https://owasp.org/Top10/A03_2021-Injection",
+            "https://semgrep.dev/docs/cheat-sheets/python-command-injection/",
+            "https://stackless.readthedocs.io/en/v2.7.16-slp/library/commands.html"
+          ],
+          "release": "ga",
+          "technology": [
+            "commands",
+            "flask",
+            "flask-wtf",
+            "os",
+            "popen2",
+            "stdlib",
+            "stdlib2",
+            "stdlib3",
+            "subprocess",
+            "web",
+            "wtforms"
+          ],
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Command Injection"],
+          "source": "https://semgrep.dev/r/python.flask.os.tainted-os-command-stdlib-flask.tainted-os-command-stdlib-flask",
+          "shortlink": "https://sg.run/yyrPk",
+          "semgrep.dev": {
+            "rule": {
+              "r_id": 116524,
+              "rv_id": 1414844,
+              "rule_id": "kxUdW6x",
+              "version_id": "7ZTKjR6",
+              "url": "https://semgrep.dev/playground/r/7ZTKjR6/python.flask.os.tainted-os-command-stdlib-flask.tainted-os-command-stdlib-flask",
+              "origin": "pro_rules"
+            }
+          }
+        },
+        "severity": "ERROR",
+        "fingerprint": "d634bc660369cf78bc39bd593a9c292f40ae649360e5c3f7f514e1e0dda5f19119598442abf411fedc679a6cdd884019d9db8314c14e6f145cee47b1204513ff_0",
+        "lines": "    os.system(c)",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "dataflow_trace": {
+          "taint_source": [
+            "CliLoc",
+            [
+              {
+                "path": "proof/relay_test.py",
+                "start": { "line": 8, "col": 9, "offset": 129 },
+                "end": { "line": 8, "col": 21, "offset": 141 }
+              },
+              "request.args"
+            ]
+          ],
+          "intermediate_vars": [
+            {
+              "location": {
+                "path": "proof/relay_test.py",
+                "start": { "line": 8, "col": 5, "offset": 125 },
+                "end": { "line": 8, "col": 8, "offset": 128 }
+              },
+              "content": "cmd"
+            }
+          ],
+          "taint_sink": [
+            "CliCall",
+            [
+              [
+                {
+                  "path": "proof/relay_test.py",
+                  "start": { "line": 9, "col": 5, "offset": 160 },
+                  "end": { "line": 9, "col": 11, "offset": 166 }
+                },
+                "run_it"
+              ],
+              [
+                {
+                  "location": {
+                    "path": "proof/relay_test.py",
+                    "start": { "line": 4, "col": 12, "offset": 74 },
+                    "end": { "line": 4, "col": 13, "offset": 75 }
+                  },
+                  "content": "c"
+                }
+              ],
+              [
+                "CliLoc",
+                [
+                  {
+                    "path": "proof/relay_test.py",
+                    "start": { "line": 5, "col": 15, "offset": 92 },
+                    "end": { "line": 5, "col": 16, "offset": 93 }
+                  },
+                  "c"
+                ]
+              ]
+            ]
+          ]
+        },
+        "engine_kind": [
+          "PRO_REQUIRED",
+          {
+            "interproc_taint": true,
+            "interfile_taint": false,
+            "proprietary_language": false
+          }
+        ]
+      }
+    },
+    {
+      "check_id": "etc.semgrep.rules.pro-python.python.django.security.injection.code.user-eval.user-eval",
+      "path": "proof/relay_test.py",
+      "start": { "line": 10, "col": 5, "offset": 176 },
+      "end": { "line": 10, "col": 35, "offset": 206 },
+      "extra": {
+        "metavars": {
+          "$F": {
+            "start": { "line": 7, "col": 5, "offset": 116 },
+            "end": { "line": 7, "col": 6, "offset": 117 },
+            "abstract_content": "x"
+          },
+          "$W": {
+            "start": { "line": 10, "col": 18, "offset": 189 },
+            "end": { "line": 10, "col": 22, "offset": 193 },
+            "abstract_content": "args"
+          }
+        },
+        "message": "Found user data in a call to 'eval'. This is extremely dangerous because it can enable an attacker to execute arbitrary remote code on the system. Instead, refactor your code to not use 'eval' and instead use a safe library for the specific functionality you need.",
+        "metadata": {
+          "cwe": [
+            "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')"
+          ],
+          "owasp": ["A03:2021 - Injection", "A05:2025 - Injection"],
+          "references": [
+            "https://nedbatchelder.com/blog/201206/eval_really_is_dangerous.html",
+            "https://owasp.org/www-community/attacks/Code_Injection"
+          ],
+          "category": "security",
+          "technology": ["django"],
+          "subcategory": ["vuln"],
+          "likelihood": "MEDIUM",
+          "impact": "HIGH",
+          "confidence": "MEDIUM",
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Code Injection"],
+          "source": "https://semgrep.dev/r/python.django.security.injection.code.user-eval.user-eval",
+          "shortlink": "https://sg.run/PJDW",
+          "semgrep.dev": {
+            "rule": {
+              "r_id": 9501,
+              "rv_id": 1263384,
+              "rule_id": "DbUpDQ",
+              "version_id": "d6Tyx2A",
+              "url": "https://semgrep.dev/playground/r/d6Tyx2A/python.django.security.injection.code.user-eval.user-eval",
+              "origin": "community"
+            }
+          }
+        },
+        "severity": "WARNING",
+        "fingerprint": "775aadc643c58015019f76781f1d3d01125d1eb87546b506d357bd4075bd4e55c59c52eee081d431e9c345b80c1f46c5ba783e2c109dbb457d05c25268d0aa21_0",
+        "lines": "    eval(request.args.get('e',''))",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "PRO"
+      }
+    },
+    {
+      "check_id": "etc.semgrep.rules.pro-python.python.flask.code.tainted-code-stdlib-flask.tainted-code-stdlib-flask",
+      "path": "proof/relay_test.py",
+      "start": { "line": 10, "col": 5, "offset": 176 },
+      "end": { "line": 10, "col": 35, "offset": 206 },
+      "extra": {
+        "metavars": {
+          "$1": {
+            "start": { "line": 1, "col": 1, "offset": 0 },
+            "end": { "line": 1, "col": 5, "offset": 4 },
+            "abstract_content": "args"
+          },
+          "$PROPERTY": {
+            "start": { "line": 8, "col": 17, "offset": 137 },
+            "end": { "line": 8, "col": 21, "offset": 141 },
+            "abstract_content": "args"
+          }
+        },
+        "message": "The application might dynamically evaluate untrusted input, which can lead to a code injection vulnerability. An attacker can execute arbitrary code, potentially gaining complete control of the system. To prevent this vulnerability, avoid executing code containing user input. If this is unavoidable, validate and sanitize the input, and use safe alternatives for evaluating user input.",
+        "metadata": {
+          "likelihood": "HIGH",
+          "impact": "HIGH",
+          "confidence": "HIGH",
+          "category": "security",
+          "subcategory": ["vuln"],
+          "cwe": [
+            "CWE-94: Improper Control of Generation of Code ('Code Injection')"
+          ],
+          "cwe2020-top25": true,
+          "cwe2022-top25": true,
+          "display-name": "Code Injection with Flask",
+          "functional-categories": [
+            "code::sink::eval::stdlib",
+            "code::sink::eval::stdlib2",
+            "code::sink::eval::stdlib3",
+            "expression-lang::sink::expression::stdlib",
+            "expression-lang::sink::expression::stdlib2",
+            "expression-lang::sink::expression::stdlib3",
+            "web::source::cookie::flask",
+            "web::source::form-data::flask",
+            "web::source::form-data::flask-wtf",
+            "web::source::form-data::wtforms",
+            "web::source::header::flask",
+            "web::source::http-body::flask",
+            "web::source::url-path-params::flask",
+            "web::source::url-query-string::flask"
+          ],
+          "owasp": ["A03:2021 - Injection", "A05:2025 - Injection"],
+          "references": [
+            "https://owasp.org/Top10/2025/A05_2025-Injection/",
+            "https://owasp.org/Top10/A03_2021-Injection",
+            "https://www.stackhawk.com/blog/command-injection-python/"
+          ],
+          "release": "ga",
+          "technology": [
+            "flask",
+            "flask-wtf",
+            "stdlib",
+            "stdlib2",
+            "stdlib3",
+            "web",
+            "wtforms"
+          ],
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Code Injection"],
+          "source": "https://semgrep.dev/r/python.flask.code.tainted-code-stdlib-flask.tainted-code-stdlib-flask",
+          "shortlink": "https://sg.run/RewXY",
+          "semgrep.dev": {
+            "rule": {
+              "r_id": 116505,
+              "rv_id": 1414797,
+              "rule_id": "WAUW7yw",
+              "version_id": "GxTlKE4",
+              "url": "https://semgrep.dev/playground/r/GxTlKE4/python.flask.code.tainted-code-stdlib-flask.tainted-code-stdlib-flask",
+              "origin": "pro_rules"
+            }
+          }
+        },
+        "severity": "CRITICAL",
+        "fingerprint": "f03e91411e648187ac63ecdc7a52937a10da4e77512525ba0e476489a8f5982cde90eaf268514145487c888f261a4ce56a05fce15755853f23d3f74c748f2bb0_0",
+        "lines": "    eval(request.args.get('e',''))",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "dataflow_trace": {
+          "taint_source": [
+            "CliLoc",
+            [
+              {
+                "path": "proof/relay_test.py",
+                "start": { "line": 8, "col": 9, "offset": 129 },
+                "end": { "line": 8, "col": 35, "offset": 155 }
+              },
+              "request.args.get('cmd','')"
+            ]
+          ],
+          "intermediate_vars": [
+            {
+              "location": {
+                "path": "proof/relay_test.py",
+                "start": { "line": 8, "col": 9, "offset": 129 },
+                "end": { "line": 8, "col": 16, "offset": 136 }
+              },
+              "content": "request"
+            }
+          ],
+          "taint_sink": [
+            "CliLoc",
+            [
+              {
+                "path": "proof/relay_test.py",
+                "start": { "line": 10, "col": 5, "offset": 176 },
+                "end": { "line": 10, "col": 35, "offset": 206 }
+              },
+              "eval(request.args.get('e',''))"
+            ]
+          ]
+        },
+        "engine_kind": "PRO"
+      }
+    },
+    {
+      "check_id": "etc.semgrep.rules.pro-python.python.flask.security.injection.user-eval.eval-injection",
+      "path": "proof/relay_test.py",
+      "start": { "line": 10, "col": 5, "offset": 176 },
+      "end": { "line": 10, "col": 35, "offset": 206 },
+      "extra": {
+        "metavars": {
+          "$W": {
+            "start": { "line": 10, "col": 18, "offset": 189 },
+            "end": { "line": 10, "col": 22, "offset": 193 },
+            "abstract_content": "args"
+          }
+        },
+        "message": "Detected user data flowing into eval. This is code injection and should be avoided.",
+        "metadata": {
+          "cwe": [
+            "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')"
+          ],
+          "owasp": ["A03:2021 - Injection", "A05:2025 - Injection"],
+          "references": [
+            "https://nedbatchelder.com/blog/201206/eval_really_is_dangerous.html"
+          ],
+          "category": "security",
+          "technology": ["flask"],
+          "subcategory": ["vuln"],
+          "likelihood": "MEDIUM",
+          "impact": "MEDIUM",
+          "confidence": "MEDIUM",
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Code Injection"],
+          "source": "https://semgrep.dev/r/python.flask.security.injection.user-eval.eval-injection",
+          "shortlink": "https://sg.run/5QpX",
+          "semgrep.dev": {
+            "rule": {
+              "r_id": 9547,
+              "rv_id": 1263436,
+              "rule_id": "0oU54W",
+              "version_id": "w8TRoB0",
+              "url": "https://semgrep.dev/playground/r/w8TRoB0/python.flask.security.injection.user-eval.eval-injection",
+              "origin": "community"
+            }
+          }
+        },
+        "severity": "ERROR",
+        "fingerprint": "dc480c3368e740b3c699295ca4129f6825f0cbc2a501acf63ff0f5af64b4951ea3ff3f7fdf010229f27062f7a22a77d51f6ad277f9c5601dd4d0caf7b27c1bd7_0",
+        "lines": "    eval(request.args.get('e',''))",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "PRO"
+      }
+    },
+    {
+      "check_id": "etc.semgrep.rules.python.no-eval-exec",
+      "path": "proof/relay_test.py",
+      "start": { "line": 10, "col": 5, "offset": 176 },
+      "end": { "line": 10, "col": 35, "offset": 206 },
+      "extra": {
+        "metavars": {},
+        "message": "Avoid dynamic code execution, use ast.literal_eval() for data parsing.",
+        "metadata": { "category": "security" },
+        "severity": "ERROR",
+        "fingerprint": "2532cdfdae610517876ae32fab1b96a898ecf5e158f9b5eab02ed2feb6449983b6b967d0166e1ca136baa0894fe5371005b30979279f8534666ae2f1b3eaae50_0",
+        "lines": "    eval(request.args.get('e',''))",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "PRO"
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {
+    "scanned": [
+      "/tmp/semgrep-mcp-cache-f57d90/relay_test.py-7acc4f367347289840137f79feb2e7f4-50866e.py"
+    ]
+  },
+  "time": {
+    "rules": [],
+    "rules_parse_time": 0.00019097328186035156,
+    "profiling_times": {},
+    "parsing_time": {
+      "total_time": 0.0,
+      "per_file_time": { "mean": 0.0, "std_dev": 0.0 },
+      "very_slow_stats": { "time_ratio": 0.0, "count_ratio": 0.0 },
+      "very_slow_files": []
+    },
+    "scanning_time": {
+      "total_time": 0.0,
+      "per_file_time": { "mean": 0.0, "std_dev": 0.0 },
+      "very_slow_stats": { "time_ratio": 0.0, "count_ratio": 0.0 },
+      "very_slow_files": []
+    },
+    "matching_time": {
+      "total_time": 0.0,
+      "per_file_and_rule_time": { "mean": 0.0, "std_dev": 0.0 },
+      "very_slow_stats": { "time_ratio": 0.0, "count_ratio": 0.0 },
+      "very_slow_rules_on_files": []
+    },
+    "tainting_time": {
+      "total_time": 0.0,
+      "per_def_and_rule_time": { "mean": 0.0, "std_dev": 0.0 },
+      "very_slow_stats": { "time_ratio": 0.0, "count_ratio": 0.0 },
+      "very_slow_rules_on_defs": []
+    },
+    "fixpoint_timeouts": [],
+    "prefiltering": {
+      "project_level_time": 0.0,
+      "file_level_time": 0.0,
+      "rules_with_project_prefilters_ratio": 0.0,
+      "rules_with_file_prefilters_ratio": 0.0,
+      "rules_selected_ratio": 0.0,
+      "rules_matched_ratio": 0.0
+    },
+    "targets": [],
+    "total_bytes": 0,
+    "max_memory_bytes": 6450099200
+  },
+  "engine_requested": "OSS",
+  "interfile_languages_used": [],
+  "skipped_rules": [],
+  "profiling_results": []
+}

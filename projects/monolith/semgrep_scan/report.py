@@ -127,6 +127,20 @@ def _ensure_writable_semgrep_home() -> None:
     _semgrep_home_ready = True
 
 
+def _decode_optional(out_type: Any, value: Any) -> Any:
+    """Decode an optional nested ``out.*`` field, safe against None.
+
+    Returns ``out_type.from_json(value)`` ONLY when ``value`` is not None; returns
+    None otherwise. The atd-generated ``from_json`` raises on a None value (it
+    reads a PRESENT key as "must be a valid value of this type"), so a cli_output
+    optional emitted as literal ``null`` MUST NOT be handed to ``from_json``. This
+    is the single guard that keeps every optional-field decode None-safe.
+    """
+    if value is None:
+        return None
+    return out_type.from_json(value)
+
+
 def _finding_from_cli_result(
     result: dict[str, Any], index: int, commit_date_iso: str
 ) -> Any:
@@ -147,14 +161,27 @@ def _finding_from_cli_result(
         metadata     <- out.RawJson(extra["metadata"])
         is_blocking  <- True (App policy decides real blocking server-side)
 
-    OPTIONAL:
+    OPTIONAL (OMITTED, i.e. left None on the Finding, when the cli value is
+    None/absent):
         match_based_id  <- extra["fingerprint"] (same fp; App dedup/triage key)
-        dataflow_trace  <- extra["dataflow_trace"] if present
-        validation_state<- extra["validation_state"] if present
-        engine_kind     <- extra["engine_kind"] if present
+        dataflow_trace  <- extra["dataflow_trace"] when present and non-None
+        validation_state<- extra["validation_state"] when present and non-None
+        engine_kind     <- extra["engine_kind"] when present and non-None
         hashes/fixed_lines/sca_info/historical_info are left None: they are
         location/code hashes we cannot cheaply reproduce without the source, and
         the App tolerates their absence (they are Optional in out.Finding).
+
+    CRITICAL (live bug, ENGINE-fingerprint capture): the cli_output emits these
+    optional keys as literal ``null`` for many findings (e.g. ``dataflow_trace``
+    is null on ~half the results in a real diff scan). The atd-generated
+    ``out.*.from_json`` treats a value of ``None`` as "invalid value for this
+    type" and RAISES (``incompatible JSON value where type 'MatchDataflowTrace'
+    was expected: 'None'``), NOT as "absent". So we must NEVER call the nested
+    ``from_json`` on a None value: we decode each optional ONLY when its source is
+    present and non-None, and otherwise leave the field None on the Finding.
+    ``out.Finding.to_json`` then omits the key entirely (verified against the
+    pinned 1.168.0 generated ``to_json``), so the App-payload never carries a null
+    for an optional and the App's own re-parse cannot trip the same error.
     """
     import semgrep.semgrep_interfaces.semgrep_output_v1 as out
 
@@ -163,20 +190,12 @@ def _finding_from_cli_result(
 
     app_severity = _APP_SEVERITY.get(str(extra.get("severity", "")).upper(), 0)
 
-    engine_kind = (
-        out.EngineOfFinding.from_json(extra["engine_kind"])
-        if extra.get("engine_kind") is not None
-        else None
+    engine_kind = _decode_optional(out.EngineOfFinding, extra.get("engine_kind"))
+    validation_state = _decode_optional(
+        out.ValidationState, extra.get("validation_state")
     )
-    validation_state = (
-        out.ValidationState.from_json(extra["validation_state"])
-        if extra.get("validation_state") is not None
-        else None
-    )
-    dataflow_trace = (
-        out.MatchDataflowTrace.from_json(extra["dataflow_trace"])
-        if extra.get("dataflow_trace") is not None
-        else None
+    dataflow_trace = _decode_optional(
+        out.MatchDataflowTrace, extra.get("dataflow_trace")
     )
 
     start = result.get("start", {})

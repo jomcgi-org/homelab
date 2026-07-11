@@ -783,10 +783,13 @@ py_test(
     name = "semgrep_report_test",
     srcs = ["semgrep_scan/report_test.py"],
     data = [
-        # report_test loads this captured cli_output fixture at runtime via
+        # report_test loads these captured cli_output fixtures at runtime via
         # Path(__file__).parent/"testdata"; the "semgrep_scan/**/*.py" backend
-        # glob does not capture the .json, so ship it into runfiles.
+        # glob does not capture the .json, so ship them into runfiles.
+        # real_cli_output.json is the live-bug regression fixture (mix of null and
+        # dict dataflow_trace across 8 findings).
         "semgrep_scan/testdata/pr_cli_output.json",
+        "semgrep_scan/testdata/real_cli_output.json",
     ],
     imports = ["."],
     # Drives the async relay via asyncio.run (sync test fns), so no
