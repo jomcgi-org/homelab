@@ -912,9 +912,15 @@ class ChatBot(discord.Client):
             "author_is_bot": bool(getattr(message.author, "bot", False)),
             "bot_user_id": str(self.user.id),
         }
-        verdict = await asyncio.to_thread(
-            safeguards.observe_message, safeguards_payload
-        )
+        try:
+            verdict = await asyncio.to_thread(
+                safeguards.observe_message, safeguards_payload
+            )
+        except Exception:
+            # observe_message already fails open internally; this guards the
+            # thread dispatch itself so safeguards can never strand a message.
+            logger.exception("safeguards: observe dispatch failed; failing open")
+            verdict = safeguards.Verdict(addressed=addressed)
         if verdict.locked_out:
             reacted = False
             if addressed:
@@ -924,9 +930,12 @@ class ChatBot(discord.Client):
                 except Exception:
                     logger.exception("safeguards: lockout reaction failed")
             if addressed or verdict.signals:
-                await asyncio.to_thread(
-                    safeguards.log_enforcement, safeguards_payload, reacted
-                )
+                try:
+                    await asyncio.to_thread(
+                        safeguards.log_enforcement, safeguards_payload, reacted
+                    )
+                except Exception:
+                    logger.exception("safeguards: enforcement log dispatch failed")
             return
 
         # The LLM intent lane runs fire-and-forget on messages worth the
