@@ -81,8 +81,13 @@ func Scan(ctx context.Context, req vsockproto.ScanRequest, runner Runner) (vsock
 // metrics/version-check-off come from the env guestboot.SetupEnv set.
 func SemgrepRunner(rulesDir string) Runner {
 	return func(ctx context.Context, treeDir string) ([]byte, error) {
+		// --max-memory bounds the interfile analysis budget. Without it, semgrep
+		// defaults to 90% of the cgroup memory limit (the guest's memMib), so an
+		// 8Gi guest would let it grow to ~7.2Gi and risk OOM. 5000 MiB measured
+		// comfortable for the ~680-file non-test tree (peak ~6Gi total, well under
+		// the 8Gi guest) while leaving the engine headroom.
 		cmd := exec.CommandContext(ctx, "semgrep", "scan", "--pro",
-			"--config", rulesDir, "--metrics=off", "--json", treeDir)
+			"--config", rulesDir, "--max-memory", "5000", "--metrics=off", "--json", treeDir)
 		cmd.Stderr = os.Stderr
 		return cmd.Output()
 	}

@@ -31,6 +31,31 @@ logger = logging.getLogger("monolith.semgrep.full_scan")
 
 _GITHUB_TIMEOUT = 30.0
 
+# Path patterns excluded from the whole-repo baseline scan. This mirrors the
+# Semgrep App's own "Path ignores" for the SMS project (tests, generated,
+# minified), so the self-hosted full scan covers the SAME source set as SMS and
+# the two projects compare like-for-like. It also roughly halves the file count
+# (1336 -> ~680 here), keeping the interfile scan inside the semgrep-full guest's
+# memory and time budget.
+_BASELINE_EXCLUDE_SUFFIXES = (
+    "_test.py",
+    "_test.go",
+    ".test.js",
+    ".test.ts",
+    ".test.tsx",
+    ".min.js",
+    "_pb2.py",
+)
+_BASELINE_EXCLUDE_DIRS = ("/testdata/", "/tests/", "/__mocks__/", "/node_modules/")
+
+
+def _excluded_from_baseline(path: str) -> bool:
+    """True if path is a test/generated/minified file the baseline scan skips."""
+    if path.endswith(_BASELINE_EXCLUDE_SUFFIXES):
+        return True
+    slashed = "/" + path
+    return any(d in slashed for d in _BASELINE_EXCLUDE_DIRS)
+
 
 async def _resolve_commit_sha(client: httpx.AsyncClient, repo: str, ref: str) -> str:
     """Resolve ``ref`` (e.g. ``main``) to its current commit sha via the REST API.
@@ -113,7 +138,9 @@ async def gather_main_files(repo: str, ref: str = "main") -> list[dict]:
         paths = [
             entry.get("path", "")
             for entry in tree_response.get("tree", [])
-            if entry.get("type") == "blob" and _is_scannable(entry.get("path", ""))
+            if entry.get("type") == "blob"
+            and _is_scannable(entry.get("path", ""))
+            and not _excluded_from_baseline(entry.get("path", ""))
         ]
 
         for path in paths:
