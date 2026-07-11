@@ -150,10 +150,16 @@ def _auth_headers() -> dict[str, str]:
         raise RuntimeError(
             "SEMGREP_APP_TOKEN is not set; cannot authenticate to the Semgrep App"
         )
+    from semgrep import __VERSION__
+
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
+        # The App parses the semgrep version from the User-Agent and rejects the
+        # /results POST with 400 {"error":"Invalid Semgrep Version"} without it.
+        # This matches str(semgrep.app.session.UserAgent()) == "Semgrep/<ver>".
+        "User-Agent": f"Semgrep/{__VERSION__}",
     }
 
 

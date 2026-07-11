@@ -226,9 +226,12 @@ def test_report_pr_scan_uploads_with_bearer_auth_on_every_request():
     assert len(calls) == 3
     create, results_call, complete_call = calls
 
-    # Every request carries an explicit Bearer header with the token.
+    # Every request carries an explicit Bearer header with the token, and a
+    # Semgrep/<version> User-Agent (the App rejects /results with 400
+    # "Invalid Semgrep Version" without it).
     for c in calls:
         assert c["headers"].get("Authorization") == f"Bearer {_FAKE_TOKEN}"
+        assert c["headers"].get("User-Agent", "").startswith("Semgrep/")
 
     # CREATE: correct URL + a CreateScanRequestV2 body (scan_metadata + project_metadata).
     assert create["url"].endswith("/api/cli/v2/scans")
