@@ -6,6 +6,16 @@ base engagement policy (refined, not gated, by the channel directive) and
 engages only above ATTENTION_THRESHOLD. Recently-tagged threads/channels get a
 lower threshold so the bot leans into relevant follow-ups. Everywhere else,
 ignore. The classifier holds no tools and fails closed (ignore) on any error.
+
+The pre-gate above only ever sees the trigger message, so it cannot catch a
+reply that turns out to barge in, double down after a brush-off, or invent
+facts. ``should_send`` is a second, disconnected post-generation gate
+(improve-ambient): a fresh classify that reads the channel directive, the recent
+interaction, and the DRAFTED reply, and vetoes an ambient send that a real
+person would not have wanted. It fails OPEN (send) so a classify blip degrades
+to today's behaviour rather than silently eating replies, and is scoped to the
+ambient chat path only (a live reply someone is waiting on is never gated, and
+heavy agent runs are gated pre-generation, not after the microVM has run).
 """
 
 import json
@@ -16,6 +26,9 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 ATTENTION_THRESHOLD = float(os.environ.get("ATTENTION_THRESHOLD", "0.5"))
 _RECENT_TAG_THRESHOLD = float(os.environ.get("ATTENTION_RECENT_TAG_THRESHOLD", "0.35"))
+# The post-generation send-gate is on by default; set AMBIENT_SEND_GATE=0 to
+# disable it (and skip its extra classify call) without a redeploy.
+SEND_GATE_ENABLED = os.environ.get("AMBIENT_SEND_GATE", "1") != "0"
 
 
 @dataclass
@@ -75,16 +88,22 @@ async def evaluate(
             "You are Bosun, a friendly bot hanging out in this Discord channel. "
             "You are one voice among friends, not a reply guy: join in when there "
             "is a real opening, and otherwise let people talk. Engage (true) if "
-            "the message addresses you, greets you, asks a question, is trying to "
-            "get your attention, or clearly invites your take, or if it states "
-            "something checkable that would genuinely benefit from a web search or "
-            "fact-check. Ignore (false) if it is aimed at another specific person "
-            "(not you), is pure noise or a bare reaction, is a link, image, or "
-            "media share posted without a question or a request for your take, is "
-            "people thinking out loud to each other, or tells you to stop, says "
-            "you talk too much, or otherwise signals you are not wanted right now. "
-            "When a message is not addressed to you and you are unsure whether it "
-            "actually wants a reply, stay quiet.\n"
+            "the message addresses you by name, greets you, asks YOU a question, "
+            "is trying to get your attention, or clearly invites your take, or if "
+            "it states something checkable that would genuinely benefit from a web "
+            "search or fact-check. Ignore (false) if it is aimed at another "
+            "specific person, or at the other people in the channel rather than "
+            "you - including friends sorting out plans among themselves ('you lot "
+            "around for a game?', 'wanna play tonight?') or catching up with each "
+            "other ('how have you been?') - is pure noise or a bare reaction, is "
+            "a link, image, or media share posted without a question or a request "
+            "for your take, is people thinking out loud to each other, or tells "
+            "you to stop, says you talk too much, or otherwise signals you are "
+            "not wanted right now. A message being phrased as a question is NOT on "
+            "its own a reason to engage when it is plainly directed at the other "
+            "people here rather than at you. When a message is not addressed to "
+            "you and you are unsure whether it actually wants a reply, stay "
+            "quiet.\n"
             + (
                 "You were recently mentioned in this channel, so lean even harder "
                 "toward engaging on the follow-up.\n"
@@ -110,6 +129,73 @@ async def evaluate(
     except Exception:
         logger.exception("attention: classify failed; failing closed (ignore)")
         return AttentionResult(False, 0.0)
+
+
+async def should_send(
+    directive: str,
+    conversation: str,
+    trigger: str,
+    reply: str,
+    *,
+    _caller=None,
+) -> bool:
+    """Post-generation send-gate for an ambient chat reply. See module docstring.
+
+    A second, disconnected classify: given the channel ``directive``, the recent
+    ``conversation``, the ``trigger`` message being replied to, and Bosun's
+    ``reply`` as already drafted, decide whether sending it improves the channel
+    or Bosun should stay silent. This is an independent critic reading the
+    finished artifact, not the drafter's own second thought, so it catches
+    reply-quality misfires the pre-gate (which only sees the trigger) cannot:
+    barging into a conversation nobody asked Bosun to join, piling on after a
+    brush-off, or inventing facts/names/links.
+
+    Fails OPEN (returns True) on any error or when disabled, so a classify blip
+    degrades to today's behaviour rather than silently swallowing a reply.
+    ``_caller`` is an injectable llm-caller for tests.
+    """
+    if not SEND_GATE_ENABLED:
+        return True
+    try:
+        caller = _caller
+        if caller is None:
+            from chat.summarizer import build_llm_caller
+
+            caller = build_llm_caller()
+        prompt = (
+            "You are the send-gate for Bosun, a bot in a Discord channel among "
+            "friends. Bosun has DRAFTED a reply to the latest message. Your only "
+            "job is to decide whether sending it right now improves the "
+            "conversation, or whether Bosun should stay silent. Be willing to "
+            "veto. Answer send=false if the reply: barges into a conversation the "
+            "humans are having with each other and did not ask Bosun to join; "
+            "piles on after someone signalled they don't want it (a brush-off, "
+            "'stop', 'you talk too much', hostility); states specific facts, "
+            "events, names, links, or numbers Bosun cannot actually know or that "
+            "read as invented; is off Bosun's voice, padded, or long for what was "
+            "asked; or adds nothing a person would miss. Answer send=true only if "
+            "a real person in this channel would be glad Bosun sent it. When "
+            "unsure, prefer send=false.\n"
+            + (
+                "Channel guidance (weigh this heavily): " + directive + "\n"
+                if directive
+                else ""
+            )
+            + "Recent conversation:\n"
+            + (conversation or "")[:2000]
+            + "\nLatest message Bosun is replying to: "
+            + (trigger or "")[:500]
+            + "\nBosun's drafted reply: "
+            + (reply or "")[:1000]
+            + '\nReply with ONLY a JSON object: {"send": true|false}. '
+            "No prose, no markdown."
+        )
+        raw = await caller(prompt)
+        data = json.loads(_extract_json(raw))
+        return bool(data.get("send", True))
+    except Exception:
+        logger.exception("attention: send-gate failed; failing open (send)")
+        return True
 
 
 async def needs_agent(message, *, _caller=None) -> bool:

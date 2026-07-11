@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from chat.attention import ATTENTION_THRESHOLD, evaluate, needs_agent
+import chat.attention as attention_mod
+from chat.attention import ATTENTION_THRESHOLD, evaluate, needs_agent, should_send
 
 
 def _make_message(content: str = "hey", mentions=None, reference=None):
@@ -139,6 +140,83 @@ class TestRecentTagWeighting:
         assert result.engage is True
         assert result.confidence == 1.0
         caller.assert_not_called()
+
+
+class TestEngagePromptGroupAddressed:
+    """Pre-gate refinement (improve-ambient eps 224/227/233): a question aimed
+    at the friend group ('you lot around for a game?', 'how have you been?') is
+    not on its own an engage signal."""
+
+    @pytest.mark.asyncio
+    async def test_prompt_covers_group_addressed_and_question_caveat(self):
+        message = _make_message(content="you boys around for any games today?")
+        caller = AsyncMock(return_value='{"engage": false, "confidence": 0.2}')
+        await evaluate(message, "", _BOT_USER, is_ambient=True, _caller=caller)
+        prompt = caller.call_args[0][0].lower()
+        # group-addressed coordination / catching up is an ignore case
+        assert "the other people in the channel rather than" in prompt
+        assert "sorting out plans among themselves" in prompt
+        assert "catching up with each other" in prompt
+        # a bare question aimed at others is not sufficient to engage
+        assert "phrased as a question is not on its own a reason to engage" in prompt
+
+
+class TestSendGate:
+    """Post-generation send-gate (improve-ambient): a disconnected classify that
+    reads the drafted reply and vetoes an ambient send that would misfire.
+    Fails open; skipped when disabled."""
+
+    @pytest.mark.asyncio
+    async def test_send_true_passes(self):
+        caller = AsyncMock(return_value='{"send": true}')
+        assert await should_send("d", "convo", "trigger", "reply", _caller=caller)
+        caller.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_false_vetoes(self):
+        caller = AsyncMock(return_value='{"send": false}')
+        assert (
+            await should_send("d", "convo", "trigger", "reply", _caller=caller) is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_fails_open_on_caller_error(self):
+        caller = AsyncMock(side_effect=RuntimeError("model unreachable"))
+        assert await should_send("d", "convo", "trigger", "reply", _caller=caller)
+
+    @pytest.mark.asyncio
+    async def test_missing_key_defaults_to_send(self):
+        caller = AsyncMock(return_value="{}")
+        assert await should_send("d", "convo", "trigger", "reply", _caller=caller)
+
+    @pytest.mark.asyncio
+    async def test_extracts_json_from_surrounding_prose(self):
+        caller = AsyncMock(return_value='hold on {"send": false} ok')
+        assert (
+            await should_send("d", "convo", "trigger", "reply", _caller=caller) is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_disabled_returns_true_without_calling(self, monkeypatch):
+        monkeypatch.setattr(attention_mod, "SEND_GATE_ENABLED", False)
+        caller = AsyncMock()
+        assert await should_send("d", "convo", "trigger", "reply", _caller=caller)
+        caller.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_directive_conversation_and_reply(self):
+        caller = AsyncMock(return_value='{"send": true}')
+        await should_send(
+            "hang back here",
+            "Wobblington: wanna play minecraft?",
+            "wanna play minecraft?",
+            "Sure thing. You hosting?",
+            _caller=caller,
+        )
+        prompt = caller.call_args[0][0]
+        assert "hang back here" in prompt
+        assert "wanna play minecraft?" in prompt
+        assert "Sure thing. You hosting?" in prompt
 
 
 class TestNeedsAgent:

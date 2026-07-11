@@ -2141,6 +2141,26 @@ class ChatBot(discord.Client):
                     sent = await message.reply(fallback)
                 return sent, fallback, None
 
+            # Post-generation send-gate (improve-ambient): a second, disconnected
+            # classify reads the channel directive + recent interaction + the
+            # drafted reply and vetoes an ambient send that would barge in, pile
+            # on after a brush-off, or invent facts - failures the pre-gate cannot
+            # see because it only had the trigger. Ambient only (nothing posted
+            # yet, so it can be silently held); a live reply someone is waiting on
+            # is never gated. Fails open. Skipped entirely when disabled.
+            if attention.SEND_GATE_ENABLED and not live and sent is None:
+                directive = await asyncio.to_thread(
+                    directives.get_active, str(message.channel.id)
+                )
+                if not await attention.should_send(
+                    directive, context, message.content or "", response_text
+                ):
+                    logger.info(
+                        "send-gate: suppressing ambient reply in channel %s",
+                        message.channel.id,
+                    )
+                    return None, "", None
+
             # Ensure a reply was sent. AgentRunResultEvent alone never calls
             # _ensure_sent, so sent may still be None here.
             await _ensure_sent(response_text)
