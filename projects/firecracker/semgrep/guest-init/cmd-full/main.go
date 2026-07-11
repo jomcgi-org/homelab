@@ -49,17 +49,26 @@ func run(logger *slog.Logger) error {
 	guestboot.SetProcessEnv()
 
 	// SetupEnv writes the offline Pro settings file and exports SEMGREP_SETTINGS_FILE
-	// / HOME; `semgrep scan --pro` needs these for the offline Pro unlock exactly
-	// as the warm scan-server does.
+	// / HOME; `osemgrep-pro scan --pro` needs these for the offline Pro unlock
+	// exactly as the warm scan-server does.
 	if _, err := guestboot.SetupEnv(logger); err != nil {
 		return err
 	}
 
+	// Reconstruct the pro-engine "install" layout (binary + version stamp) the
+	// scan CLI insists on, in a tmpfs dir on PATH. Without this the CLI reports
+	// "Semgrep Pro is either uninstalled or out of date" and exits 2. The returned
+	// path is the pro binary to invoke the scan from (inside the shim dir).
+	proBin, err := guestboot.SetupProEngine(logger)
+	if err != nil {
+		return err
+	}
+
 	rulesDir := guestboot.EnvOr("SEMGREP_SCAN_RULES", guestboot.DefaultRulesDir)
-	logger.Info("starting full-scan (semgrep scan --pro) init", "rules", rulesDir)
+	logger.Info("starting full-scan (osemgrep-pro scan --pro) init", "rules", rulesDir, "proBin", proBin)
 
 	h := handler.NewFull(func(req vsockproto.ScanRequest) (vsockproto.ScanResult, error) {
-		return fullscan.Scan(ctx, req, fullscan.SemgrepRunner(rulesDir))
+		return fullscan.Scan(ctx, req, fullscan.SemgrepRunner(rulesDir, proBin))
 	})
 
 	ln, err := scanserver.ListenVsock(vsockproto.GuestHTTPPort)

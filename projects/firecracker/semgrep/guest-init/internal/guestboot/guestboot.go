@@ -8,8 +8,12 @@
 package guestboot
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 const (
@@ -78,4 +82,58 @@ func EnvOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// proShimDir is the tmpfs directory where SetupProEngine builds the pro-engine
+// "install" layout the full-scan CLI expects.
+const proShimDir = "/tmp/sgbin"
+
+// SetupProEngine makes the baked offline-Pro engine discoverable to
+// `osemgrep-pro scan --pro`. That command (like pysemgrep) refuses to run unless
+// the Pro core looks INSTALLED: a semgrep-core-proprietary binary sitting next to
+// semgrep-core, plus a pro-installed-by.txt version stamp recording the version
+// that installed it. Our engine is baked at /opt/semgrep (read-only rootfs), not
+// in that layout, so the CLI reports "Semgrep Pro is either uninstalled or out of
+// date" and exits. We reconstruct the layout in a tmpfs dir on PATH: symlinks for
+// semgrep-core, semgrep-core-proprietary, and osemgrep-pro (all to the baked
+// binaries), so both PATH-based and argv[0]-dir-based resolution land here, plus
+// the stamp. The stamp is the engine's OWN -pro_version output (the engine is the
+// CLI, so there is no version drift to guess at). Returns the pro binary path to
+// invoke the scan from (inside the shim dir). Prepends the shim dir to PATH.
+func SetupProEngine(logger *slog.Logger) (string, error) {
+	proBin := EnvOr("OSEMGREP_PRO_BIN", DefaultOsemgrepPro)
+	coreBin := filepath.Join(filepath.Dir(proBin), "semgrep-core")
+
+	if err := os.MkdirAll(proShimDir, 0o755); err != nil {
+		return "", fmt.Errorf("pro shim mkdir: %w", err)
+	}
+	links := map[string]string{
+		"semgrep-core":             coreBin,
+		"semgrep-core-proprietary": proBin,
+		"osemgrep-pro":             proBin,
+	}
+	for name, target := range links {
+		dst := filepath.Join(proShimDir, name)
+		_ = os.Remove(dst)
+		if err := os.Symlink(target, dst); err != nil {
+			return "", fmt.Errorf("pro shim symlink %s: %w", name, err)
+		}
+	}
+
+	// pro-installed-by.txt records the installing version. Use the engine's own
+	// -pro_version (the method pysemgrep uses to read it), so the stamp always
+	// matches the baked engine exactly.
+	out, err := exec.Command(proBin, "-pro_version").Output()
+	if err != nil {
+		return "", fmt.Errorf("pro_version: %w", err)
+	}
+	stamp := strings.TrimSpace(string(out))
+	stampPath := filepath.Join(proShimDir, "pro-installed-by.txt")
+	if err := os.WriteFile(stampPath, []byte(stamp+"\n"), 0o644); err != nil {
+		return "", fmt.Errorf("pro stamp write: %w", err)
+	}
+
+	os.Setenv("PATH", proShimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	logger.Info("pro engine install shim ready", "dir", proShimDir, "version", stamp)
+	return filepath.Join(proShimDir, "osemgrep-pro"), nil
 }
