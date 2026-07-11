@@ -435,9 +435,10 @@ def _build_project_metadata(
     diff scan behavior: ``"on": "pull_request"`` and ``pull_request_id`` set to
     ``pr_id``. ``is_full_scan=True`` is a whole-repo interfile scan (the
     ``semgrep-full`` workload seeding the baseline on ``main``): the payload sets
-    ``"is_full_scan": True``, ``"on": "schedule"``, and OMITS
-    ``pull_request_id`` entirely (there is no PR to attach the scan to), rather
-    than setting it to None.
+    ``"is_full_scan": True`` and ``"on": "schedule"``. ``pull_request_id`` is a
+    REQUIRED field in the ProjectMetadata ATD schema (``from_json`` raises
+    "missing field 'pull_request_id'" if absent), so a full scan still sends it,
+    as an empty string, rather than omitting it.
     """
     import semgrep.semgrep_interfaces.semgrep_output_v1 as out
 
@@ -458,9 +459,10 @@ def _build_project_metadata(
         "pull_request_author_image_url": None,
         "pull_request_title": None,
         "is_full_scan": is_full_scan,
+        # Required field in the ProjectMetadata ATD schema. A full scan has no PR,
+        # so it sends an empty string; a PR diff scan sends the real pr_id.
+        "pull_request_id": "" if is_full_scan else pr_id,
     }
-    if not is_full_scan:
-        payload["pull_request_id"] = pr_id
     if base_ref:
         # Lets the App compute the merge base for server-side baseline handling.
         payload["base_branch_head_commit"] = base_ref
