@@ -183,6 +183,15 @@ async def should_send(
             "asked; or adds nothing a person would miss. Answer send=true only if "
             "a real person in this channel would be glad Bosun sent it. When "
             "unsure, prefer send=false.\n"
+            "EXCEPTION, explicit invitation: if the latest message directly "
+            "addresses Bosun by name or @mention with a request or question, the "
+            "human has asked Bosun to reply, so the barge-in, brush-off-context, "
+            "and when-unsure vetoes do NOT apply. Answer send=true unless the "
+            "drafted reply is harmful or hateful, or that same person told Bosun "
+            "to stop earlier in this exchange. A long computed result the person "
+            "explicitly asked for (requested digits, data, a table, a list) is "
+            "wanted content, not 'invented numbers', and must not be vetoed on "
+            "that ground.\n"
             + (
                 "Channel guidance (weigh this heavily): " + directive + "\n"
                 if directive

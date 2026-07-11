@@ -242,6 +242,19 @@ class TestSendGate:
         assert "wanna play minecraft?" in prompt
         assert "Sure thing. You hosting?" in prompt
 
+    @pytest.mark.asyncio
+    async def test_prompt_carries_explicit_invitation_exception(self):
+        # /improve-ambient episode 243: "Bosun calc pi to 1000 decimal places
+        # then plot the distribution" was a name-addressed request whose drafted
+        # reply the send-gate wrongly vetoed. The prompt must tell the gate that
+        # an addressed request is an explicit invitation the barge-in and
+        # "invented numbers" vetoes do not apply to.
+        caller = AsyncMock(return_value='{"send": true}')
+        await should_send("d", "convo", "trigger", "reply", _caller=caller)
+        prompt = caller.call_args[0][0]
+        assert "explicit invitation" in prompt
+        assert "wanted content, not 'invented numbers'" in prompt
+
 
 class TestNeedsAgent:
     """ADR 035 Phase 4: the in-monolith depth classify (chat vs goose guest)."""
