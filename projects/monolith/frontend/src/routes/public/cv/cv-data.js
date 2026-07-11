@@ -10,6 +10,9 @@
 import {
   agentFirstModelCallMs,
   agentRestoreColdMs,
+  semgrepColdStartSec,
+  semgrepRestoreMs,
+  semgrepScanSec,
 } from "../../../lib/public/fcstory/metrics.js";
 
 export const contact = {
@@ -105,15 +108,19 @@ export const jobs = [
 ];
 
 export const earlierCareer =
-  "**Chubb (2018–2020)**: account servicing for multinational corporate insurance. Automated most of the region's account-servicing admin and won two UK-wide hackathons, including an ML fraud classifier taken to production. That work started the pivot into engineering.";
+  "**Chubb (2018–2020)**: account servicing for multinational corporate insurance; the final year was engineering: process automation, data science & analytics. Automated the majority of regional account-servicing admin and won two UK-wide hackathons, including an ML fraud classifier for claims handlers.";
 
 export const personalIntro =
   "All of this runs on a bare-metal K3s cluster I operate at home, deployed with GitOps. Source: [github.com/jomcgi/homelab](https://github.com/jomcgi/homelab).";
 
 export const projects = [
+  `**Firecracker agent substrate** ([projects/firecracker](https://github.com/jomcgi/homelab/tree/main/projects/firecracker)): a serverless invoke substrate on hardware-isolated **Firecracker microVMs**. A stateless daemon serves POST /invoke: it restores a copy-on-write warm-base snapshot (**${agentRestoreColdMs}ms restore, ~${agentFirstModelCallMs}ms cold start to first model call**) and reverse-proxies HTTP over vsock into the guest; workloads are declarative Helm values, and durable state lives outside the VM. The guest never holds a real secret: a TLS-terminating egress proxy swaps placeholder tokens for the real credential at the network hop, so sandboxed code uses a GitHub token it can never read or exfiltrate.`,
+  `**goosecracker** ([projects/firecracker/goosecracker](https://github.com/jomcgi/homelab/tree/main/projects/firecracker/goosecracker)): a coding agent on the substrate that runs one task per microVM, cold boot by design so no state leaks between runs, **~${agentFirstModelCallMs}ms from trigger to the agent's first model call**. Results leave the sandbox as credential-free scratch refs pushed to an in-cluster git mirror, zero secrets on the write path.`,
+  `**Semgrep scans on agent diffs** ([projects/firecracker/semgrep](https://github.com/jomcgi/homelab/tree/main/projects/firecracker/semgrep)): a snapshot-warm guest with a resident Semgrep engine scans the code the agents write, synchronously: **~${semgrepRestoreMs}ms restore, ~${semgrepScanSec}s for a full scan** with taint analysis against a ~${semgrepColdStartSec}s cold start, so the scanner sits inside the agent's write path instead of a CI queue.`,
+  "**Grimoire** ([jomcgi.dev/app/grimoire](https://jomcgi.dev/app/grimoire)): takes scanned tabletop sourcebook pages and turns them into a domain knowledge graph you can ask questions of. An LLM extraction pipeline (a hosted frontier model, or my own in-cluster vLLM) fills Postgres + pgvector with **~34k entities and ~45k relationships across 33 books**, extracted off-pod as bounded, idempotent Argo CronWorkflows so nothing heavy touches the request path. On top: a per-campaign reader, an entity browser, and a rate-limited public RAG chat that **cites the exact source chunks** behind every answer. Access control is one visibility predicate every read path routes through, so the DM's secrets stay secret.",
+  "**Local inference & autonomous maintenance**: vLLM serving a **35B sparse-MoE on a single consumer RTX 4090** (int4-mixed weights, fp8 KV-cache, ~170 tok/s single-stream decode); a self-built MCP gateway; and scheduled Claude routines doing autonomous platform maintenance over a Postgres + pgvector knowledge graph.",
   "**OCI Model Cache Operator** ([projects/operators/oci-model-cache](https://github.com/jomcgi/homelab/tree/main/projects/operators/oci-model-cache)): a Go operator that streams HuggingFace models into an OCI registry and rewrites pod volumes at admission, so pods mount models like container images. Sealed-interface state machines make invalid phase transitions a compile error.",
-  `**Self-hosted agent platform** ([projects/firecracker](https://github.com/jomcgi/homelab/tree/main/projects/firecracker)): agent requests run in fresh, hardware-isolated **Firecracker microVMs**, not shared containers. Copy-on-write snapshot/restore brings cold start to **~${agentFirstModelCallMs}ms to first model call** (${agentRestoreColdMs}ms restore), so an idle agent costs nothing and wakes instantly. The guest is vsock-only and never holds a real secret: a TLS-terminating egress proxy swaps placeholder tokens for the real credential at the network hop, so sandboxed code uses a GitHub token it can never read or exfiltrate. Backed by on-cluster vLLM inference, a self-built MCP gateway, and scheduled routines doing autonomous platform maintenance over a Postgres + pgvector knowledge graph.`,
-  "**Platform plumbing**: four custom Bazel rulesets, notably rules_helm and a rules_semgrep that extracts the scan engine from its PyPI wheels and cuts hermetic diff scans **from 2 minutes to 30 seconds**; Argo CD GitOps; Envoy Gateway / Gateway API ingress behind a Cloudflare Tunnel (no open ports); Linkerd, Kyverno, 1Password Operator, self-hosted SigNoz.",
+  "**Platform plumbing**: five custom Bazel rulesets, notably rules_helm, a rules_semgrep running the pinned scan engine directly for hermetic diff scans **from 2 minutes to 30 seconds**, and a WIP rules_ocaml making OCaml a first-class Bazel language; Argo CD GitOps; Envoy Gateway / Gateway API ingress behind a Cloudflare Tunnel (no open ports); Linkerd, Kyverno, 1Password Operator, self-hosted SigNoz.",
   "**loom**: an open-source take on **Palantir Foundry**, a typed-object data platform with built-in lineage and governance, on a **Rust** + DataFusion + DuckLake core. Postgres is the only stateful coordinator, so a new dataset, domain, or transform adds **no new system to run**.",
 ];
 
@@ -143,6 +150,7 @@ export const skills = [
       "Postgres (PGvector/HNSW)",
       "Neo4j",
       "Iceberg",
+      "Metabase",
       "OpenTelemetry",
       "Prometheus",
       "Grafana",
@@ -156,8 +164,11 @@ export const skills = [
       "Go",
       "Python",
       "Rust",
+      "TypeScript",
       "SQL",
       "Starlark",
+      "FastAPI",
+      "SvelteKit",
       "Firecracker / microVMs",
       "vLLM",
       "MCP",

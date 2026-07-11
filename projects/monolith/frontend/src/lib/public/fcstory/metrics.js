@@ -65,3 +65,12 @@ export const goosecrackerRootfsMs = 35;
 export const goosecrackerBootMs = 28;
 export const goosecrackerGuestInitMs = 20;
 export const goosecrackerAgentUpMs = 50;
+
+// ---- Semgrep scan-guest figures (measured fc-invoke semgrep workload runs,
+// visible live on the /app/firecracker demos Semgrep tab: snapshot_restore
+// ~21.9ms, ~0.72s wall for a single Pro taint scan vs a ~6.7s cold start.
+// Not derivable from trace.js, which only covers the sandbox demo daemon;
+// re-bake by hand when the semgrep workload is re-measured) ----
+export const semgrepRestoreMs = 22;
+export const semgrepScanSec = 0.72;
+export const semgrepColdStartSec = 6.7;

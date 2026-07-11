@@ -14,6 +14,9 @@ import {
   goosecrackerBootMs,
   goosecrackerGuestInitMs,
   goosecrackerAgentUpMs,
+  semgrepRestoreMs,
+  semgrepScanSec,
+  semgrepColdStartSec,
 } from "./metrics.js";
 import { restores } from "./data/trace.js";
 
@@ -54,6 +57,14 @@ describe("fcstory metrics: derived exports are sane", () => {
 
   it("agentRestoreWarmMs is faster than agentRestoreColdMs", () => {
     expect(agentRestoreWarmMs).toBeLessThan(agentRestoreColdMs);
+  });
+
+  it("semgrep scan-guest figures are positive and ordered", () => {
+    expect(Number.isInteger(semgrepRestoreMs)).toBe(true);
+    expect(semgrepRestoreMs).toBeGreaterThan(0);
+    expect(semgrepScanSec).toBeGreaterThan(0);
+    // The whole point of the snapshot-warm guest: a warm scan beats cold start.
+    expect(semgrepScanSec).toBeLessThan(semgrepColdStartSec);
   });
 });
 
