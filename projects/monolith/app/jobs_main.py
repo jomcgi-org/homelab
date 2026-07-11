@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 
 import typer
 
@@ -413,6 +414,31 @@ def evict_artifact_sessions() -> None:
     logger.info("evict-artifact-sessions: starting")
     evict_stale_sessions_handler()
     logger.info("evict-artifact-sessions: done")
+
+
+@app.command("semgrep-full-scan-trigger")
+def semgrep_full_scan_trigger() -> None:
+    """Trigger the whole-repo Semgrep interfile baseline scan of main.
+
+    Deliberately lightweight: it POSTs the running API pod's internal endpoint,
+    which fires run_full_scan IN THAT process (where the semgrep package, the
+    Semgrep App + GitHub tokens, and a daemon-allowed ServiceAccount already
+    live). The heavy scan runs in the API pod, not this ephemeral job pod, so the
+    job needs no semgrep deps, no tokens, and no daemon access, just HTTP.
+    """
+    import httpx
+
+    configure_logging()
+    # Injected from Helm (the cron job's env), never hardcoded: a release rename
+    # changes the service DNS name, so a baked default would silently break.
+    url = os.environ.get("MONOLITH_INTERNAL_URL", "")
+    if not url:
+        raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
+    logger.info("semgrep-full-scan-trigger: POST %s/internal/semgrep/full-scan", url)
+    resp = httpx.post(f"{url}/internal/semgrep/full-scan", timeout=30)
+    resp.raise_for_status()
+    body = resp.json()
+    logger.info("semgrep-full-scan-trigger: %s", body)
 
 
 if __name__ == "__main__":
