@@ -64,19 +64,17 @@
           </div>
           {#if app.slug === "grimoire"}
             <p>
-              A D&amp;D campaign manager where knowledge is granted, not
-              global: the same monster or NPC renders full stats for the DM,
-              redacted stats for a player who has fought it, or just a name
-              for one who has only heard rumours. Same corpus, same entity,
-              different view per grant.
+              A D&amp;D campaign manager built on grants: the same monster
+              renders full stats for the DM, redacted stats for a player who
+              has fought it, and just a name for one who has only heard
+              rumours.
               <a class="more" href="/app/grimoire">play &rarr;</a>
             </p>
           {:else if app.slug === "firecracker"}
             <p>
-              Watch a microVM restore from disk in <b>{sandboxRestoreMs}ms</b>,
-              scroll-scrubbed against the daemon's own trace data: boot once,
-              freeze it, then restore forever. Every number on the page is a
-              real measurement, not a made-up demo figure.
+              Watch a microVM restore from disk in <b>{sandboxRestoreMs}ms</b>.
+              Boot once, freeze it, restore forever; every number on the page
+              comes from the daemon's own tracing.
               <a class="more" href="/app/firecracker">watch it restore &rarr;</a>
             </p>
           {/if}
@@ -93,9 +91,11 @@
           to first model call), reverse-proxy over vsock into the microVM. The guest never holds
           a real secret; an egress proxy swaps placeholder tokens for credentials at the network
           hop. Coding agents and Semgrep scans run as peers on the same substrate.
-          <a class="more" href="/app/firecracker">how &rarr;</a>
-          <a class="more" href="/docs/agents">docs &rarr;</a>
         </p>
+        <div class="clinks">
+          <a class="more" href="/app/firecracker">how &rarr;</a>
+          <a class="more" href="/docs/projects/firecracker">docs &rarr;</a>
+        </div>
       </div>
       <div class="callout">
         <div class="chead">
@@ -128,8 +128,10 @@
           Five custom Bazel rulesets build every image dual-arch and pin digests into versioned
           OCI Helm charts; ArgoCD reconciles the cluster from the repo. <b>280+ chart
           versions</b> so far.
-          <a class="more" href="/docs/contributing">the pipeline &rarr;</a>
         </p>
+        <div class="clinks">
+          <a class="more" href="/docs/contributing">the pipeline &rarr;</a>
+        </div>
       </div>
     </div>
   </div>
@@ -144,12 +146,12 @@
   .rack-eyebrow {
     display: inline-block;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--ink);
-    background: var(--blue);
+    color: var(--accent);
+    background: var(--ink);
     padding: 4px 10px;
     margin: 0;
   }
@@ -298,6 +300,11 @@
   }
   .more:hover {
     background: var(--accent);
+  }
+  .clinks {
+    display: flex;
+    gap: 14px;
+    margin-top: 10px;
   }
   @media (max-width: 820px) {
     .rack-grid {
