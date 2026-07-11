@@ -396,3 +396,27 @@ async def monolith_chat_revert_directive(scope_kind: str, scope_id: str) -> dict
     no prior version to restore.
     """
     return await asyncio.to_thread(chat_api.revert_directive, scope_kind, scope_id)
+
+
+@mcp.tool
+async def monolith_chat_trust_status(guild_id: str = "") -> dict:
+    """Bosun trust-safeguards ledger snapshot: every tracked user with their
+    effective decay-applied trust score, lockout state, and signal counts, plus
+    the newest trained forest (version, status, metrics). A locked_out user
+    gets no engagement from the bot until their score recovers or they are
+    pardoned. Pass guild_id to filter to one server; empty lists all guilds.
+    """
+    return await asyncio.to_thread(chat_api.trust_status, guild_id)
+
+
+@mcp.tool
+async def monolith_chat_trust_pardon(
+    guild_id: str, user_id: str, pardoned_by: str = "mcp"
+) -> dict:
+    """Pardon a user on the Bosun trust-safeguards ledger: reset their score to
+    100 (immediately ending any lockout) and flip their recent labeled
+    moderation events to clean, so a wrong lockout becomes corrective training
+    data instead of a poisoned example. Returns ok false when the user has no
+    ledger row yet.
+    """
+    return await asyncio.to_thread(chat_api.pardon_user, guild_id, user_id, pardoned_by)

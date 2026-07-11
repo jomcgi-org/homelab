@@ -523,6 +523,28 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # Bosun trust-safeguards forest (ADR chat/003): weekly retrain from the
+    # labeled moderation-event dataset. The fit itself runs inside the
+    # Firecracker sandbox (fc-invoke), so this pod only gathers rows and
+    # stores the resulting JSON forest; when the sandbox is unreachable the
+    # job falls back to an in-process numpy fit (hence the 1Gi limit). Only
+    # ever writes status='shadow' models; promoting one to 'live' is a manual
+    # decision after reviewing shadow scores. Skips silently until the
+    # dataset crosses the minimum-sample gates.
+    - name: safeguards-train
+      args: ["safeguards-train"]
+      schedule: "30 5 * * 1"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 900
+      suspend: false
+      env:
+        FC_INVOKE_URL: "http://fc-invoke.monolith.svc.cluster.local:8080"
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 1Gi
     # campsites.refresh: hourly at :00 UTC (not aligned to the 07:00 PT
     # reservation-opening surge). Reads the static catalog.json, fetches BC Parks
     # availability (~145 paced curl_cffi calls) + Open-Meteo forecast (~145
