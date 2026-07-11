@@ -89,6 +89,8 @@ The main repo at `~/repos/homelab` auto-fetches every 60s — always use worktre
 
 If `gh pr merge --auto --rebase` fails with "Pull request is in clean status", the PR is already green: merge directly with `gh pr merge --rebase`. Prefer `run_in_background` Bash or Monitor over `sleep`-chained polling for CI waits (sleep-chains are blocked anyway).
 
+**Required checks are STRICT: the branch must be up to date with main.** Whenever any other PR merges, every open PR goes `BEHIND` and cannot merge (auto-merge will not fire) until you update it: `gh pr update-branch <number> --rebase`, then let CI re-run. This is deliberate, not friction to route around: the re-run makes the missed-chart-bump guard re-check against post-merge main, which is the only point a rebase-merge version collision (two PRs claiming the same chart version, the loser's bump silently dropped) is detectable. If `mergeStateStatus` is `BEHIND`, update the branch; never try to bypass the strict check.
+
 **PR safety:** Always verify PR state (`gh pr view --json state`) before pushing additional commits. Never push to a merged branch — create a new worktree instead.
 
 **Commit messages MUST use [Conventional Commits](https://www.conventionalcommits.org/) format.** A `commit-msg` hook enforces this.

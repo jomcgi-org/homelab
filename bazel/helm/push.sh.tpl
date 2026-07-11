@@ -240,9 +240,12 @@ elif [[ "$CAN_VERSION" == "true" ]]; then
     # bazel dependency closure that detector queries (a shared base-image change
     # under --keep_going), which then merges and only fails main's Push images
     # post-merge, wedging the NEXT person's deploy. Run the content-stable digest
-    # check now so the PR cannot merge un-bumped. The guard fails OPEN on any
-    # registry/resolution hiccup, so it never false-blocks a PR; when it does
-    # fail it exits non-zero and errexit aborts the push with the bump command.
+    # check now so the PR cannot merge un-bumped. The guard fails OPEN on a
+    # registry/resolution hiccup, but fails CLOSED when origin/main claims this
+    # same version and it never shows up in the registry: that is the
+    # rebase-merge collision signature (another PR claimed the version first
+    # and this branch's bump hunks were, or would be, silently dropped). A
+    # guard failure exits non-zero and errexit aborts the push with the fix.
     if [[ -n "$CHECK_MISSED_BUMP" ]] && [[ -f "$CHECK_MISSED_BUMP" ]] && \
        [[ -n "$ABS_CHART_DIR" ]] && [[ -f "${ABS_CHART_DIR}/Chart.yaml" ]]; then
       GUARD_CHART_NAME=$(grep '^name:' "${ABS_CHART_DIR}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
@@ -252,11 +255,19 @@ elif [[ "$CAN_VERSION" == "true" ]]; then
         GUARD_PROJECT_DIR=$(dirname "$CHART_DIR")
       fi
       if [[ -n "$GUARD_CHART_NAME" ]]; then
+        # origin/main's claimed version is what lets the guard distinguish
+        # "this PR carries the bump" (skip) from "main claims this version but
+        # has not published it" (wait, then fail closed). Best effort: with no
+        # origin/main ref the guard keeps the legacy skip-when-unpublished
+        # behavior.
+        (cd "$WORKSPACE" && git fetch --quiet origin main 2>/dev/null) || true
+        MAIN_CHART_VERSION=$(cd "$WORKSPACE" && git show "origin/main:${CHART_DIR}/Chart.yaml" 2>/dev/null | grep '^version:' | head -1 | awk '{print $2}' | tr -d '"') || MAIN_CHART_VERSION=""
         # Pass HELM/CRANE via `env`, not a command prefix: both are readonly in
         # this shell, and a `HELM=... cmd` prefix is a shell assignment that
         # bash rejects with "HELM: readonly variable". `env` sets them only in
         # the child's environment.
         env HELM="$HELM" CRANE="$CRANE" REPOSITORY="$REPOSITORY" \
+          MAIN_CHART_VERSION="$MAIN_CHART_VERSION" \
           bash "$CHECK_MISSED_BUMP" "$GUARD_CHART_NAME" "$CURRENT_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR"
       fi
     fi

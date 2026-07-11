@@ -82,7 +82,9 @@ actions:
           echo "Formatting fixes pushed to $current_branch"
 
   # Test — runs in parallel with Push images (no dependency between them).
-  # PR merge is gated on Test passing; Push images is informational on PRs.
+  # Format check, Test, and Push images are all REQUIRED status checks in the
+  # GitHub ruleset (strict: the branch must be up to date with main), so a red
+  # Push images blocks merge; it carries the pre-merge missed-chart-bump guard.
   - name: "Test"
     container_image: "ubuntu-24.04"
     max_retries: 1
@@ -183,7 +185,9 @@ actions:
   # Push images — runs in parallel with Test (no dependency).
   # PR images are tagged with the source branch name (not "main") so they do not
   # touch the main rollout. This ensures image builds are verified before merge.
-  # PR merge is still gated on Test passing.
+  # REQUIRED status check: on PR branches each helm push runs the pre-merge
+  # missed-chart-bump guard (bazel/helm/check-missed-bump.sh), so a chart whose
+  # images changed without a version bump cannot merge.
   - name: "Push images"
     container_image: "ubuntu-24.04"
     max_retries: 1

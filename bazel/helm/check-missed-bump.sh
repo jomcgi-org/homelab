@@ -11,18 +11,28 @@
 # This is the same digest-content check push.sh.tpl runs post-merge on main,
 # factored out so it can also run pre-merge on a PR branch and be unit tested
 # with stubbed helm/crane. It is deliberately content-stable (compares manifest
-# digests, not the build-timestamped tags) and FAILS OPEN: an unresolved digest
-# or an unpublished version is treated as "nothing to assert", never a failure,
-# so a transient registry error cannot wedge a PR.
+# digests, not the build-timestamped tags). An unresolved digest fails OPEN (a
+# transient registry error must not wedge a PR), but an unpublished version is
+# only "nothing to assert" when this PR itself carries the bump. When
+# origin/main's Chart.yaml claims the SAME unpublished version, main's publish
+# is either still in flight or has failed; that is the state a rebase-merge
+# version collision leaves behind (two PRs claimed the same version, the
+# loser's bump hunks were silently emptied at merge). The guard waits briefly
+# for main's publish to land and then digest-compares; if it never lands, it
+# fails CLOSED rather than let another unverifiable PR merge on top.
 #
 # Usage:
 #   HELM=/path/helm CRANE=/path/crane REPOSITORY=oci://ghcr.io/... \
 #     check-missed-bump.sh <chart_name> <chart_version> <fresh_chart_tgz> <project_dir>
 #
 # Env:
-#   HELM         path to the helm binary (required)
-#   CRANE        path to the crane binary (required)
-#   REPOSITORY   OCI chart repository (required), e.g. oci://ghcr.io/jomcgi/homelab/charts
+#   HELM                path to the helm binary (required)
+#   CRANE               path to the crane binary (required)
+#   REPOSITORY          OCI chart repository (required), e.g. oci://ghcr.io/jomcgi/homelab/charts
+#   MAIN_CHART_VERSION  the chart version origin/main's Chart.yaml claims
+#                       (optional; empty disables the fail-closed collision path)
+#   PUBLISH_WAIT_TRIES  polls while waiting for main's publish (default 10)
+#   PUBLISH_WAIT_SECS   seconds between polls (default 30)
 set -o errexit -o nounset -o pipefail
 
 CHART_NAME="${1:?chart_name required}"
@@ -67,11 +77,48 @@ _image_digests() {
 		done | sort
 }
 
-# Only meaningful when this version is already published. If `helm show chart`
-# fails, the version is new (this PR bumped it) and there is nothing to assert.
-if ! "$HELM" show chart "${REPOSITORY}/${CHART_NAME}" --version "${CHART_VERSION}" >/dev/null 2>&1; then
-	echo "check-missed-bump: ${CHART_NAME} ${CHART_VERSION} is not published yet; nothing to check."
-	exit 0
+_published() {
+	"$HELM" show chart "${REPOSITORY}/${CHART_NAME}" --version "${CHART_VERSION}" >/dev/null 2>&1
+}
+
+# The digest comparison is only meaningful when this version is already
+# published. Unpublished splits two ways on whether origin/main claims it:
+#   - main claims a DIFFERENT version: this PR carries the bump; nothing to
+#     assert (publish happens post-merge).
+#   - main claims the SAME version: the bump came from a main commit whose
+#     publish has not landed. Normally that is a minutes-wide window while
+#     main's Push images runs, so wait for it and then compare digests. If it
+#     never lands, main's publish failed and nothing about this PR can be
+#     verified: fail closed with the fix, instead of merging blind.
+if ! _published; then
+	if [[ -n "${MAIN_CHART_VERSION:-}" && "$MAIN_CHART_VERSION" == "$CHART_VERSION" ]]; then
+		TRIES="${PUBLISH_WAIT_TRIES:-10}"
+		SECS="${PUBLISH_WAIT_SECS:-30}"
+		echo "check-missed-bump: ${CHART_NAME} ${CHART_VERSION} matches origin/main but is not in the registry yet; waiting up to $((TRIES * SECS))s for main's publish."
+		PUBLISHED=""
+		for _ in $(seq 1 "$TRIES"); do
+			sleep "$SECS"
+			if _published; then
+				PUBLISHED=1
+				break
+			fi
+		done
+		if [[ -z "$PUBLISHED" ]]; then
+			{
+				echo "ERROR: origin/main pins ${CHART_NAME} ${CHART_VERSION} but that version is not in the registry."
+				echo "Main's chart publish is still running or has FAILED (check the latest main 'Push images' run)."
+				echo "This PR does not bump the chart, so its images cannot be verified against a published baseline."
+				echo ""
+				echo "If this PR rebuilds any image the chart pins, bump in this PR:"
+				echo "  bazel/tools/git/bump-chart.sh ${PROJECT_DIR}"
+				echo "Otherwise re-run this check once main's Push images is green."
+			} >&2
+			exit 1
+		fi
+	else
+		echo "check-missed-bump: ${CHART_NAME} ${CHART_VERSION} is not published yet (this PR carries the bump); nothing to check."
+		exit 0
+	fi
 fi
 
 FRESH_DIGESTS=$(_image_digests "$CHART_TGZ") || FRESH_DIGESTS=""
