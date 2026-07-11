@@ -672,6 +672,117 @@ class UserStylePref(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+# nosemgrep: sqlmodel-datetime-without-factory (last_signal_at is intentionally NULL until the user's first signal)
+class UserTrust(SQLModel, table=True):
+    """Per-(guild, user) decaying trust score (ADR chat/003).
+
+    The safeguards ledger: heuristic signals, the LLM intent scorer, and (once
+    live) the random forest decrement ``score``; time restores it at
+    SAFEGUARDS_RECOVERY_PER_DAY. ``score_updated_at`` is the decay anchor, so
+    the effective score is computed lazily on read rather than by a sweeper.
+    Below SAFEGUARDS_LOCKOUT_THRESHOLD the bot stops engaging with the user
+    (soft lockout, see chat.safeguards). The owner is never ledgered.
+    """
+
+    __tablename__ = "user_trust"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "user_id", name="user_trust_guild_user_unique"),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: str = Field(default="")
+    user_id: str = Field(default="")
+    score: float = Field(default=100.0)
+    score_updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    signal_count: int = Field(default=0)
+    lockout_count: int = Field(default=0)
+    last_signal_at: datetime | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ModerationEvent(SQLModel, table=True):
+    """One moderation-relevant observation (ADR chat/003).
+
+    Doubles as the audit log AND the training set for the safeguards forest:
+    ``features_json`` snapshots the deterministic feature vector (in
+    chat.safeguards.FEATURE_NAMES order) at observation time, ``label`` is the
+    training target (1 for signal/llm_intent rows, 0 for sampled clean rows,
+    NULL for rows that are not samples: enforcement/lockout/pardon markers).
+    A pardon flips the user's recent labels to 0, so a wrong call becomes a
+    corrective example instead of a poisoned one. ``rf_score`` is the shadow
+    forest's probability stamped at observation time, for live-vs-shadow
+    review before any model is promoted. The kind CHECK mirrors the migration
+    so the SQLite test fixtures enforce it too (create_all does not see
+    migration-only constraints).
+    """
+
+    __tablename__ = "moderation_event"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('signal', 'llm_intent', 'clean_sample', 'enforcement', "
+            "'lockout', 'pardon')",
+            name="moderation_event_kind_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: str = Field(default="")
+    channel_id: str = Field(default="")
+    message_id: str = Field(default="")
+    user_id: str = Field(default="")
+    kind: str = Field(default="signal")
+    signal: str = Field(default="")
+    detail: str = Field(default="")
+    delta: float = Field(default=0.0)
+    score_after: float = Field(default=0.0)
+    features_json: str = Field(default="[]")
+    label: int | None = Field(default=None)
+    rf_score: float | None = Field(default=None)
+    rf_model_version: int = Field(default=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TrustModel(SQLModel, table=True):
+    """A trained safeguards random forest (ADR chat/003).
+
+    ``model_json`` is the JSON tree ensemble exported by the trainer
+    (chat.safeguards_forest.train_forest, run inside the Firecracker sandbox);
+    inference walks it in pure Python so no ML dependency enters the monolith.
+    Every fresh train lands as status='shadow' (scored, never enforced);
+    promoting a row to 'live' is a deliberate manual step via SQL or the MCP
+    surface, and supersession retires old shadow rows. ``feature_names_json``
+    pins the feature order the model was trained against; the loader refuses a
+    model whose features do not match the running code (schema drift guard).
+    The status CHECK mirrors the migration so the SQLite test fixtures enforce
+    it too.
+    """
+
+    __tablename__ = "trust_model"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('shadow', 'live', 'retired')",
+            name="trust_model_status_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    version: int = Field(unique=True)
+    status: str = Field(default="shadow")
+    model_json: str = Field(default="{}")
+    feature_names_json: str = Field(default="[]")
+    n_samples: int = Field(default=0)
+    n_positive: int = Field(default=0)
+    metrics_json: str = Field(default="{}")
+    trained_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 # nosemgrep: sqlmodel-datetime-without-factory (applied_at/validate_after get a DB now() default; the model factory mirrors it)
 class DirectiveAutopilot(SQLModel, table=True):
     """Autopilot decision + self-validation log (ADR chat/007, PR 3).

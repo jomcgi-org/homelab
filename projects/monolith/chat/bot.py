@@ -36,6 +36,7 @@ from chat import acl
 from chat import attention
 from chat import attention_log
 from chat import directives
+from chat import safeguards
 from chat import goosecracker
 from chat import goosecracker_progress
 from chat import orchestrator
@@ -750,6 +751,10 @@ class ChatBot(discord.Client):
         # synced to the guild in on_ready.
         self.tree = discord.app_commands.CommandTree(self)
         self._register_commands()
+        # Live references to fire-and-forget safeguards intent classifies
+        # (asyncio only holds weak refs to tasks; without this set a scoring
+        # task could be garbage-collected mid-flight).
+        self._safeguards_tasks: set[asyncio.Task] = set()
 
     def _register_commands(self) -> None:
         """Register application (slash) commands on the tree."""
@@ -888,6 +893,60 @@ class ChatBot(discord.Client):
             if await self._maybe_handle_goosecracker_reply(message):
                 return
 
+        # Trust safeguards (ADR chat/003): heuristic signals update the
+        # per-user ledger on every message, before any LLM spend. A locked-out
+        # author gets no engagement at all: no attention classify, no reply,
+        # no agent run. When they address the bot directly, the brig emoji on
+        # their message says "seen, but suppressed"; a locked-out user lurking
+        # in ambient chat is simply ignored. observe_message fails open, so a
+        # ledger error can never block normal chat.
+        guild_id = message.guild.id if message.guild else None
+        addressed = should_respond(message, self.user)
+        safeguards_payload = {
+            "guild_id": str(guild_id) if guild_id else "",
+            "channel_id": channel_id,
+            "message_id": msg_id,
+            "user_id": str(message.author.id),
+            "content": message.content or "",
+            "addressed": addressed,
+            "author_is_bot": bool(getattr(message.author, "bot", False)),
+            "bot_user_id": str(self.user.id),
+        }
+        verdict = await asyncio.to_thread(
+            safeguards.observe_message, safeguards_payload
+        )
+        if verdict.locked_out:
+            reacted = False
+            if addressed:
+                try:
+                    await message.add_reaction(safeguards.LOCKOUT_EMOJI)
+                    reacted = True
+                except Exception:
+                    logger.exception("safeguards: lockout reaction failed")
+            if addressed or verdict.signals:
+                await asyncio.to_thread(
+                    safeguards.log_enforcement, safeguards_payload, reacted
+                )
+            return
+
+        # The LLM intent lane runs fire-and-forget on messages worth the
+        # classify (bot-addressed, heuristic-flagged, or ambient-engaged
+        # below): it never delays the reply, and its verdict lands on the
+        # ledger for the next message.
+        intent_scored = False
+
+        def _score_intent_once() -> None:
+            nonlocal intent_scored
+            if intent_scored:
+                return
+            intent_scored = True
+            task = asyncio.create_task(safeguards.score_intent(safeguards_payload))
+            self._safeguards_tasks.add(task)
+            task.add_done_callback(self._safeguards_tasks.discard)
+
+        if addressed or verdict.signals:
+            _score_intent_once()
+
         # ADR 035 attention gate (Phase 3 rollout: contained to opted-in
         # channels). Agent-triggering fires ONLY in ambient channels; mentions
         # and replies in non-ambient channels keep today's inline chat reply via
@@ -895,7 +954,6 @@ class ChatBot(discord.Client):
         # conversation stays in-monolith (see needs_agent below), so
         # server-wide "mentions always engage" no longer needs a heavy guest
         # run to be safe to extend.
-        guild_id = message.guild.id if message.guild else None
         try:
             ambient = await asyncio.to_thread(acl.ambient_channels, guild_id)
             # A Discord thread is its own channel with its own id, distinct from
@@ -938,6 +996,7 @@ class ChatBot(discord.Client):
                 directive_version,
             )
             if result.engage:
+                _score_intent_once()
                 # Depth split (in-monolith): pure conversation and basic web
                 # lookups are answered by the in-process chat agent (low latency,
                 # SearXNG built in); only repo/build/deep-research work escalates

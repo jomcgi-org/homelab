@@ -31,6 +31,8 @@ from chat.goosecracker_progress import (  # re-exported
 )
 from chat.orchestrator import replan  # re-exported
 from chat.orchestrator_plan import Plan  # re-exported
+from chat.safeguards import pardon_user  # re-exported
+from chat.safeguards import trust_status  # re-exported
 from chat.orchestrator_plan import PlanStep  # re-exported
 from chat.outbox import enqueue_edit  # re-exported
 from chat.outbox import enqueue_message  # re-exported
@@ -74,6 +76,8 @@ __all__ = [
     "set_directive",
     "pin_directive",
     "revert_directive",
+    "trust_status",
+    "pardon_user",
     "whatsapp_checklist_final",
     "whatsapp_group_jid_for_session",
 ]
