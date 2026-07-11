@@ -154,7 +154,14 @@ semgrep:
   # Route B shadow project (Route B vs SMS comparison): self-hosted scans report
   # here instead of jomcgi/homelab, so they land in a separate Semgrep project.
   # UNSET this single value at cutover to report to the real project.
-  shadowProject: "jomcgi/homelab-selfhosted"
+  # CUT OVER 2026-07-11: Route B now reports to the REAL jomcgi/homelab project
+  # (empty -> report.py _reported_repository returns the real repo). The shadow
+  # project recorded scan findingsCounts but the App's "See findings" view is
+  # gated on a GitHub SCM integration a synthetic shadow repo cannot have, so
+  # findings never showed. The connected real project indexes them (Route B vs SMS
+  # distinguishable by scan environment "homelab-fc-invoke"). Re-set to
+  # "jomcgi/homelab-selfhosted" to revert to the shadow.
+  shadowProject: ""
   # Semgrep AppSec Platform token for the Route B CI-reporting relay. The vault
   # item exposes the field SEMGREP_API_TOKEN, mirrored into the
   # monolith-semgrep-app Secret and injected as the SEMGREP_APP_TOKEN env var
