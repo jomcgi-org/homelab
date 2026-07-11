@@ -2,7 +2,11 @@ apiVersion: v2
 name: monolith-public
 description: Read-only public tier of the monolith (ADR 004 Phase 5), Linkerd-meshed and pruned
 type: application
+<<<<<<< HEAD
 version: 0.89.54
+=======
+version: 0.89.55
+>>>>>>> c25133e8a (chore: bump monolith and monolith-public charts for private dashboard)
 appVersion: "0.1.0"
 maintainers:
   - name: homelab
