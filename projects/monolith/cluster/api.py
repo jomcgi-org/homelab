@@ -15,9 +15,11 @@ from cluster.kubernetes import (  # re-exported
     KubernetesClient,
     UnknownKindError,
 )
+from cluster.summarize import build_health  # re-exported
 
 __all__ = [
     "KubernetesClient",
     "RESOURCE_KINDS",
     "UnknownKindError",
+    "build_health",
 ]

@@ -6,10 +6,14 @@ import os
 import platform
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from sqlmodel import Field, Session, SQLModel, select, text
 
 from app.db import get_engine
+
+if TYPE_CHECKING:
+    from scheduler.views import SchedulerJobView
 
 logger = logging.getLogger("monolith.scheduler")
 
@@ -74,6 +78,19 @@ def is_heavy(name: str) -> bool:
 def registered_names() -> list[str]:
     """Names of all jobs with a registered handler."""
     return list(_registry)
+
+
+def list_jobs(session: Session) -> list["SchedulerJobView"]:
+    """List all scheduled job rows as view models (cross-domain facade).
+
+    Thin delegate to ``scheduler.service.list_jobs``, imported lazily to
+    avoid a module-load cycle (``scheduler.service`` imports from this
+    module). Other domains must call this instead of importing
+    ``scheduler.service`` directly.
+    """
+    from scheduler.service import list_jobs as _list_jobs
+
+    return _list_jobs(session)
 
 
 def register_job(
