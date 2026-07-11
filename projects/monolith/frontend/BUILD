@@ -67,7 +67,10 @@ js_run_binary(
     srcs = [":src"],
     args = ["build"],
     chdir = package_name(),
-    out_dirs = ["build"],
+    # Out dir is "dist", not "build": svelte.config.js defaults there so a
+    # local vite build cannot collide with this BUILD file on macOS's
+    # case-insensitive filesystem. build_tar remaps it to /app/build.
+    out_dirs = ["dist"],
     tool = ":vite",
     visibility = ["//projects/monolith:__pkg__"],
 )
