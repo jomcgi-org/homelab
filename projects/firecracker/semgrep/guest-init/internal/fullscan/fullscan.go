@@ -67,31 +67,23 @@ func Scan(ctx context.Context, req vsockproto.ScanRequest, runner Runner) (vsock
 	return res, nil
 }
 
-// SemgrepRunner runs the python `semgrep scan --pro` CLI over treeDir and
-// returns stdout (cli_output JSON). rulesDir is the --config path
-// (SEMGREP_SCAN_RULES). The exact flags/env that make the CLI locate the
-// proprietary core offline are verified post-deploy in a later task; adjust
-// from that finding.
-func SemgrepRunner(rulesDir string) Runner {
+// SemgrepRunner runs `osemgrep-pro scan --pro` over treeDir and returns stdout
+// (cli_output JSON). rulesDir is the --config path (SEMGREP_SCAN_RULES). proBin
+// is the pro engine to invoke: the caller passes the shim path from
+// guestboot.SetupProEngine so the CLI finds the reconstructed pro-engine install
+// layout (binary + version stamp) alongside it.
+func SemgrepRunner(rulesDir, proBin string) Runner {
 	return func(ctx context.Context, treeDir string) ([]byte, error) {
-		// Invoke the baked offline-Pro engine (osemgrep-pro, the OCaml CLI) DIRECTLY
-		// rather than the python `semgrep scan --pro`. pysemgrep looks for the pro
-		// core at its own bundled path and, not finding it, tries to DOWNLOAD it
-		// from semgrep.dev (semgrep install-semgrep-pro), which fails in the
-		// egress-less guest (DNS failure -> exit 2). pysemgrep is also a different
-		// version (1.165) than the baked engine (1.161), so satisfying its
-		// version-stamp check would drive a mismatched core. osemgrep-pro is the
-		// same self-contained binary the warm mcp scan-server uses: it has a `scan`
-		// subcommand and the interfile engine built in, so `osemgrep-pro scan --pro`
-		// does whole-tree interfile analysis offline with no download and no
-		// pysemgrep coupling. Offline Pro unlock + metrics/version-check-off come
-		// from the env guestboot.SetupEnv set (SEMGREP_SETTINGS_FILE, HOME,
-		// SEMGREP_SEND_METRICS=off, SEMGREP_ENABLE_VERSION_CHECK=0).
-		bin := os.Getenv("OSEMGREP_PRO_BIN")
-		if bin == "" {
-			bin = "/opt/semgrep/osemgrep-pro"
-		}
-		cmd := exec.CommandContext(ctx, bin, "scan", "--pro",
+		// Invoke the baked offline-Pro engine (osemgrep-pro) directly rather than
+		// the python `semgrep scan --pro`, which tries to DOWNLOAD the pro engine
+		// from semgrep.dev (fails in the egress-less guest) and couples to a
+		// different pysemgrep version. osemgrep-pro is the same self-contained
+		// binary the warm mcp scan-server uses, with a `scan` subcommand and the
+		// interfile engine built in. proBin is the shim path from
+		// guestboot.SetupProEngine so the CLI finds the pro-engine install layout
+		// it requires. Offline Pro unlock + metrics/version-check-off come from the
+		// env guestboot.SetupEnv set.
+		cmd := exec.CommandContext(ctx, proBin, "scan", "--pro",
 			"--config", rulesDir, "--metrics=off", "--json", treeDir)
 		cmd.Stderr = os.Stderr
 		return cmd.Output()
