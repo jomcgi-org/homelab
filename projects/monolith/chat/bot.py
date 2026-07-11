@@ -943,6 +943,16 @@ class ChatBot(discord.Client):
                 # SearXNG built in); only repo/build/deep-research work escalates
                 # to the goose guest. See ADR 035 (amended: chat is in-monolith).
                 if await attention.needs_agent(message):
+                    # The agent opens its own thread rather than replying in
+                    # channel, so this engage's reply_message_id stays null;
+                    # record why so /improve-ambient does not read it as a gate
+                    # veto.
+                    await asyncio.to_thread(
+                        attention_log.set_withheld_reason,
+                        channel_id,
+                        msg_id,
+                        attention_log.WITHHELD_AGENT_THREAD,
+                    )
                     await self._engage_agent(message)
                 else:
                     await self._process_message(
@@ -2140,6 +2150,12 @@ class ChatBot(discord.Client):
                     message.channel.id,
                     deps.no_reply_reason or "no reason given",
                 )
+                await asyncio.to_thread(
+                    attention_log.set_withheld_reason,
+                    str(message.channel.id),
+                    str(message.id),
+                    attention_log.WITHHELD_NO_REPLY,
+                )
                 return None, "", None
 
             # No real content: no events arrived, or the reply is blank /
@@ -2152,6 +2168,12 @@ class ChatBot(discord.Client):
             # dark.
             if not had_events or _is_empty_reply(response_text):
                 if not live and sent is None:
+                    await asyncio.to_thread(
+                        attention_log.set_withheld_reason,
+                        str(message.channel.id),
+                        str(message.id),
+                        attention_log.WITHHELD_EMPTY_REPLY,
+                    )
                     return None, "", None
                 fallback = (
                     "Sorry, I'm having trouble formulating a response. "
@@ -2180,6 +2202,12 @@ class ChatBot(discord.Client):
                     logger.info(
                         "send-gate: suppressing ambient reply in channel %s",
                         message.channel.id,
+                    )
+                    await asyncio.to_thread(
+                        attention_log.set_withheld_reason,
+                        str(message.channel.id),
+                        str(message.id),
+                        attention_log.WITHHELD_SEND_GATE,
                     )
                     return None, "", None
 

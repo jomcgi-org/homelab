@@ -805,11 +805,13 @@ class TestAmbientNonStreaming:
         bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
 
         gate = AsyncMock(return_value=False)
+        reason = MagicMock()
         with (
             patch("chat.bot.get_engine"),
             patch("chat.bot.Session") as mock_session_cls,
             patch("chat.bot.MessageStore", return_value=mock_store),
             patch("chat.bot.attention.should_send", gate),
+            patch("chat.bot.attention_log.set_withheld_reason", reason),
         ):
             ctx = MagicMock()
             mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
@@ -824,6 +826,9 @@ class TestAmbientNonStreaming:
         message.reply.assert_not_called()
         gate.assert_awaited_once()
         assert gate.call_args[0][0] == "hang back"
+        # The veto is recorded so /improve-ambient can measure the send-gate.
+        reason.assert_called_once()
+        assert reason.call_args[0][2] == "send_gate"
 
     @pytest.mark.asyncio
     async def test_live_reply_never_hits_send_gate(self):

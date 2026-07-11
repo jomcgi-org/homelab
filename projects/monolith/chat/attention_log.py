@@ -86,3 +86,43 @@ def set_reply_message(
             session.commit()
     except Exception:
         logger.exception("attention: failed to set reply message")
+
+
+# The silent-path vocabulary written to attention_decision.withheld_reason. Kept
+# here (not a DB CHECK) so a new path can be added without a schema migration;
+# /improve-ambient groups on these to measure how often each gate withholds.
+WITHHELD_AGENT_THREAD = "agent_thread"
+WITHHELD_NO_REPLY = "no_reply"
+WITHHELD_SEND_GATE = "send_gate"
+WITHHELD_EMPTY_REPLY = "empty_reply"
+
+
+def set_withheld_reason(
+    channel_id: object, trigger_message_id: object, reason: str
+) -> None:
+    """Record WHY an ambient engage produced no in-channel reply, on the most
+    recent engage decision for this trigger message.
+
+    Matched by channel_id + message_id + decision='engage', newest first (same
+    as ``set_reply_message``). No-op if there is no engage row (a non-ambient
+    reply has none, and a live reply is never withheld anyway). Synchronous
+    (opens its own session); call via ``asyncio.to_thread`` from the bot's async
+    handlers. Best-effort: never raises into the caller, since a bookkeeping
+    failure must not change whether the bot stays silent.
+    """
+    try:
+        with Session(get_engine()) as session:
+            row = session.exec(
+                select(AttentionDecision)
+                .where(AttentionDecision.channel_id == str(channel_id))
+                .where(AttentionDecision.message_id == str(trigger_message_id))
+                .where(AttentionDecision.decision == "engage")
+                .order_by(AttentionDecision.id.desc())
+            ).first()
+            if row is None:
+                return
+            row.withheld_reason = str(reason)
+            session.add(row)
+            session.commit()
+    except Exception:
+        logger.exception("attention: failed to set withheld reason")

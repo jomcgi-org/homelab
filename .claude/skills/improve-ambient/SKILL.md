@@ -164,6 +164,19 @@ PR ("not enough evidence yet").
 Before `reaction_event` data has accrued, fall back to follow-up counts +
 attention confidence as proxies and say so explicitly in the report.
 
+**Why a reply was withheld.** A `withheld_reason` on each engage record
+disambiguates the silent paths that used to look identical (a null
+`reply_message_id`): `agent_thread` (routed to the goose guest, which threads),
+`no_reply` (the model chose silence), `send_gate` (the post-generation gate
+vetoed the drafted reply), `empty_reply` (the model produced no content), and
+null when a reply was actually sent. Use it to measure gate behaviour directly:
+the `send_gate` rate over engages is the before/after verdict on whether the
+send-gate is over-vetoing, and a rising `no_reply` rate flags the model going
+silent too eagerly. An engage that was withheld by `send_gate` is a candidate
+misfire to deep-read (was that veto right?), the same way a `net_reaction < 0`
+reply is. Records from before the column existed carry `withheld_reason: null`
+even when suppressed, so scope rate claims to the current-generation window.
+
 ## 7. Write scope
 
 PRs may edit `agent.py` / `summarizer.py` / `attention.py` (Joe reviews every
@@ -186,8 +199,11 @@ Three sections, in order (sibling-identical shape):
 
 1. **Before/after aggregates.** This window vs the previous generation:
    failure-mode histogram, negative-reaction rate (episodes with
-   `net_reaction < 0` over total), and barge-in rate, computed from the
-   eval JSON in each window.
+   `net_reaction < 0` over total), barge-in rate, and the `withheld_reason`
+   breakdown over engages (`send_gate` / `no_reply` / `empty_reply` /
+   `agent_thread` / replied), computed from the eval JSON and the gathered
+   records in each window. The `send_gate` rate is the direct measure of
+   whether the send-gate is over-vetoing.
 2. **Per-edit evidence rows.** For each diff hunk: `episode_id`, channel, the
    signals (attention confidence, reactions, follow-up), a transcript excerpt,
    and which diff line addresses it.
