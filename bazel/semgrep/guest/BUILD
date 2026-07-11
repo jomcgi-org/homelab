@@ -21,15 +21,32 @@ package(default_visibility = ["//visibility:public"])
 # (placed as osemgrep-pro so `osemgrep-pro mcp --experimental --pro` selects the
 # OCaml scan-server) and semgrep-core (the OSS core the proprietary engine shells
 # to). apko_image's multiarch_tars uses the _amd64 / _arm64 suffixes.
+# The proprietary engine (osemgrep-pro) plus the "installed" layout its `scan --pro`
+# CLI insists on: a semgrep-core-proprietary binary next to semgrep-core and a
+# pro-installed-by.txt version stamp (matching the engine's own version, since the
+# engine IS the CLI). Without this the CLI reports "Semgrep Pro is either
+# uninstalled or it is out of date" and exits, because it resolves the pro engine
+# relative to its own real path (/opt/semgrep) and via the semgrep-core dir
+# (/usr/bin) -- neither of which we can write at runtime (read-only rootfs). We
+# bake the layout at BOTH resolution roots. pro-installed-by.txt MUST stay in sync
+# with the digest-pinned engine version (bazel/semgrep/third_party/semgrep_experimental).
 tar(
     name = "engine_tar_amd64",
     srcs = [
+        ":pro-installed-by.txt",
         "@semgrep_experimental_engine_amd64//:osemgrep_pro",
         "@semgrep_experimental_engine_amd64//:semgrep_core",
     ],
     mtree = [
         "./opt/semgrep/osemgrep-pro type=file content=$(execpath @semgrep_experimental_engine_amd64//:osemgrep_pro) mode=0755 uid=0 gid=0",
         "./opt/semgrep/semgrep-core type=file content=$(execpath @semgrep_experimental_engine_amd64//:semgrep_core) mode=0755 uid=0 gid=0",
+        # Pro-engine install layout, rooted at /opt/semgrep (osemgrep-pro's own dir).
+        "./opt/semgrep/semgrep-core-proprietary type=link link=osemgrep-pro uid=0 gid=0",
+        "./opt/semgrep/pro-installed-by.txt type=file content=$(execpath :pro-installed-by.txt) mode=0644 uid=0 gid=0",
+        # And rooted at /usr/bin (where the OSS semgrep-core lives on PATH), which
+        # is the other place the CLI looks for the semgrep-core-proprietary sibling.
+        "./usr/bin/semgrep-core-proprietary type=link link=/opt/semgrep/osemgrep-pro uid=0 gid=0",
+        "./usr/bin/pro-installed-by.txt type=file content=$(execpath :pro-installed-by.txt) mode=0644 uid=0 gid=0",
     ],
 )
 

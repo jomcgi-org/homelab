@@ -10,7 +10,6 @@ package guestboot
 import (
 	"log/slog"
 	"os"
-	"path/filepath"
 )
 
 const (
@@ -79,69 +78,4 @@ func EnvOr(key, def string) string {
 		return v
 	}
 	return def
-}
-
-// proShimDir is the tmpfs directory where SetupProEngine builds the pro-engine
-// "install" layout the full-scan CLI expects.
-const proShimDir = "/tmp/sgbin"
-
-// proEngineVersion is the version written into the pro-installed-by.txt stamp.
-// osemgrep-pro's "is Pro installed" check compares this to its own CLI version,
-// which equals the baked engine's version (the engine IS the CLI). The engine is
-// pinned by digest (bazel/semgrep/third_party/semgrep_experimental), so this
-// literal must be kept in sync with that engine's version when the digest bumps.
-// A mismatch surfaces as a readable "Semgrep Pro is out of date" scan error, not
-// a crash. We do NOT derive it by running the binary: osemgrep-pro rejects the
-// bare -pro_version core flag when invoked as the CLI (it kernel-panicked the
-// guest when treated as fatal).
-const proEngineVersion = "1.161.0"
-
-// SetupProEngine makes the baked offline-Pro engine discoverable to
-// `osemgrep-pro scan --pro`. That command (like pysemgrep) refuses to run unless
-// the Pro core looks INSTALLED: a semgrep-core-proprietary binary sitting next to
-// semgrep-core, plus a pro-installed-by.txt version stamp recording the version
-// that installed it. Our engine is baked at /opt/semgrep (read-only rootfs), not
-// in that layout, so the CLI reports "Semgrep Pro is either uninstalled or out of
-// date" and exits. We reconstruct the layout in a tmpfs dir on PATH: symlinks for
-// semgrep-core, semgrep-core-proprietary, and osemgrep-pro (all to the baked
-// binaries), so both PATH-based and argv[0]-dir-based resolution land here, plus
-// a pro-installed-by.txt stamp (proEngineVersion). Returns the pro binary path to
-// invoke the scan from (inside the shim dir) and prepends the shim dir to PATH.
-//
-// Best-effort and NON-FATAL: it never returns an error, because this init is the
-// guest PID 1 and any error it returned would exit(1) and kernel-panic the whole
-// microVM (Attempted to kill init). If a step fails, it is logged and the scan is
-// left to fail with a readable engine error instead of taking the guest down. It
-// deliberately does not exec the engine (osemgrep-pro rejects the bare
-// -pro_version flag as the CLI, which is what panicked an earlier attempt).
-func SetupProEngine(logger *slog.Logger) string {
-	proBin := EnvOr("OSEMGREP_PRO_BIN", DefaultOsemgrepPro)
-	coreBin := filepath.Join(filepath.Dir(proBin), "semgrep-core")
-	shimBin := filepath.Join(proShimDir, "osemgrep-pro")
-
-	if err := os.MkdirAll(proShimDir, 0o755); err != nil {
-		logger.Error("pro shim mkdir failed; falling back to baked binary", "err", err)
-		return proBin
-	}
-	links := map[string]string{
-		"semgrep-core":             coreBin,
-		"semgrep-core-proprietary": proBin,
-		"osemgrep-pro":             proBin,
-	}
-	for name, target := range links {
-		dst := filepath.Join(proShimDir, name)
-		_ = os.Remove(dst)
-		if err := os.Symlink(target, dst); err != nil {
-			logger.Error("pro shim symlink failed", "name", name, "err", err)
-		}
-	}
-
-	stampPath := filepath.Join(proShimDir, "pro-installed-by.txt")
-	if err := os.WriteFile(stampPath, []byte(proEngineVersion+"\n"), 0o644); err != nil {
-		logger.Error("pro stamp write failed", "err", err)
-	}
-
-	os.Setenv("PATH", proShimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	logger.Info("pro engine install shim ready", "dir", proShimDir, "version", proEngineVersion)
-	return shimBin
 }
