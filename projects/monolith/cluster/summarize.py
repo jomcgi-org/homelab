@@ -219,8 +219,16 @@ def _row_unhealthy(kind: str, row: dict) -> bool:
     if kind == "pods":
         if row.get("reason"):
             return True
-        if row.get("phase") not in ("Running", "Succeeded", None):
+        phase = row.get("phase")
+        if phase not in ("Running", "Succeeded", None):
             return True
+        # A Succeeded pod has terminated all its containers, so it reports
+        # ready=0/N by design. That is a completed Job/CronWorkflow pod, not an
+        # unhealthy one, so the readiness check below (which flags any x/y with
+        # x != y) must not apply to it. Without this guard every finished batch
+        # pod is miscounted as unhealthy.
+        if phase == "Succeeded":
+            return False
         ready = row.get("ready")
         return bool(ready and ready.split("/")[0] != ready.split("/")[1])
     if kind in ("deployments", "statefulsets", "daemonsets", "replicasets"):

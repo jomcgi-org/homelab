@@ -81,6 +81,13 @@ class TestUnhealthy:
             "pods", {"phase": "Running", "reason": "CrashLoopBackOff"}
         )
 
+    def test_succeeded_pod_is_healthy(self):
+        # A completed Job/CronWorkflow pod reports ready=0/1 (containers
+        # terminated); it must not be flagged as unhealthy.
+        assert not summarize._row_unhealthy(
+            "pods", {"phase": "Succeeded", "ready": "0/1"}
+        )
+
     def test_partial_deployment_is_unhealthy(self):
         assert summarize._row_unhealthy("deployments", {"ready": "1/3"})
 
@@ -120,6 +127,25 @@ class TestBuildHealth:
                     "status": {
                         "phase": "Running",
                         "containerStatuses": [{"ready": True, "restartCount": 0}],
+                    },
+                }
+            ]
+        }
+        out = summarize.build_health(resources)
+        assert out["healthy"] is True
+        assert out["unhealthy"] == {}
+
+    def test_completed_batch_pod_is_healthy(self):
+        # Real Succeeded-pod shape: containers terminated, so ready is False.
+        # This is the path that previously miscounted every finished
+        # Job/CronWorkflow pod as unhealthy.
+        resources = {
+            "pods": [
+                {
+                    "metadata": {"name": "cron-1783792800"},
+                    "status": {
+                        "phase": "Succeeded",
+                        "containerStatuses": [{"ready": False, "restartCount": 0}],
                     },
                 }
             ]
