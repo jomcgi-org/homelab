@@ -150,7 +150,9 @@ def harvest_scans(session: Session, repo: str = "jomcgi/homelab") -> dict:
     """
     token = _token()
     ids = fetch_finding_scan_ids(repo, token)
-    stored = {row for (row,) in session.exec(select(ScanPerf.scan_id))}
+    # SQLModel session.exec unwraps a single-column select to scalars (ints),
+    # not Row tuples, so iterate the scalars directly (no unpacking).
+    stored = set(session.exec(select(ScanPerf.scan_id)))
 
     harvested = 0
     for scan_id in sorted(ids - stored):
