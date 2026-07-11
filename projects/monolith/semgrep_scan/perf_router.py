@@ -36,8 +36,13 @@ async def get_perf(
     session: Session = Depends(get_session),
     limit: int = Query(300, ge=1, le=1000),
 ) -> dict:
+    # NULLS LAST so any undated row never crowds out dated rows past the LIMIT
+    # (route-b rows now carry scan_completed_at, but stay defensive for any
+    # residual or legacy NULL-dated rows).
     rows = session.exec(
-        select(ScanPerf).order_by(ScanPerf.scan_completed_at.desc()).limit(limit)
+        select(ScanPerf)
+        .order_by(ScanPerf.scan_completed_at.desc().nullslast())
+        .limit(limit)
     ).all()
 
     route_b = [_row_to_dict(r) for r in rows if r.environment == "route-b"]
