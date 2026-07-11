@@ -1,14 +1,10 @@
 <script>
-  // Two different Firecracker figures, both from metrics.js so neither is a
-  // hardcoded literal. The FIRECRACKER featured card advertises the sandbox
-  // demo it links to, so it quotes the trace-derived sandbox restore
-  // (sandboxRestoreMs). The AGENT PLATFORM card describes the agent request
-  // path, a separate measurement, so it quotes the agent restore
-  // (agentRestoreColdMs) to match the engineering deep-dive and the
-  // AgentPlatform diagram; using the sandbox figure here would understate it.
+  // Both timing figures come from metrics.js so neither is a hardcoded
+  // literal: the FIRECRACKER card quotes the trace-derived sandbox restore
+  // (sandboxRestoreMs, the demo it links to), the AGENT PLATFORM card quotes
+  // the agent-workload cold start (agentFirstModelCallMs).
   import {
     sandboxRestoreMs,
-    agentRestoreColdMs,
     agentFirstModelCallMs,
   } from "$lib/public/fcstory/metrics.js";
   import { apps } from "$lib/public/apps.js";
@@ -72,9 +68,11 @@
             </p>
           {:else if app.slug === "firecracker"}
             <p>
+              fc-invoke serves <code>POST /invoke/&#123;workload&#125;</code>:
+              boot a workload once, freeze it, restore the snapshot for every
+              request. The guest never holds a real secret; an egress proxy
+              swaps placeholder tokens for credentials at the network hop.
               Watch a microVM restore from disk in <b>{sandboxRestoreMs}ms</b>.
-              Boot once, freeze it, restore forever; every number on the page
-              comes from the daemon's own tracing.
               <a class="more" href="/app/firecracker">watch it restore &rarr;</a>
             </p>
           {/if}
@@ -86,11 +84,10 @@
           <span class="where">NODE-4</span>
         </div>
         <p>
-          A stateless daemon serves <code>POST /invoke/&#123;workload&#125;</code>: restore a
-          copy-on-write snapshot in <b>{agentRestoreColdMs}ms</b> (~{agentFirstModelCallMs}ms cold start
-          to first model call), reverse-proxy over vsock into the microVM. The guest never holds
-          a real secret; an egress proxy swaps placeholder tokens for credentials at the network
-          hop. Coding agents and Semgrep scans run as peers on the same substrate.
+          Tag <b>@Bosun</b> in a Discord thread and a <b>goose</b> agent wakes in its own
+          microVM, runs a recipe, and replies with an artifact or a PR. Ambient chat,
+          scheduled routines, and coding agents all dispatch through fc-invoke
+          (~{agentFirstModelCallMs}ms to first model call).
         </p>
         <div class="clinks">
           <a class="more" href="/app/firecracker">how &rarr;</a>
@@ -114,7 +111,7 @@
           <span class="where">NODE-1</span>
         </div>
         <p>
-          Postgres + pgvector holds the apps, a fileless knowledge graph, and the embeddings;
+          One Postgres backs every app; pgvector indexes the embeddings for a fileless knowledge graph.
           <a class="more" href="/app/notes">notes</a> is a public RAG over it. Declarative
           migrations applied by an operator, volumes replicated across nodes.
         </p>
