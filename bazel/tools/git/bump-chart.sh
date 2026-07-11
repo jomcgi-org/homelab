@@ -5,7 +5,10 @@
 # `targetRevision:` in <project>/deploy/application.yaml together, computing
 # the new number from the version at origin/main tip (not the local checkout),
 # so concurrent sessions cannot pick the same number twice. Optionally verifies
-# the candidate version is not already published to the OCI registry.
+# the candidate version is not already published to the OCI registry NOR already
+# claimed by another open PR (a version two PRs pick from the same tip does not
+# textually conflict on rebase - git auto-merges identical hunks - so it would
+# otherwise slip through to a loud "already published" failure at merge time).
 #
 # Usage:
 #   bazel/tools/git/bump-chart.sh <projects/<svc>[/chart]> [options]
@@ -18,6 +21,9 @@
 #
 # Environment:
 #   BUMP_CHART_SKIP_REGISTRY_CHECK=1  skip the OCI registry existence probe
+#   BUMP_CHART_SKIP_PR_CHECK=1       skip the open-PR claimed-version scan
+#   BUMP_CHART_CLAIMED_VERSIONS=...  inject the open-PR claimed set (newline or
+#                                    space separated); bypasses the gh scan (tests)
 #   BUMP_CHART_MAIN_VERSION=X.Y.Z    override the origin/main version (tests)
 #   BUMP_CHART_REPO_ROOT=/path       override the repo root (tests)
 #   BUMP_CHART_REPOSITORY=oci://...  override the chart registry
@@ -139,19 +145,60 @@ else
 	NEW_VERSION=$(increment "$BASE_VERSION" "$BUMP_KIND")
 fi
 
-# Best-effort registry probe: if the candidate is already published (another
-# session got there first), keep incrementing the patch until a free number is
-# found. A probe failure is treated as "free" (network flake must not block).
-if [[ "${BUMP_CHART_SKIP_REGISTRY_CHECK:-}" != "1" ]] && command -v helm >/dev/null 2>&1; then
-	for _ in $(seq 1 20); do
-		if helm show chart "${REPOSITORY}/${CHART_NAME}" --version "$NEW_VERSION" >/dev/null 2>&1; then
-			echo "Version ${NEW_VERSION} already published in the registry; trying the next patch."
-			NEW_VERSION=$(increment "$NEW_VERSION" "patch")
-		else
-			break
-		fi
-	done
+# Best-effort scan of the semver versions THIS chart's Chart.yaml already carries
+# on OTHER open PR branches. Two PRs that bump from the same origin/main tip pick
+# the SAME number; on rebase git sees an identical hunk on both sides and
+# auto-merges it (no conflict), so the duplicate reaches main and only trips the
+# loud "already published" guard at merge time. Reading each open PR's claimed
+# version here lets us skip a number a pending PR already took, before the
+# collision lands. gh/API failures yield no claims: a flaky network must never
+# block a bump.
+open_pr_versions() {
+	local self branches br v
+	self="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+	branches="$(gh pr list --state open --json headRefName --jq '.[].headRefName' 2>/dev/null || true)"
+	while IFS= read -r br; do
+		[[ -n "$br" && "$br" != "$self" ]] || continue
+		# Read Chart.yaml as it exists on that PR branch (raw, so no base64 decode).
+		v="$(gh api "repos/{owner}/{repo}/contents/${CHART_YAML}?ref=${br}" \
+			-H "Accept: application/vnd.github.raw" 2>/dev/null |
+			grep '^version:' | head -1 | awk '{print $2}' | tr -d '"' || true)"
+		[[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' "$v"
+	done <<<"$branches"
+}
+
+# Explicit injection wins (tests); otherwise scan live unless disabled or gh is
+# unavailable (mirrors the helm guard on the registry probe below).
+if [[ -n "${BUMP_CHART_CLAIMED_VERSIONS+x}" ]]; then
+	CLAIMED_VERSIONS="${BUMP_CHART_CLAIMED_VERSIONS}"
+elif [[ "${BUMP_CHART_SKIP_PR_CHECK:-}" != "1" ]] && command -v gh >/dev/null 2>&1; then
+	CLAIMED_VERSIONS="$(open_pr_versions)"
+else
+	CLAIMED_VERSIONS=""
 fi
+
+registry_has() {
+	[[ "${BUMP_CHART_SKIP_REGISTRY_CHECK:-}" != "1" ]] && command -v helm >/dev/null 2>&1 || return 1
+	helm show chart "${REPOSITORY}/${CHART_NAME}" --version "$1" >/dev/null 2>&1
+}
+
+pr_claims() {
+	[[ -n "$CLAIMED_VERSIONS" ]] && grep -qxF "$1" <<<"$CLAIMED_VERSIONS"
+}
+
+# Keep incrementing the patch until a number that is neither published nor
+# claimed by an open PR is found. A probe failure is treated as "free".
+for _ in $(seq 1 40); do
+	if registry_has "$NEW_VERSION"; then
+		echo "Version ${NEW_VERSION} already published in the registry; trying the next patch."
+		NEW_VERSION=$(increment "$NEW_VERSION" "patch")
+	elif pr_claims "$NEW_VERSION"; then
+		echo "Version ${NEW_VERSION} already claimed by an open PR; trying the next patch."
+		NEW_VERSION=$(increment "$NEW_VERSION" "patch")
+	else
+		break
+	fi
+done
 
 # The application.yaml must contain exactly one semver targetRevision (the OCI
 # chart pin); git refs like `targetRevision: HEAD` or `main` are untouched.
