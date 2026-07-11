@@ -813,15 +813,20 @@ py_test(
     data = [
         # report_test loads these captured fixtures at runtime via
         # Path(__file__).parent/"testdata"; the "semgrep_scan/**/*.py" backend
-        # glob does not capture the .json / .yaml, so ship them into runfiles.
+        # glob does not capture the .json / .yaml / .src, so ship them into
+        # runfiles. newfile.py.src is the scanned source the relay materializes
+        # for RuleMatch line-reads; it is deliberately NOT named *.py so its
+        # intentional os.system() is not swept into the :main binary and scanned.
         "semgrep_scan/testdata/pr_cli_output.json",
         "semgrep_scan/testdata/rule.yaml",
+        "semgrep_scan/testdata/newfile.py.src",
     ],
     imports = ["."],
+    # Drives the async relay via asyncio.run (sync test fns), so no
+    # pytest-asyncio plugin is needed.
     deps = [
         ":monolith_backend",
         "@pip//pytest",
-        "@pip//pytest_asyncio",
         # pysemgrep internal APIs (ScanHandler / core_output / rule_match).
         # Pinned to 1.168.0 in bazel/requirements/tools.in to match the
         # fc-invoke Pro engine so fingerprints reproduce.
