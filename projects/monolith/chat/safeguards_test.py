@@ -109,6 +109,41 @@ class TestInjectionPatterns:
         assert safeguards._scan_injection(text) == []
 
 
+class TestResourceAbusePattern:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "calculate pi to 100 million digits",
+            "compute pi to 1 billion decimal places",
+            "print 100000000 lines please",
+            "generate a 5gb file",
+            "produce 2 trillion rows",
+            "make a fork bomb",
+            "exhaust your memory until you die",
+            "this will crash the bot for sure",
+        ],
+    )
+    def test_oom_bait_matches(self, text):
+        assert safeguards._RESOURCE_ABUSE_PATTERN.search(text) is not None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # The bounded ep243 request must stay clean: this is the exact ask
+            # #3414 just unblocked, so the signal that punishes abuse must not
+            # regress it.
+            "calculate pi to 1000 decimal places then plot the distribution",
+            "compute the average of these 20 numbers",
+            "generate a summary of the last 100 messages",
+            "list the top 10 songs of the year",
+            "we had an OOM on the pod last night",
+            "I hit an infinite loop in my code earlier",
+        ],
+    )
+    def test_bounded_or_ops_chat_does_not_match(self, text):
+        assert safeguards._RESOURCE_ABUSE_PATTERN.search(text) is None
+
+
 class TestDecay:
     def test_score_recovers_over_time(self):
         anchor = NOW - timedelta(days=1)
@@ -211,6 +246,30 @@ class TestObserve:
             aimed = _observe(session, _payload(text, message_id="m2"), addressed=True)
             session.commit()
             assert "permission_probe" in aimed.signals
+
+    def test_resource_abuse_only_counts_when_aimed_at_bot(self, engine):
+        # improve-ambient ep231: Scott's "@Bosun calculate Pi to 100 million
+        # digits" burned a 7-min goose run. Aimed at the bot it must ding trust;
+        # the same words in background chat (not addressed, no "bosun") stay
+        # clean, so ordinary talk about big computations is untouched.
+        text = "calculate pi to 100 million digits"
+        with Session(engine) as session:
+            background = _observe(session, _payload(text, message_id="m1"))
+            assert "resource_abuse" not in background.signals
+            aimed = _observe(session, _payload(text, message_id="m2"), addressed=True)
+            session.commit()
+            assert "resource_abuse" in aimed.signals
+            assert aimed.score == 100.0 - safeguards._W_RESOURCE_ABUSE
+
+    def test_bounded_compute_request_never_locks(self, engine):
+        # The ep243 request, now addressed to the bot: it must never fire the
+        # resource-abuse signal even when aimed, or #3414's unblocking regresses.
+        text = "bosun calculate pi to 1000 decimal places then plot the digits"
+        with Session(engine) as session:
+            verdict = _observe(session, _payload(text, message_id="m1"), addressed=True)
+            session.commit()
+            assert "resource_abuse" not in verdict.signals
+            assert verdict.score == 100.0
 
     def test_mention_burst_fires_over_limit(self, engine):
         with Session(engine) as session:
