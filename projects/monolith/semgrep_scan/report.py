@@ -36,6 +36,7 @@ THE MAPPING (spike result):
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import logging
@@ -45,6 +46,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+from typing import Iterator
 from typing import Optional
 
 logger = logging.getLogger("monolith.semgrep.report")
@@ -71,6 +73,55 @@ def _ensure_settings_file() -> None:
         os.environ["SEMGREP_SETTINGS_FILE"] = os.path.join(
             tempfile.gettempdir(), "semgrep-relay-settings.yml"
         )
+
+
+@contextlib.contextmanager
+def _materialized_sources(files: Optional[list[dict[str, Any]]]) -> Iterator[None]:
+    """Materialize the scanned file contents on disk and chdir into them.
+
+    ``RuleMatch.__init__`` EAGERLY reads the matched source lines off disk
+    (``rule_match.get_lines`` -> ``util.get_lines_from_file(self.path, ...)``),
+    so a finding's ``path`` (repo-relative, e.g. ``repo/newfile.py``) must exist
+    on disk when we construct the RuleMatch. The monolith does not have the
+    scanned checkout, but it DID send the contents to fc-invoke as
+    ``[{path, content}]``; we write those same contents into a temp dir mirroring
+    the relative paths and ``os.chdir`` into it so the relative reads resolve. The
+    REPORTED path stays repo-relative (correct for the App) because we only change
+    cwd, never the finding paths.
+
+    CAUTION: ``os.chdir`` is process-global, so scans MUST NOT run concurrently
+    in-process while this is active. That is fine for the v1 sequential webhook
+    path; the Phase 2 concurrency/perf work must revisit this (e.g. a subprocess
+    or a lines-provider that reads from an in-memory map instead of cwd).
+
+    ``files`` may be ``None``/empty (e.g. a scan with no findings, or a caller
+    that has nothing to materialize); in that case this is a no-op chdir-wise but
+    still restores cwd, so the mapping simply finds no source to read.
+    """
+    if not files:
+        yield
+        return
+
+    original_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory(prefix="semgrep-relay-src-") as tmpdir:
+        for entry in files:
+            rel = entry.get("path")
+            content = entry.get("content")
+            if not rel or content is None:
+                continue
+            # Join defensively: reject absolute paths / parent escapes so a
+            # malicious or malformed path cannot write outside the temp dir.
+            dest = (Path(tmpdir) / rel).resolve()
+            if not str(dest).startswith(str(Path(tmpdir).resolve())):
+                logger.warning("skipping out-of-tree source path %r", rel)
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content)
+        try:
+            os.chdir(tmpdir)
+            yield
+        finally:
+            os.chdir(original_cwd)
 
 
 def _load_rules_by_bare_id(rules_dir: str) -> dict[str, Any]:
@@ -147,8 +198,15 @@ def _cli_result_to_core_match(result: dict[str, Any]) -> Any:
 def map_cli_output_to_matches(
     raw_cli_output: str,
     rules_dir: str = RULES_DIR,
+    files: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[Any, list[Any], list[dict[str, Any]]]:
     """Map a ``semgrep --json`` cli_output string to pysemgrep RuleMatches.
+
+    ``files`` is the same ``[{path, content}]`` list the caller sent to
+    fc-invoke's ``/invoke/semgrep``. It is REQUIRED whenever there are findings:
+    ``RuleMatch.__init__`` eagerly reads the matched source lines off disk, so
+    the finding paths must exist on disk during construction. We materialize the
+    contents into a temp dir and chdir into it (see ``_materialized_sources``).
 
     Returns ``(filtered_matches, rules_with_matches, unmatched)`` where
     ``filtered_matches`` is a ``FilteredMatches`` ready for
@@ -200,9 +258,15 @@ def map_cli_output_to_matches(
         }
     )
 
-    by_rule = core_matches_to_rule_matches(
-        list(rule_table.values()), core_output, fips_mode=False
-    )
+    # core_matches_to_rule_matches constructs RuleMatch objects, which eagerly
+    # read the matched source lines off disk (relative to cwd). Materialize the
+    # scanned contents and chdir into them so those reads resolve. This does NOT
+    # affect match_based_id: the fingerprint is (formula, path, rule_id) and does
+    # not depend on the line contents, so it stays byte-identical.
+    with _materialized_sources(files):
+        by_rule = core_matches_to_rule_matches(
+            list(rule_table.values()), core_output, fips_mode=False
+        )
     kept = {rule: matches for rule, matches in by_rule.items() if matches}
     filtered = FilteredMatches(kept=kept, removed=defaultdict(list))
     return filtered, list(kept.keys()), unmatched
@@ -253,6 +317,28 @@ def _build_project_metadata(
     return out.ProjectMetadata.from_json(payload)
 
 
+class _DryRunScanResponse:
+    """A stand-in for ScanHandler.scan_response used only in dry_run.
+
+    pysemgrep's ``ScanHandler.start_scan`` POSTs to semgrep.dev with NO dry_run
+    guard (only report_findings / report_failure gate on dry_run), and on a bad
+    token it calls ``sys.exit`` (a BaseException). So dry_run cannot rely on
+    calling the real ``start_scan``. Instead we set ``scan_response`` to this
+    stub so ``scan_id`` and the engine-param properties report_findings reads
+    (``autofix`` / ``dependency_query``) resolve without any network.
+    """
+
+    class _Info:
+        id = None  # scan id is null for dry runs, matching the real API
+
+    class _EngineParams:
+        autofix = False
+        dependency_query = False
+
+    info = _Info()
+    engine_params = _EngineParams()
+
+
 async def report_pr_scan(
     *,
     repo: str,
@@ -261,6 +347,7 @@ async def report_pr_scan(
     pr_id: str,
     base_ref: Optional[str] = None,
     raw_cli_output: str,
+    files: Optional[list[dict[str, Any]]] = None,
     project_id: Optional[str] = None,
     repo_url: Optional[str] = None,
     rules_dir: str = RULES_DIR,
@@ -275,8 +362,15 @@ async def report_pr_scan(
     open scan. ``SEMGREP_APP_TOKEN`` is read from the environment by pysemgrep;
     this module never hardcodes it.
 
-    With ``dry_run=True`` pysemgrep makes NO network calls (used in tests): it
-    logs the payloads and returns a success response.
+    ``files`` is the same ``[{path, content}]`` list sent to fc-invoke; it is
+    required to materialize source lines for the RuleMatch construction (see
+    ``map_cli_output_to_matches``).
+
+    With ``dry_run=True`` NO network happens at all: we skip the real
+    ``start_scan`` (which POSTs with no dry_run guard) by stubbing
+    ``scan_response``, and pysemgrep's ``report_findings`` short-circuits its
+    uploads on ``dry_run``. Used by tests and any caller that wants to assemble
+    the payload without touching the live App.
     """
     _ensure_settings_file()
 
@@ -305,7 +399,7 @@ async def report_pr_scan(
 
     try:
         filtered, rules_with_matches, unmatched = map_cli_output_to_matches(
-            raw_cli_output, rules_dir=rules_dir
+            raw_cli_output, rules_dir=rules_dir, files=files
         )
     except Exception as exc:  # noqa: BLE001 - surface mapping failure as structured
         logger.exception("failed to map cli_output to RuleMatches")
@@ -336,7 +430,13 @@ async def report_pr_scan(
 
     scan_opened = False
     try:
-        handler.start_scan(project_metadata, ProjectConfig())
+        if dry_run:
+            # Do NOT call the real start_scan: it POSTs to semgrep.dev with no
+            # dry_run guard and sys.exit()s on a bad token. Stub the response so
+            # scan_id + engine-param properties resolve with zero network.
+            handler.scan_response = _DryRunScanResponse()  # type: ignore[assignment]
+        else:
+            handler.start_scan(project_metadata, ProjectConfig())
         scan_opened = True
         result["scan_id"] = handler.scan_id
 
@@ -368,9 +468,16 @@ async def report_pr_scan(
             mid.value for mid in complete.app_blocking_match_based_ids
         ]
         return result
-    except Exception as exc:  # noqa: BLE001 - always close the scan below
+    except BaseException as exc:  # noqa: BLE001 - see below; must catch SystemExit
+        # Catch BaseException, not Exception: a bad SEMGREP_APP_TOKEN makes
+        # pysemgrep's start_scan call sys.exit(INVALID_API_KEY_EXIT_CODE), which
+        # raises SystemExit (a BaseException). Without this the relay would kill
+        # the whole monolith process on a token problem instead of returning a
+        # structured error. Re-raise genuine interrupts so we don't swallow them.
+        if isinstance(exc, KeyboardInterrupt):
+            raise
         logger.exception("report_pr_scan failed after start_scan=%s", scan_opened)
-        result["error"] = str(exc)
+        result["error"] = str(exc) or type(exc).__name__
         if scan_opened:
             try:
                 # Close the open scan so the App does not leave the PR check

@@ -2,7 +2,7 @@
 # but not used by tests or at runtime.
 copier>=9.11.2
 # Pinned EXACTLY: the monolith imports pysemgrep's INTERNAL ScanHandler /
-# core_output / rule_match APIs (projects/monolith/semgrep/report.py) to relay
+# core_output / rule_match APIs (projects/monolith/semgrep_scan/report.py) to relay
 # fc-invoke findings to the Semgrep AppSec Platform, and this pin must match the
 # fc-invoke Pro engine version so fingerprints line up. Bumping this version
 # REQUIRES re-verifying the pysemgrep import surface in report.py (see the
