@@ -811,6 +811,22 @@ py_test(
 )
 
 py_test(
+    name = "semgrep_router_test",
+    srcs = ["semgrep_scan/router_test.py"],
+    imports = ["."],
+    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
+    # Drives the async webhook via FastAPI TestClient (BackgroundTasks run inline
+    # after the response), mocking scan_files / report_pr_scan / httpx so no live
+    # GitHub, fc-invoke, or Semgrep App is touched.
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "sandbox_mcp_test",
     srcs = ["sandbox/mcp_test.py"],
     imports = ["."],
