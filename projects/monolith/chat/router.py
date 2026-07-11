@@ -1,4 +1,4 @@
-"""Chat API routes -- backfill and explore endpoints."""
+"""Chat API routes -- backfill, explore and cluster endpoints."""
 
 import asyncio
 import logging
@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from chat.backfill import run_backfill
+from chat.cluster_agent import ClusterDeps, create_cluster_agent
 from chat.explorer import ExplorerDeps, create_explorer_agent
 from chat.sse import SSEEmitter
 from knowledge.api import get_store
@@ -93,6 +94,56 @@ async def explore(body: ExploreRequest, request: Request):
             emitter.close()
         except Exception as e:
             logger.exception("Explorer stream failed")
+            emitter.emit("error", {"message": str(e)})
+            emitter.close()
+
+        async for event in emitter.stream():
+            yield event
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+class ClusterChatRequest(BaseModel):
+    message: str = Field(min_length=1)
+    history: list[dict] = Field(default_factory=list)
+
+
+_cluster_agent = None
+
+
+def get_cluster_agent():
+    global _cluster_agent
+    if _cluster_agent is None:
+        _cluster_agent = create_cluster_agent()
+    return _cluster_agent
+
+
+@router.post("/cluster")
+async def cluster_chat(body: ClusterChatRequest, request: Request):
+    emitter = SSEEmitter()
+    agent = get_cluster_agent()
+
+    deps = ClusterDeps(emitter=emitter)
+
+    # Build message list from history
+    messages = []
+    for turn in body.history:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+
+    async def generate():
+        try:
+            async with agent.run_stream(
+                body.message,
+                message_history=messages if messages else None,
+                deps=deps,
+            ) as stream:
+                async for text in stream.stream_text(delta=True):
+                    emitter.emit("text_chunk", {"text": text})
+
+            emitter.emit("done", {})
+            emitter.close()
+        except Exception as e:
+            logger.exception("Cluster chat stream failed")
             emitter.emit("error", {"message": str(e)})
             emitter.close()
 
