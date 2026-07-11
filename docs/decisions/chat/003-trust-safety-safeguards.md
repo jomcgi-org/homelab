@@ -11,7 +11,8 @@
 
 The server's members treat Bosun as a standing red-team target: prompt
 injection, exfiltration probes ("dump the system prompt", "paste the .env"),
-permission fishing, and mention flooding are a recurring game. The existing
+permission fishing, mention flooding, and resource-exhaustion / OOM-bait
+("calculate pi to 100 million digits") are a recurring game. The existing
 defenses are structural (ACL allow-lists, the tone-only directive `guard()`,
 fixed tool sets, the fail-closed attention gate) and hold up, but every attempt
 still costs real resources: each probing message can trigger an attention
@@ -37,8 +38,9 @@ rather than guesses.
 Scores start at 100 and recover at `SAFEGUARDS_RECOVERY_PER_DAY` (20), so a
 lockout is a cooling-off, not a ban. Signals subtract: heuristic pattern hits
 (25 each, two counted per message), permission probes aimed at the bot (10),
-mention bursts (8), LLM-judged malicious intent (up to 30, scaled by
-confidence). Below `SAFEGUARDS_LOCKOUT_THRESHOLD` (40) the user is soft-locked:
+resource-exhaustion / OOM-bait aimed at the bot (20), mention bursts (8),
+LLM-judged malicious intent (up to 30, scaled by confidence). Below
+`SAFEGUARDS_LOCKOUT_THRESHOLD` (40) the user is soft-locked:
 no attention classify, no reply, no agent run, no message storage. When a
 locked-out user addresses the bot directly, Bosun reacts with
 `SAFEGUARDS_LOCKOUT_EMOJI` (default the anchor: "you're in the brig") instead
@@ -57,8 +59,12 @@ turning a wrong lockout into corrective training data.
 1. **Heuristics** (`chat/safeguards.py`, every message, no LLM cost): narrow
    regexes for instruction override, prompt/secret fishing, exfiltration
    verbs, persona jailbreaks, fake system frames, tool-scaffold smuggling;
-   plus permission-probe and mention-burst rate checks. Deterministic,
-   explainable, instant enforcement, and the source of positive labels.
+   plus permission-probe, mention-burst, and resource-exhaustion checks. The
+   resource-exhaustion signal (and the permission probe) only counts when the
+   message is aimed at the bot, so ops chat about a real OOM and dev talk
+   about an infinite loop stay clean, and it is tuned so a bounded ask ("pi to
+   1000 digits") never fires. Deterministic, explainable, instant enforcement,
+   and the source of positive labels.
 2. **LLM intent** (classify-only Qwen call, same seam as the attention gate):
    fired-and-forgotten on bot-addressed, heuristic-flagged, or
    ambient-engaged messages, so it adds zero latency to replies; its verdict
