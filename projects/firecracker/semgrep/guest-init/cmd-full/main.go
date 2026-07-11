@@ -55,18 +55,15 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// Run the pro engine from its real baked path (/opt/semgrep/osemgrep-pro). The
-	// scan CLI resolves the pro-engine "install" layout (semgrep-core-proprietary +
-	// pro-installed-by.txt stamp) relative to its own real path, and that layout is
-	// baked into the image next to the engine (bazel/semgrep/guest:engine_tar_amd64),
-	// so no runtime setup is needed.
-	proBin := guestboot.EnvOr("OSEMGREP_PRO_BIN", guestboot.DefaultOsemgrepPro)
-
+	// The full scan runs pysemgrep `semgrep scan --pro`. The pro-engine "install"
+	// layout it requires (the version stamp next to its bundled semgrep-core, and a
+	// semgrep-core-proprietary binary on PATH) is baked into the image
+	// (bazel/semgrep/guest:engine_tar_amd64), so no runtime setup is needed.
 	rulesDir := guestboot.EnvOr("SEMGREP_SCAN_RULES", guestboot.DefaultRulesDir)
-	logger.Info("starting full-scan (osemgrep-pro scan --pro) init", "rules", rulesDir, "proBin", proBin)
+	logger.Info("starting full-scan (semgrep scan --pro) init", "rules", rulesDir)
 
 	h := handler.NewFull(func(req vsockproto.ScanRequest) (vsockproto.ScanResult, error) {
-		return fullscan.Scan(ctx, req, fullscan.SemgrepRunner(rulesDir, proBin))
+		return fullscan.Scan(ctx, req, fullscan.SemgrepRunner(rulesDir))
 	})
 
 	ln, err := scanserver.ListenVsock(vsockproto.GuestHTTPPort)
