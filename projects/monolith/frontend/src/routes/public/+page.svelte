@@ -165,11 +165,9 @@
       <Sticker color="var(--paper)" rotate={-3} class="sticker-bio">A LITTLE ABOUT ME</Sticker>
       <p class="bio-sub">
         I'm Joe, from Scotland, living in Vancouver.<br />
-        Monorepo enthusiast. Lover of <a href="https://brutalistwebsites.com/" class="bio-link">brutalist websites</a>.<br />
         Care<em>mad</em> about developer experience.
       </p>
     </div>
-    <h2 class="bio-headline">Boring infrastructure<br />is a feature.</h2>
   </div>
 </section>
 
@@ -326,26 +324,13 @@
   .bio-panel {
     background: var(--accent);
     border-bottom: 2px solid var(--ink);
-    padding: 56px 0;
+    padding: 40px 0;
     position: relative;
     overflow: hidden;
   }
 
   .bio-content {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 48px;
-    align-items: center;
     max-width: 1360px;
-  }
-
-  .bio-headline {
-    font-family: var(--serif);
-    font-style: italic;
-    font-size: clamp(32px, 3.8vw, 56px);
-    font-weight: 400;
-    line-height: 1.05;
-    letter-spacing: -0.02em;
   }
 
   .bio-sub {
@@ -374,23 +359,12 @@
   }
 
   /* ── Responsive ──────────────────────────── */
-  @media (max-width: 1100px) {
-    .bio-content {
-      grid-template-columns: 1fr;
-      gap: 20px;
-    }
-  }
-
   @media (max-width: 768px) {
     .hero {
       padding: 56px 0 64px;
     }
     .bio-panel {
-      padding: 56px 0;
-    }
-    .bio-content {
-      grid-template-columns: 1fr;
-      gap: 20px;
+      padding: 32px 0;
     }
     :global(.sticker-hero) {
       display: none !important;
