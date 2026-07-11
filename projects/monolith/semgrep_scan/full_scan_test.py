@@ -98,6 +98,28 @@ async def test_gather_main_files_filters_to_scannable_blobs():
         assert f["content"] == contents[f["path"]]
 
 
+def test_excluded_from_baseline():
+    """Tests, generated, and minified files are excluded from the baseline scan
+    (matching the SMS project path-ignores), source files are kept."""
+    excluded = [
+        "projects/monolith/semgrep_scan/full_scan_test.py",
+        "projects/firecracker/semgrep/guest-init/cmd/main_test.go",
+        "projects/monolith/frontend/foo.test.ts",
+        "projects/monolith/frontend/vendor.min.js",
+        "projects/monolith/grimoire/schema_pb2.py",
+        "projects/monolith/semgrep_scan/testdata/real_cli_output.py",
+    ]
+    kept = [
+        "projects/monolith/semgrep_scan/full_scan.py",
+        "projects/firecracker/semgrep/guest-init/cmd/main.go",
+        "projects/monolith/frontend/src/app.ts",
+    ]
+    for p in excluded:
+        assert full_scan._excluded_from_baseline(p), p
+    for p in kept:
+        assert not full_scan._excluded_from_baseline(p), p
+
+
 @pytest.mark.asyncio
 async def test_gather_main_files_logs_warning_on_truncated_tree(caplog):
     contents = {"projects/monolith/semgrep_scan/full_scan.py": "x = 1\n"}
