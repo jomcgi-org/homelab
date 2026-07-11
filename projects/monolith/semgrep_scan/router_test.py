@@ -44,6 +44,34 @@ def client(monkeypatch):
     return TestClient(app)
 
 
+def test_internal_full_scan_trigger_launches_and_guards(monkeypatch):
+    """POST /internal/semgrep/full-scan returns started and launches run_full_scan
+    in the background; a second call while one is in flight is a no-op."""
+    app = FastAPI()
+    app.include_router(webhook.internal_router)
+    c = TestClient(app)
+
+    calls: list[str] = []
+
+    async def _fake_run(repo):
+        calls.append(repo)
+
+    # Pin the module-level guard so the "already-running" branch is deterministic.
+    monkeypatch.setattr(webhook, "_full_scan_in_flight", True, raising=False)
+    resp = c.post("/internal/semgrep/full-scan")
+    assert resp.status_code == 200
+    assert resp.json().get("status") == "already-running"
+
+    monkeypatch.setattr(webhook, "_full_scan_in_flight", False, raising=False)
+    with mock.patch(
+        "semgrep_scan.full_scan.run_full_scan",
+        new=mock.AsyncMock(side_effect=_fake_run),
+    ):
+        resp = c.post("/internal/semgrep/full-scan?repo=jomcgi/homelab")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "started", "repo": "jomcgi/homelab"}
+
+
 def _sign(body: bytes, secret: str = _SECRET) -> str:
     """Compute the ``sha256=<hex>`` header GitHub would send for ``body``."""
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()

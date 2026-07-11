@@ -28,6 +28,7 @@ def register(app: FastAPI) -> None:
     is only pulled in when the app actually wires the router, mirroring the other
     domains' registration.
     """
-    from semgrep_scan.router import router
+    from semgrep_scan.router import internal_router, router
 
     app.include_router(router)
+    app.include_router(internal_router)

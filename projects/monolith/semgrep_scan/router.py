@@ -29,6 +29,7 @@ would be rejected by a SecurityPolicy. The HMAC check above is the real gate.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -47,6 +48,52 @@ from semgrep_scan.report import report_pr_scan
 logger = logging.getLogger("monolith.semgrep.webhook")
 
 router = APIRouter(prefix="/webhooks/github", tags=["semgrep-webhook"])
+
+# Internal, in-cluster-only trigger for the whole-repo baseline scan. It lives
+# under /internal (the CF-Access-gated catch-all route, NOT the Access-bypassed
+# /webhooks/github/semgrep path), so externally it is auth-gated; in-cluster the
+# scheduled jobs pod reaches it directly. It fires run_full_scan in THIS process
+# (which has the semgrep package loaded, the App/GitHub tokens, and a
+# daemon-allowed ServiceAccount), so the lightweight jobs pod needs none of that.
+internal_router = APIRouter(prefix="/internal/semgrep", tags=["semgrep-internal"])
+
+# Guards against overlapping whole-repo scans: a second trigger while one is in
+# flight is a no-op rather than a second (heavy, daemon-concurrency-1) scan.
+_full_scan_in_flight = False
+_full_scan_tasks: set[asyncio.Task] = set()
+
+
+@internal_router.post("/full-scan")
+async def trigger_full_scan(repo: str = "jomcgi/homelab") -> dict:
+    """Fire the whole-repo interfile baseline scan of ``repo``'s main branch as a
+    background task and return immediately. Internal only (see internal_router).
+
+    Runs semgrep_scan.full_scan.run_full_scan in-process: gather all of main,
+    scan on the semgrep-full workload, report a full scan to the Semgrep App. The
+    scan takes minutes, so it is never awaited on the request.
+    """
+    global _full_scan_in_flight
+    if _full_scan_in_flight:
+        return {"status": "already-running", "repo": repo}
+
+    async def _run() -> None:
+        global _full_scan_in_flight
+        _full_scan_in_flight = True
+        try:
+            from semgrep_scan.full_scan import run_full_scan
+
+            await run_full_scan(repo)
+        except Exception:
+            logger.exception("trigger_full_scan: run_full_scan crashed for %s", repo)
+        finally:
+            _full_scan_in_flight = False
+
+    task = asyncio.create_task(_run())
+    _full_scan_tasks.add(task)
+    task.add_done_callback(_full_scan_tasks.discard)
+    logger.info("trigger_full_scan: launched background full scan for %s", repo)
+    return {"status": "started", "repo": repo}
+
 
 # PR actions worth scanning: a fresh PR, a new push to an open PR, and a reopen.
 # Everything else (labeled, closed, review requests, ...) is acked with no work.
