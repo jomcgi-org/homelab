@@ -10,7 +10,6 @@ export async function load({ fetch }) {
         comparisons: [],
         aggregates: null,
         windowStart: null,
-        note: "",
         counts: null,
         error: res.status,
       };
@@ -20,7 +19,6 @@ export async function load({ fetch }) {
       comparisons: body.comparisons ?? [],
       aggregates: body.aggregates ?? null,
       windowStart: body.window_start ?? null,
-      note: body.coverage_note ?? "",
       counts: body.counts ?? null,
     };
   } catch (e) {
@@ -28,7 +26,6 @@ export async function load({ fetch }) {
       comparisons: [],
       aggregates: null,
       windowStart: null,
-      note: "",
       counts: null,
       error: "unavailable",
     };
