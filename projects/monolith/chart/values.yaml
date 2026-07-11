@@ -676,12 +676,12 @@ jobs:
     # trickle in from PR activity rather than a single daily baseline.
     - name: semgrep-scan-harvest
       args: ["semgrep-harvest-trigger"]
-      # Daily: SMS (managed scans) only update about once a day, so a daily
-      # sweep keeps the perf table fresh with the minimum API load. Each run is
-      # one findings request plus a scan fetch for only the newly-seen scan ids
-      # (already-stored ids are skipped), so steady state is a handful of calls.
-      # 06:00 staggers it off the 05:00 full-scan.
-      schedule: "0 6 * * *" # daily at 06:00 UTC
+      # Hourly: SMS (managed scans) run per-PR continuously, not just daily, so
+      # an hourly sweep keeps each PR's SMS counterpart fresh next to its
+      # (real-time) Route B row. Load stays minimal: each run is one findings
+      # request plus a scan fetch for only the newly-seen scan ids (already
+      # stored ids are skipped), so most runs make a single call.
+      schedule: "0 * * * *" # hourly
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 120
       suspend: false
