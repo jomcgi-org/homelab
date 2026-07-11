@@ -57,12 +57,10 @@ func run(logger *slog.Logger) error {
 
 	// Reconstruct the pro-engine "install" layout (binary + version stamp) the
 	// scan CLI insists on, in a tmpfs dir on PATH. Without this the CLI reports
-	// "Semgrep Pro is either uninstalled or out of date" and exits 2. The returned
-	// path is the pro binary to invoke the scan from (inside the shim dir).
-	proBin, err := guestboot.SetupProEngine(logger)
-	if err != nil {
-		return err
-	}
+	// "Semgrep Pro is either uninstalled or out of date" and exits 2. Best-effort
+	// and non-fatal (it is PID 1: a returned error would panic the microVM), so it
+	// returns the pro binary path to invoke the scan from and logs any setup miss.
+	proBin := guestboot.SetupProEngine(logger)
 
 	rulesDir := guestboot.EnvOr("SEMGREP_SCAN_RULES", guestboot.DefaultRulesDir)
 	logger.Info("starting full-scan (osemgrep-pro scan --pro) init", "rules", rulesDir, "proBin", proBin)
