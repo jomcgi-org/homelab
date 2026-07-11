@@ -61,18 +61,61 @@ RULES_DIR = os.environ.get("SEMGREP_SCAN_RULES", "/etc/semgrep/rules")
 SCAN_ENVIRONMENT = "homelab-fc-invoke"
 
 
-def _ensure_settings_file() -> None:
-    """Point pysemgrep at a writable settings file.
+_semgrep_home_ready = False
 
-    ``Settings`` writes a default settings.yaml on init; in the monolith pod
-    ``~/.semgrep`` may not be writable. Setting ``SEMGREP_SETTINGS_FILE`` to a
-    temp path avoids a noisy PermissionError path. The App token is read from
-    ``SEMGREP_APP_TOKEN`` directly, not from this file.
+
+def _ensure_writable_semgrep_home() -> None:
+    """Point pysemgrep at a writable HOME + data/log/settings dirs.
+
+    The monolith runs non-root with ``HOME=/`` (unwritable), but several
+    pysemgrep code paths resolve writable files under ``Path.home()``:
+
+    * ``semgrep.terminal.Terminal.configure()`` does
+      ``env.user_log_file.parent.mkdir(...)``, and ``user_log_file`` defaults to
+      ``user_data_folder / "semgrep.log"`` where ``user_data_folder`` is
+      ``Path.home() / ".semgrep"`` (unless ``XDG_CONFIG_HOME`` is a valid dir).
+      With ``HOME=/`` this tries to ``mkdir /.semgrep`` -> ``PermissionError:
+      [Errno 13] Permission denied: '/.semgrep'``.
+    * ``Settings`` writes a default settings.yaml (we already redirect that via
+      ``SEMGREP_SETTINGS_FILE``).
+    * the version-check cache resolves under ``Path.home() / ".cache"``.
+
+    We mirror the guest's ``HOME=/tmp/sghome`` pattern: if ``HOME`` is missing or
+    not writable, point it (and the specific semgrep data-dir env vars that drive
+    ``user_log_file`` / ``user_data_folder`` in the pinned 1.168.0 ``env.py``) at
+    a writable temp dir. Idempotent: safe to call once at every relay entry.
+
+    The App token is read from ``SEMGREP_APP_TOKEN`` directly, not from any of
+    these files.
     """
+    global _semgrep_home_ready
+    if _semgrep_home_ready:
+        return
+
+    home = os.environ.get("HOME")
+    if not (home and os.path.isdir(home) and os.access(home, os.W_OK)):
+        writable_home = tempfile.mkdtemp(prefix="semgrep-relay-home-")
+        os.environ["HOME"] = writable_home
+        home = writable_home
+
+    # ``user_data_folder`` = ``$XDG_CONFIG_HOME/.semgrep`` if XDG_CONFIG_HOME is a
+    # valid dir, else ``$HOME/.semgrep``. Pin it explicitly so both the data
+    # folder and the derived ``user_log_file`` land somewhere writable regardless
+    # of any stray XDG_CONFIG_HOME. We point XDG at HOME (now writable).
+    semgrep_data = os.path.join(home, ".semgrep")
+    os.makedirs(semgrep_data, exist_ok=True)
+    os.environ.setdefault("XDG_CONFIG_HOME", home)
+    os.environ.setdefault("XDG_CACHE_HOME", home)
+    # ``user_log_file`` reads SEMGREP_LOG_FILE first; pin it under the writable
+    # data dir so the ``.parent.mkdir`` in Terminal.configure() cannot fail.
+    os.environ.setdefault("SEMGREP_LOG_FILE", os.path.join(semgrep_data, "semgrep.log"))
+
     if not os.environ.get("SEMGREP_SETTINGS_FILE"):
         os.environ["SEMGREP_SETTINGS_FILE"] = os.path.join(
-            tempfile.gettempdir(), "semgrep-relay-settings.yml"
+            semgrep_data, "semgrep-relay-settings.yml"
         )
+
+    _semgrep_home_ready = True
 
 
 @contextlib.contextmanager
@@ -124,21 +167,77 @@ def _materialized_sources(files: Optional[list[dict[str, Any]]]) -> Iterator[Non
             os.chdir(original_cwd)
 
 
-def _load_rules_by_bare_id(rules_dir: str) -> dict[str, Any]:
-    """Load every rule under ``rules_dir`` keyed by its bare (un-rewritten) id."""
+def _iter_rule_files(rules_dir: str) -> Iterator[str]:
+    """Yield the individual rule files under ``rules_dir`` (recursively).
+
+    If ``rules_dir`` is itself a single file, yield just that. Otherwise walk the
+    tree yielding ``.yaml`` / ``.yml`` files. Loading files one at a time is what
+    keeps peak memory bounded (see ``_load_fired_rules``).
+    """
+    if os.path.isfile(rules_dir):
+        yield rules_dir
+        return
+    for root, _dirs, names in os.walk(rules_dir):
+        for name in sorted(names):
+            if name.endswith((".yaml", ".yml")):
+                yield os.path.join(root, name)
+
+
+def _bare_id_matches_check_id(bare_id: str, check_id: str) -> bool:
+    """Whether a loaded rule's bare id resolves a fired check_id.
+
+    Same semantics as ``_find_rule_for_check_id``: exact id, or the bare id is a
+    dotted suffix of the (possibly prefixed) check_id.
+    """
+    return check_id == bare_id or check_id.endswith("." + bare_id)
+
+
+def _load_fired_rules(rules_dir: str, check_ids: set[str]) -> dict[str, Any]:
+    """Load ONLY the rules whose bare id resolves a fired ``check_id``.
+
+    MEMORY: loading the whole rules dir at once (~1000+ rules across local + Pro
+    packs) OOM-kills the 1Gi monolith. A PR diff fires only a handful of rules,
+    so we load rule FILES one at a time, keep only the rules that resolve a fired
+    check_id, discard the rest immediately, and stop as soon as every fired
+    check_id is resolved. Peak memory is therefore bounded by one file's rules
+    plus the handful of kept rules, never the whole corpus.
+
+    Returns a dict keyed by each kept rule's bare (un-rewritten) id, matching the
+    old ``_load_rules_by_bare_id`` shape so ``_find_rule_for_check_id`` is
+    unchanged. check_ids that resolve to no rule are simply absent (the caller
+    reports them as unmatched, never loading everything as a fallback).
+    """
     from semgrep.config_resolver import Config
 
-    cfg, errors = Config.from_config_list([rules_dir], project_url=None)
-    if errors:
-        # Non-fatal: some rule files may fail to parse; log and continue with
-        # whatever loaded so a single bad rule doesn't sink the whole relay.
-        logger.warning(
-            "semgrep rule load reported %d error(s) from %s", len(errors), rules_dir
-        )
-    rules = cfg.get_rules(no_rewrite_rule_ids=True)
+    if not check_ids:
+        return {}
+
     by_bare: dict[str, Any] = {}
-    for rule in rules:
-        by_bare[rule.id] = rule
+    unresolved = set(check_ids)
+    for rule_file in _iter_rule_files(rules_dir):
+        if not unresolved:
+            break
+        try:
+            cfg, errors = Config.from_config_list([rule_file], project_url=None)
+        except Exception:  # noqa: BLE001 - one bad file must not sink the relay
+            logger.warning("failed to load semgrep rule file %s; skipping", rule_file)
+            continue
+        if errors:
+            # Non-fatal: a single bad rule file must not sink the whole relay.
+            logger.warning(
+                "semgrep rule load reported %d error(s) from %s",
+                len(errors),
+                rule_file,
+            )
+        # get_rules materializes this file's rules; we keep only the fired ones
+        # and let the rest go out of scope at the end of the loop iteration.
+        for rule in cfg.get_rules(no_rewrite_rule_ids=True):
+            matched = {
+                cid for cid in unresolved if _bare_id_matches_check_id(rule.id, cid)
+            }
+            if matched:
+                by_bare[rule.id] = rule
+                unresolved -= matched
     return by_bare
 
 
@@ -196,11 +295,16 @@ def _cli_result_to_core_match(result: dict[str, Any]) -> Any:
 
 
 def map_cli_output_to_matches(
-    raw_cli_output: str,
+    raw_cli_output: dict[str, Any] | str,
     rules_dir: str = RULES_DIR,
     files: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[Any, list[Any], list[dict[str, Any]]]:
-    """Map a ``semgrep --json`` cli_output string to pysemgrep RuleMatches.
+    """Map a ``semgrep --json`` cli_output to pysemgrep RuleMatches.
+
+    ``raw_cli_output`` may be EITHER the already-parsed cli_output ``dict`` (the
+    real fc-invoke client shape: the client does ``resp.json()`` so the embedded
+    JSON object arrives already parsed) OR the raw JSON ``str`` (the test-fixture
+    shape). Both are accepted.
 
     ``files`` is the same ``[{path, content}]`` list the caller sent to
     fc-invoke's ``/invoke/semgrep``. It is REQUIRED whenever there are findings:
@@ -215,14 +319,27 @@ def map_cli_output_to_matches(
     up), and ``unmatched`` is the list of cli results whose check_id resolved to
     no loaded rule (skipped, so a missing rule never crashes the relay).
     """
+    _ensure_writable_semgrep_home()
+
     import semgrep.semgrep_interfaces.semgrep_output_v1 as out
     from semgrep.core_output import core_matches_to_rule_matches
     from semgrep.types import FilteredMatches
 
-    cli = json.loads(raw_cli_output)
+    # Bug 1: the fc-invoke client returns the whole response via resp.json(), so
+    # raw_cli_output arrives already parsed as a dict. Accept dict OR str.
+    cli = (
+        raw_cli_output
+        if isinstance(raw_cli_output, dict)
+        else json.loads(raw_cli_output)
+    )
     results = cli.get("results", [])
 
-    by_bare = _load_rules_by_bare_id(rules_dir)
+    # Bug 3 (OOM): load ONLY the rules whose check_id actually fired. Loading the
+    # whole rules dir (~1000+ rules) at once OOM-kills the 1Gi monolith; a PR diff
+    # fires a handful of rules, so we first collect the fired check_ids and load
+    # only those (peak memory stays bounded, see _load_fired_rules).
+    fired_check_ids = {result["check_id"] for result in results}
+    by_bare = _load_fired_rules(rules_dir, fired_check_ids)
 
     # rule_table keyed by the finding's check_id -> the (renamed) matching Rule.
     # A rule object is shared across findings of the same check_id; rename once.
@@ -346,7 +463,7 @@ async def report_pr_scan(
     commit: str,
     pr_id: str,
     base_ref: Optional[str] = None,
-    raw_cli_output: str,
+    raw_cli_output: dict[str, Any] | str,
     files: Optional[list[dict[str, Any]]] = None,
     project_id: Optional[str] = None,
     repo_url: Optional[str] = None,
@@ -357,7 +474,9 @@ async def report_pr_scan(
 
     Opens a per-PR scan (``start_scan``), maps ``raw_cli_output`` to RuleMatches,
     uploads them (``report_findings`` -> POST /results + /complete), and returns
-    the App's block decision. On ANY failure after the scan is opened it calls
+    the App's block decision. ``raw_cli_output`` may be the already-parsed
+    cli_output ``dict`` (the real fc-invoke client shape) or the raw JSON ``str``
+    (see ``map_cli_output_to_matches``). On ANY failure after the scan is opened it calls
     ``report_failure`` in a finally so the App never wedges the PR check on an
     open scan. ``SEMGREP_APP_TOKEN`` is read from the environment by pysemgrep;
     this module never hardcodes it.
@@ -372,7 +491,7 @@ async def report_pr_scan(
     uploads on ``dry_run``. Used by tests and any caller that wants to assemble
     the payload without touching the live App.
     """
-    _ensure_settings_file()
+    _ensure_writable_semgrep_home()
 
     # Imports are function-local so importing this module (e.g. for the mapping
     # helpers or in the webhook router) does not eagerly pull the heavy pysemgrep
