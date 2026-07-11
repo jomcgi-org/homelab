@@ -685,6 +685,22 @@ py_test(
 )
 
 py_test(
+    name = "home_dashboard_test",
+    srcs = ["home/dashboard_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+        "@pip//tzdata",
+    ],
+)
+
+py_test(
     name = "db_test",
     srcs = ["app/db_test.py"],
     imports = ["."],

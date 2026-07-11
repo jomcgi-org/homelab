@@ -6,9 +6,11 @@ from fastapi import FastAPI
 def register(app: FastAPI) -> None:
     from home.schedule_router import router as schedule_router
     from home.observability.router import router as observability_router
+    from home.dashboard_router import router as dashboard_router
 
     app.include_router(schedule_router)
     app.include_router(observability_router)
+    app.include_router(dashboard_router)
 
 
 def register_public(app: FastAPI) -> None:
