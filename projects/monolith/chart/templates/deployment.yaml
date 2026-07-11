@@ -171,6 +171,31 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-semgrep-app
                   key: SEMGREP_API_TOKEN
+            # HMAC secret for the GitHub PR webhook (semgrep_scan/router.py, Phase
+            # 2). GitHub signs the request body with it; the handler fails closed
+            # if it is unset. Lives in the SAME semgrep vault item as the App token
+            # (field GITHUB_SEMGREP_WEBHOOK_SECRET), mirrored into this Secret; Joe
+            # sets the identical value in the GitHub hook config. Optional so an
+            # older vault item without the field does not block the pod (the
+            # webhook then 401s every request, which is the fail-closed default).
+            - name: GITHUB_SEMGREP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-semgrep-app
+                  key: GITHUB_SEMGREP_WEBHOOK_SECRET
+                  optional: true
+            {{- if .Values.chat.enabled }}
+            # Real GitHub API token for the webhook's changed-file fetch. The
+            # monolith's own GITHUB_TOKEN env is a kloak: placeholder (guest
+            # egress swap), useless for a direct API call, so we wire the REAL
+            # token (monolith-chat-secrets key GITHUB_TOKEN, the same one
+            # git-mirror uses) under a distinct env name the webhook reads.
+            - name: GITHUB_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-chat-secrets
+                  key: GITHUB_TOKEN
+            {{- end }}
             {{- end }}
             {{- if .Values.whatsapp.enabled }}
             # WhatsApp inbound bearer token (ADR 039 spec section 2). The monolith

@@ -20,6 +20,7 @@ import hikes
 import home
 import knowledge
 import scheduler
+import semgrep_scan
 import ships
 import stars
 import trips
@@ -284,6 +285,9 @@ campsites.register(app)
 worldcup.register(app)
 artifact.register(app)
 demos.register(app)
+# GitHub PR webhook -> fc-invoke scan -> Semgrep App relay (Phase 2). Registers
+# POST /webhooks/github/semgrep; HMAC-verified, no cf-access on that path.
+semgrep_scan.register(app)
 app.mount("/mcp", _mcp_app)
 
 
