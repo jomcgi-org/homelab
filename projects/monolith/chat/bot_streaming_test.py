@@ -784,6 +784,11 @@ class TestAmbientNonStreaming:
         message.reply.assert_called_once()
         posted = message.reply.call_args_list[0][0][0]
         assert posted == "Nah, fable's holding up fine."
+        assert "Thinking" not in posted
+        assert "Searching" not in posted
+        # No progressive/in-place edits in ambient mode.
+        sent.edit.assert_not_called()
+        assert text == "Nah, fable's holding up fine."
 
     @pytest.mark.asyncio
     async def test_ambient_send_gate_veto_stays_silent(self):
@@ -847,11 +852,6 @@ class TestAmbientNonStreaming:
 
         gate.assert_not_called()
         assert text == "Hello there."
-        assert "Thinking" not in posted
-        assert "Searching" not in posted
-        # No progressive/in-place edits in ambient mode.
-        sent.edit.assert_not_called()
-        assert text == "Nah, fable's holding up fine."
 
     @pytest.mark.asyncio
     async def test_ambient_placeholder_reply_is_suppressed(self):
