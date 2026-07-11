@@ -15,9 +15,10 @@ export default defineConfig({
     target: "es2022",
   },
   ssr: {
-    // The runtime image ships only the SvelteKit `build/` output — there is
-    // no node_modules. Any package imported by SSR-rendered code must be
-    // bundled into the server chunks, not externalized.
+    // The runtime image ships only the SvelteKit output dir (remapped to
+    // /app/build at image time); there is no node_modules. Any package
+    // imported by SSR-rendered code must be bundled into the server chunks,
+    // not externalized.
     noExternal: [
       "@dagrejs/dagre",
       "d3-quadtree",

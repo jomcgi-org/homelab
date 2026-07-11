@@ -7,9 +7,11 @@ const config = {
   kit: {
     // Output dir is env-parametrized so the public build (:build_public) can
     // emit to a distinct directory and avoid colliding with :build's output in
-    // the same Bazel package. Defaults to "build" for the normal build.
+    // the same Bazel package. Defaults to "dist", never "build": on a
+    // case-insensitive filesystem (macOS) an output dir named "build" collides
+    // with this package's tracked Bazel BUILD file and deletes it.
     adapter: adapter({
-      out: process.env.SVELTE_OUT_DIR || "build",
+      out: process.env.SVELTE_OUT_DIR || "dist",
       // Build-time gzip + brotli of static assets (/_app/*.js, CSS). These are
       // served by adapter-node's sirv layer BEFORE the SvelteKit handler, so the
       // hooks.server.js compression hook never sees them; precompress is how the
