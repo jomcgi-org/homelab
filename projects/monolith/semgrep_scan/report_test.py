@@ -354,9 +354,11 @@ def test_empty_shadow_project_uses_real_repo():
         assert report._reported_repository("jomcgi/homelab") == "jomcgi/homelab"
 
 
-def test_full_scan_project_metadata_omits_pull_request_id():
+def test_full_scan_project_metadata_empty_pull_request_id():
     """is_full_scan=True builds project_metadata with is_full_scan True, on
-    'schedule', and NO pull_request_id key at all (not even set to None)."""
+    'schedule', and pull_request_id set to an empty string. The field is REQUIRED
+    by the ProjectMetadata ATD schema (from_json raises if absent), so a full
+    scan sends it empty rather than omitting it."""
     pm = report._build_project_metadata(
         repo="jomcgi/homelab",
         branch="main",
@@ -370,7 +372,7 @@ def test_full_scan_project_metadata_omits_pull_request_id():
     blob = pm.to_json()
     assert blob["is_full_scan"] is True
     assert blob["on"] == "schedule"
-    assert "pull_request_id" not in blob
+    assert blob["pull_request_id"] == ""
 
 
 def test_pr_scan_project_metadata_unchanged():
