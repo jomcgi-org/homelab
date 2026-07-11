@@ -237,9 +237,13 @@ workloads:
 # Memory limit holds the capped peak of every workload's guests plus the daemon.
 # A load test drives ONE workload to concurrency 16: semgrep 16 * 1536Mi = ~24Gi
 # or sandbox 16 * 512Mi = ~8Gi (a monolith one-run guard serializes load tests,
-# so they never stack). Even with a concurrent agent run (2 * 4096Mi = 8Gi) plus
-# ~1Gi daemon overhead the peak is ~33Gi, so 36Gi keeps margin (node-4 has
-# 64Gi and idles ~29Gi used).
+# so they never stack). Even with a concurrent agent run (2 * 4096Mi = 8Gi), a
+# scheduled semgrep-full run (1 * 8192Mi = 8Gi), and ~1Gi daemon overhead the
+# worst case is ~41Gi, so 44Gi keeps margin (node-4 has 64Gi). This is a cgroup
+# CAP, not a request (that stays 2Gi below), so raising it does not overcommit
+# node scheduling; it only raises the OOM ceiling. semgrep-full is concurrency 1
+# and scheduled, so it rarely coincides with a manual load-test burst, but the
+# cap is sized for the coincidence rather than relying on it not happening.
 # Firecracker guests are child processes in this cgroup, so they count against
 # this limit; oom_score_adj makes a guest die first if it is ever breached, never
 # the daemon or a node-critical tenant (ADR platform/010).
@@ -257,7 +261,7 @@ resources:
     cpu: 6000m
     memory: 2Gi
   limits:
-    memory: 36Gi
+    memory: 44Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the
