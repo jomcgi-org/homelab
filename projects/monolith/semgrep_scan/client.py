@@ -3,7 +3,7 @@
 The plain-function half of the semgrep scan path, mirroring
 ``sandbox/client.py``. It POSTs file contents to the in-cluster ``fc-invoke``
 daemon's ``/invoke/semgrep`` endpoint and returns the structured findings. The
-MCP tool (``semgrep/mcp.py``) and the demos router (``demos/firecracker_api.py``)
+MCP tool (``semgrep_scan/mcp.py``) and the demos router (``demos/firecracker_api.py``)
 both call ``scan_files``; keeping the HTTP logic here means neither has to reach
 through the FastMCP tool wrapper to run a scan.
 """

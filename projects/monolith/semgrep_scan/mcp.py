@@ -1,7 +1,7 @@
 """MCP tool that runs Semgrep over changed files via the fc-invoke daemon.
 
 Exposes a single ``semgrep_scan`` tool. It is a thin async wrapper over
-``semgrep.client.scan_files``, which POSTs the supplied file contents to the
+``semgrep_scan.client.scan_files``, which POSTs the supplied file contents to the
 in-cluster ``fc-invoke`` HTTP service and returns the structured findings. The
 daemon URL is injected from Helm values as ``FC_INVOKE_URL`` and is never
 hardcoded here.
@@ -10,7 +10,7 @@ hardcoded here.
 from __future__ import annotations
 
 from app.mcp_app import mcp
-from semgrep.client import scan_files
+from semgrep_scan.client import scan_files
 
 
 @mcp.tool

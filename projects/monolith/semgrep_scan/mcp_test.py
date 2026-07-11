@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_semgrep_scan_tool_registered():
-    importlib.import_module("semgrep.mcp")
+    importlib.import_module("semgrep_scan.mcp")
     from app.mcp_app import mcp
 
     tools = await mcp.list_tools()

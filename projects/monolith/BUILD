@@ -12,7 +12,7 @@
 # gazelle:exclude home
 # gazelle:exclude sandbox
 # gazelle:exclude scheduler
-# gazelle:exclude semgrep
+# gazelle:exclude semgrep_scan
 # gazelle:exclude goosecracker
 # gazelle:exclude shared
 # gazelle:exclude ships
@@ -73,7 +73,7 @@ _BACKEND_SRCS = glob(
         "home/**/*.py",
         "sandbox/**/*.py",
         "scheduler/**/*.py",
-        "semgrep/**/*.py",
+        "semgrep_scan/**/*.py",
         "shared/**/*.py",
         "ships/**/*.py",
         "hikes/**/*.py",
@@ -260,7 +260,7 @@ py_library(
             "home/**/*.py",
             "sandbox/**/*.py",
             "scheduler/**/*.py",
-            "semgrep/**/*.py",
+            "semgrep_scan/**/*.py",
             "shared/**/*.py",
             "ships/**/*.py",
             "hikes/**/*.py",
@@ -321,6 +321,10 @@ py_library(
         "@pip//pydantic_ai_slim",
         "@pip//python_multipart",  # trips/ingest_router.py (UploadFile / form parsing)
         "@pip//pyyaml",
+        # pysemgrep INTERNAL APIs for the fc-invoke -> Semgrep-App relay
+        # (semgrep_scan/report.py). Pinned 1.168.0 in bazel/requirements/tools.in
+        # to match the fc-invoke Pro engine so match_based_id fingerprints line up.
+        "@pip//semgrep",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//timelength",
@@ -765,13 +769,35 @@ py_test(
 
 py_test(
     name = "semgrep_mcp_test",
-    srcs = ["semgrep/mcp_test.py"],
+    srcs = ["semgrep_scan/mcp_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "semgrep_report_test",
+    srcs = ["semgrep_scan/report_test.py"],
+    data = [
+        # report_test loads these captured fixtures at runtime via
+        # Path(__file__).parent/"testdata"; the "semgrep_scan/**/*.py" backend
+        # glob does not capture the .json / .yaml, so ship them into runfiles.
+        "semgrep_scan/testdata/pr_cli_output.json",
+        "semgrep_scan/testdata/rule.yaml",
+    ],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        # pysemgrep internal APIs (ScanHandler / core_output / rule_match).
+        # Pinned to 1.168.0 in bazel/requirements/tools.in to match the
+        # fc-invoke Pro engine so fingerprints reproduce.
+        "@pip//semgrep",
     ],
 )
 
