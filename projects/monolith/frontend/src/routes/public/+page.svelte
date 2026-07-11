@@ -340,17 +340,6 @@
     color: var(--ink-2);
   }
 
-  .bio-link {
-    text-decoration-line: underline;
-    text-decoration-color: var(--ink-3);
-    text-underline-offset: 3px;
-    transition: text-decoration-color 160ms ease;
-  }
-
-  .bio-link:hover {
-    text-decoration-color: var(--coral);
-  }
-
   .bio-left {
     display: flex;
     flex-direction: column;
