@@ -151,8 +151,8 @@
   .cluster-chat {
     display: flex;
     flex-direction: column;
-    min-height: 14rem;
-    max-height: 28rem;
+    min-height: 220px;
+    max-height: 420px;
     font-family: var(--font);
   }
 
@@ -162,20 +162,20 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    padding: 0.25rem 0 0.75rem 0;
+    gap: 10px;
+    padding: 4px 0 12px 0;
     scrollbar-width: thin;
     scrollbar-color: var(--fg-tertiary) transparent;
   }
 
   .chat-empty {
-    font-size: 0.8rem;
+    font-size: 13px;
     color: var(--fg-tertiary);
     margin: 0;
   }
 
   .msg {
-    font-size: 0.85rem;
+    font-size: 13px;
     line-height: 1.5;
     max-width: 90%;
   }
@@ -189,8 +189,8 @@
 
   .msg--assistant {
     align-self: flex-start;
-    border-left: 0.06rem solid var(--border);
-    padding-left: 0.75rem;
+    border-left: 1px solid var(--border);
+    padding-left: 12px;
   }
 
   .msg-text {
@@ -200,17 +200,17 @@
   }
 
   .tool-line {
-    font-size: 0.75rem;
+    font-size: 12px;
     color: var(--fg-tertiary);
     font-variant-numeric: tabular-nums;
-    padding: 0.1rem 0;
+    padding: 2px 0;
     word-break: break-all;
   }
 
   .error-line {
-    font-size: 0.8rem;
+    font-size: 13px;
     color: var(--danger);
-    margin-top: 0.25rem;
+    margin-top: 4px;
   }
 
   .cursor {
@@ -226,18 +226,18 @@
 
   .input-bar {
     display: flex;
-    border-top: 0.06rem solid var(--border);
+    border-top: 1px solid var(--border);
   }
 
   .input-bar input {
     flex: 1;
     font-family: var(--font);
-    font-size: 0.85rem;
+    font-size: 13px;
     color: var(--fg);
     background: transparent;
     border: none;
     outline: none;
-    padding: 0.6rem 0;
+    padding: 10px 0;
   }
 
   .input-bar input::placeholder {
@@ -250,12 +250,12 @@
 
   .input-bar button {
     font-family: var(--font);
-    font-size: 0.9rem;
+    font-size: 14px;
     font-weight: 700;
     color: var(--fg);
     background: transparent;
     border: none;
-    padding: 0.6rem 0 0.6rem 0.75rem;
+    padding: 10px 0 10px 12px;
     cursor: pointer;
   }
 
