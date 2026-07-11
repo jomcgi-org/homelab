@@ -111,7 +111,7 @@ async def gather_main_files(repo: str, ref: str = "main") -> list[dict]:
             )
 
         paths = [
-            entry["path"]
+            entry.get("path", "")
             for entry in tree_response.get("tree", [])
             if entry.get("type") == "blob" and _is_scannable(entry.get("path", ""))
         ]

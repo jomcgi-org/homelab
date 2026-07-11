@@ -33,8 +33,10 @@ SEMGREP_READ_TIMEOUT = 90.0
 # The whole-repo interfile FULL scan (semgrep-full workload) walks the entire
 # repo with cross-file analysis, which is far slower than a per-PR diff scan.
 # Same fast connect (a down daemon still fails fast); a much longer read budget
-# so the daemon has room to finish before httpx gives up on us.
-SEMGREP_FULL_READ_TIMEOUT = 600.0
+# so the daemon has room to finish before httpx gives up on us. Set a margin
+# ABOVE the daemon's 600s requestTimeout so a scan that runs to its budget
+# surfaces the daemon's structured error, not an opaque client-side timeout.
+SEMGREP_FULL_READ_TIMEOUT = 660.0
 
 
 async def _post_invoke(workload: str, files: list[dict], read_timeout: float) -> dict:
