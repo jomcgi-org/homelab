@@ -34,12 +34,9 @@
 # gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude kloak_placeholder_drift_test.py
-# gazelle:exclude semgrep_scan/pro_rules_digest_drift_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
-load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files", "strip_prefix")
-load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
@@ -325,8 +322,8 @@ py_library(
         "@pip//python_multipart",  # trips/ingest_router.py (UploadFile / form parsing)
         "@pip//pyyaml",
         # pysemgrep INTERNAL APIs for the fc-invoke -> Semgrep-App relay
-        # (semgrep_scan/report.py). Pinned 1.168.0 in bazel/requirements/tools.in
-        # to match the fc-invoke Pro engine so match_based_id fingerprints line up.
+        # (semgrep_scan/report.py): the out.* atd types plus ScanHandler and the
+        # authenticated app_session. Pinned 1.168.0 in bazel/requirements/tools.in.
         "@pip//semgrep",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -354,30 +351,6 @@ py_library(
     ],
 )
 
-# --- Semgrep local rules layer (Route B relay) ----------------------------------
-#
-# The fc-invoke -> Semgrep-App relay (semgrep_scan/report.py) recomputes each
-# finding's match_based_id fingerprint, which requires loading the SAME rules the
-# guest scanned with (SEMGREP_SCAN_RULES, default /etc/semgrep/rules). The guest's
-# merged tree is local rules + the five Pro packs. The NON-secret local rules are
-# baked here, byte-for-byte matching the guest's local_rule_files layout (per-
-# language subdir preserved under /etc/semgrep/rules/<subdir>/). The PRIVATE Pro
-# packs are NOT baked into this public image: they are mounted at runtime as native
-# Kubernetes image volumes at /etc/semgrep/rules/pro-<lang>/ (see the monolith
-# Deployment), so the two trees combine to the guest's exact ruleset at scan time.
-pkg_files(
-    name = "semgrep_local_rule_files",
-    srcs = ["//bazel/semgrep/rules:local_rules"],
-    attributes = pkg_attributes(mode = "0644"),
-    prefix = "etc/semgrep/rules",
-    strip_prefix = strip_prefix.from_root("bazel/semgrep/rules"),
-)
-
-pkg_tar(
-    name = "semgrep_local_rules_tar",
-    srcs = [":semgrep_local_rule_files"],
-)
-
 py3_image(
     name = "image",
     binary = "//projects/monolith:main",
@@ -393,7 +366,6 @@ py3_image(
     main = "app/main.py",
     multiarch_tars = ["@claude_code//:tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
-    tars = [":semgrep_local_rules_tar"],
 )
 
 # Batch-jobs image: identical base/deps to :image, launching app/jobs_main.py.
@@ -811,15 +783,10 @@ py_test(
     name = "semgrep_report_test",
     srcs = ["semgrep_scan/report_test.py"],
     data = [
-        # report_test loads these captured fixtures at runtime via
+        # report_test loads this captured cli_output fixture at runtime via
         # Path(__file__).parent/"testdata"; the "semgrep_scan/**/*.py" backend
-        # glob does not capture the .json / .yaml / .src, so ship them into
-        # runfiles. newfile.py.src is the scanned source the relay materializes
-        # for RuleMatch line-reads; it is deliberately NOT named *.py so its
-        # intentional os.system() is not swept into the :main binary and scanned.
+        # glob does not capture the .json, so ship it into runfiles.
         "semgrep_scan/testdata/pr_cli_output.json",
-        "semgrep_scan/testdata/rule.yaml",
-        "semgrep_scan/testdata/newfile.py.src",
     ],
     imports = ["."],
     # Drives the async relay via asyncio.run (sync test fns), so no
@@ -827,9 +794,9 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//pytest",
-        # pysemgrep internal APIs (ScanHandler / core_output / rule_match).
+        # pysemgrep internal APIs (out.* atd types + ScanHandler + app_session).
         # Pinned to 1.168.0 in bazel/requirements/tools.in to match the
-        # fc-invoke Pro engine so fingerprints reproduce.
+        # fc-invoke Pro engine that produced the fixture.
         "@pip//semgrep",
     ],
 )
@@ -3613,25 +3580,6 @@ py_test(
     srcs = ["kloak_placeholder_drift_test.py"],
     data = [
         "//projects/firecracker/substrate/deploy:deploy_values",
-        "//projects/monolith/deploy:deploy_values",
-    ],
-    imports = ["."],
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
-)
-
-# Drift guard: the Pro-rule OCI digests the monolith mounts as image volumes
-# (deploy/values.yaml semgrep.proRules) MUST equal the digests the fc-invoke guest
-# scans with (digests.bzl), or the Route B relay recomputes match_based_id
-# fingerprints against a different rule version and they silently mismatch. Reads
-# both files via cross-package data deps.
-py_test(
-    name = "pro_rules_digest_drift_test",
-    srcs = ["semgrep_scan/pro_rules_digest_drift_test.py"],
-    data = [
-        "//bazel/semgrep/third_party/semgrep_pro:digests.bzl",
         "//projects/monolith/deploy:deploy_values",
     ],
     imports = ["."],

@@ -1,11 +1,5 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
-# Exported so the monolith's Pro-rule digest drift-guard test
-# (projects/monolith/semgrep_scan/pro_rules_digest_drift_test.py) can read the
-# canonical guest digests at runtime and assert the monolith's mounted image
-# volumes pin the exact same versions.
-exports_files(["digests.bzl"])
-
 bzl_library(
     name = "extensions",
     srcs = ["extensions.bzl"],
