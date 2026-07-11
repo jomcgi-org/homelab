@@ -731,6 +731,23 @@ semgrep:
   # it as env; empty disables the injection (the relay then has no token).
   onepassword:
     itemPath: ""
+  # Private Pro rule packs mounted at runtime as native Kubernetes image volumes
+  # (k3s v1.35, image volume source beta/on-by-default since 1.33). The relay must
+  # load the SAME rules the fc-invoke guest scanned with to reproduce each
+  # finding's match_based_id fingerprint. The guest's merged tree is the local
+  # rules (baked into this image at /etc/semgrep/rules/<subdir>/) plus these five
+  # Pro packs; each pack is mounted read-only at /etc/semgrep/rules/pro-<lang>/,
+  # mirroring the guest's layout. The digests here MUST equal the ones the guest
+  # builds with in bazel/semgrep/third_party/semgrep_pro/digests.bzl (asserted by
+  # semgrep_scan/pro_rules_digest_drift_test.py in CI); otherwise the relay loads a
+  # different rule version than the guest and fingerprints silently mismatch. The
+  # images are PRIVATE (pulled with imagePullSecret ghcr-imagepull-secret) and are
+  # never baked into this public image. Empty list disables the mounts.
+  proRules: []
+  # imagePullSecret the Pro-rule image volumes are pulled with. The named Secret
+  # already exists in the monolith namespace. Empty means no imagePullSecrets is
+  # rendered (used when proRules is empty).
+  proRulesImagePullSecret: ""
 
 # goosecracker artifact agent (ADR 024): syncs the OpenRouter API key from
 # 1Password into the `goosecracker` Secret, consumed by the fc-invoke egress
