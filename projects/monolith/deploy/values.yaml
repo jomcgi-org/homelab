@@ -157,29 +157,6 @@ semgrep:
   # (the name pysemgrep reads).
   onepassword:
     itemPath: "vaults/k8s-homelab/items/semgrep-mcp"
-  # Private Pro rule packs mounted as native Kubernetes image volumes so the relay
-  # loads byte-identical rules to the fc-invoke guest. digestKey maps each entry to
-  # bazel/semgrep/third_party/semgrep_pro/digests.bzl; the drift-guard test
-  # (semgrep_scan/pro_rules_digest_drift_test.py) asserts every digest below equals
-  # the guest's. Digests only, never floating tags. When the GHA workflow
-  # update-semgrep-pro.yaml bumps digests.bzl, update these in the same PR.
-  proRulesImagePullSecret: "ghcr-imagepull-secret"
-  proRules:
-    - lang: golang
-      digestKey: rules_golang
-      reference: "ghcr.io/jomcgi/homelab/tools/semgrep-pro/rules-golang@sha256:3b4962725eeba008159cff4140cab426439277a8f4cc80187690ba5154d0d11b"
-    - lang: python
-      digestKey: rules_python
-      reference: "ghcr.io/jomcgi/homelab/tools/semgrep-pro/rules-python@sha256:511290522439a51dbf765cebbd0f2ac1d407c72906eda29d6ed72b5278155d34"
-    - lang: javascript
-      digestKey: rules_javascript
-      reference: "ghcr.io/jomcgi/homelab/tools/semgrep-pro/rules-javascript@sha256:d9789e2eba75c0cb1317a4a1b1838bae6a571e6bf83c87992f762221b95ba69c"
-    - lang: kubernetes
-      digestKey: rules_kubernetes
-      reference: "ghcr.io/jomcgi/homelab/tools/semgrep-pro/rules-kubernetes@sha256:eaeeeff194bad2f8ab7433a172e6968b853a2cf3be358563b1134f0b4a447602"
-    - lang: rust
-      digestKey: rules_rust
-      reference: "ghcr.io/jomcgi/homelab/tools/semgrep-pro/rules-rust@sha256:14f66ffe8d3250b8855a0fced76de01942bb30b52d7be40d123e874ab337a7d7"
 
 # goosecracker Discord agent (ADR 024): OnePasswordItem-backed `goosecracker`
 # Secret for the agent's config. The artifact tier now runs on in-cluster qwen,

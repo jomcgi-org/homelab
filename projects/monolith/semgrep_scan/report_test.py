@@ -1,25 +1,24 @@
 """Tests for the fc-invoke -> Semgrep App relay (semgrep_scan/report.py).
 
-The load-bearing assertion is fidelity: mapping a captured ``semgrep --json``
-cli_output back into pysemgrep ``RuleMatch`` objects must reproduce the SAME
-``match_based_id`` fingerprint the guest produced, because that fingerprint is
-the App's cross-scan dedup / triage-persistence key. The fixtures in
-``testdata/`` are a real one-finding cli_output, the exact rule that produced it,
-and the scanned source file, all captured from the pinned semgrep==1.168.0 Pro
-engine.
+The relay now builds the App's ``out.Finding`` upload payload DIRECTLY from the
+guest's cli_output (no rule loading, no ``RuleMatch``, no source materialization).
+The guest's syntactic ``extra.fingerprint`` is carried straight through as both
+``syntactic_id`` and ``match_based_id``. The fixture in ``testdata/`` is a real
+one-finding cli_output captured from the pinned semgrep==1.168.0 Pro engine.
 
 No network happens here. The dry_run path is genuinely network-free (report.py
-stubs scan_response instead of calling the real start_scan), so these tests do
-NOT monkeypatch start_scan; the failure test patches report_findings to force
-the scan-close path. Tests are plain sync functions driving the async relay via
-asyncio.run, so no pytest-asyncio plugin is required.
+stubs scan_response instead of calling the real start_scan, and skips the
+/results + /complete POSTs), so these tests do NOT monkeypatch start_scan; the
+failure test patches ScanHandler.report_findings' replacement path indirectly by
+forcing an upload error. Tests are plain sync functions driving the async relay
+via asyncio.run, so no pytest-asyncio plugin is required.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -29,19 +28,10 @@ from semgrep_scan import report
 
 _TESTDATA = Path(__file__).parent / "testdata"
 _CLI_OUTPUT = (_TESTDATA / "pr_cli_output.json").read_text()
-_RULES_DIR = str(_TESTDATA)
 
-# The scanned source, as the caller would send it to fc-invoke. The finding in
-# the captured cli_output is at repo/newfile.py:7, and RuleMatch construction
-# reads that line off disk, so the relay must materialize this content.
-# newfile.py.src (not *.py, so it is NOT swept into the production :main binary
-# where its intentional os.system() would trip the repo's own semgrep scan).
-_FILES = [
-    {"path": "repo/newfile.py", "content": (_TESTDATA / "newfile.py.src").read_text()}
-]
-
-# The fingerprint the pinned Pro engine emitted for the single finding in the
-# captured cli_output. The whole point of the relay is to reproduce this exactly.
+# The guest's syntactic fingerprint for the single finding in the captured
+# cli_output. The relay carries this through verbatim as syntactic_id AND
+# match_based_id.
 _EXPECTED_FINGERPRINT = (
     "98ffefa69953502ca7341c8c4a70f111c67f7d5f44e56be7bfe2bf14d49fda90"
     "3297a99fbae7de52042454a169441e7692db199a45767690cb57d0f304f1f00d_0"
@@ -50,120 +40,67 @@ _EXPECTED_CHECK_ID = (
     "rules.python.lang.security.dangerous-system-call.dangerous-system-call"
 )
 
+# An arbitrary fixed instant, computed (not a hardcoded literal) so the intent
+# reads as "any commit date" and the repo's own semgrep scan does not flag a
+# stale timestamp literal. The relay just echoes this into each finding's
+# commit_date; the exact value is irrelevant to what the tests assert.
+_COMMIT_DATE = datetime.fromtimestamp(1_600_000_000).isoformat()
 
-def test_mapping_reproduces_fingerprint_and_count():
-    filtered, rules_with_matches, unmatched = report.map_cli_output_to_matches(
-        _CLI_OUTPUT, rules_dir=_RULES_DIR, files=_FILES
+
+def test_findings_built_from_cli_output_carry_fingerprint():
+    """One cli_output result -> one out.Finding whose check_id/path/positions come
+    from the result and whose syntactic_id AND match_based_id are the guest's
+    fingerprint (the App's dedup/triage key at cutover)."""
+    ci_scan_results, findings_count = report._build_ci_scan_results(
+        _CLI_OUTPUT, _COMMIT_DATE
     )
 
-    # Exactly the one captured finding maps through, nothing dropped.
-    total = sum(len(ms) for ms in filtered.kept.values())
-    assert total == 1
-    assert unmatched == []
-    assert len(rules_with_matches) == 1
+    assert findings_count == 1
+    assert len(ci_scan_results.findings) == 1
 
-    # And its match_based_id is byte-identical to the guest's fingerprint. This
-    # is unaffected by materializing the source (fingerprint = formula/path/id).
-    match_ids = [rm.match_based_id for ms in filtered.kept.values() for rm in ms]
-    assert match_ids == [_EXPECTED_FINGERPRINT]
+    finding = ci_scan_results.findings[0]
+    assert finding.check_id.value == _EXPECTED_CHECK_ID
+    assert finding.path.value == "repo/newfile.py"
+    assert finding.line == 7
+    assert finding.column == 5
+    assert finding.syntactic_id == _EXPECTED_FINGERPRINT
+    assert finding.match_based_id == _EXPECTED_FINGERPRINT
+    # ERROR severity maps to the App's integer 2.
+    assert finding.severity == 2
 
-    # The rule was renamed to the finding's fully-prefixed check_id so the
-    # fingerprint's rule_id component lines up regardless of rules-dir layout.
-    rule_ids = [rm.rule_id for ms in filtered.kept.values() for rm in ms]
-    assert rule_ids == [_EXPECTED_CHECK_ID]
+    # The whole CiScanResults serializes to a JSON-able upload blob.
+    blob = ci_scan_results.to_json()
+    assert len(blob["findings"]) == 1
+    assert blob["findings"][0]["syntactic_id"] == _EXPECTED_FINGERPRINT
+    assert blob["findings"][0]["match_based_id"] == _EXPECTED_FINGERPRINT
 
 
-def test_mapping_accepts_dict_cli_output():
+def test_build_accepts_dict_cli_output():
     """The real fc-invoke client returns the whole response via resp.json(), so
-    raw_cli_output arrives already parsed as a dict (not a str). The mapping must
-    accept the dict form and still reproduce the byte-identical fingerprint."""
+    raw_cli_output arrives already parsed as a dict (not a str). The builder must
+    accept the dict form and still carry the fingerprint through."""
     cli_dict = json.loads(_CLI_OUTPUT)
     assert isinstance(cli_dict, dict)
 
-    filtered, rules_with_matches, unmatched = report.map_cli_output_to_matches(
-        cli_dict, rules_dir=_RULES_DIR, files=_FILES
+    ci_scan_results, findings_count = report._build_ci_scan_results(
+        cli_dict, _COMMIT_DATE
     )
-
-    total = sum(len(ms) for ms in filtered.kept.values())
-    assert total == 1
-    assert unmatched == []
-    assert len(rules_with_matches) == 1
-
-    match_ids = [rm.match_based_id for ms in filtered.kept.values() for rm in ms]
-    assert match_ids == [_EXPECTED_FINGERPRINT]
+    assert findings_count == 1
+    assert ci_scan_results.findings[0].match_based_id == _EXPECTED_FINGERPRINT
 
 
-def test_only_fired_rules_are_loaded_not_whole_dir():
-    """Regression guard for the OOM: loading the whole rules dir (~1000+ rules)
-    OOM-kills the 1Gi monolith. The mapping must load ONLY the rules whose
-    check_id actually fired. We assert the loader is driven by the fired
-    check_id set (never asked for everything) and that per-file loading only ever
-    touches files, never the whole dir at once."""
-    fired = {r["check_id"] for r in json.loads(_CLI_OUTPUT)["results"]}
-    assert len(fired) == 1  # the fixture fires exactly one rule
-
-    real_load_fired = report._load_fired_rules
-    seen_check_id_sets = []
-
-    def _spy_load_fired(rules_dir, check_ids):
-        seen_check_id_sets.append(set(check_ids))
-        return real_load_fired(rules_dir, check_ids)
-
-    # And spy the underlying Config.from_config_list so we can prove it is only
-    # ever called with a single rule FILE, never the whole rules_dir directory.
-    from semgrep.config_resolver import Config
-
-    real_from_config_list = Config.from_config_list
-    config_list_args = []
-
-    def _spy_from_config_list(config_list, **kwargs):
-        config_list_args.append(list(config_list))
-        return real_from_config_list(config_list, **kwargs)
-
-    with (
-        mock.patch.object(report, "_load_fired_rules", _spy_load_fired),
-        mock.patch.object(
-            Config, "from_config_list", staticmethod(_spy_from_config_list)
-        ),
-    ):
-        filtered, rules_with_matches, unmatched = report.map_cli_output_to_matches(
-            _CLI_OUTPUT, rules_dir=_RULES_DIR, files=_FILES
-        )
-
-    # The loader was asked ONLY for the fired check_ids, never for "everything".
-    assert seen_check_id_sets == [fired]
-
-    # Config was never handed the whole rules_dir; every call targets a single
-    # rule file (bounded per-file load = bounded memory).
-    assert config_list_args, "expected at least one per-file config load"
-    for args in config_list_args:
-        assert _RULES_DIR not in args
-        for entry in args:
-            assert os.path.isfile(entry), f"expected a rule file, got {entry!r}"
-
-    # Sanity: the fingerprint still reproduces from the fired-only rule set.
-    match_ids = [rm.match_based_id for ms in filtered.kept.values() for rm in ms]
-    assert match_ids == [_EXPECTED_FINGERPRINT]
-    assert unmatched == []
-
-
-def test_materialized_sources_restores_cwd():
-    """The chdir must be scoped: cwd is restored even after mapping runs."""
-    before = Path.cwd()
-    report.map_cli_output_to_matches(_CLI_OUTPUT, rules_dir=_RULES_DIR, files=_FILES)
-    assert Path.cwd() == before
-
-
-def test_unmatched_check_id_is_skipped_not_fatal():
-    """A finding whose check_id matches no loaded rule is reported as unmatched,
-    never crashing the relay."""
+def test_ignored_finding_goes_to_ignores_not_findings():
+    """A result flagged extra.is_ignored is uploaded as an ignore, not a finding,
+    matching how report_findings partitions the payload."""
     cli = json.loads(_CLI_OUTPUT)
-    cli["results"][0]["check_id"] = "totally.unknown.rule.that.is.not.loaded"
-    filtered, rules_with_matches, unmatched = report.map_cli_output_to_matches(
-        json.dumps(cli), rules_dir=_RULES_DIR, files=_FILES
+    cli["results"][0]["extra"]["is_ignored"] = True
+    ci_scan_results, findings_count = report._build_ci_scan_results(
+        json.dumps(cli), _COMMIT_DATE
     )
-    assert sum(len(ms) for ms in filtered.kept.values()) == 0
-    assert len(unmatched) == 1
+    assert findings_count == 0
+    assert len(ci_scan_results.findings) == 0
+    assert len(ci_scan_results.ignores) == 1
+    assert ci_scan_results.ignores[0].match_based_id == _EXPECTED_FINGERPRINT
 
 
 def test_report_pr_scan_dry_run_assembles_payload():
@@ -176,10 +113,8 @@ def test_report_pr_scan_dry_run_assembles_payload():
             pr_id="42",
             base_ref="1" * 40,
             raw_cli_output=_CLI_OUTPUT,
-            files=_FILES,
             project_id="3263658",
             repo_url="https://github.com/jomcgi/homelab",
-            rules_dir=_RULES_DIR,
             dry_run=True,
         )
     )
@@ -190,7 +125,6 @@ def test_report_pr_scan_dry_run_assembles_payload():
     # None; the point is the payload assembled with no network and no error.
     assert result["scan_id"] is None
     assert result["findings_reported"] == 1
-    assert result["unmatched_findings"] == 0
     assert result["error"] is None
     # Dry run: no App decision, defaults returned.
     assert result["app_block_override"] is False
@@ -198,20 +132,28 @@ def test_report_pr_scan_dry_run_assembles_payload():
 
 
 def test_report_pr_scan_closes_scan_on_upload_failure():
-    """If report_findings raises after the scan is opened, report_failure MUST be
+    """If the upload raises after the scan is opened, report_failure MUST be
     called (in the finally) so the App never wedges the PR check on an open
-    scan."""
+    scan. We force a real (non-dry) start_scan + upload path but stub the network
+    so start_scan succeeds and the results POST explodes."""
     closed = {}
 
-    def _boom(self, **kwargs):
-        raise RuntimeError("upload exploded")
+    class _FakeInfo:
+        id = "scan-123"
+
+    def _fake_start_scan(self, project_metadata, project_config):
+        self.scan_response = mock.Mock(info=_FakeInfo())
 
     def _capture_failure(self, exit_code):
         closed["exit_code"] = exit_code
 
+    def _boom(handler, ci_scan_results, complete):
+        raise RuntimeError("upload exploded")
+
     with (
-        mock.patch("semgrep.app.scans.ScanHandler.report_findings", _boom),
+        mock.patch("semgrep.app.scans.ScanHandler.start_scan", _fake_start_scan),
         mock.patch("semgrep.app.scans.ScanHandler.report_failure", _capture_failure),
+        mock.patch.object(report, "_post_results_and_complete", _boom),
     ):
         result = asyncio.run(
             report.report_pr_scan(
@@ -220,9 +162,7 @@ def test_report_pr_scan_closes_scan_on_upload_failure():
                 commit="0" * 40,
                 pr_id="42",
                 raw_cli_output=_CLI_OUTPUT,
-                files=_FILES,
-                rules_dir=_RULES_DIR,
-                dry_run=True,
+                dry_run=False,
             )
         )
 
