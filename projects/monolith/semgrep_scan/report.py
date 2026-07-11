@@ -386,6 +386,22 @@ def _build_scan_metadata() -> Any:
     )
 
 
+def _reported_repository(repo: str) -> str:
+    """Resolve the ``repository`` name the App scan lands under.
+
+    When ``SEMGREP_SHADOW_PROJECT`` is set and non-empty we report under that
+    SHADOW project name (e.g. ``jomcgi/homelab-selfhosted``) instead of the real
+    ``repo``, so Route B (self-hosted) scans land in a SEPARATE Semgrep project
+    from SMS's ``jomcgi/homelab`` project and the two can be compared side by
+    side. Unset (the cutover state) falls back to the real ``repo`` so Route B
+    reports to the real project with no code change.
+    """
+    shadow = os.environ.get("SEMGREP_SHADOW_PROJECT")
+    if shadow and shadow.strip():
+        return shadow.strip()
+    return repo
+
+
 def _build_project_metadata(
     *,
     repo: str,
@@ -401,12 +417,16 @@ def _build_project_metadata(
     We build it directly (rather than via ``semgrep.meta`` git helpers) because
     the monolith is not running inside the scanned git checkout; all the PR facts
     come from the webhook payload the caller passes in.
+
+    The ``repository`` value comes from ``_reported_repository(repo)``: with
+    ``SEMGREP_SHADOW_PROJECT`` set it is the shadow project name, not the real
+    ``repo``, so these scans land in a separate Semgrep project for comparison.
     """
     import semgrep.semgrep_interfaces.semgrep_output_v1 as out
 
     payload: dict[str, Any] = {
         "scan_environment": SCAN_ENVIRONMENT,
-        "repository": repo,
+        "repository": _reported_repository(repo),
         "repo_url": repo_url,
         "branch": branch,
         "commit": commit,
@@ -540,6 +560,14 @@ async def report_pr_scan(
     ``/complete`` POSTs entirely. Used by tests and any caller that wants to
     assemble the payload without touching the live App.
     """
+    # The repository the App scan lands under (the shadow project when
+    # SEMGREP_SHADOW_PROJECT is set, else the real repo), surfaced so the webhook
+    # can build the App scan URL for its commit status. ``org`` is the owner
+    # segment of the reported project (jomcgi for jomcgi/homelab-selfhosted); the
+    # App scan URL is scoped by org, not by repo.
+    reported_project = _reported_repository(repo)
+    org = reported_project.split("/", 1)[0] if "/" in reported_project else "jomcgi"
+
     result: dict[str, Any] = {
         "ok": False,
         "dry_run": dry_run,
@@ -549,6 +577,10 @@ async def report_pr_scan(
         "app_block_reason": "",
         "app_blocking_match_based_ids": [],
         "error": None,
+        # The Semgrep project + org the scan was reported under (shadow-aware), so
+        # the caller can build the App scan URL without re-reading the env.
+        "project": reported_project,
+        "org": org,
     }
 
     commit_date_iso = datetime.fromtimestamp(int(time.time())).isoformat()

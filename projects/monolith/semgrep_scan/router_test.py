@@ -138,11 +138,14 @@ def test_unsupported_action_is_noop(client):
 # --- Changed-files fetch -> scan -> report (all mocked) --------------------
 
 
-def _fake_github_client(files_pages, contents):
-    """Build a stand-in httpx.AsyncClient whose .get answers the two endpoints.
+def _fake_github_client(files_pages, contents, *, status_calls=None, post_raises=False):
+    """Build a stand-in httpx.AsyncClient answering GitHub's GET + status POST.
 
     ``files_pages`` is the list returned by GET .../pulls/{n}/files (single page);
     ``contents`` maps a path to its decoded text (base64-encoded in the response).
+    ``status_calls`` (optional list) captures each commit-status POST as
+    ``{"url": ..., "json": ...}``. ``post_raises=True`` makes the status POST
+    explode, to prove a status failure never crashes the scan job.
     """
     import base64
 
@@ -178,6 +181,13 @@ def _fake_github_client(files_pages, contents):
                 }
             )
 
+        async def post(self, url, headers=None, json=None):
+            if status_calls is not None:
+                status_calls.append({"url": url, "json": json})
+            if post_raises:
+                raise RuntimeError("status POST exploded")
+            return _Resp({})
+
     return _Client()
 
 
@@ -193,13 +203,22 @@ def test_scan_and_report_happy_path(client):
         "svc/handler.go": "package main\n",
     }
     scan_result = {"raw_cli_output": {"results": []}}
-    report_result = {"ok": True, "scan_id": 99, "findings_reported": 0}
+    report_result = {
+        "ok": True,
+        "scan_id": 99,
+        "findings_reported": 3,
+        "project": "jomcgi/homelab-selfhosted",
+        "org": "jomcgi",
+    }
+    status_calls: list[dict] = []
 
     with (
         mock.patch.object(
             webhook.httpx,
             "AsyncClient",
-            return_value=_fake_github_client(files_pages, contents),
+            return_value=_fake_github_client(
+                files_pages, contents, status_calls=status_calls
+            ),
         ),
         mock.patch.object(
             webhook, "scan_files", new=mock.AsyncMock(return_value=scan_result)
@@ -213,6 +232,18 @@ def test_scan_and_report_happy_path(client):
         resp = _post(client, _pr_payload("synchronize"))
         assert resp.status_code == 200
         assert resp.json().get("status") == "accepted"
+
+    # A route-b/semgrep commit status was posted to the REAL repo's head sha, with
+    # a success state and a description carrying the findings count.
+    assert len(status_calls) == 1
+    status = status_calls[0]
+    assert status["url"].endswith("/repos/jomcgi/homelab/statuses/headsha123")
+    assert status["json"]["context"] == "route-b/semgrep"
+    assert status["json"]["state"] == "success"
+    assert "3 findings" in status["json"]["description"]
+    # target_url links to the SHADOW project scan in the App (url-encoded slug).
+    assert "jomcgi%2Fhomelab-selfhosted" in status["json"]["target_url"]
+    assert status["json"]["target_url"].endswith("/scans/99")
 
     # Only scannable, non-removed files were scanned (README skipped, deleted .py
     # skipped), each with its fetched content.
@@ -255,6 +286,80 @@ def test_scan_error_short_circuits_report(client):
 
     # A scan error must not reach report_pr_scan.
     report.assert_not_awaited()
+
+
+def test_commit_status_failure_does_not_crash_scan_job(client):
+    """A failing commit-status POST must be swallowed (logged, not raised): the
+    background scan job completes without propagating the error."""
+    files_pages = [{"filename": "app/main.py", "status": "modified"}]
+    contents = {"app/main.py": "print('hi')\n"}
+    report_result = {
+        "ok": True,
+        "scan_id": 42,
+        "findings_reported": 1,
+        "project": "jomcgi/homelab-selfhosted",
+        "org": "jomcgi",
+    }
+
+    with (
+        mock.patch.object(
+            webhook.httpx,
+            "AsyncClient",
+            return_value=_fake_github_client(files_pages, contents, post_raises=True),
+        ),
+        mock.patch.object(
+            webhook,
+            "scan_files",
+            new=mock.AsyncMock(return_value={"raw_cli_output": {"results": []}}),
+        ),
+        mock.patch.object(
+            webhook,
+            "report_pr_scan",
+            new=mock.AsyncMock(return_value=report_result),
+        ),
+    ):
+        # TestClient runs the BackgroundTask synchronously; if the status failure
+        # were not swallowed this POST would surface a 500.
+        resp = _post(client, _pr_payload("opened"))
+        assert resp.status_code == 200
+        assert resp.json().get("status") == "accepted"
+
+
+def test_report_failure_posts_error_status(client):
+    """When report_pr_scan returns not-ok (no scan_id), the webhook posts an
+    error-state status with the failure in the description and no target_url."""
+    files_pages = [{"filename": "app/main.py", "status": "modified"}]
+    contents = {"app/main.py": "print('hi')\n"}
+    report_result = {"ok": False, "scan_id": None, "error": "App exploded"}
+    status_calls: list[dict] = []
+
+    with (
+        mock.patch.object(
+            webhook.httpx,
+            "AsyncClient",
+            return_value=_fake_github_client(
+                files_pages, contents, status_calls=status_calls
+            ),
+        ),
+        mock.patch.object(
+            webhook,
+            "scan_files",
+            new=mock.AsyncMock(return_value={"raw_cli_output": {"results": []}}),
+        ),
+        mock.patch.object(
+            webhook,
+            "report_pr_scan",
+            new=mock.AsyncMock(return_value=report_result),
+        ),
+    ):
+        resp = _post(client, _pr_payload("opened"))
+        assert resp.status_code == 200
+
+    assert len(status_calls) == 1
+    status = status_calls[0]
+    assert status["json"]["state"] == "error"
+    assert "App exploded" in status["json"]["description"]
+    assert "target_url" not in status["json"]
 
 
 def test_no_scannable_files_skips_scan(client):

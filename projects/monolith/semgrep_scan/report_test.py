@@ -294,6 +294,56 @@ def test_report_pr_scan_closes_scan_on_upload_failure():
     assert any(u.endswith("/api/agent/scans/777/error") for u in posted)
 
 
+def test_shadow_project_overrides_reported_repository():
+    """With SEMGREP_SHADOW_PROJECT set, the project_metadata repository is the
+    SHADOW project (so Route B scans land in a separate Semgrep project), NOT the
+    real repo. Unset -> the real repo. Also asserts report_pr_scan surfaces the
+    reported project + org in its return dict."""
+    with mock.patch.dict(
+        "os.environ", {"SEMGREP_SHADOW_PROJECT": "jomcgi/homelab-selfhosted"}
+    ):
+        pm = report._build_project_metadata(
+            repo="jomcgi/homelab",
+            branch="feat/test",
+            commit="0" * 40,
+            pr_id="42",
+            base_ref=None,
+            project_id=None,
+            repo_url=None,
+        )
+        assert pm.to_json()["repository"] == "jomcgi/homelab-selfhosted"
+        # dry_run surfaces the reported project + derived org without any network.
+        result = _run_scan(dry_run=True)
+        assert result["project"] == "jomcgi/homelab-selfhosted"
+        assert result["org"] == "jomcgi"
+
+
+def test_unset_shadow_project_uses_real_repo():
+    """Unset (or empty) SEMGREP_SHADOW_PROJECT falls back to the real repo, the
+    cutover state where Route B reports to the real project."""
+    with mock.patch.dict("os.environ", {}, clear=False):
+        os.environ.pop("SEMGREP_SHADOW_PROJECT", None)
+        pm = report._build_project_metadata(
+            repo="jomcgi/homelab",
+            branch="feat/test",
+            commit="0" * 40,
+            pr_id="42",
+            base_ref=None,
+            project_id=None,
+            repo_url=None,
+        )
+        assert pm.to_json()["repository"] == "jomcgi/homelab"
+        result = _run_scan(dry_run=True)
+        assert result["project"] == "jomcgi/homelab"
+        assert result["org"] == "jomcgi"
+
+
+def test_empty_shadow_project_uses_real_repo():
+    """An empty/whitespace SEMGREP_SHADOW_PROJECT is treated as unset."""
+    with mock.patch.dict("os.environ", {"SEMGREP_SHADOW_PROJECT": "  "}):
+        assert report._reported_repository("jomcgi/homelab") == "jomcgi/homelab"
+
+
 def test_missing_token_surfaces_structured_error_not_process_death():
     """With no SEMGREP_APP_TOKEN the CREATE cannot build auth; the relay must
     return a structured error (never raise into the caller / kill the process)."""

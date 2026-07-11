@@ -90,6 +90,13 @@ spec:
             - name: FC_INVOKE_URL
               value: {{ .Values.semgrep.fcInvokeUrl | quote }}
             {{- end }}
+            {{- if .Values.semgrep.shadowProject }}
+            # Route B shadow project: the relay reports App scans under this name
+            # instead of the real repo, keeping self-hosted scans in a separate
+            # Semgrep project from SMS for comparison. Unset at cutover.
+            - name: SEMGREP_SHADOW_PROJECT
+              value: {{ .Values.semgrep.shadowProject | quote }}
+            {{- end }}
             {{- if .Values.goosecracker.tiers }}
             - name: GOOSECRACKER_TIERS
               value: {{ .Values.goosecracker.tiers | toJson | quote }}

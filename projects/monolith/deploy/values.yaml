@@ -151,6 +151,10 @@ chat:
 # semgrep_scan MCP tool: the in-cluster fc-invoke daemon endpoint.
 semgrep:
   fcInvokeUrl: "http://fc-invoke.monolith.svc.cluster.local:8080"
+  # Route B shadow project (Route B vs SMS comparison): self-hosted scans report
+  # here instead of jomcgi/homelab, so they land in a separate Semgrep project.
+  # UNSET this single value at cutover to report to the real project.
+  shadowProject: "jomcgi/homelab-selfhosted"
   # Semgrep AppSec Platform token for the Route B CI-reporting relay. The vault
   # item exposes the field SEMGREP_API_TOKEN, mirrored into the
   # monolith-semgrep-app Secret and injected as the SEMGREP_APP_TOKEN env var
