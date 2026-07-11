@@ -24,9 +24,11 @@
     return `https://github.com/jomcgi/homelab/pull/${n}`;
   }
 
-  function formatTime(seconds) {
+  // Seconds under two minutes, minutes above (full scans run into the minutes).
+  function formatDuration(seconds) {
     if (seconds == null) return null;
-    return `${seconds.toFixed(1)}s`;
+    if (seconds < 120) return `${seconds.toFixed(1)}s`;
+    return `${(seconds / 60).toFixed(1)}m`;
   }
 
   function formatDate(iso) {
@@ -40,6 +42,13 @@
     return `${month} ${day} ${h}:${min}`;
   }
 
+  function formatDay(iso) {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    return `${d.toLocaleString("en-US", { month: "short" })} ${d.getDate()}`;
+  }
+
   // Best-available completion date across both sides for the Date column.
   function rowDate(row) {
     return (
@@ -50,16 +59,26 @@
 
   function speedupLabel(speedup) {
     if (speedup == null) return null;
-    if (speedup > 1.02) return { text: `${speedup.toFixed(1)}x faster`, tone: "ok" };
-    if (speedup < 0.98) return { text: `${(1 / speedup).toFixed(1)}x slower`, tone: "bad" };
-    return { text: "even", tone: "neutral" };
+    if (speedup > 1.02)
+      return { text: `${speedup.toFixed(1)}x faster`, tone: "ok" };
+    if (speedup < 0.98)
+      return { text: `${(1 / speedup).toFixed(1)}x slower`, tone: "bad" };
+    return { text: "about even", tone: "neutral" };
   }
 
-  function findingsLabel(row) {
-    const rb = row.route_b?.findings_total;
-    const sms = row.sms?.findings_total;
-    return { rb: rb ?? null, sms: sms ?? null };
-  }
+  // ── View state ───────────────────────────────
+
+  const buckets = [
+    { key: "pr", label: "Pull request scans" },
+    { key: "full", label: "Full scans (main)" },
+  ];
+
+  // The window has opened once at least one homelab scan exists. Before that
+  // every managed scan is pre-homelab and excluded, so there is nothing valid
+  // to compare and the aggregates are empty.
+  let windowOpen = $derived(
+    !data.error && (data.counts?.homelab ?? 0) > 0 && data.aggregates != null,
+  );
 </script>
 
 <svelte:head><title>Scan perf · private.jomcgi.dev</title></svelte:head>
@@ -67,119 +86,169 @@
 <div class="shell day">
   <div class="dash">
     <header class="masthead">
-      <div class="masthead-words">
-        <h1 class="greeting">Semgrep scan performance<span class="greeting-mark">.</span></h1>
-        {#if data.counts}
-          <p class="masthead-sub">
-            {data.counts.route_b ?? 0} Route B scans, {data.counts.sms ?? 0} managed scans
-          </p>
-        {/if}
-        {#if data.note}
-          <p class="masthead-note">{data.note}</p>
-        {/if}
-      </div>
+      <h1 class="greeting">
+        Semgrep scan performance<span class="greeting-mark">.</span>
+      </h1>
+      <p class="masthead-lead">homelab (self-hosted) vs Semgrep managed scans</p>
+      {#if data.counts}
+        <p class="masthead-sub">
+          {data.counts.homelab ?? 0} homelab scans, {data.counts.managed ?? 0} managed
+          scans{#if data.windowStart}
+            &nbsp;in window since {formatDay(data.windowStart)}{/if}
+        </p>
+      {/if}
+      {#if data.note}
+        <p class="masthead-note">{data.note}</p>
+      {/if}
     </header>
 
     {#if data.error}
       <p class="unavail">perf data unavailable</p>
-    {/if}
-
-    {#if !data.error && data.comparisons.length === 0}
+    {:else if !windowOpen}
       <section class="card card--empty">
-        <h2 class="section-label">No comparison data yet</h2>
+        <h2 class="section-label">Waiting for the first homelab scan</h2>
         <p class="unavail">
-          Comparisons populate over time as Route B and Semgrep Managed Scans
-          complete against the same commits.
+          The comparison window opens with the first homelab scan. Aggregates
+          and matched pairs appear as homelab and Semgrep managed scans run
+          against the same pull requests and commits.
         </p>
       </section>
-    {:else if data.comparisons.length > 0}
-      <section class="card card--table">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Ref / Commit</th>
-                <th>Type</th>
-                <th class="num">Route B</th>
-                <th class="num">SMS</th>
-                <th class="num">Speedup</th>
-                <th class="num">Findings</th>
-                <th>Match</th>
-                <th>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each data.comparisons as row}
-                {@const sha = shortSha(row.commit_sha)}
-                {@const pr = prNumber(row.scan_ref)}
-                {@const speedup = speedupLabel(row.speedup)}
-                {@const findings = findingsLabel(row)}
-                <tr>
-                  <td>
-                    <div class="ref-cell">
-                      {#if sha}
-                        <a
-                          class="mono ref-link"
-                          href={commitUrl(row.commit_sha)}
-                          target="_blank"
-                          rel="noopener"
-                        >{sha}</a>
-                      {:else}
-                        <span class="mono">{row.scan_ref}</span>
-                      {/if}
-                      {#if pr}
-                        <a
-                          class="pr-chip"
-                          href={prUrl(pr)}
-                          target="_blank"
-                          rel="noopener"
-                        >PR #{pr}</a>
-                      {/if}
-                    </div>
-                  </td>
-                  <td>
-                    <span class="badge" class:badge--full={row.is_full_scan}>
-                      {row.is_full_scan ? "full" : "PR"}
-                    </span>
-                  </td>
-                  <td class="num mono">
-                    {#if row.route_b}
-                      {formatTime(row.route_b.total_time)}
-                    {:else}
-                      <span class="dim">no counterpart</span>
-                    {/if}
-                  </td>
-                  <td class="num mono">
-                    {#if row.sms}
-                      {formatTime(row.sms.total_time)}
-                    {:else}
-                      <span class="dim">no counterpart</span>
-                    {/if}
-                  </td>
-                  <td class="num mono">
-                    {#if speedup}
-                      <span
-                        class="speedup"
-                        class:speedup--ok={speedup.tone === "ok"}
-                        class:speedup--bad={speedup.tone === "bad"}
-                      >{speedup.text}</span>
-                    {:else}
-                      <span class="dim">&ndash;</span>
-                    {/if}
-                  </td>
-                  <td class="num mono">
-                    <span class:dim={findings.rb == null}>{findings.rb ?? "-"}</span>
-                    <span class="dim"> / </span>
-                    <span class:dim={findings.sms == null}>{findings.sms ?? "-"}</span>
-                  </td>
-                  <td><span class="dim">{row.match_kind}</span></td>
-                  <td class="mono">{rowDate(row) ?? "-"}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+    {:else}
+      <section class="agg-grid">
+        {#each buckets as bucket}
+          {@const agg = data.aggregates[bucket.key] ?? { pairs: 0 }}
+          {@const speedup = speedupLabel(agg.speedup)}
+          <div class="card agg-card">
+            <h2 class="section-label">{bucket.label}</h2>
+            {#if agg.pairs > 0}
+              <div
+                class="agg-headline"
+                class:agg-headline--ok={speedup?.tone === "ok"}
+                class:agg-headline--bad={speedup?.tone === "bad"}
+              >
+                {speedup ? speedup.text : "-"}
+              </div>
+              <div class="agg-medians">
+                <div class="agg-median">
+                  <span class="agg-median-label">homelab median</span>
+                  <span class="mono agg-median-value"
+                    >{formatDuration(agg.homelab_median)}</span
+                  >
+                </div>
+                <div class="agg-median-vs">vs</div>
+                <div class="agg-median">
+                  <span class="agg-median-label">managed median</span>
+                  <span class="mono agg-median-value"
+                    >{formatDuration(agg.managed_median)}</span
+                  >
+                </div>
+              </div>
+              <p class="agg-foot">
+                {agg.pairs} matched pair{agg.pairs === 1 ? "" : "s"}
+              </p>
+            {:else}
+              <p class="unavail agg-empty">No matched pairs yet</p>
+            {/if}
+          </div>
+        {/each}
       </section>
+
+      <details class="detail">
+        <summary class="detail-summary">
+          Individual comparisons ({data.comparisons.length})
+        </summary>
+        <div class="card card--table">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ref / Commit</th>
+                  <th>Type</th>
+                  <th class="num">Homelab</th>
+                  <th class="num">Managed</th>
+                  <th class="num">Speedup</th>
+                  <th class="num">Findings</th>
+                  <th>Match</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each data.comparisons as row}
+                  {@const sha = shortSha(row.commit_sha)}
+                  {@const pr = prNumber(row.scan_ref)}
+                  {@const speedup = speedupLabel(row.speedup)}
+                  <tr>
+                    <td>
+                      <div class="ref-cell">
+                        {#if sha}
+                          <a
+                            class="mono ref-link"
+                            href={commitUrl(row.commit_sha)}
+                            target="_blank"
+                            rel="noopener">{sha}</a
+                          >
+                        {:else}
+                          <span class="mono">{row.scan_ref}</span>
+                        {/if}
+                        {#if pr}
+                          <a
+                            class="pr-chip"
+                            href={prUrl(pr)}
+                            target="_blank"
+                            rel="noopener">PR #{pr}</a
+                          >
+                        {/if}
+                      </div>
+                    </td>
+                    <td>
+                      <span class="badge" class:badge--full={row.is_full_scan}>
+                        {row.is_full_scan ? "full" : "PR"}
+                      </span>
+                    </td>
+                    <td class="num mono">
+                      {#if row.route_b}
+                        {formatDuration(row.route_b.total_time)}
+                      {:else}
+                        <span class="dim">no counterpart</span>
+                      {/if}
+                    </td>
+                    <td class="num mono">
+                      {#if row.sms}
+                        {formatDuration(row.sms.total_time)}
+                      {:else}
+                        <span class="dim">no counterpart</span>
+                      {/if}
+                    </td>
+                    <td class="num mono">
+                      {#if speedup}
+                        <span
+                          class="speedup"
+                          class:speedup--ok={speedup.tone === "ok"}
+                          class:speedup--bad={speedup.tone === "bad"}
+                          >{speedup.text}</span
+                        >
+                      {:else}
+                        <span class="dim">&ndash;</span>
+                      {/if}
+                    </td>
+                    <td class="num mono">
+                      <span class:dim={row.route_b?.findings_total == null}
+                        >{row.route_b?.findings_total ?? "-"}</span
+                      >
+                      <span class="dim"> / </span>
+                      <span class:dim={row.sms?.findings_total == null}
+                        >{row.sms?.findings_total ?? "-"}</span
+                      >
+                    </td>
+                    <td><span class="dim">{row.match_kind}</span></td>
+                    <td class="mono">{rowDate(row) ?? "-"}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
     {/if}
   </div>
 </div>
@@ -224,17 +293,23 @@
     color: var(--accent);
   }
 
-  .masthead-sub {
-    margin: 8px 0 0;
+  .masthead-lead {
+    margin: 6px 0 0;
     font-size: 14px;
     color: var(--ink-2);
   }
 
+  .masthead-sub {
+    margin: 8px 0 0;
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+
   .masthead-note {
-    margin: 4px 0 0;
+    margin: 6px 0 0;
     font-size: 12px;
     color: var(--ink-3);
-    max-width: 720px;
+    max-width: 760px;
   }
 
   .card {
@@ -249,6 +324,101 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  /* ── Aggregate cards ── */
+  .agg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .agg-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .agg-headline {
+    font-family: var(--font-display);
+    font-size: 30px;
+    font-weight: 460;
+    letter-spacing: -0.01em;
+    line-height: 1;
+    color: var(--ink);
+  }
+
+  .agg-headline--ok {
+    color: var(--ok);
+  }
+
+  .agg-headline--bad {
+    color: var(--bad);
+  }
+
+  .agg-medians {
+    display: flex;
+    align-items: flex-end;
+    gap: 16px;
+  }
+
+  .agg-median {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .agg-median-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-3);
+  }
+
+  .agg-median-value {
+    font-size: 18px;
+    color: var(--ink);
+  }
+
+  .agg-median-vs {
+    font-size: 12px;
+    color: var(--ink-3);
+    padding-bottom: 3px;
+  }
+
+  .agg-foot {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+
+  .agg-empty {
+    margin: 0;
+  }
+
+  /* ── Collapsed detail ── */
+  .detail {
+    margin-top: 4px;
+  }
+
+  .detail-summary {
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--ink-3);
+    padding: 6px 0;
+    user-select: none;
+  }
+
+  .detail-summary:hover {
+    color: var(--ink-2);
+  }
+
+  .detail[open] .detail-summary {
+    margin-bottom: 10px;
   }
 
   .section-label {

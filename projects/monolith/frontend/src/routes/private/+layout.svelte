@@ -37,30 +37,33 @@
 {@render children()}
 
 <style>
+  /* A subtle, borderless text link. Variables use fallbacks so it reads
+     correctly on both the dashboard theme (--ink-*, --font-ui, --accent) and
+     the older brutalist theme (--fg-*, --font) without a boxed look. */
   .back-to-dashboard {
     position: fixed;
-    top: 0.5rem;
-    left: 0.5rem;
+    top: 0.9rem;
+    left: 1.1rem;
     z-index: 1000;
-    font-family: var(--font);
-    font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--fg-tertiary);
-    background: var(--bg);
-    border: 0.06rem solid var(--border);
-    padding: 0.25rem 0.5rem;
+    font-family: var(--font-ui, var(--font));
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--ink-3, var(--fg-tertiary));
+    background: transparent;
+    border: none;
+    padding: 4px 2px;
     text-decoration: none;
     transition: color 0.15s ease;
   }
 
   .back-to-dashboard:hover {
-    color: var(--fg);
+    color: var(--accent, var(--fg));
   }
 
   .back-to-dashboard:focus-visible {
-    outline: 1.5px solid var(--fg);
+    outline: 1.5px solid var(--accent, var(--fg));
     outline-offset: 2px;
+    border-radius: 4px;
   }
 </style>

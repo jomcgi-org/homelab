@@ -198,3 +198,56 @@ def build_comparisons(route_b: list[dict], sms: list[dict]) -> list[dict]:
     undated = [row for row in result if _best_date(row) is None]
     dated.sort(key=_best_date, reverse=True)
     return dated + undated
+
+
+def _median(values: list[float]) -> float | None:
+    """Median of a non-empty list, or None if empty."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def build_aggregates(comparisons: list[dict]) -> dict:
+    """Summarise matched comparisons into per-type aggregates.
+
+    Only two-sided rows (both homelab and managed ran) count: a one-sided row
+    is not a comparison. Buckets by scan type ("pr" vs "full") since PR and
+    full-scan runtimes differ by an order of magnitude and must not be pooled.
+    ``speedup`` is managed_median / homelab_median (greater than 1 means
+    homelab is faster). Returns a stable shape even for empty buckets so the
+    page can render placeholders.
+    """
+    buckets: dict[str, list[dict]] = {"pr": [], "full": []}
+    for row in comparisons:
+        if row.get("route_b") and row.get("sms"):
+            buckets["full" if row.get("is_full_scan") else "pr"].append(row)
+
+    out: dict[str, dict] = {}
+    for key, pairs in buckets.items():
+        if not pairs:
+            out[key] = {
+                "pairs": 0,
+                "homelab_median": None,
+                "managed_median": None,
+                "speedup": None,
+            }
+            continue
+        homelab_median = _median([p["route_b"]["total_time"] for p in pairs])
+        managed_median = _median([p["sms"]["total_time"] for p in pairs])
+        speedup = (
+            managed_median / homelab_median
+            if homelab_median and homelab_median > 0
+            else None
+        )
+        out[key] = {
+            "pairs": len(pairs),
+            "homelab_median": homelab_median,
+            "managed_median": managed_median,
+            "speedup": speedup,
+        }
+    return out
