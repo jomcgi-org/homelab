@@ -321,9 +321,14 @@ py_library(
         "@pip//pydantic_ai_slim",
         "@pip//python_multipart",  # trips/ingest_router.py (UploadFile / form parsing)
         "@pip//pyyaml",
+        # NOTE: semgrep_scan/report.py uploads to the Semgrep App via plain
+        # authenticated HTTP (explicit Authorization: Bearer) using httpx (already
+        # a dep above), not ScanHandler.
         # pysemgrep INTERNAL APIs for the fc-invoke -> Semgrep-App relay
-        # (semgrep_scan/report.py): the out.* atd types plus ScanHandler and the
-        # authenticated app_session. Pinned 1.168.0 in bazel/requirements/tools.in.
+        # (semgrep_scan/report.py): only the out.* atd types (light) + __VERSION__.
+        # We do NOT use ScanHandler / get_state / app_session (auth never attaches
+        # outside a click command, and start_scan polls the OOM /config ruleset).
+        # Pinned 1.168.0 in bazel/requirements/tools.in.
         "@pip//semgrep",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -783,12 +788,10 @@ py_test(
     name = "semgrep_report_test",
     srcs = ["semgrep_scan/report_test.py"],
     data = [
-        # report_test loads these captured cli_output fixtures at runtime via
+        # report_test loads this captured cli_output fixture at runtime via
         # Path(__file__).parent/"testdata"; the "semgrep_scan/**/*.py" backend
-        # glob does not capture the .json, so ship them into runfiles.
-        # real_cli_output.json is the live-bug regression fixture (mix of null and
-        # dict dataflow_trace across 8 findings).
-        "semgrep_scan/testdata/pr_cli_output.json",
+        # glob does not capture the .json, so ship it into runfiles. 8 results
+        # (7 findings + 1 ignored), derived from a real 1.168.0 Pro finding.
         "semgrep_scan/testdata/real_cli_output.json",
     ],
     imports = ["."],
@@ -797,9 +800,12 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//pytest",
-        # pysemgrep internal APIs (out.* atd types + ScanHandler + app_session).
-        # Pinned to 1.168.0 in bazel/requirements/tools.in to match the
-        # fc-invoke Pro engine that produced the fixture.
+        # httpx: the test mocks semgrep_scan.report.httpx.post to capture the three
+        # App uploads (CREATE + /results + /complete) and their Bearer auth.
+        "@pip//httpx",
+        # pysemgrep out.* atd types (light). Pinned to 1.168.0 in
+        # bazel/requirements/tools.in to match the fc-invoke Pro engine that
+        # produced the fixture. NOT ScanHandler / app_session.
         "@pip//semgrep",
     ],
 )

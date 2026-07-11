@@ -3,14 +3,35 @@
 The fc-invoke semgrep guest scans a PR on our own Firecracker VM and returns the
 verbatim ``semgrep --json`` cli_output (``raw_cli_output``, see the guest's
 ``ScanResult.RawCliOutput``). This module turns that cli_output DIRECTLY into the
-App's ``out.Finding`` upload payload and POSTs it under a per-PR scan using
-pysemgrep's OWN client (``semgrep.app.scans.ScanHandler`` for ``start_scan`` and
-the authenticated ``app_session``), so the Semgrep App applies policy/triage
-server-side and posts the native PR check exactly as a Managed Scan would. The
-guest itself stays air-gapped from the App; the monolith owns the whole App
-conversation.
+App's ``out.Finding`` upload payload and POSTs it under a per-PR scan using PLAIN
+authenticated HTTP (``httpx`` with an explicit ``Authorization: Bearer`` from
+``SEMGREP_APP_TOKEN``), so the Semgrep App applies policy/triage server-side and
+posts the native PR check exactly as a Managed Scan would. The guest itself stays
+air-gapped from the App; the monolith owns the whole App conversation.
 
-WHY NO RULE LOADING (the pivot):
+WHY NOT ScanHandler (the second pivot, from live debugging against deployment
+47408 / org jomcgi on semgrep.dev):
+    ``semgrep.app.scans.ScanHandler`` is the WRONG tool in a long-lived non-CLI
+    process, for two confirmed reasons:
+
+    1. Auth never attaches. ScanHandler's internal ``get_state()`` calls resolve
+       ``ctx.ensure_object(SemgrepState)`` from the click context. OUTSIDE a click
+       command every such call builds a FRESH context, hence a fresh
+       unauthenticated ``AppSession`` (token=None), so its POSTs go out with no
+       ``Authorization`` header and the App returns
+       ``401 {"error":"Invalid Authorization"}``. ``app_session.authenticate()``
+       only helps within one click scope, which ScanHandler's own ``get_state()``
+       calls do not share.
+    2. Config download OOMs. Even when auth succeeds, ``start_scan`` (v2) polls
+       ``GET /api/cli/v2/scans/{id}/config``, which returns the deployment's FULL
+       ruleset; parsing it OOM-kills the 1Gi monolith (exit 137). We do NOT scan,
+       so we must NEVER fetch that config.
+
+    The token itself is VALID: a plain ``Authorization: Bearer $SEMGREP_APP_TOKEN``
+    to ``GET /api/agent/deployments/current`` returns 200. So we bypass ScanHandler
+    entirely and speak plain authenticated HTTP to exactly three endpoints.
+
+WHY NO RULE LOADING (the first pivot):
     The previous design recomputed Semgrep's ``match_based_id`` by reconstructing
     ``RuleMatch`` objects, which required loading the rule definitions the guest
     scanned with. The Pro packs are monolithic YAML (~480MB each), and loading
@@ -28,26 +49,37 @@ WHY NO RULE LOADING (the pivot):
     the Pro engine computes over rule formulae), so triage state resets ONCE at
     cutover. That is acceptable and intended.
 
+MEMORY DISCIPLINE:
+    We import ONLY the atd-generated ``out.*`` types from ``semgrep_output_v1``
+    plus ``__VERSION__`` and ``httpx``. We NEVER import ``semgrep.state`` or
+    ``semgrep.app.scans`` (those pull the heavy Terminal/Settings machinery and,
+    for ScanHandler, the OOM config poll). We NEVER fetch or parse the deployment
+    ruleset. No rules live anywhere in this module.
+
 VERSION COUPLING (read before bumping semgrep):
-    This module still depends on pysemgrep INTERNAL APIs: the ``out.*`` atd types
-    from ``semgrep_output_v1``, ``ScanHandler`` (for ``start_scan`` +
-    ``report_failure``), and the authenticated ``state.app_session``. The pin is
+    This module still depends on pysemgrep's ``out.*`` atd types from
+    ``semgrep_output_v1`` and on the three App endpoints below. The pin is
     ``semgrep==1.168.0`` in ``bazel/requirements/tools.in``. A bump REQUIRES
     re-verifying the ``out.Finding`` / ``out.CiScanResults`` / ``out.CiScanComplete``
-    field surface and the two POST endpoints below (``/results`` + ``/complete``,
-    replicated from ``ScanHandler.report_findings``).
+    / ``out.CreateScanRequestV2`` / ``out.CreateScanResponseV2`` field surface and
+    the three endpoint shapes.
 
-THE UPLOAD (spike result):
-    ``ScanHandler.report_findings`` builds ``out.CiScanResults{findings, ignores,
-    token=None, searched_paths, renamed_paths, rule_ids, contributions}`` from
-    ``match.to_app_finding_format(...)`` and POSTs it to
-    ``{semgrep_url}/api/agent/scans/{scan_id}/results``, then POSTs an
-    ``out.CiScanComplete`` to ``.../complete`` and reads the block decision from
-    the ``CiScanCompleteResponse``. We build the ``out.Finding`` list ourselves
-    (no ``RuleMatch``), assemble the same ``CiScanResults`` + ``CiScanComplete``,
-    and replicate those two POSTs via ``state.app_session`` (which carries the
-    ``SEMGREP_APP_TOKEN`` auth). ``start_scan`` needs NO rules: it just registers
-    the scan and returns the deployment config + scan_id.
+THE THREE-ENDPOINT FLOW (verified against pinned 1.168.0 ``app/scans.py``):
+    1. CREATE  POST ``{url}/api/cli/v2/scans`` with an ``out.CreateScanRequestV2``
+       ``{scan_metadata, project_metadata, project_config=None}``. The response is
+       an ``out.CreateScanResponseV2`` whose ``info.id`` is the ``scan_id`` and is
+       returned IMMEDIATELY by the POST (``start_scan_v2`` docstring: "POST ... to
+       create scan (returns scan info immediately)"). We read ``scan_id`` from THIS
+       response and NEVER poll ``/config`` (that is the OOM path).
+    2. RESULTS POST ``{url}/api/agent/scans/{scan_id}/results`` with the
+       ``out.CiScanResults`` we built from cli_output (``.to_json()``).
+    3. COMPLETE POST ``{url}/api/agent/scans/{scan_id}/complete`` with the
+       ``out.CiScanComplete`` (``.to_json()``); the response parses to an
+       ``out.CiScanCompleteResponse`` carrying the block decision.
+    On any failure after CREATE succeeded we POST
+    ``{url}/api/agent/scans/{scan_id}/error`` with ``{"exit_code", "stderr"}`` (the
+    exact shape ``ScanHandler.report_failure`` uses) so the App never wedges the
+    PR check on an open scan.
 """
 
 from __future__ import annotations
@@ -55,18 +87,27 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 import time
+import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 from typing import Optional
+
+import httpx
 
 logger = logging.getLogger("monolith.semgrep.report")
 
 # The scan_environment string the App tags our scans with. Distinguishes Route B
 # (self-hosted) scans from Semgrep Managed Scans in the dashboard.
 SCAN_ENVIRONMENT = "homelab-fc-invoke"
+
+# Semgrep App base URL. semgrep.dev is the SaaS default; overridable via env for a
+# self-hosted App without touching the heavy pysemgrep state machinery.
+_DEFAULT_SEMGREP_URL = "https://semgrep.dev"
+
+# Seconds. The results/complete POSTs can be slow on the App side; keep a generous
+# but bounded timeout so a hung App never blocks the monolith request forever.
+_UPLOAD_TIMEOUT = 60
 
 # cli_output severity string -> App integer severity, following the same mapping
 # pysemgrep's ``RuleMatch.to_app_finding_format`` uses (Critical=3, Error/High=2,
@@ -81,50 +122,39 @@ _APP_SEVERITY = {
 }
 
 
-_semgrep_home_ready = False
+def _semgrep_url() -> str:
+    """Resolve the Semgrep App base URL WITHOUT triggering pysemgrep state.
 
-
-def _ensure_writable_semgrep_home() -> None:
-    """Point pysemgrep at a writable HOME + data/log/settings dirs.
-
-    We no longer load rules, but we still call ``ScanHandler.start_scan`` and use
-    the authenticated ``state.app_session``. Building ``SemgrepState`` (via
-    ``get_state()``, which ``ScanHandler.__init__`` calls) constructs ``Settings``,
-    whose ``__attrs_post_init__`` does ``self.save()`` -> ``self.path.parent.mkdir``
-    under ``Path.home()/.semgrep`` (or ``$SEMGREP_SETTINGS_FILE``'s parent). The
-    monolith runs non-root with ``HOME=/`` (unwritable), so that mkdir raises
-    ``[Errno 30] Read-only file system: '/.semgrep'`` without this safeguard
-    (verified against the pinned 1.168.0 in the spike).
-
-    We mirror the guest's ``HOME=/tmp/sghome`` pattern: if ``HOME`` is missing or
-    not writable, point it (and the specific semgrep data-dir env vars) at a
-    writable temp dir. Idempotent: safe to call at every relay entry.
-
-    The App token is read from ``SEMGREP_APP_TOKEN`` directly, not from any of
-    these files.
+    Reads ``SEMGREP_URL`` / ``SEMGREP_APP_URL`` (either name, in that order) if set,
+    otherwise the semgrep.dev default. We deliberately do NOT read
+    ``state.env.semgrep_url`` because building ``SemgrepState`` pulls in the heavy
+    Terminal/Settings machinery we are avoiding.
     """
-    global _semgrep_home_ready
-    if _semgrep_home_ready:
-        return
+    return (
+        os.environ.get("SEMGREP_URL")
+        or os.environ.get("SEMGREP_APP_URL")
+        or _DEFAULT_SEMGREP_URL
+    ).rstrip("/")
 
-    home = os.environ.get("HOME")
-    if not (home and os.path.isdir(home) and os.access(home, os.W_OK)):
-        writable_home = tempfile.mkdtemp(prefix="semgrep-relay-home-")
-        os.environ["HOME"] = writable_home
-        home = writable_home
 
-    semgrep_data = os.path.join(home, ".semgrep")
-    os.makedirs(semgrep_data, exist_ok=True)
-    os.environ.setdefault("XDG_CONFIG_HOME", home)
-    os.environ.setdefault("XDG_CACHE_HOME", home)
-    os.environ.setdefault("SEMGREP_LOG_FILE", os.path.join(semgrep_data, "semgrep.log"))
+def _auth_headers() -> dict[str, str]:
+    """Build the explicit Bearer auth header from ``SEMGREP_APP_TOKEN``.
 
-    if not os.environ.get("SEMGREP_SETTINGS_FILE"):
-        os.environ["SEMGREP_SETTINGS_FILE"] = os.path.join(
-            semgrep_data, "semgrep-relay-settings.yml"
+    This is the whole fix: every outbound request carries the token explicitly,
+    instead of relying on ScanHandler's ``get_state().app_session`` (which is
+    unauthenticated outside a click command). Raises if the token is missing so the
+    failure is a clear structured error, not a silent 401.
+    """
+    token = os.environ.get("SEMGREP_APP_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "SEMGREP_APP_TOKEN is not set; cannot authenticate to the Semgrep App"
         )
-
-    _semgrep_home_ready = True
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
 
 def _decode_optional(out_type: Any, value: Any) -> Any:
@@ -330,6 +360,26 @@ def _build_ci_scan_complete(findings_count: int) -> Any:
     )
 
 
+def _build_scan_metadata() -> Any:
+    """Build the light ``out.ScanMetadata`` for the CREATE request.
+
+    Mirrors ``ScanHandler.__init__`` (cli_version + a client-generated unique_id +
+    empty requested_products), but WITHOUT ``get_state()``: the ``unique_id`` is a
+    fresh uuid we mint ourselves rather than ``state.local_scan_id``, and
+    ``dry_run`` is always False here (dry_run never reaches the network so it never
+    builds a CREATE request). No rules, no state.
+    """
+    import semgrep.semgrep_interfaces.semgrep_output_v1 as out
+    from semgrep import __VERSION__
+
+    return out.ScanMetadata(
+        cli_version=out.Version(__VERSION__),
+        unique_id=out.Uuid(str(uuid.uuid4())),
+        requested_products=[],
+        dry_run=False,
+    )
+
+
 def _build_project_metadata(
     *,
     repo: str,
@@ -375,54 +425,82 @@ def _build_project_metadata(
     return out.ProjectMetadata.from_json(payload)
 
 
-class _DryRunScanResponse:
-    """A stand-in for ScanHandler.scan_response used only in dry_run.
+def _create_scan(scan_metadata: Any, project_metadata: Any) -> Optional[int]:
+    """CREATE the scan via plain authenticated HTTP and return the ``scan_id``.
 
-    pysemgrep's ``ScanHandler.start_scan`` POSTs to semgrep.dev with NO dry_run
-    guard, and on a bad token it calls ``sys.exit`` (a BaseException). So dry_run
-    cannot rely on calling the real ``start_scan``. Instead we set
-    ``scan_response`` to this stub so ``scan_id`` resolves without any network.
+    POSTs an ``out.CreateScanRequestV2`` to ``/api/cli/v2/scans`` with an explicit
+    ``Authorization: Bearer`` header. The pinned ``start_scan_v2`` confirms the
+    POST response ``CreateScanResponseV2.info.id`` IS the scan_id and is returned
+    immediately, so we read it straight from the create response and NEVER poll
+    ``/config`` (the OOM path). Returns ``info.id`` (an int; the App may return null
+    only for dry runs, which never reach here).
     """
+    import semgrep.semgrep_interfaces.semgrep_output_v1 as out
 
-    class _Info:
-        id = None  # scan id is null for dry runs, matching the real API
-
-    info = _Info()
+    request = out.CreateScanRequestV2(
+        scan_metadata=scan_metadata,
+        project_metadata=project_metadata,
+        project_config=None,
+    )
+    resp = httpx.post(
+        f"{_semgrep_url()}/api/cli/v2/scans",
+        headers=_auth_headers(),
+        json=request.to_json(),
+        timeout=_UPLOAD_TIMEOUT,
+    )
+    resp.raise_for_status()
+    create_response = out.CreateScanResponseV2.from_json(resp.json())
+    return create_response.info.id
 
 
 def _post_results_and_complete(
-    handler: Any,
+    scan_id: int,
     ci_scan_results: Any,
     complete: Any,
 ) -> Any:
-    """Replicate ``report_findings``' two POSTs, minus the RuleMatch mapping.
+    """POST ``/results`` then ``/complete`` via plain authenticated HTTP.
 
-    POST the assembled ``CiScanResults`` to ``/results`` then the
-    ``CiScanComplete`` to ``/complete`` via the authenticated ``app_session``,
-    and return the parsed ``out.CiScanCompleteResponse``. This is the exact
-    request/response shape ``ScanHandler.report_findings`` uses (see the pinned
-    1.168.0 ``app/scans.py``): same URLs, same JSON bodies, same auth session.
+    Replicates ``ScanHandler.report_findings``' two POSTs (same URLs, same JSON
+    bodies) but with an explicit ``Authorization: Bearer`` header on each, and
+    returns the parsed ``out.CiScanCompleteResponse`` for the block decision.
     """
     import semgrep.semgrep_interfaces.semgrep_output_v1 as out
-    from semgrep.state import get_state
 
-    state = get_state()
-    base = f"{state.env.semgrep_url}/api/agent/scans/{handler.scan_id}"
+    base = f"{_semgrep_url()}/api/agent/scans/{scan_id}"
+    headers = _auth_headers()
 
-    results_resp = state.app_session.post(
+    results_resp = httpx.post(
         f"{base}/results",
-        timeout=state.env.upload_findings_timeout,
+        headers=headers,
         json=ci_scan_results.to_json(),
+        timeout=_UPLOAD_TIMEOUT,
     )
     results_resp.raise_for_status()
 
-    complete_resp = state.app_session.post(
+    complete_resp = httpx.post(
         f"{base}/complete",
-        timeout=state.env.upload_findings_timeout,
+        headers=headers,
         json=complete.to_json(),
+        timeout=_UPLOAD_TIMEOUT,
     )
     complete_resp.raise_for_status()
     return out.CiScanCompleteResponse.from_json(complete_resp.json())
+
+
+def _report_failure(scan_id: int, exit_code: int) -> None:
+    """Close an open scan via ``/error`` so the App never wedges the PR check.
+
+    Same endpoint and body shape as ``ScanHandler.report_failure``
+    (``POST /api/agent/scans/{scan_id}/error`` with ``{"exit_code", "stderr"}``),
+    plus the explicit Bearer header.
+    """
+    resp = httpx.post(
+        f"{_semgrep_url()}/api/agent/scans/{scan_id}/error",
+        headers=_auth_headers(),
+        json={"exit_code": exit_code, "stderr": ""},
+        timeout=_UPLOAD_TIMEOUT,
+    )
+    resp.raise_for_status()
 
 
 async def report_pr_scan(
@@ -439,31 +517,23 @@ async def report_pr_scan(
 ) -> dict[str, Any]:
     """Report an fc-invoke PR scan to the Semgrep App, built from cli_output.
 
-    Opens a per-PR scan (``start_scan``, which needs NO rules), maps
-    ``raw_cli_output`` DIRECTLY into ``out.Finding`` objects (no ``RuleMatch``, no
-    rule loading), POSTs them (``/results`` + ``/complete`` via the authenticated
-    ``app_session``), and returns the App's block decision. ``raw_cli_output`` may
-    be the already-parsed cli_output ``dict`` (the real fc-invoke client shape) or
-    the raw JSON ``str``.
+    Opens a per-PR scan (CREATE POST, which needs NO rules and returns the scan_id
+    immediately), maps ``raw_cli_output`` DIRECTLY into ``out.Finding`` objects (no
+    ``RuleMatch``, no rule loading), POSTs them (``/results`` + ``/complete``), and
+    returns the App's block decision. Every request carries an explicit
+    ``Authorization: Bearer $SEMGREP_APP_TOKEN`` header. ``raw_cli_output`` may be
+    the already-parsed cli_output ``dict`` (the real fc-invoke client shape) or the
+    raw JSON ``str``.
 
-    On ANY failure after the scan is opened it calls ``report_failure`` in a
-    ``finally`` so the App never wedges the PR check on an open scan.
-    ``SEMGREP_APP_TOKEN`` is read from the environment by pysemgrep; this module
-    never hardcodes it.
+    On ANY failure after the scan is opened it POSTs ``/error`` in the exception
+    path so the App never wedges the PR check on an open scan. ``SEMGREP_APP_TOKEN``
+    is read from the environment; this module never hardcodes it.
 
-    With ``dry_run=True`` NO network happens at all: we skip the real
-    ``start_scan`` (which POSTs with no dry_run guard) by stubbing
-    ``scan_response``, and we skip the ``/results`` + ``/complete`` POSTs. Used by
-    tests and any caller that wants to assemble the payload without touching the
-    live App.
+    With ``dry_run=True`` NO network happens at all: we assemble and serialize both
+    payloads (proving they are well-formed) but skip the CREATE / ``/results`` /
+    ``/complete`` POSTs entirely. Used by tests and any caller that wants to
+    assemble the payload without touching the live App.
     """
-    _ensure_writable_semgrep_home()
-
-    # Imports are function-local so importing this module does not eagerly pull
-    # the heavy pysemgrep app/state machinery unless a scan is actually reported.
-    from semgrep.app.project_config import ProjectConfig
-    from semgrep.app.scans import ScanHandler
-
     result: dict[str, Any] = {
         "ok": False,
         "dry_run": dry_run,
@@ -499,30 +569,28 @@ async def report_pr_scan(
         repo_url=repo_url,
     )
 
-    handler = ScanHandler(enable_transitive_reachability=None, dry_run=dry_run)
-
-    scan_opened = False
-    try:
-        if dry_run:
-            # Do NOT call the real start_scan: it POSTs to semgrep.dev with no
-            # dry_run guard and sys.exit()s on a bad token. Stub the response so
-            # scan_id resolves with zero network.
-            handler.scan_response = _DryRunScanResponse()  # type: ignore[assignment]
-        else:
-            handler.start_scan(project_metadata, ProjectConfig())
-        scan_opened = True
-        result["scan_id"] = handler.scan_id
-
-        if dry_run:
-            # Assemble-only: serialize both payloads so the dry run proves they
-            # are well-formed, but do NO network.
+    if dry_run:
+        # Assemble-only: serialize both payloads so the dry run proves they are
+        # well-formed, but do NO network (no CREATE, no /results, no /complete).
+        try:
+            _build_scan_metadata()
             ci_scan_results.to_json()
             complete.to_json()
-            result["ok"] = True
+        except Exception as exc:  # noqa: BLE001 - surface serialization failure
+            logger.exception("dry_run payload assembly failed")
+            result["error"] = str(exc) or type(exc).__name__
             return result
+        result["ok"] = True
+        return result
+
+    scan_id: Optional[int] = None
+    try:
+        scan_metadata = _build_scan_metadata()
+        scan_id = _create_scan(scan_metadata, project_metadata)
+        result["scan_id"] = scan_id
 
         complete_response = _post_results_and_complete(
-            handler, ci_scan_results, complete
+            scan_id, ci_scan_results, complete
         )
         result["ok"] = True
         result["app_block_override"] = complete_response.app_block_override
@@ -531,21 +599,16 @@ async def report_pr_scan(
             mid.value for mid in complete_response.app_blocking_match_based_ids
         ]
         return result
-    except BaseException as exc:  # noqa: BLE001 - see below; must catch SystemExit
-        # Catch BaseException, not Exception: a bad SEMGREP_APP_TOKEN makes
-        # pysemgrep's start_scan call sys.exit(INVALID_API_KEY_EXIT_CODE), which
-        # raises SystemExit (a BaseException). Without this the relay would kill
-        # the whole monolith process on a token problem instead of returning a
-        # structured error. Re-raise genuine interrupts so we don't swallow them.
-        if isinstance(exc, KeyboardInterrupt):
-            raise
-        logger.exception("report_pr_scan failed after start_scan=%s", scan_opened)
+    except Exception as exc:  # noqa: BLE001 - structured error, never kill the process
+        logger.exception(
+            "report_pr_scan failed (scan_id=%s)", scan_id if scan_id else "unopened"
+        )
         result["error"] = str(exc) or type(exc).__name__
-        if scan_opened:
+        if scan_id:
             try:
                 # Close the open scan so the App does not leave the PR check
                 # spinning. Exit code 2 = internal error, mirroring the CLI.
-                handler.report_failure(2)
+                _report_failure(scan_id, 2)
             except Exception:  # noqa: BLE001 - best-effort close
                 logger.exception("report_failure also failed; scan may be left open")
         return result
