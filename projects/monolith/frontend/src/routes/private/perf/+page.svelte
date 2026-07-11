@@ -92,13 +92,13 @@
       <p class="masthead-lead">homelab (self-hosted) vs Semgrep managed scans</p>
       {#if data.counts}
         <p class="masthead-sub">
-          {data.counts.homelab ?? 0} homelab scans, {data.counts.managed ?? 0} managed
-          scans{#if data.windowStart}
-            &nbsp;in window since {formatDay(data.windowStart)}{/if}
+          <span class="mono">{data.counts.homelab ?? 0}</span> homelab
+          <span class="sub-sep">&middot;</span>
+          <span class="mono">{data.counts.managed ?? 0}</span> managed{#if data.windowStart}
+            <span class="sub-sep">&middot;</span> since {formatDay(
+              data.windowStart,
+            )}{/if}
         </p>
-      {/if}
-      {#if data.note}
-        <p class="masthead-note">{data.note}</p>
       {/if}
     </header>
 
@@ -107,11 +107,7 @@
     {:else if !windowOpen}
       <section class="card card--empty">
         <h2 class="section-label">Waiting for the first homelab scan</h2>
-        <p class="unavail">
-          The comparison window opens with the first homelab scan. Aggregates
-          and matched pairs appear as homelab and Semgrep managed scans run
-          against the same pull requests and commits.
-        </p>
+        <p class="unavail">Comparisons appear after the first homelab scan.</p>
       </section>
     {:else}
       <section class="agg-grid">
@@ -302,14 +298,12 @@
   .masthead-sub {
     margin: 8px 0 0;
     font-size: 13px;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 
-  .masthead-note {
-    margin: 6px 0 0;
-    font-size: 12px;
+  .sub-sep {
     color: var(--ink-3);
-    max-width: 760px;
+    padding: 0 2px;
   }
 
   .card {
@@ -373,7 +367,7 @@
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.1em;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 
   .agg-median-value {
@@ -390,7 +384,7 @@
   .agg-foot {
     margin: 0;
     font-size: 12px;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 
   .agg-empty {

@@ -37,9 +37,9 @@
 {@render children()}
 
 <style>
-  /* A subtle, borderless text link. Variables use fallbacks so it reads
-     correctly on both the dashboard theme (--ink-*, --font-ui, --accent) and
-     the older brutalist theme (--fg-*, --font) without a boxed look. */
+  /* A quiet pill. Variables use fallbacks so it reads correctly on both the
+     dashboard theme (--ink-*, --font-ui, --accent, --card-bg, --line) and the
+     older brutalist theme (--fg-*, --font). */
   .back-to-dashboard {
     position: fixed;
     top: 0.9rem;
@@ -49,21 +49,24 @@
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.03em;
-    color: var(--ink-3, var(--fg-tertiary));
-    background: transparent;
-    border: none;
-    padding: 4px 2px;
+    color: var(--ink-2, var(--fg-secondary));
+    background: var(--card-bg, transparent);
+    border: 1px solid var(--line, var(--fg-tertiary));
+    border-radius: 999px;
+    padding: 4px 12px;
     text-decoration: none;
-    transition: color 0.15s ease;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease;
   }
 
   .back-to-dashboard:hover {
     color: var(--accent, var(--fg));
+    border-color: var(--accent, var(--fg));
   }
 
   .back-to-dashboard:focus-visible {
     outline: 1.5px solid var(--accent, var(--fg));
     outline-offset: 2px;
-    border-radius: 4px;
   }
 </style>
