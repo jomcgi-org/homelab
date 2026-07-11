@@ -339,13 +339,21 @@ def _build_ci_scan_results(
     return ci_scan_results, len(findings)
 
 
-def _build_ci_scan_complete(findings_count: int) -> Any:
+def _build_ci_scan_complete(
+    findings_count: int, scan_execution_duration: Optional[float] = None
+) -> Any:
     """Assemble the ``out.CiScanComplete`` payload POSTed to ``/complete``.
 
     Only the fields the App needs to finalize a diff scan are populated; error
     lists and parse-rate stats are empty (we did not run the parser here, the
     guest did). ``exit_code`` is the CLI hint (non-zero when there are findings);
     the App applies its own policy to decide blocking.
+
+    ``scan_execution_duration`` (seconds) is the engine scan time measured by the
+    webhook around the fc-invoke call; it populates ``stats.total_time`` so the
+    App's scan-time column reflects the real engine duration instead of a
+    hardcoded 0. ``None`` (e.g. dry-run callers that never timed a scan) falls
+    back to 0.0.
     """
     import semgrep.semgrep_interfaces.semgrep_output_v1 as out
 
@@ -356,7 +364,7 @@ def _build_ci_scan_complete(findings_count: int) -> Any:
         stats=out.CiScanCompleteStats(
             findings=findings_count,
             errors=[],
-            total_time=0.0,
+            total_time=float(scan_execution_duration or 0.0),
             unsupported_exts={},
             lockfile_scan_info={},
             parse_rate={},
@@ -539,6 +547,7 @@ async def report_pr_scan(
     raw_cli_output: dict[str, Any] | str,
     project_id: Optional[str] = None,
     repo_url: Optional[str] = None,
+    scan_execution_duration: Optional[float] = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Report an fc-invoke PR scan to the Semgrep App, built from cli_output.
@@ -549,7 +558,9 @@ async def report_pr_scan(
     returns the App's block decision. Every request carries an explicit
     ``Authorization: Bearer $SEMGREP_APP_TOKEN`` header. ``raw_cli_output`` may be
     the already-parsed cli_output ``dict`` (the real fc-invoke client shape) or the
-    raw JSON ``str``.
+    raw JSON ``str``. ``scan_execution_duration`` (seconds), when passed, is the
+    engine scan time the webhook measured around fc-invoke; it is reported as the
+    App scan's ``total_time`` (else the App shows 0 for a self-reported scan).
 
     On ANY failure after the scan is opened it POSTs ``/error`` in the exception
     path so the App never wedges the PR check on an open scan. ``SEMGREP_APP_TOKEN``
@@ -595,7 +606,7 @@ async def report_pr_scan(
         return result
 
     result["findings_reported"] = findings_count
-    complete = _build_ci_scan_complete(findings_count)
+    complete = _build_ci_scan_complete(findings_count, scan_execution_duration)
 
     project_metadata = _build_project_metadata(
         repo=repo,
