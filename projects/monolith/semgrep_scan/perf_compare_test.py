@@ -10,7 +10,7 @@ import datetime
 
 import pytest
 
-from semgrep_scan.perf_compare import build_comparisons
+from semgrep_scan.perf_compare import build_aggregates, build_comparisons
 
 UTC = datetime.timezone.utc
 
@@ -260,3 +260,85 @@ def test_commit_match_ignores_empty_commit_sha():
     # empty commit_sha/scan_ref never key a match; both fall through to one-sided
     assert all(row["match_kind"] == "one-sided" for row in result)
     assert len(result) == 2
+
+
+# ── build_aggregates ─────────────────────────────
+
+
+def _pair(is_full: bool, rb_time: float, sms_time: float) -> dict:
+    """A matched (two-sided) comparison row, the only kind aggregates count."""
+    return {
+        "commit_sha": "c",
+        "scan_ref": "r",
+        "is_full_scan": is_full,
+        "branch": "main",
+        "route_b": {
+            "scan_id": 1,
+            "total_time": rb_time,
+            "findings_total": 0,
+            "scan_completed_at": None,
+        },
+        "sms": {
+            "scan_id": 2,
+            "total_time": sms_time,
+            "findings_total": 0,
+            "scan_completed_at": None,
+        },
+        "speedup": None,
+        "match_kind": "commit",
+    }
+
+
+def test_aggregates_medians_and_speedup_per_bucket():
+    comparisons = [
+        _pair(False, 10.0, 30.0),
+        _pair(False, 20.0, 40.0),
+        _pair(True, 100.0, 400.0),
+    ]
+    agg = build_aggregates(comparisons)
+    # PR bucket: medians 15 and 35, speedup 35/15
+    assert agg["pr"]["pairs"] == 2
+    assert agg["pr"]["homelab_median"] == 15.0
+    assert agg["pr"]["managed_median"] == 35.0
+    assert agg["pr"]["speedup"] == pytest.approx(35.0 / 15.0)
+    # full bucket: single pair
+    assert agg["full"]["pairs"] == 1
+    assert agg["full"]["speedup"] == pytest.approx(4.0)
+
+
+def test_aggregates_ignore_one_sided_rows():
+    one_sided = {
+        "commit_sha": "c",
+        "scan_ref": "r",
+        "is_full_scan": False,
+        "branch": "main",
+        "route_b": {
+            "scan_id": 1,
+            "total_time": 5.0,
+            "findings_total": 0,
+            "scan_completed_at": None,
+        },
+        "sms": None,
+        "speedup": None,
+        "match_kind": "one-sided",
+    }
+    agg = build_aggregates([one_sided])
+    assert agg["pr"]["pairs"] == 0
+    assert agg["pr"]["speedup"] is None
+
+
+def test_aggregates_empty_input_has_stable_shape():
+    agg = build_aggregates([])
+    for key in ("pr", "full"):
+        assert agg[key] == {
+            "pairs": 0,
+            "homelab_median": None,
+            "managed_median": None,
+            "speedup": None,
+        }
+
+
+def test_aggregates_speedup_guards_zero_homelab_time():
+    agg = build_aggregates([_pair(False, 0.0, 30.0)])
+    assert agg["pr"]["pairs"] == 1
+    assert agg["pr"]["speedup"] is None

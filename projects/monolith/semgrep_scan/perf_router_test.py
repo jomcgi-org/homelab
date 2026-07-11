@@ -61,7 +61,10 @@ def test_empty_db_returns_empty_comparisons(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["comparisons"] == []
-    assert body["counts"] == {"route_b": 0, "sms": 0}
+    assert body["counts"] == {"homelab": 0, "managed": 0}
+    assert body["window_start"] is None
+    assert body["aggregates"]["pr"]["pairs"] == 0
+    assert body["aggregates"]["full"]["pairs"] == 0
     assert body["coverage_note"]
 
 
@@ -98,7 +101,7 @@ def test_matched_pair_returns_one_comparison_with_both_sides(session, client):
     assert resp.status_code == 200
     body = resp.json()
 
-    assert body["counts"] == {"route_b": 1, "sms": 1}
+    assert body["counts"] == {"homelab": 1, "managed": 1}
     assert len(body["comparisons"]) == 1
 
     comparison = body["comparisons"][0]
@@ -109,3 +112,53 @@ def test_matched_pair_returns_one_comparison_with_both_sides(session, client):
     assert comparison["route_b"]["total_time"] == 5.0
     assert comparison["sms"]["total_time"] == 25.0
     assert comparison["speedup"] == 5.0
+
+    # A full-scan matched pair aggregates into the "full" bucket.
+    assert body["window_start"] is not None
+    assert body["aggregates"]["full"]["pairs"] == 1
+    assert body["aggregates"]["full"]["speedup"] == 5.0
+    assert body["aggregates"]["pr"]["pairs"] == 0
+
+
+def test_pre_homelab_managed_scans_are_excluded(session, client):
+    # A managed scan that predates the first homelab scan is an invalid
+    # cross-era comparison and must be excluded from the window entirely.
+    before = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    session.add(
+        ScanPerf(
+            scan_id=10,
+            environment="managed-scans",
+            is_full_scan=True,
+            branch="main",
+            scan_ref="refs/heads/main",
+            commit_sha="old999",
+            total_time=99.0,
+            findings_total=0,
+            scan_completed_at=before,
+        )
+    )
+    session.add(
+        ScanPerf(
+            scan_id=11,
+            environment="route-b",
+            is_full_scan=True,
+            branch="main",
+            scan_ref="refs/heads/main",
+            commit_sha="new111",
+            total_time=5.0,
+            findings_total=0,
+            scan_completed_at=T0,
+        )
+    )
+    session.commit()
+
+    body = client.get("/api/semgrep/perf").json()
+    # Only the homelab scan is in window; the pre-homelab managed scan is gone.
+    assert body["counts"] == {"homelab": 1, "managed": 0}
+    scan_ids = [
+        side["scan_id"]
+        for row in body["comparisons"]
+        for side in (row["route_b"], row["sms"])
+        if side is not None
+    ]
+    assert 10 not in scan_ids

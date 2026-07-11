@@ -6,15 +6,31 @@ export async function load({ fetch }) {
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
-      return { comparisons: [], note: "", counts: null, error: res.status };
+      return {
+        comparisons: [],
+        aggregates: null,
+        windowStart: null,
+        note: "",
+        counts: null,
+        error: res.status,
+      };
     }
     const body = await res.json();
     return {
       comparisons: body.comparisons ?? [],
+      aggregates: body.aggregates ?? null,
+      windowStart: body.window_start ?? null,
       note: body.coverage_note ?? "",
       counts: body.counts ?? null,
     };
   } catch (e) {
-    return { comparisons: [], note: "", counts: null, error: "unavailable" };
+    return {
+      comparisons: [],
+      aggregates: null,
+      windowStart: null,
+      note: "",
+      counts: null,
+      error: "unavailable",
+    };
   }
 }
