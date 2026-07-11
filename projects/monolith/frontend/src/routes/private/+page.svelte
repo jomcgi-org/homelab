@@ -1,8 +1,53 @@
 <script>
   import { tick } from "svelte";
   import { deserialize } from "$app/forms";
+  import { launcher } from "$lib/private/launcher.js";
+  import ClusterChatPanel from "$lib/private/components/ClusterChatPanel.svelte";
 
   let { data } = $props();
+
+  // ── Dashboard data (60s client refresh) ──────
+  // Every access below is null-safe: any section may be null or {error}
+  // and SSR must never crash on missing data.
+  // svelte-ignore state_referenced_locally
+  let dash = $state(data.dashboard);
+
+  $effect(() => {
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch("/dashboard-data");
+        if (!res.ok) return;
+        const json = await res.json();
+        if (json && !json.error) dash = json;
+      } catch {
+        // keep the last good snapshot
+      }
+    }, 60_000);
+    return () => clearInterval(id);
+  });
+
+  let events = $derived(
+    dash?.today && !dash.today.error ? (dash.today.events ?? []) : null,
+  );
+  let health = $derived(dash?.health && !dash.health.error ? dash.health : null);
+  let alerts = $derived(
+    dash?.alerts && !dash.alerts.error ? (dash.alerts.firing ?? []) : null,
+  );
+  let github = $derived(
+    dash?.github && !dash.github.error ? dash.github : null,
+  );
+  let queues = $derived(
+    dash?.queues && !dash.queues.error ? dash.queues : null,
+  );
+  let unhealthyKinds = $derived(
+    health ? Object.entries(health.unhealthy ?? {}) : [],
+  );
+  let unhealthyCount = $derived(
+    unhealthyKinds.reduce((n, [, rows]) => n + (rows?.length ?? 0), 0),
+  );
+  let allClear = $derived(
+    health?.healthy === true && (alerts == null || alerts.length === 0),
+  );
 
   // ── Capture ──────────────────────────────────
   let note = $state("");
@@ -251,19 +296,7 @@
     }
   }
 
-  // ── Schedule ─────────────────────────────────
-  let events = $derived(data.schedule);
-  let eventListRef = $state(null);
-
-  const LINKS = [
-    { label: "ArgoCD", url: "#" },
-    { label: "Grafana", url: "#" },
-    { label: "SigNoz", url: "#" },
-    { label: "BuildBuddy", url: "#" },
-    { label: "Notion", url: "#" },
-    { label: "GitHub", url: "#" },
-  ];
-
+  // ── Schedule past/active logic ───────────────
   function timeToMinutes(timeStr) {
     const [h, m] = timeStr.split(":").map(Number);
     return h * 60 + m;
@@ -276,126 +309,52 @@
   function isPast(ev, d) {
     if (ev.allDay) return false;
     const end = ev.endTime ?? ev.time;
+    if (!end) return false;
     return nowMinutes(d) >= timeToMinutes(end);
   }
 
   function isActive(ev, d) {
-    if (ev.allDay || !ev.endTime) return false;
+    if (ev.allDay || !ev.endTime || !ev.time) return false;
     const n = nowMinutes(d);
     return n >= timeToMinutes(ev.time) && n < timeToMinutes(ev.endTime);
   }
 
-  // Scroll to the first active/upcoming event, re-run every 10 minutes
-  let scrollTick = $state(0);
-  $effect(() => {
-    const id = setInterval(() => (scrollTick = Date.now()), 600_000);
-    return () => clearInterval(id);
-  });
+  // ── Tasks ────────────────────────────────────
+  const DONE_STATUSES = ["done", "cancelled"];
 
-  function scrollToRelevant() {
-    if (!eventListRef) return;
-    const rows = eventListRef.querySelectorAll(".event-row");
-    let target = rows.length - 1;
-    for (let i = 0; i < rows.length; i++) {
-      if (
-        rows[i].classList.contains("event-row--active") ||
-        (!rows[i].classList.contains("event-row--past") &&
-          !rows[i].classList.contains("event-row--allday"))
-      ) {
-        target = Math.max(0, i - 1);
-        break;
-      }
-    }
-    rows[target]?.scrollIntoView({ block: "start" });
+  // svelte-ignore state_referenced_locally
+  let tasksDaily = $state(data.tasksDaily ?? []);
+  // svelte-ignore state_referenced_locally
+  let tasksWeekly = $state(data.tasksWeekly ?? []);
+
+  // Weekly is a superset of daily (due this week vs due today/overdue);
+  // show only the weekly items not already in the daily list.
+  let dailyIds = $derived(new Set(tasksDaily.map((t) => t.note_id)));
+  let weeklyOnly = $derived(
+    tasksWeekly.filter((t) => !dailyIds.has(t.note_id)),
+  );
+
+  function isDone(task) {
+    return DONE_STATUSES.includes(task?.status);
   }
 
-  $effect(() => {
-    scrollTick;
-    scrollToRelevant();
-  });
-
-  // ── Todo ─────────────────────────────────────
-  // /api/home was removed in the 2026-04-17 Home-module refactor; the
-  // backend now returns 404. Until this page is re-pointed at the
-  // knowledge.tasks endpoint, fall back to sane defaults when data.todo
-  // isn't shaped right so SSR doesn't crash with "cannot read .task".
-  // svelte-ignore state_referenced_locally
-  let goal = $state(data.todo?.weekly?.task ?? "");
-  // svelte-ignore state_referenced_locally
-  let goalDone = $state(data.todo?.weekly?.done ?? false);
-  // svelte-ignore state_referenced_locally
-  let daily = $state(
-    Array.isArray(data.todo?.daily)
-      ? data.todo.daily.map((d) => d.task ?? "")
-      : ["", "", ""],
-  );
-  // svelte-ignore state_referenced_locally
-  let dailyDone = $state(
-    Array.isArray(data.todo?.daily)
-      ? data.todo.daily.map((d) => d.done ?? false)
-      : [false, false, false],
-  );
-  let editing = $state(false);
-
-  let goalRef = $state(null);
-  let dailyRefs = $state([null, null, null]);
-
-  let saveTimer;
-  function scheduleSave() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      const body = JSON.stringify({
-        weekly: { task: goal, done: goalDone },
-        daily: daily.map((text, i) => ({ task: text, done: dailyDone[i] })),
-      });
+  async function toggleTask(task) {
+    const prev = task.status;
+    // Optimistic flip; the server computes the same transition.
+    task.status = DONE_STATUSES.includes(prev) ? "todo" : "done";
+    try {
       const formData = new FormData();
-      formData.append("body", body);
-      fetch("?/save", {
+      formData.append("note_id", task.note_id);
+      formData.append("status", prev);
+      const res = await fetch("?/toggleTask", {
         method: "POST",
         body: formData,
       });
-    }, 400);
-  }
-
-  function setGoal(text) {
-    goal = text;
-    scheduleSave();
-  }
-
-  function toggleGoal() {
-    goalDone = !goalDone;
-    scheduleSave();
-  }
-
-  function setDailyText(i, text) {
-    daily[i] = text;
-    scheduleSave();
-  }
-
-  function toggleDaily(i) {
-    dailyDone[i] = !dailyDone[i];
-    scheduleSave();
-  }
-
-  function startEditing() {
-    editing = true;
-    setTimeout(() => goalRef?.focus(), 0);
-  }
-
-  function handleKeyDown(e, nextRef) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      nextRef?.focus();
-    }
-    if (e.key === "Escape") {
-      editing = false;
-    }
-  }
-
-  function handleReadOnlyKeyDown(e, hasText, toggleFn) {
-    if (e.key === " " || e.key === "Enter") {
-      e.preventDefault();
-      hasText ? toggleFn() : startEditing();
+      const outcome = deserialize(await res.text());
+      if (outcome.type !== "success" || outcome.data?.error) throw new Error();
+      if (outcome.data?.status) task.status = outcome.data.status;
+    } catch {
+      task.status = prev;
     }
   }
 
@@ -421,153 +380,302 @@
       minute: "2-digit",
     });
   }
+
+  function relTime(iso) {
+    if (!iso) return "";
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return "";
+    const s = Math.round((now.getTime() - t) / 1000);
+    if (s < 60) return "just now";
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.round(h / 24);
+    return `${d}d ago`;
+  }
 </script>
 
-<div class="root">
-  <!-- Left pane: Capture -->
-  <section class="capture">
-    <textarea
-      bind:this={captureRef}
-      class="capture-input"
-      class:capture-input--sent={sent}
-      value={note}
-      oninput={(e) => (note = e.target.value)}
-      onkeydown={captureKeyDown}
-      placeholder={ingestMode ? "paste url..." : "write something..."}
-      spellcheck="false"
-      aria-label="Quick note"
-    ></textarea>
-    <footer class="capture-footer">
-      <span class="capture-hints">
-        <span class="capture-hint" class:capture-hint--error={error}>
-          {#if error}
-            failed
-          {:else if sent}
-            sent
-          {:else if ingestMode && note.trim()}
-            {detectSourceType(note.trim())} · ⌘ enter
-          {:else if note.trim()}
-            ⌘ enter
-          {:else}
-            &nbsp;
-          {/if}
-        </span>
-        <span class="capture-hint">{ingestMode ? "⌘I" : "⌘K"}</span>
-      </span>
-      {#if ingestMode}
-        <span class="capture-mode">ingest</span>
-      {:else if note.length > 0}
-        <span class="capture-count">{note.length}</span>
-      {/if}
-    </footer>
-  </section>
+<div class="dash">
+  <header class="dash-header">
+    <span class="date">{formatDate(now)}</span>
+    <span class="clock">{formatTime(now)}</span>
+  </header>
 
-  <!-- Right pane -->
-  <aside class="panel">
-    <header class="panel-header">
-      <span class="date">{formatDate(now)}</span>
-      <span class="clock">{formatTime(now)}</span>
-    </header>
-
-    <!-- Schedule -->
-    <section class="panel-section">
-      <h2 class="section-label">today</h2>
-      <ul class="event-list" bind:this={eventListRef}>
-        {#each events as ev}
-          <li
-            class="event-row"
-            class:event-row--past={isPast(ev, now)}
-            class:event-row--active={isActive(ev, now)}
-            class:event-row--allday={ev.allDay}
-          >
-            {#if ev.allDay}
-              <span class="event-time"></span>
-              <span class="event-title">{ev.title}</span>
-              <span class="event-meta">all day</span>
+  <div class="grid">
+    <!-- Capture -->
+    <section class="card">
+      <h2 class="section-label">capture</h2>
+      <textarea
+        bind:this={captureRef}
+        class="capture-input"
+        class:capture-input--sent={sent}
+        value={note}
+        oninput={(e) => (note = e.target.value)}
+        onkeydown={captureKeyDown}
+        placeholder={ingestMode ? "paste url..." : "write something..."}
+        spellcheck="false"
+        aria-label="Quick note"
+      ></textarea>
+      <footer class="capture-footer">
+        <span class="capture-hints">
+          <span class="capture-hint" class:capture-hint--error={error}>
+            {#if error}
+              failed
+            {:else if sent}
+              sent
+            {:else if ingestMode && note.trim()}
+              {detectSourceType(note.trim())} · ⌘ enter
+            {:else if note.trim()}
+              ⌘ enter
             {:else}
-              <span class="event-time">{ev.time}</span>
-              <span class="event-title">{ev.title}</span>
-              <span class="event-meta">{ev.endTime ? ev.endTime : ""}</span>
+              &nbsp;
             {/if}
-          </li>
-        {/each}
-      </ul>
+          </span>
+          <span class="capture-hint">{ingestMode ? "⌘I" : "⌘K"}</span>
+        </span>
+        {#if ingestMode}
+          <span class="capture-mode">ingest</span>
+        {:else if note.length > 0}
+          <span class="capture-count">{note.length}</span>
+        {/if}
+      </footer>
     </section>
 
-    <!-- Links -->
-    <section class="panel-section">
-      <h2 class="section-label">links</h2>
-      <div class="links-grid">
-        {#each LINKS as lk}
-          <a href={lk.url} class="link">{lk.label}</a>
+    <!-- Today: events + tasks -->
+    <section class="card">
+      <h2 class="section-label">today</h2>
+      {#if events == null}
+        <p class="unavail">calendar unavailable</p>
+      {:else if events.length === 0}
+        <p class="unavail">no events today</p>
+      {:else}
+        <ul class="event-list">
+          {#each events as ev}
+            <li
+              class="event-row"
+              class:event-row--past={isPast(ev, now)}
+              class:event-row--active={isActive(ev, now)}
+              class:event-row--allday={ev.allDay}
+            >
+              {#if ev.allDay}
+                <span class="event-time"></span>
+                <span class="event-title">{ev.title}</span>
+                <span class="event-meta">all day</span>
+              {:else}
+                <span class="event-time">{ev.time}</span>
+                <span class="event-title">
+                  {ev.title}
+                  {#if ev.location}
+                    <span class="event-location">{ev.location}</span>
+                  {/if}
+                </span>
+                <span class="event-meta">{ev.endTime ? ev.endTime : ""}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      <h2 class="section-label">tasks</h2>
+      {#if weeklyOnly.length === 0 && tasksDaily.length === 0}
+        <p class="unavail">nothing due</p>
+      {:else}
+        <ul class="task-list">
+          {#each weeklyOnly as task (task.note_id)}
+            <li class="task-row">
+              <button
+                class="task-check"
+                aria-pressed={isDone(task)}
+                aria-label={`Toggle ${task.title}`}
+                onclick={() => toggleTask(task)}
+              >
+                {isDone(task) ? "☑" : "☐"}
+              </button>
+              <span
+                class="task-title task-title--weekly"
+                class:task-title--done={isDone(task)}>{task.title}</span
+              >
+              {#if task.due}
+                <span class="task-due">{task.due}</span>
+              {/if}
+            </li>
+          {/each}
+          {#each tasksDaily as task (task.note_id)}
+            <li class="task-row">
+              <button
+                class="task-check"
+                aria-pressed={isDone(task)}
+                aria-label={`Toggle ${task.title}`}
+                onclick={() => toggleTask(task)}
+              >
+                {isDone(task) ? "☑" : "☐"}
+              </button>
+              <span class="task-title" class:task-title--done={isDone(task)}
+                >{task.title}</span
+              >
+              {#if task.due}
+                <span class="task-due">{task.due}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+
+    <!-- Cluster health + alerts -->
+    <section class="card">
+      <h2 class="section-label">cluster</h2>
+      {#if health == null && alerts == null}
+        <p class="unavail">unavailable</p>
+      {:else}
+        {#if allClear}
+          <p class="headline headline--ok">
+            &#10003; all clear · {health?.scanned ?? 0} workloads scanned
+          </p>
+        {:else}
+          <p class="headline headline--bad">
+            {#if health && !health.healthy}
+              {unhealthyCount} unhealthy ({unhealthyKinds
+                .map(([kind, rows]) => `${rows?.length ?? 0} ${kind}`)
+                .join(", ")})
+            {:else if health}
+              workloads healthy
+            {/if}
+            {#if alerts && alerts.length > 0}
+              · {alerts.length} firing
+            {/if}
+          </p>
+        {/if}
+        {#if health == null}
+          <p class="unavail">health unavailable</p>
+        {:else if !health.healthy}
+          <ul class="plain-list">
+            {#each unhealthyKinds as [kind, rows]}
+              {#each rows ?? [] as row}
+                <li class="bad-row">
+                  <span class="dim">{kind}</span>
+                  {row.namespace ? `${row.namespace}/` : ""}{row.name}
+                </li>
+              {/each}
+            {/each}
+          </ul>
+        {/if}
+        {#if alerts == null}
+          <p class="unavail">alerts unavailable</p>
+        {:else if alerts.length > 0}
+          <ul class="plain-list">
+            {#each alerts as alert}
+              <li class="alert-row">
+                {alert.name}{alert.severity ? ` (${alert.severity})` : ""}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    </section>
+
+    <!-- Shipping: PRs + merges -->
+    <section class="card">
+      <h2 class="section-label">shipping</h2>
+      {#if github == null}
+        <p class="unavail">unavailable</p>
+      {:else}
+        {#if (github.open_prs ?? []).length === 0}
+          <p class="unavail">no open PRs</p>
+        {:else}
+          <ul class="plain-list">
+            {#each github.open_prs ?? [] as pr}
+              <li>
+                <a
+                  class="pr-row"
+                  href={pr.url}
+                  target="_blank"
+                  rel="noopener"
+                >
+                  <span class="ci-dot ci-dot--{pr.ci ?? 'pending'}"></span>
+                  <span class="pr-num">#{pr.number}</span>
+                  <span class="pr-title">{pr.title}</span>
+                  {#if pr.draft}
+                    <span class="dim">draft</span>
+                  {/if}
+                </a>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if (github.recent_merges ?? []).length > 0}
+          <h3 class="sub-label">merged</h3>
+          <ul class="plain-list">
+            {#each github.recent_merges ?? [] as pr}
+              <li>
+                <a
+                  class="pr-row pr-row--merged"
+                  href={pr.url}
+                  target="_blank"
+                  rel="noopener"
+                >
+                  <span class="pr-num">#{pr.number}</span>
+                  <span class="pr-title">{pr.title}</span>
+                  <span class="dim">{relTime(pr.merged_at)}</span>
+                </a>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    </section>
+
+    <!-- Queues -->
+    <section class="card">
+      <h2 class="section-label">queues</h2>
+      {#if queues == null}
+        <p class="unavail">unavailable</p>
+      {:else}
+        <p class="queue-counts">
+          <a href="/review" class="queue-link"
+            >{queues.notes_review_queue ?? 0} notes</a
+          >
+          · {queues.gaps_review_queue ?? 0} gaps in review
+        </p>
+        {#if (queues.scheduler_jobs ?? []).length > 0}
+          <ul class="plain-list">
+            {#each queues.scheduler_jobs ?? [] as job}
+              <li class="job-row" class:job-row--bad={job.last_status !== "ok"}>
+                <span class="job-name">{job.name}</span>
+                <span class="job-status">{job.last_status ?? "never ran"}</span>
+                <span class="dim">{relTime(job.last_run_at)}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    </section>
+
+    <!-- Ask the cluster -->
+    <section class="card">
+      <h2 class="section-label">ask the cluster</h2>
+      <ClusterChatPanel />
+    </section>
+
+    <!-- Launcher -->
+    <section class="card card--wide">
+      <h2 class="section-label">launcher</h2>
+      <div class="launcher-grid">
+        {#each launcher as item}
+          <a
+            href={item.href}
+            class="launch"
+            target={item.external ? "_blank" : undefined}
+            rel={item.external ? "noopener" : undefined}
+          >
+            <span class="launch-label">{item.label}</span>
+            <span class="launch-desc">{item.desc}</span>
+          </a>
         {/each}
       </div>
     </section>
-
-    <!-- Todo -->
-    <section class="panel-section">
-      <button
-        class="section-label section-label--interactive"
-        onclick={() => (editing ? (editing = false) : startEditing())}
-      >
-        {editing ? "done" : "todo"}
-      </button>
-
-      <!-- Weekly goal -->
-      <input
-        bind:this={goalRef}
-        class="todo-field todo-field--goal"
-        class:todo-field--done={goalDone && !editing}
-        class:todo-field--empty={!goal && !editing}
-        value={editing ? goal : goal || "set weekly goal"}
-        readonly={!editing}
-        oninput={(e) => setGoal(e.target.value)}
-        onclick={() => {
-          if (!editing && goal) toggleGoal();
-          else if (!editing) startEditing();
-        }}
-        onkeydown={(e) =>
-          editing
-            ? handleKeyDown(e, dailyRefs[0])
-            : handleReadOnlyKeyDown(e, goal, toggleGoal)}
-        placeholder="weekly goal"
-        spellcheck="false"
-        tabindex="0"
-      />
-
-      <!-- 3 daily goals -->
-      {#each daily as text, i}
-        {@const allDailyEmpty = !editing && daily.every((d) => !d)}
-        {@const emptyLabel =
-          allDailyEmpty && i === 0 && goal ? "set daily goals" : "..."}
-        <div class="todo-daily-row">
-          <span class="todo-dash" class:todo-dash--empty={!text && !editing}>
-            &ndash;
-          </span>
-          <input
-            bind:this={dailyRefs[i]}
-            class="todo-field"
-            class:todo-field--done={dailyDone[i] && !editing}
-            class:todo-field--empty={!text && !editing}
-            value={editing ? text : text || emptyLabel}
-            readonly={!editing}
-            oninput={(e) => setDailyText(i, e.target.value)}
-            onclick={() => {
-              if (!editing && text) toggleDaily(i);
-              else if (!editing) startEditing();
-            }}
-            onkeydown={(e) =>
-              editing
-                ? handleKeyDown(e, dailyRefs[i + 1] || null)
-                : handleReadOnlyKeyDown(e, text, () => toggleDaily(i))}
-            placeholder="daily goal"
-            spellcheck="false"
-            tabindex="0"
-          />
-        </div>
-      {/each}
-    </section>
-  </aside>
+  </div>
 </div>
 
 {#if searchOpen}
@@ -605,7 +713,7 @@
             <h2 class="search-preview-title">{selectedNote.title}</h2>
             {#if selectedNote.tags?.length}
               <div class="search-preview-tags">
-                {selectedNote.tags.join(" \u00b7 ")}
+                {selectedNote.tags.join(" · ")}
               </div>
             {/if}
           </div>
@@ -669,7 +777,7 @@
                       &nbsp;&middot;&nbsp;
                     {/if}
                     {#if result.tags?.length}
-                      {result.tags.join(" \u00b7 ")}
+                      {result.tags.join(" · ")}
                     {/if}
                   </div>
                 {/if}
@@ -688,39 +796,124 @@
 <style>
   /* ── Layout ────────────────────────────────── */
 
-  .root {
-    display: flex;
-    height: 100vh;
+  .dash {
+    min-height: 100vh;
     width: 100%;
+    max-width: 90rem;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 3rem 1.25rem;
     font-family: var(--font);
     font-size: 1rem;
     line-height: 1.5;
     color: var(--fg);
     background: var(--bg);
-    overflow: hidden;
     -webkit-font-feature-settings: "liga" 0;
     font-feature-settings: "liga" 0;
   }
 
-  /* ── Capture (left pane) ───────────────────── */
+  .dash-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 1.25rem;
+  }
 
-  .capture {
-    flex: 1 1 0%;
+  .date {
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .clock {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  @media (min-width: 900px) {
+    .grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (min-width: 1400px) {
+    .grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  .card {
     display: flex;
     flex-direction: column;
-    padding: 2.5rem;
-    padding-bottom: 1.25rem;
+    gap: 0.5rem;
+    border: 0.06rem solid var(--border);
+    padding: 1.1rem 1.25rem 1.25rem 1.25rem;
     min-width: 0;
   }
 
+  .card--wide {
+    grid-column: 1 / -1;
+  }
+
+  .section-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--fg);
+    margin: 0 0 0.25rem 0;
+    padding-bottom: 0.4rem;
+    border-bottom: 0.04rem solid var(--border);
+  }
+
+  .sub-label {
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--fg-tertiary);
+    margin: 0.5rem 0 0 0;
+  }
+
+  .unavail {
+    font-size: 0.8rem;
+    color: var(--fg-tertiary);
+    margin: 0;
+  }
+
+  .dim {
+    color: var(--fg-tertiary);
+    font-size: 0.75rem;
+  }
+
+  .plain-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  /* ── Capture ───────────────────────────────── */
+
   .capture-input {
     flex: 1;
+    min-height: 9rem;
     resize: none;
     border: none;
     outline: none;
     background: transparent;
     font-family: var(--font);
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     line-height: 1.8;
     color: var(--fg);
     padding: 0;
@@ -740,7 +933,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding-top: 0.75rem;
+    padding-top: 0.5rem;
   }
 
   .capture-hint {
@@ -775,82 +968,15 @@
     color: var(--fg-tertiary);
   }
 
-  /* ── Right panel ───────────────────────────── */
-
-  .panel {
-    flex: 0 0 38%;
-    max-width: 22rem;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    padding: 2.5rem 2rem;
-    overflow-y: auto;
-    scrollbar-width: none;
-    border-left: 0.06rem solid var(--fg);
-  }
-
-  .panel::-webkit-scrollbar {
-    display: none;
-  }
-
-  .panel-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-  }
-
-  .date {
-    font-size: 0.8rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .clock {
-    font-size: 0.8rem;
-    font-weight: 700;
-    color: var(--fg);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* ── Sections ──────────────────────────────── */
-
-  .panel-section {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .section-label {
-    font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg);
-    margin-bottom: 0.25rem;
-    padding-bottom: 0.4rem;
-    border-bottom: 0.04rem solid var(--border);
-  }
-
   /* ── Schedule ──────────────────────────────── */
 
   .event-list {
+    list-style: none;
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
-    max-height: 10rem;
-    overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--fg-tertiary) transparent;
-  }
-
-  .event-list::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  .event-list::-webkit-scrollbar-thumb {
-    background: var(--fg-tertiary);
-    border-radius: 2px;
+    padding: 0;
+    margin: 0;
   }
 
   .event-row {
@@ -869,9 +995,15 @@
   }
 
   .event-title {
-    font-size: 1rem;
+    font-size: 0.95rem;
     flex: 1;
     min-width: 0;
+  }
+
+  .event-location {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--fg-tertiary);
   }
 
   .event-meta {
@@ -897,97 +1029,234 @@
     opacity: 0.3;
   }
 
-  /* ── Links ─────────────────────────────────── */
+  /* ── Tasks ─────────────────────────────────── */
 
-  .links-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0.3rem 0;
+  .task-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
   }
 
-  .link {
-    font-size: 0.85rem;
+  .task-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.15rem 0;
+  }
+
+  .task-check {
+    all: unset;
+    font-family: var(--font);
+    font-size: 0.9rem;
     color: var(--fg-secondary);
-    padding: 0.1rem 0;
-    transition: color 0.15s ease;
+    cursor: pointer;
+    flex-shrink: 0;
   }
 
-  .link:hover {
+  .task-check:hover {
     color: var(--fg);
   }
 
-  .link:focus-visible {
+  .task-check:focus-visible {
     outline: 1.5px solid var(--fg);
     outline-offset: 2px;
   }
 
-  /* ── Todos ─────────────────────────────────── */
-
-  button.section-label--interactive {
-    all: unset;
-    font: inherit;
-    color: inherit;
-    letter-spacing: inherit;
-    text-transform: inherit;
-    font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    cursor: pointer;
-    transition: color 0.15s ease;
-  }
-
-  .section-label--interactive:hover {
-    color: var(--fg-secondary);
-  }
-
-  .todo-field {
-    font-family: var(--font);
+  .task-title {
     font-size: 0.85rem;
-    line-height: 1.5;
-    color: var(--fg);
-    background: transparent;
-    border: none;
-    outline: none;
-    width: 100%;
-    padding: 0.2rem 0;
-    cursor: pointer;
+    flex: 1;
+    min-width: 0;
   }
 
-  .todo-field--goal {
+  .task-title--weekly {
     font-weight: 700;
   }
 
-  .todo-field--done {
+  .task-title--done {
     text-decoration: line-through;
     opacity: 0.3;
   }
 
-  .todo-field--empty {
+  .task-due {
+    font-size: 0.7rem;
+    color: var(--fg-tertiary);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  /* ── Cluster ───────────────────────────────── */
+
+  .headline {
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  .headline--ok {
+    color: var(--fg);
+  }
+
+  .headline--bad {
     color: var(--danger);
   }
 
-  .todo-field::placeholder {
+  .bad-row {
+    font-size: 0.85rem;
+    color: var(--fg);
+  }
+
+  .alert-row {
+    font-size: 0.85rem;
     color: var(--danger);
   }
 
-  .todo-field:focus-visible {
-    outline: none;
-  }
+  /* ── Shipping ──────────────────────────────── */
 
-  .todo-daily-row {
+  .pr-row {
     display: flex;
     align-items: baseline;
     gap: 0.5rem;
+    padding: 0.15rem 0;
+    color: var(--fg-secondary);
+    text-decoration: none;
+    transition: color 0.15s ease;
+    min-width: 0;
   }
 
-  .todo-dash {
+  .pr-row:hover {
+    color: var(--fg);
+  }
+
+  .pr-num {
+    font-size: 0.8rem;
+    color: var(--fg-tertiary);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  .pr-title {
+    font-size: 0.85rem;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ci-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+    align-self: center;
+  }
+
+  .ci-dot--passing {
+    background: var(--st-ok);
+  }
+
+  .ci-dot--failing {
+    background: var(--danger);
+  }
+
+  .ci-dot--pending {
+    background: var(--fg-tertiary);
+    opacity: 0.4;
+  }
+
+  /* ── Queues ────────────────────────────────── */
+
+  .queue-counts {
+    font-size: 0.85rem;
+    color: var(--fg-secondary);
+    margin: 0;
+  }
+
+  .queue-link {
+    color: var(--fg);
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .queue-link:hover {
+    color: var(--fg-secondary);
+  }
+
+  .job-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--fg-secondary);
+  }
+
+  .job-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .job-status {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
     color: var(--fg-tertiary);
     flex-shrink: 0;
   }
 
-  .todo-dash--empty {
+  .job-row--bad .job-status {
     color: var(--danger);
+  }
+
+  /* ── Launcher ──────────────────────────────── */
+
+  .launcher-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    gap: 0.5rem;
+  }
+
+  .launch {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.6rem 0.75rem;
+    border: 0.06rem solid var(--border);
+    color: var(--fg-secondary);
+    text-decoration: none;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease;
+    min-width: 0;
+  }
+
+  .launch:hover {
+    color: var(--fg);
+    border-color: var(--fg);
+  }
+
+  .launch:focus-visible {
+    outline: 1.5px solid var(--fg);
+    outline-offset: 2px;
+  }
+
+  .launch-label {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--fg);
+  }
+
+  .launch-desc {
+    font-size: 0.7rem;
+    color: var(--fg-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* ── Knowledge search overlay ───────────────── */
