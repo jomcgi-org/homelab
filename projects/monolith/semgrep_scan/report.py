@@ -709,6 +709,35 @@ def _report_pr_scan_blocking(
         result["app_blocking_match_based_ids"] = [
             mid.value for mid in complete_response.app_blocking_match_based_ids
         ]
+
+        # Persist a Route B perf row (authoritative runtime = scan_execution_duration)
+        # for the private scan-perf comparison page. Best-effort: a perf-store
+        # failure must never fail an already-reported scan.
+        try:
+            from semgrep import __VERSION__ as _sg_cli_version
+            from sqlmodel import Session
+            from app.db import get_engine
+            from semgrep_scan.perf_store import ScanPerf, upsert_scan_perf
+
+            with Session(get_engine()) as _perf_session:
+                upsert_scan_perf(
+                    _perf_session,
+                    ScanPerf(
+                        scan_id=scan_id,
+                        environment="route-b",
+                        raw_environment=SCAN_ENVIRONMENT,
+                        is_full_scan=is_full_scan,
+                        branch=branch,
+                        scan_ref=(f"refs/pull/{pr_id}/merge" if pr_id else branch),
+                        commit_sha=commit,
+                        total_time=float(scan_execution_duration or 0.0),
+                        findings_total=int(findings_count),
+                        cli_version=_sg_cli_version,
+                    ),
+                )
+        except Exception:
+            logger.exception("semgrep perf: failed to persist route-b scan_perf row")
+
         return result
     except Exception as exc:  # noqa: BLE001 - structured error, never kill the process
         logger.exception(
