@@ -35,6 +35,13 @@ SEND_GATE_ENABLED = os.environ.get("AMBIENT_SEND_GATE", "1") != "0"
 class AttentionResult:
     engage: bool
     confidence: float
+    # True when this engage is an explicit summons (a hard @mention, a reply to
+    # Bosun, or a caller-supplied ``directed`` signal), as opposed to a soft
+    # ambient interjection the classifier chose to join. The caller uses this to
+    # keep an explicit summons on the live (never-suppressed) reply path even in
+    # an ambient channel: someone who @-mentioned Bosun is waiting on an answer,
+    # so the no_reply tool and the post-generation send-gate must not eat it.
+    explicit: bool = False
 
 
 async def evaluate(
@@ -65,7 +72,7 @@ async def evaluate(
     # non-Discord channels use; it keeps should_respond off the hot path when
     # bot_user is None (WhatsApp has no Discord user object).
     if directed:
-        return AttentionResult(True, 1.0)
+        return AttentionResult(True, 1.0, explicit=True)
 
     from chat.bot import should_respond  # mention/reply detection (lazy to avoid cycle)
 
@@ -73,7 +80,7 @@ async def evaluate(
     # engaged (they set directed instead); guard the Discord-only check so a
     # WhatsApp adapter never hits should_respond's <@id> mention parsing.
     if bot_user is not None and should_respond(message, bot_user):
-        return AttentionResult(True, 1.0)
+        return AttentionResult(True, 1.0, explicit=True)
     if not is_ambient:
         return AttentionResult(False, 0.0)
     # Ambient channel: classify.

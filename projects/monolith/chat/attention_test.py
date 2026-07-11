@@ -36,6 +36,27 @@ class TestExplicitTrigger:
         )
         assert result.engage is True
         assert result.confidence == 1.0
+        # A hard @mention is an explicit summons: the caller keeps it on the
+        # live, never-suppressed reply path even in an ambient channel.
+        assert result.explicit is True
+        caller.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mention_in_ambient_channel_is_explicit(self):
+        # The bug this guards: a direct @mention inside an ambient channel must
+        # still be flagged explicit so the no_reply tool / send-gate cannot eat
+        # it (the mention short-circuits before the classifier either way).
+        message = _make_message(mentions=[_BOT_USER])
+        caller = AsyncMock()
+        result = await evaluate(
+            message,
+            "only jump in when @-mentioned",
+            _BOT_USER,
+            is_ambient=True,
+            _caller=caller,
+        )
+        assert result.engage is True
+        assert result.explicit is True
         caller.assert_not_called()
 
 
@@ -62,6 +83,9 @@ class TestAmbientClassification:
         )
         assert result.engage is True
         assert result.confidence == 0.9
+        # A soft classifier engage is NOT an explicit summons, so it stays on
+        # the suppressible ambient path (no_reply tool / send-gate can veto it).
+        assert result.explicit is False
         caller.assert_called_once()
 
     @pytest.mark.asyncio
@@ -313,6 +337,9 @@ class TestDirectedSeam:
         )
         assert result.engage is True
         assert result.confidence == 1.0
+        # A caller-supplied directedness signal (reply-to-bot / trigger-name) is
+        # also an explicit summons.
+        assert result.explicit is True
         caller.assert_not_called()
 
     @pytest.mark.asyncio
