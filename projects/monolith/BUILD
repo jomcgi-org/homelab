@@ -381,7 +381,6 @@ pkg_tar(
 py3_image(
     name = "image",
     binary = "//projects/monolith:main",
-    tars = [":semgrep_local_rules_tar"],
     env = {
         # py3_image sets PYTHONPATH to the workspace root (_main/) but this
         # project's sibling packages (app/, knowledge/) need the package directory
@@ -394,6 +393,7 @@ py3_image(
     main = "app/main.py",
     multiarch_tars = ["@claude_code//:tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
+    tars = [":semgrep_local_rules_tar"],
 )
 
 # Batch-jobs image: identical base/deps to :image, launching app/jobs_main.py.
