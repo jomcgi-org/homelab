@@ -262,6 +262,10 @@ def test_scan_and_report_happy_path(client):
     assert kwargs["pr_id"] == "4242"
     assert kwargs["base_ref"] == "basesha456"
     assert kwargs["raw_cli_output"] == {"results": []}
+    # The engine scan duration is measured and threaded through so the App gets a
+    # real total_time (a non-negative float, not the old hardcoded 0).
+    assert isinstance(kwargs["scan_execution_duration"], float)
+    assert kwargs["scan_execution_duration"] >= 0.0
 
 
 def test_scan_error_short_circuits_report(client):

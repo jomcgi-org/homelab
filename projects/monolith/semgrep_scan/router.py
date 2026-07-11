@@ -218,8 +218,9 @@ async def _post_commit_status(
 ) -> None:
     """POST a GitHub commit status to the REAL repo's PR head sha, best-effort.
 
-    Route B is in a VALIDATION (non-gating) phase, so we surface findings + latency
-    as our own commit status on the real repo (a PAT with repo scope can post
+    Route B is in a VALIDATION (non-gating) phase, so we surface findings +
+    scan_pr_wall_time as our own commit status on the real repo (a PAT with repo
+    scope can post
     statuses even though it cannot create Check Runs, which is why we use statuses
     and not a Check Run). The status is posted to ``{real_repo}`` (from the webhook
     ``repository.full_name``), NOT the shadow project the App report used.
@@ -251,13 +252,28 @@ async def _post_commit_status(
         )
 
 
-async def _scan_and_report(payload: dict[str, Any]) -> None:
+async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
     """Background job: gather changed files, scan on fc-invoke, report to the App.
 
     Runs after the fast 200 so GitHub's delivery never blocks on the scan. Wrapped
     end-to-end in try/except: a failure here is logged, never crashes the app (an
     unhandled exception in a FastAPI BackgroundTask would otherwise surface as a
     500 for a response we already sent).
+
+    ``received`` is the ``time.monotonic()`` stamp taken at webhook receipt, so
+    the wall-time metric spans the whole PR check the developer waits on (gather +
+    scan + report + status post), not just the engine.
+
+    Two headline timing metrics are logged (both ``scan_*`` so they group in
+    SigNoz), plus per-segment debug fields:
+
+    - ``scan_execution_duration`` (s): the fc-invoke engine scan ONLY. Also sent
+      to the App as the scan's ``total_time``.
+    - ``scan_pr_wall_time`` (s): webhook receipt -> developer-visible commit
+      status posted. The whole PR check, minus only the GitHub-send-to-us hop we
+      cannot clock here. Also shown in the commit-status description.
+    - ``gather_ms`` / ``report_ms`` / ``status_ms``: secondary per-segment spans
+      so a bad ``scan_pr_wall_time`` can be attributed without a headline metric.
     """
     try:
         pull_request = payload.get("pull_request", {})
@@ -280,7 +296,9 @@ async def _scan_and_report(payload: dict[str, Any]) -> None:
             )
             return
 
+        t_gather = time.monotonic()
         files = await _gather_files(repo, int(pr_number), head_sha)
+        gather_ms = (time.monotonic() - t_gather) * 1000
         if not files:
             logger.info(
                 "semgrep webhook: no scannable changed files for %s#%s, nothing to do",
@@ -289,12 +307,12 @@ async def _scan_and_report(payload: dict[str, Any]) -> None:
             )
             return
 
-        # Wall-clock timer around the scan + report: the in-cluster (SigNoz-
-        # queryable, via the structured log below) latency signal for comparing
-        # Route B against SMS.
-        started = time.monotonic()
-
+        # scan_execution_duration: the engine scan ONLY (fc-invoke round trip),
+        # measured on its own so it is both the App total_time and a clean
+        # "how fast is our scanner" signal, independent of gather/report/status.
+        t_scan = time.monotonic()
         scan = await scan_files(files)
+        scan_execution_duration = time.monotonic() - t_scan
         if not isinstance(scan, dict) or scan.get("error"):
             logger.error(
                 "semgrep webhook: fc-invoke scan failed for %s#%s: %s",
@@ -304,6 +322,7 @@ async def _scan_and_report(payload: dict[str, Any]) -> None:
             )
             return
 
+        t_report = time.monotonic()
         result = await report_pr_scan(
             repo=repo,
             branch=head_ref,
@@ -312,42 +331,60 @@ async def _scan_and_report(payload: dict[str, Any]) -> None:
             base_ref=base_sha or None,
             raw_cli_output=scan.get("raw_cli_output"),
             repo_url=repo_url,
+            scan_execution_duration=scan_execution_duration,
         )
-        latency = time.monotonic() - started
+        report_ms = (time.monotonic() - t_report) * 1000
 
         scan_id = result.get("scan_id")
         findings = result.get("findings_reported")
         project = result.get("project", repo)
         org = result.get("org", "jomcgi")
 
+        # Wall time up to just before the developer-visible status post. The
+        # status body cannot contain its own post latency, so the description
+        # shows this (receipt -> result ready); the log records the full
+        # scan_pr_wall_time (including the post) after it returns.
+        wall_pre_status = time.monotonic() - received
+
         if result.get("ok") and scan_id:
-            logger.info(
-                "semgrep webhook: reported %s#%s scan_id=%s findings=%s "
-                "latency=%.2fs project=%s",
-                repo,
-                pr_number,
-                scan_id,
-                findings,
-                latency,
-                project,
-            )
             # VALIDATION phase: non-gating, always "success". At cutover this maps
             # result["app_block_override"] -> "failure" else "success".
+            t_status = time.monotonic()
             await _post_commit_status(
                 repo=repo,
                 head_sha=head_sha,
                 state="success",
-                description=f"{findings} findings, {latency:.1f}s",
+                description=f"{findings} findings, {wall_pre_status:.1f}s",
                 target_url=_app_scan_url(org, project, scan_id),
+            )
+            status_ms = (time.monotonic() - t_status) * 1000
+            scan_pr_wall_time = time.monotonic() - received
+            logger.info(
+                "semgrep webhook: reported %s#%s scan_id=%s findings=%s "
+                "scan_execution_duration=%.2fs scan_pr_wall_time=%.2fs project=%s "
+                "gather_ms=%.0f report_ms=%.0f status_ms=%.0f",
+                repo,
+                pr_number,
+                scan_id,
+                findings,
+                scan_execution_duration,
+                scan_pr_wall_time,
+                project,
+                gather_ms,
+                report_ms,
+                status_ms,
             )
         else:
             error = result.get("error")
+            scan_pr_wall_time = time.monotonic() - received
             logger.error(
-                "semgrep webhook: App report failed for %s#%s: %s (latency=%.2fs)",
+                "semgrep webhook: App report failed for %s#%s: %s "
+                "(scan_execution_duration=%.2fs scan_pr_wall_time=%.2fs)",
                 repo,
                 pr_number,
                 error,
-                latency,
+                scan_execution_duration,
+                scan_pr_wall_time,
             )
             # Report failed (no scan_id / not ok): surface it as an error status
             # with no target_url (there is no App scan to link to).
@@ -377,6 +414,9 @@ async def semgrep_webhook(
     3. For a scannable action, dispatch ``_scan_and_report`` as a background task
        and return 200 immediately; the scan never blocks the response.
     """
+    # Stamp receipt as early as possible: scan_pr_wall_time is measured from here
+    # to the commit-status post, i.e. the whole PR check the developer waits on.
+    received = time.monotonic()
     body = await request.body()
     _verify_signature(body, x_hub_signature_256)
 
@@ -396,5 +436,5 @@ async def semgrep_webhook(
     if action not in _SCAN_ACTIONS:
         return {"status": "ignored", "reason": f"action={action}"}
 
-    background_tasks.add_task(_scan_and_report, payload)
+    background_tasks.add_task(_scan_and_report, payload, received)
     return {"status": "accepted", "action": action}

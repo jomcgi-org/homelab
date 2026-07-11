@@ -138,7 +138,7 @@ def _mock_response(payload: dict) -> mock.Mock:
     return resp
 
 
-def _run_scan(dry_run: bool = False):
+def _run_scan(dry_run: bool = False, scan_execution_duration: float | None = 1.25):
     return asyncio.run(
         report.report_pr_scan(
             repo="jomcgi/homelab",
@@ -149,9 +149,17 @@ def _run_scan(dry_run: bool = False):
             raw_cli_output=_CLI_OUTPUT,
             project_id="3263658",
             repo_url="https://github.com/jomcgi/homelab",
+            scan_execution_duration=scan_execution_duration,
             dry_run=dry_run,
         )
     )
+
+
+def test_ci_scan_complete_total_time_from_duration():
+    """total_time carries the passed engine duration, and None falls back to 0.0
+    (dry-run / legacy callers that never timed a scan)."""
+    assert report._build_ci_scan_complete(3, 2.5).stats.total_time == 2.5
+    assert report._build_ci_scan_complete(0, None).stats.total_time == 0.0
 
 
 def test_report_pr_scan_dry_run_does_no_network():
@@ -249,9 +257,11 @@ def test_report_pr_scan_uploads_with_bearer_auth_on_every_request():
         results_call["json"]["findings"][0]["match_based_id"] == _EXPECTED_FINGERPRINT
     )
 
-    # /complete: scan_id in URL + a CiScanComplete body.
+    # /complete: scan_id in URL + a CiScanComplete body. total_time carries the
+    # measured engine duration (_run_scan passes 1.25s), not the old hardcoded 0.
     assert complete_call["url"].endswith("/api/agent/scans/555/complete")
     assert complete_call["json"]["stats"]["findings"] == _EXPECTED_FINDINGS
+    assert complete_call["json"]["stats"]["total_time"] == 1.25
 
 
 def test_report_pr_scan_closes_scan_on_upload_failure():
