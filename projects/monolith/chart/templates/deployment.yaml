@@ -25,6 +25,12 @@ spec:
       annotations: {}
     spec:
       serviceAccountName: {{ include "monolith.fullname" . }}
+      {{- if and .Values.semgrep.proRules .Values.semgrep.proRulesImagePullSecret }}
+      # Pull secret for the private Pro-rule image volumes below. Harmless for the
+      # public main image (which needs no auth); required for the private packs.
+      imagePullSecrets:
+        - name: {{ .Values.semgrep.proRulesImagePullSecret }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -387,6 +393,18 @@ spec:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if .Values.semgrep.proRules }}
+          # Private Pro rule packs (image volumes declared at the pod level).
+          # Mounted read-only at /etc/semgrep/rules/pro-<lang>/ so the baked local
+          # rules and these packs combine to the guest's exact SEMGREP_SCAN_RULES
+          # tree, letting the relay reproduce the guest's fingerprints.
+          volumeMounts:
+            {{- range .Values.semgrep.proRules }}
+            - name: semgrep-pro-rules-{{ .lang }}
+              mountPath: /etc/semgrep/rules/pro-{{ .lang }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
         - name: frontend
           image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
@@ -430,3 +448,16 @@ spec:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- if .Values.semgrep.proRules }}
+      # Native Kubernetes image volumes (k3s v1.35; the image volume source is beta
+      # and on-by-default since 1.33). Each pulls a private, digest-pinned Pro rule
+      # pack OCI artifact with the imagePullSecret above. Digests MUST match
+      # bazel/semgrep/third_party/semgrep_pro/digests.bzl (drift-guard test).
+      volumes:
+        {{- range .Values.semgrep.proRules }}
+        - name: semgrep-pro-rules-{{ .lang }}
+          image:
+            reference: {{ .reference | quote }}
+            pullPolicy: IfNotPresent
+        {{- end }}
+      {{- end }}
