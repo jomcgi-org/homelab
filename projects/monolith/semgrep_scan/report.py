@@ -90,7 +90,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from typing import Optional
 
@@ -719,6 +719,12 @@ def _report_pr_scan_blocking(
             from app.db import get_engine
             from semgrep_scan.perf_store import ScanPerf, upsert_scan_perf
 
+            # Stamp the completion time at persist (this runs right after the
+            # scan reported complete). scan_completed_at must be set: the perf
+            # read query orders by it, and route-b rows without it sort NULLS
+            # FIRST in Postgres and starve dated SMS rows past the LIMIT.
+            _perf_now = datetime.now(timezone.utc)
+            _perf_dur = float(scan_execution_duration or 0.0)
             with Session(get_engine()) as _perf_session:
                 upsert_scan_perf(
                     _perf_session,
@@ -730,9 +736,11 @@ def _report_pr_scan_blocking(
                         branch=branch,
                         scan_ref=(f"refs/pull/{pr_id}/merge" if pr_id else branch),
                         commit_sha=commit,
-                        total_time=float(scan_execution_duration or 0.0),
+                        total_time=_perf_dur,
                         findings_total=int(findings_count),
                         cli_version=_sg_cli_version,
+                        scan_started_at=_perf_now - timedelta(seconds=_perf_dur),
+                        scan_completed_at=_perf_now,
                     ),
                 )
         except Exception:
