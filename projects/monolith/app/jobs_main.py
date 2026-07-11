@@ -441,5 +441,29 @@ def semgrep_full_scan_trigger() -> None:
     logger.info("semgrep-full-scan-trigger: %s", body)
 
 
+@app.command("semgrep-harvest-trigger")
+def semgrep_harvest_trigger() -> None:
+    """Trigger the Semgrep Managed Scans (SMS) scan-perf harvest.
+
+    Deliberately lightweight: it POSTs the running API pod's internal endpoint,
+    which fires harvest_scans IN THAT process (where the Semgrep App token and
+    a DB session already live). The harvest runs in the API pod, not this
+    ephemeral job pod, so the job needs no tokens or DB access, just HTTP.
+    """
+    import httpx
+
+    configure_logging()
+    # Injected from Helm (the cron job's env), never hardcoded: a release rename
+    # changes the service DNS name, so a baked default would silently break.
+    url = os.environ.get("MONOLITH_INTERNAL_URL", "")
+    if not url:
+        raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
+    logger.info("semgrep-harvest-trigger: POST %s/internal/semgrep/harvest-scans", url)
+    resp = httpx.post(f"{url}/internal/semgrep/harvest-scans", timeout=30)
+    resp.raise_for_status()
+    body = resp.json()
+    logger.info("semgrep-harvest-trigger: %s", body)
+
+
 if __name__ == "__main__":
     app()
