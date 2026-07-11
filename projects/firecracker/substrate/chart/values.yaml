@@ -165,6 +165,29 @@ workloads:
     readyPath: /shim/ready
     sessioned: false
     requestTimeout: 90s
+  # The semgrep-full workload (ADR tooling/011): a whole-repo INTERFILE scan. Same
+  # semgrep-guest image as `semgrep`, but its lean init (harnessInit below) skips
+  # the warm mcp scan-server and instead runs `semgrep scan --pro` as a subprocess
+  # over the materialized tree, so cross-file dataflow fires (mcp --pro is
+  # single-file only). warmBase:false because there is no resident child to
+  # snapshot; each scheduled run cold-boots. Footprint is generous pending a
+  # measured run (ADR 011 open question): interfile holds cross-file state for
+  # ~750 files, well above the 697Mi rule-compile peak the 1.5G single-file
+  # workload was sized to. concurrency:1 (one scheduled full scan at a time, never
+  # a hot path). node-4 has 64.9GiB; worst-case guest RAM with this added
+  # (semgrep 16*1536 + agent 2*4096 + sandbox 1*512 + this 1*8192 = ~41GiB) fits.
+  semgrep-full:
+    image: semgrep-guest
+    rootfsPath: /disks/nvme-02/fc-invoke/semgrep/rootfs.ext4
+    harnessInit: /usr/local/bin/semgrep-full-guest-init
+    vcpus: 4
+    memMib: 8192
+    concurrency: 1
+    egressEnabled: false
+    warmBase: false
+    readyPath: /shim/ready
+    sessioned: false
+    requestTimeout: 600s
   # The agent (goosecracker) workload: a goose coding agent served over the
   # guest shim HTTP handler. warmBase:false = cold boot per invoke (the agent's
   # slow part is model inference, not boot, so a warm snapshot buys little and
