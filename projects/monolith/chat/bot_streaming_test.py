@@ -769,6 +769,9 @@ class TestAmbientNonStreaming:
             patch("chat.bot.get_engine"),
             patch("chat.bot.Session") as mock_session_cls,
             patch("chat.bot.MessageStore", return_value=mock_store),
+            # Ambient replies now pass a post-generation send-gate; allow it here
+            # so this test stays focused on the single-message posting mechanics.
+            patch("chat.bot.attention.should_send", AsyncMock(return_value=True)),
         ):
             ctx = MagicMock()
             mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
@@ -781,6 +784,69 @@ class TestAmbientNonStreaming:
         message.reply.assert_called_once()
         posted = message.reply.call_args_list[0][0][0]
         assert posted == "Nah, fable's holding up fine."
+
+    @pytest.mark.asyncio
+    async def test_ambient_send_gate_veto_stays_silent(self):
+        """live=False: when the post-generation send-gate vetoes the drafted
+        reply, nothing is posted and the call returns silent (like no_reply)."""
+        bot = _make_bot()
+        message = _make_message(content="you boys around for any games today?")
+        mock_store = _make_store()
+
+        events = [
+            _text_delta("I'm around. "),
+            _text_delta("What's the plan?"),
+        ]
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        gate = AsyncMock(return_value=False)
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.attention.should_send", gate),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            sent, text, _thinking = await bot._stream_response(
+                message, None, with_buttons=False, live=False, directive="hang back"
+            )
+
+        # Vetoed: silent return, nothing posted, directive threaded to the gate.
+        assert sent is None
+        assert text == ""
+        message.reply.assert_not_called()
+        gate.assert_awaited_once()
+        assert gate.call_args[0][0] == "hang back"
+
+    @pytest.mark.asyncio
+    async def test_live_reply_never_hits_send_gate(self):
+        """live=True (a reply someone is waiting on) is never gated: the send-gate
+        classify is not even called."""
+        bot = _make_bot()
+        message = _make_message(content="hey bot")
+        mock_store = _make_store()
+
+        events = [_text_delta("Hello "), _text_delta("there.")]
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        gate = AsyncMock(return_value=False)
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.attention.should_send", gate),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            sent, text, _thinking = await bot._stream_response(
+                message, None, with_buttons=True, live=True
+            )
+
+        gate.assert_not_called()
+        assert text == "Hello there."
         assert "Thinking" not in posted
         assert "Searching" not in posted
         # No progressive/in-place edits in ambient mode.

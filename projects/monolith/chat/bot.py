@@ -945,7 +945,9 @@ class ChatBot(discord.Client):
                 if await attention.needs_agent(message):
                     await self._engage_agent(message)
                 else:
-                    await self._process_message(message, force_respond=True)
+                    await self._process_message(
+                        message, force_respond=True, directive=directive
+                    )
                 return
 
         await self._process_message(message)
@@ -1762,13 +1764,19 @@ class ChatBot(discord.Client):
             store.mark_completed(msg_id)
 
     async def _process_message(
-        self, message: discord.Message, force_respond: bool = False
+        self,
+        message: discord.Message,
+        force_respond: bool = False,
+        directive: str | None = None,
     ) -> None:
         """Process a message that this pod has locked.
 
         ``force_respond`` skips the ``should_respond`` gate so an ambient
         engage that the depth classify routed to chat (ADR 035 Phase 4) still
-        gets a reply even though it's not a mention/reply.
+        gets a reply even though it's not a mention/reply. ``directive`` is the
+        channel directive already fetched by ``on_message`` for the pre-gate,
+        threaded through to the post-generation send-gate so it is not read from
+        the DB a second time; only the ambient (force_respond) path passes it.
         """
         msg_id = str(message.id)
         channel_id = str(message.channel.id)
@@ -1821,6 +1829,7 @@ class ChatBot(discord.Client):
                     attachments,
                     with_buttons=not force_respond,
                     live=not force_respond,
+                    directive=directive,
                 )
         except Exception:
             logger.exception("Failed to respond to message %s", msg_id)
@@ -1892,6 +1901,7 @@ class ChatBot(discord.Client):
         *,
         with_buttons: bool = True,
         live: bool = True,
+        directive: str | None = None,
     ) -> tuple[discord.Message | None, str, str | None]:
         """Build context and stream the PydanticAI agent response.
 
@@ -2147,13 +2157,12 @@ class ChatBot(discord.Client):
             # on after a brush-off, or invent facts - failures the pre-gate cannot
             # see because it only had the trigger. Ambient only (nothing posted
             # yet, so it can be silently held); a live reply someone is waiting on
-            # is never gated. Fails open. Skipped entirely when disabled.
+            # is never gated. The directive is threaded in from on_message (which
+            # already fetched it for the pre-gate), so there is no second DB read
+            # here. Fails open. Skipped entirely when disabled.
             if attention.SEND_GATE_ENABLED and not live and sent is None:
-                directive = await asyncio.to_thread(
-                    directives.get_active, str(message.channel.id)
-                )
                 if not await attention.should_send(
-                    directive, context, message.content or "", response_text
+                    directive or "", context, message.content or "", response_text
                 ):
                     logger.info(
                         "send-gate: suppressing ambient reply in channel %s",
