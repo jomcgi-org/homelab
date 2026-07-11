@@ -130,6 +130,52 @@ class TestSetReplyMessage:
         assert row.reply_message_id == "333"
 
 
+class TestSetWithheldReason:
+    def test_records_reason_on_latest_engage(self, engine):
+        with patch("chat.attention_log.get_engine", return_value=engine):
+            attention_log.log_decision("c1", "m1", "engage", 0.9, _rng=lambda: 0.0)
+            attention_log.set_withheld_reason(
+                "c1", "m1", attention_log.WITHHELD_SEND_GATE
+            )
+        with Session(engine) as session:
+            row = session.exec(select(AttentionDecision)).one()
+        assert row.withheld_reason == "send_gate"
+        # A withheld engage never has a reply id.
+        assert row.reply_message_id is None
+
+    def test_picks_newest_engage_for_trigger(self, engine):
+        with patch("chat.attention_log.get_engine", return_value=engine):
+            attention_log.log_decision("c1", "m1", "engage", 0.9, _rng=lambda: 0.0)
+            attention_log.log_decision("c1", "m1", "engage", 0.9, _rng=lambda: 0.0)
+            attention_log.set_withheld_reason(
+                "c1", "m1", attention_log.WITHHELD_NO_REPLY
+            )
+        with Session(engine) as session:
+            rows = session.exec(
+                select(AttentionDecision).order_by(AttentionDecision.id)
+            ).all()
+        assert rows[0].withheld_reason is None
+        assert rows[1].withheld_reason == "no_reply"
+
+    def test_noop_when_no_engage_row(self, engine):
+        with patch("chat.attention_log.get_engine", return_value=engine):
+            attention_log.log_decision("c1", "m1", "ignore", 0.1, _rng=lambda: 0.0)
+            attention_log.set_withheld_reason(
+                "c1", "m1", attention_log.WITHHELD_AGENT_THREAD
+            )
+        with Session(engine) as session:
+            row = session.exec(select(AttentionDecision)).one()
+        assert row.withheld_reason is None
+
+    def test_ids_are_stringified(self, engine):
+        with patch("chat.attention_log.get_engine", return_value=engine):
+            attention_log.log_decision(111, 222, "engage", 0.9, _rng=lambda: 0.0)
+            attention_log.set_withheld_reason(111, 222, "empty_reply")
+        with Session(engine) as session:
+            row = session.exec(select(AttentionDecision)).one()
+        assert row.withheld_reason == "empty_reply"
+
+
 class TestDecisionCheckConstraint:
     def test_rejects_invalid_decision(self, engine):
         with Session(engine) as session:

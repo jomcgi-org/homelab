@@ -475,6 +475,11 @@ class AttentionDecision(SQLModel, table=True):
     confidence: float = Field(default=0.0)
     directive_version: int = Field(default=0)
     reply_message_id: str | None = Field(default=None)
+    # Why an engage produced no in-channel reply (null when one was sent). One
+    # of 'agent_thread', 'no_reply', 'send_gate', 'empty_reply'; see the
+    # 20260711200000 migration. Lets /improve-ambient tell the silent paths
+    # apart instead of guessing from a null reply_message_id.
+    withheld_reason: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

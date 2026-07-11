@@ -30,6 +30,14 @@ is no exact "did a human follow up" link). Overlapping episodes in the same
 channel can share the windowed signal; the Opus deep-read (fetch-episode)
 resolves ambiguity per episode. ``reaction_match`` on each record flags which
 path was used ("exact" or "time-window-heuristic").
+
+Each record also carries ``withheld_reason``: why the engage produced no
+in-channel reply, disambiguating the silent paths that a null
+``reply_message_id`` alone cannot. One of ``agent_thread`` (routed to the goose
+guest), ``no_reply`` (the model chose silence), ``send_gate`` (the
+post-generation gate vetoed the drafted reply), ``empty_reply`` (no content),
+or null when a reply was sent. Records from before the column existed are null
+even when suppressed, so scope any rate over it to the current window.
 The agent-thread match is likewise a nearest-in-time heuristic
 (``_AGENT_WINDOW_MINUTES``): ``claude_agent.agent_threads`` carries no channel
 or trigger-message key, only a ``session_id`` (the run's own Discord thread), so
@@ -98,6 +106,7 @@ SELECT
     ad.directive_version        AS directive_version,
     ad.created_at               AS created_at,
     ad.reply_message_id         AS reply_message_id,
+    ad.withheld_reason          AS withheld_reason,
     m.user_id                   AS author_id,
     m.username                  AS author_name,
     LEFT(m.content, 500)        AS trigger_content,
