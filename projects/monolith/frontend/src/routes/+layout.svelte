@@ -7,6 +7,11 @@
 
   let isPrivate = $derived($page.url.hostname.startsWith("private."));
 
+  // The private tier drops the shared Nav entirely: the dashboard at the
+  // private root IS the nav (launcher grid, queue links, back affordances),
+  // and routes/private/+layout.svelte renders its own minimal chrome (a
+  // small "back to dashboard" link on non-root private paths).
+  //
   // Apps under /app/* are full-screen experiences (e.g. the live ships map)
   // that render their own chrome, so the site nav is suppressed for them. The
   // hooks.js reroute keeps the browser path un-prefixed, but match the
@@ -30,7 +35,8 @@
   // (wordmark + tabs) and are a full-page tool, not a page of the portfolio
   // site, so the global nav is suppressed here too.
   let hideNav = $derived(
-    /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
+    isPrivate ||
+      /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?demos(\/|$)/.test($page.url.pathname) ||
