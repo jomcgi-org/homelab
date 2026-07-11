@@ -579,9 +579,8 @@ async def report_pr_scan(
     is required and threaded into the App's ``pull_request_id``, exactly as
     before. ``is_full_scan=True`` is the whole-repo interfile FULL scan (the
     ``semgrep-full`` workload, reported ``"on": "schedule"``): ``pr_id`` is not
-    needed (pass None, the default) and is never sent to the App, since
-    ``_build_project_metadata`` omits ``pull_request_id`` entirely for a full
-    scan.
+    needed (pass None, the default) and the App's ``pull_request_id`` is sent as
+    an empty string, which the ProjectMetadata schema requires.
 
     On ANY failure after the scan is opened it POSTs ``/error`` in the exception
     path so the App never wedges the PR check on an open scan. ``SEMGREP_APP_TOKEN``
