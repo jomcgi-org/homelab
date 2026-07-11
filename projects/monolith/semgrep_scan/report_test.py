@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -70,6 +71,80 @@ def test_mapping_reproduces_fingerprint_and_count():
     # fingerprint's rule_id component lines up regardless of rules-dir layout.
     rule_ids = [rm.rule_id for ms in filtered.kept.values() for rm in ms]
     assert rule_ids == [_EXPECTED_CHECK_ID]
+
+
+def test_mapping_accepts_dict_cli_output():
+    """The real fc-invoke client returns the whole response via resp.json(), so
+    raw_cli_output arrives already parsed as a dict (not a str). The mapping must
+    accept the dict form and still reproduce the byte-identical fingerprint."""
+    cli_dict = json.loads(_CLI_OUTPUT)
+    assert isinstance(cli_dict, dict)
+
+    filtered, rules_with_matches, unmatched = report.map_cli_output_to_matches(
+        cli_dict, rules_dir=_RULES_DIR, files=_FILES
+    )
+
+    total = sum(len(ms) for ms in filtered.kept.values())
+    assert total == 1
+    assert unmatched == []
+    assert len(rules_with_matches) == 1
+
+    match_ids = [rm.match_based_id for ms in filtered.kept.values() for rm in ms]
+    assert match_ids == [_EXPECTED_FINGERPRINT]
+
+
+def test_only_fired_rules_are_loaded_not_whole_dir():
+    """Regression guard for the OOM: loading the whole rules dir (~1000+ rules)
+    OOM-kills the 1Gi monolith. The mapping must load ONLY the rules whose
+    check_id actually fired. We assert the loader is driven by the fired
+    check_id set (never asked for everything) and that per-file loading only ever
+    touches files, never the whole dir at once."""
+    fired = {r["check_id"] for r in json.loads(_CLI_OUTPUT)["results"]}
+    assert len(fired) == 1  # the fixture fires exactly one rule
+
+    real_load_fired = report._load_fired_rules
+    seen_check_id_sets = []
+
+    def _spy_load_fired(rules_dir, check_ids):
+        seen_check_id_sets.append(set(check_ids))
+        return real_load_fired(rules_dir, check_ids)
+
+    # And spy the underlying Config.from_config_list so we can prove it is only
+    # ever called with a single rule FILE, never the whole rules_dir directory.
+    from semgrep.config_resolver import Config
+
+    real_from_config_list = Config.from_config_list
+    config_list_args = []
+
+    def _spy_from_config_list(config_list, **kwargs):
+        config_list_args.append(list(config_list))
+        return real_from_config_list(config_list, **kwargs)
+
+    with (
+        mock.patch.object(report, "_load_fired_rules", _spy_load_fired),
+        mock.patch.object(
+            Config, "from_config_list", staticmethod(_spy_from_config_list)
+        ),
+    ):
+        filtered, rules_with_matches, unmatched = report.map_cli_output_to_matches(
+            _CLI_OUTPUT, rules_dir=_RULES_DIR, files=_FILES
+        )
+
+    # The loader was asked ONLY for the fired check_ids, never for "everything".
+    assert seen_check_id_sets == [fired]
+
+    # Config was never handed the whole rules_dir; every call targets a single
+    # rule file (bounded per-file load = bounded memory).
+    assert config_list_args, "expected at least one per-file config load"
+    for args in config_list_args:
+        assert _RULES_DIR not in args
+        for entry in args:
+            assert os.path.isfile(entry), f"expected a rule file, got {entry!r}"
+
+    # Sanity: the fingerprint still reproduces from the fired-only rule set.
+    match_ids = [rm.match_based_id for ms in filtered.kept.values() for rm in ms]
+    assert match_ids == [_EXPECTED_FINGERPRINT]
+    assert unmatched == []
 
 
 def test_materialized_sources_restores_cwd():
