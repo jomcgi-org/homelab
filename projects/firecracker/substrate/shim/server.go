@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 )
 
 // Request carries the inbound /invoke call to a workload Handler. Path is the
@@ -113,6 +114,15 @@ func (s *Server) invokeHandler(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if resp != nil && resp.Status != 0 {
 		status = resp.Status
+	}
+	// Set an explicit Content-Length so the response is fixed-length framed, not
+	// chunked. WriteHeader commits the response before the body is written, so
+	// without this Go falls back to chunked transfer-encoding; a large body (a
+	// whole-repo scan result is hundreds of KiB) chunked over the vsock transport
+	// surfaced as "malformed chunked encoding" resets on the daemon side. The body
+	// is a known-size []byte, so a Content-Length is always available and correct.
+	if resp != nil {
+		w.Header().Set("Content-Length", strconv.Itoa(len(resp.Body)))
 	}
 	w.WriteHeader(status)
 	if resp != nil {
