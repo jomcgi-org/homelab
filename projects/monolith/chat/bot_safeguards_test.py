@@ -149,11 +149,16 @@ class TestLockoutEnforcement:
             patch("chat.bot.safeguards.log_enforcement", MagicMock()) as mock_log,
             patch("chat.bot.acl.ambient_channels", MagicMock(return_value={"99"})),
             patch("chat.bot.directives.get_active", MagicMock(return_value=None)),
+            patch("chat.bot.directives.get_active_version", MagicMock(return_value=3)),
             patch.object(bot, "_recently_tagged", MagicMock(return_value=False)),
             patch(
                 "chat.bot.attention.evaluate",
-                AsyncMock(return_value=MagicMock(engage=True)),
+                AsyncMock(return_value=MagicMock(engage=True, confidence=0.9)),
             ) as mock_eval,
+            patch("chat.bot.attention_log.log_decision", MagicMock()) as mock_decision,
+            patch(
+                "chat.bot.attention_log.set_withheld_reason", MagicMock()
+            ) as mock_withheld,
             patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
@@ -167,6 +172,12 @@ class TestLockoutEnforcement:
         assert message.add_reaction.call_args.args[0] == "⚓"
         mock_log.assert_called_once()
         assert mock_log.call_args.args[1] is True  # reacted
+        # The classifier's engage is logged and stamped so /improve-ambient can
+        # see lockout suppressed a reply-worthy message.
+        mock_decision.assert_called_once()
+        assert mock_decision.call_args.args[2] == "engage"
+        mock_withheld.assert_called_once()
+        assert mock_withheld.call_args.args[2] == "locked_out"
         # Emoji only: no reply, no agent run.
         mock_proc.assert_not_called()
 
@@ -190,11 +201,16 @@ class TestLockoutEnforcement:
             patch("chat.bot.safeguards.log_enforcement", MagicMock()) as mock_log,
             patch("chat.bot.acl.ambient_channels", MagicMock(return_value={"99"})),
             patch("chat.bot.directives.get_active", MagicMock(return_value=None)),
+            patch("chat.bot.directives.get_active_version", MagicMock(return_value=3)),
             patch.object(bot, "_recently_tagged", MagicMock(return_value=False)),
             patch(
                 "chat.bot.attention.evaluate",
-                AsyncMock(return_value=MagicMock(engage=False)),
+                AsyncMock(return_value=MagicMock(engage=False, confidence=0.1)),
             ) as mock_eval,
+            patch("chat.bot.attention_log.log_decision", MagicMock()) as mock_decision,
+            patch(
+                "chat.bot.attention_log.set_withheld_reason", MagicMock()
+            ) as mock_withheld,
             patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
@@ -207,6 +223,11 @@ class TestLockoutEnforcement:
         message.add_reaction.assert_not_called()
         mock_log.assert_not_called()
         mock_proc.assert_not_called()
+        # The ignore is still logged (mirrors the normal path), but nothing is
+        # stamped withheld: there was no engage to suppress.
+        mock_decision.assert_called_once()
+        assert mock_decision.call_args.args[2] == "ignore"
+        mock_withheld.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reaction_failure_still_suppresses_reply(self):
