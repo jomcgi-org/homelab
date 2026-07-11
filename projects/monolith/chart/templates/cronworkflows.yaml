@@ -53,6 +53,14 @@ spec:
       secondsAfterCompletion: 3600
       secondsAfterSuccess: 3600
       secondsAfterFailure: 86400
+    # Delete pods as soon as the workflow succeeds instead of letting them sit
+    # for the full ttlStrategy window (1h). The Workflow object still lingers
+    # per ttlStrategy for status visibility; only the finished pods are reaped
+    # promptly, so completed CronWorkflow pods do not accumulate in the
+    # namespace. Failed workflows keep their pods (OnWorkflowSuccess only) so a
+    # failure remains debuggable until secondsAfterFailure (24h) expires.
+    podGC:
+      strategy: OnWorkflowSuccess
     templates:
       - name: run
         container:
