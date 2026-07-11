@@ -303,3 +303,63 @@ class TestProcessMessageEarlyReturn:
 
         # save_message should have been called (message was stored)
         mock_store.save_message.assert_called()
+
+
+class TestExplicitSummonsIsLive:
+    """An explicit summons (a direct @mention / reply to Bosun) routed to the
+    ambient chat path must be marked live=True so the no_reply tool and the
+    post-generation send-gate cannot silently eat it (the ep-236 regression)."""
+
+    def _make_msg(self):
+        msg = MagicMock()
+        msg.id = 7
+        msg.content = "<@1> the site is cool, true or false?"
+        msg.attachments = []
+        msg.author.bot = False
+        msg.author.id = 42
+        msg.author.display_name = "TestUser"
+        msg.channel.id = 99
+        msg.mentions = []
+        msg.reference = None
+        msg.reply = AsyncMock(return_value=MagicMock(id=200))
+        msg.channel.typing = MagicMock(return_value=_async_cm())
+        return msg
+
+    def _make_store(self):
+        store = AsyncMock()
+        store.save_message = AsyncMock()
+        store.mark_completed = MagicMock()
+        return store
+
+    async def _run(self, *, force_respond: bool, explicit: bool):
+        bot = _make_bot()
+        msg = self._make_msg()
+        mock_store = self._make_store()
+        stream = AsyncMock(return_value=(None, "", None))
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.download_image_attachments", AsyncMock(return_value=[])),
+            patch.object(bot, "_stream_response", stream),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot._process_message(
+                msg, force_respond=force_respond, explicit=explicit
+            )
+        return stream
+
+    @pytest.mark.asyncio
+    async def test_explicit_ambient_engage_is_live(self):
+        stream = await self._run(force_respond=True, explicit=True)
+        stream.assert_called_once()
+        assert stream.call_args.kwargs["live"] is True
+
+    @pytest.mark.asyncio
+    async def test_soft_ambient_engage_stays_suppressible(self):
+        stream = await self._run(force_respond=True, explicit=False)
+        stream.assert_called_once()
+        assert stream.call_args.kwargs["live"] is False

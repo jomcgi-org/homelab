@@ -511,7 +511,11 @@ class TestAttentionGate:
             patch("chat.bot.attention_log.log_decision", MagicMock()),
             patch(
                 "chat.bot.attention.evaluate",
-                AsyncMock(return_value=SimpleNamespace(engage=True, confidence=0.9)),
+                AsyncMock(
+                    return_value=SimpleNamespace(
+                        engage=True, confidence=0.9, explicit=False
+                    )
+                ),
             ),
             patch(
                 "chat.bot.attention.needs_agent", AsyncMock(return_value=False)
@@ -524,7 +528,9 @@ class TestAttentionGate:
             patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
             patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
-            mock_evaluate.return_value = SimpleNamespace(engage=True, confidence=0.9)
+            mock_evaluate.return_value = SimpleNamespace(
+                engage=True, confidence=0.9, explicit=False
+            )
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=MagicMock()
             )
@@ -535,10 +541,65 @@ class TestAttentionGate:
             assert mock_evaluate.call_args.kwargs.get("recently_tagged") is True
             mock_needs_agent.assert_called_once()
             # The directive fetched for the pre-gate is threaded through to the
-            # post-generation send-gate rather than re-read from the DB.
-            mock_proc.assert_called_once_with(message, force_respond=True, directive="")
+            # post-generation send-gate rather than re-read from the DB. A soft
+            # classifier engage is not an explicit summons, so explicit=False and
+            # the reply stays suppressible.
+            mock_proc.assert_called_once_with(
+                message, force_respond=True, explicit=False, directive=""
+            )
             mock_engage_agent.assert_not_called()
             mock_start_flow.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_explicit_ambient_engage_marks_reply_live(self):
+        """A direct @mention in an ambient channel that routes to chat is an
+        explicit summons: on_message threads explicit=True into _process_message
+        so the no_reply tool / send-gate cannot silently eat an answer someone is
+        waiting on (the ep-236 regression)."""
+        bot = _make_bot()
+
+        message = _make_message(content="<@1> the site is cool, true or false?")
+        message.reference = None
+        message.guild = None
+        message.channel = MagicMock(spec=discord.TextChannel)
+        message.channel.id = 99
+
+        mock_store = _make_store()
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.acl.ambient_channels", return_value={"99"}),
+            patch("chat.bot.directives.get_active", return_value="only @-mentions"),
+            patch("chat.bot.directives.get_active_version", return_value=4),
+            patch("chat.bot.attention_log.log_decision", MagicMock()),
+            patch("chat.bot.attention.needs_agent", AsyncMock(return_value=False)),
+            patch.object(bot, "_recently_tagged", MagicMock(return_value=False)),
+            patch(
+                "chat.bot.attention.evaluate",
+                AsyncMock(
+                    return_value=SimpleNamespace(
+                        engage=True, confidence=1.0, explicit=True
+                    )
+                ),
+            ),
+            patch.object(bot, "_engage_agent", AsyncMock()) as mock_engage_agent,
+            patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+            mock_proc.assert_called_once_with(
+                message,
+                force_respond=True,
+                explicit=True,
+                directive="only @-mentions",
+            )
+            mock_engage_agent.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_mention_in_ambient_channel_without_grant_gets_refusal(self):

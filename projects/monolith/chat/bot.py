@@ -946,7 +946,10 @@ class ChatBot(discord.Client):
                     await self._engage_agent(message)
                 else:
                     await self._process_message(
-                        message, force_respond=True, directive=directive
+                        message,
+                        force_respond=True,
+                        explicit=result.explicit,
+                        directive=directive,
                     )
                 return
 
@@ -1767,16 +1770,23 @@ class ChatBot(discord.Client):
         self,
         message: discord.Message,
         force_respond: bool = False,
+        explicit: bool = False,
         directive: str | None = None,
     ) -> None:
         """Process a message that this pod has locked.
 
         ``force_respond`` skips the ``should_respond`` gate so an ambient
         engage that the depth classify routed to chat (ADR 035 Phase 4) still
-        gets a reply even though it's not a mention/reply. ``directive`` is the
-        channel directive already fetched by ``on_message`` for the pre-gate,
-        threaded through to the post-generation send-gate so it is not read from
-        the DB a second time; only the ambient (force_respond) path passes it.
+        gets a reply even though it's not a mention/reply. ``explicit`` marks an
+        ambient engage that is actually a hard summons (a direct @mention or a
+        reply to Bosun): it keeps the reply on the live, never-suppressed path
+        even though ``force_respond`` routed it here, so the no_reply tool and
+        the post-generation send-gate cannot silently eat an answer someone is
+        waiting on. (A soft ambient interjection leaves ``explicit`` False and
+        stays suppressible.) ``directive`` is the channel directive already
+        fetched by ``on_message`` for the pre-gate, threaded through to the
+        post-generation send-gate so it is not read from the DB a second time;
+        only the ambient (force_respond) path passes it.
         """
         msg_id = str(message.id)
         channel_id = str(message.channel.id)
@@ -1828,7 +1838,10 @@ class ChatBot(discord.Client):
                     message,
                     attachments,
                     with_buttons=not force_respond,
-                    live=not force_respond,
+                    # An explicit summons is always live (never suppressed),
+                    # even on the ambient force_respond path: the mention set
+                    # engage=1.0, so a person is waiting on an answer.
+                    live=(not force_respond) or explicit,
                     directive=directive,
                 )
         except Exception:
