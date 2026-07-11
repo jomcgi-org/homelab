@@ -104,6 +104,7 @@ ADRs document significant architectural decisions and their context.
 | [010 - FastMonolith Modular Framework](services/010-fastmonolith-modular-framework.md)            | Privilege-typed, data-isolated domain modules composed into per-tier binaries              |
 | [011 - Grimoire Hot-Tier Schema](services/011-grimoire-hot-tier-schema.md)                        | Typed CTI schema + grant-overlay visibility on monolith Postgres, checked out from Loom    |
 | [012 - Grimoire Postgres-First, Loom-Shaped](services/012-grimoire-postgres-first-loom-shaped.md) | Build Grimoire entirely in monolith Postgres with Loom-compatible shapes; Iceberg deferred |
+| [013 - Grimoire Knowledge Audiences](services/013-grimoire-knowledge-audiences.md)                | Corpus-derived character knowledge as audience rules compiled into grants                  |
 | [014 - Grimoire Post-Extraction Quality Passes](services/014-grimoire-post-extraction-quality-passes.md) | Evidence-grounded stat verifier + report-first alias merge over the extracted graph |
 
 ## Tooling
