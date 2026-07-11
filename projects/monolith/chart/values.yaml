@@ -724,6 +724,13 @@ chat:
 # deploy/values.yaml; never hardcode it in a template.
 semgrep:
   fcInvokeUrl: ""
+  # Shadow project override (Route B vs SMS comparison): when set, the relay
+  # reports its App scans under THIS project name instead of the real repo, so
+  # Route B (self-hosted) scans land in a SEPARATE Semgrep project from SMS's
+  # jomcgi/homelab project. Injected as SEMGREP_SHADOW_PROJECT; empty (the
+  # cutover state) makes Route B report to the real project. Plain value, not a
+  # secret.
+  shadowProject: ""
   # Semgrep AppSec Platform reporting (Route B, self-hosted CI reporting): the
   # relay (semgrep_scan/report.py) uploads fc-invoke findings using pysemgrep's
   # own client, authenticated by SEMGREP_APP_TOKEN. Set onepassword.itemPath in

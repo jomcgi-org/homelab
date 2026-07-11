@@ -34,7 +34,9 @@ import hashlib
 import hmac
 import logging
 import os
+import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
@@ -185,6 +187,70 @@ async def _gather_files(repo: str, pr_number: int, head_sha: str) -> list[dict]:
     return files
 
 
+# The commit-status context string GitHub shows on the PR. Namespaced so it is
+# obviously the self-hosted Route B signal and never collides with SMS's native
+# Semgrep check.
+_STATUS_CONTEXT = "route-b/semgrep"
+
+
+def _app_scan_url(org: str, project: str, scan_id: Any) -> str:
+    """Best-effort App URL for a Route B scan, for the status ``target_url``.
+
+    The App scans live under an org-scoped project slug. We url-encode the project
+    (it contains a ``/``, e.g. ``jomcgi/homelab-selfhosted``) so it is one path
+    segment. ASSUMPTION: this ``.../projects/{project}/scans/{scan_id}`` shape is
+    the shadow-project scan URL; it is a convenience link, not load-bearing, so a
+    format drift only breaks the click-through, never the scan itself.
+    """
+    return (
+        f"https://semgrep.dev/orgs/{org}/projects/"
+        f"{quote(project, safe='')}/scans/{scan_id}"
+    )
+
+
+async def _post_commit_status(
+    *,
+    repo: str,
+    head_sha: str,
+    state: str,
+    description: str,
+    target_url: str | None,
+) -> None:
+    """POST a GitHub commit status to the REAL repo's PR head sha, best-effort.
+
+    Route B is in a VALIDATION (non-gating) phase, so we surface findings + latency
+    as our own commit status on the real repo (a PAT with repo scope can post
+    statuses even though it cannot create Check Runs, which is why we use statuses
+    and not a Check Run). The status is posted to ``{real_repo}`` (from the webhook
+    ``repository.full_name``), NOT the shadow project the App report used.
+
+    A status failure must NEVER crash the scan job, so the whole POST is wrapped in
+    try/except and only logged. GitHub caps ``description`` at 140 chars.
+    """
+    try:
+        body: dict[str, Any] = {
+            "state": state,
+            "context": _STATUS_CONTEXT,
+            "description": description[:140],
+        }
+        if target_url:
+            body["target_url"] = target_url
+        async with httpx.AsyncClient(timeout=httpx.Timeout(_GITHUB_TIMEOUT)) as client:
+            resp = await client.post(
+                f"{_GITHUB_API}/repos/{repo}/statuses/{head_sha}",
+                headers=_github_headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+    except Exception:
+        logger.exception(
+            "semgrep webhook: failed to post %s commit status to %s@%s",
+            _STATUS_CONTEXT,
+            repo,
+            head_sha,
+        )
+
+
 async def _scan_and_report(payload: dict[str, Any]) -> None:
     """Background job: gather changed files, scan on fc-invoke, report to the App.
 
@@ -223,6 +289,11 @@ async def _scan_and_report(payload: dict[str, Any]) -> None:
             )
             return
 
+        # Wall-clock timer around the scan + report: the in-cluster (SigNoz-
+        # queryable, via the structured log below) latency signal for comparing
+        # Route B against SMS.
+        started = time.monotonic()
+
         scan = await scan_files(files)
         if not isinstance(scan, dict) or scan.get("error"):
             logger.error(
@@ -242,20 +313,50 @@ async def _scan_and_report(payload: dict[str, Any]) -> None:
             raw_cli_output=scan.get("raw_cli_output"),
             repo_url=repo_url,
         )
-        if result.get("ok"):
+        latency = time.monotonic() - started
+
+        scan_id = result.get("scan_id")
+        findings = result.get("findings_reported")
+        project = result.get("project", repo)
+        org = result.get("org", "jomcgi")
+
+        if result.get("ok") and scan_id:
             logger.info(
-                "semgrep webhook: reported %s#%s scan_id=%s findings=%s",
+                "semgrep webhook: reported %s#%s scan_id=%s findings=%s "
+                "latency=%.2fs project=%s",
                 repo,
                 pr_number,
-                result.get("scan_id"),
-                result.get("findings_reported"),
+                scan_id,
+                findings,
+                latency,
+                project,
+            )
+            # VALIDATION phase: non-gating, always "success". At cutover this maps
+            # result["app_block_override"] -> "failure" else "success".
+            await _post_commit_status(
+                repo=repo,
+                head_sha=head_sha,
+                state="success",
+                description=f"{findings} findings, {latency:.1f}s",
+                target_url=_app_scan_url(org, project, scan_id),
             )
         else:
+            error = result.get("error")
             logger.error(
-                "semgrep webhook: App report failed for %s#%s: %s",
+                "semgrep webhook: App report failed for %s#%s: %s (latency=%.2fs)",
                 repo,
                 pr_number,
-                result.get("error"),
+                error,
+                latency,
+            )
+            # Report failed (no scan_id / not ok): surface it as an error status
+            # with no target_url (there is no App scan to link to).
+            await _post_commit_status(
+                repo=repo,
+                head_sha=head_sha,
+                state="error",
+                description=f"report failed: {error}",
+                target_url=None,
             )
     except Exception:
         logger.exception("semgrep webhook: background scan/report crashed")
