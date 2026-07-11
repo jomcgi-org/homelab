@@ -534,7 +534,9 @@ class TestAttentionGate:
             mock_recently_tagged.assert_called_once_with("99", str(message.id))
             assert mock_evaluate.call_args.kwargs.get("recently_tagged") is True
             mock_needs_agent.assert_called_once()
-            mock_proc.assert_called_once_with(message, force_respond=True)
+            # The directive fetched for the pre-gate is threaded through to the
+            # post-generation send-gate rather than re-read from the DB.
+            mock_proc.assert_called_once_with(message, force_respond=True, directive="")
             mock_engage_agent.assert_not_called()
             mock_start_flow.assert_not_called()
 
