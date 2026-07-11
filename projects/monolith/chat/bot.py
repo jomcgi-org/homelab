@@ -894,11 +894,14 @@ class ChatBot(discord.Client):
                 return
 
         # Trust safeguards (ADR chat/003): heuristic signals update the
-        # per-user ledger on every message, before any LLM spend. A locked-out
-        # author gets no engagement at all: no attention classify, no reply,
-        # no agent run. When they address the bot directly, the brig emoji on
-        # their message says "seen, but suppressed"; a locked-out user lurking
-        # in ambient chat is simply ignored. observe_message fails open, so a
+        # per-user ledger on every message, before any reply, agent run, or
+        # message storage. A locked-out author never gets a reply. The brig
+        # emoji on their message says "seen, but suppressed": it lands when they
+        # address the bot directly, and also when the attention classifier would
+        # have engaged them in an ambient channel. That ambient case runs the
+        # classify (one LLM call) but nothing downstream, so a gated lurker can
+        # tell Bosun would have replied; a locked user whose ambient message the
+        # classifier ignores stays silent. observe_message fails open, so a
         # ledger error can never block normal chat.
         guild_id = message.guild.id if message.guild else None
         addressed = should_respond(message, self.user)
@@ -923,13 +926,38 @@ class ChatBot(discord.Client):
             verdict = safeguards.Verdict(addressed=addressed)
         if verdict.locked_out:
             reacted = False
-            if addressed:
+            # Addressed messages always warrant the brig emoji. For an
+            # unaddressed (lurking) message, run ONLY the attention classify in
+            # an ambient channel: if it would have engaged, the emoji still
+            # lands, but no reply, agent run, or storage follows. This
+            # deliberately relaxes the zero-spend-when-locked property to a
+            # single classify so a gated user can see they were heard.
+            should_mark = addressed
+            if not should_mark and await self._resolve_ambient(
+                guild_id, channel_id, message
+            ):
+                directive = await asyncio.to_thread(directives.get_active, channel_id)
+                recently_tagged = await asyncio.to_thread(
+                    self._recently_tagged, channel_id, msg_id
+                )
+                try:
+                    result = await attention.evaluate(
+                        message,
+                        directive,
+                        self.user,
+                        True,
+                        recently_tagged=recently_tagged,
+                    )
+                    should_mark = result.engage
+                except Exception:
+                    logger.exception("safeguards: locked-out ambient classify failed")
+            if should_mark:
                 try:
                     await message.add_reaction(safeguards.LOCKOUT_EMOJI)
                     reacted = True
                 except Exception:
                     logger.exception("safeguards: lockout reaction failed")
-            if addressed or verdict.signals:
+            if addressed or verdict.signals or reacted:
                 try:
                     await asyncio.to_thread(
                         safeguards.log_enforcement, safeguards_payload, reacted
@@ -963,28 +991,7 @@ class ChatBot(discord.Client):
         # conversation stays in-monolith (see needs_agent below), so
         # server-wide "mentions always engage" no longer needs a heavy guest
         # run to be safe to extend.
-        try:
-            ambient = await asyncio.to_thread(acl.ambient_channels, guild_id)
-            # A Discord thread is its own channel with its own id, distinct from
-            # its parent. Ambient grants are scoped to the parent channel, so a
-            # thread inherits ambient from its parent: check the parent id too
-            # when this is a thread. Agent/artifact threads never reach here
-            # (they return above), so this only opens ordinary user threads
-            # under a granted channel. channel_id stays the thread id, so the
-            # directive lookup, recent-tag check, and decision log all key off
-            # the thread's own history.
-            is_ambient = channel_id in ambient
-            if not is_ambient and isinstance(message.channel, discord.Thread):
-                parent_id = message.channel.parent_id
-                is_ambient = parent_id is not None and str(parent_id) in ambient
-        except Exception:
-            # Best-effort: if the grants read fails (DB blip), treat the channel
-            # as non-ambient and fall through to normal handling rather than
-            # dropping the message. Fail closed (no ambient engage on error).
-            logger.exception(
-                "attention: ambient lookup failed; treating as non-ambient"
-            )
-            is_ambient = False
+        is_ambient = await self._resolve_ambient(guild_id, channel_id, message)
         if is_ambient:
             directive = await asyncio.to_thread(directives.get_active, channel_id)
             recently_tagged = await asyncio.to_thread(
@@ -1032,6 +1039,35 @@ class ChatBot(discord.Client):
                 return
 
         await self._process_message(message)
+
+    async def _resolve_ambient(
+        self, guild_id, channel_id: str, message: discord.Message
+    ) -> bool:
+        """True if this channel has an ambient grant.
+
+        A Discord thread is its own channel with its own id, distinct from its
+        parent. Ambient grants are scoped to the parent channel, so a thread
+        inherits ambient from its parent: the parent id is checked too when this
+        is a thread. Agent/artifact threads never reach the ambient gate (they
+        return earlier in on_message), so this only opens ordinary user threads
+        under a granted channel.
+
+        Fails closed (non-ambient) on a grants-read error (DB blip), so a
+        failure never spuriously engages nor strands the message.
+        """
+        try:
+            ambient = await asyncio.to_thread(acl.ambient_channels, guild_id)
+        except Exception:
+            logger.exception(
+                "attention: ambient lookup failed; treating as non-ambient"
+            )
+            return False
+        if channel_id in ambient:
+            return True
+        if isinstance(message.channel, discord.Thread):
+            parent_id = message.channel.parent_id
+            return parent_id is not None and str(parent_id) in ambient
+        return False
 
     async def _persist_reaction_signal(
         self, payload: discord.RawReactionActionEvent, action: str

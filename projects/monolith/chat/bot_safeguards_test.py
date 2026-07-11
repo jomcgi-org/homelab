@@ -96,7 +96,8 @@ class TestLockoutEnforcement:
         mock_ambient.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_locked_out_unaddressed_is_silently_ignored(self):
+    async def test_locked_out_unaddressed_non_ambient_is_silently_ignored(self):
+        """A lurking message in a non-ambient channel: no classify, no emoji."""
         bot = _make_bot()
         message = _make_message("lurking quietly")
         mock_store = _make_store()
@@ -111,6 +112,8 @@ class TestLockoutEnforcement:
                 return_value=Verdict(locked_out=True, score=10.0),
             ),
             patch("chat.bot.safeguards.log_enforcement", MagicMock()) as mock_log,
+            patch("chat.bot.acl.ambient_channels", MagicMock(return_value=set())),
+            patch("chat.bot.attention.evaluate", AsyncMock()) as mock_eval,
             patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
@@ -119,6 +122,88 @@ class TestLockoutEnforcement:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
+        message.add_reaction.assert_not_called()
+        mock_log.assert_not_called()
+        mock_proc.assert_not_called()
+        # Non-ambient: the classifier is never even consulted.
+        mock_eval.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_locked_out_ambient_would_engage_gets_brig_emoji(self):
+        """A lurking message the classifier would engage in an ambient channel
+        still earns the brig emoji: the gated user sees Bosun would have replied,
+        but no reply, agent, or storage follows."""
+        bot = _make_bot()
+        message = _make_message("something bosun would jump on")
+        mock_store = _make_store()
+        p_engine, p_session, p_store = _lock_patches(mock_store)
+
+        with (
+            p_engine,
+            p_session as mock_session_cls,
+            p_store,
+            patch(
+                "chat.bot.safeguards.observe_message",
+                return_value=Verdict(locked_out=True, score=10.0),
+            ),
+            patch("chat.bot.safeguards.log_enforcement", MagicMock()) as mock_log,
+            patch("chat.bot.acl.ambient_channels", MagicMock(return_value={"99"})),
+            patch("chat.bot.directives.get_active", MagicMock(return_value=None)),
+            patch.object(bot, "_recently_tagged", MagicMock(return_value=False)),
+            patch(
+                "chat.bot.attention.evaluate",
+                AsyncMock(return_value=MagicMock(engage=True)),
+            ) as mock_eval,
+            patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+        mock_eval.assert_awaited_once()
+        message.add_reaction.assert_awaited_once()
+        assert message.add_reaction.call_args.args[0] == "⚓"
+        mock_log.assert_called_once()
+        assert mock_log.call_args.args[1] is True  # reacted
+        # Emoji only: no reply, no agent run.
+        mock_proc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_locked_out_ambient_would_ignore_stays_silent(self):
+        """A lurking message the classifier would ignore stays fully silent,
+        even in an ambient channel: no emoji, no reply, no enforcement log."""
+        bot = _make_bot()
+        message = _make_message("ordinary lurking chatter")
+        mock_store = _make_store()
+        p_engine, p_session, p_store = _lock_patches(mock_store)
+
+        with (
+            p_engine,
+            p_session as mock_session_cls,
+            p_store,
+            patch(
+                "chat.bot.safeguards.observe_message",
+                return_value=Verdict(locked_out=True, score=10.0),
+            ),
+            patch("chat.bot.safeguards.log_enforcement", MagicMock()) as mock_log,
+            patch("chat.bot.acl.ambient_channels", MagicMock(return_value={"99"})),
+            patch("chat.bot.directives.get_active", MagicMock(return_value=None)),
+            patch.object(bot, "_recently_tagged", MagicMock(return_value=False)),
+            patch(
+                "chat.bot.attention.evaluate",
+                AsyncMock(return_value=MagicMock(engage=False)),
+            ) as mock_eval,
+            patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+        mock_eval.assert_awaited_once()
         message.add_reaction.assert_not_called()
         mock_log.assert_not_called()
         mock_proc.assert_not_called()
