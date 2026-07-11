@@ -1,0 +1,180 @@
+{
+  "version": "1.146.0",
+  "results": [
+    {
+      "check_id": "rules.python.lang.security.dangerous-system-call.dangerous-system-call",
+      "path": "repo/newfile.py",
+      "start": {
+        "line": 7,
+        "col": 5,
+        "offset": 86
+      },
+      "end": {
+        "line": 7,
+        "col": 17,
+        "offset": 98
+      },
+      "extra": {
+        "metavars": {},
+        "message": "Found user-controlled data used in a system call. This could allow a malicious actor to execute commands. Use the 'subprocess' module instead, which is easier to use without accidentally exposing a command injection vulnerability.",
+        "metadata": {
+          "source-rule-url": "https://bandit.readthedocs.io/en/latest/plugins/b605_start_process_with_a_shell.html",
+          "cwe": [
+            "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+          ],
+          "owasp": [
+            "A01:2017 - Injection",
+            "A03:2021 - Injection",
+            "A05:2025 - Injection"
+          ],
+          "references": [
+            "https://semgrep.dev/docs/cheat-sheets/python-command-injection/"
+          ],
+          "asvs": {
+            "control_id": "5.2.4 Dyanmic Code Execution Features",
+            "control_url": "https://github.com/OWASP/ASVS/blob/master/4.0/en/0x13-V5-Validation-Sanitization-Encoding.md#v52-sanitization-and-sandboxing-requirements",
+            "section": "V5: Validation, Sanitization and Encoding Verification Requirements",
+            "version": "4"
+          },
+          "category": "security",
+          "technology": ["python"],
+          "confidence": "MEDIUM",
+          "cwe2022-top25": true,
+          "cwe2021-top25": true,
+          "subcategory": ["vuln"],
+          "likelihood": "HIGH",
+          "impact": "HIGH",
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": ["Command Injection"],
+          "source": "https://semgrep.dev/r/python.lang.security.dangerous-system-call.dangerous-system-call",
+          "shortlink": "https://sg.run/k0W7",
+          "semgrep.dev": {
+            "rule": {
+              "origin": "community",
+              "r_id": 27272,
+              "rule_id": "5rUoP1",
+              "rv_id": 1263527,
+              "url": "https://semgrep.dev/playground/r/2KTv2Zn/python.lang.security.dangerous-system-call.dangerous-system-call",
+              "version_id": "2KTv2Zn"
+            }
+          }
+        },
+        "severity": "ERROR",
+        "fingerprint": "98ffefa69953502ca7341c8c4a70f111c67f7d5f44e56be7bfe2bf14d49fda903297a99fbae7de52042454a169441e7692db199a45767690cb57d0f304f1f00d_0",
+        "lines": "    os.system(c)",
+        "is_ignored": false,
+        "validation_state": "NO_VALIDATOR",
+        "dataflow_trace": {
+          "taint_source": [
+            "CliLoc",
+            [
+              {
+                "path": "repo/newfile.py",
+                "start": {
+                  "line": 11,
+                  "col": 11,
+                  "offset": 149
+                },
+                "end": {
+                  "line": 11,
+                  "col": 38,
+                  "offset": 176
+                }
+              },
+              "request.args.get(\"cmd\", \"\")"
+            ]
+          ],
+          "intermediate_vars": [
+            {
+              "location": {
+                "path": "repo/newfile.py",
+                "start": {
+                  "line": 11,
+                  "col": 5,
+                  "offset": 143
+                },
+                "end": {
+                  "line": 11,
+                  "col": 8,
+                  "offset": 146
+                }
+              },
+              "content": "cmd"
+            }
+          ],
+          "taint_sink": [
+            "CliCall",
+            [
+              [
+                {
+                  "path": "repo/newfile.py",
+                  "start": {
+                    "line": 12,
+                    "col": 5,
+                    "offset": 181
+                  },
+                  "end": {
+                    "line": 12,
+                    "col": 11,
+                    "offset": 187
+                  }
+                },
+                "run_it"
+              ],
+              [
+                {
+                  "location": {
+                    "path": "repo/newfile.py",
+                    "start": {
+                      "line": 6,
+                      "col": 12,
+                      "offset": 78
+                    },
+                    "end": {
+                      "line": 6,
+                      "col": 13,
+                      "offset": 79
+                    }
+                  },
+                  "content": "c"
+                }
+              ],
+              [
+                "CliLoc",
+                [
+                  {
+                    "path": "repo/newfile.py",
+                    "start": {
+                      "line": 7,
+                      "col": 5,
+                      "offset": 86
+                    },
+                    "end": {
+                      "line": 7,
+                      "col": 17,
+                      "offset": 98
+                    }
+                  },
+                  "os.system(c)"
+                ]
+              ]
+            ]
+          ]
+        },
+        "engine_kind": [
+          "PRO_REQUIRED",
+          {
+            "interproc_taint": true,
+            "interfile_taint": false,
+            "proprietary_language": false
+          }
+        ]
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {
+    "scanned": ["repo/newfile.py"]
+  },
+  "time": {}
+}

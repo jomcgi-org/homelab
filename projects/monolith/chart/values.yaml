@@ -724,6 +724,13 @@ chat:
 # deploy/values.yaml; never hardcode it in a template.
 semgrep:
   fcInvokeUrl: ""
+  # Semgrep AppSec Platform reporting (Route B, self-hosted CI reporting): the
+  # relay (semgrep_scan/report.py) uploads fc-invoke findings using pysemgrep's
+  # own client, authenticated by SEMGREP_APP_TOKEN. Set onepassword.itemPath in
+  # deploy/values.yaml to sync the token from 1Password into a Secret and inject
+  # it as env; empty disables the injection (the relay then has no token).
+  onepassword:
+    itemPath: ""
 
 # goosecracker artifact agent (ADR 024): syncs the OpenRouter API key from
 # 1Password into the `goosecracker` Secret, consumed by the fc-invoke egress

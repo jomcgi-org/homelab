@@ -151,6 +151,12 @@ chat:
 # semgrep_scan MCP tool: the in-cluster fc-invoke daemon endpoint.
 semgrep:
   fcInvokeUrl: "http://fc-invoke.monolith.svc.cluster.local:8080"
+  # Semgrep AppSec Platform token for the Route B CI-reporting relay. The vault
+  # item exposes the field SEMGREP_API_TOKEN, mirrored into the
+  # monolith-semgrep-app Secret and injected as the SEMGREP_APP_TOKEN env var
+  # (the name pysemgrep reads).
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/semgrep-mcp"
 
 # goosecracker Discord agent (ADR 024): OnePasswordItem-backed `goosecracker`
 # Secret for the agent's config. The artifact tier now runs on in-cluster qwen,

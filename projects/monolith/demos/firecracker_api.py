@@ -43,7 +43,7 @@ from app.db import get_engine
 from demos.loadtest_corpus import load_corpus
 from home.observability.traces import fetch_correlated_spans, fetch_trace_spans
 from sandbox.client import run_python_in_sandbox
-from semgrep.client import scan_files
+from semgrep_scan.client import scan_files
 
 logger = logging.getLogger(__name__)
 
