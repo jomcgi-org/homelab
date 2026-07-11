@@ -5569,3 +5569,22 @@ semgrep_target_test(
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":gen_orchestrator_bundle",
 )
+
+semgrep_test(
+    name = "perf_e2e_probe_semgrep_test",
+    srcs = ["perf_e2e_probe.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+py_library(
+    name = "monolith",
+    srcs = ["perf_e2e_probe.py"],
+    visibility = ["//:__subpackages__"],
+)
