@@ -10,7 +10,11 @@ import datetime
 
 import pytest
 
-from semgrep_scan.perf_compare import build_aggregates, build_comparisons
+from semgrep_scan.perf_compare import (
+    build_aggregates,
+    build_comparisons,
+    build_distributions,
+)
 
 UTC = datetime.timezone.utc
 
@@ -335,6 +339,8 @@ def test_aggregates_empty_input_has_stable_shape():
             "homelab_median": None,
             "managed_median": None,
             "speedup": None,
+            "findings_pairs": 0,
+            "findings_agree": 0,
         }
 
 
@@ -342,3 +348,76 @@ def test_aggregates_speedup_guards_zero_homelab_time():
     agg = build_aggregates([_pair(False, 0.0, 30.0)])
     assert agg["pr"]["pairs"] == 1
     assert agg["pr"]["speedup"] is None
+
+
+def test_aggregates_findings_parity():
+    agree = _pair(False, 10.0, 30.0)
+    agree["route_b"]["findings_total"] = 7
+    agree["sms"]["findings_total"] = 7
+    disagree = _pair(False, 10.0, 30.0)
+    disagree["route_b"]["findings_total"] = 7
+    disagree["sms"]["findings_total"] = 9
+    unknown = _pair(False, 10.0, 30.0)
+    unknown["route_b"]["findings_total"] = None
+
+    agg = build_aggregates([agree, disagree, unknown])
+
+    assert agg["pr"]["pairs"] == 3
+    # the pair with a None findings side does not count toward parity
+    assert agg["pr"]["findings_pairs"] == 2
+    assert agg["pr"]["findings_agree"] == 1
+
+
+# ── build_distributions ──────────────────────────
+
+
+def test_distributions_bucket_by_type_and_side():
+    homelab = [
+        _row(1, total_time=1.0),
+        _row(2, total_time=2.0),
+        _row(3, total_time=3.0),
+        _row(4, is_full_scan=True, total_time=300.0),
+    ]
+    managed = [_row(5, total_time=40.0), _row(6, total_time=60.0)]
+
+    dist = build_distributions(homelab, managed)
+
+    assert dist["pr"]["homelab"]["n"] == 3
+    assert dist["pr"]["homelab"]["p50"] == 2.0
+    assert dist["pr"]["homelab"]["min"] == 1.0
+    assert dist["pr"]["homelab"]["max"] == 3.0
+    # p90 over [1,2,3]: linear interpolation at pos 1.8 -> 2.8
+    assert dist["pr"]["homelab"]["p90"] == pytest.approx(2.8)
+    assert dist["pr"]["managed"]["n"] == 2
+    assert dist["pr"]["managed"]["p50"] == 50.0
+    assert dist["full"]["homelab"]["n"] == 1
+    assert dist["full"]["homelab"]["p50"] == 300.0
+    assert dist["full"]["managed"] == {
+        "n": 0,
+        "p50": None,
+        "p90": None,
+        "min": None,
+        "max": None,
+    }
+
+
+def test_distributions_skip_rows_without_total_time():
+    homelab = [_row(1, total_time=None), _row(2, total_time=5.0)]
+
+    dist = build_distributions(homelab, [])
+
+    assert dist["pr"]["homelab"]["n"] == 1
+    assert dist["pr"]["homelab"]["p50"] == 5.0
+
+
+def test_distributions_empty_input_has_stable_shape():
+    dist = build_distributions([], [])
+    for bucket in ("pr", "full"):
+        for side in ("homelab", "managed"):
+            assert dist[bucket][side] == {
+                "n": 0,
+                "p50": None,
+                "p90": None,
+                "min": None,
+                "max": None,
+            }

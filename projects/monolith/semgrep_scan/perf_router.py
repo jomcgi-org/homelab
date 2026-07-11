@@ -13,7 +13,11 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.db import get_session
-from semgrep_scan.perf_compare import build_aggregates, build_comparisons
+from semgrep_scan.perf_compare import (
+    build_aggregates,
+    build_comparisons,
+    build_distributions,
+)
 from semgrep_scan.perf_store import ScanPerf
 
 _COVERAGE_NOTE = (
@@ -43,6 +47,7 @@ def _empty_response() -> dict:
     return {
         "comparisons": [],
         "aggregates": build_aggregates([]),
+        "distributions": build_distributions([], []),
         "window_start": None,
         "counts": {"homelab": 0, "managed": 0},
         "coverage_note": _COVERAGE_NOTE,
@@ -81,6 +86,7 @@ async def get_perf(
     return {
         "comparisons": comparisons,
         "aggregates": build_aggregates(comparisons),
+        "distributions": build_distributions(homelab, managed),
         "window_start": window_start,
         "counts": {"homelab": len(homelab), "managed": len(managed)},
         "coverage_note": _COVERAGE_NOTE,

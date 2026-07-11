@@ -9,6 +9,7 @@ export async function load({ fetch }) {
       return {
         comparisons: [],
         aggregates: null,
+        distributions: null,
         windowStart: null,
         counts: null,
         error: res.status,
@@ -18,6 +19,7 @@ export async function load({ fetch }) {
     return {
       comparisons: body.comparisons ?? [],
       aggregates: body.aggregates ?? null,
+      distributions: body.distributions ?? null,
       windowStart: body.window_start ?? null,
       counts: body.counts ?? null,
     };
@@ -25,6 +27,7 @@ export async function load({ fetch }) {
     return {
       comparisons: [],
       aggregates: null,
+      distributions: null,
       windowStart: null,
       counts: null,
       error: "unavailable",

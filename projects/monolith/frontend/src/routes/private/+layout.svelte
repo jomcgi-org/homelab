@@ -1,4 +1,5 @@
 <script>
+  import "$lib/private/dashboard-theme.css";
   import { page } from "$app/stores";
 
   let { children } = $props();
@@ -31,42 +32,38 @@
 </script>
 
 {#if showBack}
-  <a class="back-to-dashboard" href="/">&larr; dashboard</a>
+  <a class="back-to-dashboard shell day" href="/">&larr; dashboard</a>
 {/if}
 
 {@render children()}
 
 <style>
-  /* A quiet pill. Variables use fallbacks so it reads correctly on both the
-     dashboard theme (--ink-*, --font-ui, --accent, --card-bg, --line) and the
-     older brutalist theme (--fg-*, --font). */
+  /* A quiet text link. This renders OUTSIDE any page's .shell, so it
+     carries "shell day" itself: dashboard-theme.css's .shell class only
+     defines custom properties, making the day palette resolve here without
+     inheriting any page styling. */
   .back-to-dashboard {
     position: fixed;
-    top: 0.9rem;
-    left: 1.1rem;
+    top: 1.1rem;
+    left: 1.2rem;
     z-index: 1000;
-    font-family: var(--font-ui, var(--font));
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    color: var(--ink-2, var(--fg-secondary));
-    background: var(--card-bg, transparent);
-    border: 1px solid var(--line, var(--fg-tertiary));
-    border-radius: 999px;
-    padding: 4px 12px;
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    color: var(--ink-2);
     text-decoration: none;
-    transition:
-      color 0.15s ease,
-      border-color 0.15s ease;
+    padding: 4px 2px;
+    transition: color 0.15s ease;
   }
 
   .back-to-dashboard:hover {
-    color: var(--accent, var(--fg));
-    border-color: var(--accent, var(--fg));
+    color: var(--accent);
   }
 
   .back-to-dashboard:focus-visible {
-    outline: 1.5px solid var(--accent, var(--fg));
+    outline: 1.5px solid var(--accent);
     outline-offset: 2px;
+    border-radius: 4px;
   }
 </style>

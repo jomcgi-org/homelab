@@ -212,6 +212,21 @@ def _median(values: list[float]) -> float | None:
     return (ordered[mid - 1] + ordered[mid]) / 2
 
 
+def _percentile(values: list[float], q: float) -> float | None:
+    """Linear-interpolated percentile (q in [0, 1]), or None if empty."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = q * (len(ordered) - 1)
+    lo = int(pos)
+    frac = pos - lo
+    if frac == 0:
+        return ordered[lo]
+    return ordered[lo] + (ordered[lo + 1] - ordered[lo]) * frac
+
+
 def build_aggregates(comparisons: list[dict]) -> dict:
     """Summarise matched comparisons into per-type aggregates.
 
@@ -219,8 +234,11 @@ def build_aggregates(comparisons: list[dict]) -> dict:
     is not a comparison. Buckets by scan type ("pr" vs "full") since PR and
     full-scan runtimes differ by an order of magnitude and must not be pooled.
     ``speedup`` is managed_median / homelab_median (greater than 1 means
-    homelab is faster). Returns a stable shape even for empty buckets so the
-    page can render placeholders.
+    homelab is faster). ``findings_pairs``/``findings_agree`` count pairs
+    where both sides reported a findings total, and how many of those totals
+    match exactly (a results-parity signal alongside the speed numbers).
+    Returns a stable shape even for empty buckets so the page can render
+    placeholders.
     """
     buckets: dict[str, list[dict]] = {"pr": [], "full": []}
     for row in comparisons:
@@ -235,6 +253,8 @@ def build_aggregates(comparisons: list[dict]) -> dict:
                 "homelab_median": None,
                 "managed_median": None,
                 "speedup": None,
+                "findings_pairs": 0,
+                "findings_agree": 0,
             }
             continue
         homelab_median = _median([p["route_b"]["total_time"] for p in pairs])
@@ -244,10 +264,47 @@ def build_aggregates(comparisons: list[dict]) -> dict:
             if homelab_median and homelab_median > 0
             else None
         )
+        findings_sides = [
+            (p["route_b"]["findings_total"], p["sms"]["findings_total"])
+            for p in pairs
+            if p["route_b"]["findings_total"] is not None
+            and p["sms"]["findings_total"] is not None
+        ]
         out[key] = {
             "pairs": len(pairs),
             "homelab_median": homelab_median,
             "managed_median": managed_median,
             "speedup": speedup,
+            "findings_pairs": len(findings_sides),
+            "findings_agree": sum(1 for rb, sms in findings_sides if rb == sms),
         }
+    return out
+
+
+def build_distributions(route_b: list[dict], sms: list[dict]) -> dict:
+    """Runtime distributions over ALL scans in the window, not just matched
+    pairs. Matched-pair medians answer "same work, who was faster"; these
+    answer "what does each side's runtime look like overall", which matters
+    while managed coverage is sparse (only scans that left an open finding
+    are visible via the Semgrep API, so most homelab scans have no pair).
+
+    Shape: {"pr"|"full": {"homelab"|"managed": {n, p50, p90, min, max}}}.
+    Rows without a total_time are excluded from n and the stats.
+    """
+    out: dict[str, dict] = {}
+    for bucket_key, is_full in (("pr", False), ("full", True)):
+        out[bucket_key] = {}
+        for side_key, rows in (("homelab", route_b), ("managed", sms)):
+            times = [
+                r["total_time"]
+                for r in rows
+                if bool(r["is_full_scan"]) == is_full and r["total_time"] is not None
+            ]
+            out[bucket_key][side_key] = {
+                "n": len(times),
+                "p50": _percentile(times, 0.5),
+                "p90": _percentile(times, 0.9),
+                "min": min(times) if times else None,
+                "max": max(times) if times else None,
+            }
     return out

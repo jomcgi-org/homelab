@@ -140,10 +140,36 @@
                 </div>
               </div>
               <p class="agg-foot">
-                {agg.pairs} matched pair{agg.pairs === 1 ? "" : "s"}
+                {agg.pairs} matched pair{agg.pairs === 1 ? "" : "s"}{#if agg.findings_pairs > 0}
+                  <span class="sub-sep">&middot;</span> findings agree on {agg.findings_agree}/{agg.findings_pairs}{/if}
               </p>
             {:else}
               <p class="unavail agg-empty">No matched pairs yet</p>
+            {/if}
+            {#if data.distributions?.[bucket.key]}
+              {@const dist = data.distributions[bucket.key]}
+              <table class="dist">
+                <thead>
+                  <tr>
+                    <th class="dist-side">all scans</th>
+                    <th class="num">n</th>
+                    <th class="num">p50</th>
+                    <th class="num">p90</th>
+                    <th class="num">max</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each [["homelab", dist.homelab], ["managed", dist.managed]] as [side, d]}
+                    <tr>
+                      <td class="dist-side">{side}</td>
+                      <td class="num mono">{d.n}</td>
+                      <td class="num mono">{formatDuration(d.p50) ?? "-"}</td>
+                      <td class="num mono">{formatDuration(d.p90) ?? "-"}</td>
+                      <td class="num mono">{formatDuration(d.max) ?? "-"}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
             {/if}
           </div>
         {/each}
@@ -389,6 +415,32 @@
 
   .agg-empty {
     margin: 0;
+  }
+
+  /* Compact all-scans distribution table inside the aggregate cards. Cell
+     rules are scoped to beat the shared comparison-table selectors below. */
+  .dist {
+    width: auto;
+    margin-top: 4px;
+    border-top: 1px solid var(--line);
+  }
+
+  .dist thead th {
+    padding: 10px 14px 4px 0;
+    border-bottom: none;
+    letter-spacing: 0.1em;
+  }
+
+  .dist tbody td {
+    padding: 2px 14px 2px 0;
+    border-bottom: none;
+    white-space: nowrap;
+  }
+
+  .dist .dist-side {
+    text-align: left;
+    font-size: 12px;
+    color: var(--ink-2);
   }
 
   /* ── Collapsed detail ── */
