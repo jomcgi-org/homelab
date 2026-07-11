@@ -95,6 +95,53 @@ async def trigger_full_scan(repo: str = "jomcgi/homelab") -> dict:
     return {"status": "started", "repo": repo}
 
 
+# Guards against overlapping harvests: a second trigger while one is in flight
+# is a no-op rather than a second concurrent sweep of the findings + scans API.
+_harvest_in_flight = False
+_harvest_tasks: set[asyncio.Task] = set()
+
+
+@internal_router.post("/harvest-scans")
+async def trigger_harvest(repo: str = "jomcgi/homelab") -> dict:
+    """Fire the SMS scan-perf harvest for ``repo`` as a background task and
+    return immediately. Internal only (see internal_router).
+
+    Runs semgrep_scan.perf_harvest.harvest_scans in-process against a fresh DB
+    session: sweep the deployment's findings for scan ids, fetch each new one,
+    and upsert Semgrep Managed Scans rows into semgrep.scan_perf. This is
+    API+DB only (no heavy semgrep import), so it is safe to run in the backend
+    pod rather than the semgrep-full workload.
+    """
+    global _harvest_in_flight
+    if _harvest_in_flight:
+        return {"status": "already-running", "repo": repo}
+
+    def _harvest() -> None:
+        from sqlmodel import Session
+
+        from app.db import get_engine
+        from semgrep_scan.perf_harvest import harvest_scans
+
+        with Session(get_engine()) as session:
+            harvest_scans(session, repo)
+
+    async def _run() -> None:
+        global _harvest_in_flight
+        _harvest_in_flight = True
+        try:
+            await asyncio.to_thread(_harvest)
+        except Exception:
+            logger.exception("trigger_harvest: harvest_scans crashed for %s", repo)
+        finally:
+            _harvest_in_flight = False
+
+    task = asyncio.create_task(_run())
+    _harvest_tasks.add(task)
+    task.add_done_callback(_harvest_tasks.discard)
+    logger.info("trigger_harvest: launched background scan-perf harvest for %s", repo)
+    return {"status": "started", "repo": repo}
+
+
 # PR actions worth scanning: a fresh PR, a new push to an open PR, and a reopen.
 # Everything else (labeled, closed, review requests, ...) is acked with no work.
 _SCAN_ACTIONS = {"opened", "synchronize", "reopened"}
