@@ -59,6 +59,7 @@ run_bump() {
 	set +e
 	BUMP_CHART_REPO_ROOT="$root" \
 		BUMP_CHART_SKIP_REGISTRY_CHECK=1 \
+		BUMP_CHART_SKIP_PR_CHECK=1 \
 		BUMP_CHART_MAIN_VERSION="${MAIN_VERSION_OVERRIDE:?}" \
 		bash "$SCRIPT" projects/foo "$@" >"$TMP/out" 2>&1
 	echo $?
@@ -136,6 +137,44 @@ rc=$(run_bump "$ROOT")
 assert_eq "t6 exit code" 0 "$rc"
 assert_eq "t6 chart version" 0.3.1 "$(chart_version "$ROOT")"
 assert_eq "t6 targetRevision healed" 0.3.1 "$(semver_tr "$ROOT")"
+
+# --- Test 7: skip a version an open PR already claimed ----------------------
+# Natural next patch is 0.1.1, but two open PRs already claim 0.1.1 and 0.1.2
+# (injected). The bump must skip both and land on 0.1.3, so two concurrent PRs
+# never pick the same number (the collision git's rebase would silently merge).
+ROOT="$TMP/t7"
+setup_project "$ROOT" 0.1.0 0.1.0
+set +e
+BUMP_CHART_REPO_ROOT="$ROOT" \
+	BUMP_CHART_SKIP_REGISTRY_CHECK=1 \
+	BUMP_CHART_MAIN_VERSION=0.1.0 \
+	BUMP_CHART_CLAIMED_VERSIONS=$'0.1.1\n0.1.2' \
+	bash "$SCRIPT" projects/foo >"$TMP/out" 2>&1
+rc=$?
+set -e
+assert_eq "t7 exit code" 0 "$rc"
+assert_eq "t7 skips claimed versions" 0.1.3 "$(chart_version "$ROOT")"
+assert_eq "t7 targetRevision skips too" 0.1.3 "$(semver_tr "$ROOT")"
+grep -q "already claimed by an open PR" "$TMP/out" || {
+	echo "FAIL: t7 expected 'already claimed by an open PR' message" >&2
+	FAILURES=$((FAILURES + 1))
+}
+
+# --- Test 8: a claimed version equal to the base is irrelevant --------------
+# An open PR sitting at an OLDER/equal version (0.1.0, e.g. an un-bumped branch)
+# must not push our bump around: only claims on the candidate matter.
+ROOT="$TMP/t8"
+setup_project "$ROOT" 0.1.0 0.1.0
+set +e
+BUMP_CHART_REPO_ROOT="$ROOT" \
+	BUMP_CHART_SKIP_REGISTRY_CHECK=1 \
+	BUMP_CHART_MAIN_VERSION=0.1.0 \
+	BUMP_CHART_CLAIMED_VERSIONS="0.1.0" \
+	bash "$SCRIPT" projects/foo >"$TMP/out" 2>&1
+rc=$?
+set -e
+assert_eq "t8 exit code" 0 "$rc"
+assert_eq "t8 ignores equal/older claim" 0.1.1 "$(chart_version "$ROOT")"
 
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed" >&2
