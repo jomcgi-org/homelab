@@ -354,6 +354,64 @@ def test_empty_shadow_project_uses_real_repo():
         assert report._reported_repository("jomcgi/homelab") == "jomcgi/homelab"
 
 
+def test_full_scan_project_metadata_omits_pull_request_id():
+    """is_full_scan=True builds project_metadata with is_full_scan True, on
+    'schedule', and NO pull_request_id key at all (not even set to None)."""
+    pm = report._build_project_metadata(
+        repo="jomcgi/homelab",
+        branch="main",
+        commit="0" * 40,
+        pr_id=None,
+        base_ref=None,
+        project_id=None,
+        repo_url="https://github.com/jomcgi/homelab",
+        is_full_scan=True,
+    )
+    blob = pm.to_json()
+    assert blob["is_full_scan"] is True
+    assert blob["on"] == "schedule"
+    assert "pull_request_id" not in blob
+
+
+def test_pr_scan_project_metadata_unchanged():
+    """is_full_scan=False (the default) stays byte-identical to the original PR
+    diff scan shape: on=pull_request, is_full_scan=False, pull_request_id set."""
+    pm = report._build_project_metadata(
+        repo="jomcgi/homelab",
+        branch="feat/test",
+        commit="0" * 40,
+        pr_id="42",
+        base_ref=None,
+        project_id=None,
+        repo_url=None,
+    )
+    blob = pm.to_json()
+    assert blob["is_full_scan"] is False
+    assert blob["on"] == "pull_request"
+    assert blob["pull_request_id"] == "42"
+
+
+def test_report_pr_scan_full_scan_dry_run_no_pr_id():
+    """report_pr_scan with is_full_scan=True and pr_id=None (the full-scan call
+    shape) assembles successfully with no network in dry_run."""
+    result = asyncio.run(
+        report.report_pr_scan(
+            repo="jomcgi/homelab",
+            branch="main",
+            commit="0" * 40,
+            base_ref=None,
+            raw_cli_output=_CLI_OUTPUT,
+            repo_url="https://github.com/jomcgi/homelab",
+            scan_execution_duration=12.5,
+            dry_run=True,
+            is_full_scan=True,
+        )
+    )
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["error"] is None
+
+
 def test_missing_token_surfaces_structured_error_not_process_death():
     """With no SEMGREP_APP_TOKEN the CREATE cannot build auth; the relay must
     return a structured error (never raise into the caller / kill the process)."""

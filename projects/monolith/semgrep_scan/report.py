@@ -415,12 +415,13 @@ def _build_project_metadata(
     repo: str,
     branch: str,
     commit: str,
-    pr_id: str,
+    pr_id: Optional[str],
     base_ref: Optional[str],
     project_id: Optional[str],
     repo_url: Optional[str],
+    is_full_scan: bool = False,
 ) -> Any:
-    """Construct ``out.ProjectMetadata`` for a PR diff scan.
+    """Construct ``out.ProjectMetadata`` for a PR diff scan or a whole-repo FULL scan.
 
     We build it directly (rather than via ``semgrep.meta`` git helpers) because
     the monolith is not running inside the scanned git checkout; all the PR facts
@@ -429,6 +430,14 @@ def _build_project_metadata(
     The ``repository`` value comes from ``_reported_repository(repo)``: with
     ``SEMGREP_SHADOW_PROJECT`` set it is the shadow project name, not the real
     ``repo``, so these scans land in a separate Semgrep project for comparison.
+
+    ``is_full_scan=False`` (the default) is byte-identical to the original PR
+    diff scan behavior: ``"on": "pull_request"`` and ``pull_request_id`` set to
+    ``pr_id``. ``is_full_scan=True`` is a whole-repo interfile scan (the
+    ``semgrep-full`` workload seeding the baseline on ``main``): the payload sets
+    ``"is_full_scan": True``, ``"on": "schedule"``, and OMITS
+    ``pull_request_id`` entirely (there is no PR to attach the scan to), rather
+    than setting it to None.
     """
     import semgrep.semgrep_interfaces.semgrep_output_v1 as out
 
@@ -444,13 +453,14 @@ def _build_project_metadata(
         "commit_author_username": None,
         "commit_author_image_url": None,
         "ci_job_url": None,
-        "on": "pull_request",
+        "on": "schedule" if is_full_scan else "pull_request",
         "pull_request_author_username": None,
         "pull_request_author_image_url": None,
-        "pull_request_id": pr_id,
         "pull_request_title": None,
-        "is_full_scan": False,
+        "is_full_scan": is_full_scan,
     }
+    if not is_full_scan:
+        payload["pull_request_id"] = pr_id
     if base_ref:
         # Lets the App compute the merge base for server-side baseline handling.
         payload["base_branch_head_commit"] = base_ref
@@ -542,17 +552,18 @@ async def report_pr_scan(
     repo: str,
     branch: str,
     commit: str,
-    pr_id: str,
+    pr_id: str | None = None,
     base_ref: Optional[str] = None,
     raw_cli_output: dict[str, Any] | str,
     project_id: Optional[str] = None,
     repo_url: Optional[str] = None,
     scan_execution_duration: Optional[float] = None,
     dry_run: bool = False,
+    is_full_scan: bool = False,
 ) -> dict[str, Any]:
-    """Report an fc-invoke PR scan to the Semgrep App, built from cli_output.
+    """Report an fc-invoke scan to the Semgrep App, built from cli_output.
 
-    Opens a per-PR scan (CREATE POST, which needs NO rules and returns the scan_id
+    Opens a scan (CREATE POST, which needs NO rules and returns the scan_id
     immediately), maps ``raw_cli_output`` DIRECTLY into ``out.Finding`` objects (no
     ``RuleMatch``, no rule loading), POSTs them (``/results`` + ``/complete``), and
     returns the App's block decision. Every request carries an explicit
@@ -561,6 +572,14 @@ async def report_pr_scan(
     raw JSON ``str``. ``scan_execution_duration`` (seconds), when passed, is the
     engine scan time the webhook measured around fc-invoke; it is reported as the
     App scan's ``total_time`` (else the App shows 0 for a self-reported scan).
+
+    ``is_full_scan=False`` (the default) is the per-PR diff scan path: ``pr_id``
+    is required and threaded into the App's ``pull_request_id``, exactly as
+    before. ``is_full_scan=True`` is the whole-repo interfile FULL scan (the
+    ``semgrep-full`` workload, reported ``"on": "schedule"``): ``pr_id`` is not
+    needed (pass None, the default) and is never sent to the App, since
+    ``_build_project_metadata`` omits ``pull_request_id`` entirely for a full
+    scan.
 
     On ANY failure after the scan is opened it POSTs ``/error`` in the exception
     path so the App never wedges the PR check on an open scan. ``SEMGREP_APP_TOKEN``
@@ -616,6 +635,7 @@ async def report_pr_scan(
         base_ref=base_ref,
         project_id=project_id,
         repo_url=repo_url,
+        is_full_scan=is_full_scan,
     )
 
     if dry_run:
