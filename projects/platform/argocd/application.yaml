@@ -20,6 +20,21 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
+  # ServerSideApply=true (below) makes ArgoCD diff against a server-side-apply
+  # dry-run, which includes the Gateway-API-populated defaults on HTTPRoutes
+  # (parentRefs.group/kind, backendRefs.group/kind/weight). git omits those, so
+  # they read as permanent drift, leaving this app OutOfSync-but-Healthy. The
+  # cluster owns those fields, so tell ArgoCD to ignore them. (Non-SSA apps use
+  # ArgoCD's normalizer, which already drops these, so they never drift.)
+  ignoreDifferences:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      jqPathExpressions:
+        - '.spec.parentRefs[].group'
+        - '.spec.parentRefs[].kind'
+        - '.spec.rules[].backendRefs[].group'
+        - '.spec.rules[].backendRefs[].kind'
+        - '.spec.rules[].backendRefs[].weight'
   syncPolicy:
     automated:
       prune: true
