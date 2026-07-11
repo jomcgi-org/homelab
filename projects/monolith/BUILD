@@ -896,6 +896,20 @@ py_test(
 )
 
 py_test(
+    name = "semgrep_perf_router_test",
+    srcs = ["semgrep_scan/perf_router_test.py"],
+    imports = ["."],
+    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "sandbox_mcp_test",
     srcs = ["sandbox/mcp_test.py"],
     imports = ["."],

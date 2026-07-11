@@ -16,19 +16,23 @@ unresolvable. Keeping our name distinct lets both coexist.
 
 - ``router``: the GitHub PR webhook (Phase 2) that fires the scan + App relay on a
   real ``pull_request`` event. Registered on the app like every other domain.
+- ``perf_router``: the private read endpoint (``GET /api/semgrep/perf``) serving
+  the Route B vs Semgrep Managed Scans comparison built by ``perf_compare``.
 """
 
 from fastapi import FastAPI
 
 
 def register(app: FastAPI) -> None:
-    """Register the semgrep webhook router with the app.
+    """Register the semgrep webhook and perf-read routers with the app.
 
     Import is local so the module (and its pysemgrep-dependent transitive imports)
     is only pulled in when the app actually wires the router, mirroring the other
     domains' registration.
     """
+    from semgrep_scan.perf_router import router as perf_router
     from semgrep_scan.router import internal_router, router
 
     app.include_router(router)
     app.include_router(internal_router)
+    app.include_router(perf_router)
