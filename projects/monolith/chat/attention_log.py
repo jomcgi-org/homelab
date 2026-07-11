@@ -95,6 +95,10 @@ WITHHELD_AGENT_THREAD = "agent_thread"
 WITHHELD_NO_REPLY = "no_reply"
 WITHHELD_SEND_GATE = "send_gate"
 WITHHELD_EMPTY_REPLY = "empty_reply"
+# The classifier would have engaged, but the author is trust-locked-out (ADR
+# chat/003): the engage was suppressed to a brig emoji, never sent. Logged so
+# /improve-ambient can measure how often lockout withholds reply-worthy ambient.
+WITHHELD_LOCKED_OUT = "locked_out"
 
 
 def set_withheld_reason(

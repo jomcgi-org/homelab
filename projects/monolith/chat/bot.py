@@ -949,6 +949,30 @@ class ChatBot(discord.Client):
                         recently_tagged=recently_tagged,
                     )
                     should_mark = result.engage
+                    # Log the classifier's call (mirrors the normal ambient
+                    # path, so ignore rows are sampled the same way). On an
+                    # engage, stamp withheld_reason=locked_out: without it a
+                    # suppressed engage is invisible to /improve-ambient, which
+                    # can then never see how often lockout blocks a reply-worthy
+                    # message.
+                    directive_version = await asyncio.to_thread(
+                        directives.get_active_version, channel_id
+                    )
+                    await asyncio.to_thread(
+                        attention_log.log_decision,
+                        channel_id,
+                        msg_id,
+                        "engage" if result.engage else "ignore",
+                        result.confidence,
+                        directive_version,
+                    )
+                    if result.engage:
+                        await asyncio.to_thread(
+                            attention_log.set_withheld_reason,
+                            channel_id,
+                            msg_id,
+                            attention_log.WITHHELD_LOCKED_OUT,
+                        )
                 except Exception:
                     logger.exception("safeguards: locked-out ambient classify failed")
             if should_mark:

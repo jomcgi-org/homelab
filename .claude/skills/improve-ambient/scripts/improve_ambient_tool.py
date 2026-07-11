@@ -36,7 +36,9 @@ in-channel reply, disambiguating the silent paths that a null
 ``reply_message_id`` alone cannot. One of ``agent_thread`` (routed to the goose
 guest), ``no_reply`` (the model chose silence), ``send_gate`` (the
 post-generation gate vetoed the drafted reply), ``empty_reply`` (no content),
-or null when a reply was sent. Records from before the column existed are null
+``locked_out`` (the author is trust-locked-out, so a would-be engage was
+suppressed to a brig emoji; ADR chat/003), or null when a reply was sent.
+Records from before the column existed are null
 even when suppressed, so scope any rate over it to the current window.
 The agent-thread match is likewise a nearest-in-time heuristic
 (``_AGENT_WINDOW_MINUTES``): ``claude_agent.agent_threads`` carries no channel
