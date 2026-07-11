@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package guestboot
 
 import (
 	"log/slog"
@@ -8,12 +8,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// bringUpLoopback sets the loopback interface UP. semgrep-guest-init is the guest's
-// PID 1 and there is no init system, so nothing else brings lo up. Until it is up,
-// a bind to a loopback address succeeds but no traffic flows over 127.0.0.1. The
-// kernel already assigns 127.0.0.1/8 to lo, so only the IFF_UP flag is missing; we
-// flip it via SIOCSIFFLAGS. Best-effort: a failure is logged, not fatal.
-func bringUpLoopback(logger *slog.Logger) {
+// BringUpLoopback sets the loopback interface UP. The guest init is PID 1 and
+// there is no init system, so nothing else brings lo up. Until it is up, a bind
+// to a loopback address succeeds but no traffic flows over 127.0.0.1. The kernel
+// already assigns 127.0.0.1/8 to lo, so only the IFF_UP flag is missing; we flip
+// it via SIOCSIFFLAGS. Best-effort: a failure is logged, not fatal.
+func BringUpLoopback(logger *slog.Logger) {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		logger.Warn("loopback: open socket failed", "err", err)
@@ -40,5 +40,5 @@ func bringUpLoopback(logger *slog.Logger) {
 		logger.Warn("loopback: set up failed", "err", err)
 		return
 	}
-	logger.Info("loopback interface up")
+	logger.Info("loopback up")
 }
