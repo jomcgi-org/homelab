@@ -404,7 +404,7 @@ async def monolith_chat_trust_status(guild_id: str = "") -> dict:
     effective decay-applied trust score, lockout state, and signal counts, plus
     the newest trained forest (version, status, metrics). A locked_out user
     gets no engagement from the bot until their score recovers or they are
-    pardoned. Pass guild_id to filter to one server; empty lists all guilds.
+    pardoned. Pass guild_id to filter to one server. Empty lists all guilds.
     """
     return await asyncio.to_thread(chat_api.trust_status, guild_id)
 
