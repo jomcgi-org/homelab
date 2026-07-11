@@ -1,11 +1,14 @@
-"""Broker for the fc-invoke semgrep workload (ADR agents/044).
+"""Broker for the fc-invoke semgrep workloads (ADR agents/044).
 
 The plain-function half of the semgrep scan path, mirroring
 ``sandbox/client.py``. It POSTs file contents to the in-cluster ``fc-invoke``
-daemon's ``/invoke/semgrep`` endpoint and returns the structured findings. The
-MCP tool (``semgrep_scan/mcp.py``) and the demos router (``demos/firecracker_api.py``)
-both call ``scan_files``; keeping the HTTP logic here means neither has to reach
-through the FastMCP tool wrapper to run a scan.
+daemon and returns the structured findings, for two workloads sharing the same
+wire shape: ``scan_files`` calls ``/invoke/semgrep`` (a per-PR diff scan), and
+``scan_files_full`` calls ``/invoke/semgrep-full`` (a whole-repo interfile FULL
+scan). The MCP tool (``semgrep_scan/mcp.py``) and the demos router
+(``demos/firecracker_api.py``) call ``scan_files``; ``full_scan.py`` calls
+``scan_files_full``. Keeping the HTTP logic here means none of them has to
+reach through the FastMCP tool wrapper to run a scan.
 """
 
 from __future__ import annotations
@@ -27,21 +30,27 @@ FC_INVOKE_URL = os.environ.get("FC_INVOKE_URL", "")
 SEMGREP_CONNECT_TIMEOUT = 5.0
 SEMGREP_READ_TIMEOUT = 90.0
 
+# The whole-repo interfile FULL scan (semgrep-full workload) walks the entire
+# repo with cross-file analysis, which is far slower than a per-PR diff scan.
+# Same fast connect (a down daemon still fails fast); a much longer read budget
+# so the daemon has room to finish before httpx gives up on us.
+SEMGREP_FULL_READ_TIMEOUT = 600.0
 
-async def scan_files(files: list[dict]) -> dict:
-    """POST file contents to the fc-invoke semgrep workload and return findings.
 
-    Each entry in ``files`` needs a ``path`` (repo-relative, used to pick rules
-    and report locations) and a ``content`` (the whole current file text). On
-    success returns the daemon response: a ``findings`` list plus an ``errors``
-    list. On failure returns a dict with a single ``error`` key.
+async def _post_invoke(workload: str, files: list[dict], read_timeout: float) -> dict:
+    """Shared POST to an fc-invoke semgrep workload; used by both scan entrypoints.
+
+    ``workload`` is the ``/invoke/<workload>`` path segment (``semgrep`` for the
+    per-PR diff scan, ``semgrep-full`` for the whole-repo interfile scan). Same
+    body shape and error handling for both: on success returns the daemon's
+    parsed JSON response, on failure a dict with a single ``error`` key.
     """
     if not FC_INVOKE_URL:
         return {"error": "FC_INVOKE_URL is not configured"}
     if not files:
         return {"error": "no files provided to scan"}
 
-    timeout = httpx.Timeout(SEMGREP_READ_TIMEOUT, connect=SEMGREP_CONNECT_TIMEOUT)
+    timeout = httpx.Timeout(read_timeout, connect=SEMGREP_CONNECT_TIMEOUT)
     payload = {"files": files}
 
     try:
@@ -49,7 +58,7 @@ async def scan_files(files: list[dict]) -> dict:
             # Carry this pod's ServiceAccount token so fc-invoke's TokenReview
             # gate admits the call; off-cluster this is an empty header set.
             resp = await client.post(
-                f"{FC_INVOKE_URL}/invoke/semgrep",
+                f"{FC_INVOKE_URL}/invoke/{workload}",
                 json=payload,
                 headers=auth_headers(),
             )
@@ -69,3 +78,27 @@ async def scan_files(files: list[dict]) -> dict:
     except Exception as exc:  # noqa: BLE001: surface any failure as structured error
         logger.exception("fc-invoke semgrep scan failed")
         return {"error": f"semgrep scan failed: {exc}"}
+
+
+async def scan_files(files: list[dict]) -> dict:
+    """POST file contents to the fc-invoke semgrep workload and return findings.
+
+    Each entry in ``files`` needs a ``path`` (repo-relative, used to pick rules
+    and report locations) and a ``content`` (the whole current file text). On
+    success returns the daemon response: a ``findings`` list plus an ``errors``
+    list. On failure returns a dict with a single ``error`` key.
+    """
+    return await _post_invoke("semgrep", files, SEMGREP_READ_TIMEOUT)
+
+
+async def scan_files_full(files: list[dict]) -> dict:
+    """POST the whole repo's file contents to the semgrep-full fc-invoke workload.
+
+    Same wire shape as ``scan_files`` (``{"path", "content"}`` entries, same
+    daemon response and error shape), but targets ``/invoke/semgrep-full``: a
+    separate fc-invoke workload that runs Semgrep's interfile engine over the
+    whole repo instead of a per-PR diff. Uses a much longer read timeout
+    (``SEMGREP_FULL_READ_TIMEOUT``) since a whole-repo interfile scan is far
+    slower than a diff scan.
+    """
+    return await _post_invoke("semgrep-full", files, SEMGREP_FULL_READ_TIMEOUT)
