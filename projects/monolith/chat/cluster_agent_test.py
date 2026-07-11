@@ -45,11 +45,10 @@ def _one_tool_call_model(tool_name: str, args: dict) -> FunctionModel:
 
 
 class TestToolRegistration:
-    @pytest.mark.anyio
-    async def test_agent_registers_six_read_only_tools(self):
+    def test_agent_registers_six_read_only_tools(self):
         agent = create_cluster_agent()
-        tool_defs = await agent.toolset.get_tools(None)  # type: ignore[arg-type]
-        assert set(tool_defs.keys()) == {
+        tool_names = set(agent._function_toolset.tools.keys())
+        assert tool_names == {
             "health_summary",
             "list_resources",
             "get_resource",

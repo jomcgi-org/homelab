@@ -15,6 +15,8 @@
   //   the link would collide with
   // - /review: renders its own top bar (tabs + mode toggle) flush with the
   //   top-left, where the link would sit on top of the tabs
+  // - /chat and /notes: both render their own top-left chrome (the explorer
+  //   header and the notes status bar) that the link would overlap
   //
   // $page.url reflects the browser URL (hooks.js reroute keeps private
   // paths un-prefixed), but strip a literal /private prefix too in case a
@@ -23,7 +25,7 @@
     const path =
       $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
-    if (/^\/(app|demos|review)(\/|$)/.test(path)) return false;
+    if (/^\/(app|demos|review|chat|notes)(\/|$)/.test(path)) return false;
     return true;
   });
 </script>
