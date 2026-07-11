@@ -811,6 +811,23 @@ py_test(
 )
 
 py_test(
+    name = "semgrep_full_scan_test",
+    srcs = ["semgrep_scan/full_scan_test.py"],
+    imports = ["."],
+    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
+    # Drives the async gather/scan/report via pytest-asyncio (auto mode from
+    # shared/testing/plugin.py), mocking gather_main_files / scan_files_full /
+    # report_pr_scan and faking httpx.AsyncClient's trees/commits/contents GETs so
+    # no live GitHub, fc-invoke, or Semgrep App is touched.
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "semgrep_router_test",
     srcs = ["semgrep_scan/router_test.py"],
     imports = ["."],
