@@ -84,6 +84,7 @@ THE THREE-ENDPOINT FLOW (verified against pinned 1.168.0 ``app/scans.py``):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -550,6 +551,46 @@ def _report_failure(scan_id: int, exit_code: int) -> None:
 
 
 async def report_pr_scan(
+    *,
+    repo: str,
+    branch: str,
+    commit: str,
+    pr_id: str | None = None,
+    base_ref: Optional[str] = None,
+    raw_cli_output: dict[str, Any] | str,
+    project_id: Optional[str] = None,
+    repo_url: Optional[str] = None,
+    scan_execution_duration: Optional[float] = None,
+    dry_run: bool = False,
+    is_full_scan: bool = False,
+) -> dict[str, Any]:
+    """Report an fc-invoke scan to the Semgrep App (non-blocking async wrapper).
+
+    The actual work (mapping cli_output into ``out.Finding`` objects and the
+    synchronous CREATE / ``/results`` / ``/complete`` ``httpx`` POSTs) is CPU- and
+    sync-IO-bound and does NOT await, so running it inline on the event loop would
+    block it, briefly for a PR diff, longer for a whole-repo full scan (hundreds
+    of findings + a ~224 KiB payload). Run it in a worker thread so the API pod's
+    event loop keeps serving live requests. The thread never touches loop objects
+    (plain env reads + sync httpx), so it is safe.
+    """
+    return await asyncio.to_thread(
+        _report_pr_scan_blocking,
+        repo=repo,
+        branch=branch,
+        commit=commit,
+        pr_id=pr_id,
+        base_ref=base_ref,
+        raw_cli_output=raw_cli_output,
+        project_id=project_id,
+        repo_url=repo_url,
+        scan_execution_duration=scan_execution_duration,
+        dry_run=dry_run,
+        is_full_scan=is_full_scan,
+    )
+
+
+def _report_pr_scan_blocking(
     *,
     repo: str,
     branch: str,
