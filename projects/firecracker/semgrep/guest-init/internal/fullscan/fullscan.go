@@ -67,23 +67,21 @@ func Scan(ctx context.Context, req vsockproto.ScanRequest, runner Runner) (vsock
 	return res, nil
 }
 
-// SemgrepRunner runs `osemgrep-pro scan --pro` over treeDir and returns stdout
-// (cli_output JSON). rulesDir is the --config path (SEMGREP_SCAN_RULES). proBin
-// is the pro engine to invoke: the caller passes the shim path from
-// guestboot.SetupProEngine so the CLI finds the reconstructed pro-engine install
-// layout (binary + version stamp) alongside it.
-func SemgrepRunner(rulesDir, proBin string) Runner {
+// SemgrepRunner runs the python `semgrep scan --pro` CLI (pysemgrep) over treeDir
+// and returns stdout (cli_output JSON). rulesDir is the --config path
+// (SEMGREP_SCAN_RULES).
+//
+// pysemgrep, NOT the osemgrep-pro binary directly: verified in-image that
+// osemgrep-pro's own `scan --pro` gates on the engine's -pro_version (1.161),
+// which cannot match its bundled CLI (1.165) and is unsatisfiable. pysemgrep
+// instead gates on a version STAMP (pro-installed-by.txt == pysemgrep __VERSION__)
+// and resolves the pro engine via PATH, both of which the image bakes
+// (bazel/semgrep/guest:engine_tar_amd64). It then drives the 1.161 engine for a
+// whole-tree interfile scan with no download. Offline Pro unlock +
+// metrics/version-check-off come from the env guestboot.SetupEnv set.
+func SemgrepRunner(rulesDir string) Runner {
 	return func(ctx context.Context, treeDir string) ([]byte, error) {
-		// Invoke the baked offline-Pro engine (osemgrep-pro) directly rather than
-		// the python `semgrep scan --pro`, which tries to DOWNLOAD the pro engine
-		// from semgrep.dev (fails in the egress-less guest) and couples to a
-		// different pysemgrep version. osemgrep-pro is the same self-contained
-		// binary the warm mcp scan-server uses, with a `scan` subcommand and the
-		// interfile engine built in. proBin is the shim path from
-		// guestboot.SetupProEngine so the CLI finds the pro-engine install layout
-		// it requires. Offline Pro unlock + metrics/version-check-off come from the
-		// env guestboot.SetupEnv set.
-		cmd := exec.CommandContext(ctx, proBin, "scan", "--pro",
+		cmd := exec.CommandContext(ctx, "semgrep", "scan", "--pro",
 			"--config", rulesDir, "--metrics=off", "--json", treeDir)
 		cmd.Stderr = os.Stderr
 		return cmd.Output()

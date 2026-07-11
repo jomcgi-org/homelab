@@ -24,12 +24,16 @@ package(default_visibility = ["//visibility:public"])
 # The proprietary engine (osemgrep-pro) plus the "installed" layout its `scan --pro`
 # CLI insists on: a semgrep-core-proprietary binary next to semgrep-core and a
 # pro-installed-by.txt version stamp (matching the engine's own version, since the
-# engine IS the CLI). Without this the CLI reports "Semgrep Pro is either
-# uninstalled or it is out of date" and exits, because it resolves the pro engine
-# relative to its own real path (/opt/semgrep) and via the semgrep-core dir
-# (/usr/bin) -- neither of which we can write at runtime (read-only rootfs). We
-# bake the layout at BOTH resolution roots. pro-installed-by.txt MUST stay in sync
-# with the digest-pinned engine version (bazel/semgrep/third_party/semgrep_experimental).
+# engine, so its `scan --pro` runs whole-tree interfile analysis) refuses unless
+# the Pro engine looks INSTALLED. Verified from the guest image's own pysemgrep:
+# it resolves semgrep-core to its BUNDLED copy, so it reads the version stamp at
+# site-packages/semgrep/bin/pro-installed-by.txt (NOT /usr/bin or /opt/semgrep),
+# checks it equals pysemgrep's __VERSION__, and resolves the pro binary via PATH
+# as semgrep-core-proprietary. We bake exactly that: the stamp at the bundled-core
+# dir set to the pysemgrep version, and a /usr/bin/semgrep-core-proprietary symlink
+# to the engine. pro-installed-by.txt MUST match the apko `semgrep` package's
+# pysemgrep version (currently 1.165.0); it is independent of the digest-pinned
+# ENGINE version (1.161.0), which pysemgrep drives fine across that drift.
 tar(
     name = "engine_tar_amd64",
     srcs = [
@@ -40,13 +44,10 @@ tar(
     mtree = [
         "./opt/semgrep/osemgrep-pro type=file content=$(execpath @semgrep_experimental_engine_amd64//:osemgrep_pro) mode=0755 uid=0 gid=0",
         "./opt/semgrep/semgrep-core type=file content=$(execpath @semgrep_experimental_engine_amd64//:semgrep_core) mode=0755 uid=0 gid=0",
-        # Pro-engine install layout, rooted at /opt/semgrep (osemgrep-pro's own dir).
-        "./opt/semgrep/semgrep-core-proprietary type=link link=osemgrep-pro uid=0 gid=0",
-        "./opt/semgrep/pro-installed-by.txt type=file content=$(execpath :pro-installed-by.txt) mode=0644 uid=0 gid=0",
-        # And rooted at /usr/bin (where the OSS semgrep-core lives on PATH), which
-        # is the other place the CLI looks for the semgrep-core-proprietary sibling.
+        # The pro engine, resolved by pysemgrep via PATH as semgrep-core-proprietary.
         "./usr/bin/semgrep-core-proprietary type=link link=/opt/semgrep/osemgrep-pro uid=0 gid=0",
-        "./usr/bin/pro-installed-by.txt type=file content=$(execpath :pro-installed-by.txt) mode=0644 uid=0 gid=0",
+        # The version stamp, next to pysemgrep's bundled semgrep-core (where it reads it).
+        "./opt/chainguard/semgrep/lib/python3.13/site-packages/semgrep/bin/pro-installed-by.txt type=file content=$(execpath :pro-installed-by.txt) mode=0644 uid=0 gid=0",
     ],
 )
 
