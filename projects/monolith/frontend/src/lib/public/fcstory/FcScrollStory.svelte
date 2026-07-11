@@ -382,7 +382,7 @@
             >.
           </h2>
           <p>
-            The VM was never the slow part. What costs real time is waiting
+            The slow part is waiting
             for a useful guest: kernel up, agent listening, toolchain warm.
             Measured cold, that wait is
             <span class="num big">{coldWait.ms.toLocaleString()}&nbsp;ms</span
@@ -402,7 +402,7 @@
           </p>
         </div>
         <div class="caption" bind:this={capRestoreEl}>
-          <h2>A request doesn't boot anything. It <em>restores</em>.</h2>
+          <h2>A request <em>restores</em>.</h2>
           <p>
             The bytes map from disk straight back into memory and the guest
             resumes mid-thought. The readiness wait that cost
@@ -574,8 +574,7 @@
     <p>
       This button replays one of the {restores.length} recorded runs at its true
       speed. No cluster is touched: the timings below were captured from the live
-      daemon and baked into this page. Blink and you miss it, which is the entire
-      point.
+      daemon and baked into this page. Blink and you miss it.
     </p>
     <ReplayWidget {restores} {PHASE_HUMAN} />
   </section>

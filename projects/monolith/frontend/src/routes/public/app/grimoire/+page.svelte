@@ -19,7 +19,7 @@
     {
       status: "Planned",
       title: "Evidence-grounded verification",
-      body: "A trailing job re-checks every extracted stat against the source passages, correcting what it can ground and nulling what it cannot.",
+      body: "A trailing job re-checks every extracted stat against its source passage, corrects it or nulls it.",
     },
     {
       status: "Planned",
@@ -34,7 +34,7 @@
     {
       status: "Designed",
       title: "Live-play tools",
-      body: "DM advice capture and a live session view, so the grimoire is useful mid-encounter and not just between sessions.",
+      body: "DM advice capture and a live session view for use mid-encounter.",
     },
     {
       status: "Long term",
@@ -64,8 +64,8 @@
       <span class="kn">demo</span>
     </div>
     <p class="block-lede">
-      Knowledge is granted, not global. The same entity renders differently
-      for each player character depending on the scope their DM has granted.
+      The same entity renders differently
+      for each player character, depending on the scope their DM has granted.
       The creature below is invented for this demo; the real corpus works the
       same way.
     </p>
@@ -104,9 +104,8 @@
       </article>
     </div>
     <p class="block-note">
-      One visibility predicate implements this everywhere: entity lookups,
-      search results, and the reader's "entities on this page" chips all
-      project through the same grant check.
+      One visibility predicate covers entity lookups, search results, and the
+      reader's "entities on this page" chips.
     </p>
   </section>
 
@@ -132,8 +131,7 @@
 
   <p class="foot-note">
     The library is free to browse. The interactive tools sit behind a quick
-    human check to keep bots out, and the whole app stays out of search
-    engines.
+    human check to keep bots out.
   </p>
 </div>
 

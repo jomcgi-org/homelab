@@ -165,7 +165,7 @@
       <Sticker color="var(--paper)" rotate={-3} class="sticker-bio">A LITTLE ABOUT ME</Sticker>
       <p class="bio-sub">
         I'm Joe, from Scotland, living in Vancouver.<br />
-        Care<em>mad</em> about developer experience.
+        Monorepo enthusiast. Care<em>mad</em> about developer experience.
       </p>
     </div>
   </div>
