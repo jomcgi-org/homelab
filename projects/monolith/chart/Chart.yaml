@@ -1,7 +1,11 @@
 apiVersion: v2
 name: monolith
 description: Consolidated homelab web services
+<<<<<<< HEAD
 version: 0.285.125
+=======
+version: 0.285.126
+>>>>>>> c25133e8a (chore: bump monolith and monolith-public charts for private dashboard)
 type: application
 dependencies:
   - name: cf-ingress

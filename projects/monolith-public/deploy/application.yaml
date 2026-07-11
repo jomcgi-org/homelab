@@ -9,7 +9,11 @@ spec:
     # Chart from OCI registry (pushed by CI via Bazel helm_push)
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith-public
+<<<<<<< HEAD
       targetRevision: 0.89.54
+=======
+      targetRevision: 0.89.55
+>>>>>>> c25133e8a (chore: bump monolith and monolith-public charts for private dashboard)
       helm:
         releaseName: monolith-public
         valueFiles:
