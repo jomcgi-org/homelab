@@ -1,0 +1,74 @@
+/* ── Private dashboard palette ──────────────────────────────────────
+ * Design tokens for the private.jomcgi.dev landing page. The palette
+ * drifts with the clock: the page shell carries one of .dawn / .day /
+ * .dusk / .night alongside .shell, and each period re-tints the same
+ * token names. Kept in lib/private so the public build (:src_public)
+ * never ships it.
+ */
+
+.shell {
+  /* palette (day defaults, overridden per period below) */
+  --paper: #f3f1ea;
+  --card-bg: #fbfaf6;
+  --ink: #26231c;
+  --ink-2: #625d50;
+  --ink-3: #97917f;
+  --line: rgba(64, 58, 42, 0.13);
+  --accent: #46709f;
+  --ok: #3d8f5f;
+  --warn: #b07c2f;
+  --bad: #b6473a;
+  --glow-a: rgba(196, 216, 233, 0.75);
+  --glow-b: rgba(233, 229, 208, 0.8);
+
+  --font-display: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --font-ui:
+    "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-code: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+
+  --radius: 18px;
+
+  /* re-bind the shared token names so descendant components
+   * (ClusterChatPanel, the search overlay) restyle without edits */
+  --font: var(--font-ui);
+  --bg: var(--paper);
+  --fg: var(--ink);
+  --fg-secondary: var(--ink-2);
+  --fg-tertiary: var(--ink-3);
+  --border: var(--line);
+  --surface: color-mix(in srgb, var(--ink) 6%, var(--card-bg));
+  --danger: var(--bad);
+  --st-ok: var(--ok);
+}
+
+.shell.dawn {
+  --paper: #f6f0e5;
+  --card-bg: #fdf9f1;
+  --accent: #b4642f;
+  --glow-a: rgba(243, 210, 150, 0.65);
+  --glow-b: rgba(238, 219, 205, 0.75);
+}
+
+.shell.dusk {
+  --paper: #f2ece9;
+  --card-bg: #fbf7f4;
+  --accent: #a35262;
+  --glow-a: rgba(238, 197, 183, 0.6);
+  --glow-b: rgba(213, 204, 228, 0.55);
+}
+
+.shell.night {
+  --paper: #14151b;
+  --card-bg: #1c1e26;
+  --ink: #e8e5dc;
+  --ink-2: #a5a297;
+  --ink-3: #6f6d65;
+  --line: rgba(232, 227, 210, 0.12);
+  --accent: #d3a45f;
+  --ok: #6fbf8d;
+  --warn: #d0a050;
+  --bad: #d9776a;
+  --glow-a: rgba(48, 56, 82, 0.55);
+  --glow-b: rgba(66, 48, 70, 0.45);
+  --surface: color-mix(in srgb, #fff 5%, var(--card-bg));
+}
