@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 def pytest_configure(config):
     """Set asyncio_mode and register custom markers."""
     config.option.asyncio_mode = "auto"
+    # pytest-asyncio 1.x requires an explicit default fixture loop scope;
+    # leaving it unset emits a deprecation warning that pytest 9 promotes to a
+    # collection error. "function" matches the historical implicit default and
+    # keeps per-test loop isolation (the SAVEPOINT-per-test model relies on it).
+    config.option.asyncio_default_fixture_loop_scope = "function"
     config.addinivalue_line(
         "markers", "covers_route(path, method): marks test as covering an API route"
     )

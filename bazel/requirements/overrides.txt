@@ -39,10 +39,7 @@ pyjwt[crypto]==2.13.0
 # These packages are transitive (or loosely-constrained direct) deps that a
 # plain recompile would leave at their vulnerable pins, so we force the first
 # patched version as an override. Each maps to open Dependabot alerts; drop an
-# entry once the upstream constraint naturally floats past it. starlette and
-# pydantic-ai-slim are intentionally NOT here: both require a major bump with
-# real breaking-change risk (starlette 1.x is capped by fastapi) and are
-# tracked separately.
+# entry once the upstream constraint naturally floats past it.
 aiohttp>=3.14.1
 authlib>=1.6.12
 cryptography>=48.0.1
@@ -52,16 +49,12 @@ mako>=1.3.12
 pip>=26.1.2
 pygments>=2.20.0
 pydantic-settings>=2.14.2
-# pytest is CAPPED <9, not bumped: pytest-asyncio 0.23.8 only supports
-# pytest <9, and pytest 9 makes it fail to register (async tests then error
-# with "async def functions are not natively supported"). Closing the pytest
-# CVE (CVE-2025-71176, test-only) requires a coupled pytest-asyncio 1.x
-# migration (breaking event_loop-fixture / loop-scope changes across every
-# async test), so it is held for a dedicated PR. Without this cap a fresh
-# re-lock floats pytest to 9.x and breaks all async tests. Pinned exactly
-# (a bare `pytest<9` range override is not honored by the uv compile) to the
-# same version main runs today.
-pytest==7.4.4
+# pytest 9 (closes CVE-2025-71176) requires pytest-asyncio 1.x; the two are
+# bumped together. pytest-asyncio is transitive, so it is forced here to keep
+# the resolver from holding it at the old 0.23.x line. The async harness change
+# is a one-line asyncio_default_fixture_loop_scope in shared/testing/plugin.py.
+pytest>=9.0.3
+pytest-asyncio>=1.4,<2
 python-multipart>=0.0.31
 soupsieve>=2.8.4
 urllib3>=2.7.0
