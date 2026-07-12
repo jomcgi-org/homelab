@@ -143,6 +143,17 @@ class TestListTasks:
         ids = {t["note_id"] for t in tasks}
         assert ids == {"t1", "t2"}
 
+    def test_exclude_statuses_drops_listed_and_keeps_blank(self, session):
+        _make_task(session, "t1", status="todo")
+        _make_task(session, "t2", status="done")
+        _make_task(session, "t3", status="cancelled")
+        _make_task(session, "t4", status="")  # blank status must survive
+
+        store = KnowledgeStore(session)
+        tasks = store.list_tasks(exclude_statuses={"done", "cancelled"})
+        ids = {t["note_id"] for t in tasks}
+        assert ids == {"t1", "t4"}
+
     def test_returns_task_fields(self, session):
         _make_task(
             session,
@@ -167,6 +178,31 @@ class TestListTasks:
         assert task["size"] == "medium"
         assert task["blocked_by"] == ["t0"]
         assert task["task_completed"] is None
+
+
+class TestDailyWeeklyHideFinished:
+    """The daily/weekly views (and the MCP tools behind them) must not show
+    tasks that are already done or cancelled, however overdue they are."""
+
+    def test_daily_hides_done_and_cancelled_but_keeps_open_overdue(self, session):
+        # All overdue (due long before today), so due_before is satisfied.
+        _make_task(session, "open", status="todo", due="2020-01-01")
+        _make_task(session, "finished", status="done", due="2020-01-01")
+        _make_task(session, "dropped", status="cancelled", due="2020-01-01")
+
+        store = KnowledgeStore(session)
+        tasks = store.list_tasks_daily()
+        ids = {t["note_id"] for t in tasks}
+        assert ids == {"open"}
+
+    def test_weekly_hides_done_and_cancelled(self, session):
+        _make_task(session, "open", status="todo", due="2020-01-01")
+        _make_task(session, "finished", status="done", due="2020-01-01")
+
+        store = KnowledgeStore(session)
+        tasks = store.list_tasks_weekly()
+        ids = {t["note_id"] for t in tasks}
+        assert ids == {"open"}
 
 
 class TestPatchTask:
