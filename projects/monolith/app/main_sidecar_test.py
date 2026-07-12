@@ -356,7 +356,7 @@ async def test_wait_for_sidecar_logs_waiting_message():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with patch("app.main.logger") as mock_logger:
+                with patch("chat.leader.logger") as mock_logger:
                     await _wait_for_sidecar()
 
     messages = [str(c) for c in mock_logger.info.call_args_list]
@@ -371,7 +371,7 @@ async def test_wait_for_sidecar_logs_ready_message():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with patch("app.main.logger") as mock_logger:
+                with patch("chat.leader.logger") as mock_logger:
                     await _wait_for_sidecar()
 
     messages = [str(c) for c in mock_logger.info.call_args_list]
@@ -424,7 +424,7 @@ async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
         patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "fake-token-for-test"}),
         patch.dict(sys.modules, {"chat.bot": mock_chat_module}),
         patch("asyncio.create_task", side_effect=capture_create_task),
-        patch("app.main._wait_for_sidecar", side_effect=_mock_wait_for_sidecar),
+        patch("chat.leader.wait_for_sidecar", side_effect=_mock_wait_for_sidecar),
         patches[0],
         patches[1],
         patches[2],

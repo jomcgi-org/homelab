@@ -275,7 +275,7 @@ def test_log_task_exception_does_not_log_when_task_cancelled():
     mock_task = MagicMock()
     mock_task.cancelled.return_value = True
 
-    with patch("app.main.logger") as mock_logger:
+    with patch("framework.core.logger") as mock_logger:
         _log_task_exception(mock_task)
 
     mock_logger.error.assert_not_called()
@@ -291,7 +291,7 @@ def test_log_task_exception_logs_error_when_exception_present():
     mock_task.exception.return_value = exc
     mock_task.get_name.return_value = "my-task"
 
-    with patch("app.main.logger") as mock_logger:
+    with patch("framework.core.logger") as mock_logger:
         _log_task_exception(mock_task)
 
     mock_logger.error.assert_called_once()
@@ -307,7 +307,7 @@ def test_log_task_exception_does_not_log_when_task_succeeded():
     mock_task.cancelled.return_value = False
     mock_task.exception.return_value = None
 
-    with patch("app.main.logger") as mock_logger:
+    with patch("framework.core.logger") as mock_logger:
         _log_task_exception(mock_task)
 
     mock_logger.error.assert_not_called()
@@ -323,7 +323,7 @@ def test_log_task_exception_includes_task_name_in_error_message():
     mock_task.exception.return_value = exc
     mock_task.get_name.return_value = "important-task"
 
-    with patch("app.main.logger") as mock_logger:
+    with patch("framework.core.logger") as mock_logger:
         _log_task_exception(mock_task)
 
     call_args = mock_logger.error.call_args[0]
@@ -349,7 +349,7 @@ async def test_lifespan_logs_monolith_started_on_startup():
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            with patch("app.main.logger") as mock_logger:
+            with patch("framework.core.logger") as mock_logger:
                 async with lifespan(app):
                     pass
 
@@ -372,7 +372,7 @@ async def test_lifespan_logs_shutting_down_on_exit():
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            with patch("app.main.logger") as mock_logger:
+            with patch("framework.core.logger") as mock_logger:
                 async with lifespan(app):
                     pass
 
@@ -470,7 +470,7 @@ async def test_lifespan_logs_discord_bot_starting_when_token_set():
                 patches[6],
                 patches[7],
             ):
-                with patch("app.main.logger") as mock_logger:
+                with patch("chat.leader.logger") as mock_logger:
                     await _start_singletons(app)
 
     logged_messages = [str(c) for c in mock_logger.info.call_args_list]
@@ -533,7 +533,7 @@ async def test_lifespan_does_not_log_discord_bot_starting_when_token_absent():
     with patch.dict(os.environ, env_without_token, clear=True):
         with patch("asyncio.create_task", side_effect=capture_create_task):
             with patches[0], patches[1], patches[2], patches[3], patches[4]:
-                with patch("app.main.logger") as mock_logger:
+                with patch("chat.leader.logger") as mock_logger:
                     async with lifespan(app):
                         pass
 

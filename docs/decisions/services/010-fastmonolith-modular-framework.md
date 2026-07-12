@@ -1,7 +1,7 @@
 # ADR 010: FastMonolith Modular Framework
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Accepted (implemented 2026-07-11; see Amendments)
 **Created:** 2026-06-15
 **Relates to:** [ADR 004: Public Read-Only Service Isolation](../security/004-public-read-only-service-isolation.md), [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)
 
@@ -148,6 +148,43 @@ Builds on the `docs/security.md` baseline and ADR 004. The load-bearing controls
 | `knowledge` `_core` leaks private logic into the public path | Medium | Medium | `_core` holds models and pure helpers only; the read-only public-only grant remains the backstop, so a leak still cannot read private rows |
 
 ---
+
+## Amendments (2026-07-11, at implementation)
+
+The framework landed as decided (``framework/`` with ``Profile``, ``Module``,
+``build_app``; two prod binaries composed from one root; runtime capability as
+the boundary), with four adaptations to how the monolith had evolved since
+this ADR was written:
+
+1. **No scheduler composition.** The in-process SKIP-LOCKED loop was removed
+   repo-wide after this ADR (scheduled jobs run as Argo CronWorkflows against
+   the ``:jobs_image`` batch entrypoint), so ``Module`` carries no
+   ``startup_jobs`` and ``build_app`` starts no scheduler loop. The
+   leader-elected singletons (Discord bot, outbox drain, lock sweep, AIS
+   ingest) took the scheduler's place as the composed background concern:
+   they moved out of ``app/main.py`` into their owning domains
+   (``chat/leader.py``, ``ships/leader.py``) as ``leader_start``/
+   ``leader_stop`` hooks the framework drives. Each profile scopes its
+   Postgres leader-election lease key (the confined monolith keeps the
+   historical ``singletons`` key; domain profiles get ``singletons.<name>``),
+   so a standalone domain binary deployed next to the confined monolith
+   never contends for, and silently wins, the monolith's election.
+2. **Both-tier domains use hooks, not package splits.** Reality converged on
+   ``register(app)`` + ``register_public(app)`` hooks per domain rather than
+   ``_core``/``_public``/``_private`` packages. ``Module`` carries both
+   optional callables and ``build_app`` selects by the profile's tier.
+3. **The profile does not own DB plumbing.** ``app.db.get_engine`` reads
+   ``DATABASE_URL``, which each deployment points at the right endpoint and
+   role, exactly the runtime-capability framing above; adding engine wiring
+   to the profile would have changed behavior for no isolation gain.
+4. **Per-domain images are a build product now.** Beyond the two prod
+   binaries, ``app/main_domain.py`` composes any single domain
+   (``MONOLITH_DOMAIN`` env), and ``domain_images.bzl`` fans out a build-only
+   dual-arch image per domain sharing the confined monolith's layers
+   (``bazel build //projects/monolith:image_domain_<name>`` or
+   ``:domain_images`` for all). No push wiring and no charts: per-domain
+   production deployment stays out of scope as decided; ``api.py`` remains
+   the cut point when a domain graduates for real.
 
 ## Open Questions
 

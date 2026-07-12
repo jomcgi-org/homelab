@@ -53,29 +53,37 @@ _RELEASE_SQL = (
 )
 
 
-def _acquire_or_renew() -> bool:
+def _acquire_or_renew(key: str = LEASE_KEY) -> bool:
     """Atomically acquire/renew/steal the lease. True if this replica holds it."""
     with Session(get_engine()) as session:
         row = session.execute(
             text(_ACQUIRE_SQL),
-            {"key": LEASE_KEY, "holder": HOLDER_ID, "ttl": LEASE_TTL},
+            {"key": key, "holder": HOLDER_ID, "ttl": LEASE_TTL},
         ).fetchone()
         session.commit()
     return row is not None and row[0] == HOLDER_ID
 
 
-def _release() -> None:
+def _release(key: str = LEASE_KEY) -> None:
     """Drop our lease on graceful shutdown so failover is immediate, not TTL-bound."""
     with Session(get_engine()) as session:
-        session.execute(text(_RELEASE_SQL), {"key": LEASE_KEY, "holder": HOLDER_ID})
+        session.execute(text(_RELEASE_SQL), {"key": key, "holder": HOLDER_ID})
         session.commit()
 
 
 class LeaderElector:
-    """Drives leadership transitions, invoking callbacks on acquire/resign."""
+    """Drives leadership transitions, invoking callbacks on acquire/resign.
 
-    def __init__(self) -> None:
+    ``lease_key`` scopes the election: differently-composed binaries (the
+    confined monolith vs a standalone domain image) must not contend for the
+    same lease, or whichever process wins silently benches the other's
+    singletons. The confined monolith keeps the historical "singletons" key;
+    domain profiles get a per-domain key (see framework.domain_profile).
+    """
+
+    def __init__(self, lease_key: str = LEASE_KEY) -> None:
         self._is_leader = False
+        self._lease_key = lease_key
 
     @property
     def is_leader(self) -> bool:
@@ -95,7 +103,7 @@ class LeaderElector:
         try:
             while True:
                 try:
-                    leader = await asyncio.to_thread(_acquire_or_renew)
+                    leader = await asyncio.to_thread(_acquire_or_renew, self._lease_key)
                 except Exception:
                     logger.exception("leader lease check failed; treating as follower")
                     leader = False
@@ -115,7 +123,7 @@ class LeaderElector:
         except asyncio.CancelledError:
             if self._is_leader:
                 try:
-                    await asyncio.to_thread(_release)
+                    await asyncio.to_thread(_release, self._lease_key)
                     logger.info("released leader lease on shutdown")
                 except Exception:
                     logger.exception("leader lease release failed")

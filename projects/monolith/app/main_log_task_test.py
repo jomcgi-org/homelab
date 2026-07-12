@@ -20,7 +20,7 @@ class TestLogTaskException:
         task.exception.return_value = RuntimeError("something went wrong")
         task.get_name.return_value = "my-task"
 
-        with patch("app.main.logger") as mock_logger:
+        with patch("framework.core.logger") as mock_logger:
             _log_task_exception(task)
 
         mock_logger.error.assert_called_once()
@@ -36,7 +36,7 @@ class TestLogTaskException:
         task.cancelled.return_value = True
         task.get_name.return_value = "cancelled-task"
 
-        with patch("app.main.logger") as mock_logger:
+        with patch("framework.core.logger") as mock_logger:
             _log_task_exception(task)
 
         mock_logger.error.assert_not_called()
@@ -47,7 +47,7 @@ class TestLogTaskException:
         task.cancelled.return_value = False
         task.exception.return_value = None
 
-        with patch("app.main.logger") as mock_logger:
+        with patch("framework.core.logger") as mock_logger:
             _log_task_exception(task)
 
         mock_logger.error.assert_not_called()
@@ -59,7 +59,7 @@ class TestLogTaskException:
         task.exception.return_value = RuntimeError("irrelevant")
         task.get_name.return_value = "task"
 
-        with patch("app.main.logger") as mock_logger:
+        with patch("framework.core.logger") as mock_logger:
             _log_task_exception(task)
 
         mock_logger.error.assert_not_called()

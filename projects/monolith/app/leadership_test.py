@@ -20,7 +20,7 @@ def _seq(values):
     """A fake _acquire_or_renew that yields `values` then stays a follower."""
     it = iter(values)
 
-    def f():
+    def f(*_args):
         try:
             return next(it)
         except StopIteration:
@@ -51,7 +51,7 @@ async def test_acquire_then_resign_fire_once(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_db_error_is_follower(monkeypatch):
-    def boom():
+    def boom(*_args):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(leadership, "_acquire_or_renew", boom)
@@ -73,7 +73,7 @@ async def test_db_error_is_follower(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_releases_lease_on_cancel_when_leader(monkeypatch):
-    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda: True)
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
     monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
     released = mock.Mock()
     monkeypatch.setattr(leadership, "_release", released)

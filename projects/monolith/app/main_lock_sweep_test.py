@@ -11,7 +11,7 @@ Covers paths not addressed by existing main_* test files:
 - sweep_task.add_done_callback(_log_task_exception) is registered
 - 'Message lock sweep started (30s interval)' is logged when token is set
 
-NOTE on loop structure in _lock_sweep_loop (from app/main.py):
+NOTE on loop structure in _lock_sweep_loop (chat/leader.py leader_start):
   1. while not bot.is_ready(): sleep(2)    # poll until bot connected
   2. while True:
        await asyncio.sleep(30)             # sleep is FIRST in each iteration
@@ -78,23 +78,22 @@ def _lifespan_patches_no_discord():
 
 
 def _capture_sweep_coro():
-    """Capture the _lock_sweep_loop coroutine (task 4) without closing it.
+    """Capture the _lock_sweep_loop coroutine without closing it.
 
-    Task order when DISCORD_BOT_TOKEN is set:
-      1=bot, 2=outbox drain, 3=ships ingest, 4=sweep
+    Identified by coroutine name rather than creation order, so the test does
+    not depend on which order the composed leader hooks spawn their tasks
+    (chat starts bot, outbox drain, and sweep; ships starts the AIS ingest).
     """
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
     mock_bot.is_ready = MagicMock(return_value=True)
 
     coros: list = []
-    task_counter = [0]
 
     def capture_create_task(coro, **kwargs):
-        task_counter[0] += 1
         t = MagicMock()
-        # 4th task is the lock sweep (bot, outbox drain, ships, sweep).
-        if task_counter[0] == 4:
+        cr_code = getattr(coro, "cr_code", None)
+        if cr_code is not None and cr_code.co_name == "_lock_sweep_loop":
             coros.append(coro)  # preserve — do NOT close
         else:
             if hasattr(coro, "close"):
@@ -128,24 +127,19 @@ def _make_session_mock(store: MagicMock) -> MagicMock:
 class TestSweepTaskRegistration:
     @pytest.mark.asyncio
     async def test_sweep_task_registers_done_callback_with_log_task_exception(self):
-        """When DISCORD_BOT_TOKEN is set, sweep_task.add_done_callback(_log_task_exception) is called.
-
-        Task order: 1=bot, 2=outbox drain, 3=ships ingest, 4=sweep.
-        """
+        """When DISCORD_BOT_TOKEN is set, sweep_task.add_done_callback(_log_task_exception) is called."""
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
 
         sweep_task_mock = MagicMock()
-        task_counter = [0]
 
         def capture_create_task(coro, **kwargs):
+            # Identify the sweep by coroutine name, not creation order.
+            cr_code = getattr(coro, "cr_code", None)
+            is_sweep = cr_code is not None and cr_code.co_name == "_lock_sweep_loop"
             if hasattr(coro, "close"):
                 coro.close()
-            task_counter[0] += 1
-            # 4th task is the lock sweep (bot, outbox drain, ships, sweep).
-            if task_counter[0] == 4:
-                return sweep_task_mock
-            return MagicMock()
+            return sweep_task_mock if is_sweep else MagicMock()
 
         patches = _lifespan_patches_with_discord(mock_bot)
         with (
@@ -187,7 +181,7 @@ class TestSweepTaskRegistration:
             patches[5],
             patches[6],
             patches[7],
-            patch("app.main.logger") as mock_logger,
+            patch("chat.leader.logger") as mock_logger,
         ):
             await _start_singletons(app)
 
@@ -222,7 +216,7 @@ class TestSweepTaskRegistration:
             patches[2],
             patches[3],
             patches[4],
-            patch("app.main.logger") as mock_logger,
+            patch("chat.leader.logger") as mock_logger,
         ):
             await _start_singletons(app)
 
@@ -283,7 +277,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger"),
+            patch("chat.leader.logger"),
         ):
             try:
                 await coros[0]
@@ -335,7 +329,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger"),
+            patch("chat.leader.logger"),
         ):
             try:
                 await coros[0]
@@ -389,7 +383,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger"),
+            patch("chat.leader.logger"),
         ):
             try:
                 await coros[0]
@@ -444,7 +438,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger") as mock_logger,
+            patch("chat.leader.logger") as mock_logger,
         ):
             try:
                 await coros[0]
@@ -508,7 +502,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger"),
+            patch("chat.leader.logger"),
         ):
             try:
                 await coros[0]
@@ -571,7 +565,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger"),
+            patch("chat.leader.logger"),
         ):
             try:
                 await coros[0]
@@ -631,7 +625,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger") as mock_logger,
+            patch("chat.leader.logger") as mock_logger,
         ):
             try:
                 await coros[0]
@@ -689,7 +683,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger") as mock_logger,
+            patch("chat.leader.logger") as mock_logger,
         ):
             try:
                 await coros[0]
@@ -749,7 +743,7 @@ class TestLockSweepLoopExceptionHandling:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger") as mock_logger,
+            patch("chat.leader.logger") as mock_logger,
         ):
             try:
                 await coros[0]
@@ -807,7 +801,7 @@ class TestLockSweepLoopExceptionHandling:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger"),
+            patch("chat.leader.logger"),
         ):
             try:
                 await coros[0]
@@ -860,7 +854,7 @@ class TestLockSweepLoopExceptionHandling:
             patch("sqlmodel.Session", return_value=mock_session_obj),
             patch("chat.store.MessageStore", return_value=mock_store),
             patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
-            patch("app.main.logger"),
+            patch("chat.leader.logger"),
         ):
             try:
                 await coros[0]
