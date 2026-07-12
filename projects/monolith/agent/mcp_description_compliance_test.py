@@ -21,10 +21,6 @@ If Context Forge is upgraded and the rules change, update the
 
 from __future__ import annotations
 
-import ast
-import importlib
-import pathlib
-
 import pytest
 
 # From mcpgateway/schemas.py:436 — copied verbatim. Backticks are
@@ -38,37 +34,34 @@ FORBIDDEN_PATTERNS = ["&&", ";", "||", "$(", "|", "> ", "< "]
 MAX_DESCRIPTION_LENGTH = 8192
 
 
-def _tool_registration_modules() -> list[str]:
-    """The ``<domain>.mcp`` modules ``app/main.py`` imports to register tools.
+def _register_all_tools() -> int:
+    """Register every composed module's MCP tools; return how many modules did.
 
-    Derived from ``app/main.py`` (the single source of truth for tool
-    registration) instead of hand-listed here, so a newly added tool module is
-    covered automatically. A hand-maintained list previously omitted
-    ``cluster.mcp`` and shipped the k8s-* tools unvalidated (the gateway then
-    silently dropped four of them); reading the real registration site closes
-    that gap for good.
+    Derived from the FastMonolith module registry (the single source of truth
+    for tool registration since app/main.py became a build_app call) instead
+    of hand-listed here, so a newly added tool module is covered
+    automatically. A hand-maintained list previously omitted ``cluster.mcp``
+    and shipped the k8s-* tools unvalidated (the gateway then silently dropped
+    four of them); reading the real registration source closes that gap.
     """
-    main_py = pathlib.Path(__file__).resolve().parent.parent / "app" / "main.py"
-    tree = ast.parse(main_py.read_text())
-    return [
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-        if alias.name.endswith(".mcp")
-    ]
+    from app.modules_private import ALL_MODULES
+
+    registered = 0
+    for module in ALL_MODULES:
+        if module.register_mcp is not None:
+            module.register_mcp()
+            registered += 1
+    return registered
 
 
 @pytest.mark.asyncio
 async def test_all_mcp_tool_descriptions_pass_context_forge_validation():
     """Every registered tool's description must be Context Forge-safe."""
-    modules = _tool_registration_modules()
-    assert modules, (
-        "no <domain>.mcp registration imports found in app/main.py; the test "
-        "cannot see the tool set (check the app/main.py data dependency)"
+    registered = _register_all_tools()
+    assert registered, (
+        "no module in app.modules_private.ALL_MODULES declares register_mcp; "
+        "the test cannot see the tool set"
     )
-    for module in modules:
-        importlib.import_module(module)
     from app.mcp_app import mcp
 
     tools = await mcp.list_tools()

@@ -148,8 +148,8 @@ async def test_lifespan_starts_elector_and_shuts_down_tracer():
 
     with (
         patch("asyncio.create_task", side_effect=cap),
-        patch("app.main._tracer_provider", mock_tracer_provider),
-        patch("app.main.prime_snapshots", new_callable=AsyncMock),
+        patch("framework.core._OTEL_PROVIDER", mock_tracer_provider),
+        patch("home.observability.rollup.prime_snapshots", new_callable=AsyncMock),
         patch("app.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("knowledge.service.on_startup"),

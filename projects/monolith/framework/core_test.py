@@ -1,0 +1,252 @@
+"""Unit tests for the FastMonolith composition core (framework/core.py).
+
+These tests compose synthetic modules (no real domains) so they exercise the
+framework's own behavior: validation, tier selection, health endpoints, MCP
+gating, and the leader-singleton start/stop composition.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+
+import pytest
+from fastapi import FastAPI
+
+from framework import (
+    PRIVATE_PROFILE,
+    PUBLIC_PROFILE,
+    Module,
+    Tier,
+    build_app,
+    build_private_lifespan,
+    domain_profile,
+    start_leader_singletons,
+    stop_leader_singletons,
+)
+
+# A private-tier test profile with the process-global concerns disabled so the
+# tests stay hermetic (no OTel provider, no static mount, no MCP instance).
+_PLAIN_PRIVATE = dataclasses.replace(
+    PRIVATE_PROFILE,
+    mcp_enabled=False,
+    otel_enabled=False,
+    static_frontend=False,
+)
+
+
+def _routed_module(name: str, prefix: str) -> Module:
+    def register(app: FastAPI) -> None:
+        @app.get(f"/api/{prefix}/ping")
+        def ping():
+            return {"pong": name}
+
+    def register_public(app: FastAPI) -> None:
+        @app.get(f"/api/{prefix}/public-ping")
+        def public_ping():
+            return {"pong": name}
+
+    return Module(name=name, register=register, register_public=register_public)
+
+
+def _paths(app: FastAPI) -> set[str]:
+    return {r.path for r in app.routes if hasattr(r, "path")}
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def test_public_profile_rejects_module_without_public_surface():
+    private_only = Module(name="privy", register=lambda app: None)
+    with pytest.raises(ValueError, match="no public surface"):
+        build_app(PUBLIC_PROFILE, [private_only])
+
+
+def test_restricted_private_profile_rejects_secret_requiring_module():
+    secretive = Module(
+        name="secretive",
+        register=lambda app: None,
+        requires_secrets=frozenset({"SOME_TOKEN"}),
+    )
+    restricted = dataclasses.replace(_PLAIN_PRIVATE, allowed_secrets=frozenset())
+    with pytest.raises(ValueError, match="SOME_TOKEN"):
+        build_app(restricted, [secretive])
+
+
+def test_public_tier_ignores_private_surface_secrets():
+    """A both-tier module's private-surface secrets do not block public
+    composition: the public tier never mounts the secret-consuming hooks."""
+    both_tier = Module(
+        name="both",
+        register=lambda app: None,
+        register_public=lambda app: None,
+        requires_secrets=frozenset({"SOME_TOKEN"}),
+    )
+    app = build_app(PUBLIC_PROFILE, [both_tier])
+    assert "/healthz" in {r.path for r in app.routes if hasattr(r, "path")}
+
+
+def test_duplicate_module_names_rejected():
+    a = _routed_module("dup", "a")
+    b = _routed_module("dup", "b")
+    with pytest.raises(ValueError, match="duplicate"):
+        build_app(_PLAIN_PRIVATE, [a, b])
+
+
+def test_private_profile_rejects_contentless_module():
+    empty = Module(name="empty")
+    with pytest.raises(ValueError, match="contributes nothing"):
+        build_app(_PLAIN_PRIVATE, [empty])
+
+
+# ---------------------------------------------------------------------------
+# Tier selection + health
+# ---------------------------------------------------------------------------
+
+
+def test_private_tier_mounts_register_not_register_public():
+    app = build_app(_PLAIN_PRIVATE, [_routed_module("m", "m")])
+    paths = _paths(app)
+    assert "/api/m/ping" in paths
+    assert "/api/m/public-ping" not in paths
+    assert "/healthz" in paths
+    assert "/api/health" not in paths  # private profile has no deep health
+
+
+def test_public_tier_mounts_register_public_only():
+    app = build_app(PUBLIC_PROFILE, [_routed_module("m", "m")])
+    paths = _paths(app)
+    assert "/api/m/public-ping" in paths
+    assert "/api/m/ping" not in paths
+    assert "/healthz" in paths
+    assert "/api/health" in paths  # deep health on the public tier
+
+
+def test_public_tier_has_no_lifespan_side_effects_or_mcp():
+    app = build_app(PUBLIC_PROFILE, [_routed_module("m", "m")])
+    mounts = [r for r in app.routes if getattr(r, "path", "") == "/mcp"]
+    assert not mounts
+
+
+def test_domain_profile_shape():
+    profile = domain_profile("hikes")
+    assert profile.tier is Tier.PRIVATE
+    assert profile.service_name == "monolith-hikes"
+    assert profile.static_frontend is False
+    assert profile.leader_singletons is True
+
+
+# ---------------------------------------------------------------------------
+# MCP gating
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_only_module_is_valid_and_mounts_mcp():
+    calls: list[str] = []
+
+    mcp_only = Module(name="tools", register_mcp=lambda: calls.append("mcp"))
+    profile = dataclasses.replace(_PLAIN_PRIVATE, mcp_enabled=True)
+    app = build_app(profile, [mcp_only])
+
+    assert calls == ["mcp"]
+    assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
+
+
+def test_mcp_disabled_profile_skips_registration_and_mount():
+    calls: list[str] = []
+
+    module = Module(
+        name="tools",
+        register=lambda app: None,
+        register_mcp=lambda: calls.append("mcp"),
+    )
+    app = build_app(_PLAIN_PRIVATE, [module])
+
+    assert calls == []
+    assert not any(getattr(r, "path", "") == "/mcp" for r in app.routes)
+
+
+# ---------------------------------------------------------------------------
+# Leader singleton composition
+# ---------------------------------------------------------------------------
+
+
+def _leader_module(name: str, log: list[str]) -> Module:
+    async def leader_start(app: FastAPI) -> list[asyncio.Task]:
+        log.append(f"{name}:start")
+
+        async def _forever():
+            await asyncio.Event().wait()
+
+        return [asyncio.create_task(_forever(), name=f"{name}-task")]
+
+    async def leader_stop(app: FastAPI) -> None:
+        log.append(f"{name}:stop")
+
+    return Module(name=name, leader_start=leader_start, leader_stop=leader_stop)
+
+
+@pytest.mark.asyncio
+async def test_start_and_stop_leader_singletons_compose_across_modules():
+    log: list[str] = []
+    modules = [_leader_module("a", log), _leader_module("b", log)]
+    app = FastAPI()
+
+    await start_leader_singletons(app, modules)
+    assert log == ["a:start", "b:start"]
+    assert len(app.state.singleton_tasks) == 2
+
+    tasks = list(app.state.singleton_tasks)
+    await stop_leader_singletons(app, modules)
+    assert log == ["a:start", "b:start", "a:stop", "b:stop"]
+    assert app.state.singleton_tasks == []
+    for task in tasks:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_stop_is_idempotent_and_survives_failing_hook():
+    log: list[str] = []
+
+    async def bad_stop(app: FastAPI) -> None:
+        raise RuntimeError("boom")
+
+    modules = [
+        Module(
+            name="bad",
+            leader_start=_leader_module("bad", log).leader_start,
+            leader_stop=bad_stop,
+        ),
+        _leader_module("good", log),
+    ]
+    app = FastAPI()
+    await start_leader_singletons(app, modules)
+    # A failing leader_stop must not prevent the other modules stopping.
+    await stop_leader_singletons(app, modules)
+    assert "good:stop" in log
+    # Second stop is a no-op.
+    await stop_leader_singletons(app, modules)
+
+
+@pytest.mark.asyncio
+async def test_private_lifespan_runs_startup_hooks_and_skips_elector_without_leader_hooks():
+    started: list[str] = []
+
+    async def startup(app: FastAPI) -> None:
+        started.append("primed")
+
+    module = Module(name="m", register=lambda app: None, startup=startup)
+    lifespan = build_private_lifespan(_PLAIN_PRIVATE, [module])
+
+    app = FastAPI()
+    async with lifespan(app):
+        assert started == ["primed"]
+        assert app.state.bot is None
+        assert app.state.singleton_tasks == []
+        # No module declares leader hooks, so no elector was created; the
+        # attribute still exists (None) so readers never AttributeError.
+        assert app.state.elector is None

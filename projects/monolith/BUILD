@@ -6,6 +6,7 @@
 # gazelle:exclude app
 # gazelle:exclude demos
 # gazelle:exclude e2e
+# gazelle:exclude framework
 # gazelle:exclude knowledge
 # gazelle:exclude notes
 # gazelle:exclude scripts
@@ -43,6 +44,7 @@ load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("//projects/monolith:bdd_test.bzl", "bdd_test")
+load("//projects/monolith:domain_images.bzl", "MONOLITH_DOMAINS", "monolith_domain_images")
 
 # Pin the frontend build to the exec (host) platform. The vite output is
 # just static HTML/CSS/JS — it's arch-independent — but py3_image's
@@ -63,6 +65,7 @@ _BACKEND_SRCS = glob(
     [
         "agent/**/*.py",
         "app/**/*.py",
+        "framework/**/*.py",
         "artifact/**/*.py",
         "chat/**/*.py",
         "chat_public/**/*.py",
@@ -250,6 +253,7 @@ py_library(
         [
             "agent/**/*.py",
             "app/**/*.py",
+            "framework/**/*.py",
             "artifact/**/*.py",
             "chat/**/*.py",
             "chat_public/**/*.py",
@@ -449,6 +453,10 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # Private entrypoint + MCP app.
     "app/main.py",
     "app/mcp_app.py",
+    # Private module registry (imports chat/agent/demos/...) and the
+    # single-domain entrypoint: never part of the public composition.
+    "app/modules_private.py",
+    "app/main_domain.py",
     # Batch-jobs entrypoint: runs as :jobs_image, never in the public binary.
     "app/jobs_main.py",
     # Private knowledge routers / write paths / heavy maintenance internals.
@@ -479,6 +487,7 @@ py_library(
     srcs = glob(
         [
             "app/**/*.py",
+            "framework/**/*.py",
             "artifact/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
@@ -543,6 +552,7 @@ py_venv_binary(
     srcs = glob(
         [
             "app/**/*.py",
+            "framework/**/*.py",
             "artifact/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
@@ -581,6 +591,44 @@ py3_image(
     main = "app/main_public.py",
     multiarch_tars = ["@claude_code//:tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-backend",
+)
+
+# ---------------------------------------------------------------------------
+# FastMonolith per-domain composition (ADR services/010): one shared binary
+# that composes a single domain selected by MONOLITH_DOMAIN, and one build-only
+# dual-arch image per domain baking that env in. All 18 images share ONE layer
+# set (each extra image costs only its config); note the layers do NOT dedupe
+# against :image in the registry, because py_image_layer embeds the binary
+# name (main vs main_domain) in every path.
+# Build one:  bazel build //projects/monolith:image_domain_hikes
+# Build all:  bazel build //projects/monolith:domain_images
+# ---------------------------------------------------------------------------
+py_venv_binary(
+    name = "main_domain",
+    srcs = _BACKEND_SRCS,  # keep
+    data = [
+        # Same runtime data files as :main (any domain may be selected at
+        # startup); only the static frontend bundle is omitted, because the
+        # domain profile never serves it (framework: static_frontend=False).
+        "campsites/catalog.json",
+        "chat/directive_seed.md",
+        "chat/orchestrator_bundle.md",
+        "knowledge/repo_docs_manifest.ndjson",
+        "worldcup/ratings/elo_2026.json",
+        "//projects/firecracker/goosecracker/guest:recipe_yamls",
+    ] + glob(["demos/loadtest_corpus/**/*.sample"]),
+    imports = ["."],  # keep
+    main = "app/main_domain.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":monolith_backend"],  # keep
+)
+
+monolith_domain_images(
+    name = "domain_images",
+    binary = ":main_domain",
+    config_test_domain = "hikes",
+    domains = MONOLITH_DOMAINS,
+    main = "app/main_domain.py",
 )
 
 py_test(
@@ -774,6 +822,33 @@ py_test(
     deps = [
         ":monolith_public_backend",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "framework_core_test",
+    srcs = ["framework/core_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "main_domain_test",
+    srcs = ["app/main_domain_test.py"],
+    data = ["domain_images.bzl"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+        "@pip//tzdata",
     ],
 )
 
@@ -5176,9 +5251,6 @@ py_test(
 py_test(
     name = "agent_mcp_description_compliance_test",
     srcs = ["agent/mcp_description_compliance_test.py"],
-    # The test parses app/main.py at runtime to derive the tool-registration
-    # module list, so it must be in the test runfiles.
-    data = ["app/main.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -5570,4 +5642,17 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":gen_orchestrator_bundle",
+)
+
+semgrep_target_test(
+    name = "main_domain_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":main_domain",
 )
