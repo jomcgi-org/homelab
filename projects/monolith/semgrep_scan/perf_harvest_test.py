@@ -71,7 +71,9 @@ def test_scan_to_row_managed_scan():
     assert row.branch == "main"
     assert row.scan_ref == "main"
     assert row.commit_sha == "abc123"
-    assert row.total_time == 12.75
+    # total_time is the startedAt->completedAt WALL (10:00:00 -> 10:00:13 = 13s),
+    # the aligned comparison basis, not Semgrep's engine-only totalTime (12.75).
+    assert row.total_time == 13.0
     assert row.findings_total == 3
     assert row.cli_version == "1.90.0"
     assert row.scan_started_at is not None
@@ -84,13 +86,27 @@ def test_scan_to_row_unspecified_returns_none():
 
 
 def test_scan_to_row_missing_findings_counts_and_total_time():
+    # With no timestamps AND no totalTime, total_time falls back to 0.0. The wall
+    # is preferred when both timestamps are present (see test above), so drop them
+    # here to exercise the fallback path.
     scan = _managed_scan()
     scan.pop("findingsCounts")
+    scan.pop("startedAt")
+    scan.pop("completedAt")
     scan["totalTime"] = None
     row = scan_to_row(scan)
     assert row is not None
     assert row.findings_total == 0
     assert row.total_time == 0.0
+
+
+def test_scan_to_row_falls_back_to_total_time_without_timestamps():
+    # No wall available (missing completedAt) -> use Semgrep's engine totalTime.
+    scan = _managed_scan()
+    scan.pop("completedAt")
+    row = scan_to_row(scan)
+    assert row is not None
+    assert row.total_time == 12.75
 
 
 @pytest.fixture(name="session")
