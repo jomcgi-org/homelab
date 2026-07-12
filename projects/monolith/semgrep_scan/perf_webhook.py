@@ -8,13 +8,18 @@ This webhook captures every managed scan's runtime for the perf comparison in
 near-real-time, findings-independent. The hourly harvest stays as a backstop
 for any delivery this misses.
 
-AUTH (fail-closed): Semgrep signs with ``SEMGREP_WEBHOOK_SECRET`` and sends
-``X-Semgrep-Signature-256: <hex>`` (HMAC-SHA256, hex, no prefix). Semgrep's docs
-compute the digest over the canonical ``json.dumps(payload, separators=(",",
-":"))`` rather than necessarily the exact bytes on the wire, so we accept a
-match against EITHER the raw body OR that canonical re-serialization. Both
-require the shared secret, so accepting either is safe and it removes a whole
-class of whitespace-mismatch silent-401s. An unset secret denies every request.
+AUTH (fail-closed, defense-in-depth): Semgrep signs ``semgrep_finding`` events
+with ``SEMGREP_WEBHOOK_SECRET`` (``X-Semgrep-Signature-256: <hex>``, HMAC-SHA256)
+but delivers ``semgrep_scan`` (scan-completion) events UNSIGNED. So:
+  - Signed request -> HMAC-verify (match against the raw body OR Semgrep's
+    canonical compact re-serialization; both need the secret).
+  - Unsigned request -> accept ONLY from Semgrep's egress IPs (CF-Connecting-IP,
+    set by Cloudflare and not client-spoofable since the origin is reachable only
+    via the CF tunnel), then rely on the API fetch in _capture_scan to verify the
+    scan is real. The webhook payload data is never trusted; we use it only for
+    the scan id and re-fetch the authoritative record.
+This captures the unsigned scan events (the ones carrying runtime) while never
+accepting an unverifiable, un-sourced request.
 
 The path ``/webhooks/semgrep`` is reachable through the private ingress via a
 Cloudflare Access IP-Bypass for Semgrep's egress IPs (Semgrep sends no Access
@@ -34,6 +39,23 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 logger = logging.getLogger("monolith.semgrep.perf_webhook")
 
 router = APIRouter(prefix="/webhooks/semgrep", tags=["semgrep-scan-webhook"])
+
+# Semgrep's documented egress IPs (observed as the webhook source: 52.34.137.110
+# and 52.35.248.246). Semgrep signs semgrep_finding events but delivers
+# semgrep_scan (scan completion) events UNSIGNED, so we cannot HMAC-verify those.
+# We instead accept an unsigned request only from these source IPs. CF-Connecting-IP
+# is set by Cloudflare and is not client-spoofable (the origin has no direct
+# internet exposure, only the CF tunnel reaches it), so it is a trustworthy gate.
+# The scan is then further verified by fetching its authoritative record from the
+# Semgrep API in _capture_scan (the webhook payload data is never trusted).
+_SEMGREP_WEBHOOK_IPS = frozenset(
+    {
+        "35.166.231.235",
+        "52.35.248.246",
+        "52.34.137.110",
+        "44.225.64.41",
+    }
+)
 
 
 def _verify_signature(body: bytes, signature_header: str | None) -> None:
@@ -144,7 +166,17 @@ async def semgrep_scan_webhook(
         len(body),
         bool(x_semgrep_signature_256),
     )
-    _verify_signature(body, x_semgrep_signature_256)
+    # Auth: a signed request (semgrep_finding events) is HMAC-verified. An
+    # unsigned request (semgrep_scan / scan-completion events, which Semgrep
+    # delivers without a signature) is accepted only from Semgrep's egress IPs;
+    # _capture_scan then fetch-verifies the scan against the Semgrep API, so the
+    # payload data is never trusted. Anything else is rejected (fail-closed).
+    if x_semgrep_signature_256:
+        _verify_signature(body, x_semgrep_signature_256)
+    elif client_ip not in _SEMGREP_WEBHOOK_IPS:
+        raise HTTPException(
+            status_code=401, detail="unsigned request from unrecognized source"
+        )
     try:
         payload = json.loads(body)
     except ValueError as exc:
