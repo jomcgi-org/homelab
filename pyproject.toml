@@ -36,7 +36,7 @@ dependencies = [
     # the monolith-workflows Argo controller (off-pod job execution).
     "hera",
     "jinja2~=3.1",
-    "python-multipart>=0.0.20",
+    "python-multipart>=0.0.31",
     "apscheduler~=3.10",
     "pytest~=7.4",
     "pytest-bdd~=7.0",

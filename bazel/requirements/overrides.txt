@@ -7,7 +7,9 @@
 # This override strips the [html-clean] extra. We add lxml-html-clean
 # as an explicit dep where needed (extractors BUILD) so it's still
 # available at runtime.
-lxml==6.0.2
+# Pinned to 6.1.0 (was 6.0.2) to fix CVE-2026-41066: iterparse()/
+# ETCompatXMLParser() default config allowed XXE to local files.
+lxml==6.1.0
 
 # Override pillow upper bound from open-gopro[gui] (requires <12).
 # Pillow 12.1.1 is needed to fix CVE. The <12 bound in open-gopro
@@ -32,3 +34,35 @@ opentelemetry-exporter-otlp-proto-http>=1.25.0
 # pyjwt==2.11.0 via runtime.txt. Broaden it so both coexist in the combined
 # all.txt lock; pyjwt 2.13 is API-compatible for mcp's JWT verification.
 pyjwt[crypto]==2.13.0
+
+# --- Security floors (Dependabot CVE remediation, 2026-07-11) ---
+# These packages are transitive (or loosely-constrained direct) deps that a
+# plain recompile would leave at their vulnerable pins, so we force the first
+# patched version as an override. Each maps to open Dependabot alerts; drop an
+# entry once the upstream constraint naturally floats past it. starlette and
+# pydantic-ai-slim are intentionally NOT here: both require a major bump with
+# real breaking-change risk (starlette 1.x is capped by fastapi) and are
+# tracked separately.
+aiohttp>=3.14.1
+authlib>=1.6.12
+cryptography>=48.0.1
+dulwich>=1.2.5
+idna>=3.15
+mako>=1.3.12
+pip>=26.1.2
+pygments>=2.20.0
+pydantic-settings>=2.14.2
+# pytest is CAPPED <9, not bumped: pytest-asyncio 0.23.8 only supports
+# pytest <9, and pytest 9 makes it fail to register (async tests then error
+# with "async def functions are not natively supported"). Closing the pytest
+# CVE (CVE-2025-71176, test-only) requires a coupled pytest-asyncio 1.x
+# migration (breaking event_loop-fixture / loop-scope changes across every
+# async test), so it is held for a dedicated PR. Without this cap a fresh
+# re-lock floats pytest to 9.x and breaks all async tests. Pinned exactly
+# (a bare `pytest<9` range override is not honored by the uv compile) to the
+# same version main runs today.
+pytest==7.4.4
+python-multipart>=0.0.31
+soupsieve>=2.8.4
+urllib3>=2.7.0
+zeroconf>=0.149.16
