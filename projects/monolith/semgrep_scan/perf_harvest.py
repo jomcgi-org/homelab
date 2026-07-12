@@ -126,12 +126,12 @@ def scan_to_row(scan: dict) -> ScanPerf | None:
     branch = scan.get("branch", "")
     started = _parse_dt(scan.get("startedAt"))
     completed = _parse_dt(scan.get("completedAt"))
-    # Aligned comparison basis: the managed scan's startedAt->completedAt WALL,
-    # to match Route B's request->post wall (perf_store.update_perf_total_time).
-    # Semgrep's own `totalTime` is engine-only (~40-45% of this wall: it strips
-    # their queue/checkout/upload), so comparing it to our engine time flattered
-    # us; wall-vs-wall is the honest full-request-to-result comparison. Fall back
-    # to totalTime only when a timestamp is missing.
+    # Comparison basis: the managed scan's startedAt->completedAt window (their
+    # whole scan job). Semgrep's own `totalTime` is engine-only (~40-45% of this
+    # window: it strips their queue/checkout/upload), which understated their real
+    # turnaround against Route B's request-to-scan-complete time
+    # (scan_execution_duration). start->end is the comparable whole-scan-job
+    # number. Fall back to totalTime only when a timestamp is missing.
     if started is not None and completed is not None:
         total_time = (completed - started).total_seconds()
     else:
