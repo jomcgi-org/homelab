@@ -79,7 +79,9 @@
       "postcss": ">=8.5.10 <9",
       "ws": ">=8.21.0 <9",
       "http-proxy-middleware": ">=3.0.7 <4",
-      "@anthropic-ai/claude-code": ">=2.1.163 <3"
+      "@anthropic-ai/claude-code": ">=2.1.163 <3",
+      "brace-expansion": ">=5.0.6 <6",
+      "yaml": ">=2.8.3 <3"
     },
     "patchedDependencies": {
       "@sveltejs/kit": "bazel/patches/@sveltejs__kit.patch",
