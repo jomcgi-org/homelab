@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, not_, or_
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 # are too generic to be meaningful.
 MIN_SEARCH_SCORE = 0.4
 _CHUNK_LEN_RAMP = 100  # chars at which the length penalty reaches 1.0
+
+# Terminal task statuses. A task in one of these is finished and should drop
+# out of the daily/weekly "what's on my plate" views (and the MCP tools that
+# back them). patch_task also uses this set to stamp/clear task-completed on
+# transition, so keeping one definition avoids the two drifting apart.
+_DONE_STATUSES = frozenset({"done", "cancelled"})
 
 # Note types that participate in the knowledge graph. Notes whose type
 # is NULL or not in this set are dropped from the graph response — they
@@ -545,6 +552,7 @@ class KnowledgeStore:
         self,
         *,
         statuses: list[str] | None = None,
+        exclude_statuses: Iterable[str] | None = None,
         due_before: str | None = None,
         due_after: str | None = None,
         sizes: list[str] | None = None,
@@ -576,6 +584,12 @@ class KnowledgeStore:
                 continue
 
             if statuses is not None and status not in statuses:
+                continue
+
+            # Exclude-list runs after the allowlist so callers can pass an
+            # empty/blank status through (unlike an allowlist, which would
+            # silently drop unknown statuses) while still dropping terminal ones.
+            if exclude_statuses is not None and status in exclude_statuses:
                 continue
 
             if due_before is not None and (due is None or due > due_before):
@@ -667,17 +681,25 @@ class KnowledgeStore:
         return results
 
     def list_tasks_daily(self) -> list[dict]:
-        """Tasks due today or overdue."""
+        """Tasks due today or overdue, excluding finished (done/cancelled) ones."""
         today = date.today().isoformat()
-        return self.list_tasks(due_before=today, include_someday=False)
+        return self.list_tasks(
+            due_before=today,
+            include_someday=False,
+            exclude_statuses=_DONE_STATUSES,
+        )
 
     def list_tasks_weekly(self) -> list[dict]:
-        """Tasks due this week (Monday through Sunday)."""
+        """Tasks due this week (Monday through Sunday), excluding finished ones."""
         today = date.today()
         # Find end of current week (Sunday).
         days_until_sunday = 6 - today.weekday()
         end_of_week = (today + timedelta(days=days_until_sunday)).isoformat()
-        return self.list_tasks(due_before=end_of_week, include_someday=False)
+        return self.list_tasks(
+            due_before=end_of_week,
+            include_someday=False,
+            exclude_statuses=_DONE_STATUSES,
+        )
 
     def patch_task(self, note_id: str, fields: dict) -> None:
         """Update JSONB extra fields on a task note.
@@ -699,7 +721,7 @@ class KnowledgeStore:
         extra = dict(note.extra or {})
 
         # Detect status transitions for auto-completing.
-        done_statuses = {"done", "cancelled"}
+        done_statuses = _DONE_STATUSES
         old_status = extra.get("status", "")
         new_status = fields.get("status", old_status)
 
