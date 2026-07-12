@@ -17,7 +17,6 @@ load("@bazel_env.bzl", "bazel_env")
 load("@bazelrc-preset.bzl", "bazelrc_preset")
 load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
 load("@npm//:defs.bzl", "npm_link_all_packages")
-load("@npm//bazel/tools:yo/package_json.bzl", yo_bin = "bin")
 load("@rules_python//python/entry_points:py_console_script_binary.bzl", "py_console_script_binary")
 
 package(default_visibility = ["//visibility:public"])
@@ -33,8 +32,6 @@ py_console_script_binary(
 )
 
 npm_link_all_packages(name = "node_modules")
-
-yo_bin.yo_binary(name = "yo")
 
 bazel_env(
     name = "bazel_env",
@@ -53,7 +50,6 @@ bazel_env(
         "scaffold": "@com_github_hay_kot_scaffold//:scaffold",
         "node": "$(NODE_PATH)",
         "pnpm": "@pnpm",
-        "yo": ":yo",
         "python": "$(PYTHON3)",
         # Multitool tools (excluding gazelle - use `bazel run //:gazelle` instead)
         "aspect": MULTITOOL_TOOLS["aspect"],
