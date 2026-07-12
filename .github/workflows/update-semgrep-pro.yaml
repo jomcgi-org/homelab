@@ -25,13 +25,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup crane
-        uses: imjasonh/setup-crane@v0.4
+        uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -103,7 +103,14 @@ jobs:
                 mkdir -p "${dir}"
 
                 echo "[oss-engine-${arch}] Fetching PyPI wheel URL (matching /${platform}/)..."
-                WHEEL_URL=$(curl --compressed -sSf "https://pypi.org/pypi/semgrep/${SEMGREP_VERSION}/json" | python3 -c "
+                # Download the PyPI metadata to a file first, then parse it with a
+                # local script (never `curl | python3`): piping a remote response
+                # straight into an interpreter is the curl-pipe-shell pattern, so a
+                # hijacked response could influence execution. Here we fetch, then
+                # read from the file on disk.
+                pypi_json="/tmp/pypi-semgrep-${arch}.json"
+                curl --compressed -sSf "https://pypi.org/pypi/semgrep/${SEMGREP_VERSION}/json" -o "${pypi_json}"
+                WHEEL_URL=$(python3 -c "
           import json, re, sys
           data = json.load(sys.stdin)
           for f in data['urls']:
@@ -113,7 +120,8 @@ jobs:
           else:
               print('ERROR: no wheel found for ${platform}', file=sys.stderr)
               sys.exit(1)
-          ")
+          " < "${pypi_json}")
+                rm -f "${pypi_json}"
 
                 echo "[oss-engine-${arch}] Downloading wheel: ${WHEEL_URL##*/}"
                 curl --compressed -sSfL -o "/tmp/semgrep-${arch}.whl" "${WHEEL_URL}"
