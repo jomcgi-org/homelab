@@ -2911,9 +2911,9 @@ pydantic[email]==2.12.5 \
     #   pydantic-settings
     #   pydantic-sqlite
     #   sqlmodel
-pydantic-ai-slim[openai]==1.75.0 \
-    --hash=sha256:5132e7fc135e062cde13ecd389940bccd84feadabd4ed810f61a099068d271a7 \
-    --hash=sha256:8ba5ad332be6c2f8c62e0778504086a2d9441cc28064bb335a3caf6d270b463f
+pydantic-ai-slim[openai]==1.102.0 \
+    --hash=sha256:0b8f2b70fa2b40efcbd09d341a346934fc4e46622ae281f858c6bfd3d0d3152b \
+    --hash=sha256:f9fa9c3fb58a76f85522f78d1037d201b424de46d532263ed780b3730060449f
     # via homelab (pyproject.toml)
 pydantic-core==2.41.5 \
     --hash=sha256:0177272f88ab8312479336e1d777f6b124537d47f2123f89cb37e0accea97f90 \
@@ -3876,9 +3876,9 @@ sse-starlette==3.3.2 \
     --hash=sha256:5c3ea3dad425c601236726af2f27689b74494643f57017cafcb6f8c9acfbb862 \
     --hash=sha256:678fca55a1945c734d8472a6cad186a55ab02840b4f6786f5ee8770970579dcd
     # via mcp
-starlette==0.52.1 \
-    --hash=sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74 \
-    --hash=sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933
+starlette==1.3.1 \
+    --hash=sha256:05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0 \
+    --hash=sha256:c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6
     # via
     #   homelab (pyproject.toml)
     #   fastapi
