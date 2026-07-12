@@ -146,3 +146,12 @@ def test_managed_row_for_classifies_via_scan_record(monkeypatch):
         },
     )
     assert perf_webhook._managed_row_for(501) is None
+
+
+def test_extract_scan_id_tolerates_alias_and_nested_shapes():
+    from semgrep_scan.perf_webhook import _extract_scan_id
+
+    assert _extract_scan_id({"id": 5}) == 5
+    assert _extract_scan_id({"scan_id": "6"}) == 6
+    assert _extract_scan_id({"scan": {"id": 7}}) == 7
+    assert _extract_scan_id({"environment": "x"}) is None
