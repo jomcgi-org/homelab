@@ -86,3 +86,24 @@ def upsert_scan_perf(session: Session, row: ScanPerf) -> None:
         session.add(existing)
 
     session.commit()
+
+
+def update_perf_total_time(session: Session, scan_id: int, total_time: float) -> None:
+    """Overwrite only ``total_time`` for an existing perf row, by ``scan_id``.
+
+    Route B's aligned runtime is the request->post wall time (webhook receipt to
+    commit-status posted), which is only known AFTER report.py has already
+    written the perf row with the engine scan_execution_duration. This lets the
+    webhook stamp the wall time onto that row without disturbing the other
+    columns (a full upsert would copy every _UPDATE_FIELD from a partial row and
+    blank them). No-op if the row is absent (e.g. the perf write was skipped).
+    The App-reported total_time stays the engine time; only this comparison row
+    moves to wall, so both sides of the dashboard are request->post vs
+    startedAt->completedAt.
+    """
+    existing = session.exec(select(ScanPerf).where(ScanPerf.scan_id == scan_id)).first()
+    if existing is None:
+        return
+    existing.total_time = total_time
+    session.add(existing)
+    session.commit()

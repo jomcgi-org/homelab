@@ -9,7 +9,12 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from semgrep_scan.perf_store import ScanPerf, _merge_decision, upsert_scan_perf
+from semgrep_scan.perf_store import (
+    ScanPerf,
+    _merge_decision,
+    update_perf_total_time,
+    upsert_scan_perf,
+)
 
 
 def test_merge_decision_no_existing_row_inserts():
@@ -64,6 +69,32 @@ def test_upsert_inserts_new_row(session):
     assert rows[0].scan_id == 1
     assert rows[0].environment == "route-b"
     assert rows[0].total_time == 12.5
+
+
+def test_update_perf_total_time_overwrites_only_total_time(session):
+    # Route B wall-time alignment: report.py wrote the engine time; the webhook
+    # stamps the request->post wall onto only total_time, leaving other columns.
+    upsert_scan_perf(
+        session,
+        ScanPerf(
+            scan_id=7,
+            environment="route-b",
+            total_time=3.0,
+            findings_total=4,
+            branch="feat/x",
+        ),
+    )
+    update_perf_total_time(session, scan_id=7, total_time=21.6)
+
+    row = session.exec(select(ScanPerf).where(ScanPerf.scan_id == 7)).one()
+    assert row.total_time == 21.6
+    assert row.findings_total == 4  # untouched
+    assert row.branch == "feat/x"  # untouched
+
+
+def test_update_perf_total_time_noop_when_absent(session):
+    update_perf_total_time(session, scan_id=999, total_time=5.0)
+    assert session.exec(select(ScanPerf).where(ScanPerf.scan_id == 999)).first() is None
 
 
 def test_upsert_updates_existing_row_in_place(session):

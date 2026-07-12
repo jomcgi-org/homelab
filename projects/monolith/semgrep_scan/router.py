@@ -159,6 +159,12 @@ _USER_AGENT = "homelab-semgrep-webhook"
 # background job page forever. 100 items/page * 30 pages = 3000 files is plenty.
 _MAX_FILE_PAGES = 30
 _GITHUB_TIMEOUT = 30.0
+# Max concurrent GitHub contents fetches when gathering a PR's changed files.
+# The per-file fetches are independent WAN round trips, so a serial loop made
+# gather scale linearly with diff size (SigNoz: up to 63s on big PRs); a bounded
+# gather collapses it toward one round trip. The bound keeps a large PR from
+# opening hundreds of sockets or tripping GitHub secondary rate limits.
+_GATHER_CONCURRENCY = 8
 
 
 def _verify_signature(body: bytes, signature_header: str | None) -> None:
@@ -270,15 +276,24 @@ async def _gather_files(repo: str, pr_number: int, head_sha: str) -> list[dict]:
     whose content cannot be fetched is dropped. Shares one AsyncClient across all
     the GitHub calls.
     """
-    files: list[dict] = []
     timeout = httpx.Timeout(_GITHUB_TIMEOUT)
     async with httpx.AsyncClient(timeout=timeout) as client:
         paths = await _list_changed_files(client, repo, pr_number)
-        for path in paths:
-            content = await _fetch_file_content(client, repo, path, head_sha)
-            if content is not None:
-                files.append({"path": path, "content": content})
-    return files
+
+        # Fetch changed-file contents concurrently (bounded). asyncio.gather
+        # preserves the input order, so files stay in changed-file order; a file
+        # whose content cannot be fetched is dropped.
+        sem = asyncio.Semaphore(_GATHER_CONCURRENCY)
+
+        async def _fetch(path: str) -> dict | None:
+            async with sem:
+                content = await _fetch_file_content(client, repo, path, head_sha)
+            if content is None:
+                return None
+            return {"path": path, "content": content}
+
+        fetched = await asyncio.gather(*(_fetch(path) for path in paths))
+    return [f for f in fetched if f is not None]
 
 
 # The commit-status context string GitHub shows on the PR. Namespaced so it is
@@ -344,6 +359,23 @@ async def _post_commit_status(
             repo,
             head_sha,
         )
+
+
+def _persist_perf_wall_time(scan_id: int, wall_time: float) -> None:
+    """Stamp the Route B perf row's aligned runtime (request->post wall time).
+
+    Runs in a worker thread (never on the event loop) with its own fresh session,
+    per the monolith async-handler rule. report.py wrote the row with the engine
+    scan_execution_duration; this overwrites only total_time with the full wall so
+    the perf dashboard compares wall-vs-wall against managed startedAt->completedAt.
+    """
+    from sqlmodel import Session
+
+    from app.db import get_engine
+    from semgrep_scan.perf_store import update_perf_total_time
+
+    with Session(get_engine()) as session:
+        update_perf_total_time(session, scan_id, wall_time)
 
 
 async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
@@ -453,6 +485,19 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
             )
             status_ms = (time.monotonic() - t_status) * 1000
             scan_pr_wall_time = time.monotonic() - received
+            # Align the Route B perf row to the request->post wall (webhook
+            # receipt -> commit status posted): report.py wrote it with the
+            # engine scan_execution_duration, but the perf dashboard compares
+            # wall-vs-wall against managed startedAt->completedAt. Off the event
+            # loop (own session) per the monolith async-handler rule; best-effort.
+            try:
+                await asyncio.to_thread(
+                    _persist_perf_wall_time, int(scan_id), scan_pr_wall_time
+                )
+            except Exception:
+                logger.exception(
+                    "semgrep webhook: failed to align Route B perf wall time"
+                )
             logger.info(
                 "semgrep webhook: reported %s#%s scan_id=%s findings=%s "
                 "scan_execution_duration=%.2fs scan_pr_wall_time=%.2fs project=%s "
