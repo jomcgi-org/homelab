@@ -55,6 +55,11 @@ def _pod_status(obj: dict) -> dict:
             "ready": f"{ready}/{len(containers)}" if containers else None,
             "restarts": restarts or None,
             "reason": waiting,
+            # restartPolicy distinguishes run-to-completion pods (Jobs, Argo
+            # Workflow steps: Never/OnFailure) from long-running ones (Always).
+            # The health rollup uses it so an in-flight batch pod is not judged
+            # by a readiness invariant it is never meant to satisfy.
+            "restart_policy": (obj.get("spec") or {}).get("restartPolicy"),
         }
     )
 
@@ -217,6 +222,16 @@ def filter_logs(
 
 def _row_unhealthy(kind: str, row: dict) -> bool:
     if kind == "pods":
+        # Run-to-completion pods (Jobs, Argo Workflow / CronWorkflow steps:
+        # restartPolicy Never/OnFailure) are not meant to become Ready and churn
+        # through Pending -> ContainerCreating -> Running (with a wait sidecar
+        # that keeps ready at x/N, x != N) before exiting. Judged by the
+        # long-running checks below they always look unhealthy while in flight,
+        # so a per-minute health snapshot almost always catches one mid-run and
+        # reports the cluster unhealthy. Only a terminal Failed is unhealthy; a
+        # pending/initializing/running/succeeded batch pod is doing its job.
+        if row.get("restart_policy") in ("Never", "OnFailure"):
+            return row.get("phase") == "Failed"
         if row.get("reason"):
             return True
         phase = row.get("phase")

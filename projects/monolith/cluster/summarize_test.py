@@ -88,6 +88,39 @@ class TestUnhealthy:
             "pods", {"phase": "Succeeded", "ready": "0/1"}
         )
 
+    def test_inflight_batch_pod_is_healthy(self):
+        # An Argo Workflow / Job pod (restartPolicy Never) that is mid-run reports
+        # ready=x/N (x != N) with a wait sidecar and never becomes Ready. It must
+        # not be flagged just for being in flight, else a per-minute snapshot
+        # constantly reports the cluster unhealthy.
+        assert not summarize._row_unhealthy(
+            "pods", {"phase": "Running", "ready": "0/2", "restart_policy": "Never"}
+        )
+
+    def test_pending_batch_pod_is_healthy(self):
+        assert not summarize._row_unhealthy(
+            "pods",
+            {
+                "phase": "Pending",
+                "reason": "ContainerCreating",
+                "restart_policy": "Never",
+            },
+        )
+
+    def test_failed_batch_pod_is_unhealthy(self):
+        # A terminal failure IS worth surfacing (failed Workflow pods are kept by
+        # podGC OnWorkflowSuccess, so they persist rather than flicker).
+        assert summarize._row_unhealthy(
+            "pods", {"phase": "Failed", "restart_policy": "Never"}
+        )
+
+    def test_running_unready_long_lived_pod_still_unhealthy(self):
+        # A Deployment pod (restartPolicy Always) stuck unready keeps the old
+        # behaviour: it is meant to be Ready, so x/N with x != N is unhealthy.
+        assert summarize._row_unhealthy(
+            "pods", {"phase": "Running", "ready": "0/1", "restart_policy": "Always"}
+        )
+
     def test_partial_deployment_is_unhealthy(self):
         assert summarize._row_unhealthy("deployments", {"ready": "1/3"})
 
@@ -146,6 +179,30 @@ class TestBuildHealth:
                     "status": {
                         "phase": "Succeeded",
                         "containerStatuses": [{"ready": False, "restartCount": 0}],
+                    },
+                }
+            ]
+        }
+        out = summarize.build_health(resources)
+        assert out["healthy"] is True
+        assert out["unhealthy"] == {}
+
+
+    def test_inflight_workflow_pod_is_healthy_end_to_end(self):
+        # Real in-flight Argo Workflow pod shape: restartPolicy Never, Running,
+        # main container not yet ready alongside the wait sidecar (ready 0/2).
+        # Exercises restart_policy extraction from spec through build_health.
+        resources = {
+            "pods": [
+                {
+                    "metadata": {"name": "knowledge-ingest-1783894500"},
+                    "spec": {"restartPolicy": "Never"},
+                    "status": {
+                        "phase": "Running",
+                        "containerStatuses": [
+                            {"ready": False, "restartCount": 0},
+                            {"ready": False, "restartCount": 0},
+                        ],
                     },
                 }
             ]
