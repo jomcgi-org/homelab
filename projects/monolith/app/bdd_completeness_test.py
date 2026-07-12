@@ -50,49 +50,16 @@ _PUBLIC_EXCLUSIONS: set[str] = {
 # ---------------------------------------------------------------------------
 
 
-def _iter_app_routes(routes):
-    """Yield every concrete route, recursing into included sub-routers.
-
-    Starlette 1.x no longer flattens ``app.include_router()`` output into
-    ``app.routes``: each included router appears as a single ``_IncludedRouter``
-    wrapper (no ``.path``/``.methods``), and its child ``APIRoute`` objects
-    (which carry the full, prefix-resolved ``.path`` and ``.methods``) live on
-    ``wrapper.original_router.routes``. Recurse into those so every endpoint is
-    discovered; otherwise this coverage guard passes vacuously.
-
-    ``Mount`` sub-apps (``/mcp``, static files) are yielded but NOT descended
-    into: their internal routes carry un-prefixed paths and are intentionally
-    out of scope for this guard (the caller skips Mounts).
-    """
-    from starlette.routing import Mount
-
-    for route in routes:
-        yield route
-        if isinstance(route, Mount):
-            continue
-        sub = getattr(route, "routes", None)
-        if sub is None:
-            orig = getattr(route, "original_router", None)
-            sub = getattr(orig, "routes", None) if orig is not None else None
-        if sub:
-            yield from _iter_app_routes(sub)
-
-
 def _discover_routes() -> set[tuple[str, str]]:
     """Introspect the FastAPI app to find all registered routes."""
     from app.main import app
 
-    from starlette.routing import Mount
-
     routes: set[tuple[str, str]] = set()
-    for route in _iter_app_routes(app.routes):
-        # Skip mounted sub-apps (like /mcp and static files). Under Starlette
-        # 1.x a plain APIRoute also carries an ``.app`` attribute, so the old
-        # ``hasattr(route, "app")`` heuristic dropped every real route; match
-        # the Mount type explicitly instead.
-        if isinstance(route, Mount):
-            continue
+    for route in app.routes:
         if not hasattr(route, "methods") or not hasattr(route, "path"):
+            continue
+        # Skip mounted sub-apps (like /mcp and static files)
+        if hasattr(route, "app"):
             continue
         for method in route.methods:
             if method in ("HEAD", "OPTIONS"):

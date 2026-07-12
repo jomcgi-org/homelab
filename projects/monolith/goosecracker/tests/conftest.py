@@ -14,6 +14,14 @@ import os
 import pytest
 from sqlmodel import Session, create_engine, text
 
+# Import chat.api eagerly at collection time. runner._request_replan imports it
+# lazily (`from chat.api import replan`) inside an async test; under pytest 9 /
+# pytest-asyncio 1.x that first import happens deep in a running event loop,
+# where beartype's claw import hook (installed transitively by py-key-value-aio)
+# trips a circular import. Importing it here in a clean synchronous context (as
+# happened implicitly before the bump) makes the lazy import a cache hit.
+import chat.api  # noqa: E402,F401
+
 
 def _clean(conn) -> None:
     conn.execute(text("DELETE FROM claude_agent.agent_threads"))
