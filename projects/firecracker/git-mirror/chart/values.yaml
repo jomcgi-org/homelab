@@ -85,14 +85,19 @@ securityContext:
     drop:
       - ALL
 
-# Resource sizing: git-daemon + a refresh loop are lightweight. CPU request only
-# (no limit per repo convention); memory request = limit.
+# Resource sizing: git-daemon is lightweight, but the refresh loop's `git fetch`
+# / index-pack (and the periodic `git gc --auto`) hold delta bases in memory
+# proportional to the repo. homelab.git alone is ~215Mi on disk (167Mi pack), so
+# a 256Mi limit OOM-killed every fetch (exit 137) and froze the mirror 10 days
+# behind main, silently serving a stale tree to agent workspaces. 1Gi gives
+# index-pack/gc ~5x the pack size in headroom. CPU request only (no limit per
+# repo convention); memory request = limit.
 resources:
   requests:
     cpu: 100m
-    memory: 256Mi
+    memory: 1Gi
   limits:
-    memory: 256Mi
+    memory: 1Gi
 
 serviceAccount:
   create: false
