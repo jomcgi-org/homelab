@@ -4,10 +4,10 @@
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.1.71",
     "bindings": "^1.5.0",
-    "file-uri-to-path": "^1.0.0",
-    "obsidian-headless": "^0.0.8",
     "express": "^4.22.1",
+    "file-uri-to-path": "^1.0.0",
     "http-proxy-middleware": "^3.0.5",
+    "obsidian-headless": "^0.0.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "uuid": "^11.1.1",
@@ -84,6 +84,7 @@
       "@anthropic-ai/claude-code": ">=2.1.163 <3"
     },
     "patchedDependencies": {
+      "@sveltejs/kit": "bazel/patches/@sveltejs__kit.patch",
       "rollup": "bazel/patches/rollup.patch"
     }
   }
