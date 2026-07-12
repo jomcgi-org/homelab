@@ -103,12 +103,6 @@ async def refresh_cluster_snapshot() -> None:
     logger.info("cluster snapshot refreshed (scanned=%s)", health.get("scanned"))
 
 
-async def cluster_snapshot_refresh_handler() -> None:
-    """Scheduler handler for the cluster snapshot refresh."""
-    await refresh_cluster_snapshot()
-    return None
-
-
 def read_cluster_snapshot(session: Session) -> dict | None:
     """Return the stored snapshot, or None when the caller should live-scan.
 
