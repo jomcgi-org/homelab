@@ -27,9 +27,10 @@ rules:
   - apiGroups: [""]
     resources: ["nodes/proxy"]
     verbs: ["get"]
-  # count_deployments.
+  # count_deployments, plus the home.cluster_snapshot health rollup which lists
+  # statefulsets and daemonsets alongside deployments to flag not-ready ones.
   - apiGroups: ["apps"]
-    resources: ["deployments"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
     verbs: ["get", "list"]
   # count_argocd_applications + get_argocd_app_status. Read-only: no patch
   # (stats never triggers a sync).

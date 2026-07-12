@@ -16,8 +16,9 @@ class TestPublicFunctions:
         assert isinstance(result, list)
 
     @covers_public("home.on_startup_jobs")
-    def test_on_startup_jobs_registers_jobs(self, session):
+    def test_on_startup_jobs_registers_job(self, session):
         with patch("scheduler.api.register_job") as mock_register:
             home.on_startup_jobs(session)
-        names = {call.kwargs["name"] for call in mock_register.call_args_list}
-        assert names == {"home.calendar_poll", "home.cluster_snapshot_refresh"}
+        mock_register.assert_called_once()
+        _, kwargs = mock_register.call_args
+        assert kwargs["name"] == "home.calendar_poll"

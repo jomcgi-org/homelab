@@ -29,6 +29,15 @@ def test_worldcup_sim_dispatches_to_refresh_handler():
     handler.assert_awaited_once()
 
 
+def test_cluster_snapshot_refresh_dispatches_to_refresh():
+    refresh = mock.AsyncMock(return_value=None)
+    with mock.patch("home.cluster_snapshot.refresh_cluster_snapshot", new=refresh):
+        result = runner.invoke(jobs_main.app, ["home-cluster-snapshot-refresh"])
+
+    assert result.exit_code == 0, result.output
+    refresh.assert_awaited_once()
+
+
 def test_no_args_lists_commands():
     result = runner.invoke(jobs_main.app, [])
     # no_args_is_help exits non-zero and prints the command list.
