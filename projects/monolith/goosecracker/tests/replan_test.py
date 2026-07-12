@@ -143,7 +143,7 @@ def _wire_loop(monkeypatch, *, invoke_results, replan_returns):
 
     delivered: list = []
 
-    async def fake_deliver(session, recipe, discord_thread, data):
+    async def fake_deliver(session, discord_thread, data, provider="discord"):
         delivered.append(data)
         return True
 
