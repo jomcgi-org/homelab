@@ -126,6 +126,7 @@ docs/decisions/ categories:
 - agents
 - chat
 - docs
+- embervm
 - networking
 - platform
 - repo
