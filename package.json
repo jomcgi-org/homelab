@@ -68,7 +68,6 @@
       "ip-address": ">=10.1.1 <11",
       "@sigstore/core": ">=3.2.1 <4",
       "sigstore": ">=4.1.1 <5",
-      "@opentelemetry/core": ">=2.8.0 <3",
       "@babel/core": ">=7.29.6 <8",
       "path-to-regexp@<0.1.13": ">=0.1.13 <0.2",
       "picomatch@>=4.0.0 <4.0.4": ">=4.0.4 <5",
