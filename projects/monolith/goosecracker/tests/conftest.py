@@ -9,18 +9,22 @@ domain's ``agent_db`` fixture.
 
 from __future__ import annotations
 
-import os
-
-import pytest
-from sqlmodel import Session, create_engine, text
-
-# Import chat.api eagerly at collection time. runner._request_replan imports it
-# lazily (`from chat.api import replan`) inside an async test; under pytest 9 /
-# pytest-asyncio 1.x that first import happens deep in a running event loop,
-# where beartype's claw import hook (installed transitively by py-key-value-aio)
-# trips a circular import. Importing it here in a clean synchronous context (as
-# happened implicitly before the bump) makes the lazy import a cache hit.
+# beartype's claw import hook (installed transitively by py-key-value-aio) has a
+# latent circular import in beartype.claw._clawstate that only manifests when the
+# hook is first triggered from deep inside a running event loop -- which is
+# exactly what happens under pytest 9 / pytest-asyncio 1.x when
+# runner._request_replan does its lazy `from chat.api import replan`. Fully load
+# _clawstate here, at import time in a clean synchronous context, so claw_state
+# is always available when the hook later instruments an import. Then warm
+# chat.api itself so the lazy import is a plain cache hit. Both must run before
+# any async test.
+import beartype.claw._clawstate  # noqa: E402,F401
 import chat.api  # noqa: E402,F401
+
+import os  # noqa: E402
+
+import pytest  # noqa: E402
+from sqlmodel import Session, create_engine, text  # noqa: E402
 
 
 def _clean(conn) -> None:
