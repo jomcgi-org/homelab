@@ -363,7 +363,7 @@ class _FakeClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, json=None):
+    async def post(self, url, json=None, headers=None):
         self.calls += 1
         item = self._script.pop(0)
         if isinstance(item, Exception):
@@ -600,7 +600,7 @@ async def test_run_one_turn_ships_injected_context_in_payload(monkeypatch):
 
     captured_payload = {}
 
-    async def fake_post(url, payload, on_retry):
+    async def fake_post(url, payload, on_retry, traceparent=""):
         captured_payload.update(payload)
         return {"status": "ok", "result": "done", "sessionDb": ""}
 
@@ -642,7 +642,7 @@ async def _run_turn_capturing_payload(monkeypatch, **turn_kwargs):
 
     captured_payload = {}
 
-    async def fake_post(url, payload, on_retry):
+    async def fake_post(url, payload, on_retry, traceparent=""):
         captured_payload.update(payload)
         return {"status": "ok", "result": "done", "sessionDb": ""}
 
@@ -718,7 +718,7 @@ async def _run_one_turn_with_captured_payload(monkeypatch, *, plan):
 
     captured_payload = {}
 
-    async def fake_post(url, payload, on_retry):
+    async def fake_post(url, payload, on_retry, traceparent=""):
         captured_payload.update(payload)
         return {"status": "ok", "result": "done", "sessionDb": ""}
 
