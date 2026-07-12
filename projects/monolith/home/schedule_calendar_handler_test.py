@@ -71,53 +71,74 @@ class TestCalendarPollHandler:
 # ---------------------------------------------------------------------------
 
 
+def _calls_by_name(mock_register):
+    """Map each register_job(...) call to its job name kwarg.
+
+    on_startup_jobs registers more than one job, so tests select the call they
+    mean by name instead of relying on call_args (which is only the last call).
+    """
+    return {call.kwargs["name"]: call for call in mock_register.call_args_list}
+
+
 class TestOnStartupJobs:
-    def test_calls_register_job_once(self):
-        """on_startup_jobs() calls register_job() exactly once."""
+    def test_registers_calendar_and_cluster_snapshot_jobs(self):
+        """on_startup_jobs() registers both the calendar poll and the cluster
+        health snapshot refresh."""
         mock_session = MagicMock()
         with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
-        mock_register.assert_called_once()
+        assert mock_register.call_count == 2
+        names = {call.kwargs["name"] for call in mock_register.call_args_list}
+        assert names == {"home.calendar_poll", "home.cluster_snapshot_refresh"}
 
-    def test_passes_session_to_register_job(self):
-        """on_startup_jobs() forwards its session argument as the first positional arg."""
+    def test_passes_session_to_every_register_job(self):
+        """on_startup_jobs() forwards its session as the first positional arg to
+        every registration."""
         mock_session = MagicMock()
         with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
-        positional_args, _ = mock_register.call_args
-        assert positional_args[0] is mock_session
+        for call in mock_register.call_args_list:
+            assert call.args[0] is mock_session
 
-    def test_job_name_is_home_calendar_poll(self):
-        """The registered job name is 'home.calendar_poll'."""
+    def test_calendar_job_interval_and_ttl(self):
+        """Calendar poll runs every 900 seconds (15 minutes) with a 120s TTL."""
         mock_session = MagicMock()
         with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
-        _, kwargs = mock_register.call_args
-        assert kwargs["name"] == "home.calendar_poll"
+        cal = _calls_by_name(mock_register)["home.calendar_poll"]
+        assert cal.kwargs["interval_secs"] == 900
+        assert cal.kwargs["ttl_secs"] == 120
 
-    def test_interval_secs_is_900(self):
-        """Calendar poll runs every 900 seconds (15 minutes)."""
+    def test_cluster_snapshot_job_interval_and_ttl(self):
+        """The cluster snapshot refresh runs every 60 seconds with a 120s TTL."""
         mock_session = MagicMock()
         with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
-        _, kwargs = mock_register.call_args
-        assert kwargs["interval_secs"] == 900
-
-    def test_ttl_secs_is_120(self):
-        """Calendar poll job TTL is 120 seconds."""
-        mock_session = MagicMock()
-        with patch("scheduler.api.register_job") as mock_register:
-            on_startup_jobs(mock_session)
-        _, kwargs = mock_register.call_args
-        assert kwargs["ttl_secs"] == 120
+        snap = _calls_by_name(mock_register)["home.cluster_snapshot_refresh"]
+        assert snap.kwargs["interval_secs"] == 60
+        assert snap.kwargs["ttl_secs"] == 120
 
     @pytest.mark.asyncio
-    async def test_handler_delegates_to_calendar_poll_handler(self):
-        """The registered handler wraps calendar_poll_handler."""
+    async def test_calendar_handler_delegates_to_calendar_poll_handler(self):
+        """The calendar job's handler wraps calendar_poll_handler."""
         mock_session = MagicMock()
         with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
-        _, kwargs = mock_register.call_args
+        cal = _calls_by_name(mock_register)["home.calendar_poll"]
         with patch("home.schedule.poll_calendar", new_callable=AsyncMock):
-            result = await kwargs["handler"](mock_session)
+            result = await cal.kwargs["handler"](mock_session)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_cluster_snapshot_handler_delegates_to_refresh(self):
+        """The snapshot job's handler wraps refresh_cluster_snapshot."""
+        mock_session = MagicMock()
+        with patch("scheduler.api.register_job") as mock_register:
+            on_startup_jobs(mock_session)
+        snap = _calls_by_name(mock_register)["home.cluster_snapshot_refresh"]
+        with patch(
+            "home.cluster_snapshot.refresh_cluster_snapshot", new_callable=AsyncMock
+        ) as mock_refresh:
+            result = await snap.kwargs["handler"](mock_session)
+        mock_refresh.assert_awaited_once()
         assert result is None
