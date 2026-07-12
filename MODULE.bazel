@@ -282,14 +282,14 @@ use_repo(npm, "npm")
 
 # Vendored Playwright chromium for the hermetic visual-regression capture (ADR
 # tooling/010). playwright_version MUST match the @playwright/test pinned in
-# pnpm-lock.yaml (1.55.0 / chromium rev 1187). rules_playwright 0.5.3 defaults
+# pnpm-lock.yaml (1.55.1 / chromium rev 1187). rules_playwright 0.5.3 defaults
 # browsers_download_urls to the dead playwright.azureedge.net; cdn.playwright.dev
 # is the live mirror (307s to the blob backend, which Bazel follows).
 playwright = use_extension("@rules_playwright//playwright:extensions.bzl", "playwright")
 playwright.repo(
     name = "playwright",
     browsers_download_urls = ["https://cdn.playwright.dev/dbazure/download/playwright"],
-    playwright_version = "1.55.0",
+    playwright_version = "1.55.1",
 )
 use_repo(playwright, "playwright")
 
