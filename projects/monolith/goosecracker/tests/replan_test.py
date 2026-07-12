@@ -13,9 +13,8 @@ Two surfaces:
   final one. The non-plan path never inspects a result for a replan.
 
 The loop tests mock at the run/deliver seams (``_invoke_turn`` /
-``_deliver_result``) and stub ``chat.orchestrator`` in ``sys.modules`` (the loop
-lazily does ``from chat.orchestrator import replan``, so a sys.modules entry
-wins).
+``_deliver_result``) and stub ``chat.api`` in ``sys.modules`` (the loop lazily
+does ``from chat.api import replan``, so a sys.modules entry wins).
 """
 
 from __future__ import annotations
@@ -158,7 +157,12 @@ def _wire_loop(monkeypatch, *, invoke_results, replan_returns):
 
 
 async def _run(fake_orch, *, plan):
-    with patch.dict(sys.modules, {"chat.orchestrator": fake_orch}):
+    # runner._request_replan does `from chat.api import replan` (import-boundary
+    # rule: domains import from chat.api, not chat internals), so stub chat.api
+    # in sys.modules -- not chat.orchestrator. Stubbing the module also means the
+    # import resolves to the mock without hitting the real chat.api import graph
+    # (whose beartype claw hook otherwise trips a circular import here).
+    with patch.dict(sys.modules, {"chat.api": fake_orch}):
         return await runner._run_one_turn(
             "sess",
             task="do the thing",
