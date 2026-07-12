@@ -192,3 +192,13 @@ def test_bad_signature_still_rejected_even_from_semgrep_ip(client):
         },
     )
     assert resp.status_code == 401
+
+
+def test_extract_scan_id_unwraps_semgrep_scan_envelope():
+    from semgrep_scan.perf_webhook import _extract_scan_id
+
+    # The real delivered shape: {"semgrep_scan": {"id": ...}}
+    assert _extract_scan_id({"semgrep_scan": {"id": 193379272}}) == 193379272
+    assert _extract_scan_id({"semgrep_scan": {"scan_id": "77"}}) == 77
+    # top-level id still works
+    assert _extract_scan_id({"id": 5}) == 5
