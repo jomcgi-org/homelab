@@ -127,6 +127,25 @@ def observability_stats_rollup() -> None:
     logger.info("observability-stats-rollup: done")
 
 
+@app.command("home-cluster-snapshot-refresh")
+def home_cluster_snapshot_refresh() -> None:
+    """Snapshot the cluster health rollup + firing alerts as a one-shot.
+
+    One-shot form of the retired in-process refresh. refresh_cluster_snapshot
+    scans deployments/statefulsets/daemonsets/pods/ArgoCD-apps via the in-cluster
+    K8s API, so this job runs under the dedicated least-privilege monolith-stats
+    SA (same as observability-stats-rollup), and fetches firing SigNoz alerts
+    (SIGNOZ_URL + SIGNOZ_API_KEY). It upserts one home.cluster_snapshot row so the
+    dashboard read path is a single-row lookup instead of a live per-request scan.
+    Fail-soft per section; the writer opens its own session."""
+    from home.cluster_snapshot import refresh_cluster_snapshot
+
+    configure_logging()
+    logger.info("home-cluster-snapshot-refresh: starting")
+    asyncio.run(refresh_cluster_snapshot())
+    logger.info("home-cluster-snapshot-refresh: done")
+
+
 @app.command("hikes-scrape-walks")
 def hikes_scrape_walks() -> None:
     """Run the full WalkHighlands corpus scrape as a one-shot.

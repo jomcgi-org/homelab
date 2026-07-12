@@ -373,6 +373,34 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # home.cluster_snapshot_refresh: scans the cluster health rollup (deployments,
+    # statefulsets, daemonsets, pods, ArgoCD apps via the in-cluster K8s API) plus
+    # firing SigNoz alerts, and upserts one home.cluster_snapshot row so the
+    # private dashboard reads a single row instead of doing a live ~235-resource
+    # scan on every request. Cluster reads run under the dedicated least-privilege
+    # monolith-stats SA (same as observability-stats-rollup). SIGNOZ_API_KEY is the
+    # 1Password key cloned into monolith-workflows by Kyverno. Every minute, to
+    # match the frontend's 60s refresh.
+    - name: home-cluster-snapshot-refresh
+      replaces: home.cluster_snapshot_refresh
+      args: ["home-cluster-snapshot-refresh"]
+      schedule: "* * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 120
+      suspend: false
+      serviceAccountName: monolith-stats
+      env:
+        SIGNOZ_URL: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"
+      secretEnv:
+        SIGNOZ_API_KEY:
+          secretName: signoz-api-key
+          key: api-key
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     # chat.summary_generation: per-user + per-channel LLM summaries. LLM-only
     # (Qwen via LLAMA_CPP_URL), no Discord bot needed, so it is a clean cutover.
     # Daily (was 86400s); generous deadline since it loops users/channels with
