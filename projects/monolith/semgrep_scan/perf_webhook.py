@@ -217,3 +217,6 @@ async def semgrep_scan_webhook(
         return {"status": "ignored", "reason": "no scan id"}
     background_tasks.add_task(_capture_scan, scan_id)
     return {"status": "accepted", "scan_id": scan_id}
+
+
+# live-check 2: trigger a managed scan to observe the semgrep_scan webhook (PR closed after)
