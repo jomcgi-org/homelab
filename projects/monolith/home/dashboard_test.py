@@ -254,15 +254,40 @@ async def test_check_run_status_fetch_error_is_pending():
 # ---------------------------------------------------------------------------
 
 
+def _iter_route_paths(routes):
+    """Yield every route ``.path``, recursing into included/mounted sub-routers.
+
+    Starlette 1.x no longer flattens ``app.include_router()`` output into
+    ``app.routes``: each included router appears as a single ``_IncludedRouter``
+    wrapper with no ``.path``, and its child ``APIRoute`` objects (which carry
+    the full, prefix-resolved ``.path``) live on ``wrapper.original_router.routes``.
+    ``Mount`` sub-apps yield their own mount path but are not descended into.
+    """
+    from starlette.routing import Mount
+
+    for route in routes:
+        path = getattr(route, "path", None)
+        if path is not None:
+            yield path
+        if isinstance(route, Mount):
+            continue
+        sub = getattr(route, "routes", None)
+        if sub is None:
+            orig = getattr(route, "original_router", None)
+            sub = getattr(orig, "routes", None) if orig is not None else None
+        if sub:
+            yield from _iter_route_paths(sub)
+
+
 def test_dashboard_router_registered_on_private_app():
     from app.main import app
 
-    paths = {route.path for route in app.routes if hasattr(route, "path")}
+    paths = set(_iter_route_paths(app.routes))
     assert "/api/home/dashboard" in paths
 
 
 def test_dashboard_router_not_registered_on_public_app():
     from app.main_public import app as public_app
 
-    paths = {route.path for route in public_app.routes if hasattr(route, "path")}
+    paths = set(_iter_route_paths(public_app.routes))
     assert "/api/home/dashboard" not in paths

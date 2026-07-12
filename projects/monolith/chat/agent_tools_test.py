@@ -65,10 +65,18 @@ class TestAllToolsSignposted:
 
 
 class TestToolSchemaSignposts:
-    def test_agent_has_prepare_tools(self):
-        """Agent is configured with a prepare_tools callback."""
+    def test_agent_registers_signposts(self):
+        """create_agent() wires signpost injection: tools carry signposts.
+
+        (pydantic-ai 1.107 removed the ``Agent._prepare_tools`` internal this
+        used to probe; assert the observable wiring instead -- that the built
+        agent's tools actually carry the signposts the callback serves.)
+        """
+        from chat.agent import _collect_signposts
+
         agent = create_agent(base_url="http://fake:8080")
-        assert agent._prepare_tools is not None
+        signpost_map = _collect_signposts(agent)
+        assert signpost_map, "expected create_agent to register tool signposts"
 
 
 class TestNoReplyTool:
