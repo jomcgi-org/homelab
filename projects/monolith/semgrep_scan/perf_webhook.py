@@ -83,9 +83,12 @@ def _verify_signature(body: bytes, signature_header: str | None) -> None:
 
 
 def _extract_scan_id(payload: dict) -> int | None:
-    # The semgrep_scan object carries the scan id as "id", but tolerate a few
-    # likely shapes (a "scan_id" alias, or a nested "scan": {"id": ...}) so a
-    # minor payload-shape difference does not silently drop the capture.
+    # Semgrep delivers the scan event wrapped in an envelope:
+    # {"semgrep_scan": {"id": ..., ...}} (confirmed live). Unwrap it, then read
+    # the id, tolerating a "scan_id" alias or a nested "scan": {"id": ...} too so
+    # a minor shape change does not silently drop the capture.
+    if isinstance(payload.get("semgrep_scan"), dict):
+        payload = payload["semgrep_scan"]
     raw = payload.get("id")
     if raw is None:
         raw = payload.get("scan_id")
