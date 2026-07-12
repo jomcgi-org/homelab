@@ -26,9 +26,6 @@ logger = logging.getLogger(__name__)
 GITHUB_REPO = "jomcgi/homelab"
 _GITHUB_CACHE_TTL_SECS = 60
 
-# Workload kinds scanned by the health rollup, mirrors cluster.mcp._HEALTH_KINDS.
-_HEALTH_KINDS = ("deployments", "statefulsets", "daemonsets", "pods", "applications")
-
 # Module-level cache: {"data": dict, "expires_at": float} or None until first fill.
 _github_cache: dict | None = None
 
@@ -132,30 +129,37 @@ async def _collect_github() -> dict:
     return data
 
 
-async def _collect_health() -> dict:
-    """Cluster health rollup, reusing the same internals as k8s_health_summary."""
-    from cluster.api import KubernetesClient, build_health
+async def _collect_health(session) -> dict:
+    """Cluster health rollup, served from the background snapshot when fresh.
 
-    k8s = KubernetesClient()
-    try:
-        resources: dict[str, list[dict]] = {}
-        for kind in _HEALTH_KINDS:
-            try:
-                resources[kind] = await k8s.list_resources(kind)
-            except Exception:
-                logger.exception("dashboard: listing %s failed", kind)
-                resources[kind] = []
-        return build_health(resources)
-    finally:
-        await k8s.close()
+    The scan itself (~235 resources across all namespaces) runs off-request in
+    home.cluster_snapshot_refresh, so the normal path here is a single-row read.
+    Falls back to a live scan only when no fresh snapshot exists: a fresh deploy
+    before the first refresh, a wedged refresher, or an unmigrated env.
+    """
+    from home.cluster_snapshot import read_cluster_snapshot, scan_health_live
+
+    snap = read_cluster_snapshot(session)
+    if snap is not None:
+        # Surface freshness without disturbing the {healthy, scanned, unhealthy}
+        # shape the frontend reads.
+        health = dict(snap["health"])
+        health["snapshot_at"] = snap["snapshot_at"]
+        return health
+    return await scan_health_live()
 
 
-async def _collect_alerts() -> dict:
-    """Firing SigNoz alert rules."""
-    from agent.api import check_firing_alerts
+async def _collect_alerts(session) -> dict:
+    """Firing SigNoz alert rules, served from the background snapshot when fresh.
 
-    firing = await check_firing_alerts()
-    return {"firing": firing}
+    Falls back to a live SigNoz fetch only when no fresh snapshot exists (see
+    _collect_health for when that happens)."""
+    from home.cluster_snapshot import fetch_alerts_live, read_cluster_snapshot
+
+    snap = read_cluster_snapshot(session)
+    if snap is not None:
+        return snap["alerts"]
+    return await fetch_alerts_live()
 
 
 async def _collect_queues(session) -> dict:
@@ -206,8 +210,8 @@ async def build_dashboard(session) -> dict:
     """
     names = ("health", "alerts", "github", "queues", "today")
     results = await asyncio.gather(
-        _collect_health(),
-        _collect_alerts(),
+        _collect_health(session),
+        _collect_alerts(session),
         _collect_github(),
         _collect_queues(session),
         _collect_today(session),
