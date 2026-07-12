@@ -61,7 +61,14 @@ def _verify_signature(body: bytes, signature_header: str | None) -> None:
 
 
 def _extract_scan_id(payload: dict) -> int | None:
+    # The semgrep_scan object carries the scan id as "id", but tolerate a few
+    # likely shapes (a "scan_id" alias, or a nested "scan": {"id": ...}) so a
+    # minor payload-shape difference does not silently drop the capture.
     raw = payload.get("id")
+    if raw is None:
+        raw = payload.get("scan_id")
+    if raw is None and isinstance(payload.get("scan"), dict):
+        raw = payload["scan"].get("id")
     try:
         return int(raw) if raw is not None else None
     except (ValueError, TypeError):
@@ -95,13 +102,18 @@ def _capture_scan(scan_id: int) -> None:
                 "semgrep scan webhook: scan %s not a managed scan, skipped", scan_id
             )
             return
+        # Read the values before the session closes: SQLAlchemy expires ORM
+        # attributes on commit, so accessing row.total_time after the `with`
+        # block would lazy-reload against a closed session and raise.
+        total_time = row.total_time
+        findings_total = row.findings_total
         with Session(get_engine()) as session:
             upsert_scan_perf(session, row)
         logger.info(
             "semgrep scan webhook: captured managed scan %s (%.1fs, %d findings)",
             scan_id,
-            row.total_time,
-            row.findings_total,
+            total_time,
+            findings_total,
         )
     except Exception:
         logger.exception("semgrep scan webhook: failed to capture scan %s", scan_id)
@@ -120,14 +132,37 @@ async def semgrep_scan_webhook(
     ``semgrep_finding`` events (JSON arrays) are acknowledged and ignored.
     """
     body = await request.body()
+    client_ip = request.headers.get("cf-connecting-ip") or (
+        request.client.host if request.client else "?"
+    )
+    # Observability: log every inbound delivery before verification so a real
+    # Semgrep scan webhook is visible even if it later 401s or is ignored (a
+    # 401 otherwise leaves no trace). Cheap: webhooks are low-frequency.
+    logger.info(
+        "semgrep webhook inbound: ip=%s bytes=%d has_sig=%s",
+        client_ip,
+        len(body),
+        bool(x_semgrep_signature_256),
+    )
     _verify_signature(body, x_semgrep_signature_256)
     try:
         payload = json.loads(body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid json") from exc
     if not isinstance(payload, dict):
+        logger.info(
+            "semgrep webhook: non-dict payload (type=%s), ignored",
+            type(payload).__name__,
+        )
         return {"status": "ignored", "reason": "not a semgrep_scan object"}
     scan_id = _extract_scan_id(payload)
+    # Log the payload keys (not values) so we can see the real semgrep_scan
+    # shape and confirm which key carries the scan id.
+    logger.info(
+        "semgrep webhook payload: keys=%s scan_id=%s",
+        sorted(payload.keys()),
+        scan_id,
+    )
     if scan_id is None:
         return {"status": "ignored", "reason": "no scan id"}
     background_tasks.add_task(_capture_scan, scan_id)
