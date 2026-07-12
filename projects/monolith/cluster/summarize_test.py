@@ -187,7 +187,6 @@ class TestBuildHealth:
         assert out["healthy"] is True
         assert out["unhealthy"] == {}
 
-
     def test_inflight_workflow_pod_is_healthy_end_to_end(self):
         # Real in-flight Argo Workflow pod shape: restartPolicy Never, Running,
         # main container not yet ready alongside the wait sidecar (ready 0/2).
