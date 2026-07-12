@@ -361,23 +361,6 @@ async def _post_commit_status(
         )
 
 
-def _persist_perf_wall_time(scan_id: int, wall_time: float) -> None:
-    """Stamp the Route B perf row's aligned runtime (request->post wall time).
-
-    Runs in a worker thread (never on the event loop) with its own fresh session,
-    per the monolith async-handler rule. report.py wrote the row with the engine
-    scan_execution_duration; this overwrites only total_time with the full wall so
-    the perf dashboard compares wall-vs-wall against managed startedAt->completedAt.
-    """
-    from sqlmodel import Session
-
-    from app.db import get_engine
-    from semgrep_scan.perf_store import update_perf_total_time
-
-    with Session(get_engine()) as session:
-        update_perf_total_time(session, scan_id, wall_time)
-
-
 async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
     """Background job: gather changed files, scan on fc-invoke, report to the App.
 
@@ -485,19 +468,6 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
             )
             status_ms = (time.monotonic() - t_status) * 1000
             scan_pr_wall_time = time.monotonic() - received
-            # Align the Route B perf row to the request->post wall (webhook
-            # receipt -> commit status posted): report.py wrote it with the
-            # engine scan_execution_duration, but the perf dashboard compares
-            # wall-vs-wall against managed startedAt->completedAt. Off the event
-            # loop (own session) per the monolith async-handler rule; best-effort.
-            try:
-                await asyncio.to_thread(
-                    _persist_perf_wall_time, int(scan_id), scan_pr_wall_time
-                )
-            except Exception:
-                logger.exception(
-                    "semgrep webhook: failed to align Route B perf wall time"
-                )
             logger.info(
                 "semgrep webhook: reported %s#%s scan_id=%s findings=%s "
                 "scan_execution_duration=%.2fs scan_pr_wall_time=%.2fs project=%s "
