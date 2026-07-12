@@ -33,6 +33,7 @@ import hmac
 import json
 import logging
 import os
+import time
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
@@ -100,16 +101,30 @@ def _extract_scan_id(payload: dict) -> int | None:
         return None
 
 
-def _managed_row_for(scan_id: int):
+def _managed_row_for(scan_id: int, attempts: int = 8, delay_s: float = 8.0):
     """Fetch the scan record and return a ScanPerf row iff it is a managed scan,
     else None. Reuses the harvest's fetch + classify so managed scans are
     captured identically; our own scans (env UNSPECIFIED) classify to None and
-    are skipped here (report.py is authoritative for those)."""
+    are skipped here (report.py is authoritative for those).
+
+    The completion webhook races the API: totalTime can still read 0 for a few
+    seconds after the scan completes. Since a real scan is never genuinely 0s,
+    retry the fetch until total_time is populated (a 0-finding managed scan is
+    invisible to the findings harvest, so nothing else would ever correct a 0)."""
     from semgrep_scan.perf_harvest import fetch_scan, scan_to_row
 
     token = os.environ.get("SEMGREP_APP_TOKEN", "")
-    scan = fetch_scan(scan_id, token)
-    return scan_to_row(scan) if scan else None
+    row = None
+    for attempt in range(attempts):
+        scan = fetch_scan(scan_id, token)
+        row = scan_to_row(scan) if scan else None
+        # Not a managed scan (or not found): stop, nothing to wait for.
+        if row is None:
+            return None
+        if row.total_time > 0 or attempt == attempts - 1:
+            return row
+        time.sleep(delay_s)
+    return row
 
 
 def _capture_scan(scan_id: int) -> None:

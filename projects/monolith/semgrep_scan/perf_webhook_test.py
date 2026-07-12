@@ -202,3 +202,33 @@ def test_extract_scan_id_unwraps_semgrep_scan_envelope():
     assert _extract_scan_id({"semgrep_scan": {"scan_id": "77"}}) == 77
     # top-level id still works
     assert _extract_scan_id({"id": 5}) == 5
+
+
+def test_managed_row_for_retries_until_totaltime_populated(monkeypatch):
+    # The completion webhook races the API: totalTime reads 0 briefly. The
+    # fetch should retry until it is populated (a real scan is never 0s).
+    from semgrep_scan import perf_harvest, perf_webhook
+
+    calls = {"n": 0}
+
+    def fake_fetch(scan_id, token):
+        calls["n"] += 1
+        tt = 0.0 if calls["n"] == 1 else 42.0
+        return {
+            "id": str(scan_id),
+            "environment": "SCAN_ENVIRONMENT_MANAGED_SCANS",
+            "isFullScan": False,
+            "branch": "main",
+            "commit": "c",
+            "totalTime": tt,
+            "findingsCounts": {"total": "0"},
+            "cliVersion": "1.1",
+            "startedAt": None,
+            "completedAt": None,
+        }
+
+    monkeypatch.setattr(perf_harvest, "fetch_scan", fake_fetch)
+    monkeypatch.setattr(perf_webhook.time, "sleep", lambda s: None)
+    row = perf_webhook._managed_row_for(123, attempts=3, delay_s=0)
+    assert row.total_time == 42.0
+    assert calls["n"] == 2  # retried exactly once past the initial 0
