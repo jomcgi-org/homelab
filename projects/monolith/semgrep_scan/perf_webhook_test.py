@@ -155,3 +155,40 @@ def test_extract_scan_id_tolerates_alias_and_nested_shapes():
     assert _extract_scan_id({"scan_id": "6"}) == 6
     assert _extract_scan_id({"scan": {"id": 7}}) == 7
     assert _extract_scan_id({"environment": "x"}) is None
+
+
+def test_unsigned_from_semgrep_ip_is_accepted(client):
+    # semgrep_scan (scan-completion) events arrive unsigned; accepted from a
+    # Semgrep egress IP (CF-Connecting-IP), then fetch-verified downstream.
+    body = json.dumps({"id": 42}).encode()
+    resp = client.post(
+        "/webhooks/semgrep",
+        content=body,
+        headers={"CF-Connecting-IP": "52.34.137.110"},
+    )
+    assert resp.status_code == 200
+    assert resp.json().get("scan_id") == 42
+
+
+def test_unsigned_from_unknown_ip_is_401(client):
+    body = json.dumps({"id": 42}).encode()
+    resp = client.post(
+        "/webhooks/semgrep",
+        content=body,
+        headers={"CF-Connecting-IP": "203.0.113.9"},
+    )
+    assert resp.status_code == 401
+
+
+def test_bad_signature_still_rejected_even_from_semgrep_ip(client):
+    # A present-but-wrong signature is rejected regardless of source IP.
+    body = json.dumps({"id": 42}).encode()
+    resp = client.post(
+        "/webhooks/semgrep",
+        content=body,
+        headers={
+            "X-Semgrep-Signature-256": "deadbeef",
+            "CF-Connecting-IP": "52.34.137.110",
+        },
+    )
+    assert resp.status_code == 401
