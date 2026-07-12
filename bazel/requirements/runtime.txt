@@ -168,6 +168,7 @@ anyio==4.12.1 \
     #   anthropic
     #   google-genai
     #   httpx
+    #   httpx2
     #   mcp
     #   openai
     #   py-key-value-aio
@@ -907,9 +908,9 @@ exceptiongroup==1.3.1 \
     #   fastmcp
     #   pydantic-ai-slim
     #   pytest
-fastapi==0.135.1 \
-    --hash=sha256:46e2fc5745924b7c840f71ddd277382af29ce1cdb7d5eab5bf697e3fb9999c9e \
-    --hash=sha256:d04115b508d936d254cea545b7312ecaa58a7b3a0f84952535b4c9afae7668cd
+fastapi==0.139.0 \
+    --hash=sha256:99ab7b2d92223c76d6cf10757ab3f89d45b38267fc20b2a136cf02f6beac3145 \
+    --hash=sha256:cf15e1e9e667ddb0ad63811e60bd11390d1aac838ca4a7a23f421807b2308189
     # via homelab (pyproject.toml)
 fastembed==0.8.0 \
     --hash=sha256:40bee672657574a1009e35ec50030a55f2b426842cb011845379817641bbbbd0 \
@@ -1064,9 +1065,9 @@ fsspec==2026.3.0 \
     --hash=sha256:1ee6a0e28677557f8c2f994e3eea77db6392b4de9cd1f5d7a9e87a0ae9d01b41 \
     --hash=sha256:d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4
     # via huggingface-hub
-genai-prices==0.0.56 \
-    --hash=sha256:ac24b16a84d0ab97539bfa48dfa4649689de8e3ce71c12ebacef29efb1998045 \
-    --hash=sha256:dbe86be8f3f556bed1b72209ed36851fec8b01793b3b220f42921a4e7da945f6
+genai-prices==0.0.71 \
+    --hash=sha256:1d13111563af2b1ce43ccfacf77b7ac3216ad704c644408a56e11b181fe0d128 \
+    --hash=sha256:de4db34ec38404f9ef383cb1ab29e204d16ccf27071af0b16d5747ee7affe36b
     # via pydantic-ai-slim
 geopandas==1.1.2 \
     --hash=sha256:2bb0b1052cb47378addb4ba54c47f8d4642dcbda9b61375638274f49d9f0bb0d \
@@ -1213,6 +1214,7 @@ h11==0.16.0 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
     # via
     #   httpcore
+    #   httpcore2
     #   uvicorn
 haversine==2.9.0 \
     --hash=sha256:1103d7e1f0f108c25b31b63452c54d9d6f29389a70de7dd75fd4b908329b6fcf \
@@ -1257,6 +1259,10 @@ httpcore==1.0.9 \
     --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55 \
     --hash=sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8
     # via httpx
+httpcore2==2.5.0 \
+    --hash=sha256:5ce35188de461d31e8d000bfb8ef8bf22c6c16587a211e5571deaa5e9bdf842a \
+    --hash=sha256:88aa170137c17328d5ac44234f9fd10706466d5fb347f3edac4d39b91137b09d
+    # via httpx2
 httptools==0.7.1 \
     --hash=sha256:04c6c0e6c5fb0739c5b8a9eb046d298650a0ff38cf42537fc372b28dc7e4472c \
     --hash=sha256:0d92b10dbf0b3da4823cde6a96d18e6ae358a9daa741c71448975f6a2c339cad \
@@ -1309,7 +1315,6 @@ httpx==0.28.1 \
     #   homelab (pyproject.toml)
     #   anthropic
     #   fastmcp
-    #   genai-prices
     #   google-genai
     #   huggingface-hub
     #   mcp
@@ -1320,6 +1325,10 @@ httpx-sse==0.4.3 \
     --hash=sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc \
     --hash=sha256:9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d
     # via mcp
+httpx2==2.5.0 \
+    --hash=sha256:3d2d4d9cf4b61f1a1f46a95947cfdb47e80cb56a2f91c6256ac8f58e4891df41 \
+    --hash=sha256:e2df9cb4611021527ff8a675b1c320b610a2ec397acc8d6fe6e91df2d9b33c29
+    # via genai-prices
 huggingface-hub==1.8.0 \
     --hash=sha256:c5627b2fd521e00caf8eff4ac965ba988ea75167fad7ee72e17f9b7183ec63f3 \
     --hash=sha256:d3eb5047bd4e33c987429de6020d4810d38a5bef95b3b40df9b17346b7f353f2
@@ -1338,6 +1347,7 @@ idna==3.18 \
     #   anyio
     #   email-validator
     #   httpx
+    #   httpx2
     #   requests
     #   url-normalize
     #   yarl
@@ -2231,9 +2241,9 @@ open-gopro[gui]==0.22.0 \
     --hash=sha256:8b55f4ecb549f3b71593a901e2b8d10eda84cfd1e7d9c8dd2719082d2000e0bc \
     --hash=sha256:ecf8b4baed8ef0ab8c83d5673afee4dcea8ced942a82d1feec9a500967df703a
     # via homelab (pyproject.toml)
-openai==2.30.0 \
-    --hash=sha256:92f7661c990bda4b22a941806c83eabe4896c3094465030dd882a71abe80c885 \
-    --hash=sha256:9a5ae616888eb2748ec5e0c5b955a51592e0b201a11f4262db920f2a78c5231d
+openai==2.45.0 \
+    --hash=sha256:10d34ca9c5643bce775852fddbfc172505cb1d4de1ccd101696c3ecff358765d \
+    --hash=sha256:5df105f5f8c9b711fcb9d06d2d3888cebc82506db216484c14a4e53cdf651777
     # via pydantic-ai-slim
 openapi-pydantic==0.5.1 \
     --hash=sha256:a3a09ef4586f5bd760a8df7f43028b60cafb6d9f61de2acba9574766255ab146 \
@@ -2911,9 +2921,9 @@ pydantic[email]==2.12.5 \
     #   pydantic-settings
     #   pydantic-sqlite
     #   sqlmodel
-pydantic-ai-slim[openai]==1.75.0 \
-    --hash=sha256:5132e7fc135e062cde13ecd389940bccd84feadabd4ed810f61a099068d271a7 \
-    --hash=sha256:8ba5ad332be6c2f8c62e0778504086a2d9441cc28064bb335a3caf6d270b463f
+pydantic-ai-slim[openai]==1.107.1 \
+    --hash=sha256:8eade1c9a1bbdf19c06b4fba9424980b0f446ef2756d2559cc819971ec35cc8f \
+    --hash=sha256:c4c86aae407e62ea720e8911627219f34f60668dc4c35fdead5ad026efdd00fc
     # via homelab (pyproject.toml)
 pydantic-core==2.41.5 \
     --hash=sha256:0177272f88ab8312479336e1d777f6b124537d47f2123f89cb37e0accea97f90 \
@@ -3042,9 +3052,9 @@ pydantic-extra-types==2.11.0 \
     --hash=sha256:4e9991959d045b75feb775683437a97991d02c138e00b59176571db9ce634f0e \
     --hash=sha256:84b864d250a0fc62535b7ec591e36f2c5b4d1325fa0017eb8cda9aeb63b374a6
     # via homelab (pyproject.toml)
-pydantic-graph==1.75.0 \
-    --hash=sha256:c46feb2a0d0e87a4487324ea91e5e547114996bd4026542eebddcaee3e4989bd \
-    --hash=sha256:ea290452de13477699fe60745fe70f01ae3d16c5e50457e0b3d65a1ea1c9c703
+pydantic-graph==1.107.1 \
+    --hash=sha256:b5893249b7fc1dc2e60dfc40a08ccd4cc0d1dd6e05aeeee2a50392c5663eac60 \
+    --hash=sha256:c83b255a67b1e64e460749a61195309738f42895ad5b93da2140d6bff76b14f1
     # via pydantic-ai-slim
 pydantic-settings==2.14.2 \
     --hash=sha256:a20c97b37910b6550d5ea50fbcc2d4187defe58cd57070b73863d069419c9440 \
@@ -3062,6 +3072,7 @@ pygments==2.20.0 \
     --hash=sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176
     # via
     #   --override bazel/requirements/overrides.txt
+    #   pytest
     #   rich
 pyjwt[crypto]==2.13.0 \
     --hash=sha256:41571c89ca91598c79e8ef18a2d07367d4810fbbd6f637794879baf1b7703423 \
@@ -3226,18 +3237,20 @@ pyproj==3.7.2 \
     --hash=sha256:f9428b318530625cb389b9ddc9c51251e172808a4af79b82809376daaeabe5e9 \
     --hash=sha256:fc52ba896cfc3214dc9f9ca3c0677a623e8fdd096b257c14a31e719d21ff3fdd
     # via geopandas
-pytest==7.4.4 \
-    --hash=sha256:2cf0005922c6ace4a3e2ec8b4080eb0d9753fdc93107415332f50ce9e7994280 \
-    --hash=sha256:b090cdf5ed60bf4c45261be03239c2c1c22df034fbffe691abe93cd80cea01d8
+pytest==9.1.1 \
+    --hash=sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313 \
+    --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
     # via
     #   --override bazel/requirements/overrides.txt
     #   homelab (pyproject.toml)
     #   pytest-asyncio
     #   pytest-bdd
-pytest-asyncio==0.23.8 \
-    --hash=sha256:50265d892689a5faefb84df80819d1ecef566eb3549cf915dfb33569359d1ce2 \
-    --hash=sha256:759b10b33a6dc61cce40a8bd5205e302978bbbcc00e279a8b61d9a6a3c82e4d3
-    # via homelab (pyproject.toml)
+pytest-asyncio==1.4.0 \
+    --hash=sha256:933ca923a23075a87fb7070c0ec272a6848489824d887c85c812670932835aa1 \
+    --hash=sha256:c6c0d2259945122819f171a32ecea2c349ead889ee28176caaf492143424be42
+    # via
+    #   --override bazel/requirements/overrides.txt
+    #   homelab (pyproject.toml)
 pytest-bdd==7.3.0 \
     --hash=sha256:168ede4a118e348feb70182590ee4a2f856e68dafe54a75a4e9203da37d4ade6 \
     --hash=sha256:9dfeb1d8565d9548907f36a5a9e2c8e1e0cbac3b2724e17331b87386a19fbc16
@@ -3876,9 +3889,9 @@ sse-starlette==3.3.2 \
     --hash=sha256:5c3ea3dad425c601236726af2f27689b74494643f57017cafcb6f8c9acfbb862 \
     --hash=sha256:678fca55a1945c734d8472a6cad186a55ab02840b4f6786f5ee8770970579dcd
     # via mcp
-starlette==0.52.1 \
-    --hash=sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74 \
-    --hash=sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933
+starlette==1.3.1 \
+    --hash=sha256:05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0 \
+    --hash=sha256:c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6
     # via
     #   homelab (pyproject.toml)
     #   fastapi
@@ -4007,6 +4020,12 @@ trafilatura==2.0.0 \
     --hash=sha256:77eb5d1e993747f6f20938e1de2d840020719735690c840b9a1024803a4cd51d \
     --hash=sha256:ceb7094a6ecc97e72fea73c7dba36714c5c5b577b6470e4520dca893706d6247
     # via homelab (pyproject.toml)
+truststore==0.10.4 \
+    --hash=sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301 \
+    --hash=sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981
+    # via
+    #   httpcore2
+    #   httpx2
 typeguard==2.13.3 \
     --hash=sha256:00edaa8da3a133674796cf5ea87d9f4b4c367d77476e185e80251cc13dfbb8c4 \
     --hash=sha256:5e3e3be01e887e7eafae5af63d1f36c849aaa94e3a0112097312aabfa16284f1
