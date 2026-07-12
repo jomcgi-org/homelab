@@ -16,8 +16,40 @@ import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring
 from app.main_public import app
 
 
+def _iter_route_paths(routes) -> "list[str]":
+    """Yield every route ``.path``, recursing into included/mounted sub-routers.
+
+    Starlette 1.x no longer flattens ``app.include_router()`` output into
+    ``app.routes``: each included router appears as a single ``_IncludedRouter``
+    wrapper with no ``.path``, and its child ``APIRoute`` objects (which carry
+    the full, prefix-resolved ``.path``) live on ``wrapper.original_router.routes``.
+    Recursing into included routers is what makes the deny-by-default allowlist
+    below see the complete route surface (a partial walk would let a private
+    path silently pass the leak checks). ``Mount`` sub-apps yield their own
+    mount path (e.g. ``/mcp``, which ``test_no_mcp_mount`` asserts against) but
+    are NOT descended into: their internal routes are un-prefixed and out of
+    scope, matching the old flattened 0.x behaviour.
+    """
+    from starlette.routing import Mount
+
+    out: list[str] = []
+    for route in routes:
+        path = getattr(route, "path", None)
+        if path is not None:
+            out.append(path)
+        if isinstance(route, Mount):
+            continue
+        sub = getattr(route, "routes", None)
+        if sub is None:
+            orig = getattr(route, "original_router", None)
+            sub = getattr(orig, "routes", None) if orig is not None else None
+        if sub:
+            out.extend(_iter_route_paths(sub))
+    return out
+
+
 def _paths() -> set[str]:
-    return {r.path for r in app.routes if hasattr(r, "path")}
+    return set(_iter_route_paths(app.routes))
 
 
 # ---------------------------------------------------------------------------

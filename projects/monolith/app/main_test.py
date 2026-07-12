@@ -87,9 +87,36 @@ def test_healthz_content_type_is_json(client):
 # ---------------------------------------------------------------------------
 
 
+def _iter_route_paths(routes):
+    """Yield every route ``.path``, recursing into included/mounted sub-routers.
+
+    Starlette 1.x no longer flattens ``app.include_router()`` output into
+    ``app.routes``: each included router appears as a single ``_IncludedRouter``
+    wrapper with no ``.path``, and its child ``APIRoute`` objects (which carry
+    the full, prefix-resolved ``.path``) live on ``wrapper.original_router.routes``.
+    ``Mount`` sub-apps expose their own mount path (e.g. ``/mcp``) but are not
+    descended into, matching the old flattened 0.x behaviour (which only ever
+    saw the mount point, never the sub-app's internal, un-prefixed routes).
+    """
+    from starlette.routing import Mount
+
+    for route in routes:
+        path = getattr(route, "path", None)
+        if path is not None:
+            yield path
+        if isinstance(route, Mount):
+            continue
+        sub = getattr(route, "routes", None)
+        if sub is None:
+            orig = getattr(route, "original_router", None)
+            sub = getattr(orig, "routes", None) if orig is not None else None
+        if sub:
+            yield from _iter_route_paths(sub)
+
+
 def test_schedule_router_registered():
     """Schedule router is included — routes with /api/home prefix exist."""
-    paths = [getattr(route, "path", "") for route in app.routes]
+    paths = list(_iter_route_paths(app.routes))
     assert any(p.startswith("/api/home") for p in paths), (
         "No /api/home routes found; home router may not be included"
     )
@@ -97,7 +124,7 @@ def test_schedule_router_registered():
 
 def test_knowledge_router_registered():
     """Knowledge router is included — routes with /api/knowledge prefix exist in the app."""
-    paths = [getattr(route, "path", "") for route in app.routes]
+    paths = list(_iter_route_paths(app.routes))
     assert any(p.startswith("/api/knowledge") for p in paths), (
         "No /api/knowledge routes found; knowledge_router may not be included"
     )

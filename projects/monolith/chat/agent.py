@@ -76,6 +76,50 @@ def signposted(text: str):
     return decorator
 
 
+def apply_signposts(
+    tool_defs: list[ToolDefinition],
+    signpost_map: dict[str, str],
+) -> list[ToolDefinition]:
+    """Append ``USE WHEN: <signpost>`` to each tool description with a signpost.
+
+    Pure function: given the current tool definitions and a ``{tool_name:
+    signpost}`` mapping, return a new list where every tool that has a signpost
+    gets its description suffixed. Tools with no signpost pass through unchanged.
+
+    This is the behaviour the ``prepare_tools`` callback runs at request time.
+    It is a plain function (no dependency on pydantic-ai internals) so it can be
+    unit-tested directly and does not reach through the agent's private toolset.
+    """
+    updated: list[ToolDefinition] = []
+    for td in tool_defs:
+        sp = signpost_map.get(td.name)
+        if sp:
+            updated.append(replace(td, description=f"{td.description} USE WHEN: {sp}"))
+        else:
+            updated.append(td)
+    return updated
+
+
+def _collect_signposts(agent: Agent[Any]) -> dict[str, str]:
+    """Snapshot the ``{tool_name: signpost}`` map from a fully-built agent.
+
+    Reads ``agent._function_toolset.tools`` once at build time (right after all
+    ``@agent.tool`` registrations), so the per-request ``prepare_tools`` callback
+    can close over a plain dict instead of touching pydantic-ai internals on the
+    hot path. ``_function_toolset`` and ``Tool.function`` are both still present
+    in pydantic-ai 1.107; if either is ever removed this returns an empty map and
+    signposting degrades gracefully (descriptions are left untouched).
+    """
+    signpost_map: dict[str, str] = {}
+    toolset = getattr(agent, "_function_toolset", None)
+    tools = getattr(toolset, "tools", None) or {}
+    for name, tool in tools.items():
+        sp = getattr(getattr(tool, "function", None), "signpost", None)
+        if sp:
+            signpost_map[name] = sp
+    return signpost_map
+
+
 def _parse_due_at(due_at_iso: Any) -> datetime | None:
     """Parse a tool-supplied ISO 8601 datetime, accepting a trailing "Z" and
     treating a naive parse as UTC. Returns None instead of raising -- this
@@ -452,22 +496,16 @@ def create_agent(
         ),
     )
 
+    # Populated after all tools are registered (see _collect_signposts below).
+    # The prepare_tools callback closes over this dict, so at request time it
+    # never reaches into pydantic-ai internals -- it just reads a plain map.
+    signpost_map: dict[str, str] = {}
+
     async def inject_signposts(
         ctx: RunContext[ChatDeps],
         tool_defs: list[ToolDefinition],
     ) -> list[ToolDefinition]:
-        updated = []
-        for td in tool_defs:
-            tool = agent._function_toolset.tools.get(td.name)
-            if tool:
-                sp = getattr(tool.function, "signpost", None)
-                if sp:
-                    updated.append(
-                        replace(td, description=f"{td.description} USE WHEN: {sp}")
-                    )
-                    continue
-            updated.append(td)
-        return updated
+        return apply_signposts(tool_defs, signpost_map)
 
     agent: Agent[ChatDeps] = Agent(
         model,
@@ -946,6 +984,10 @@ def create_agent(
             names = ", ".join(f.get("path", "?") for f in result["files"])
             parts.append(f"[files attached to reply: {names}]")
         return "\n".join(parts)
+
+    # All tools are registered now; snapshot their signposts once so the
+    # prepare_tools callback above can serve them from a plain dict.
+    signpost_map.update(_collect_signposts(agent))
 
     return agent
 

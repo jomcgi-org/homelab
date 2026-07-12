@@ -7,6 +7,13 @@ import re
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from chat.backfill import run_backfill
 from chat.cluster_agent import ClusterDeps, create_cluster_agent
@@ -22,6 +29,24 @@ def _log_backfill_exception(task: "asyncio.Task[object]") -> None:
     """Log unhandled exceptions from the backfill task."""
     if not task.cancelled() and task.exception():
         logger.error("Backfill task failed", exc_info=task.exception())
+
+
+def _history_to_messages(history: list[dict]) -> list[ModelMessage]:
+    """Convert a [{role, content}] history into pydantic-ai ModelMessages.
+
+    pydantic-ai (>=1.x) requires ``message_history`` items to be ModelMessage
+    objects, not plain dicts (it reads ``.conversation_id`` off each). A user
+    turn becomes a ModelRequest with a UserPromptPart; anything else (assistant)
+    becomes a ModelResponse with a TextPart.
+    """
+    messages: list[ModelMessage] = []
+    for turn in history:
+        content = turn["content"]
+        if turn["role"] == "user":
+            messages.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+        else:
+            messages.append(ModelResponse(parts=[TextPart(content=content)]))
+    return messages
 
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -75,10 +100,7 @@ async def explore(body: ExploreRequest, request: Request):
         emitter=emitter,
     )
 
-    # Build message list from history
-    messages = []
-    for turn in body.history:
-        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages = _history_to_messages(body.history)
 
     async def generate():
         try:
@@ -125,10 +147,7 @@ async def cluster_chat(body: ClusterChatRequest, request: Request):
 
     deps = ClusterDeps(emitter=emitter)
 
-    # Build message list from history
-    messages = []
-    for turn in body.history:
-        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages = _history_to_messages(body.history)
 
     async def generate():
         try:
