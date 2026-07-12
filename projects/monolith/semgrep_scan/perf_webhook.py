@@ -220,3 +220,4 @@ async def semgrep_scan_webhook(
 
 
 # live-check 2: trigger a managed scan to observe the semgrep_scan webhook (PR closed after)
+# live-check 3: verify unsigned semgrep_scan webhook capture
