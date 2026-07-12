@@ -79,6 +79,17 @@
   let windowOpen = $derived(
     !data.error && (data.counts?.homelab ?? 0) > 0 && data.aggregates != null,
   );
+
+  // The table defaults to matched pairs (both sides scanned the same work);
+  // one-sided rows (a scan with no counterpart yet) are the historical backlog
+  // and can be revealed with the toggle.
+  let showOneSided = $state(false);
+  let matchedComparisons = $derived(
+    data.comparisons.filter((c) => c.route_b && c.sms),
+  );
+  let visibleComparisons = $derived(
+    showOneSided ? data.comparisons : matchedComparisons,
+  );
 </script>
 
 <svelte:head><title>Scan perf · private.jomcgi.dev</title></svelte:head>
@@ -177,8 +188,15 @@
 
       <details class="detail">
         <summary class="detail-summary">
-          Individual comparisons ({data.comparisons.length})
+          Individual comparisons ({matchedComparisons.length} matched)
         </summary>
+        {#if data.comparisons.length > matchedComparisons.length}
+          <label class="onesided-toggle">
+            <input type="checkbox" bind:checked={showOneSided} />
+            show one-sided ({data.comparisons.length - matchedComparisons.length}
+            scans with no counterpart yet)
+          </label>
+        {/if}
         <div class="card card--table">
           <div class="table-wrap">
             <table>
@@ -195,7 +213,7 @@
                 </tr>
               </thead>
               <tbody>
-                {#each data.comparisons as row}
+                {#each visibleComparisons as row}
                   {@const sha = shortSha(row.commit_sha)}
                   {@const pr = prNumber(row.scan_ref)}
                   {@const speedup = speedupLabel(row.speedup)}
@@ -269,6 +287,12 @@
               </tbody>
             </table>
           </div>
+          {#if visibleComparisons.length === 0}
+            <p class="unavail">
+              No matched pairs yet. Matches appear as homelab and managed both
+              scan the same commit; toggle above to see one-sided scans.
+            </p>
+          {/if}
         </div>
       </details>
     {/if}
@@ -465,6 +489,22 @@
 
   .detail[open] .detail-summary {
     margin-bottom: 10px;
+  }
+
+  .onesided-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--ink-3);
+    margin: 0 0 10px 2px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .onesided-toggle input {
+    accent-color: var(--accent);
+    cursor: pointer;
   }
 
   .section-label {
