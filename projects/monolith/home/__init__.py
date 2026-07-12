@@ -23,12 +23,24 @@ def register_public(app: FastAPI) -> None:
 def on_startup_jobs(session) -> None:
     from scheduler.api import register_job
     from home.schedule import calendar_poll_handler
+    from home.cluster_snapshot import cluster_snapshot_refresh_handler
 
     register_job(
         session,
         name="home.calendar_poll",
         interval_secs=900,
         handler=lambda _: calendar_poll_handler(),
+        ttl_secs=120,
+    )
+
+    # Refresh the cluster health + firing-alerts snapshot off-request so the
+    # dashboard read path stays a single-row lookup instead of a live
+    # ~235-resource K8s scan. Cadence matches the frontend's 60s refresh.
+    register_job(
+        session,
+        name="home.cluster_snapshot_refresh",
+        interval_secs=60,
+        handler=lambda _: cluster_snapshot_refresh_handler(),
         ttl_secs=120,
     )
 

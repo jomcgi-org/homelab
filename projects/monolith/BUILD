@@ -701,6 +701,18 @@ py_test(
 )
 
 py_test(
+    name = "home_cluster_snapshot_test",
+    srcs = ["home/cluster_snapshot_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+    ],
+)
+
+py_test(
     name = "db_test",
     srcs = ["app/db_test.py"],
     imports = ["."],
