@@ -31,6 +31,11 @@ set -euo pipefail
 
 REPOSITORY="${BUMP_CHART_REPOSITORY:-oci://ghcr.io/jomcgi/homelab/charts}"
 
+# Absolute path to this script, resolved BEFORE any cd, so the coupled-chart
+# self-invocation at the end works regardless of the caller's CWD.
+SELF="$0"
+[[ "$SELF" = /* ]] || SELF="$(pwd)/$SELF"
+
 usage() {
 	grep '^#' "$0" | sed 's/^# \{0,1\}//' | sed -n '2,20p' >&2
 	exit 1
@@ -228,3 +233,33 @@ echo "Bumped ${CHART_NAME}: ${LOCAL_VERSION} -> ${NEW_VERSION} (base ${BASE_VERS
 echo "  ${CHART_YAML}"
 echo "  ${APP_YAML}"
 echo "Commit with: git commit -m \"chore(${CHART_NAME}): bump chart to ${NEW_VERSION}\""
+
+# --- Coupled charts --------------------------------------------------------
+# Some charts pin the SAME image and MUST bump together: monolith-public serves
+# from monolith's backend image, so a monolith change that rebuilds the image
+# also drifts monolith-public's pinned digest. Bumping monolith alone passes
+# local checks but fails the Push images guard on the public tier's stale pin (a
+# wasted CI round-trip). Bump the coupled tier(s) too, each via a fresh
+# self-invocation so it computes its OWN version base and runs its OWN
+# registry/PR checks. BUMP_CHART_NO_COUPLING stops the child from recursing.
+coupled_projects() {
+	# Keyed on the bumped chart's `name:`. Tests inject a coupling for a fake
+	# chart via BUMP_CHART_COUPLED_<name> (hyphens in <name> become underscores).
+	local name="$1" override_var="BUMP_CHART_COUPLED_${1//-/_}"
+	if [[ -n "${!override_var:-}" ]]; then
+		printf '%s\n' "${!override_var}"
+		return
+	fi
+	case "$name" in
+	monolith) echo "projects/monolith-public" ;;
+	esac
+}
+
+if [[ "${BUMP_CHART_NO_COUPLING:-}" != "1" ]]; then
+	while IFS= read -r coupled; do
+		[[ -n "$coupled" ]] || continue
+		echo ""
+		echo "Coupling: ${coupled} shares ${CHART_NAME}'s image; bumping it too."
+		BUMP_CHART_NO_COUPLING=1 bash "$SELF" "$coupled"
+	done < <(coupled_projects "$CHART_NAME")
+fi

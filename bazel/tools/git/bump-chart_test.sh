@@ -176,6 +176,64 @@ set -e
 assert_eq "t8 exit code" 0 "$rc"
 assert_eq "t8 ignores equal/older claim" 0.1.1 "$(chart_version "$ROOT")"
 
+# --- Test 9: a coupled chart is bumped alongside the primary ----------------
+# monolith and monolith-public pin the same image, so bumping one must bump the
+# other. Modeled here with foo coupled to a second chart (bar) via the
+# BUMP_CHART_COUPLED_foo test hook. Both must land a fresh patch bump.
+ROOT="$TMP/t9"
+setup_project "$ROOT" 0.1.0 0.1.0
+mkdir -p "$ROOT/projects/bar/chart" "$ROOT/projects/bar/deploy"
+cat >"$ROOT/projects/bar/chart/Chart.yaml" <<-EOF
+	apiVersion: v2
+	name: bar
+	version: 0.1.0
+EOF
+cat >"$ROOT/projects/bar/deploy/application.yaml" <<-EOF
+	apiVersion: argoproj.io/v1alpha1
+	kind: Application
+	spec:
+	  sources:
+	    - repoURL: ghcr.io/jomcgi/homelab/charts
+	      chart: bar
+	      targetRevision: 0.1.0
+	    - repoURL: https://github.com/jomcgi/homelab
+	      targetRevision: HEAD
+	      ref: values
+EOF
+set +e
+BUMP_CHART_REPO_ROOT="$ROOT" \
+	BUMP_CHART_SKIP_REGISTRY_CHECK=1 \
+	BUMP_CHART_SKIP_PR_CHECK=1 \
+	BUMP_CHART_MAIN_VERSION=0.1.0 \
+	BUMP_CHART_COUPLED_foo="projects/bar" \
+	bash "$SCRIPT" projects/foo >"$TMP/out" 2>&1
+rc=$?
+set -e
+bar_version() { grep '^version:' "$ROOT/projects/bar/chart/Chart.yaml" | awk '{print $2}'; }
+bar_tr() { grep -E 'targetRevision: [0-9]' "$ROOT/projects/bar/deploy/application.yaml" | awk '{print $2}'; }
+assert_eq "t9 exit code" 0 "$rc"
+assert_eq "t9 primary (foo) bumped" 0.1.1 "$(chart_version "$ROOT")"
+assert_eq "t9 coupled (bar) chart bumped" 0.1.1 "$(bar_version)"
+assert_eq "t9 coupled (bar) targetRevision bumped" 0.1.1 "$(bar_tr)"
+grep -q "Coupling: projects/bar" "$TMP/out" || {
+	echo "FAIL: t9 expected coupling message" >&2
+	FAILURES=$((FAILURES + 1))
+}
+
+# --- Test 10: an uncoupled chart bumps only itself (no recursion/leakage) ---
+# Without a coupling entry the script must bump exactly one chart, and must not
+# emit a coupling line. Guards against the coupling firing for the wrong chart.
+ROOT="$TMP/t10"
+setup_project "$ROOT" 0.1.0 0.1.0
+MAIN_VERSION_OVERRIDE=0.1.0
+rc=$(run_bump "$ROOT")
+assert_eq "t10 exit code" 0 "$rc"
+assert_eq "t10 chart bumped" 0.1.1 "$(chart_version "$ROOT")"
+if grep -q "Coupling:" "$TMP/out"; then
+	echo "FAIL: t10 uncoupled chart must not emit a coupling line" >&2
+	FAILURES=$((FAILURES + 1))
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed" >&2
 	exit 1
