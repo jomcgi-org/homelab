@@ -59,7 +59,6 @@ FORBIDDEN_MODULES = [
     # ClickHouse client + writer path + private home paths.
     "home.observability.clickhouse",
     "home.observability.slo",
-    "home.observability.topology_query",
     "home.observability.rollup",
     "home.observability.stats",
     "home.schedule",

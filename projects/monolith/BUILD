@@ -464,7 +464,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "home/schedule_router.py",
     "home/observability/clickhouse.py",
     "home/observability/slo.py",
-    "home/observability/topology_query.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
     "home/observability/traces.py",
@@ -4680,28 +4679,8 @@ py_test(
 )
 
 py_test(
-    name = "home_observability_config_test",
-    srcs = ["home/observability/config_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "home_observability_slo_test",
     srcs = ["home/observability/slo_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "home_observability_topology_config_test",
-    srcs = ["home/observability/topology_config_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -5514,19 +5493,6 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (home is gazelle-excluded): ClickHouse-backed topology
-# builder -- _ch_scalar, _ch_rows, _query_node, _query_edge, build_topology.
-py_test(
-    name = "home_observability_topology_query_test",
-    srcs = ["home/observability/topology_query_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 
