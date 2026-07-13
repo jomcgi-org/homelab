@@ -3,11 +3,21 @@ defmodule Embervm.Application do
   Root OTP application for the EmberVM control plane.
 
   R0 skeleton: the supervision tree holds the op-log (durable task-state
-  seam) and the health endpoint. Later tasks add children under this same
-  tree (the WorkloadWatcher, the NodeRegistry, the Dispatcher, the submit-API
+  seam), the ETS hot-set task store built on top of it, and the health
+  endpoint. Later tasks add children under this same tree (the
+  WorkloadWatcher, the NodeRegistry, the Dispatcher, the submit-API
   listener), which is exactly why the control plane is on the BEAM: each of
   those is a supervised process with its own failure domain, restarted in
   isolation.
+
+  Strategy is `:rest_for_one`, not `:one_for_one`: `Embervm.TaskStore` reads
+  the op-log once on init to rebuild its ETS tables and otherwise depends on
+  it being alive for every write. If `Embervm.OpLog.SQLite` crashes and
+  restarts, `:rest_for_one` also restarts every child listed after it (today
+  just `TaskStore`), so the rebuild-on-boot path runs again against the
+  op-log's post-restart state instead of leaving ETS stale against an op-log
+  that came back with (in the worst case) a different in-memory connection.
+  `Health` has no dependency on either, so ordering it last costs nothing.
   """
   use Application
 
@@ -17,10 +27,11 @@ defmodule Embervm.Application do
 
     children = [
       {Embervm.OpLog.SQLite, path: oplog_path()},
+      {Embervm.TaskStore, []},
       {Embervm.Health, port: port}
     ]
 
-    opts = [strategy: :one_for_one, name: Embervm.Supervisor]
+    opts = [strategy: :rest_for_one, name: Embervm.Supervisor]
     Supervisor.start_link(children, opts)
   end
 
