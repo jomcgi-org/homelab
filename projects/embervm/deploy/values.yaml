@@ -16,5 +16,11 @@ opLog:
 # real consumer SAs (the monolith semgrep scanner) are added at the Task 14/15
 # side-by-side/shadow cutover, not here.
 auth:
+  # The control plane's own ServiceAccount is Helm-fullname-prefixed
+  # (<release>-<chart> = embervm-embervm), so the principal TokenReview returns
+  # is system:serviceaccount:embervm:embervm-embervm, not :embervm. This lets an
+  # operator round-trip a live submit with `kubectl create token embervm-embervm
+  # -n embervm`. Real consumer SAs (the monolith semgrep scanner) are added at
+  # the Task 14/15 cutover.
   allowedServiceAccounts:
-    - system:serviceaccount:embervm:embervm
+    - system:serviceaccount:embervm:embervm-embervm
