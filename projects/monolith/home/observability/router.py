@@ -1,11 +1,10 @@
-"""Public, read-only observability endpoints (``/stats`` and ``/topology``).
+"""Public, read-only observability endpoint (``/stats``).
 
-Both endpoints serve precomputed snapshot rows out of the ``observability``
-schema: they never touch ClickHouse or the K8s API, so this module stays free of
-the ClickHouse client, SLO math, and topology config. The writer that fills those
-snapshots (``build_topology``) lives in ``home.observability.topology_query`` and
+The endpoint serves a precomputed snapshot row out of the ``observability``
+schema: it never touches ClickHouse or the K8s API, so this module stays free of
+the ClickHouse client and SLO math. The writer that fills the stats snapshot
 runs only on the private monolith via ``home.observability.rollup``. Keeping this
-split lets the public service mount these routes without the ClickHouse import
+split lets the public service mount this route without the ClickHouse import
 closure (ADR 004 Layer 1+4).
 """
 
@@ -34,16 +33,3 @@ def get_stats(session: Session = Depends(get_session)):
         text("SELECT payload FROM observability.stats_snapshot WHERE id = 1")
     ).first()
     return row[0] if row else {}
-
-
-@router.get("/topology")
-def get_topology(session: Session = Depends(get_session)):
-    """Return the latest precomputed topology snapshot (ADR 004).
-
-    Refreshed by observability.topology_rollup. Returns an empty skeleton until
-    the first rollup has run (the public page tolerates this with fallback data).
-    """
-    row = session.execute(
-        text("SELECT payload FROM observability.topology_snapshot WHERE id = 1")
-    ).first()
-    return row[0] if row else {"groups": [], "nodes": [], "edges": []}

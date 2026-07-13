@@ -215,8 +215,8 @@ async def lifespan(app: FastAPI):
     # removed, so the monolith is purely orchestration + APIs - no batch work on
     # the request-serving pods.
 
-    # Prime the observability snapshots (topology + stats) once at startup so the
-    # first request has data; the scheduled rollup jobs refresh them thereafter.
+    # Prime the observability stats snapshot once at startup so the first request
+    # has data; the scheduled rollup job refreshes it thereafter.
     # Runs on every replica (best-effort; the scheduler rollup refreshes later).
     await prime_snapshots()
 

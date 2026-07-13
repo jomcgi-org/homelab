@@ -60,7 +60,6 @@ REQUIRED_PATHS = [
     "/api/knowledge/public/graph",
     "/api/knowledge/public/notes/{note_id}",
     "/api/home/observability/stats",
-    "/api/home/observability/topology",
 ]
 
 # Prefixes for the wholly-public domains; at least one route per prefix must

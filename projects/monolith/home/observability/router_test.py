@@ -3,8 +3,8 @@
 After ADR 004 Layer 4 the endpoints no longer call ClickHouse: they read a
 precomputed snapshot row from Postgres. These tests override the DB session so
 they assert the read-and-return behaviour without a database. The ClickHouse
-build logic is covered by stats_test / topology_config_test / slo_test, and the
-write + grant round-trip by observability_snapshot_grants_test (real Postgres).
+build logic is covered by stats_test / slo_test, and the write + grant
+round-trip by observability_snapshot_grants_test (real Postgres).
 """
 
 from unittest.mock import MagicMock
@@ -30,27 +30,6 @@ def _with_session(row):
 
 def _clear():
     app.dependency_overrides.pop(get_session, None)
-
-
-def test_topology_returns_snapshot_payload():
-    payload = {"groups": [], "nodes": [{"id": "x"}], "edges": []}
-    _with_session((payload,))
-    try:
-        resp = TestClient(app).get("/api/home/observability/topology")
-        assert resp.status_code == 200
-        assert resp.json() == payload
-    finally:
-        _clear()
-
-
-def test_topology_empty_skeleton_when_no_snapshot():
-    _with_session(None)
-    try:
-        resp = TestClient(app).get("/api/home/observability/topology")
-        assert resp.status_code == 200
-        assert resp.json() == {"groups": [], "nodes": [], "edges": []}
-    finally:
-        _clear()
 
 
 def test_stats_returns_snapshot_payload():

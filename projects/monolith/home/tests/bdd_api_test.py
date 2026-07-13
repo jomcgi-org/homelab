@@ -25,15 +25,6 @@ class TestDashboardAPI:
 
 
 class TestObservabilityAPI:
-    @covers_route("/api/home/observability/topology")
-    def test_returns_topology_structure(self, live_server):
-        r = httpx.get(f"{live_server}/api/home/observability/topology")
-        assert r.status_code == 200
-        data = r.json()
-        assert "nodes" in data
-        assert "edges" in data
-        assert "groups" in data
-
     @covers_route("/api/home/observability/stats")
     def test_returns_stats(self, live_server):
         r = httpx.get(f"{live_server}/api/home/observability/stats")
