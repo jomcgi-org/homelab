@@ -106,9 +106,19 @@ defmodule Embervm.RouterTest do
   end
 
   test "a body over 8 MiB is rejected 413" do
+    # An over-cap POST is answered 413 BEFORE the server reads the whole body,
+    # which leaves the HTTP/1.1 connection with an undrained tail. Reusing that
+    # pooled connection for a later request would misframe and hang it, so this
+    # abnormal request runs against its OWN throwaway Finch pool that no other
+    # test shares; the app's shared Embervm.Finch pool is never poisoned.
+    start_supervised!({Finch, name: __MODULE__.BigBodyFinch})
     wl = unique("wl")
     big = :binary.copy("a", 8_388_609)
-    resp = req(:post, "/v1/workloads/#{wl}/tasks", auth("good"), big)
+
+    {:ok, resp} =
+      Finch.build(:post, "http://127.0.0.1:8080/v1/workloads/#{wl}/tasks", auth("good"), big)
+      |> Finch.request(__MODULE__.BigBodyFinch)
+
     assert resp.status == 413
   end
 
