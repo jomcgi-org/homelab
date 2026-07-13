@@ -638,6 +638,7 @@ erlang = use_extension("//bazel/erlang:repositories.bzl", "erlang")
 use_repo(
     erlang,
     "elixir_1_18_4",
+    "hex_archive",
     "hex_cc_precompiler",
     "hex_db_connection",
     "hex_elixir_make",

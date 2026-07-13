@@ -12,19 +12,25 @@
 # pattern).
 #
 # Args: $1 OTP Install script, $2 elixir bin/elixir anchor, $3 control mix.exs
-#       anchor, $4 output tar, $5.. hex dependency tarballs (may be empty).
+#       anchor, $4 output tar, $5 hex.ez archive, $6.. hex dependency tarballs
+#       (may be empty).
 set -euo pipefail
 
 install_script="$1"
 elixir_anchor="$2"
 mixexs="$3"
 out="$4"
-shift 4
+hex_ez="$5"
+shift 5
 # Remaining args ("$@") are hex dependency tarballs.
 
 case "$out" in
 /*) ;;
 *) out="$(pwd)/$out" ;;
+esac
+case "$hex_ez" in
+/*) ;;
+*) hex_ez="$(pwd)/$hex_ez" ;;
 esac
 
 otp_src="$(cd "$(dirname "$install_script")" && pwd)"
@@ -66,6 +72,12 @@ done
 export PATH="$work/otp/bin:$work/elixir/bin:$PATH"
 export HOME="$work"
 export MIX_ENV=prod
+export ELIXIR_ERL_OPTIONS="+fnu"
+export HEX_OFFLINE=1
+
+# Register Hex offline from the staged archive (needed to parse hex-style dep
+# declarations inside our path deps; see mix_test.sh). Local .ez, no network.
+mix archive.install "$hex_ez" --force >&2
 
 cd "$work/control"
 # Compile path deps first (builds the exqlite NIF via make), then assemble the
