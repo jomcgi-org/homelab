@@ -14,8 +14,13 @@ cilium:
 
   # Coexist with k3s's own CNI config management rather than taking the CNI conf
   # directory exclusively (k3s writes and owns it). Recommended for k3s+Cilium.
+  # confPath/binPath point at k3s's real CNI dirs (from `k3s crictl info`):
+  # Cilium's defaults (/etc/cni/net.d, /opt/cni/bin) are dirs k3s never reads, so
+  # without these overrides a node comes up with no usable CNI after the flip.
   cni:
     exclusive: false
+    confPath: /var/lib/rancher/k3s/agent/etc/cni/net.d
+    binPath: /var/lib/rancher/k3s/data/cni
 
   ipam:
     mode: cluster-pool

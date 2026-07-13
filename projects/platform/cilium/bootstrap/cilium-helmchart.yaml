@@ -35,8 +35,13 @@ spec:
     # k8sServiceHost/Port omitted on purpose (see ../values.yaml): kube-proxy
     # routes the kubernetes Service, and 127.0.0.1 would be wrong on the agent.
     # cni.exclusive: false lets Cilium coexist with k3s CNI config management.
+    # confPath/binPath point at k3s's real CNI dirs (from `k3s crictl info`):
+    # Cilium's defaults (/etc/cni/net.d, /opt/cni/bin) are dirs k3s never reads,
+    # so without these the node comes up with no usable CNI after the flip.
     cni:
       exclusive: false
+      confPath: /var/lib/rancher/k3s/agent/etc/cni/net.d
+      binPath: /var/lib/rancher/k3s/data/cni
 
     ipam:
       mode: cluster-pool
