@@ -18,6 +18,24 @@ genrule(
     tools = ["otp_smoke.sh"],
 )
 
+# Proves the prebuilt OTP + precompiled Elixir compile and ExUnit-test the
+# control-plane skeleton on the executor (the other half of the Task 1 toolchain).
+genrule(
+    name = "mix_test_smoke",
+    srcs = [
+        "@otp_ubuntu2204_amd64//:otp",
+        "@otp_ubuntu2204_amd64//:Install",
+        "@elixir_1_18_4//:elixir",
+        "@elixir_1_18_4//:bin/elixir",
+        "//projects/embervm/control:srcs",
+        "//projects/embervm/control:mix.exs",
+    ],
+    outs = ["mix_test_smoke.txt"],
+    cmd = "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\"",
+    tags = ["no-remote-cache"],
+    tools = ["mix_test.sh"],
+)
+
 bzl_library(
     name = "repositories",
     srcs = ["repositories.bzl"],
