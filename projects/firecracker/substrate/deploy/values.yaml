@@ -34,6 +34,15 @@ linkerdPolicy:
   allowedIdentities:
     - monolith.monolith.serviceaccount.identity.linkerd.cluster.local
 
+# Cilium translation of the /invoke authorization (ADR platform/012). Staged
+# with the caller namespace pre-seeded but enabled=false, so the cutover window
+# flips it on with a one-line change. linkerdPolicy above stays enabled until
+# the window teardown removes the Linkerd sidecar mesh.
+ciliumPolicy:
+  enabled: false
+  fromNamespaces:
+    - monolith
+
 # The daemon image (private) and the proprietary semgrep-guest image (crane-pulled
 # by the rootfs-builder) need GHCR creds in-cluster; charts stay private too via
 # the ArgoCD repo-cred added in projects/platform/argocd.

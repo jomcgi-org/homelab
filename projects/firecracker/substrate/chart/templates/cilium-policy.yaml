@@ -1,0 +1,50 @@
+{{- if .Values.ciliumPolicy.enabled }}
+# CiliumNetworkPolicy translation of the Linkerd /invoke authorization that used
+# to live in templates/linkerd-policy.yaml. ADR platform/012 replaces the
+# Linkerd sidecar mesh with Cilium as the CNI.
+#
+# Cilium runs in policyEnforcementMode=default (allow-until-selected), so this
+# rule only restricts the daemon once the gate below is flipped. The daemon's
+# own TokenReview control is the PRIMARY gate; this network policy is
+# defence-in-depth (STPA: unauthenticated /invoke), exactly as the Linkerd
+# Server/AuthorizationPolicy chain was.
+#
+# Gated off by default (chart/values.yaml); flipped on during the Cilium cutover
+# window. Ingress-only: substrate never had an EgressNetwork, so there is no
+# egress half to translate.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "fc-invoke.fullname" . }}-invoke
+  labels:
+    {{- include "fc-invoke.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "fc-invoke.selectorLabels" . | nindent 6 }}
+  ingress:
+    {{- if .Values.ciliumPolicy.fromNamespaces }}
+    # Callers allowed to reach /invoke, by namespace: the Cilium proxy for the
+    # Linkerd allowedIdentities mesh-identity list. Today that is the monolith
+    # orchestrator (its goosecracker runner and the semgrep MCP tool, both under
+    # the monolith ServiceAccount in the monolith namespace). Cilium has no
+    # direct ServiceAccount selector, so this authorizes the namespace and the
+    # daemon's TokenReview gate still enforces the exact caller identity.
+    - fromEndpoints:
+        {{- range .Values.ciliumPolicy.fromNamespaces }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.service.port | quote }}
+              protocol: TCP
+    {{- end }}
+    # kubelet liveness/readiness probes originate from the node host. Linkerd
+    # auto-authorized these; once an ingress rule makes the endpoint
+    # default-deny, Cilium needs them allowed explicitly or the pod never goes
+    # Ready. `health` covers the cilium-health checker.
+    - fromEntities:
+        - host
+        - health
+{{- end }}
