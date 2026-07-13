@@ -12,8 +12,8 @@ out="$2"
 # Bazel passes $out relative to the execroot (cwd at start); absolutize it before
 # we cd into the work dir, or the later `tee "$out"` writes to the wrong place.
 case "$out" in
-  /*) ;;
-  *) out="$(pwd)/$out" ;;
+/*) ;;
+*) out="$(pwd)/$out" ;;
 esac
 
 root="$(cd "$(dirname "$install_script")" && pwd)"
