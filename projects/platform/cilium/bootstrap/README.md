@@ -55,6 +55,14 @@ Per the full runbook in `docs/plans/2026-07-10-cilium-migration.md` (Track 2):
 values as `../values.yaml`, so the bootstrap install and the ArgoCD-managed
 release converge on identical config. Keep the two in sync if either changes.
 
+Note the two pull from **different registries on purpose**: this bootstrap CR
+uses the classic Helm repo `https://helm.cilium.io` (what the k3s `HelmChart`
+CR's `repo:` field expects), while `../application.yaml` / `../Chart.lock` pin
+the OCI chart `oci://quay.io/cilium/charts` (digest-locked). Both resolve to
+upstream Cilium 1.19.5; the version, not a shared digest, is the contract. The
+bootstrap is a one-time CNI seed that the ArgoCD release adopts, after which the
+OCI-pinned source is authoritative.
+
 ## Rollback
 
 Rollback is an etcd snapshot restore plus a k3s config revert (remove the
