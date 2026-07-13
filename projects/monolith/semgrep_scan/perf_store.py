@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, Session, SQLModel, select
 
 
@@ -34,6 +35,15 @@ class ScanPerf(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
     cli_version: str = ""
     scan_started_at: Optional[datetime] = None
     scan_completed_at: Optional[datetime] = None
+
+    # Cohort metadata (diff shape) for per-cohort speedup segmentation. Populated
+    # on route-b rows (a matched pair inherits it by commit_sha); languages is
+    # {language: changed_lines}. See semgrep_scan/cohorts.py.
+    file_count: Optional[int] = None
+    changed_lines: Optional[int] = None
+    languages: Optional[dict] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
 
 
 def _merge_decision(existing_env: str | None, new_env: str) -> str:
@@ -63,6 +73,9 @@ _UPDATE_FIELDS = (
     "cli_version",
     "scan_started_at",
     "scan_completed_at",
+    "file_count",
+    "changed_lines",
+    "languages",
 )
 
 

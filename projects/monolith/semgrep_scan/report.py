@@ -561,6 +561,7 @@ async def report_pr_scan(
     project_id: Optional[str] = None,
     repo_url: Optional[str] = None,
     scan_execution_duration: Optional[float] = None,
+    cohort: Optional[dict] = None,
     dry_run: bool = False,
     is_full_scan: bool = False,
 ) -> dict[str, Any]:
@@ -585,6 +586,7 @@ async def report_pr_scan(
         project_id=project_id,
         repo_url=repo_url,
         scan_execution_duration=scan_execution_duration,
+        cohort=cohort,
         dry_run=dry_run,
         is_full_scan=is_full_scan,
     )
@@ -601,6 +603,7 @@ def _report_pr_scan_blocking(
     project_id: Optional[str] = None,
     repo_url: Optional[str] = None,
     scan_execution_duration: Optional[float] = None,
+    cohort: Optional[dict] = None,
     dry_run: bool = False,
     is_full_scan: bool = False,
 ) -> dict[str, Any]:
@@ -741,6 +744,11 @@ def _report_pr_scan_blocking(
                         cli_version=_sg_cli_version,
                         scan_started_at=_perf_now - timedelta(seconds=_perf_dur),
                         scan_completed_at=_perf_now,
+                        # Diff cohort (route-b only; a matched pair inherits it by
+                        # commit_sha). None for full scans / when unavailable.
+                        file_count=(cohort or {}).get("file_count"),
+                        changed_lines=(cohort or {}).get("changed_lines"),
+                        languages=(cohort or {}).get("languages"),
                     ),
                 )
         except Exception:

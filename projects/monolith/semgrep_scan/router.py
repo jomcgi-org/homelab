@@ -43,6 +43,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
 from semgrep_scan.client import scan_files, scan_files_hi
+from semgrep_scan.cohorts import diff_cohort
 from semgrep_scan.report import report_pr_scan
 
 logger = logging.getLogger("monolith.semgrep.webhook")
@@ -142,6 +143,104 @@ async def trigger_harvest(repo: str = "jomcgi/homelab") -> dict:
     return {"status": "started", "repo": repo}
 
 
+# Guards against overlapping cohort backfills.
+_cohort_backfill_in_flight = False
+_cohort_backfill_tasks: set[asyncio.Task] = set()
+
+
+async def _backfill_cohorts(repo: str) -> dict:
+    """Backfill diff-cohort metadata onto route-b perf rows that lack it.
+
+    For each route-b row whose ``scan_ref`` is a ``refs/pull/{N}/merge`` and whose
+    ``file_count`` is NULL, fetch the PR's ``/pulls/{N}/files`` (the same endpoint
+    and the same ``diff_cohort`` the live webhook uses) and stamp the cohort. DB
+    reads/writes go through worker threads (own sessions) per the async-handler
+    rule; the GitHub calls are async. Best-effort per row.
+    """
+    import re
+
+    from sqlmodel import Session, select
+
+    from app.db import get_engine
+    from semgrep_scan.perf_store import ScanPerf
+
+    def _needing() -> list[tuple[int, str]]:
+        with Session(get_engine()) as session:
+            rows = session.exec(
+                select(ScanPerf).where(
+                    ScanPerf.environment == "route-b",
+                    ScanPerf.file_count.is_(None),  # type: ignore[union-attr]
+                )
+            ).all()
+            return [(r.scan_id, r.scan_ref) for r in rows]
+
+    def _persist(scan_id: int, cohort: dict) -> None:
+        with Session(get_engine()) as session:
+            row = session.exec(
+                select(ScanPerf).where(ScanPerf.scan_id == scan_id)
+            ).first()
+            if row is None:
+                return
+            row.file_count = cohort["file_count"]
+            row.changed_lines = cohort["changed_lines"]
+            row.languages = cohort["languages"]
+            session.add(row)
+            session.commit()
+
+    rows = await asyncio.to_thread(_needing)
+    pr_re = re.compile(r"refs/pull/(\d+)/merge")
+    updated = skipped = 0
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_GITHUB_TIMEOUT)) as client:
+        for scan_id, scan_ref in rows:
+            match = pr_re.match(scan_ref or "")
+            if not match:
+                skipped += 1
+                continue
+            try:
+                entries = await _list_changed_files(client, repo, int(match.group(1)))
+                await asyncio.to_thread(_persist, scan_id, diff_cohort(entries))
+                updated += 1
+            except Exception:
+                logger.exception("cohort backfill failed for scan %s", scan_id)
+                skipped += 1
+    logger.info(
+        "cohort backfill: updated=%d skipped=%d of %d route-b rows",
+        updated,
+        skipped,
+        len(rows),
+    )
+    return {"updated": updated, "skipped": skipped, "total": len(rows)}
+
+
+@internal_router.post("/backfill-cohorts")
+async def trigger_cohort_backfill(repo: str = "jomcgi/homelab") -> dict:
+    """Fire the one-time cohort backfill (GitHub API) as a background task.
+
+    Internal only. Populates the diff-cohort columns on historical route-b rows
+    from each PR's ``/pulls/{N}/files``; new rows get the cohort live in the
+    webhook. Idempotent (only touches rows with a NULL file_count).
+    """
+    global _cohort_backfill_in_flight
+    if _cohort_backfill_in_flight:
+        return {"status": "already-running", "repo": repo}
+
+    async def _run() -> None:
+        global _cohort_backfill_in_flight
+        _cohort_backfill_in_flight = True
+        try:
+            await _backfill_cohorts(repo)
+        except Exception:
+            logger.exception("trigger_cohort_backfill crashed for %s", repo)
+        finally:
+            _cohort_backfill_in_flight = False
+
+    task = asyncio.create_task(_run())
+    _cohort_backfill_tasks.add(task)
+    task.add_done_callback(_cohort_backfill_tasks.discard)
+    logger.info("trigger_cohort_backfill: launched cohort backfill for %s", repo)
+    return {"status": "started", "repo": repo}
+
+
 # PR actions worth scanning: a fresh PR, a new push to an open PR, and a reopen.
 # Everything else (labeled, closed, review requests, ...) is acked with no work.
 _SCAN_ACTIONS = {"opened", "synchronize", "reopened"}
@@ -219,15 +318,17 @@ def _is_scannable(path: str) -> bool:
 
 async def _list_changed_files(
     client: httpx.AsyncClient, repo: str, pr_number: int
-) -> list[str]:
-    """Return the scannable, non-removed changed-file paths for a PR (paginated).
+) -> list[dict]:
+    """Return the scannable, non-removed changed-file ENTRIES for a PR (paginated).
 
-    GET /repos/{repo}/pulls/{n}/files, 100 per page, following pages until a short
-    page or the page cap. Only files whose ``status`` is not ``removed`` and whose
-    extension is scannable are kept: a deleted file has no head content to fetch,
-    and an unscannable extension has no rules.
+    Each entry is the GitHub file object (``filename``, ``status``, ``additions``,
+    ``deletions``): callers need the path to fetch content AND the diff stats for
+    cohort metadata. GET /repos/{repo}/pulls/{n}/files, 100 per page, following
+    pages until a short page or the page cap. Only files whose ``status`` is not
+    ``removed`` and whose extension is scannable are kept: a deleted file has no
+    head content to fetch, and an unscannable extension has no rules.
     """
-    paths: list[str] = []
+    entries: list[dict] = []
     for page in range(1, _MAX_FILE_PAGES + 1):
         resp = await client.get(
             f"{_GITHUB_API}/repos/{repo}/pulls/{pr_number}/files",
@@ -243,10 +344,10 @@ async def _list_changed_files(
             status = entry.get("status", "")
             if status == "removed" or not _is_scannable(path):
                 continue
-            paths.append(path)
+            entries.append(entry)
         if len(batch) < 100:
             break
-    return paths
+    return entries
 
 
 async def _fetch_file_content(
@@ -276,16 +377,21 @@ async def _fetch_file_content(
         return None
 
 
-async def _gather_files(repo: str, pr_number: int, head_sha: str) -> list[dict]:
-    """Build the ``[{path, content}]`` scan input for a PR's changed files.
+async def _gather_files(
+    repo: str, pr_number: int, head_sha: str
+) -> tuple[list[dict], dict]:
+    """Build the ``[{path, content}]`` scan input plus the diff cohort for a PR.
 
-    Lists the scannable changed files then fetches each one's head content. A file
-    whose content cannot be fetched is dropped. Shares one AsyncClient across all
-    the GitHub calls.
+    Lists the scannable changed-file entries, computes the cohort (file count,
+    changed lines, per-language breakdown) from their diff stats, then fetches
+    each file's head content. A file whose content cannot be fetched is dropped
+    from the scan input but still counts toward the cohort (it was part of the
+    diff). Shares one AsyncClient across all the GitHub calls.
     """
     timeout = httpx.Timeout(_GITHUB_TIMEOUT)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        paths = await _list_changed_files(client, repo, pr_number)
+        entries = await _list_changed_files(client, repo, pr_number)
+        cohort = diff_cohort(entries)
 
         # Fetch changed-file contents concurrently (bounded). asyncio.gather
         # preserves the input order, so files stay in changed-file order; a file
@@ -299,8 +405,10 @@ async def _gather_files(repo: str, pr_number: int, head_sha: str) -> list[dict]:
                 return None
             return {"path": path, "content": content}
 
-        fetched = await asyncio.gather(*(_fetch(path) for path in paths))
-    return [f for f in fetched if f is not None]
+        fetched = await asyncio.gather(
+            *(_fetch(entry["filename"]) for entry in entries)
+        )
+    return [f for f in fetched if f is not None], cohort
 
 
 # The commit-status context string GitHub shows on the PR. Namespaced so it is
@@ -413,7 +521,7 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
             return
 
         t_gather = time.monotonic()
-        files = await _gather_files(repo, int(pr_number), head_sha)
+        files, cohort = await _gather_files(repo, int(pr_number), head_sha)
         gather_ms = (time.monotonic() - t_gather) * 1000
         if not files:
             logger.info(
@@ -452,6 +560,7 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
             raw_cli_output=scan.get("raw_cli_output"),
             repo_url=repo_url,
             scan_execution_duration=scan_execution_duration,
+            cohort=cohort,
         )
         report_ms = (time.monotonic() - t_report) * 1000
 

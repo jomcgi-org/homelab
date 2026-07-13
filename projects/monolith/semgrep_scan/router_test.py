@@ -108,7 +108,9 @@ def _post(client, payload, *, event="pull_request", secret=_SECRET, sign=True):
 def test_valid_signature_accepted_and_dispatches(client):
     with (
         mock.patch.object(
-            webhook, "_gather_files", new=mock.AsyncMock(return_value=[])
+            webhook,
+            "_gather_files",
+            new=mock.AsyncMock(return_value=([], {})),
         ),
         mock.patch.object(webhook, "scan_files", new=mock.AsyncMock()) as scan,
     ):
