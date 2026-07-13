@@ -66,6 +66,43 @@
     return { text: "about even", tone: "neutral" };
   }
 
+  // Build an inline SVG line chart of the rolling speedup trend. Returns null
+  // when there are fewer than two points (a single point is not a line). Y is
+  // auto-scaled to the data range so the shape shows the trend, not the absolute
+  // magnitude; the tooltip and axis labels carry the numbers.
+  function buildTrendChart(trend) {
+    const pts = (trend?.points ?? []).filter((p) => p.speedup != null);
+    if (pts.length < 2) return null;
+    const W = 900,
+      H = 200,
+      padL = 8,
+      padR = 8,
+      padT = 16,
+      padB = 26;
+    const vals = pts.map((p) => p.speedup);
+    const ymin = Math.min(...vals);
+    const ymax = Math.max(...vals);
+    const yrange = ymax - ymin || 1;
+    const n = pts.length;
+    const x = (i) => padL + (W - padL - padR) * (i / (n - 1));
+    const y = (v) => padT + (H - padT - padB) * (1 - (v - ymin) / yrange);
+    const line = pts
+      .map((p, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(p.speedup).toFixed(1)}`)
+      .join(" ");
+    const area = `${line} L ${x(n - 1).toFixed(1)} ${H - padB} L ${x(0).toFixed(1)} ${H - padB} Z`;
+    return {
+      W,
+      H,
+      line,
+      area,
+      dots: pts.map((p, i) => ({ cx: x(i), cy: y(p.speedup), ...p })),
+      ymin,
+      ymax,
+      first: pts[0],
+      latest: pts[n - 1],
+    };
+  }
+
   // ── View state ───────────────────────────────
 
   const buckets = [
@@ -185,6 +222,65 @@
           </div>
         {/each}
       </section>
+
+      {#if data.trend && data.trend.points && data.trend.points.length >= 2}
+        {@const chart = buildTrendChart(data.trend)}
+        {#if chart}
+          <section class="card trend">
+            <div class="trend-head">
+              <h2 class="section-label">Speedup trend</h2>
+              <span class="trend-meta"
+                >{data.trend.window_days}-day rolling &middot; latest
+                <span class="mono">{chart.latest.speedup.toFixed(1)}x</span>
+                (was <span class="mono">{chart.first.speedup.toFixed(1)}x</span
+                >)</span
+              >
+            </div>
+            <svg
+              class="trend-svg"
+              viewBox="0 0 {chart.W} {chart.H}"
+              role="img"
+              aria-label="Rolling speedup over time"
+            >
+              <path class="trend-area" d={chart.area} />
+              <path class="trend-line" d={chart.line} />
+              {#each chart.dots as d}
+                <circle class="trend-dot" cx={d.cx} cy={d.cy} r="2.5">
+                  <title
+                    >{formatDay(d.date)}: {d.speedup.toFixed(1)}x &middot; homelab {formatDuration(
+                      d.homelab_median,
+                    )} vs managed {formatDuration(d.managed_median)} &middot; {d.pairs}
+                    pairs</title
+                  >
+                </circle>
+              {/each}
+              <text class="trend-axis" x={chart.W - 4} y="14" text-anchor="end"
+                >{chart.ymax.toFixed(0)}x</text
+              >
+              <text
+                class="trend-axis"
+                x={chart.W - 4}
+                y={chart.H - 30}
+                text-anchor="end">{chart.ymin.toFixed(0)}x</text
+              >
+              <text class="trend-axis" x="8" y={chart.H - 8}
+                >{formatDay(chart.first.date)}</text
+              >
+              <text
+                class="trend-axis"
+                x={chart.W - 8}
+                y={chart.H - 8}
+                text-anchor="end">{formatDay(chart.latest.date)}</text
+              >
+            </svg>
+            <p class="trend-note">
+              Higher is a wider lead. A drop means our advantage is narrowing
+              &mdash; hover a point to see whether homelab slowed or managed sped
+              up.
+            </p>
+          </section>
+        {/if}
+      {/if}
 
       {#if data.cohorts && data.cohorts.total_pairs > 0}
         <section class="card cohorts">
@@ -733,5 +829,65 @@
 
   .cohort-table tbody tr:last-child td {
     border-bottom: none;
+  }
+
+  /* ── Speedup trend chart ── */
+  .trend {
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .trend-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .trend-meta {
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+
+  .trend-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    overflow: visible;
+  }
+
+  .trend-area {
+    fill: color-mix(in srgb, var(--accent) 12%, transparent);
+    stroke: none;
+  }
+
+  .trend-line {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .trend-dot {
+    fill: var(--accent);
+    stroke: var(--card-bg);
+    stroke-width: 1.5;
+  }
+
+  .trend-axis {
+    fill: var(--ink-3);
+    font-family: var(--font-code);
+    font-size: 11px;
+  }
+
+  .trend-note {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ink-3);
   }
 </style>

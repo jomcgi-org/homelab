@@ -15,6 +15,7 @@ from semgrep_scan.perf_compare import (
     build_cohort_aggregates,
     build_comparisons,
     build_distributions,
+    build_trend,
 )
 
 UTC = datetime.timezone.utc
@@ -495,3 +496,40 @@ def test_build_cohort_aggregates_ignores_pairs_without_cohort_or_full_scans():
     assert out["total_pairs"] == 0
     assert out["by_files"] == []
     assert out["by_language"] == []
+
+
+# ── build_trend ──────────────────────────────────
+
+
+def _trend_pair(day, homelab_t, managed_t):
+    when = datetime.datetime(2026, 7, day, 12, 0, tzinfo=UTC)
+    return {
+        "is_full_scan": False,
+        "route_b": {"total_time": homelab_t, "scan_completed_at": when},
+        "sms": {"total_time": managed_t, "scan_completed_at": when},
+        "speedup": managed_t / homelab_t,
+    }
+
+
+def test_build_trend_rolling_window():
+    comps = [
+        _trend_pair(1, 5.0, 50.0),
+        _trend_pair(1, 5.0, 50.0),
+        _trend_pair(3, 10.0, 50.0),
+    ]
+    out = build_trend(comps, window_days=7)
+    assert out["window_days"] == 7
+    pts = out["points"]
+    assert [p["date"] for p in pts] == ["2026-07-01", "2026-07-02", "2026-07-03"]
+    # day 1: only day-1 pairs -> homelab median 5, managed 50 -> 10x, 2 pairs
+    assert pts[0]["pairs"] == 2
+    assert pts[0]["speedup"] == 10.0
+    # day 2: trailing window still covers day-1 pairs
+    assert pts[1]["pairs"] == 2
+    # day 3: window covers all three; medians 5 / 50 -> 10x, 3 pairs
+    assert pts[2]["pairs"] == 3
+    assert pts[2]["speedup"] == 10.0
+
+
+def test_build_trend_empty():
+    assert build_trend([]) == {"points": [], "window_days": 7}
