@@ -1,10 +1,10 @@
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 # EmberVM control-plane image: the Wolfi + erlang-27 base (apko.yaml) with the
-# control-plane OTP release layered at /opt/embervm. The release is
-# architecture-independent .beam (include_erts:false), so it is a regular tar
-# used for both arches; apko resolves erlang-27 per arch. Entrypoint (from
-# apko.yaml) is /opt/embervm/bin/embervm start.
+# control-plane OTP release layered at /opt/embervm. AMD64-ONLY: the release
+# carries exqlite's arch-specific sqlite3_nif.so, so the tar is not portable
+# across arches; the executor and every cluster node are amd64 (see apko.yaml for
+# the full rationale). Entrypoint (from apko.yaml) is /opt/embervm/bin/embervm start.
 apko_image(
     name = "image",
     config = "apko.yaml",
