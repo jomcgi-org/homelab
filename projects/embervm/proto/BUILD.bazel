@@ -1,0 +1,7 @@
+# node.proto is the EmberVM control-to-node gRPC contract (the design seam).
+# Proto codegen infrastructure (rules_proto + Go/Elixir stubs) is a later,
+# decision-gated bootstrap; until it lands the .proto is a contract artifact
+# only. Disable gazelle proto-rule generation for this subtree so it does not
+# synthesize a proto_library loading @rules_proto (which is absent from
+# MODULE.bazel). Propagates to subdirectories, including node/v1.
+# gazelle:proto disable
