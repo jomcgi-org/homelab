@@ -1,0 +1,214 @@
+defmodule Embervm.RouterTest do
+  @moduledoc """
+  Request tests for the submit API, driving the LIVE Bandit instance the
+  application boots (over the Embervm.Finch pool on loopback) with an injected
+  fake authenticator, so no live Kubernetes API server is needed. `async: false`
+  because these mutate global application env (the authenticator + sync knobs)
+  and share the one running control-plane instance; unique workloads and
+  idempotency keys keep tasks from colliding across tests.
+  """
+  use ExUnit.Case, async: false
+
+  alias Embervm.TaskStore
+
+  @allowed "system:serviceaccount:embervm:embervm"
+
+  defmodule FakeAuth do
+    @allowed "system:serviceaccount:embervm:embervm"
+    def authenticate("good"), do: {:ok, @allowed}
+    def authenticate("good2"), do: {:ok, "principal-2"}
+    def authenticate("forbidden"), do: {:error, :forbidden}
+    def authenticate(_), do: {:error, :unauthenticated}
+  end
+
+  setup do
+    Application.put_env(:embervm, :authenticator, FakeAuth)
+
+    on_exit(fn ->
+      Application.delete_env(:embervm, :authenticator)
+      Application.delete_env(:embervm, :sync_park_cap)
+      Application.delete_env(:embervm, :sync_timeout_ms)
+    end)
+
+    :ok
+  end
+
+  defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
+
+  defp req(method, path, headers \\ [], body \\ "") do
+    {:ok, resp} =
+      Finch.build(method, "http://127.0.0.1:8080#{path}", headers, body)
+      |> Finch.request(Embervm.Finch)
+
+    resp
+  end
+
+  defp auth(token), do: [{"authorization", "Bearer " <> token}]
+
+  defp json(body), do: :json.decode(body)
+
+  # -- auth ------------------------------------------------------------------
+
+  test "a /v1 request without a token is 401" do
+    resp = req(:post, "/v1/workloads/#{unique("wl")}/tasks")
+    assert resp.status == 401
+  end
+
+  test "an unauthenticated token is 401" do
+    resp = req(:post, "/v1/workloads/#{unique("wl")}/tasks", auth("nope"), "x")
+    assert resp.status == 401
+  end
+
+  test "an authenticated but non-allow-listed token is 403" do
+    resp = req(:post, "/v1/workloads/#{unique("wl")}/tasks", auth("forbidden"), "x")
+    assert resp.status == 403
+  end
+
+  test "/healthz needs no auth" do
+    resp = req(:get, "/healthz")
+    assert resp.status == 200
+    assert resp.body == "ok"
+  end
+
+  # -- submit ----------------------------------------------------------------
+
+  test "async submit returns 202 and creates a queued task backed by the op-log" do
+    wl = unique("wl")
+    resp = req(:post, "/v1/workloads/#{wl}/tasks", auth("good"), "source-file-bytes")
+
+    assert resp.status == 202
+    body = json(resp.body)
+    assert body["state"] == "queued"
+    task_id = body["task_id"]
+    assert is_binary(task_id)
+
+    # The queued task is durable (write-through op-log projection surfaced via
+    # the ETS hot set): GET reflects it.
+    got = req(:get, "/v1/tasks/#{task_id}", auth("good"))
+    assert got.status == 200
+    view = json(got.body)
+    assert view["state"] == "queued"
+    assert view["workload"] == wl
+    assert view["attempt"] == 1
+  end
+
+  test "Idempotency-Key dedupes a resubmit to the same task" do
+    wl = unique("wl")
+    key = unique("idem")
+    headers = auth("good") ++ [{"idempotency-key", key}]
+
+    a = req(:post, "/v1/workloads/#{wl}/tasks", headers, "body")
+    b = req(:post, "/v1/workloads/#{wl}/tasks", headers, "body")
+
+    assert a.status == 202
+    assert b.status == 202
+    assert json(a.body)["task_id"] == json(b.body)["task_id"]
+  end
+
+  test "a body over 8 MiB is rejected 413" do
+    wl = unique("wl")
+    big = :binary.copy("a", 8_388_609)
+    resp = req(:post, "/v1/workloads/#{wl}/tasks", auth("good"), big)
+    assert resp.status == 413
+  end
+
+  # -- reads -----------------------------------------------------------------
+
+  test "GET unknown task is 404" do
+    resp = req(:get, "/v1/tasks/#{unique("nope")}", auth("good"))
+    assert resp.status == 404
+  end
+
+  test "GET result is 404 before any result exists" do
+    wl = unique("wl")
+    task_id = json(req(:post, "/v1/workloads/#{wl}/tasks", auth("good"), "x").body)["task_id"]
+
+    resp = req(:get, "/v1/tasks/#{task_id}/result", auth("good"))
+    assert resp.status == 404
+  end
+
+  # -- sync ------------------------------------------------------------------
+
+  test "sync submit returns the stored guest result when the task is already terminal" do
+    wl = unique("wl")
+    key = unique("idem")
+    headers = auth("good") ++ [{"idempotency-key", key}]
+
+    # Create the task, then drive it to success directly (no dispatcher in R0).
+    task_id = json(req(:post, "/v1/workloads/#{wl}/tasks", headers, "x").body)["task_id"]
+    {:ok, _} = TaskStore.assign(task_id)
+    {:ok, _} = TaskStore.start(task_id)
+
+    {:ok, _} =
+      TaskStore.succeed(task_id, %{
+        status_code: 201,
+        body: "FINDINGS",
+        size_bytes: 8,
+        truncated: false
+      })
+
+    # A sync submit with the same idempotency key resolves to the existing,
+    # now-terminal task; the already-terminal re-check returns its result without
+    # a real park.
+    resp = req(:post, "/v1/workloads/#{wl}/tasks?wait=true", headers, "x")
+    assert resp.status == 201
+    assert resp.body == "FINDINGS"
+  end
+
+  test "sync submit is 429 when the principal's park cap is exhausted" do
+    Application.put_env(:embervm, :sync_park_cap, 0)
+    wl = unique("wl")
+
+    resp = req(:post, "/v1/workloads/#{wl}/tasks?wait=true", auth("good"), "x")
+    assert resp.status == 429
+    assert json(resp.body)["retryable"] == true
+  end
+
+  test "sync submit times out to 202 while work is still in flight" do
+    Application.put_env(:embervm, :sync_timeout_ms, 60)
+    wl = unique("wl")
+
+    resp = req(:post, "/v1/workloads/#{wl}/tasks?wait=true", auth("good"), "x")
+    assert resp.status == 202
+    assert json(resp.body)["state"] == "queued"
+  end
+
+  # -- DLQ + redrive ---------------------------------------------------------
+
+  test "dead-letter listing and redrive round-trip" do
+    wl = unique("wl")
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(%{tenant: "homelab", principal: @allowed, workload: wl})
+
+    {:ok, _} = TaskStore.assign(task_id)
+    # guest4xx is always permanent, so this dead-letters in one step.
+    {:ok, dl} = TaskStore.fail(task_id, :guest4xx)
+    assert dl.state == :dead_lettered
+
+    listed = req(:get, "/v1/workloads/#{wl}/dead-letters", auth("good"))
+    assert listed.status == 200
+    body = json(listed.body)
+    assert body["total"] == 1
+    assert [item] = body["items"]
+    assert item["task_id"] == task_id
+    assert item["state"] == "dead_lettered"
+
+    redriven = req(:post, "/v1/tasks/#{task_id}/redrive", auth("good"))
+    assert redriven.status == 200
+    assert json(redriven.body)["state"] == "queued"
+
+    got = req(:get, "/v1/tasks/#{task_id}", auth("good"))
+    assert json(got.body)["state"] == "queued"
+    # Attempt counter was reset to a fresh budget.
+    assert json(got.body)["attempt"] == 1
+  end
+
+  test "redrive of a non-dead-lettered task is 409" do
+    wl = unique("wl")
+    {:ok, :created, task_id} = TaskStore.submit(%{tenant: "homelab", principal: @allowed, workload: wl})
+
+    resp = req(:post, "/v1/tasks/#{task_id}/redrive", auth("good"))
+    assert resp.status == 409
+  end
+end

@@ -244,4 +244,58 @@ defmodule Embervm.TaskStoreTest do
     {:ok, ops} = SQLite.read_from(op_log, 0)
     assert Enum.count(ops, &(&1.kind == :submitted)) == 1
   end
+
+  test "get_result returns the stored result, then nil for an unknown task", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, _} = TaskStore.assign(store, task_id)
+    {:ok, _} = TaskStore.start(store, task_id)
+
+    {:ok, _} =
+      TaskStore.succeed(store, task_id, %{
+        status_code: 201,
+        body: "FINDINGS",
+        size_bytes: 8,
+        truncated: false
+      })
+
+    assert {:ok, %{status_code: 201, body: "FINDINGS", truncated: false}} =
+             TaskStore.get_result(store, task_id)
+
+    assert {:ok, nil} = TaskStore.get_result(store, "does-not-exist")
+  end
+
+  test "redrive re-queues a dead-lettered task, resets attempt, and survives restart", %{
+    path: path
+  } do
+    {op_log, store} = start_pair(path)
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    # Drive to dead-lettered via a permanent (guest4xx) failure.
+    {:ok, _} = TaskStore.assign(store, task_id)
+    {:ok, dl} = TaskStore.fail(store, task_id, :guest4xx)
+    assert dl.state == :dead_lettered
+
+    {:ok, redriven} = TaskStore.redrive(store, task_id)
+    assert redriven.state == :queued
+    assert redriven.attempt == 1
+
+    # Redriving a task that is not dead-lettered is an illegal transition.
+    assert {:error, {:illegal_transition, :queued, :redrive}} =
+             TaskStore.redrive(store, task_id)
+
+    # The reset persists: a fresh TaskStore rebuilt from the op-log sees queued
+    # at attempt 1, proving the :redrive projection wrote through durably.
+    :ok = GenServer.stop(store)
+    {:ok, store2} = TaskStore.start_link(op_log: op_log, name: nil)
+
+    {:ok, rebuilt} = TaskStore.get(store2, task_id)
+    assert rebuilt.state == :queued
+    assert rebuilt.attempt == 1
+  end
 end

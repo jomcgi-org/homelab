@@ -1,0 +1,159 @@
+# EmberVM submit API (Task 8, invocation front-end). Hand-written contract; this
+# is what the monolith scan client (Task 15) programs against. Served by the
+# control plane on :8080 behind the cluster Service; every /v1 path requires a
+# bearer token authenticated by Kubernetes TokenReview against the allow-list.
+openapi: 3.1.0
+info:
+  title: EmberVM Submit API
+  version: v1
+  description: >-
+    Durable, fair, retried task execution over the Firecracker fleet. A task is
+    one HTTP request to a guest: the submit body is forwarded verbatim as the
+    guest request body. R0 has no dispatcher yet, so submitted tasks sit queued;
+    the async submit + task/result/DLQ surface is the stable contract.
+servers:
+  - url: http://embervm.embervm.svc.cluster.local:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness/readiness probe (unauthenticated).
+      security: []
+      responses:
+        "200":
+          description: OK.
+          content:
+            text/plain:
+              schema: { type: string, example: ok }
+  /v1/workloads/{name}/tasks:
+    post:
+      summary: Submit a task to a workload.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: wait
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: >-
+            When true, park the request until the task reaches a terminal state
+            or the sync timeout elapses, then return the guest response directly.
+            When false/absent, return 202 immediately with the task id.
+      requestBody:
+        description: >-
+          Forwarded verbatim as the guest request body (max 8 MiB). Content-Type
+          is forwarded. Headers prefixed X-Ember-Guest- are stripped of the
+          prefix and forwarded to the guest; no other caller header reaches it.
+        required: false
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      parameters_headers_note: >-
+        X-Ember-Guest-Path overrides the guest path (default spec.source.invokePath).
+        Idempotency-Key dedupes a resubmit to the existing task for its result TTL.
+      responses:
+        "202":
+          description: Accepted (async), or sync wait timed out with work still in flight.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskRef" }
+        "200":
+          description: Sync wait completed; body is the guest response (untruncated).
+        "413": { description: Body exceeds 8 MiB. }
+        "429":
+          description: Per-principal sync-wait park cap exceeded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Missing or invalid bearer token. }
+        "403": { description: Authenticated ServiceAccount not in the allow-list. }
+        "502": { description: Sync wait settled non-successfully (dead-lettered). }
+  /v1/tasks/{id}:
+    get:
+      summary: Task state and metadata.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Task view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskView" }
+        "404": { description: No such task. }
+  /v1/tasks/{id}/result:
+    get:
+      summary: Stored task result (until its TTL).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: >-
+            The stored guest response body, at the guest status code. The
+            X-Ember-Truncated header is true when the stored copy was capped at
+            the workload resultMaxBytes.
+        "404": { description: No result (task never ran or the TTL expired). }
+  /v1/workloads/{name}/dead-letters:
+    get:
+      summary: Paged dead-letter queue listing for a workload.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1, maximum: 500 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0, minimum: 0 } }
+      responses:
+        "200":
+          description: DLQ page (newest first).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeadLetterPage" }
+  /v1/tasks/{id}/redrive:
+    post:
+      summary: Re-queue a dead-lettered task (attempt counter reset, audited).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Redriven; task is queued again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskView" }
+        "404": { description: No such task. }
+        "409": { description: Task is not dead-lettered. }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    TaskRef:
+      type: object
+      properties:
+        task_id: { type: string }
+        state: { type: string }
+    TaskView:
+      type: object
+      properties:
+        task_id: { type: string }
+        workload: { type: string }
+        principal: { type: string }
+        state:
+          type: string
+          enum: [queued, assigned, running, succeeded, failed_retryable, failed_permanent, dead_lettered]
+        attempt: { type: integer }
+        submitted_at: { type: integer, description: epoch ms }
+        updated_at: { type: integer, description: epoch ms }
+    DeadLetterPage:
+      type: object
+      properties:
+        workload: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/TaskView" }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        task_id: { type: string }
+        retryable: { type: boolean }

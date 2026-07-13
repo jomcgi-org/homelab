@@ -32,9 +32,21 @@ defmodule Embervm.Application do
     port = http_port()
 
     children = [
+      # The sync-wait waiter registry + park-count ETS owner come FIRST: every
+      # terminal task-state write in TaskStore calls Embervm.SyncWait.notify,
+      # which dispatches through this registry, so it must already exist. Both
+      # are dependency-free and effectively never crash, so leading the
+      # rest_for_one chain costs nothing.
+      {Registry, keys: :duplicate, name: Embervm.TaskWaiters},
+      Embervm.SyncWait,
       {Embervm.OpLog.SQLite, path: oplog_path()},
       {Embervm.TaskStore, []},
-      {Finch, name: Embervm.Finch},
+      # Finch (the shared HTTP pool, TLS-pinned to the K8s CA in-cluster) before
+      # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
+      Embervm.K8s.finch_child_spec(),
+      {Embervm.Auth, allowed: allowed_service_accounts()},
+      # Bandit + the router last: its handlers call Auth, TaskStore, and
+      # SyncWait, so the HTTP surface must not accept requests until all are up.
       {Bandit, plug: Embervm.Router, scheme: :http, port: port}
     ]
 
@@ -62,6 +74,23 @@ defmodule Embervm.Application do
       nil -> nil
       "" -> nil
       path -> path
+    end
+  end
+
+  # The TokenReview allow-list: ServiceAccount usernames permitted to submit
+  # tasks, from EMBERVM_ALLOWED_SERVICE_ACCOUNTS (comma-separated), wired by the
+  # chart from values.auth.allowedServiceAccounts. An empty list means deny-all
+  # (fail-closed); Embervm.Auth logs a loud warning in that case.
+  defp allowed_service_accounts do
+    case System.get_env("EMBERVM_ALLOWED_SERVICE_ACCOUNTS") do
+      nil ->
+        []
+
+      raw ->
+        raw
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
     end
   end
 end

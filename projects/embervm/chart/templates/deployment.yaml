@@ -44,6 +44,13 @@ spec:
             - name: EMBERVM_NODE_ADDRESS
               value: {{ .Values.node.address | quote }}
             {{- end }}
+            {{- if .Values.auth.allowedServiceAccounts }}
+            # TokenReview allow-list: ServiceAccount usernames permitted to
+            # submit tasks. Empty means deny-all (fail-closed) in the control
+            # plane, so the env is only set when the list is non-empty.
+            - name: EMBERVM_ALLOWED_SERVICE_ACCOUNTS
+              value: {{ join "," .Values.auth.allowedServiceAccounts | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

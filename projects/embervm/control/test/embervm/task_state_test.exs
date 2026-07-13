@@ -18,11 +18,12 @@ defmodule Embervm.TaskStateTest do
     {:running, :fail_retryable} => :failed_retryable,
     {:running, :fail_permanent} => :failed_permanent,
     {:failed_retryable, :retry} => :queued,
-    {:failed_permanent, :dead_letter} => :dead_lettered
+    {:failed_permanent, :dead_letter} => :dead_lettered,
+    {:dead_lettered, :redrive} => :queued
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 9
+    assert map_size(@legal) == 10
 
     for state <- TaskState.states(), event <- TaskState.events() do
       case Map.fetch(@legal, {state, event}) do

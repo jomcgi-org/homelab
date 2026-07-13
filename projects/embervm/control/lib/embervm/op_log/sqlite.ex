@@ -104,6 +104,11 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def load_result(server \\ __MODULE__, task_id) do
+    GenServer.call(server, {:load_result, task_id})
+  end
+
+  @impl Embervm.OpLog
   def compact(server \\ __MODULE__, now_ms) do
     GenServer.call(server, {:compact, now_ms})
   end
@@ -145,6 +150,10 @@ defmodule Embervm.OpLog.SQLite do
 
   def handle_call(:load_tasks, _from, state) do
     {:reply, do_load_tasks(state.conn), state}
+  end
+
+  def handle_call({:load_result, task_id}, _from, state) do
+    {:reply, do_load_result(state.conn, task_id), state}
   end
 
   def handle_call({:compact, now_ms}, _from, state) do
@@ -287,6 +296,22 @@ defmodule Embervm.OpLog.SQLite do
     update_task_state(conn, op.task_id, "dead_lettered", op.ts)
   end
 
+  # Redrive re-queues a dead-lettered task and RESETS the attempt counter to 0
+  # (SQL is 0-based; ETS surfaces it 1-based), so the redriven task gets a full
+  # fresh retry budget rather than starting already-exhausted. The `redrive`
+  # op is the audit record of the manual intervention, distinct from automatic
+  # `retried` ops.
+  defp project(conn, %Op{kind: :redrive} = op, _seq) do
+    sql = "UPDATE tasks SET state='queued', attempt=0, updated_at=? WHERE task_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.task_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
   # Audit-only kinds: no task/result projection.
   defp project(_conn, %Op{kind: kind}, _seq)
        when kind in [:denied, :base_built, :primed, :vm_destroyed, :quota_enforced, :drain] do
@@ -370,6 +395,40 @@ defmodule Embervm.OpLog.SQLite do
       tasks = collect_tasks(conn, stmt, [])
       :ok = Sqlite3.release(conn, stmt)
       {:ok, tasks}
+    end
+  end
+
+  defp do_load_result(conn, task_id) do
+    sql = """
+    SELECT status_code, body, size_bytes, truncated, created_at, expires_at
+    FROM results WHERE task_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [task_id]) do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [status_code, body, size_bytes, truncated, created_at, expires_at]} ->
+            {:ok,
+             %{
+               task_id: task_id,
+               status_code: status_code,
+               body: body,
+               size_bytes: size_bytes,
+               truncated: truncated == 1,
+               created_at: created_at,
+               expires_at: expires_at
+             }}
+
+          :done ->
+            {:ok, nil}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
     end
   end
 

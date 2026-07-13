@@ -33,10 +33,26 @@ defmodule Embervm.TaskState do
 
   @terminal_states [:succeeded, :failed_permanent, :dead_lettered]
 
-  @events [:assign, :start, :succeed, :fail_retryable, :fail_permanent, :retry, :dead_letter]
+  @events [
+    :assign,
+    :start,
+    :succeed,
+    :fail_retryable,
+    :fail_permanent,
+    :retry,
+    :dead_letter,
+    :redrive
+  ]
 
   # The transition table. Every legal (state, event) pair the control plane
   # allows; anything not a key here is illegal by construction.
+  #
+  # `:redrive` is the DLQ escape hatch (Task 8): a dead-lettered task is
+  # terminal to the automatic pipeline, but an operator (or the redrive API)
+  # can move it back to `:queued` for another run. It is the ONLY event that
+  # leaves a terminal state, which is why it is enumerated explicitly rather
+  # than folded into `:retry` (retry increments the attempt counter and only
+  # applies to `:failed_retryable`; redrive RESETS the counter, see TaskStore).
   @transitions %{
     {:queued, :assign} => :assigned,
     {:assigned, :start} => :running,
@@ -46,7 +62,8 @@ defmodule Embervm.TaskState do
     {:running, :fail_retryable} => :failed_retryable,
     {:running, :fail_permanent} => :failed_permanent,
     {:failed_retryable, :retry} => :queued,
-    {:failed_permanent, :dead_letter} => :dead_lettered
+    {:failed_permanent, :dead_letter} => :dead_lettered,
+    {:dead_lettered, :redrive} => :queued
   }
 
   @type state ::
@@ -59,7 +76,14 @@ defmodule Embervm.TaskState do
           | :dead_lettered
 
   @type event ::
-          :assign | :start | :succeed | :fail_retryable | :fail_permanent | :retry | :dead_letter
+          :assign
+          | :start
+          | :succeed
+          | :fail_retryable
+          | :fail_permanent
+          | :retry
+          | :dead_letter
+          | :redrive
 
   @spec states() :: [state()]
   def states, do: @states

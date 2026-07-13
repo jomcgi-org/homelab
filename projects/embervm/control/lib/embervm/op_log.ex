@@ -56,6 +56,7 @@ defmodule Embervm.OpLog do
     :failed,
     :retried,
     :dead_lettered,
+    :redrive,
     :denied,
     :base_built,
     :primed,
@@ -72,6 +73,16 @@ defmodule Embervm.OpLog do
   @callback append(server(), Op.t()) :: {:ok, seq :: pos_integer()} | {:error, term()}
   @callback read_from(server(), seq :: non_neg_integer()) :: {:ok, [Op.t()]} | {:error, term()}
   @callback load_tasks(server()) :: {:ok, [map()]} | {:error, term()}
+  # Reads one task's stored result from the durable `results` projection, or
+  # {:ok, nil} when there is none (never ran, or the TTL sweeper reaped it).
+  # This is the result-store read the submit API (Task 8) serves `GET
+  # /v1/tasks/{id}/result` from; it is a projection read, NOT the ops log, so
+  # it does not violate "the API never exposes op-log internals". The stored
+  # copy may be truncated to the workload's resultMaxBytes (the `truncated`
+  # flag says so); sync callers get the full untruncated response a different
+  # way (streamed straight through at request time, never via this store).
+  @callback load_result(server(), task_id :: String.t()) ::
+              {:ok, map() | nil} | {:error, term()}
   @callback compact(server(), now_ms :: integer()) ::
               {:ok, %{results_deleted: non_neg_integer(), tasks_compacted: non_neg_integer()}}
               | {:error, term()}
