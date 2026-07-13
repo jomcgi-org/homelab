@@ -1,0 +1,55 @@
+# Control-plane RBAC. Every verb here maps to a specific API call the control
+# plane makes; a missing verb fails silently in prod as a Forbidden that looks
+# like a generic 5xx, so the set is kept exact.
+#
+#   workloads (get/list/watch)          WorkloadWatcher relist + watch (Task 5)
+#   workloads/status (update/patch)     status writer; the watcher writes ONLY
+#                                       status, never spec (Task 5)
+#   tokenreviews (create)               submit-API TokenReview auth (Task 8)
+#
+# ClusterRole (not Role) because tokenreviews.authentication.k8s.io is cluster-
+# scoped, and the watcher may observe Workloads across namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "embervm.fullname" . }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - embervm.dev
+    resources:
+      - workloads
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - embervm.dev
+    resources:
+      - workloads/status
+    verbs:
+      - get
+      - update
+      - patch
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "embervm.fullname" . }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "embervm.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "embervm.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

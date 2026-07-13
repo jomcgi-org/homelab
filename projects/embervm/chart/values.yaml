@@ -1,0 +1,52 @@
+# EmberVM control-plane chart values.
+#
+# NOTE: image.repository/tag are placeholders until Task 1 lands the control-plane
+# OTP/Go image; the Bazel helm_chart(images = {...}) pin and the deploy/ ArgoCD
+# Application are wired in that PR (a chart with no published image must not be
+# handed to ArgoCD). This file is the decision-independent chart CONTENT.
+
+image:
+  # Pinned at build time by helm_chart(images={"image": ".../image:image.info"}).
+  repository: ghcr.io/jomcgi/homelab/projects/embervm/image
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Control-plane resources sized small to start (SigNoz 7-day-peak resizing later).
+# CPU is a request only (no limit) per the repo convention; memory request == limit.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+# The op-log PVC. Longhorn, RWO, single replica: a PVC provides DURABILITY, not
+# availability. SQLite is single-writer and the Deployment uses the Recreate
+# strategy so a rolling update never runs two writers against one RWO volume.
+opLog:
+  storageClass: longhorn
+  size: 2Gi
+
+# The single node daemon the control plane talks to (v1: exactly one). Address is
+# resolved in-cluster; the registry takes a list so multi-node needs no reshape.
+node:
+  # embervm-noded is a later PR (Task 4); this is the address the NodeRegistry
+  # dials once it exists.
+  address: ""
+  # Static bearer token secret (1Password-provisioned) gating the daemon gRPC.
+  bearerTokenSecret: ""
+
+# TokenReview auth allow-list: ServiceAccount usernames permitted to submit tasks.
+auth:
+  allowedServiceAccounts: []
+
+service:
+  port: 8080
+
+# uid 65532 non-root convention. The control plane needs no privilege (only the
+# node daemon is privileged for KVM).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532

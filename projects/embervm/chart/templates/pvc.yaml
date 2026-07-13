@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "embervm.fullname" . }}-oplog
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.opLog.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.opLog.size }}
