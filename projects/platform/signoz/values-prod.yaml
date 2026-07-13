@@ -82,6 +82,37 @@ k8s-infra:
                     labels:
                       service: monolith-postgres
 
+        # Prometheus scraper for Cilium Hubble metrics (node-local flow metrics)
+        # Cilium agent pods expose Hubble metrics on port 9965; scrape them
+        # directly via pod service discovery rather than the headless Service.
+        prometheus/hubble:
+          config:
+            scrape_configs:
+              - job_name: "hubble"
+                scrape_interval: 15s
+                kubernetes_sd_configs:
+                  - role: pod
+                    namespaces:
+                      names: ["kube-system"]
+                relabel_configs:
+                  # Keep only Cilium agent pods
+                  - source_labels: [__meta_kubernetes_pod_label_k8s_app]
+                    action: keep
+                    regex: cilium
+                  # Skip pods that are not yet Running
+                  - source_labels: [__meta_kubernetes_pod_phase]
+                    action: keep
+                    regex: Running
+                  # Scrape the Hubble metrics port on each pod IP
+                  - source_labels: [__meta_kubernetes_pod_ip]
+                    target_label: __address__
+                    replacement: "$1:9965"
+                  # Propagate k8s context labels for filtering in SigNoz
+                  - source_labels: [__meta_kubernetes_namespace]
+                    target_label: k8s_namespace_name
+                  - source_labels: [__meta_kubernetes_pod_name]
+                    target_label: k8s_pod_name
+
         # =============================================================================
         # Synthetic HTTP Health Checks
         # Monitors all public domains for availability and response time
@@ -154,6 +185,7 @@ k8s-infra:
             receivers:
               - prometheus/dcgm
               - prometheus/cnpg
+              - prometheus/hubble
               - httpcheck/k8s-services
               - httpcheck/cloudflare-pages
             processors:
