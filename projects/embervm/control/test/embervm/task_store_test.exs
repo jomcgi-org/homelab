@@ -10,6 +10,7 @@ defmodule Embervm.TaskStoreTest do
 
   alias Embervm.OpLog.SQLite
   alias Embervm.TaskStore
+  alias Embervm.WorkloadCatalog
 
   setup do
     path = Path.join(System.tmp_dir!(), "embervm_taskstore_test_#{System.unique_integer([:positive, :monotonic])}.db")
@@ -297,5 +298,48 @@ defmodule Embervm.TaskStoreTest do
     {:ok, rebuilt} = TaskStore.get(store2, task_id)
     assert rebuilt.state == :queued
     assert rebuilt.attempt == 1
+  end
+
+  test "cfg_for reads Embervm.WorkloadCatalog: a workload-specific retry config drives classify/backoff", %{
+    path: path
+  } do
+    # This proves the cfg_for -> WorkloadCatalog wiring end to end, not just
+    # that WorkloadCatalog.retry_config/1 works in isolation (that is already
+    # covered by workload_catalog_test.exs). It writes into the DEFAULT
+    # :embervm_workloads table (the same one Embervm.WorkloadWatcher owns in
+    # the running application) rather than a private one, because cfg_for/1
+    # always reads the default table; a unique workload NAME within that
+    # shared table, plus on_exit cleanup, is what keeps this test isolated
+    # from the application's own watcher and from other async tests.
+    default_table = WorkloadCatalog.table()
+
+    if :ets.whereis(default_table) == :undefined do
+      WorkloadCatalog.create(default_table)
+    end
+
+    workload = "wl-cfg-for-probe-#{System.unique_integer([:positive])}"
+
+    # max_attempts: 1 means the very first failure on attempt 1 already
+    # exhausts the budget, so a :transport failure (normally retryable under
+    # the default config) must go straight to permanent/dead-lettered here
+    # instead of retryable. That divergence from the default is only
+    # observable if cfg_for/1 actually reads this catalog entry.
+    custom_retry = %{max_attempts: 1, backoff_ms: 1, backoff_cap_ms: 1, retry_on: [:transport]}
+    WorkloadCatalog.upsert(default_table, workload, %{name: workload, retry: custom_retry})
+    on_exit(fn -> WorkloadCatalog.drop(default_table, workload) end)
+
+    {_op_log, store} = start_pair(path)
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: workload})
+
+    {:ok, _} = TaskStore.assign(store, task_id)
+
+    {:ok, task} = TaskStore.fail(store, task_id, :transport)
+    assert task.state == :dead_lettered
+
+    {:ok, ets_task} = TaskStore.get(store, task_id)
+    assert ets_task.state == :dead_lettered
+    assert ets_task.attempt == 1
   end
 end

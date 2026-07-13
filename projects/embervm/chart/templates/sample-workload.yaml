@@ -1,0 +1,31 @@
+# R0 self-test artifact (see values.sampleWorkload): a single valid,
+# task-class Workload deployed alongside the control plane so the watcher's
+# list_workloads + patch_workload_status round trip, and the ClusterRole's
+# workloads/workloads-status RBAC, are exercised live in-cluster before
+# Task 14 lands the real semgrep/sandbox workloads. The image ref is never
+# pulled (no base builder exists yet, Task 10), so this is inert beyond
+# giving the watcher something to catalog and report status on.
+{{- if .Values.sampleWorkload.enabled }}
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: {{ .Values.sampleWorkload.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Apply after the CRD (default wave 0): the Workload CRD ships in this same
+    # chart (crds/), so a later wave lets it establish before this CR is applied,
+    # avoiding a transient first-sync "no matches for kind Workload" error.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  class: task
+  source:
+    image:
+      ref: ghcr.io/jomcgi/homelab/projects/embervm/echo:latest
+      port: 8080
+  resources:
+    vcpus: 1
+    memMib: 256
+  concurrency:
+    floor: 0
+    cap: 4
+{{- end }}

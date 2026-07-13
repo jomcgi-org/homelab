@@ -64,3 +64,12 @@ podSecurityContext:
   runAsUser: 65532
   runAsGroup: 65532
   fsGroup: 65532
+
+# R0 self-test artifact: one valid task-class Workload CR, deployed with the
+# chart so Embervm.WorkloadWatcher has something real to reconcile and report
+# status on in-cluster (see chart/templates/sample-workload.yaml). This is a
+# self-test, not a production workload: turn it off once Task 14 lands the
+# real semgrep/sandbox workload CRs.
+sampleWorkload:
+  enabled: true
+  name: echo

@@ -490,11 +490,14 @@ defmodule Embervm.TaskStore do
     end
   end
 
-  # No WorkloadWatcher exists yet (that's Task 5), so every workload gets the
-  # same default retry config for now. Kept as a single function so wiring the
-  # real per-workload source in a later task is a one-line change here, not a
-  # call-site sweep.
-  defp cfg_for(_workload), do: Embervm.Retry.default_config()
+  # Reads the per-workload retry config from Embervm.WorkloadCatalog (kept up
+  # to date by Embervm.WorkloadWatcher's reconcile loop, Task 5).
+  # WorkloadCatalog.retry_config/1 already falls back to
+  # Embervm.Retry.default_config/0 both for a workload that is not (yet, or no
+  # longer) cataloged and for the case the catalog table does not exist at all
+  # (the watcher has not booted), so this call site needs no fallback logic
+  # of its own.
+  defp cfg_for(workload), do: Embervm.WorkloadCatalog.retry_config(workload)
 
   defp default_id do
     16

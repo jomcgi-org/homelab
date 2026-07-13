@@ -1,11 +1,18 @@
 defmodule Embervm.K8s do
   @moduledoc """
-  Minimal in-cluster Kubernetes API client over Finch/Mint. R0 needs exactly two
-  calls: the `TokenReview` POST here (submit-API auth, Task 8) and the Workload
-  CRD list+watch (Task 5, added alongside the watcher). Hand-rolling over Finch
-  rather than pulling a full `k8s` hex library is deliberate: that library drags a
-  large transitive closure, and closure-completeness is the whole risk the
-  bandit/plug/finch de-risk PR set out to bound. Two endpoints do not justify it.
+  Minimal in-cluster Kubernetes API client over Finch/Mint. R0 needs exactly
+  three calls: the `TokenReview` POST here (submit-API auth, Task 8) and the
+  Workload CRD list + status-patch (Task 5, `Embervm.WorkloadWatcher`'s
+  reconciler). Hand-rolling over Finch rather than pulling a full `k8s` hex
+  library is deliberate: that library drags a large transitive closure, and
+  closure-completeness is the whole risk the bandit/plug/finch de-risk PR set
+  out to bound. Three endpoints do not justify it.
+
+  `do_request/4` is the shared low-level helper every public call builds on:
+  it re-reads the SA token, sets the auth/accept headers, optionally sets
+  content-type when a body is present, and maps Finch's own error shape to
+  ours. `review_token/1`'s request plumbing predates this refactor and now
+  routes through it too, with its return contract unchanged.
 
   ## In-cluster config
 
@@ -29,6 +36,7 @@ defmodule Embervm.K8s do
   @token_file "#{@sa_dir}/token"
   @ca_file "#{@sa_dir}/ca.crt"
   @tokenreview_path "/apis/authentication.k8s.io/v1/tokenreviews"
+  @workloads_path "/apis/embervm.dev/v1alpha1/workloads"
   @receive_timeout 5_000
 
   @doc """
@@ -72,18 +80,52 @@ defmodule Embervm.K8s do
       })
       |> :erlang.iolist_to_binary()
 
-    with {:ok, sa_token} <- read_sa_token(),
-         url = api_url(@tokenreview_path),
-         headers = [
-           {"authorization", "Bearer " <> sa_token},
-           {"content-type", "application/json"},
-           {"accept", "application/json"}
-         ],
-         req = Finch.build(:post, url, headers, body),
-         {:ok, %Finch.Response{status: status, body: resp_body}} <-
-           Finch.request(req, Embervm.Finch, receive_timeout: @receive_timeout) do
-      parse_review(status, resp_body)
-    else
+    case do_request(:post, @tokenreview_path, body, "application/json") do
+      {:ok, status, resp_body} -> parse_review(status, resp_body)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Lists every `Workload` custom resource cluster-wide (the ClusterRole grants
+  `list` across namespaces, not scoped to one). Poll-based, not a streaming
+  watch: `Embervm.WorkloadWatcher` calls this on a timer, so the list-level
+  `resourceVersion` is ignored entirely, there is nothing to resume from.
+  Returns the raw `items` array (binary-keyed CR maps, exactly as the API
+  server encodes them) so the watcher does its own validation/shaping.
+  """
+  @spec list_workloads() :: {:ok, [map()]} | {:error, term()}
+  def list_workloads do
+    case do_request(:get, @workloads_path, nil, nil) do
+      {:ok, 200, resp_body} ->
+        decoded = :json.decode(resp_body)
+        {:ok, Map.get(decoded, "items", [])}
+
+      {:ok, status, _resp_body} ->
+        {:error, {:apiserver_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Patches one `Workload`'s `/status` subresource with `status_map` (a
+  binary-keyed map the caller already built). Uses a JSON merge patch
+  (`application/merge-patch+json`), so unspecified status fields are left
+  alone, only the keys present in `status_map` are overwritten. This is the
+  ONLY write `Embervm.WorkloadWatcher` performs: it never touches `spec`.
+  """
+  @spec patch_workload_status(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def patch_workload_status(namespace, name, status_map) do
+    path =
+      "/apis/embervm.dev/v1alpha1/namespaces/#{URI.encode(namespace)}/workloads/#{URI.encode(name)}/status"
+
+    body = :json.encode(%{"status" => status_map}) |> :erlang.iolist_to_binary()
+
+    case do_request(:patch, path, body, "application/merge-patch+json") do
+      {:ok, 200, _resp_body} -> :ok
+      {:ok, status, _resp_body} -> {:error, {:apiserver_status, status}}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -108,6 +150,29 @@ defmodule Embervm.K8s do
 
   defp parse_review(status, _body) do
     {:error, {:apiserver_status, status}}
+  end
+
+  # Shared request plumbing for every API-server call: re-read the SA token
+  # fresh (so the hourly projected-token rotation needs no restart), set the
+  # bearer + accept headers, and add content-type ONLY when a body is being
+  # sent (a bodyless GET must not send content-type). `content_type` is a
+  # caller-supplied param rather than inferred from `method` because PATCH
+  # needs `application/merge-patch+json` while POST needs plain
+  # `application/json`, and inferring from the verb would bake that coupling
+  # in here instead of leaving it to each caller.
+  defp do_request(method, path, body, content_type) do
+    with {:ok, sa_token} <- read_sa_token() do
+      headers =
+        [{"authorization", "Bearer " <> sa_token}, {"accept", "application/json"}] ++
+          if(content_type, do: [{"content-type", content_type}], else: [])
+
+      req = Finch.build(method, api_url(path), headers, body || "")
+
+      case Finch.request(req, Embervm.Finch, receive_timeout: @receive_timeout) do
+        {:ok, %Finch.Response{status: status, body: resp_body}} -> {:ok, status, resp_body}
+        {:error, reason} -> {:error, reason}
+      end
+    end
   end
 
   defp read_sa_token do
