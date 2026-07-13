@@ -82,8 +82,13 @@ export HEX_OFFLINE=1
 mix archive.install "$hex_ez" --force >&2
 
 cd "$work/control"
-# Deps are staged as path deps, so no network is needed. --no-deps-check keeps
-# mix from auditing deps against a (nonexistent) lock or reaching hex.
+# Compile the path deps FIRST (builds the exqlite NIF via make, generates each
+# dep's .app). This is required: `mix test --no-deps-check` skips the deps
+# freshness check and, as a side effect, will NOT compile uncompiled deps, so
+# without this the app fails to start ("could not find application file:
+# exqlite.app"). --no-deps-check keeps mix from auditing against a (nonexistent)
+# lock or reaching hex.
+mix deps.compile --no-deps-check >&2
 if mix test --no-deps-check >"$out" 2>&1; then
 	echo "MIX TEST OK on the executor" >&2
 	cat "$out" >&2
