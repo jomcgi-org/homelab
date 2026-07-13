@@ -16,8 +16,8 @@ mixexs="$3"
 out="$4"
 
 case "$out" in
-  /*) ;;
-  *) out="$(pwd)/$out" ;;
+/*) ;;
+*) out="$(pwd)/$out" ;;
 esac
 
 otp_src="$(cd "$(dirname "$install_script")" && pwd)"
