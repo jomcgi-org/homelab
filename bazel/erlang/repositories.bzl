@@ -31,6 +31,20 @@ filegroup(
 exports_files(["Install"], visibility = ["//visibility:public"])
 """
 
+# Elixir ships a precompiled release (bin/ + lib/, .beam bytecode) that is
+# architecture-independent and only needs a working erl to run. So one Elixir
+# archive serves every arch; it is fetched, not built.
+_ELIXIR_BUILD = """
+filegroup(
+    name = "elixir",
+    srcs = glob(["**"], exclude = ["BUILD", "BUILD.bazel", "WORKSPACE", "WORKSPACE.bazel"]),
+    visibility = ["//visibility:public"],
+)
+
+# bin/elixir anchors the Elixir root for staging (its dir's parent is the root).
+exports_files(["bin/elixir"], visibility = ["//visibility:public"])
+"""
+
 def _erlang_impl(_ctx):
     http_archive(
         name = "otp_ubuntu2204_amd64",
@@ -39,8 +53,14 @@ def _erlang_impl(_ctx):
         strip_prefix = "OTP-27.3.4.14",
         build_file_content = _OTP_BUILD,
     )
+    http_archive(
+        name = "elixir_1_18_4",
+        urls = ["https://github.com/elixir-lang/elixir/releases/download/v1.18.4/elixir-otp-27.zip"],
+        sha256 = "5be18f35e329f7c5914a80dd9f323d7bbb144616df1ed16f6f0862a1900b4bb5",
+        build_file_content = _ELIXIR_BUILD,
+    )
 
 erlang = module_extension(
     implementation = _erlang_impl,
-    doc = "Fetches the prebuilt ubuntu-22.04 OTP 27 tarball as @otp_ubuntu2204_amd64.",
+    doc = "Fetches the prebuilt ubuntu-22.04 OTP 27 (@otp_ubuntu2204_amd64) and precompiled Elixir 1.18.4 (@elixir_1_18_4).",
 )

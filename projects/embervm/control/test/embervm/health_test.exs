@@ -1,27 +1,25 @@
 defmodule Embervm.HealthTest do
   @moduledoc """
-  The trivial passing ExUnit target Task 1 requires under `bazel test`. It boots
-  the health listener on an ephemeral port and round-trips a real TCP request, so
-  it proves both the supervision-tree wiring and the dep-free HTTP path.
+  The trivial passing ExUnit target Task 1 requires under `bazel test`. `mix test`
+  starts the :embervm application, which boots Embervm.Health on its default port,
+  so this round-trips a real TCP request against the already-running listener
+  (starting a second instance would collide on the registered name). It proves the
+  supervision-tree wiring and the dependency-free HTTP path together.
   """
   use ExUnit.Case, async: false
 
-  setup do
-    # Port 0 lets the OS pick a free port; read it back off the listen socket via
-    # a fixed test port to keep the client simple.
-    port = 8099
-    start_supervised!({Embervm.Health, port: port})
-    {:ok, port: port}
-  end
+  # The app boots Embervm.Health on EMBERVM_HTTP_PORT or 8080 by default; tests
+  # run with neither set, so the listener is on 8080.
+  @port 8080
 
-  test "GET /healthz returns 200 ok", %{port: port} do
-    assert {status, body} = http_get(port, "/healthz")
+  test "GET /healthz returns 200 ok" do
+    assert {status, body} = http_get(@port, "/healthz")
     assert status == 200
     assert body == "ok"
   end
 
-  test "unknown path returns 404", %{port: port} do
-    assert {status, _body} = http_get(port, "/nope")
+  test "unknown path returns 404" do
+    assert {status, _body} = http_get(@port, "/nope")
     assert status == 404
   end
 
