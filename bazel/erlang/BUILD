@@ -3,6 +3,12 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 # Prebuilt Erlang/OTP toolchain groundwork for the EmberVM control plane.
 # See repositories.bzl for why a prebuilt (not from-source) OTP is used here.
 
+# The mix_release driver is consumed by the control package's release genrule.
+exports_files(
+    ["mix_release.sh"],
+    visibility = ["//projects/embervm:__subpackages__"],
+)
+
 # Smoke test: proves the prebuilt ubuntu-22.04 OTP boots and runs crypto ON the
 # RBE executor (the decisive de-risk before wiring mix/elixir + apko). Built by
 # `bazel test //...`; no-remote-cache so it re-verifies the live executor.
