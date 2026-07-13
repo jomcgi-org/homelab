@@ -1,0 +1,10 @@
+# Cluster-specific overrides for the EmberVM control plane. The image tag is
+# pinned into the chart at build time (helm_chart images=), so it is not set
+# here. Defaults in the chart are sized small to start (SigNoz 7-day-peak
+# resizing later).
+opLog:
+  storageClass: longhorn
+  # A PVC provides DURABILITY for the SQLite op-log, not availability: the
+  # Deployment is Recreate + 1 replica because SQLite is single-writer and the
+  # volume is RWO.
+  size: 2Gi

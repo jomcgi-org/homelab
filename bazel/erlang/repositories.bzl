@@ -47,10 +47,14 @@ exports_files(["bin/elixir"], visibility = ["//visibility:public"])
 
 def _erlang_impl(_ctx):
     http_archive(
+        # OTP version MUST match the apko image's Wolfi erlang-27 (27.3.4.2)
+        # exactly: an include_erts:false release pins exact OTP app versions in
+        # its .boot, so a build/runtime patch mismatch fails the pod at boot. If
+        # Wolfi's erlang-27 bumps, re-pin both this and the image package together.
         name = "otp_ubuntu2204_amd64",
-        urls = ["https://builds.hex.pm/builds/otp/ubuntu-22.04/OTP-27.3.4.14.tar.gz"],
-        sha256 = "0045c32b7c41b1924d68c9d51958aab609a09447a79298c42bd87bdded0827e7",
-        strip_prefix = "OTP-27.3.4.14",
+        urls = ["https://builds.hex.pm/builds/otp/ubuntu-22.04/OTP-27.3.4.2.tar.gz"],
+        sha256 = "32c3ee239855556350f9700cf942a0a70b60228a277f314397a709e992345dfc",
+        strip_prefix = "OTP-27.3.4.2",
         build_file_content = _OTP_BUILD,
     )
     http_archive(

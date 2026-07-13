@@ -63,7 +63,14 @@ spec:
           volumeMounts:
             - name: oplog
               mountPath: /var/lib/embervm
+            # The OTP release writes runtime scratch (extracted vm.args, boot
+            # files) to RELEASE_TMP=/tmp; the rootfs is read-only, so /tmp is a
+            # writable emptyDir. RELEASE_TMP is set in the image env (apko.yaml).
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: oplog
           persistentVolumeClaim:
             claimName: {{ include "embervm.fullname" . }}-oplog
+        - name: tmp
+          emptyDir: {}

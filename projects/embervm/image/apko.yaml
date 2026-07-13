@@ -1,0 +1,41 @@
+# Runtime image for the EmberVM control plane. Wolfi base providing erlang-27
+# (the ERTS + OTP apps the include_erts:false release boots against), busybox
+# (the release start script is /bin/sh), and ca-certificates. The control-plane
+# OTP release is layered at /opt/embervm per-arch-independently (see BUILD); the
+# .beam bytecode is architecture-independent, so one release serves both arches
+# and apko resolves erlang-27 per arch.
+#
+# erlang-27 is pinned to 27.3.4.2-r0 to EXACTLY match the build OTP
+# (bazel/erlang/repositories.bzl): an include_erts:false release pins exact OTP
+# app versions in its .boot script, so a build/runtime patch mismatch crash-loops
+# the pod at boot. Re-pin both together when Wolfi bumps erlang-27.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - busybox
+    - erlang-27=27.3.4.2-r0
+
+archs:
+  - x86_64
+  - aarch64
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # A UTF-8 locale keeps Elixir from warning and mangling non-ASCII.
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  # No Erlang distribution (single-node control plane); avoids epmd and a
+  # resolvable-hostname requirement.
+  RELEASE_DISTRIBUTION: none
+  # The release writes its runtime scratch (extracted vm.args, pids) here. The
+  # pod runs read-only-rootfs as uid 65532, so RELEASE_TMP MUST point at a
+  # writable emptyDir the chart mounts (/tmp); the default (the root-owned
+  # release dir) is not writable.
+  RELEASE_TMP: /tmp
+
+entrypoint:
+  command: /opt/embervm/bin/embervm start
