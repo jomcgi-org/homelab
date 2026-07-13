@@ -73,3 +73,73 @@ podSecurityContext:
 sampleWorkload:
   enabled: true
   name: echo
+
+# embervm-noded: the node daemon (gRPC NodeService) that owns Firecracker microVM
+# lifecycle on node-4. A SECOND Deployment in this chart, privileged and node-
+# pinned, forked from the fc-invoke node layer (ADR embervm/001). It coexists with
+# fc-invoke on node-4; this release primes ZERO VMs (the control-plane dispatcher
+# is Task 11), so its steady footprint is just the daemon.
+noded:
+  enabled: true
+  image:
+    # Pinned at build time by helm_chart(images={"noded.image": ".../noded/image:image.info"}).
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/noded/image
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # gRPC port the control plane dials; health port for kubelet probes.
+  grpcPort: 9090
+  healthPort: 8080
+
+  # node-4 pinning: the lone Firecracker node (homelab.io/firecracker=true).
+  nodeSelector:
+    homelab.io/firecracker: "true"
+  tolerations: []
+  # Disposable tier (ADR platform/010): microVM workloads must die before
+  # inference or the database under memory pressure, so lowest priority.
+  priorityClassName: homelab-disposable
+
+  # Node-level backstop cap on concurrently live microVMs. The control plane owns
+  # real concurrency; this only stops a runaway from exhausting the node.
+  maxLiveVMs: 8
+
+  # Static bearer token gating the gRPC surface. Disabled here (daemon runs open +
+  # warns; Cilium/Linkerd policy is the layer). A 1Password-provisioned secret is
+  # wired in a later PR when the control plane dials the daemon (Task 11).
+  bearerTokenSecret:
+    enabled: false
+    name: ""
+    key: token
+
+  # Firecracker substrate on node-4. The firecracker binary + guest kernel are
+  # baked into the image at /opt/fc, so the node only provides /dev/kvm and the
+  # nvme scratch dir (see projects/platform/firecracker-node).
+  firecracker:
+    nvmeRoot: /disks/nvme-02
+    guestOomScoreAdj: 1000
+    bootReadyTimeout: 60s
+    # Shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable
+    # guest path is a tmpfs, so one read-only rootfs file backs every microVM.
+    kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
+
+  # Node-side image identity table (image_ref -> {rootfsPath[, harnessInit]}),
+  # rendered to EMBERVM_NODED_IMAGES. Empty until the control plane provisions
+  # guest images (Task 11+); BuildBase for an unknown image fails FAILED_PRECONDITION.
+  images: {}
+
+  # Graceful-drain budget: on SIGTERM the daemon waits up to this long for in-
+  # flight Assigns before exiting. terminationGracePeriodSeconds is set above it
+  # (grace = drain + 30s), so a rollout never drops a running task.
+  drain:
+    timeoutSeconds: 60
+
+  # 256Mi req / 2Gi limit: fits the node-4 coexistence budget alongside fc-invoke
+  # (2Gi req / 50Gi limit). This release primes ZERO VMs (the dispatcher is Task
+  # 11), so the daemon idles well under 256Mi; the 2Gi ceiling covers the daemon
+  # plus ~1 future primed 1Gi VM. Grow the limit when the real pool lands.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
