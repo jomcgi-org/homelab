@@ -74,6 +74,8 @@ ADRs document significant architectural decisions and their context.
 | ADR                                                                          | Decision                                      |
 | ---------------------------------------------------------------------------- | --------------------------------------------- |
 | [001 - Cloudflare Envoy Gateway](networking/001-cloudflare-envoy-gateway.md) | Cloudflare Tunnel + Envoy Gateway for ingress |
+| [002 - Path-Based Ingress Tiers](networking/002-path-based-ingress-tiers.md) | Public/private tiers split by URL path on a shared origin |
+| [003 - Incremental Cilium Capability Adoption](networking/003-cilium-capability-adoption.md) | Adopt 4 Cilium features ranked by value-per-effort; L7 metrics ride on L7 policy; default-deny gated |
 
 ## Platform
 
