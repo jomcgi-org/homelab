@@ -635,4 +635,13 @@ bazel_dep(name = "rules_pkg", version = "1.1.0")
 # working crypto (no from-source build / OpenSSL provisioning). Build-time only:
 # the release is include_erts:false and the apko image supplies erlang at runtime.
 erlang = use_extension("//bazel/erlang:repositories.bzl", "erlang")
-use_repo(erlang, "elixir_1_18_4", "otp_ubuntu2204_amd64")
+use_repo(
+    erlang,
+    "elixir_1_18_4",
+    "hex_cc_precompiler",
+    "hex_db_connection",
+    "hex_elixir_make",
+    "hex_exqlite",
+    "hex_telemetry",
+    "otp_ubuntu2204_amd64",
+)

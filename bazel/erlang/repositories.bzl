@@ -17,7 +17,30 @@ Elixir itself is architecture-independent .beam and is fetched separately (its
 precompiled release only needs a working erl to run).
 """
 
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
+
+# Hex dependency tarballs, fetched hermetically at repo-fetch time (the host has
+# network; the RBE executor does not). Hex tarballs are a nested format (an outer
+# tar holding contents.tar.gz), which http_archive cannot unpack, so each is an
+# http_file and bazel/erlang/mix_test.sh|mix_release.sh unpack the inner archive
+# into the project's deps/ tree. The control-plane mix.exs then consumes them as
+# `path:` deps (Path SCM), so mix never contacts hex.pm: no mix.lock, no .hex
+# markers, no `mix deps.get`, no Hex archive install. This is the hex-dependency
+# analog of the prebuilt-OTP de-risk.
+#
+# The closure below is exqlite (the SQLite op-log driver) plus everything it
+# declares non-optionally: db_connection -> telemetry, and the build-time
+# elixir_make + cc_precompiler. sha256 is the outer tarball hash (verified with
+# `shasum -a 256 <name>-<version>.tar` against repo.hex.pm). When bumping a
+# version, re-fetch the tarball and re-pin the sha here. (table is exqlite's only
+# optional dep and is not pulled.)
+_HEX_DEPS = [
+    ("exqlite", "0.38.0", "f3da7b6e7b08bd548c33a118890d0eb8c5395fe093b31c8b329663234d0e988e"),
+    ("db_connection", "2.10.2", "510b14482330f1af6490a2fa0efd8d4f1435d1529b165647df22ac0f2df0fa93"),
+    ("elixir_make", "0.9.0", "db23d4fd8b757462ad02f8aa73431a426fe6671c80b200d9710caf3d1dd0ffdb"),
+    ("cc_precompiler", "0.1.11", "3427232caf0835f94680e5bcf082408a70b48ad68a5f5c0b02a3bea9f3a075b9"),
+    ("telemetry", "1.4.2", "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1"),
+]
 
 # hex.pm's OTP build extracts to OTP-<ver>/ with erts-*/, lib/, and an Install
 # script that bakes ERL_ROOT paths (run `Install -minimal <abs-root>` before use).
@@ -63,8 +86,17 @@ def _erlang_impl(_ctx):
         sha256 = "5be18f35e329f7c5914a80dd9f323d7bbb144616df1ed16f6f0862a1900b4bb5",
         build_file_content = _ELIXIR_BUILD,
     )
+    for name, version, sha in _HEX_DEPS:
+        http_file(
+            name = "hex_%s" % name,
+            urls = ["https://repo.hex.pm/tarballs/%s-%s.tar" % (name, version)],
+            sha256 = sha,
+            # Keep the <name>-<version>.tar filename: the staging scripts derive
+            # the deps/<name>/ directory from it.
+            downloaded_file_path = "%s-%s.tar" % (name, version),
+        )
 
 erlang = module_extension(
     implementation = _erlang_impl,
-    doc = "Fetches the prebuilt ubuntu-22.04 OTP 27 (@otp_ubuntu2204_amd64) and precompiled Elixir 1.18.4 (@elixir_1_18_4).",
+    doc = "Fetches the prebuilt ubuntu-22.04 OTP 27 (@otp_ubuntu2204_amd64), precompiled Elixir 1.18.4 (@elixir_1_18_4), and the control-plane hex dependency tarballs (@hex_*).",
 )
