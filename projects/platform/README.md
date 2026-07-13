@@ -13,7 +13,7 @@ that ArgoCD itself watches; every `projects/*/deploy/application.yaml` is discov
 through it. There is no `helm install` or `kubectl apply` in the normal workflow, only
 commits.
 
-## Service mesh and traffic
+## Ingress and traffic
 
 | Component                                    | Purpose                                                                                                                                                                                                                |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
