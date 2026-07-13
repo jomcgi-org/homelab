@@ -592,3 +592,17 @@ cfIngress:
     rateLimit:
       requests: 100
       unit: Minute
+
+# CiliumNetworkPolicy gates (ADR platform/012). templates/cilium-policy.yaml is
+# the Cilium translation of the Linkerd policy chain; both gates default off so
+# the template renders NOTHING until a deploy override flips one during the
+# Cilium cutover. Split into two so ingress (who-can-reach-us) and egress
+# (off-cluster deny + Turnstile allow) can be staged independently: ingress is
+# meant to flip during the maintenance window, egress in a tested follow-up
+# after Cilium is proven live. See projects/monolith-public/chart/templates/
+# cilium-policy.yaml for the full rationale.
+ciliumPolicy:
+  ingress:
+    enabled: false
+  egress:
+    enabled: false

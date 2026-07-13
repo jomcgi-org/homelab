@@ -1,0 +1,209 @@
+# CiliumNetworkPolicy translation of the Linkerd policy chain that used to live
+# in templates/linkerd-policy.yaml (Server / AuthorizationPolicy /
+# MeshTLSAuthentication / EgressNetwork / TLSRoute). ADR platform/012 replaces
+# the Linkerd sidecar mesh with Cilium as the CNI.
+#
+# Cilium runs in policyEnforcementMode=default (allow-until-selected), so these
+# rules are ADDITIVE: an endpoint is only restricted once a policy selects it in
+# a given direction. That is why tearing out the Linkerd policies at cutover
+# opens no deny-gap.
+#
+# TWO independent gates so the cutover can stage the two halves separately
+# (both default false in chart/values.yaml, so this whole file is inert on
+# merge and only renders when a deploy override flips a gate):
+#
+#   ciliumPolicy.ingress.enabled - the who-can-reach-us restrictions
+#     (gateway -> frontend, frontend -> backend). Low risk, well understood;
+#     intended to flip ON during the maintenance window.
+#
+#   ciliumPolicy.egress.enabled  - the default-deny-OFF-cluster lockdown plus
+#     the single sanctioned Turnstile FQDN allow. Recommended to flip ON in a
+#     tested follow-up AFTER the window (watch flows with `hubble observe`), so
+#     an unproven egress deny is not stacked onto the irreversible CNI swap.
+#
+# imgproxy note: its INGRESS is deliberately left unrestricted (it has no
+# Linkerd Server today and also answers on private.jomcgi.dev). Its EGRESS is
+# locked down, because the Linkerd EgressNetwork deny is namespace-wide and
+# currently blocks imgproxy's off-cluster traffic too.
+
+{{- if .Values.ciliumPolicy.ingress.enabled }}
+{{- if .Values.frontend.enabled }}
+---
+# Only the Cloudflare/Envoy gateway may reach the frontend SSR pod. Replaces the
+# allow-gateway-frontend AuthorizationPolicy + the gateway MeshTLSAuthentication.
+# Selecting by namespace matches the old wildcard over the gateway namespace's
+# ServiceAccounts, which survived the envoy data-plane SA's hash-suffixed name.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-frontend-ingress
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: envoy-gateway-system
+      toPorts:
+        - ports:
+            - port: {{ .Values.frontend.containerPort | quote }}
+              protocol: TCP
+    # kubelet liveness/readiness probes originate from the node host. Linkerd
+    # auto-authorized these; once an ingress rule makes the endpoint
+    # default-deny, Cilium needs them allowed explicitly or the pod never goes
+    # Ready. `health` covers the cilium-health checker.
+    - fromEntities:
+        - host
+        - health
+{{- end }}
+{{- if .Values.web.enabled }}
+---
+# The backend ("web") is reachable ONLY by the frontend SSR pod (in-cluster,
+# via API_BASE / CHAT_API_BASE). The gateway never reaches the backend directly
+# (there is no /api ingress rule). Replaces the allow-web-clients
+# AuthorizationPolicy + the web-clients MeshTLSAuthentication (the frontend's
+# own mesh identity).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-web-ingress
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- include "monolith-public.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: frontend
+      toPorts:
+        - ports:
+            - port: {{ .Values.web.containerPort | quote }}
+              protocol: TCP
+    - fromEntities:
+        - host
+        - health
+{{- end }}
+{{- end }}
+
+{{- if .Values.ciliumPolicy.egress.enabled }}
+{{- if .Values.web.enabled }}
+---
+# Backend egress: default-deny OFF-cluster (replaces the namespace EgressNetwork
+# deny) while allowing all in-cluster calls, plus the ONE sanctioned external
+# host. The backend fans out in-cluster to Postgres RO (public_reader) and RW
+# (public_writer), vLLM inference, embeddings, and SeaweedFS S3; those are all
+# covered by the toEntities: cluster allow below, exactly as the Linkerd
+# EgressNetwork left in-cluster traffic untouched.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-web-egress
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  egress:
+    # DNS via the Cilium DNS proxy. REQUIRED for the toFQDNs allow below to
+    # learn challenges.cloudflare.com's IP, and for in-cluster name resolution.
+    # The L7 dns rule engages the proxy and takes precedence over the broad
+    # in-cluster allow on port 53 (verify with `hubble observe` at rollout).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    # All in-cluster egress (Postgres RO/RW, inference, embeddings, SeaweedFS).
+    - toEntities:
+        - cluster
+    # THE ONE SANCTIONED OFF-CLUSTER EGRESS (ADR 005, Public Chat V3). Turnstile
+    # siteverify. This is the only external host the public tier may reach; do
+    # not broaden it to a wildcard. Replaces the allow-turnstile-egress TLSRoute.
+    - toFQDNs:
+        - matchName: "challenges.cloudflare.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}
+{{- if .Values.frontend.enabled }}
+---
+# Frontend egress: default-deny OFF-cluster, allow all in-cluster (it calls the
+# backend over API_BASE and the SigNoz OTEL collector via the /otel proxy) plus
+# DNS. No off-cluster host is needed.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-frontend-egress
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toEntities:
+        - cluster
+{{- end }}
+{{- if .Values.imgproxy.enabled }}
+---
+# imgproxy egress: default-deny OFF-cluster (it only fetches sources from the
+# in-cluster SeaweedFS S3 gateway), allow all in-cluster + DNS. Ingress is left
+# unrestricted on purpose (no policy selects imgproxy for ingress), matching the
+# current open posture where any meshed caller (including the private-tier
+# grimoire reader on private.jomcgi.dev) may reach it.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-imgproxy-egress
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: imgproxy
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toEntities:
+        - cluster
+{{- end }}
+{{- end }}
