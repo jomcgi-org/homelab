@@ -42,5 +42,16 @@ cilium:
     relay:
       enabled: true
     # UI off; SigNoz remains the dashboard. Keep flow buffer modest.
+    # httpV2 emits nothing until an L7 CiliumNetworkPolicy redirects a surface
+    # through Envoy (ADR networking/003 #2); it is inert until Task A1 lands the
+    # /invoke L7 rule. httpV2 (not v1 http) folds status onto
+    # hubble_httpv2_requests_total, which the error-rate alert reads. Context is
+    # workload+namespace only: no path/URL label (PII + cardinality). This list
+    # MUST match bootstrap/cilium-helmchart.yaml or a node reboot reverts it.
     metrics:
-      enabled: ["dns", "drop", "tcp", "flow"]
+      enabled:
+        - dns
+        - drop
+        - tcp
+        - flow
+        - "httpV2:sourceContext=workload;destinationContext=workload;labelsContext=source_namespace,destination_namespace"
