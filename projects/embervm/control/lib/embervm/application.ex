@@ -46,12 +46,13 @@ defmodule Embervm.Application do
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
       Embervm.K8s.finch_child_spec(),
       {Embervm.Auth, allowed: allowed_service_accounts()},
-      # The Workload reconciler (Task 5): lists Workload CRs over the Finch
-      # pool above and writes Embervm.WorkloadCatalog, which TaskStore.cfg_for/1
-      # reads. Placed after Finch (needs it) and after TaskStore in the
-      # supervision list; TaskStore does not depend on the watcher being up
-      # (WorkloadCatalog.retry_config/1 tolerates the catalog table not
-      # existing yet), so their relative order here is not load-bearing.
+      # The Workload informer (Task 5): LISTs then WATCHes Workload CRs over the
+      # Finch pool above and writes Embervm.WorkloadCatalog, which
+      # TaskStore.cfg_for/1 reads. Placed after Finch (its watch streams over
+      # that pool) and after TaskStore in the supervision list; TaskStore does
+      # not depend on the watcher being up (WorkloadCatalog.retry_config/1
+      # tolerates the catalog table not existing yet), so their relative order
+      # here is not load-bearing.
       Embervm.WorkloadWatcher,
       # Bandit + the router last: its handlers call Auth, TaskStore, and
       # SyncWait, so the HTTP surface must not accept requests until all are up.
