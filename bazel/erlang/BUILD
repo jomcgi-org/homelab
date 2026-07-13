@@ -15,11 +15,22 @@ exports_files(
 filegroup(
     name = "hex_tarballs",
     srcs = [
+        "@hex_bandit//file",
         "@hex_cc_precompiler//file",
         "@hex_db_connection//file",
         "@hex_elixir_make//file",
         "@hex_exqlite//file",
+        "@hex_finch//file",
+        "@hex_hpax//file",
+        "@hex_mime//file",
+        "@hex_mint//file",
+        "@hex_nimble_options//file",
+        "@hex_nimble_pool//file",
+        "@hex_plug//file",
+        "@hex_plug_crypto//file",
         "@hex_telemetry//file",
+        "@hex_thousand_island//file",
+        "@hex_websock//file",
     ],
     visibility = ["//projects/embervm:__subpackages__"],
 )

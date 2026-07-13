@@ -28,18 +28,47 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file"
 # markers, no `mix deps.get`, no Hex archive install. This is the hex-dependency
 # analog of the prebuilt-OTP de-risk.
 #
-# The closure below is exqlite (the SQLite op-log driver) plus everything it
-# declares non-optionally: db_connection -> telemetry, and the build-time
-# elixir_make + cc_precompiler. sha256 is the outer tarball hash (verified with
-# `shasum -a 256 <name>-<version>.tar` against repo.hex.pm). When bumping a
-# version, re-fetch the tarball and re-pin the sha here. (table is exqlite's only
-# optional dep and is not pulled.)
+# The closure below is two dependency groups, both fetched the same way:
+#
+#   1. exqlite (the SQLite op-log driver) plus everything it declares
+#      non-optionally: db_connection -> telemetry, and the build-time
+#      elixir_make + cc_precompiler. (table is exqlite's only optional dep and
+#      is not pulled.)
+#   2. The HTTP + K8s-client closure for the submit API (Task 8) and the
+#      Workload watcher (Task 5): Bandit (HTTP server) + Plug (router) replace
+#      the raw :gen_tcp health endpoint; Finch + Mint make the K8s API calls
+#      (TokenReview POST, CRD watch stream). Their full non-optional transitive
+#      closure, resolved from each package's hex requirements: bandit -> plug,
+#      hpax, thousand_island, websock, telemetry; plug -> mime, plug_crypto,
+#      telemetry; finch -> mint, nimble_options, nimble_pool, mime, telemetry;
+#      mint -> hpax (castore is mint's ONLY dep and is OPTIONAL: it ships a
+#      Mozilla CA bundle for TLS to arbitrary hosts, but every call we make is
+#      to the in-cluster K8s API whose CA is the pod's own ca.crt passed via
+#      transport_opts, so Mint never reaches for it). telemetry (1.4.2) and mime
+#      are shared across both groups; hpax is shared by bandit and mint. All of
+#      group 2 is pure Elixir/Erlang (no NIF, no rebar3), so the mix-built path
+#      needs no new build tooling.
+#
+# sha256 is the outer tarball hash (verified with `shasum -a 256
+# <name>-<version>.tar` against repo.hex.pm). When bumping a version, re-fetch
+# the tarball and re-pin the sha here.
 _HEX_DEPS = [
     ("exqlite", "0.38.0", "f3da7b6e7b08bd548c33a118890d0eb8c5395fe093b31c8b329663234d0e988e"),
     ("db_connection", "2.10.2", "510b14482330f1af6490a2fa0efd8d4f1435d1529b165647df22ac0f2df0fa93"),
     ("elixir_make", "0.9.0", "db23d4fd8b757462ad02f8aa73431a426fe6671c80b200d9710caf3d1dd0ffdb"),
     ("cc_precompiler", "0.1.11", "3427232caf0835f94680e5bcf082408a70b48ad68a5f5c0b02a3bea9f3a075b9"),
     ("telemetry", "1.4.2", "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1"),
+    ("bandit", "1.12.0", "45dac82dc86f45cf4a196dee9cc5a8b791d9c9469d996055f055e6ee36c66e20"),
+    ("finch", "0.23.0", "80e58d3f936f57e3fdf404f83a3642897ae6d9fb642934e46da4d8fe761b99d5"),
+    ("hpax", "1.0.4", "afc7cb142ebcc2d01ce7816190b98ce5dd49e799111b24249f3443d730f377ca"),
+    ("mime", "2.0.7", "6171188e399ee16023ffc5b76ce445eb6d9672e2e241d2df6050f3c771e80ccd"),
+    ("mint", "1.9.1", "831101bd560b086316fab5f7adb21a4f3455717d8e4bc8368b052e09aa9163e0"),
+    ("nimble_options", "1.1.1", "821b2470ca9442c4b6984882fe9bb0389371b8ddec4d45a9504f00a66f650b44"),
+    ("nimble_pool", "1.1.0", "af2e4e6b34197db81f7aad230c1118eac993acc0dae6bc83bac0126d4ae0813a"),
+    ("plug", "1.20.3", "be266aee1b8536ef6409d58cf39a3121319f0ec47cfa1b24024485aa0e76ad76"),
+    ("plug_crypto", "2.1.1", "6470bce6ffe41c8bd497612ffde1a7e4af67f36a15eea5f921af71cf3e11247c"),
+    ("thousand_island", "1.5.0", "708923d40523e43cf99041ab37a0d4b0ec426ac6438fa3716ab23d919eaeb412"),
+    ("websock", "0.5.3", "6105453d7fac22c712ad66fab1d45abdf049868f253cf719b625151460b8b453"),
 ]
 
 # hex.pm's OTP build extracts to OTP-<ver>/ with erts-*/, lib/, and an Install
