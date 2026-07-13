@@ -219,6 +219,44 @@ def _fake_github_client(files_pages, contents, *, status_calls=None, post_raises
     return _Client()
 
 
+def test_large_diff_routes_to_semgrep_hi(client):
+    # A PR touching >= _HEAVY_ROUTE_MIN_FILES scannable files routes to the heavier
+    # semgrep-hi workload; scan_files (the small-diff route) is not called.
+    files_pages = [
+        {"filename": f"pkg/mod{i}.py", "status": "modified"} for i in range(5)
+    ]
+    contents = {f"pkg/mod{i}.py": "x = 1\n" for i in range(5)}
+    report_result = {
+        "ok": True,
+        "scan_id": 101,
+        "findings_reported": 0,
+        "project": "jomcgi/homelab-selfhosted",
+        "org": "jomcgi",
+    }
+    with (
+        mock.patch.object(
+            webhook.httpx,
+            "AsyncClient",
+            return_value=_fake_github_client(files_pages, contents),
+        ),
+        mock.patch.object(webhook, "scan_files", new=mock.AsyncMock()) as scan,
+        mock.patch.object(
+            webhook,
+            "scan_files_hi",
+            new=mock.AsyncMock(return_value={"raw_cli_output": {"results": []}}),
+        ) as scan_hi,
+        mock.patch.object(
+            webhook, "report_pr_scan", new=mock.AsyncMock(return_value=report_result)
+        ),
+    ):
+        resp = _post(client, _pr_payload("synchronize"))
+        assert resp.status_code == 200
+
+    scan_hi.assert_awaited_once()
+    scan.assert_not_awaited()
+    assert len(scan_hi.await_args.args[0]) == 5
+
+
 def test_scan_and_report_happy_path(client):
     files_pages = [
         {"filename": "app/main.py", "status": "modified"},
