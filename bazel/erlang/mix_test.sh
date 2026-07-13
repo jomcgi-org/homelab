@@ -14,8 +14,8 @@ out="$4"
 
 # Absolutize the output before we cd away (Bazel passes it execroot-relative).
 case "$out" in
-  /*) ;;
-  *) out="$(pwd)/$out" ;;
+/*) ;;
+*) out="$(pwd)/$out" ;;
 esac
 
 otp_src="$(cd "$(dirname "$install_script")" && pwd)"
@@ -33,17 +33,17 @@ cp -RL "$control_src"/. "$work/control/"
 "$work/otp/Install" -minimal "$work/otp" >/dev/null
 
 export PATH="$work/otp/bin:$work/elixir/bin:$PATH"
-export HOME="$work"       # mix/hex write under $HOME; keep it in the sandbox
+export HOME="$work" # mix/hex write under $HOME; keep it in the sandbox
 export MIX_ENV=test
 
 cd "$work/control"
 # Zero hex deps by design, so no network is needed. --no-deps-check keeps mix
 # from trying to reach hex for a deps audit.
-if mix test --no-deps-check > "$out" 2>&1; then
-  echo "MIX TEST OK on the executor" >&2
-  cat "$out" >&2
+if mix test --no-deps-check >"$out" 2>&1; then
+	echo "MIX TEST OK on the executor" >&2
+	cat "$out" >&2
 else
-  echo "MIX TEST FAILED on the executor:" >&2
-  cat "$out" >&2
-  exit 1
+	echo "MIX TEST FAILED on the executor:" >&2
+	cat "$out" >&2
+	exit 1
 fi
