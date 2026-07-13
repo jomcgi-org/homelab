@@ -1,0 +1,399 @@
+defmodule Embervm.TaskStore do
+  @moduledoc """
+  ETS hot set over the op-log's durable `tasks` projection: every read the
+  dispatch hot path needs (Task 11) is O(1) against ETS, while every write
+  goes through the op-log FIRST and only lands in ETS once the op-log confirms
+  it's durable. That ordering, "op-log append succeeds, then and only then
+  update ETS", is the write-through invariant this whole module exists to
+  enforce: ETS never shows a task in a state the op-log doesn't already agree
+  with, and a crash between the two never loses a transition (worst case ETS
+  is briefly stale until the next boot's rebuild replays it).
+
+  On `init/1` this rebuilds both ETS tables from `OpLog.load_tasks/1`, which
+  is the recovery path: a fresh TaskStore against an existing op-log file (a
+  crash-restart, or a `:rest_for_one` supervisor restart triggered by the
+  op-log itself) ends up with exactly the state the durable log recorded,
+  with no replay logic beyond "read the projection".
+
+  Attempt bookkeeping note: the op-log's SQL `tasks.attempt` column counts
+  *retries*, starting at 0 for a freshly submitted task and incrementing by
+  one on each `:retried` op (see `Embervm.OpLog.SQLite`'s projection). The
+  task-lifecycle contract callers see here (and the spec for this task) counts
+  *attempts*, 1-based, so the first try is attempt 1. This module is the
+  translation seam: ETS (and every public read) always holds the 1-based
+  attempt count, computed as `sql_attempt + 1` when rebuilding from
+  `load_tasks/1`, and incremented by exactly 1 in ETS on every successful
+  `retry/2` call, mirroring the op-log's own `attempt = attempt + 1`.
+  """
+
+  use GenServer
+
+  alias Embervm.OpLog.Op
+  alias Embervm.TaskState
+
+  @tasks_table :embervm_tasks
+  @idem_table :embervm_task_idempotency
+
+  # -- Client API ----------------------------------------------------------
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
+  end
+
+  @doc """
+  Submits a new task, or returns the existing one if `idempotency_key` was
+  already seen for this workload. `attrs` is `%{tenant, principal, workload,
+  idempotency_key \\ nil, expires_at \\ nil}`.
+  """
+  @spec submit(GenServer.server(), map()) ::
+          {:ok, :created, String.t()} | {:ok, :existing, String.t()} | {:error, term()}
+  def submit(store \\ __MODULE__, attrs) do
+    GenServer.call(store, {:submit, attrs})
+  end
+
+  @spec assign(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def assign(store \\ __MODULE__, task_id) do
+    GenServer.call(store, {:assign, task_id})
+  end
+
+  @spec start(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def start(store \\ __MODULE__, task_id) do
+    GenServer.call(store, {:start, task_id})
+  end
+
+  @spec succeed(GenServer.server(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def succeed(store \\ __MODULE__, task_id, result) do
+    GenServer.call(store, {:succeed, task_id, result})
+  end
+
+  @doc """
+  Classifies `reason` against the task's workload retry config and applies the
+  resulting transition (`:fail_retryable` or `:fail_permanent`). A permanent
+  failure immediately chains into `:dead_letter` too (DLQ is on by default),
+  so callers never need to issue a separate dead-letter call for the common
+  path. Returns the updated task plus, for a retryable failure, the computed
+  backoff so the (future) dispatcher knows when to call `retry/2`.
+  """
+  @spec fail(GenServer.server(), String.t(), atom()) ::
+          {:ok, map()} | {:ok, map(), backoff_ms :: non_neg_integer()} | {:error, term()}
+  def fail(store \\ __MODULE__, task_id, reason) do
+    GenServer.call(store, {:fail, task_id, reason})
+  end
+
+  @spec retry(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def retry(store \\ __MODULE__, task_id) do
+    GenServer.call(store, {:retry, task_id})
+  end
+
+  @spec get(GenServer.server(), String.t()) :: {:ok, map()} | :error
+  def get(store \\ __MODULE__, task_id) do
+    GenServer.call(store, {:get, task_id})
+  end
+
+  # -- GenServer callbacks ---------------------------------------------------
+
+  @impl true
+  def init(opts) do
+    op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
+    id_fun = Keyword.get(opts, :id_fun, &default_id/0)
+    clock = Keyword.get(opts, :clock, &default_clock/0)
+
+    tasks = :ets.new(@tasks_table, [:set, :private])
+    idem = :ets.new(@idem_table, [:set, :private])
+
+    state = %{op_log: op_log, id_fun: id_fun, clock: clock, tasks: tasks, idem: idem}
+
+    case rebuild(state) do
+      :ok ->
+        {:ok, state}
+
+      {:error, reason} ->
+        {:stop, {:rebuild_failed, reason}}
+    end
+  end
+
+  # Rebuild path: read every row the op-log's projection currently has (queued
+  # through terminal; terminal rows stay queryable until the op-log's own
+  # compaction prunes them) and populate both ETS tables from scratch. This is
+  # the entire recovery story: no per-op replay, just the projection's current
+  # snapshot, because the op-log projection already IS the authoritative
+  # current state.
+  defp rebuild(%{op_log: op_log, tasks: tasks, idem: idem}) do
+    case Embervm.OpLog.SQLite.load_tasks(op_log) do
+      {:ok, rows} ->
+        Enum.each(rows, fn row ->
+          task = row_to_task(row)
+          :ets.insert(tasks, {task.task_id, task})
+
+          if task.idempotency_key do
+            :ets.insert(idem, {{task.workload, task.idempotency_key}, task.task_id})
+          end
+        end)
+
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp row_to_task(row) do
+    %{
+      task_id: row.task_id,
+      tenant: row.tenant,
+      principal: row.principal,
+      workload: row.workload,
+      state: state_from_string(row.state),
+      attempt: row.attempt + 1,
+      idempotency_key: row.idempotency_key,
+      submitted_at: row.submitted_at,
+      updated_at: row.updated_at,
+      expires_at: row.expires_at
+    }
+  end
+
+  # Explicit map rather than String.to_existing_atom/1: every TaskState atom
+  # is already loaded (this module references them all directly above), so
+  # to_existing_atom would work too, but an explicit map fails loudly with a
+  # clear error on an unrecognized string instead of raising ArgumentError
+  # deep in the atom table, and doubles as documentation of the exact string
+  # values the SQL projection writes.
+  @state_strings %{
+    "queued" => :queued,
+    "assigned" => :assigned,
+    "running" => :running,
+    "succeeded" => :succeeded,
+    "failed_retryable" => :failed_retryable,
+    "failed_permanent" => :failed_permanent,
+    "dead_lettered" => :dead_lettered
+  }
+
+  defp state_from_string(str) do
+    Map.fetch!(@state_strings, str)
+  end
+
+  @impl true
+  def handle_call({:submit, attrs}, _from, state) do
+    workload = Map.fetch!(attrs, :workload)
+    idempotency_key = Map.get(attrs, :idempotency_key)
+
+    case idempotency_key && :ets.lookup(state.idem, {workload, idempotency_key}) do
+      [{_key, existing_task_id}] ->
+        {:reply, {:ok, :existing, existing_task_id}, state}
+
+      _ ->
+        do_submit(attrs, workload, idempotency_key, state)
+    end
+  end
+
+  def handle_call({:assign, task_id}, _from, state) do
+    apply_transition(state, task_id, :assign, :assigned, %{})
+  end
+
+  def handle_call({:start, task_id}, _from, state) do
+    apply_transition(state, task_id, :start, :started, %{})
+  end
+
+  def handle_call({:succeed, task_id, result}, _from, state) do
+    payload = %{
+      status_code: Map.fetch!(result, :status_code),
+      body: Map.get(result, :body),
+      size_bytes: Map.fetch!(result, :size_bytes),
+      truncated: Map.get(result, :truncated, false),
+      expires_at: Map.get(result, :expires_at)
+    }
+
+    apply_transition(state, task_id, :succeed, :succeeded, payload)
+  end
+
+  def handle_call({:fail, task_id, reason}, _from, state) do
+    with {:ok, task} <- fetch_task(state, task_id) do
+      cfg = cfg_for(task.workload)
+      event = Embervm.Retry.classify(reason, task.attempt, cfg)
+      next = TaskState.transition!(task.state, event)
+
+      case append_and_update(state, task, :failed, next, %{state: next, reason: reason}) do
+        {:ok, updated} ->
+          reply_after_fail(state, updated, event, task.attempt, cfg)
+
+        {:error, _reason} = error ->
+          {:reply, error, state}
+      end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:retry, task_id}, _from, state) do
+    with {:ok, task} <- fetch_task(state, task_id),
+         {:ok, next} <- TaskState.transition(task.state, :retry) do
+      ts = state.clock.()
+
+      op = %Op{
+        kind: :retried,
+        tenant: task.tenant,
+        principal: task.principal,
+        workload: task.workload,
+        task_id: task_id,
+        ts: ts,
+        payload: %{}
+      }
+
+      case Embervm.OpLog.SQLite.append(state.op_log, op) do
+        {:ok, _seq} ->
+          updated = %{task | state: next, attempt: task.attempt + 1, updated_at: ts}
+          :ets.insert(state.tasks, {task_id, updated})
+          {:reply, {:ok, updated}, state}
+
+        {:error, _reason} = error ->
+          {:reply, error, state}
+      end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:get, task_id}, _from, state) do
+    case :ets.lookup(state.tasks, task_id) do
+      [{^task_id, task}] -> {:reply, {:ok, task}, state}
+      [] -> {:reply, :error, state}
+    end
+  end
+
+  # -- submit helpers --------------------------------------------------------
+
+  defp do_submit(attrs, workload, idempotency_key, state) do
+    task_id = state.id_fun.()
+    ts = state.clock.()
+    expires_at = Map.get(attrs, :expires_at)
+
+    op = %Op{
+      kind: :submitted,
+      tenant: Map.fetch!(attrs, :tenant),
+      principal: Map.get(attrs, :principal),
+      workload: workload,
+      task_id: task_id,
+      ts: ts,
+      payload: %{idempotency_key: idempotency_key, expires_at: expires_at}
+    }
+
+    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      {:ok, _seq} ->
+        task = %{
+          task_id: task_id,
+          tenant: op.tenant,
+          principal: op.principal,
+          workload: workload,
+          state: :queued,
+          attempt: 1,
+          idempotency_key: idempotency_key,
+          submitted_at: ts,
+          updated_at: ts,
+          expires_at: expires_at
+        }
+
+        :ets.insert(state.tasks, {task_id, task})
+
+        if idempotency_key do
+          :ets.insert(state.idem, {{workload, idempotency_key}, task_id})
+        end
+
+        {:reply, {:ok, :created, task_id}, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  # -- transition helpers -----------------------------------------------------
+
+  # Shared path for the simple (state) x (event) x (op kind) transitions that
+  # don't need bespoke payload logic (assign, start, succeed): look up the
+  # task, ask the FSM for the next state, append, and on success update ETS.
+  defp apply_transition(state, task_id, event, op_kind, payload) do
+    with {:ok, task} <- fetch_task(state, task_id),
+         {:ok, next} <- TaskState.transition(task.state, event) do
+      case append_and_update(state, task, op_kind, next, payload) do
+        {:ok, updated} -> {:reply, {:ok, updated}, state}
+        {:error, _reason} = error -> {:reply, error, state}
+      end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # The write-through core: append to the op-log, and ONLY on {:ok, seq} write
+  # the new state into ETS. On append failure ETS is left untouched (the task
+  # stays exactly as durable as the op-log currently agrees it is) and the
+  # error is handed back to the caller.
+  defp append_and_update(state, task, op_kind, next_state, payload) do
+    ts = state.clock.()
+
+    op = %Op{
+      kind: op_kind,
+      tenant: task.tenant,
+      principal: task.principal,
+      workload: task.workload,
+      task_id: task.task_id,
+      ts: ts,
+      payload: payload
+    }
+
+    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      {:ok, _seq} ->
+        updated = %{task | state: next_state, updated_at: ts}
+        :ets.insert(state.tasks, {task.task_id, updated})
+        {:ok, updated}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # After a :failed op lands, a permanent failure immediately chains into
+  # :dead_letter (DLQ enabled by default) so the common permanent-failure path
+  # is one `fail/2` call, not two. A retryable failure instead reports the
+  # backoff so a future dispatcher (Task 11) knows when to call retry/2.
+  defp reply_after_fail(state, task, :fail_permanent, _prior_attempt, _cfg) do
+    case TaskState.transition(task.state, :dead_letter) do
+      {:ok, next} ->
+        case append_and_update(state, task, :dead_lettered, next, %{}) do
+          {:ok, updated} -> {:reply, {:ok, updated}, state}
+          {:error, _reason} = error -> {:reply, error, state}
+        end
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  defp reply_after_fail(state, task, :fail_retryable, prior_attempt, cfg) do
+    backoff = Embervm.Retry.backoff_ms(prior_attempt, cfg)
+    {:reply, {:ok, task, backoff}, state}
+  end
+
+  defp fetch_task(state, task_id) do
+    case :ets.lookup(state.tasks, task_id) do
+      [{^task_id, task}] -> {:ok, task}
+      [] -> {:error, {:not_found, task_id}}
+    end
+  end
+
+  # No WorkloadWatcher exists yet (that's Task 5), so every workload gets the
+  # same default retry config for now. Kept as a single function so wiring the
+  # real per-workload source in a later task is a one-line change here, not a
+  # call-site sweep.
+  defp cfg_for(_workload), do: Embervm.Retry.default_config()
+
+  defp default_id do
+    16
+    |> :crypto.strong_rand_bytes()
+    |> Base.encode32(case: :lower, padding: false)
+  end
+
+  defp default_clock, do: System.system_time(:millisecond)
+end
