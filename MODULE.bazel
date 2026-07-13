@@ -625,3 +625,10 @@ multiarch_http_file(
 )
 
 bazel_dep(name = "rules_pkg", version = "1.1.0")
+
+# Prebuilt Erlang/OTP for the EmberVM control-plane build (bazel/erlang). The RBE
+# executor is ubuntu-22.04, so the matching hex.pm OTP build runs natively with
+# working crypto (no from-source build / OpenSSL provisioning). Build-time only:
+# the release is include_erts:false and the apko image supplies erlang at runtime.
+erlang = use_extension("//bazel/erlang:repositories.bzl", "erlang")
+use_repo(erlang, "otp_ubuntu2204_amd64")
