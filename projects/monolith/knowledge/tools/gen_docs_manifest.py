@@ -17,8 +17,8 @@ self-maintaining: ADRs are append-only decisions, and READMEs are colocated
 with the code they describe so they get updated by proximity pressure. Hand-
 written top-level ``docs/*.md`` reference docs are no longer published (they
 rot far from the code they describe); they remain internal-only. Excluded:
-``docs/plans/**``, vendored README subtrees (a prefix blocklist, e.g. the
-vendored ``linkerd`` charts), and a per-file blocklist for any README that
+``docs/plans/**``, vendored README subtrees (a prefix blocklist for
+third-party charts we vendor but did not author), and a per-file blocklist for any README that
 should stay off the public surface. Be conservative: if unsure whether a doc is
 public, it stays off the allowlist.
 
@@ -48,7 +48,7 @@ README_SUFFIX = "/README.md"
 # Vendored subtree prefix blocklist: third-party charts/code we vendor in but
 # did not author, so their READMEs should not appear on the public docs site.
 # Add future vendored trees here.
-_VENDORED_PREFIXES = ("projects/platform/linkerd/charts/",)
+_VENDORED_PREFIXES: tuple[str, ...] = ()
 
 # Per-file blocklist: individual README paths that must NOT appear on the
 # public docs site even though they match the allowlist glob. These are

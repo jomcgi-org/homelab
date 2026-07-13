@@ -122,12 +122,12 @@ ALLOWED_PREFIXES = (
     # Internal-only public chat API. It is mounted on the public binary but is
     # deliberately kept off the public HTTPRoute (see
     # projects/monolith-public/chart/httproute_public_test.py): it is reachable
-    # only in-cluster from the SSR front door over Linkerd mTLS, never directly
+    # only in-cluster from the SSR front door (Cilium datapath), never directly
     # from the internet.
     "/internal/chat",
     # Internal-only grimoire D&D chat API (mirrors /internal/chat, ADR 005):
     # mounted on the public binary, reachable only in-cluster from the SSR front
-    # door over Linkerd mTLS, kept off the public HTTPRoute.
+    # door (Cilium datapath), kept off the public HTTPRoute.
     "/internal/grimoire-chat",
     # Internal-only artifact read API (ADR 024): mounted on the public binary so
     # the SSR frontend can proxy /artifact/<id>/raw + /version in-cluster, but

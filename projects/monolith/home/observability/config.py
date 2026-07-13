@@ -49,20 +49,10 @@ class GroupConfig:
 
 
 @dataclass
-class LinkerdEdge:
-    """Pre-generated Linkerd metric queries for an HTTP edge."""
-
-    rps_query: str
-    latency_query: str
-    error_rate_query: str
-
-
-@dataclass
 class EdgeConfig:
     source: str
     target: str
     bidi: bool = False
-    linkerd: LinkerdEdge | None = None
 
 
 @dataclass

@@ -6,10 +6,11 @@ backend-only OnePasswordItem, never in SSR); SSR forwards only the user's token
 and the real client IP. The site key is public by design; the secret key is a
 verification-only credential.
 
-The call is the FIRST off-cluster egress from the public namespace. ADR 004 gives
-that namespace a default-deny Linkerd EgressNetwork, so this destination
-(challenges.cloudflare.com:443) is explicitly allowed by a single TLSRoute in
-projects/monolith-public/chart/templates/linkerd-policy.yaml. Nothing else opens.
+The call is the FIRST off-cluster egress from the public namespace. This
+destination (challenges.cloudflare.com:443) is the single sanctioned off-cluster
+FQDN in the public tier's CiliumNetworkPolicy egress rules (ADR platform/012's
+translation of the old default-deny egress); see
+projects/monolith-public/chart/templates/cilium-policy.yaml. Nothing else opens.
 
 Fail-closed posture: any verification we cannot complete (network error, timeout,
 non-2xx, malformed body) is treated as a failure, never a pass.
@@ -33,9 +34,9 @@ SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 # production always injects it from the cloudflare-turnstile OnePasswordItem.
 SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY", "")
 
-# Per-attempt timeout. The connect leg is the flaky one (the Linkerd egress
-# proxy establishing the off-cluster connection to Cloudflare), so it gets a
-# more generous budget than the read.
+# Per-attempt timeout. The connect leg is the flaky one (establishing the
+# off-cluster TLS connection to Cloudflare), so it gets a more generous budget
+# than the read.
 _TIMEOUT = httpx.Timeout(
     float(os.environ.get("TURNSTILE_TIMEOUT_SECONDS", "6")),
     connect=float(os.environ.get("TURNSTILE_CONNECT_TIMEOUT_SECONDS", "8")),

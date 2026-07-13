@@ -12,9 +12,8 @@ keda:
   crds:
     install: true
 
-  # Linkerd-meshed namespace: never use Kubernetes NetworkPolicies (port 4143
-  # mismatch breaks meshed traffic). The chart defaults this to false; keep it
-  # explicit so the intent is clear.
+  # Cilium handles network policy at the cluster level. The chart defaults
+  # this to false; keep it explicit so the intent is clear.
   networkPolicy:
     enabled: false
 

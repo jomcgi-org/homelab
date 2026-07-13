@@ -127,8 +127,6 @@ redis:
         secretKeyRef:
           name: grimoire
           key: redis_password
-  podAnnotations:
-    linkerd.io/inject: disabled
   podSecurityContext:
     runAsNonRoot: true
     runAsUser: 999

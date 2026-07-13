@@ -1,8 +1,8 @@
 """Phase 1 guard (ADR 005): the public HTTPRoute must never expose chat.
 
 The only internet-facing origin for public chat is the SvelteKit SSR app; the
-internal ``/internal/chat/*`` API is reachable solely in-cluster over Linkerd
-mTLS and must never appear on the public HTTPRoute. This test reads the chart
+internal ``/internal/chat/*`` API is reachable solely in-cluster (Cilium
+datapath) and must never appear on the public HTTPRoute. This test reads the chart
 template and fails CI if a future edit adds a route path that references chat or
 the internal API prefix, so the front-door invariant cannot regress silently.
 

@@ -4,6 +4,4 @@
   (dict "name" "REDIS_ADDR" "value" (printf "%s-redis:%v" (include "homelab.fullname" .) .Values.redis.service.port))
   (dict "name" "REDIS_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" .Values.grimoireSecret.name "key" "redis_password")))
 ) }}
-{{- $annotations := dict "config.linkerd.io/skip-outbound-ports" (toString .Values.redis.service.port) }}
-{{- $_ := set .Values.wsGateway "podAnnotations" (merge (default dict .Values.wsGateway.podAnnotations) $annotations) }}
 {{- include "homelab.deployment" (dict "context" . "component" "wsGateway" "componentName" "ws-gateway") }}

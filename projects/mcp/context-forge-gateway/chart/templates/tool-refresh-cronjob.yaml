@@ -13,10 +13,6 @@
 # come from the context-forge secret, the same envFrom the gateway uses), looks
 # up the target gateway id by name, and POSTs /gateways/{id}/tools/refresh. It
 # reuses the gateway image, which already bundles mcpgateway + httpx.
-#
-# The pod opts out of the Linkerd mesh (linkerd.io/inject: disabled) so the
-# proxy sidecar does not keep the Job alive forever; it reaches the meshed
-# gateway over plaintext on the in-cluster Service.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -38,8 +34,6 @@ spec:
         metadata:
           labels:
             {{- include "context-forge.selectorLabels" . | nindent 12 }}
-          annotations:
-            linkerd.io/inject: disabled
         spec:
           restartPolicy: Never
           securityContext:

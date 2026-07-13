@@ -2,8 +2,8 @@
 // (the STPA "unauthenticated /invoke" high-severity UCA). The daemon enforces
 // authentication itself, in application code, rather than delegating it to the
 // deployment substrate, so the security property is portable to any cluster and
-// does not evaporate when a service mesh is absent. In the homelab a Linkerd
-// AuthorizationPolicy is layered on top as defence-in-depth, but this middleware
+// does not evaporate when a service mesh is absent. In the homelab a Cilium
+// network policy is layered on top as defence-in-depth, but this middleware
 // is the substrate-independent guarantee.
 //
 // The mechanism is the Kubernetes TokenReview API: a caller presents its
@@ -47,9 +47,7 @@ type Reviewer interface {
 
 // healthPath is exempt from authentication: kubelet liveness/readiness probes
 // hit the app port directly and carry no bearer token, so authenticating them
-// would fail every probe and crash-loop the pod. The Linkerd layer likewise
-// auto-authorizes kubelet probes, so this exemption keeps the two layers
-// consistent.
+// would fail every probe and crash-loop the pod.
 const healthPath = "/healthz"
 
 // middleware wraps a handler, admitting a request only after its bearer token

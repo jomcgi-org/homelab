@@ -60,11 +60,6 @@ func buildCopyJob(mc *v1alpha1.ModelCache, cfg config.Config) *batchv1.Job {
 			// Clean up completed Jobs after 5 minutes
 			TTLSecondsAfterFinished: ptr.To(int32(300)),
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"linkerd.io/inject": "disabled",
-					},
-				},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{

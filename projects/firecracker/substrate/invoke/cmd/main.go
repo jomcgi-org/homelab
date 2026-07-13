@@ -161,7 +161,7 @@ func run(logger *slog.Logger) error {
 	// an allow-listed identity; /healthz stays open for kubelet probes. When it is
 	// unset the daemon runs open and says so loudly, so a missing config is never
 	// a silent hole. This is the portable, substrate-independent control; the
-	// homelab layers a Linkerd AuthorizationPolicy on top as defence-in-depth.
+	// homelab layers a Cilium network policy on top as defence-in-depth.
 	var handler http.Handler = ingress.New(invokers, logger)
 	if len(cfg.AllowedCallers) > 0 {
 		reviewer, err := auth.NewClusterReviewer()

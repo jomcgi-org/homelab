@@ -4,12 +4,11 @@ X.509 certificate management for Kubernetes. Automates certificate issuance and 
 
 ## Overview
 
-Wrapper chart around the official [cert-manager](https://cert-manager.io/) Helm chart with local defaults. Used primarily for Linkerd mTLS trust anchor management.
+Wrapper chart around the official [cert-manager](https://cert-manager.io/) Helm chart with local defaults, providing TLS certificate issuance and renewal for cluster services.
 
 ```mermaid
 flowchart LR
     CM[cert-manager] --> Certs[TLS Certificates]
-    CM --> Linkerd[Linkerd Trust Anchors]
     Issuers[ClusterIssuers] --> CM
 ```
 
@@ -17,7 +16,6 @@ flowchart LR
 
 - **Automatic renewal** - Certificates renew before expiration
 - **Multiple issuers** - Supports ACME, self-signed, and CA issuers
-- **Linkerd integration** - Manages mTLS identity certificates
 
 ## Configuration
 

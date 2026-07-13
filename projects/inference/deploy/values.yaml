@@ -228,7 +228,6 @@ strategy:
   type: Recreate
 
 podAnnotations:
-  linkerd.io/inject: disabled
   prometheus.io/scrape: "true"
   prometheus.io/port: "8080"
 
@@ -332,7 +331,6 @@ embeddings:
   nodeSelector:
     kubernetes.io/hostname: node-4
   podAnnotations:
-    linkerd.io/inject: disabled
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
   # 7-day SigNoz RSS is ~5.5Gi (llama.cpp holds the GGUF weights in host RAM,

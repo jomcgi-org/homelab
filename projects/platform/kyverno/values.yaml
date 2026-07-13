@@ -16,25 +16,6 @@ otelInjection:
     - kube-public
     - kube-node-lease
 
-# Linkerd namespace injection configuration
-linkerdInjection:
-  enabled: true # Auto-enable Linkerd injection for all namespaces
-  background: true # Apply to existing AND new namespaces
-  excludeNamespaces:
-    # System namespaces
-    - kube-system
-    - kube-public
-    - kube-node-lease
-    # Infrastructure that shouldn't be meshed
-    - linkerd # Linkerd control plane itself
-    - linkerd-cni # Linkerd CNI (if using CNI mode)
-    - cert-manager # Certificate management
-    - kyverno # Policy engine
-    - argocd # GitOps controller
-    - longhorn-system # Storage system
-    # Observability (optional - can mesh these if desired)
-    - signoz # SigNoz collector (avoid circular tracing)
-
 # Require resource requests + a memory limit (AUDIT-only) in first-party app
 # namespaces, so regressions in our own charts surface as PolicyReports. A CPU
 # limit is intentionally NOT required: CPU limits cause CFS throttling even on an

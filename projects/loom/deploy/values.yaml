@@ -82,11 +82,9 @@ objectStore:
 ui:
   apiBase: /app/loom
 
-# The cluster's Kyverno policy annotates every namespace linkerd.io/inject:
-# enabled, so loom pods are meshed. The chart's default-deny NetworkPolicy
-# blocks the linkerd-proxy's control-plane egress (linkerd-await times out,
-# PostStartHookError). Homelab convention: never combine K8s NetworkPolicies
-# with Linkerd-meshed namespaces; mTLS + Linkerd policy is the enforcement
-# layer here instead.
+# Homelab convention: never combine K8s NetworkPolicies with the cluster's
+# CNI-level policy enforcement (Cilium); the chart's default-deny
+# NetworkPolicy would otherwise block control-plane egress the CNI already
+# manages.
 networkPolicy:
   enabled: false

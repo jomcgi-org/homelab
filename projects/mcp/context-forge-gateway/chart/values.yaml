@@ -87,9 +87,8 @@ secret:
   name: context-forge
   itemPath: ""
 
-# NetworkPolicies disabled — Linkerd mTLS arrives on port 4143, not the
-# app port, so K8s NetworkPolicies silently drop meshed traffic.
-# Context Forge enforces auth at the application layer instead.
+# NetworkPolicies disabled. Context Forge enforces auth at the application
+# layer instead.
 networkPolicy:
   enabled: false
 

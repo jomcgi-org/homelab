@@ -2,9 +2,8 @@
 {{- $vals := index $.Values $component }}
 {{- if and $vals.enabled $vals.autoscaling $vals.autoscaling.enabled }}
 # HPA for the {{ $component }} component. Scales on the app container's CPU
-# (ContainerResource, GA in k8s 1.27+) so the linkerd-proxy sidecar's CPU does
-# not dilute the signal. CPU, not memory: Node/Python hold memory after a spike,
-# so a memory-based HPA would never scale back down.
+# (ContainerResource, GA in k8s 1.27+). CPU, not memory: Node/Python hold
+# memory after a spike, so a memory-based HPA would never scale back down.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

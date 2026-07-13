@@ -1,4 +1,4 @@
-# cert-manager configuration for Linkerd trust anchor management
+# cert-manager configuration for cluster TLS certificate management
 
 cert-manager:
   # CRD installation

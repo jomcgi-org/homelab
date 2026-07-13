@@ -4,15 +4,14 @@
 # (httproute-public.yaml) forwards /img/ to this Service, and imgproxy runs with
 # IMGPROXY_PATH_PREFIX=/img. The old img.jomcgi.dev Cloudflare-tunnel route is
 # retired. The Deployment and Service are rendered from the homelab-library
-# helpers (same as the web/frontend components), so it lives in the meshed
+# helpers (same as the web/frontend components), so it lives in the
 # monolith-public namespace.
 #
-# Meshing notes: the namespace label auto-injects the Linkerd proxy. No Server
-# in cilium-policy.yaml selects this component's port, so the cluster's
-# defaultInboundPolicy (all-unauthenticated) governs inbound and the meshed
-# envoy gateway can reach it over mTLS. imgproxy's only egress is the
-# in-cluster seaweedfs-s3 endpoint, which is cluster-network traffic and so is
-# not blocked by the namespace EgressNetwork deny.
+# Networking notes: no Server in cilium-policy.yaml selects this component's
+# port, so the cluster's default inbound policy governs inbound and the envoy
+# gateway can reach it. imgproxy's only egress is the in-cluster seaweedfs-s3
+# endpoint, which is cluster-network traffic and so is not blocked by the
+# namespace EgressNetwork deny.
 #
 # Security boundary: URLs are HMAC-signed (IMGPROXY_KEY/SALT synced from
 # 1Password), so imgproxy only serves paths the frontend SSR signer produced;

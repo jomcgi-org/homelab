@@ -5,8 +5,7 @@ Covers:
   _ch_rows    -- happy path, retry on transient failure
   _query_node -- node without SLO, with SLO, with static + dynamic metrics,
                  with spark, SLO query fails, metric query fails
-  _query_edge -- simple edge (no linkerd), edge with linkerd queries,
-                 linkerd partial failure (return_exceptions)
+  _query_edge -- simple edge, bidi edge
   build_topology -- end-to-end with mocked client and patched TOPOLOGY
 """
 
@@ -19,7 +18,6 @@ import pytest
 from home.observability.config import (
     EdgeConfig,
     GroupConfig,
-    LinkerdEdge,
     MetricConfig,
     NodeConfig,
     SloConfig,
@@ -68,9 +66,8 @@ def _simple_edge(
     target: str = "b",
     *,
     bidi: bool = False,
-    linkerd: LinkerdEdge | None = None,
 ) -> EdgeConfig:
-    return EdgeConfig(source=source, target=target, bidi=bidi, linkerd=linkerd)
+    return EdgeConfig(source=source, target=target, bidi=bidi)
 
 
 def _mock_client(
@@ -318,7 +315,7 @@ class TestQueryNode:
 
 class TestQueryEdge:
     @pytest.mark.asyncio
-    async def test_simple_edge_without_linkerd(self):
+    async def test_simple_edge(self):
         edge = _simple_edge("a", "b")
         client = _mock_client()
         result = await _query_edge(client, edge)
@@ -330,51 +327,6 @@ class TestQueryEdge:
         client = _mock_client()
         result = await _query_edge(client, edge)
         assert result.get("bidi") is True
-
-    @pytest.mark.asyncio
-    async def test_linkerd_metrics_populated(self):
-        linkerd = LinkerdEdge(
-            rps_query="SELECT rps",
-            latency_query="SELECT p99",
-            error_rate_query="SELECT err",
-        )
-        call_values = [12.0, 45.0, 0.5]  # rps, latency, error_rate
-        call_count = 0
-
-        async def _multi(sql):
-            nonlocal call_count
-            v = call_values[call_count % len(call_values)]
-            call_count += 1
-            return v
-
-        client = MagicMock()
-        client.query_scalar = _multi
-        edge = _simple_edge("frontend", "api", linkerd=linkerd)
-        result = await _query_edge(client, edge)
-        lk = result.get("linkerd", {})
-        assert lk["rps"] is not None
-        assert lk["p99_ms"] is not None
-        assert lk["error_pct"] is not None
-
-    @pytest.mark.asyncio
-    async def test_linkerd_partial_failure_returns_none_for_failed_metric(self):
-        """If one linkerd query fails, it becomes None rather than propagating."""
-        linkerd = LinkerdEdge(
-            rps_query="SELECT rps",
-            latency_query="SELECT p99",
-            error_rate_query="SELECT err",
-        )
-        client = MagicMock()
-        # rps OK, latency raises, error OK
-        client.query_scalar = AsyncMock(
-            side_effect=[12.0, RuntimeError("timeout"), 0.0]
-        )
-        edge = _simple_edge("a", "b", linkerd=linkerd)
-        result = await _query_edge(client, edge)
-        lk = result.get("linkerd", {})
-        assert lk["rps"] == 12.0
-        assert lk["p99_ms"] is None
-        assert lk["error_pct"] == 0.0
 
 
 # ---------------------------------------------------------------------------

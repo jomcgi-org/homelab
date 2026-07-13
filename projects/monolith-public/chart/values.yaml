@@ -1,4 +1,4 @@
-# Read-only public service (ADR 004 Phase 5). Linkerd-meshed, isolation via
+# Read-only public service (ADR 004 Phase 5). Isolation via
 # templates/cilium-policy.yaml (ADR platform/012), no K8s API access
 # (automountServiceAccountToken false), connects to
 # monolith-pg-ro as public_reader. The image tag is pinned by the Bazel
@@ -187,11 +187,8 @@ web:
     pullPolicy: IfNotPresent
   containerPort: 8000
   portName: http
-  # Meshed (ADR 004 Phase 5): the pod joins the Linkerd mesh; inbound and
-  # egress isolation is now expressed via templates/cilium-policy.yaml (ADR
-  # platform/012).
-  podAnnotations:
-    linkerd.io/inject: enabled
+  # Inbound and egress isolation is expressed via templates/cilium-policy.yaml
+  # (ADR platform/012).
   probes:
     liveness:
       path: /healthz
@@ -348,12 +345,9 @@ frontend:
     pullPolicy: IfNotPresent
   containerPort: 3000
   portName: http
-  # Meshed: inherits the namespace's Linkerd injection. Inbound restriction to
-  # the gateway identity is now expressed via templates/cilium-policy.yaml.
-  podAnnotations:
-    linkerd.io/inject: enabled
+  # Inbound restriction to the gateway identity is expressed via
+  # templates/cilium-policy.yaml.
   # The SSR Node server has no HTTP health endpoint, so probe the TCP port.
-  # Linkerd auto-authorizes kubelet probes even with the deny-by-default Server.
   probes:
     liveness:
       tcpSocket: true
@@ -452,11 +446,6 @@ imgproxy:
     pullPolicy: IfNotPresent
   containerPort: 8080
   portName: http
-  # Meshed like the other components (the namespace auto-injects); inbound is
-  # governed by the cluster default all-unauthenticated policy since no Server
-  # selects this port, so the meshed cloudflared tunnel reaches it.
-  podAnnotations:
-    linkerd.io/inject: enabled
   # IMGPROXY_PATH_PREFIX=/img moves EVERY route (including the health endpoint)
   # under /img, so the probes must hit /img/health, not the library default
   # /health (which now 404s and would crash-loop the pod on liveness failure).

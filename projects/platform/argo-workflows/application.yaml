@@ -21,17 +21,6 @@ spec:
     server: https://kubernetes.default.svc
     namespace: monolith-workflows
   syncPolicy:
-    # Stamp the mesh opt-out onto the namespace at creation. This cluster meshes
-    # every namespace by default (Kyverno inject-linkerd-namespace-annotation),
-    # but that policy excludes namespaces carrying a linkerd.io/inject label. A
-    # meshed Workflow pod would never terminate (its linkerd-proxy never exits),
-    # so the whole namespace (controller, server, and Workflow pods) runs
-    # unmeshed via this opt-out.
-    managedNamespaceMetadata:
-      labels:
-        linkerd.io/inject: disabled
-      annotations:
-        linkerd.io/inject: disabled
     automated:
       prune: true
       selfHeal: true

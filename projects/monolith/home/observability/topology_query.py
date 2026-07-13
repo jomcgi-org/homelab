@@ -131,29 +131,16 @@ async def _query_node(client: ClickHouseClient, node: NodeConfig) -> dict:
 
 
 async def _query_edge(client: ClickHouseClient, edge: EdgeConfig) -> dict:
-    """Serialize an edge, running Linkerd metric queries if configured."""
+    """Serialize an edge to its from/to (and bidi) shape.
+
+    Inter-service edge metrics (RPS/latency/error rate) used to come from the
+    Linkerd proxy telemetry; that mesh has been replaced by Cilium (ADR
+    platform/012), so edges currently carry structure only. Cilium/Hubble edge
+    metrics are a possible future re-addition here.
+    """
     result: dict = {"from": edge.source, "to": edge.target}
     if edge.bidi:
         result["bidi"] = True
-    if edge.linkerd is None:
-        return result
-    lk = edge.linkerd
-    try:
-        rps, latency, error_rate = await asyncio.gather(
-            _ch_scalar(client, lk.rps_query),
-            _ch_scalar(client, lk.latency_query),
-            _ch_scalar(client, lk.error_rate_query),
-            return_exceptions=True,
-        )
-        result["linkerd"] = {
-            "rps": rps if not isinstance(rps, Exception) else None,
-            "p99_ms": latency if not isinstance(latency, Exception) else None,
-            "error_pct": error_rate if not isinstance(error_rate, Exception) else None,
-        }
-    except Exception:
-        logger.exception(
-            "Linkerd edge query failed for %s->%s", edge.source, edge.target
-        )
     return result
 
 
