@@ -57,7 +57,10 @@ defmodule Embervm.SyncWait do
   @doc "Releases a park slot previously `reserve/2`d; clamps at zero."
   @spec release(String.t()) :: :ok
   def release(principal) do
-    :ets.update_counter(@counts, principal, {2, -1, 0, 0})
+    # The {principal, 0} default makes a release for a key that does not exist
+    # yet (a release with no prior reserve) create it at 0 rather than raise;
+    # combined with the {2, -1, 0, 0} clamp the count can never go negative.
+    :ets.update_counter(@counts, principal, {2, -1, 0, 0}, {principal, 0})
     :ok
   end
 
