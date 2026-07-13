@@ -1,3 +1,5 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+
 # Prebuilt Erlang/OTP toolchain groundwork for the EmberVM control plane.
 # See repositories.bzl for why a prebuilt (not from-source) OTP is used here.
 
@@ -14,4 +16,11 @@ genrule(
     cmd = "$(location otp_smoke.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$@\"",
     tags = ["no-remote-cache"],
     tools = ["otp_smoke.sh"],
+)
+
+bzl_library(
+    name = "repositories",
+    srcs = ["repositories.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["@bazel_tools//tools/build_defs/repo:http.bzl"],
 )

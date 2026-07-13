@@ -28,7 +28,7 @@ crypto_bytes="$(./bin/erl -noshell -eval 'io:format("~w", [byte_size(crypto:stro
 printf 'otp_release=%s crypto_bytes=%s\n' "$otp_release" "$crypto_bytes" | tee "$out"
 
 if [ "$crypto_bytes" != "16" ]; then
-  echo "SMOKE FAILED: crypto app did not load on the executor (crypto_bytes=$crypto_bytes)" >&2
-  exit 1
+	echo "SMOKE FAILED: crypto app did not load on the executor (crypto_bytes=$crypto_bytes)" >&2
+	exit 1
 fi
 echo "SMOKE OK: prebuilt OTP $otp_release runs with working crypto on the executor" >&2
