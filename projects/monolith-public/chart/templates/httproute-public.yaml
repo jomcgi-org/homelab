@@ -2,7 +2,7 @@
 # Public ingress for the read-only public service (ADR 004 Phase 5e). The
 # Cloudflare/Envoy gateway routes the public hostname here: pages + client
 # assets to the SvelteKit frontend, /api to the public backend. The gateway's
-# mesh identity is authorized by templates/linkerd-policy.yaml.
+# mesh identity is authorized by templates/cilium-policy.yaml.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

@@ -1,6 +1,6 @@
-# Read-only public service (ADR 004 Phase 5). Linkerd-meshed (isolation via
-# Server/AuthorizationPolicy/EgressNetwork, see templates/linkerd-policy.yaml),
-# no K8s API access (automountServiceAccountToken false), connects to
+# Read-only public service (ADR 004 Phase 5). Linkerd-meshed, isolation via
+# templates/cilium-policy.yaml (ADR platform/012), no K8s API access
+# (automountServiceAccountToken false), connects to
 # monolith-pg-ro as public_reader. The image tag is pinned by the Bazel
 # helm_images_values pipeline at build time; do not set a digest here.
 #
@@ -187,10 +187,9 @@ web:
     pullPolicy: IfNotPresent
   containerPort: 8000
   portName: http
-  # Meshed (ADR 004 Phase 5): the pod joins the Linkerd mesh so inbound is
-  # restricted by a native AuthorizationPolicy (only the gateway identity may
-  # call it) and off-cluster egress is denied by an EgressNetwork. See
-  # templates/linkerd-policy.yaml.
+  # Meshed (ADR 004 Phase 5): the pod joins the Linkerd mesh; inbound and
+  # egress isolation is now expressed via templates/cilium-policy.yaml (ADR
+  # platform/012).
   podAnnotations:
     linkerd.io/inject: enabled
   probes:
@@ -349,9 +348,8 @@ frontend:
     pullPolicy: IfNotPresent
   containerPort: 3000
   portName: http
-  # Meshed: inherits the namespace's Linkerd injection. A native Server +
-  # AuthorizationPolicy (templates/linkerd-policy.yaml) restricts inbound to the
-  # gateway identity only.
+  # Meshed: inherits the namespace's Linkerd injection. Inbound restriction to
+  # the gateway identity is now expressed via templates/cilium-policy.yaml.
   podAnnotations:
     linkerd.io/inject: enabled
   # The SSR Node server has no HTTP health endpoint, so probe the TCP port.

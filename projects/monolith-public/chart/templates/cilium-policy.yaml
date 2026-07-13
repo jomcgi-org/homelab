@@ -1,6 +1,6 @@
 # CiliumNetworkPolicy translation of the Linkerd policy chain that used to live
-# in templates/linkerd-policy.yaml (Server / AuthorizationPolicy /
-# MeshTLSAuthentication / EgressNetwork / TLSRoute). ADR platform/012 replaces
+# in this chart's now-removed linkerd-policy.yaml (Server / AuthorizationPolicy
+# / MeshTLSAuthentication / EgressNetwork / TLSRoute). ADR platform/012 replaces
 # the Linkerd sidecar mesh with Cilium as the CNI.
 #
 # Cilium runs in policyEnforcementMode=default (allow-until-selected), so these

@@ -5,14 +5,13 @@ resources:
   - ./argocd
   - ./argo-workflows # Namespace-scoped (monolith-workflows ns) batch-job executor for the monolith
   - ./atlas-operator/deploy
-  - ./cert-manager # Must be before linkerd
+  - ./cert-manager
   - ./cilium # CNI; manual-sync-disabled until the Cilium cutover window (ADR platform/012)
   - ./cloudnative-pg/deploy
-  - ./cloudflare-gateway # Envoy Gateway + Gateway API + Cloudflare Tunnel; CRDs must be before linkerd
+  - ./cloudflare-gateway # Envoy Gateway + Gateway API + Cloudflare Tunnel
   - ./coredns
   - ./keda
   - ./kyverno
-  - ./linkerd
   - ./longhorn
   - ./nvidia-gpu-operator
   - ./opentelemetry-operator
