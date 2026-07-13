@@ -30,10 +30,14 @@ resources:
   limits:
     memory: 512Mi
 
-# The op-log PVC. Longhorn, RWO, single replica: a PVC provides DURABILITY, not
-# availability. SQLite is single-writer and the Deployment uses the Recreate
-# strategy so a rolling update never runs two writers against one RWO volume.
+# The op-log volume. persistentVolume is FALSE until the SQLite op-log lands
+# (Task 6): the R0 skeleton is a dependency-free health server that writes nothing
+# durable, so it uses an emptyDir and does not depend on Longhorn. When the op-log
+# ships, flip persistentVolume to true to get the RWO Longhorn PVC below (which
+# provides DURABILITY, not availability: SQLite is single-writer and the Deployment
+# is Recreate so a rolling update never runs two writers against one RWO volume).
 opLog:
+  persistentVolume: false
   storageClass: longhorn
   size: 2Gi
 
