@@ -1,0 +1,43 @@
+# Sample Workload exercising every schema branch: a trivial echo guest on the
+# frozen contract (vsock HTTP server, GET readyPath -> 200). Used by the
+# watcher's round-trip test and as living documentation of the surface. Not a
+# production deploy (those live under projects/embervm/deploy/).
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: echo
+  namespace: embervm
+spec:
+  class: task
+  source:
+    image:
+      ref: ghcr.io/jomcgi/homelab/projects/embervm/guests/echo:latest
+      port: 1027
+      readyPath: /shim/ready
+      invokePath: /
+      initEnv:
+        ECHO_MODE: reflect
+  resources:
+    vcpus: 1
+    memMib: 256
+  concurrency:
+    floor: 2
+    cap: 8
+  invocation:
+    timeoutSeconds: 30
+    retry:
+      maxAttempts: 3
+      backoffSeconds: 1
+      backoffCapSeconds: 30
+      retryOn:
+        - transport
+        - timeout
+        - guest5xx
+    resultTtlSeconds: 3600
+    resultMaxBytes: 1048576
+    deadLetter:
+      enabled: true
+  triggers:
+    - cron: "*/15 * * * *"
+      payload:
+        ping: scheduled

@@ -1,0 +1,270 @@
+# EmberVM Workload CRD (v1alpha1) — the entire v1 management surface.
+#
+# A Workload is low-churn declarative intent: an OCI image the platform turns
+# into a pristine base snapshot, plus the resource shape, concurrency floor/cap,
+# invocation policy (timeout/retry/DLQ/result TTL), and optional cron triggers
+# for task execution. kubectl + Helm + ArgoCD are the whole surface; there is no
+# bespoke API.
+#
+# v1 invariants held for later rungs (cheap now, expensive to retrofit):
+#   - spec.class is an enum reserving session|serving|stateful (R2/R3/R4); only
+#     `task` is valid in v1alpha1.
+#   - spec.source is a oneOf so the R1 zip/runtime-shim lane is a schema
+#     addition, not a reshape; only `image` is implemented.
+#   - spec.group (R5 composite groups) is deliberately RESERVED, not defined:
+#     when it lands it is a new optional block, so v1alpha1 CRs stay valid.
+#   - status.snapshotRef carries no volumeGeneration in the task class (task VMs
+#     are single-use, no volumes); the R4 stateful class will pair a
+#     volumeGeneration with the snapshot. Recorded here so the field is expected.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: workloads.embervm.dev
+spec:
+  group: embervm.dev
+  scope: Namespaced
+  names:
+    kind: Workload
+    listKind: WorkloadList
+    plural: workloads
+    singular: workload
+    shortNames:
+      - wl
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Class
+          type: string
+          jsonPath: .spec.class
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Snapshot
+          type: string
+          jsonPath: .status.snapshotRef
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - class
+                - source
+                - resources
+                - concurrency
+              properties:
+                class:
+                  type: string
+                  description: >-
+                    Isolation/lifecycle class. Only `task` is valid in
+                    v1alpha1; the other values are reserved for later rungs and
+                    rejected by the watcher via a status condition, not by the
+                    API server, so a forward CR does not hard-fail admission.
+                  enum:
+                    - task
+                    - session
+                    - serving
+                    - stateful
+                source:
+                  type: object
+                  description: >-
+                    Where the guest comes from. A oneOf: exactly one member is
+                    set. Only `image` is implemented in v1alpha1; future lanes
+                    (zip, runtimeShim) plug in as additional members.
+                  properties:
+                    image:
+                      type: object
+                      required:
+                        - ref
+                        - port
+                      properties:
+                        ref:
+                          type: string
+                          description: >-
+                            OCI reference, digest-pinned or tag. A tag is
+                            resolved to a digest at base-build time and the
+                            digest recorded in status (deploys are explicit CR
+                            updates, never tag drift).
+                        port:
+                          type: integer
+                          description: Guest HTTP server port (over vsock).
+                          minimum: 1
+                          maximum: 65535
+                        readyPath:
+                          type: string
+                          description: Guest readiness path (200 = ready).
+                          default: /shim/ready
+                        invokePath:
+                          type: string
+                          description: >-
+                            Path tasks are POSTed to. Overridable per submit
+                            with the X-Ember-Guest-Path header.
+                          default: /
+                        initEnv:
+                          type: object
+                          description: >-
+                            Environment baked into the guest at base-build time.
+                          additionalProperties:
+                            type: string
+                  oneOf:
+                    - required:
+                        - image
+                resources:
+                  type: object
+                  required:
+                    - vcpus
+                    - memMib
+                  properties:
+                    vcpus:
+                      type: integer
+                      minimum: 1
+                      maximum: 8
+                    memMib:
+                      type: integer
+                      minimum: 128
+                      maximum: 16384
+                concurrency:
+                  type: object
+                  required:
+                    - cap
+                  properties:
+                    floor:
+                      type: integer
+                      description: Primed-pool floor (VMs kept warm per workload).
+                      minimum: 0
+                      default: 0
+                    cap:
+                      type: integer
+                      description: Hard max in-flight tasks. Must be >= floor.
+                      minimum: 1
+                invocation:
+                  type: object
+                  description: Task execution policy. All fields defaulted.
+                  properties:
+                    timeoutSeconds:
+                      type: integer
+                      minimum: 1
+                      maximum: 900
+                      default: 90
+                    retry:
+                      type: object
+                      properties:
+                        maxAttempts:
+                          type: integer
+                          minimum: 1
+                          maximum: 10
+                          default: 3
+                        backoffSeconds:
+                          type: integer
+                          minimum: 0
+                          default: 1
+                        backoffCapSeconds:
+                          type: integer
+                          minimum: 0
+                          default: 60
+                        retryOn:
+                          type: array
+                          description: >-
+                            Error classes that are retryable. Guest 4xx is never
+                            retryable (the task itself is wrong).
+                          items:
+                            type: string
+                            enum:
+                              - transport
+                              - timeout
+                              - guest5xx
+                          default:
+                            - transport
+                            - timeout
+                            - guest5xx
+                      default: {}
+                    resultTtlSeconds:
+                      type: integer
+                      minimum: 0
+                      default: 86400
+                    resultMaxBytes:
+                      type: integer
+                      description: >-
+                        Cap on the STORED result copy (sync callers still get
+                        the full untruncated response). Max 8 MiB (the daemon
+                        Assign body cap).
+                      minimum: 0
+                      maximum: 8388608
+                      default: 1048576
+                    deadLetter:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                      default: {}
+                  default: {}
+                triggers:
+                  type: array
+                  description: >-
+                    v1 supports cron only. Each trigger fires spec.source
+                    invokePath as a submit with the inline payload. May be empty.
+                  items:
+                    type: object
+                    required:
+                      - cron
+                    properties:
+                      cron:
+                        type: string
+                        description: 5-field cron expression.
+                      payload:
+                        description: >-
+                          Inline JSON POSTed as the task body (<= 8 KiB).
+                          x-kubernetes-preserve-unknown-fields keeps arbitrary
+                          JSON shape without a fixed schema.
+                        x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              description: >-
+                Written only by the control plane (never by users). The watcher
+                writes status exclusively and never mutates spec.
+              properties:
+                observedGeneration:
+                  type: integer
+                snapshotRef:
+                  type: string
+                  description: Opaque base snapshot handle from the daemon.
+                snapshotDigest:
+                  type: string
+                  description: Resolved OCI image digest the base was built from.
+                primedFloorSatisfied:
+                  type: boolean
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                        description: Ready | BaseBuilt.
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
