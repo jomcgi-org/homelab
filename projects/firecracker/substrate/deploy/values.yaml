@@ -28,7 +28,7 @@ auth:
 # Cilium authorization for the /invoke route (ADR platform/012), on top of the
 # daemon's own TokenReview control (defence in depth).
 ciliumPolicy:
-  enabled: false
+  enabled: true
   fromNamespaces:
     - monolith
 
