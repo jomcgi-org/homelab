@@ -17,12 +17,19 @@ def apko_image(
         visibility = ["//bazel/images:__pkg__"],
         tars = None,
         multiarch_tars = None,
-        multiplatform_tars = None):
+        multiplatform_tars = None,
+        arm64 = True):
     """Create a multi-platform apko OCI image, optionally with additional tar layers.
 
     Args:
         name: The name of the image.
-        config: The apko config file (should define both x86_64 and aarch64 in archs list).
+        config: The apko config file (should define both x86_64 and aarch64 in archs
+                list, unless arm64 = False, in which case only x86_64).
+        arm64: Whether to build the aarch64 variant. Defaults to True (dual-arch).
+               Set False for images that carry an architecture-specific artifact the
+               build cannot produce for arm64 (e.g. a compiled NIF built on the amd64
+               executor); the apko config's archs list must then be x86_64-only too.
+               When False, :{name} is a single-platform amd64 image, not an index.
         contents: The apko contents (lock file).
         repository: The container registry repository (e.g., "ghcr.io/jomcgi/homelab/my-app").
                    Defaults to "ghcr.io/jomcgi/homelab/{package_name}".
@@ -106,7 +113,7 @@ def apko_image(
         push_image = name
         use_oci_push = False
     else:
-        # Create platform-specific base images
+        # Create the amd64 base image (always built).
         _apko_image(
             name = name + "_base_amd64",
             architecture = "x86_64",
@@ -115,15 +122,7 @@ def apko_image(
             tag = "latest",
         )
 
-        _apko_image(
-            name = name + "_base_arm64",
-            architecture = "aarch64",
-            config = config,
-            contents = contents,
-            tag = "latest",
-        )
-
-        # Transition the base images to their target platforms
+        # Transition the base image to its target platform
         # (apko bases are already platform-specific, this just sets the platform metadata)
         platform_transition_filegroup(
             name = name + "_base_amd64_transitioned",
@@ -131,35 +130,53 @@ def apko_image(
             target_platform = "@rules_go//go/toolchain:linux_amd64",
         )
 
-        platform_transition_filegroup(
-            name = name + "_base_arm64_transitioned",
-            srcs = [":" + name + "_base_arm64"],
-            target_platform = "@rules_go//go/toolchain:linux_arm64",
-        )
+        if arm64:
+            _apko_image(
+                name = name + "_base_arm64",
+                architecture = "aarch64",
+                config = config,
+                contents = contents,
+                tag = "latest",
+            )
 
-        # Layer tars on top of the transitioned bases
-        # Note: tars are NOT transitioned because they contain platform-independent files
-        # (e.g., JavaScript bundles, config files) that are built on the exec platform
-        oci_image(
-            name = name + "_amd64",
-            base = ":" + name + "_base_amd64_transitioned",
-            tars = tars_amd64,
-        )
+            platform_transition_filegroup(
+                name = name + "_base_arm64_transitioned",
+                srcs = [":" + name + "_base_arm64"],
+                target_platform = "@rules_go//go/toolchain:linux_arm64",
+            )
 
-        oci_image(
-            name = name + "_arm64",
-            base = ":" + name + "_base_arm64_transitioned",
-            tars = tars_arm64,
-        )
+            # Layer tars on top of the transitioned bases
+            # Note: tars are NOT transitioned because they contain platform-independent files
+            # (e.g., JavaScript bundles, config files) that are built on the exec platform
+            oci_image(
+                name = name + "_amd64",
+                base = ":" + name + "_base_amd64_transitioned",
+                tars = tars_amd64,
+            )
 
-        # Create multi-platform index
-        oci_image_index(
-            name = name,
-            images = [
-                ":" + name + "_amd64",
-                ":" + name + "_arm64",
-            ],
-        )
+            oci_image(
+                name = name + "_arm64",
+                base = ":" + name + "_base_arm64_transitioned",
+                tars = tars_arm64,
+            )
+
+            # Create multi-platform index
+            oci_image_index(
+                name = name,
+                images = [
+                    ":" + name + "_amd64",
+                    ":" + name + "_arm64",
+                ],
+            )
+        else:
+            # Single-arch (amd64-only): :{name} is the amd64 image directly, no
+            # index. Used when a layered tar carries an amd64-specific artifact
+            # (e.g. a compiled NIF) that has no valid aarch64 counterpart.
+            oci_image(
+                name = name,
+                base = ":" + name + "_base_amd64_transitioned",
+                tars = tars_amd64,
+            )
 
         push_image = name
         use_oci_push = True
