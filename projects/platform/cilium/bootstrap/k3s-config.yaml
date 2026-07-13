@@ -1,0 +1,8 @@
+# projects/platform/cilium/bootstrap/k3s-config.yaml
+#
+# Reference-only fragment. Applied BY HAND in Track 2, NOT via ArgoCD.
+# Append these keys to /etc/rancher/k3s/config.yaml on node-1/2/3, then reboot
+# the node so k3s brings up flannel-less networking and hands the datapath to
+# Cilium. See bootstrap/README.md and ADR platform/012.
+flannel-backend: none
+disable-network-policy: true

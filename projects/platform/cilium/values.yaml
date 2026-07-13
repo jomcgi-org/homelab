@@ -1,0 +1,32 @@
+# projects/platform/cilium/values.yaml
+#
+# Cilium is installed via the local wrapper chart (Chart.yaml depends on the
+# upstream oci://quay.io/cilium/charts cilium chart), so these values are nested
+# under the `cilium:` subchart key to reach the upstream chart's values.
+cilium:
+  kubeProxyReplacement: false # keep k3s kube-proxy (deferred item)
+  k8sServiceHost: 127.0.0.1 # k3s: reach apiserver during bootstrap
+  k8sServicePort: 6443
+
+  ipam:
+    mode: cluster-pool
+    operator:
+      clusterPoolIPv4PodCIDRList: ["10.42.0.0/16"] # match k3s flannel CIDR
+
+  encryption:
+    enabled: true
+    type: wireguard
+    nodeEncryption: true # encrypt node-to-node too
+
+  policyEnforcementMode: default # allow-until-selected; no deny-gap at cutover
+
+  operator:
+    replicas: 2
+
+  hubble:
+    enabled: true
+    relay:
+      enabled: true
+    # UI off; SigNoz remains the dashboard. Keep flow buffer modest.
+    metrics:
+      enabled: ["dns", "drop", "tcp", "flow"]

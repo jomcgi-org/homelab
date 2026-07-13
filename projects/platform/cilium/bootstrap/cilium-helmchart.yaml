@@ -1,0 +1,48 @@
+# projects/platform/cilium/bootstrap/cilium-helmchart.yaml
+#
+# Out-of-band bootstrap install; copied by hand to node-1 during the cutover
+# window at /var/lib/rancher/k3s/server/manifests/cilium.yaml. k3s applies files
+# in that directory automatically during bootstrap, installing Cilium BEFORE
+# ArgoCD is reachable (it provides the CNI the cluster needs to come up). ArgoCD
+# adopts the release afterward via the manual-sync Application (see ADR
+# platform/012 and bootstrap/README.md).
+#
+# valuesContent below mirrors ../values.yaml, but at the upstream chart's top
+# level (not nested under `cilium:`) because k3s installs the upstream chart
+# directly here, not through our local wrapper chart.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: cilium
+  namespace: kube-system
+spec:
+  chart: cilium
+  repo: https://helm.cilium.io
+  version: 1.19.5
+  targetNamespace: kube-system
+  valuesContent: |-
+    kubeProxyReplacement: false
+    k8sServiceHost: 127.0.0.1
+    k8sServicePort: 6443
+
+    ipam:
+      mode: cluster-pool
+      operator:
+        clusterPoolIPv4PodCIDRList: ["10.42.0.0/16"]
+
+    encryption:
+      enabled: true
+      type: wireguard
+      nodeEncryption: true
+
+    policyEnforcementMode: default
+
+    operator:
+      replicas: 2
+
+    hubble:
+      enabled: true
+      relay:
+        enabled: true
+      metrics:
+        enabled: ["dns", "drop", "tcp", "flow"]
