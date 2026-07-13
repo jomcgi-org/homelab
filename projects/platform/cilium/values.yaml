@@ -5,8 +5,17 @@
 # under the `cilium:` subchart key to reach the upstream chart's values.
 cilium:
   kubeProxyReplacement: false # keep k3s kube-proxy (deferred item)
-  k8sServiceHost: 127.0.0.1 # k3s: reach apiserver during bootstrap
-  k8sServicePort: 6443
+
+  # k8sServiceHost/Port intentionally NOT set. With kubeProxyReplacement=false,
+  # kube-proxy already routes the in-cluster kubernetes Service, so cilium-agent
+  # (hostNetwork) reaches the apiserver through it on every node. A literal
+  # 127.0.0.1 would be correct on servers but WRONG on the node-4 agent, which
+  # has no local apiserver.
+
+  # Coexist with k3s's own CNI config management rather than taking the CNI conf
+  # directory exclusively (k3s writes and owns it). Recommended for k3s+Cilium.
+  cni:
+    exclusive: false
 
   ipam:
     mode: cluster-pool
