@@ -25,19 +25,8 @@ auth:
   allowedCallers:
     - system:serviceaccount:monolith:monolith
 
-# Linkerd-native authorization on top of the TokenReview control (defence in
-# depth): fc-invoke is meshed in the monolith namespace, so a Server + policy
-# restricts the http port to the monolith's mesh identity. Kubelet probes to
-# /healthz are auto-authorized by Linkerd.
-linkerdPolicy:
-  enabled: true
-  allowedIdentities:
-    - monolith.monolith.serviceaccount.identity.linkerd.cluster.local
-
-# Cilium translation of the /invoke authorization (ADR platform/012). Staged
-# with the caller namespace pre-seeded but enabled=false, so the cutover window
-# flips it on with a one-line change. linkerdPolicy above stays enabled until
-# the window teardown removes the Linkerd sidecar mesh.
+# Cilium authorization for the /invoke route (ADR platform/012), on top of the
+# daemon's own TokenReview control (defence in depth).
 ciliumPolicy:
   enabled: false
   fromNamespaces:

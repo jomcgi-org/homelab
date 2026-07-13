@@ -8,7 +8,7 @@
 # monolith-public namespace.
 #
 # Meshing notes: the namespace label auto-injects the Linkerd proxy. No Server
-# in linkerd-policy.yaml selects this component's port, so the cluster's
+# in cilium-policy.yaml selects this component's port, so the cluster's
 # defaultInboundPolicy (all-unauthenticated) governs inbound and the meshed
 # envoy gateway can reach it over mTLS. imgproxy's only egress is the
 # in-cluster seaweedfs-s3 endpoint, which is cluster-network traffic and so is

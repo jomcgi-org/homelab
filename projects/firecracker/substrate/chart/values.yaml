@@ -76,26 +76,14 @@ auth:
   # FC_INVOKE_ALLOWED_CALLERS. Empty here; the real list lives in deploy/values.yaml.
   allowedCallers: []
 
-# Linkerd-native authorization for /invoke (homelab defence-in-depth on top of
-# the daemon's TokenReview control). Off by default because it depends on the
-# pod being meshed; a consuming deploy in a Linkerd namespace flips it on and
-# lists the caller mesh identities.
-linkerdPolicy:
-  enabled: false
-  # Mesh identities allowed to reach /invoke, e.g.
-  # "monolith.monolith.serviceaccount.identity.linkerd.cluster.local".
-  allowedIdentities: []
-
-# CiliumNetworkPolicy gate (ADR platform/012), the Cilium translation of the
-# Linkerd /invoke authorization above (see templates/cilium-policy.yaml).
-# Default off so the template renders nothing until a deploy override flips it
-# during the Cilium cutover window.
+# CiliumNetworkPolicy gate (ADR platform/012) authorizing /invoke (see
+# templates/cilium-policy.yaml). Default off so the template renders nothing
+# until a deploy override flips it during the Cilium cutover window.
 ciliumPolicy:
   enabled: false
-  # Namespaces whose pods may reach /invoke: the Cilium proxy for the Linkerd
-  # allowedIdentities list (Cilium has no ServiceAccount selector). The daemon's
-  # TokenReview gate still enforces the exact caller identity. Set in
-  # deploy/values.yaml.
+  # Namespaces whose pods may reach /invoke (Cilium has no ServiceAccount
+  # selector). The daemon's TokenReview gate still enforces the exact caller
+  # identity. Set in deploy/values.yaml.
   fromNamespaces: []
 
 # Safe-rollout drain budget. On SIGTERM the daemon stops accepting new invokes

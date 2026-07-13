@@ -5,6 +5,6 @@ metadata:
   labels:
     {{- include "monolith-public.labels" . | nindent 4 }}
     # Meshed (ADR 004 Phase 5): join Kyverno's default Linkerd injection so the
-    # public pod gets a proxy and is governed by the native Server /
-    # AuthorizationPolicy / EgressNetwork in templates/linkerd-policy.yaml.
+    # public pod gets a proxy; inbound/egress isolation is now governed by
+    # templates/cilium-policy.yaml.
     linkerd.io/inject: enabled
