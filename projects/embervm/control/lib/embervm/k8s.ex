@@ -1,12 +1,12 @@
 defmodule Embervm.K8s do
   @moduledoc """
   Minimal in-cluster Kubernetes API client over Finch/Mint. R0 needs exactly
-  three calls: the `TokenReview` POST here (submit-API auth, Task 8) and the
-  Workload CRD list + status-patch (Task 5, `Embervm.WorkloadWatcher`'s
-  reconciler). Hand-rolling over Finch rather than pulling a full `k8s` hex
+  four calls: the `TokenReview` POST here (submit-API auth, Task 8) and the
+  Workload CRD list + watch + status-patch (Task 5, `Embervm.WorkloadWatcher`'s
+  informer). Hand-rolling over Finch rather than pulling a full `k8s` hex
   library is deliberate: that library drags a large transitive closure, and
   closure-completeness is the whole risk the bandit/plug/finch de-risk PR set
-  out to bound. Three endpoints do not justify it.
+  out to bound. Four endpoints do not justify it.
 
   `do_request/4` is the shared low-level helper every public call builds on:
   it re-reads the SA token, sets the auth/accept headers, optionally sets
@@ -38,6 +38,21 @@ defmodule Embervm.K8s do
   @tokenreview_path "/apis/authentication.k8s.io/v1/tokenreviews"
   @workloads_path "/apis/embervm.dev/v1alpha1/workloads"
   @receive_timeout 5_000
+
+  # Watch tuning. The apiserver serves watches from its cache, so the steady-
+  # state cost of a held watch is near zero regardless of how many Workloads
+  # exist. `timeoutSeconds` asks the apiserver to close the stream itself after
+  # ~5 min (a normal, healthy close the watcher simply re-establishes), which
+  # bounds how long any one connection lives and gives the apiserver a natural
+  # point to rebalance. `@watch_receive_timeout` sits ABOVE that server budget
+  # so that on a healthy-but-idle stream the server-side close always fires
+  # first; the client-side receive timeout only trips on a genuinely wedged
+  # connection (no bookmarks, no close), which is exactly when we want to give
+  # up and reconnect. `allowWatchBookmarks` makes the apiserver periodically
+  # emit BOOKMARK events carrying a fresh resourceVersion, so a long-idle watch
+  # still advances the RV we would resume from after a disconnect.
+  @watch_timeout_seconds 300
+  @watch_receive_timeout 310_000
 
   @doc """
   The Finch child spec for the control plane's shared HTTP pool. In-cluster it
@@ -89,24 +104,136 @@ defmodule Embervm.K8s do
 
   @doc """
   Lists every `Workload` custom resource cluster-wide (the ClusterRole grants
-  `list` across namespaces, not scoped to one). Poll-based, not a streaming
-  watch: `Embervm.WorkloadWatcher` calls this on a timer, so the list-level
-  `resourceVersion` is ignored entirely, there is nothing to resume from.
-  Returns the raw `items` array (binary-keyed CR maps, exactly as the API
-  server encodes them) so the watcher does its own validation/shaping.
+  `list` across namespaces, not scoped to one). This is the reconcile leg of
+  `Embervm.WorkloadWatcher`'s list-then-watch informer: it runs on boot, and
+  again on any watch invalidation (a 410 Expired, a parse/transport error) to
+  re-establish current truth before resuming the watch.
+
+  Requested with `resourceVersion=0`, which tells the apiserver "serve this
+  from your watch cache, any recent version is fine" rather than doing a
+  quorum read against etcd, so even a frequent resync is cheap. Returns the
+  raw `items` array (binary-keyed CR maps, exactly as the apiserver encodes
+  them) AND the collection-level `metadata.resourceVersion`: that RV is where
+  the subsequent watch resumes, so the two must come from the same list
+  response, which is why they are returned together here rather than fetched
+  separately.
   """
-  @spec list_workloads() :: {:ok, [map()]} | {:error, term()}
+  @spec list_workloads() :: {:ok, [map()], String.t() | nil} | {:error, term()}
   def list_workloads do
-    case do_request(:get, @workloads_path, nil, nil) do
+    case do_request(:get, @workloads_path <> "?resourceVersion=0", nil, nil) do
       {:ok, 200, resp_body} ->
         decoded = :json.decode(resp_body)
-        {:ok, Map.get(decoded, "items", [])}
+        items = Map.get(decoded, "items", [])
+        rv = get_in(decoded, ["metadata", "resourceVersion"])
+        {:ok, items, rv}
 
       {:ok, status, _resp_body} ->
         {:error, {:apiserver_status, status}}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @doc """
+  Opens a streaming watch on the `Workload` collection from `resource_version`
+  and invokes `on_event` once per delta as it arrives. This is the steady-state
+  leg of the informer: after the initial LIST establishes the catalog, the
+  watch delivers only what changed, served from the apiserver's cache.
+
+  The call is SYNCHRONOUS: `Finch.stream/5` blocks the calling process for the
+  whole lifetime of the stream, so the watcher must run this in a dedicated
+  process, never inside the GenServer that owns the catalog (that would freeze
+  every catalog read for the stream's lifetime). Returns:
+
+    * `{:ok, :closed}` when the stream ends cleanly (the normal path: the
+      apiserver closed it at `timeoutSeconds`, or after emitting a terminal
+      ERROR event). The caller decides whether to resume-watch or resync-LIST
+      based on the events it saw (an ERROR event means the RV expired).
+    * `{:error, reason}` on a non-200 status or a transport error, which the
+      caller treats as "resync with backoff".
+
+  `on_event` receives each event as a binary-keyed map
+  (`%{"type" => "ADDED"|"MODIFIED"|"DELETED"|"BOOKMARK"|"ERROR", "object" =>
+  ...}`), exactly as the apiserver frames it. It is invoked from THIS process
+  (the streamer), so implementations hand the event off to the owning
+  GenServer (a `send`) rather than mutating shared state directly.
+  """
+  @spec watch_workloads(String.t() | nil, (map() -> any())) :: {:ok, :closed} | {:error, term()}
+  def watch_workloads(resource_version, on_event) do
+    query =
+      URI.encode_query([
+        {"watch", "1"},
+        {"allowWatchBookmarks", "true"},
+        {"timeoutSeconds", Integer.to_string(@watch_timeout_seconds)},
+        {"resourceVersion", resource_version || "0"}
+      ])
+
+    with {:ok, sa_token} <- read_sa_token() do
+      headers = [{"authorization", "Bearer " <> sa_token}, {"accept", "application/json"}]
+      req = Finch.build(:get, api_url(@workloads_path <> "?" <> query), headers, "")
+      acc0 = %{status: nil, buffer: "", on_event: on_event}
+
+      result =
+        Finch.stream(req, Embervm.Finch, acc0, &watch_reducer/2, receive_timeout: @watch_receive_timeout)
+
+      # Finch.stream/5 returns {:ok, acc} on a completed stream, or the THREE-
+      # element {:error, exception, acc} on a transport error mid-stream (NOT a
+      # 2-tuple: matching {:error, reason} alone would CaseClause-crash on every
+      # disconnect). The acc carries the last-seen HTTP status; a non-200 there
+      # means the watch establishment itself was rejected (the apiserver sent an
+      # error object, not the NDJSON stream), which we surface as a resync.
+      case result do
+        {:ok, %{status: 200}} -> {:ok, :closed}
+        {:ok, %{status: status}} -> {:error, {:apiserver_status, status}}
+        {:error, reason, _acc} -> {:error, reason}
+      end
+    end
+  end
+
+  # Finch.stream/5 reducer. Threads a small acc holding the HTTP status, a
+  # frame buffer, and the caller's on_event. We only parse the body once the
+  # status is 200: a non-200 watch response carries a JSON error object, not
+  # the NDJSON event stream, and must not be fed to the event path.
+  defp watch_reducer({:status, status}, acc), do: %{acc | status: status}
+  defp watch_reducer({:headers, _headers}, acc), do: acc
+  defp watch_reducer({:trailers, _trailers}, acc), do: acc
+
+  defp watch_reducer({:data, data}, %{status: 200} = acc) do
+    {lines, rest} = frame_ndjson(acc.buffer, data)
+    Enum.each(lines, &dispatch_watch_line(&1, acc.on_event))
+    %{acc | buffer: rest}
+  end
+
+  defp watch_reducer({:data, _data}, acc), do: acc
+
+  @doc false
+  # Splits `buffer <> chunk` into complete newline-terminated lines plus the
+  # trailing incomplete remainder (to be prepended to the next chunk). A watch
+  # stream is newline-delimited JSON and TCP chunk boundaries fall anywhere, so
+  # a single JSON event can straddle two `:data` frames; this reassembles them.
+  # Exposed (rather than private) so it can be unit-tested directly, since the
+  # streaming path itself needs a live apiserver.
+  @spec frame_ndjson(binary(), binary()) :: {[binary()], binary()}
+  def frame_ndjson(buffer, chunk) do
+    parts = String.split(buffer <> chunk, "\n")
+    {complete, [remainder]} = Enum.split(parts, length(parts) - 1)
+    {complete, remainder}
+  end
+
+  # Blank lines (a stream's trailing newline) carry no event; skip them. A line
+  # that fails to decode is skipped rather than raised on: the apiserver writes
+  # one complete JSON object per line, so a decode failure would signal a
+  # framing bug we do not want to crash the streamer over mid-flight.
+  defp dispatch_watch_line("", _on_event), do: :ok
+
+  defp dispatch_watch_line(line, on_event) do
+    try do
+      on_event.(:json.decode(line))
+    catch
+      kind, reason ->
+        Logger.warning("embervm k8s watch: skipping undecodable event line: #{inspect({kind, reason})}")
+        :ok
     end
   end
 
