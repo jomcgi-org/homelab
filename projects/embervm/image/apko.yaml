@@ -1,9 +1,15 @@
 # Runtime image for the EmberVM control plane. Wolfi base providing erlang-27
 # (the ERTS + OTP apps the include_erts:false release boots against), busybox
 # (the release start script is /bin/sh), and ca-certificates. The control-plane
-# OTP release is layered at /opt/embervm per-arch-independently (see BUILD); the
-# .beam bytecode is architecture-independent, so one release serves both arches
-# and apko resolves erlang-27 per arch.
+# OTP release is layered at /opt/embervm (see BUILD).
+#
+# AMD64-ONLY: the release carries exqlite's compiled sqlite3_nif.so (the op-log
+# SQLite driver), which is architecture-specific, so the earlier "one release
+# serves both arches" property no longer holds. The RBE build executor and every
+# cluster node are amd64, so building x86_64 only is correct and honest: a dual
+# arch image would layer the amd64 NIF into an aarch64 manifest that no node can
+# run. If an arm64 node ever joins, this must become a per-arch release build (a
+# per-arch NIF), the bazel/ocaml pattern; until then, one arch is simpler.
 #
 # erlang-27 is pinned to 27.3.4.2-r0 to EXACTLY match the build OTP
 # (bazel/erlang/repositories.bzl): an include_erts:false release pins exact OTP
@@ -21,7 +27,6 @@ contents:
 
 archs:
   - x86_64
-  - aarch64
 
 environment:
   PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
