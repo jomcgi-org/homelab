@@ -7,6 +7,7 @@ helm_chart(
     name = "chart",
     images = {
         "image": "//projects/embervm/image:image.info",
+        "noded.image": "//projects/embervm/noded/image:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

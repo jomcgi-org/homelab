@@ -1,0 +1,129 @@
+{{- if .Values.noded.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "embervm.noded.fullname" . }}
+  labels:
+    {{- include "embervm.noded.labels" . | nindent 4 }}
+spec:
+  # Single replica: the daemon is node-affine (FC guests are node-bound) and owns
+  # node-4's KVM device + nvme scratch. Recreate, never run two against one node.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "embervm.noded.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "embervm.noded.labels" . | nindent 8 }}
+    spec:
+      # Safe-rollout drain: give the daemon time to finish in-flight Assigns on
+      # SIGTERM before Kubernetes SIGKILLs it. Set above the daemon's own drain
+      # budget (EMBERVM_NODED_DRAIN_TIMEOUT below) so grace always outlasts drain,
+      # mirroring fc-invoke (grace = drain + 30s).
+      terminationGracePeriodSeconds: {{ add .Values.noded.drain.timeoutSeconds 30 }}
+      serviceAccountName: {{ include "embervm.noded.serviceAccountName" . }}
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      priorityClassName: {{ .Values.noded.priorityClassName }}
+      nodeSelector:
+        {{- toYaml .Values.noded.nodeSelector | nindent 8 }}
+      {{- with .Values.noded.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Driving Firecracker needs root + the host KVM device and the nvme scratch
+      # dir (the firecracker binary + guest kernel are baked into the image at
+      # /opt/fc). Privileged is required for the per-instance vsock mount namespaces.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: noded
+          image: "{{ .Values.noded.image.repository }}:{{ .Values.noded.image.tag }}"
+          imagePullPolicy: {{ .Values.noded.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.noded.grpcPort }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.noded.healthPort }}
+              protocol: TCP
+          env:
+            - name: EMBERVM_NODED_LISTEN_ADDR
+              value: ":{{ .Values.noded.grpcPort }}"
+            - name: EMBERVM_NODED_HEALTH_ADDR
+              value: ":{{ .Values.noded.healthPort }}"
+            # The daemon self-identifies from the Downward API so snapshot node-
+            # pinning is correct wherever it lands.
+            - name: EMBERVM_NODED_NODE
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: EMBERVM_NODED_MAX_LIVE_VMS
+              value: {{ .Values.noded.maxLiveVMs | quote }}
+            # Per-invoke FC bundle snapshots and the fixed vsock dir the snapshot
+            # embeds both derive from nvmeRoot so the scratch disk is one knob.
+            - name: EMBERVM_NODED_SNAPSHOT_ROOT
+              value: {{ printf "%s/embervm-noded/snapshots" .Values.noded.firecracker.nvmeRoot | quote }}
+            - name: EMBERVM_NODED_CANONICAL_VSOCK_DIR
+              value: {{ printf "%s/embervm-noded-vsock" .Values.noded.firecracker.nvmeRoot | quote }}
+            - name: EMBERVM_NODED_GUEST_OOM_SCORE_ADJ
+              value: {{ .Values.noded.firecracker.guestOomScoreAdj | quote }}
+            - name: EMBERVM_NODED_BOOT_READY_TIMEOUT
+              value: {{ .Values.noded.firecracker.bootReadyTimeout | quote }}
+            {{- with .Values.noded.firecracker.kernelBootArgs }}
+            - name: EMBERVM_NODED_KERNEL_BOOT_ARGS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: EMBERVM_NODED_DRAIN_TIMEOUT
+              value: "{{ .Values.noded.drain.timeoutSeconds }}s"
+            # Node-side image identity table (image_ref -> rootfsPath[,harnessInit]),
+            # rendered as JSON. Empty until the control plane provisions guest images
+            # (Task 11+); BuildBase for an unknown image fails FAILED_PRECONDITION.
+            - name: EMBERVM_NODED_IMAGES
+              value: {{ .Values.noded.images | toJson | quote }}
+            {{- if .Values.noded.bearerTokenSecret.enabled }}
+            # Static bearer token gating the gRPC surface. When unset the daemon
+            # runs open and warns; a Cilium/Linkerd policy is defence-in-depth.
+            - name: EMBERVM_NODED_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.noded.bearerTokenSecret.name }}
+                  key: {{ .Values.noded.bearerTokenSecret.key }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.noded.resources | nindent 12 }}
+          volumeMounts:
+            - name: dev-kvm
+              mountPath: /dev/kvm
+            - name: nvme
+              mountPath: {{ .Values.noded.firecracker.nvmeRoot }}
+      volumes:
+        - name: dev-kvm
+          hostPath:
+            path: /dev/kvm
+            type: CharDevice
+        - name: nvme
+          hostPath:
+            path: {{ .Values.noded.firecracker.nvmeRoot }}
+            type: Directory
+{{- end }}

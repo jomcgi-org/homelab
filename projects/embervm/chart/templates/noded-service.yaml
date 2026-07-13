@@ -1,0 +1,18 @@
+{{- if .Values.noded.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "embervm.noded.fullname" . }}
+  labels:
+    {{- include "embervm.noded.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "embervm.noded.selectorLabels" . | nindent 4 }}
+  ports:
+    # gRPC NodeService the control plane dials (Task 11 wires the dispatcher to
+    # <fullname>.<namespace>.svc.cluster.local:{{ .Values.noded.grpcPort }}).
+    - name: grpc
+      port: {{ .Values.noded.grpcPort }}
+      targetPort: grpc
+{{- end }}

@@ -1,0 +1,34 @@
+# Runtime image for the embervm-noded daemon. Wolfi base with ca-certificates
+# (TLS to the in-cluster apiserver / OTLP) and busybox (a shell for in-pod
+# debugging). The Go daemon binary is layered at /usr/local/bin/embervm-noded and
+# the firecracker binary + guest kernel are baked at /opt/fc from the
+# @kata_firecracker bundle, so node-4 needs no /opt/kata install: it only provides
+# /dev/kvm and the nvme scratch dir (see projects/platform/firecracker-node).
+#
+# AMD64-ONLY: node-4 is the sole Firecracker node and is amd64, and FC snapshots
+# are arch-affine, so an aarch64 image no node could run would be dead weight.
+# This matches the embervm control image's amd64-only choice; if an arm64 FC node
+# ever joins, flip archs + apko_image(arm64=True) and rebuild the lock.
+#
+# LEAN by design: the daemon's driver boots one shared rootfs READ-ONLY per
+# microVM (the fc-invoke warm-base pattern, provisioner disabled), so it never
+# execs dmsetup. The devmapper CoW provisioner (ADR 026) is dead code at runtime
+# here; if it is ever enabled for noded, add lvm2 + util-linux back (fc-invoke's
+# base carries them for that mode).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - busybox
+
+archs:
+  - x86_64
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+entrypoint:
+  command: /usr/local/bin/embervm-noded
