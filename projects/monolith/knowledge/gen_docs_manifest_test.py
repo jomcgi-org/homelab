@@ -34,15 +34,14 @@ def test_should_index_allowlist():
     assert _should_index("docs/decisions/agents/001-background-agents.md")
     assert _should_index("docs/decisions/docs/002-x.md")
     # Excluded: hand-written top-level reference docs, plans, nested non-ADR
-    # docs, non-README project files, vendored README subtrees, wrong
-    # extension, non-docs paths, and the manifest itself.
+    # docs, non-README project files, wrong extension, non-docs paths, and the
+    # manifest itself. (Vendored README subtrees are also excluded via
+    # _VENDORED_PREFIXES, currently empty since the last vendored chart was
+    # removed; the mechanism stays for future vendored trees.)
     assert not _should_index("docs/security.md")
     assert not _should_index("docs/plans/2026-06-19-x.md")
     assert not _should_index("docs/security.txt")
     assert not _should_index("projects/monolith/chart/values.yaml")
-    assert not _should_index(
-        "projects/platform/linkerd/charts/linkerd-control-plane/README.md"
-    )
     assert not _should_index("README.md")
     assert not _should_index(
         "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"
