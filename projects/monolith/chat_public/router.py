@@ -2,8 +2,8 @@
 
 Mounted under ``/internal/chat`` and deliberately NOT on the public HTTPRoute:
 the only internet-facing origin for chat is the public SvelteKit SSR app, which
-proxies turns here over in-cluster Linkerd mTLS. The browser never talks to this
-router directly.
+proxies turns here in-cluster over the Cilium datapath (WireGuard node
+encryption). The browser never talks to this router directly.
 
 Phase 3 wires real inference: the message endpoint is async, builds the model
 context server-side (fixed system prompt + rolling summary + recent turns + the
@@ -223,10 +223,9 @@ async def create_chat_session(
     The real client IP arrives in the Cloudflare ``CF-Connecting-IP`` header,
     forwarded by SSR, and is stored only as a salted hash for reactive abuse
     forensics (there is no per-IP mint cap; see limits.py). The backend trusts
-    the header because it is reachable ONLY from the SSR mesh identity: the
-    ``-web`` Linkerd Server + AuthorizationPolicy (see the monolith-public
-    linkerd-policy) authorize only the frontend ServiceAccount, so any request
-    reaching this handler came from SSR.
+    the header because it is reachable ONLY from the frontend: the ``-web``
+    CiliumNetworkPolicy (see the monolith-public cilium-policy) admits only the
+    frontend pod, so any request reaching this handler came from SSR.
     """
     result = await turnstile.siteverify(payload.turnstile_token, cf_connecting_ip)
     if not result.success:

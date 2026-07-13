@@ -143,17 +143,6 @@ func TestBuildCopyJob_SecurityContext(t *testing.T) {
 	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, sc.SeccompProfile.Type)
 }
 
-// TestBuildCopyJob_LinkerdInjectionDisabled verifies the pod annotation.
-func TestBuildCopyJob_LinkerdInjectionDisabled(t *testing.T) {
-	mc := minimalModelCache()
-	cfg := minimalConfig()
-
-	job := buildCopyJob(mc, cfg)
-
-	annotations := job.Spec.Template.ObjectMeta.Annotations
-	assert.Equal(t, "disabled", annotations["linkerd.io/inject"])
-}
-
 // TestBuildCopyJob_ResourceLimits verifies memory requests and limits are applied.
 func TestBuildCopyJob_ResourceLimits(t *testing.T) {
 	mc := minimalModelCache()

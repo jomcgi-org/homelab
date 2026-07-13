@@ -39,9 +39,9 @@ export async function POST({ request, cookies }) {
   // Forward coarse geo + user-agent for the backend's pseudonymous session row,
   // plus the real client IP from Cloudflare's CF-Connecting-IP header so the
   // backend can salt-and-hash it (ip_hash, for reactive abuse forensics). The
-  // backend trusts CF-Connecting-IP only on connections bearing SSR's Linkerd
-  // identity (the -web Server + AuthorizationPolicy authorize only the frontend
-  // ServiceAccount), so a direct caller cannot spoof it.
+  // backend trusts CF-Connecting-IP only on connections from the frontend (the
+  // web CiliumNetworkPolicy admits only the frontend pod), so a direct caller
+  // cannot spoof it.
   const headers = { "content-type": "application/json" };
   const country = request.headers.get("cf-ipcountry");
   if (country) headers["CF-IPCountry"] = country;

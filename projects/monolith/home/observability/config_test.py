@@ -24,7 +24,7 @@ class TestTopologyConfig:
                 )
 
     def test_has_nodes(self):
-        assert len(TOPOLOGY.nodes) == 18
+        assert len(TOPOLOGY.nodes) == 17
 
     def test_external_nodes_have_no_slo(self):
         ext = next(n for n in TOPOLOGY.nodes if n.id == "external")

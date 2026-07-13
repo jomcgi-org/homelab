@@ -64,11 +64,7 @@ nodeSelector:
 tolerations: []
 affinity: {}
 
-# Linkerd injection disabled: the mirror is an in-cluster TCP service reached
-# via the egress-proxy; Linkerd sidecars are not needed here and would add
-# unnecessary latency and resource overhead to a node-local hop.
-podAnnotations:
-  linkerd.io/inject: disabled
+podAnnotations: {}
 
 podSecurityContext:
   runAsNonRoot: true

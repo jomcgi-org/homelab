@@ -10,21 +10,6 @@
 # run with --namespaced and creates Roles (not ClusterRoles) bound only in the
 # release namespace 'monolith-workflows'. Workflow pods also run there.
 #
-# Linkerd + workflow-pod termination: a meshed pod's linkerd-proxy never exits
-# when the main container completes, so a meshed Workflow pod would never reach
-# Completed and the controller would think it is stuck forever (the classic
-# mesh + Job problem). This cluster meshes every namespace by default via the
-# Kyverno `inject-linkerd-namespace-annotation` policy, and the existing
-# `disable-linkerd-on-jobs` policy only matches kind=Job, NOT Argo's bare
-# Workflow pods. Rather than opt out per workflow pod, the whole
-# 'monolith-workflows' namespace opts out: the ArgoCD Application stamps
-# `linkerd.io/inject: disabled` (label + annotation) onto the namespace via
-# managedNamespaceMetadata, which is exactly the exclusion the Kyverno policy
-# honours. So controller, server, and every Workflow pod run UNMESHED and
-# Workflow pods terminate cleanly with zero sidecar-kill hacks. monolith-pg has
-# no AuthorizationPolicy/Server in the monolith namespace, so unmeshed Workflow
-# pods reach it over plaintext in-cluster without being denied.
-#
 # Values are wrapped under the `argo-workflows:` key because the upstream
 # argoproj/argo-workflows chart is pulled in as a subchart dependency (Chart.yaml).
 argo-workflows:

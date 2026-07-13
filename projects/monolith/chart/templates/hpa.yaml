@@ -1,7 +1,7 @@
 {{- if and .Values.backend.autoscaling .Values.backend.autoscaling.enabled }}
 # HPA for the monolith backend deployment. Scales on the backend container's CPU
-# (ContainerResource, GA in k8s 1.27+) so the linkerd-proxy sidecar's CPU does
-# not dilute the signal. CPU, not memory: Python/Node hold memory after a spike,
+# (ContainerResource, GA in k8s 1.27+) so only the backend container drives
+# scaling, not any co-scheduled container. CPU, not memory: Python/Node hold memory after a spike,
 # so a memory-based HPA would never scale back down. Steady state stays at
 # minReplicas; scaling out is safe because the in-process singletons (Discord
 # bot, outbox drain, AIS ingest, lock sweep) are leader-gated via the Postgres

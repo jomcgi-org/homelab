@@ -5,9 +5,6 @@ metadata:
   labels:
     {{- include "monolith.labels" . | nindent 4 }}
 spec:
-  inheritedMetadata:
-    annotations:
-      config.linkerd.io/skip-inbound-ports: "9187"
   instances: {{ .Values.postgres.instances }}
   storage:
     size: {{ .Values.postgres.storage.size }}

@@ -3,14 +3,14 @@
 The TOPOLOGY *object* shape (node/edge/group counts and cross-reference
 integrity) is already covered by observability/config_test.py.  These
 tests focus on the helper functions that generate ClickHouse SQL strings
-and on the _slo() / _linkerd() compositors.
+and on the _slo() compositor.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from home.observability.config import LinkerdEdge, SloConfig
+from home.observability.config import SloConfig
 from home.observability.topology_config import (
     WINDOW_DAYS,
     SLO_TARGET,
@@ -23,10 +23,6 @@ from home.observability.topology_config import (
     _envoy_avg_latency_query,
     _envoy_rps_query,
     _envoy_success_rate_query,
-    _linkerd,
-    _linkerd_p99_error_rate_query,
-    _linkerd_p99_latency_query,
-    _linkerd_p99_rps_query,
     _llamacpp_requests_query,
     _llamacpp_tokens_query,
     _seaweedfs_disk_query,
@@ -301,146 +297,6 @@ class TestLlamaCppTokensQuery:
         # max - min gives counter delta
         q = _llamacpp_tokens_query("llama-cpp")
         assert "max(value) - min(value)" in q
-
-
-class TestLinkerdP99RpsQuery:
-    def test_returns_string(self):
-        q = _linkerd_p99_rps_query("monolith", "llama-cpp", "llama-cpp")
-        assert isinstance(q, str)
-
-    def test_contains_src(self):
-        q = _linkerd_p99_rps_query("monolith", "llama-cpp", "llama-cpp")
-        assert "monolith" in q
-
-    def test_contains_dst_ns(self):
-        q = _linkerd_p99_rps_query("src-svc", "dst-namespace", "dst-svc")
-        assert "dst-namespace" in q
-
-    def test_contains_dst_svc(self):
-        q = _linkerd_p99_rps_query("src-svc", "dst-ns", "dst-svc")
-        assert "dst-svc" in q
-
-    def test_contains_metric_name(self):
-        q = _linkerd_p99_rps_query("a", "b", "c")
-        assert "outbound_http_route_request_duration_seconds.count" in q
-
-    def test_uses_7_day_window(self):
-        q = _linkerd_p99_rps_query("a", "b", "c")
-        assert "INTERVAL 7 DAY" in q
-
-    def test_uses_p99_quantile(self):
-        q = _linkerd_p99_rps_query("a", "b", "c")
-        assert "0.99" in q
-
-
-class TestLinkerdP99LatencyQuery:
-    def test_returns_string(self):
-        q = _linkerd_p99_latency_query("monolith", "llama-cpp", "llama-cpp")
-        assert isinstance(q, str)
-
-    def test_contains_src(self):
-        q = _linkerd_p99_latency_query("monolith", "llama-cpp", "llama-cpp")
-        assert "monolith" in q
-
-    def test_contains_dst_ns(self):
-        q = _linkerd_p99_latency_query("src-svc", "dst-namespace", "dst-svc")
-        assert "dst-namespace" in q
-
-    def test_contains_dst_svc(self):
-        q = _linkerd_p99_latency_query("src-svc", "dst-ns", "dst-svc")
-        assert "dst-svc" in q
-
-    def test_contains_bucket_metric(self):
-        q = _linkerd_p99_latency_query("a", "b", "c")
-        assert "outbound_http_route_request_duration_seconds.bucket" in q
-
-    def test_converts_to_ms(self):
-        # multiplies by 1000 for ms conversion
-        q = _linkerd_p99_latency_query("a", "b", "c")
-        assert "1000" in q
-
-    def test_uses_7_day_window(self):
-        q = _linkerd_p99_latency_query("a", "b", "c")
-        assert "INTERVAL 7 DAY" in q
-
-
-class TestLinkerdP99ErrorRateQuery:
-    def test_returns_string(self):
-        q = _linkerd_p99_error_rate_query("monolith", "llama-cpp", "llama-cpp")
-        assert isinstance(q, str)
-
-    def test_contains_src(self):
-        q = _linkerd_p99_error_rate_query("monolith", "llama-cpp", "llama-cpp")
-        assert "monolith" in q
-
-    def test_contains_dst_ns(self):
-        q = _linkerd_p99_error_rate_query("src-svc", "dst-namespace", "dst-svc")
-        assert "dst-namespace" in q
-
-    def test_contains_dst_svc(self):
-        q = _linkerd_p99_error_rate_query("src-svc", "dst-ns", "dst-svc")
-        assert "dst-svc" in q
-
-    def test_contains_metric_name(self):
-        q = _linkerd_p99_error_rate_query("a", "b", "c")
-        assert "outbound_http_route_backend_response_statuses_total" in q
-
-    def test_filters_5xx_errors(self):
-        q = _linkerd_p99_error_rate_query("a", "b", "c")
-        assert "5%" in q
-
-    def test_uses_7_day_window(self):
-        q = _linkerd_p99_error_rate_query("a", "b", "c")
-        assert "INTERVAL 7 DAY" in q
-
-    def test_uses_p99_quantile(self):
-        q = _linkerd_p99_error_rate_query("a", "b", "c")
-        assert "0.99" in q
-
-
-class TestLinkerdCompositor:
-    def test_returns_linkerd_edge(self):
-        result = _linkerd("monolith", "llama-cpp", "llama-cpp")
-        assert isinstance(result, LinkerdEdge)
-
-    def test_rps_query_populated(self):
-        result = _linkerd("monolith", "llama-cpp", "llama-cpp")
-        assert isinstance(result.rps_query, str)
-        assert len(result.rps_query) > 0
-
-    def test_latency_query_populated(self):
-        result = _linkerd("monolith", "llama-cpp", "llama-cpp")
-        assert isinstance(result.latency_query, str)
-        assert len(result.latency_query) > 0
-
-    def test_error_rate_query_populated(self):
-        result = _linkerd("monolith", "llama-cpp", "llama-cpp")
-        assert isinstance(result.error_rate_query, str)
-        assert len(result.error_rate_query) > 0
-
-    def test_all_three_queries_distinct(self):
-        result = _linkerd("monolith", "llama-cpp", "llama-cpp")
-        assert result.rps_query != result.latency_query
-        assert result.latency_query != result.error_rate_query
-        assert result.rps_query != result.error_rate_query
-
-    def test_src_propagated_to_all_queries(self):
-        result = _linkerd("unique-src", "dst-ns", "dst-svc")
-        assert "unique-src" in result.rps_query
-        assert "unique-src" in result.latency_query
-        assert "unique-src" in result.error_rate_query
-
-    def test_dst_ns_propagated_to_all_queries(self):
-        result = _linkerd("src", "unique-dst-ns", "dst-svc")
-        assert "unique-dst-ns" in result.rps_query
-        assert "unique-dst-ns" in result.latency_query
-        assert "unique-dst-ns" in result.error_rate_query
-
-    def test_dst_svc_propagated_to_all_queries(self):
-        result = _linkerd("src", "dst-ns", "unique-dst-svc")
-        assert "unique-dst-svc" in result.rps_query
-        assert "unique-dst-svc" in result.latency_query
-        assert "unique-dst-svc" in result.error_rate_query
 
 
 class TestQueryParameterIsolation:
