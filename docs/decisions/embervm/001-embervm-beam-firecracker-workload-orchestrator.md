@@ -1,7 +1,7 @@
 # ADR 001: EmberVM, a BEAM Orchestrator for Firecracker Workloads
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-07-12
 
 ---
