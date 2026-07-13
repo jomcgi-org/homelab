@@ -11,6 +11,16 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
+# GHCR pull credentials. The control-plane image is private, and embervm runs in
+# its own namespace (unlike fc-invoke, which reuses the monolith namespace's
+# secret), so it creates its own OnePasswordItem-synced dockerconfigjson.
+imagePullSecret:
+  enabled: true
+  create: true
+  name: ghcr-imagepull-secret
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/ghcr-read-permissions"
+
 # Control-plane resources sized small to start (SigNoz 7-day-peak resizing later).
 # CPU is a request only (no limit) per the repo convention; memory request == limit.
 resources:
