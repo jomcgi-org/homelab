@@ -40,6 +40,7 @@ COVERAGE_ALLOWLIST = frozenset(
         # real projects deliberately left out of that top-level tree. Promote one
         # into the README (and drop it from here) if it grows into a headline system.
         "advent_of_code",
+        "embervm",  # R0 skeleton (ADR embervm/001), not yet a deployed system; promote to the README when its chart wires to ArgoCD.
         "firecracker",
         "grimoire",
         "hikes",
