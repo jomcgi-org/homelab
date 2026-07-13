@@ -18,13 +18,40 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: kube-system
-  # MANUAL SYNC ONLY. `syncPolicy.automated` is deliberately omitted: Cilium must
-  # not self-install ahead of the human-run cutover window. The flannel -> Cilium
-  # datapath swap needs an out-of-band k3s server-flag change and node reboot
-  # (see projects/platform/cilium/bootstrap/README.md) that GitOps cannot drive.
-  # Track 2 of the migration enables sync by hand once the node bootstrap is done.
-  # See ADR platform/012 and docs/plans/2026-07-10-cilium-migration.md.
+  # Cilium is now GitOps-reconciled (ADR platform/012, migration plan Step 5).
+  # The bootstrap HelmChart CR in bootstrap/ stays the INSTALL seam (it provides
+  # the CNI before ArgoCD is reachable); ArgoCD adopts the release and reconciles
+  # ongoing config from here. Verified before enabling: the rendered chart values
+  # (version 1.19.5, image, and every datapath cilium-config key: WireGuard,
+  # node encryption, tunnel/vxlan, pod CIDR, kube-proxy-replacement=false,
+  # policy=default, cni-exclusive=false) match the live install, and the rendered
+  # resource set equals the tracked set, so adoption is metadata-only (no agent
+  # roll, nothing pruned).
+  ignoreDifferences:
+    # Cilium's chart generates the Hubble CA and mTLS certs at Helm template time
+    # (tls.auto.method=helm), so each render produces DIFFERENT random certs than
+    # the live (bootstrap-generated) ones. Without this, every sync would rotate
+    # Hubble's certs (Hubble observability churn; the eBPF datapath and WireGuard
+    # keys are unaffected). Ignore their data so the live certs are preserved.
+    - group: ""
+      kind: Secret
+      name: cilium-ca
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: hubble-server-certs
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: hubble-relay-client-certs
+      jsonPointers:
+        - /data
   syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=false
       # Cilium's bundled CRDs render large; server-side apply skips the 256 KiB
