@@ -186,6 +186,66 @@
         {/each}
       </section>
 
+      {#if data.cohorts && data.cohorts.total_pairs > 0}
+        <section class="card cohorts">
+          <h2 class="section-label">Speedup by diff cohort</h2>
+          <p class="cohort-note">
+            {data.cohorts.total_pairs} matched PR pair{data.cohorts.total_pairs ===
+            1
+              ? ""
+              : "s"} segmented by diff shape &mdash; which cohorts are at parity vs
+            a major speedup.
+          </p>
+          <div class="cohort-grid">
+            {#each [["By changed files", data.cohorts.by_files], ["By changed lines", data.cohorts.by_lines], ["By language", data.cohorts.by_language]] as [title, groups]}
+              {#if groups && groups.length}
+                <div class="cohort-block">
+                  <h3 class="cohort-title">{title}</h3>
+                  <table class="cohort-table">
+                    <thead>
+                      <tr>
+                        <th>cohort</th>
+                        <th class="num">n</th>
+                        <th class="num">homelab</th>
+                        <th class="num">managed</th>
+                        <th class="num">speedup</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each groups as g}
+                        {@const sp = speedupLabel(g.speedup)}
+                        <tr>
+                          <td>{g.label}</td>
+                          <td class="num mono">{g.pairs}</td>
+                          <td class="num mono"
+                            >{formatDuration(g.homelab_median) ?? "-"}</td
+                          >
+                          <td class="num mono"
+                            >{formatDuration(g.managed_median) ?? "-"}</td
+                          >
+                          <td class="num mono">
+                            {#if sp}
+                              <span
+                                class="speedup"
+                                class:speedup--ok={sp.tone === "ok"}
+                                class:speedup--bad={sp.tone === "bad"}
+                                >{sp.text}</span
+                              >
+                            {:else}
+                              <span class="dim">&ndash;</span>
+                            {/if}
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
+            {/each}
+          </div>
+        </section>
+      {/if}
+
       <details class="detail">
         <summary class="detail-summary">
           Individual comparisons ({matchedComparisons.length} matched)
@@ -625,5 +685,53 @@
 
   .speedup--bad {
     color: var(--bad);
+  }
+
+  /* ── Cohort segmentation ── */
+  .cohorts {
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .cohort-note {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+
+  .cohort-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px 28px;
+  }
+
+  .cohort-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--ink-2);
+    margin: 0 0 6px;
+  }
+
+  .cohort-table {
+    width: 100%;
+  }
+
+  .cohort-table thead th {
+    padding: 0 12px 6px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .cohort-table tbody td {
+    padding: 5px 12px 5px 0;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+
+  .cohort-table tbody tr:last-child td {
+    border-bottom: none;
   }
 </style>
