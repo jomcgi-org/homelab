@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "embervm.fullname" . }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+spec:
+  # Exactly one replica. The op-log PVC is RWO and SQLite is single-writer, so a
+  # second replica would either deadlock on the volume or run two writers.
+  replicas: 1
+  # Recreate, never RollingUpdate: a rolling update would briefly run the old and
+  # new pods together, contending for the RWO op-log volume (deadlock) or double-
+  # writing SQLite. Recreate tears the old pod down before starting the new one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "embervm.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "embervm.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "embervm.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: control-plane
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            - name: EMBERVM_HTTP_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: EMBERVM_OPLOG_PATH
+              value: /var/lib/embervm/oplog.db
+            {{- if .Values.node.address }}
+            - name: EMBERVM_NODE_ADDRESS
+              value: {{ .Values.node.address | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: oplog
+              mountPath: /var/lib/embervm
+      volumes:
+        - name: oplog
+          persistentVolumeClaim:
+            claimName: {{ include "embervm.fullname" . }}-oplog
