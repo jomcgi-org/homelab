@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: embervm
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    # Chart from OCI (pushed by CI via Bazel helm_push); image tag pinned at build.
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: embervm
+      targetRevision: 0.1.0
+      helm:
+        valueFiles:
+          - $values/projects/embervm/deploy/values.yaml
+    # Git repo for environment-specific values.
+    - repoURL: https://github.com/jomcgi/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    # Own namespace; nothing monolith-coupled.
+    namespace: embervm
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
