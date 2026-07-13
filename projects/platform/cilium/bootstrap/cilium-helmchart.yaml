@@ -20,10 +20,23 @@ spec:
   repo: https://helm.cilium.io
   version: 1.19.5
   targetNamespace: kube-system
+  # bootstrap: true is REQUIRED for a CNI installed through the k3s
+  # helm-controller. It runs the Helm install Job on the HOST network with
+  # control-plane node selection and tolerations (NodeNotReady,
+  # NetworkUnavailable, uninitialized, Etcd, control-plane), so the install can
+  # run BEFORE any CNI exists. Without it the install Job is unschedulable (no
+  # pod networking is available yet) and the cluster comes up with no CNI at all.
+  # failurePolicy: abort fails loudly instead of retry-looping a broken install.
+  bootstrap: true
+  failurePolicy: abort
   valuesContent: |-
     kubeProxyReplacement: false
-    k8sServiceHost: 127.0.0.1
-    k8sServicePort: 6443
+
+    # k8sServiceHost/Port omitted on purpose (see ../values.yaml): kube-proxy
+    # routes the kubernetes Service, and 127.0.0.1 would be wrong on the agent.
+    # cni.exclusive: false lets Cilium coexist with k3s CNI config management.
+    cni:
+      exclusive: false
 
     ipam:
       mode: cluster-pool
