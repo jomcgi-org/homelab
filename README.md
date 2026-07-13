@@ -56,6 +56,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── inference/        #   On-cluster vLLM (Qwen3.6) + llama.cpp embeddings
 ├── operators/        #   Custom Kubernetes operators
 ├── sextant/          #   State-machine code generator for operators
+├── embervm/          #   BEAM orchestrator for Firecracker workload execution
 └── home-cluster/     #   Auto-generated ArgoCD root kustomization
 bazel/                # Build infrastructure (rules, tools, images, semgrep)
 buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a cell)
