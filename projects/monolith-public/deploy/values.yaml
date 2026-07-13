@@ -47,14 +47,16 @@ cfIngress:
     enabled: true
     hostname: jomcgi.dev
 
-# Cilium ingress restrictions (ADR platform/012). Post-cutover follow-up: flip
-# the INGRESS gate on (gateway -> frontend, frontend -> web) now that Cilium is
-# the live CNI. The EGRESS gate stays off deliberately: the off-cluster
-# default-deny + Turnstile FQDN allow flips in a separate tested follow-up so an
-# unproven egress deny is not stacked on the CNI swap. See the chart's
-# templates/cilium-policy.yaml rationale.
+# Cilium network policy (ADR platform/012). Both gates are on:
+#   ingress: gateway -> frontend, frontend -> web (flipped during the window).
+#   egress:  off-cluster default-deny with the single sanctioned Turnstile FQDN
+#            (challenges.cloudflare.com), all in-cluster allowed, DNS via the L7
+#            proxy. Flipped in a tested follow-up: hubble showed the only
+#            off-cluster egress is web -> Turnstile; frontend/imgproxy reach
+#            nothing off-cluster (imgproxy sources from in-cluster SeaweedFS).
+# See the chart's templates/cilium-policy.yaml rationale.
 ciliumPolicy:
   ingress:
     enabled: true
   egress:
-    enabled: false
+    enabled: true
