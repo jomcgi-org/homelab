@@ -18,7 +18,8 @@
 4. **Enforcement fails closed, warmth fails open.** Unreadable quota/capacity state denies dispatch; lost snapshots or a cold pool degrade to slower boots, never to incorrect behavior.
 5. **Facts through the control plane, payloads never**, with the R0-inherent exception: task request/response bodies flow control plane -> daemon -> vsock by definition (lifecycle-rate equals request-rate for the all-miss task class).
 6. **No VM is ever reused across principals.** Task-class VMs are single-use: pristine restore, one assignment, destroy. Task-class VMs have no NIC (vsock only).
-7. **v1 invariants held for later rungs** (cheap now, expensive to retrofit): the invocation front-end is a separate module from placement; `source` is a oneOf in the CRD schema; results and audit events are ordered op-log appends; per-tenant partitioning is a first-class key in every op-log record.
+7. **v1 invariants held for later rungs** (cheap now, expensive to retrofit): the invocation front-end is a separate module from placement; `source` is a oneOf in the CRD schema; results and audit events are ordered op-log appends; per-tenant partitioning is a first-class key in every op-log record; snapshot metadata records carry a `volumeGeneration` field (null for the task class, the R4 pairing invariant); the CRD schema comment reserves a `spec.group` block (the R5 group-shaped room). Tenancy note: v1 runs a single tenant (`homelab`), so per-tenant quotas are degenerate; the tenant column is still carried on every record and enforcement key so multi-tenant is a data change, not a schema change.
+8. **"Durable store never on the dispatch path" means dispatch never READS it.** Task-state transitions are write-through appends by design (the at-least-once bound in gate 3 depends on them); capacity and pool facts are read from ETS only.
 
 ## Cross-cutting constraints
 
@@ -83,6 +84,7 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 **Specification:**
 - The chart MUST template cleanly with `helm template embervm projects/embervm/chart/ -f projects/embervm/deploy/values.yaml`.
 - Control-plane resources sized small to start (requests 100m/256Mi, limits mem 512Mi); resizing follows the SigNoz 7-day-peak convention later.
+- Deployment strategy MUST be `Recreate`: the op-log PVC is RWO and SQLite is single-writer, so a rolling update would either deadlock on the volume or briefly run two writers.
 - PVC (Longhorn, 1 replica per the non-HA policy) mounted for the SQLite op-log; a PVC provides durability, not availability, and that wording goes in the values comment.
 - `format` regenerates the home-cluster root kustomization to include the new app.
 
@@ -105,6 +107,7 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 - `rpc Assign(AssignRequest) returns (AssignResponse)`: deliver exactly one HTTP-semantics task (method, path, headers, body; body capped at 8 MiB) to a primed `vm_id` over vsock; returns the guest HTTP response plus usage stats (`cpu_ms`, `peak_rss_mib`, wall time). The daemon destroys the VM after response delivery regardless of outcome. `Assign` on an already-assigned or destroyed `vm_id` MUST fail without side effects.
 - `rpc Destroy(DestroyRequest) returns (DestroyResponse)`: reap a primed or wedged VM.
 - `rpc WatchNode(WatchNodeRequest) returns (stream NodeStatus)`: server-streamed heartbeat with capacity facts (free primed slots per workload, mem/cpu headroom, base build states, daemon draining flag). The daemon is the health authority.
+- `rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus)`: unary snapshot of the same facts, for polling fallback and startup reconciliation.
 - All RPCs carry a `workload` name and an opaque `task_id`/`correlation_id` for tracing. Errors use canonical gRPC codes; `RESOURCE_EXHAUSTED` for capacity, `FAILED_PRECONDITION` for lifecycle misuse.
 - Auth v1: mTLS is out of scope; the daemon listens on the pod network, gated by Linkerd policy + a static bearer token from a Kubernetes Secret (upgrade path noted in proto comments).
 - The proto MUST NOT leak Firecracker concepts (no jailer paths, no snapshot file paths in the API; refs are opaque strings).
@@ -151,10 +154,10 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 
 **Specification (schema, normative for R0):**
 - `spec.class`: enum, only `task` valid in v1alpha1 (schema reserves the enum for `session|serving|stateful`).
-- `spec.source`: oneOf; only `image` implemented: `{ref (OCI reference, digest-pinned or tag), port (int, guest HTTP port), readyPath (default /shim/ready), initEnv (map, optional)}`. The oneOf shape MUST be structurally validated (exactly one member set).
+- `spec.source`: oneOf; only `image` implemented: `{ref (OCI reference, digest-pinned or tag), port (int, guest HTTP port), readyPath (default /shim/ready), invokePath (default /, the guest path tasks are POSTed to), initEnv (map, optional)}`. The oneOf shape MUST be structurally validated (exactly one member set).
 - `spec.resources`: `{vcpus (1..8), memMib (128..16384)}`.
 - `spec.concurrency`: `{floor (primed pool floor, >=0), cap (hard max in-flight, >=1, >=floor)}`.
-- `spec.invocation`: `{timeoutSeconds (1..900), retry {maxAttempts (1..10, default 3), backoffSeconds (default 1), backoffCapSeconds (default 60), retryOn (enum list: transport|timeout|guest5xx, default all three)}, resultTtlSeconds (default 86400), deadLetter {enabled (default true)}}`.
+- `spec.invocation`: `{timeoutSeconds (1..900), retry {maxAttempts (1..10, default 3), backoffSeconds (default 1), backoffCapSeconds (default 60), retryOn (enum list: transport|timeout|guest5xx, default all three)}, resultTtlSeconds (default 86400), resultMaxBytes (default 1 MiB, max 8 MiB), deadLetter {enabled (default true)}}`. Failure destinations (forwarding failed tasks to another workload or endpoint) are explicitly a recorded follow-on, not v1; the DLQ list/redrive surface in Task 8 is the v1 answer to the ADR's failure-handling contract.
 - `spec.triggers`: list, v1 supports `{cron: "<5-field cron>", payload: <inline JSON, <=8KiB>}` only; may be empty.
 - `status`: `{observedGeneration, snapshotRef, snapshotDigest, conditions[] (Ready, BaseBuilt), primedFloorSatisfied (bool)}`.
 - Guest-image identity fields (rootfs path, harness init) are daemon-side values configuration in v1 (they are node facts, not workload intent); revisit when multi-node lands.
@@ -174,7 +177,7 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 - Task and result tables with a documented schema migration path
 
 **Specification:**
-- Schema (v1): `ops(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, tenant, principal, workload, task_id, kind, payload_json)`; `tasks(task_id TEXT PRIMARY KEY, tenant, principal, workload, state, attempt, idempotency_key, submitted_at, updated_at, expires_at)`; unique index on `(workload, idempotency_key)` where idempotency_key is not null; `results(task_id PRIMARY KEY, status_code, body BLOB, size_bytes, created_at, expires_at)` with body capped at 1 MiB (larger results are truncated with a marker; object-store spill is a recorded follow-on, not v1).
+- Schema (v1): `ops(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, tenant, principal, workload, task_id, kind, payload_json)`; `tasks(task_id TEXT PRIMARY KEY, tenant, principal, workload, state, attempt, idempotency_key, submitted_at, updated_at, expires_at)`; unique index on `(workload, idempotency_key)` where idempotency_key is not null; `results(task_id PRIMARY KEY, status_code, body BLOB, size_bytes, truncated, created_at, expires_at)` with body capped at the workload's `resultMaxBytes` (larger stored copies are truncated with the flag set; object-store spill is a recorded follow-on, not v1). Truncation applies to the stored copy only; sync callers receive the full response (Task 8).
 - `kind` values (closed enum, additive-only): `submitted, assigned, started, succeeded, failed, retried, dead_lettered, denied, base_built, primed, vm_destroyed, quota_enforced, drain`.
 - Every record carries `tenant` and `principal` columns (R6 partitioning invariant), even though v1 has effectively one tenant.
 - WAL mode on; single writer process (an OTP GenServer owns the connection); fsync on task-state transitions; append latency budget p95 <= 5ms on the PVC.
@@ -195,7 +198,7 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 - Task lifecycle FSM implemented as data (explicit transition table), not scattered conditionals
 
 **Specification:**
-- States: `queued -> assigned -> running -> succeeded | failed_retryable -> queued (attempt+1) | failed_permanent -> dead_lettered`. Terminal: `succeeded, failed_permanent, dead_lettered, denied`. Every transition appends to the op-log before it is visible in ETS (task-state write-through).
+- States: `queued -> assigned -> running -> succeeded | failed_retryable -> queued (attempt+1) | failed_permanent -> dead_lettered`. Terminal: `succeeded, failed_permanent, dead_lettered`. Every transition appends to the op-log before it is visible in ETS (task-state write-through). Submit-time denials (quota, cap, auth) do NOT create task records; the `denied` op-log kind carries a nullable `task_id` and the denial reason.
 - Delivery semantics: at-least-once. A task found `assigned`/`running` after control-plane restart with no daemon evidence (vm gone from `NodeStatus`) is retried per policy; duplicate side effects are the caller's concern via idempotency keys.
 - Idempotency: a submit carrying an existing `(workload, idempotency_key)` returns the existing task (and its result if terminal) instead of creating a new one, for the lifetime of the result TTL.
 - Retry: exponential backoff with full jitter from `backoffSeconds` to `backoffCapSeconds`; only error classes listed in `retryOn` are retryable; guest 4xx is always `failed_permanent` (the guest spoke HTTP; the task itself is wrong).
@@ -211,12 +214,14 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 **Why:** The caller-facing surface; deliberately a separate module from placement (v1 invariant, keeps R3's front-end split reachable).
 
 **Deliverables:**
-- HTTP API in the control plane: `POST /v1/workloads/{name}/tasks` (async: 202 + task_id; sync: `?wait=true` parks the request until terminal state or `timeoutSeconds`), `GET /v1/tasks/{id}` (state + metadata), `GET /v1/tasks/{id}/result` (stored result until TTL)
+- HTTP API in the control plane: `POST /v1/workloads/{name}/tasks` (async: 202 + task_id; sync: `?wait=true` parks the request until terminal state or `timeoutSeconds`), `GET /v1/tasks/{id}` (state + metadata), `GET /v1/tasks/{id}/result` (stored result until TTL), `GET /v1/workloads/{name}/dead-letters` (paged DLQ listing), `POST /v1/tasks/{id}/redrive` (re-queue a dead-lettered task, attempt counter reset, audited)
 - TokenReview auth port of the fc-invoke pattern: bearer token -> TokenReview -> allow-list of ServiceAccount usernames from values; principal recorded on every task
 
 **Specification:**
+- **Task envelope (normative):** a task IS one HTTP request to the guest. Method is always POST for the task class. Path defaults to the workload's `spec.source.invokePath`, overridable per submit with the `X-Ember-Guest-Path` header. The submit request's body is forwarded verbatim as the guest request body; `Content-Type` is forwarded; headers prefixed `X-Ember-Guest-` are stripped of the prefix and forwarded; no other caller headers reach the guest. Cron trigger payloads are POSTed to `invokePath` with `Content-Type: application/json`. This is the contract `AssignRequest` carries and the Task 15 monolith client programs against.
+- Token validation MUST be cached: sha256(token) -> principal with a 60s TTL, singleflight on misses, failures never cached, and the K8s client configured with raised QPS/Burst (the fc-invoke 5 QPS TokenReview throttle incident, PR #3352, is the cautionary precedent; gate 1 implies ~75 authenticated submits/s).
 - Sync wait is a parked BEAM process, not a poll loop; parked count is capped per principal (default 512) and excess sync submits are rejected 429 (miss-path abuse guard, wake-rate analog).
-- Request body cap 8 MiB (matches daemon Assign cap); responses stream through without buffering beyond the result-store write.
+- Request body cap 8 MiB (matches daemon Assign cap); sync responses stream the full untruncated guest response through to the caller regardless of `resultMaxBytes` (which caps only the stored copy).
 - Errors are structured JSON `{error, task_id?, retryable}`; denial reasons (quota, cap, auth) are distinguishable from capacity backpressure.
 - OpenAPI document generated or hand-written under `projects/embervm/docs/api.yaml`; it is the contract for the monolith client in Task 15.
 - API MUST NOT expose op-log internals; task queries read ETS/result store only.
@@ -257,7 +262,7 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 **Specification:**
 - Builds are serialized per node (base builds are heavy: boot + health-gate + snapshot); concurrent Workload admissions queue.
 - A failed build sets `BaseBuilt=False` with the daemon's error string in the condition message and retries with backoff (cap 10m); the Workload never becomes Ready without a base.
-- Image ref changes (new digest) trigger a rebuild; the old base is destroyed only after the new one is built and the primed pool has turned over (no dispatch gap).
+- Image ref changes (new digest) trigger a rebuild; once the new base is built, old-base primed VMs are proactively destroyed and re-primed from the new base (turnover must not wait for organic assignment on an idle pool), and the old base file is destroyed only after zero primed VMs reference it (no dispatch gap).
 - Tag-pinned refs are resolved to digests at build time and the digest is recorded in status (deploys are explicit CR updates, not tag drift).
 
 **Acceptance:**
@@ -279,7 +284,7 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 - Enforcement (fail-closed): per-workload `cap` on in-flight tasks; per-principal share cap (values-configured fraction, default: cap divided by active principals, minimum 1); queue depth cap per principal (default 10k, reject 429 beyond). If ETS capacity facts are missing or stale (>15s), deny dispatch with a distinct denial kind.
 - Pool fairness: refill is per-workload floor first, then proportional to queue depth; one workload's burst MUST NOT drain another workload's floor (property test).
 - Latency budgets (measured via OTel spans, enforced in Task 16 gates): submit-to-Assign p95 <= 25ms when a primed VM exists; miss-path submit-to-Assign p95 <= 500ms (restore-bound); control-plane share of end-to-end task latency p95 <= 50ms.
-- Cron triggers: a supervised scheduler fires `spec.triggers[].cron` as ordinary submits with principal `system:cron:<workload>`; misfires during control-plane downtime are skipped, not replayed (documented semantic; the daily full-scan consumer tolerates it).
+- Cron triggers: implemented behind a `TriggerAdapter` behaviour (adapter turns external events into ordinary submits; cron is the only R0 adapter, NATS plugs in behind the same behaviour later). The cron adapter fires `spec.triggers[].cron` as submits with principal `system:cron:<workload>`; misfires during control-plane downtime are skipped, not replayed (documented semantic; the daily full-scan consumer tolerates it).
 
 **Acceptance:**
 - ExUnit: fairness property (two principals, unequal submit rates, near-equal service rates), floor isolation property, cap and fail-closed denial tests, cron fire test with clock injection. Fake-daemon integration: 1k tasks drain with zero lost, all terminal.
@@ -316,6 +321,7 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 - OTel traces from the control plane (OTLP to SigNoz): root span per task with child spans `auth`, `enqueue`, `fair_wait`, `assign` (or `prime_assign` on miss), `guest_exec`, `result_store`; every external call (TokenReview, gRPC, SQLite append) has a span
 - Structured JSON logs; key transitions logged at info, denials at warn
 - Daemon fork keeps fc-invoke's span shape for restore/boot phases
+- Guest logs shipped from day one (ADR contract): embervm-noded captures guest console output and emits it as structured log lines tagged with `workload` and `task_id` (per-task cap 256 KiB, truncation marked), reaching SigNoz via the standard pod log pipeline
 
 **Specification:**
 - Span attributes: `ember.workload`, `ember.tenant`, `ember.principal` (hashed if configured), `ember.task_id`, `ember.pool_hit` (bool), `ember.attempt`.
@@ -376,9 +382,9 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 - Post-cutover: the semgrep-full daily CronWorkflow trigger optionally moves to a `spec.triggers` cron entry (only if Task 11's cron semantics fit; otherwise recorded as follow-on)
 
 **Specification (the gates, all MUST pass before cutover):**
-1. Throughput: semgrep >= 18/s and sandbox >= 55/s sustained over 120s on node-4 at cap 16, error rate 0, matching the fc-invoke baseline (2026-07-10 measurements) within noise.
+1. Throughput: semgrep >= 18/s and sandbox >= 55/s sustained over 120s on node-4 at cap 16, error rate 0, matching the fc-invoke baseline (2026-07-10 measurements) within noise. If the coexistence budget forces caps below 16, the gate normalizes per slot: throughput per concurrency slot >= the baseline's per-slot rate (18/16 and 55/16 respectively), with the absolute run repeated at cap 16 after fc-invoke's scan path is drained, before cutover completes.
 2. Latency: end-to-end task p50 within 10% of the fc-invoke baseline for the same corpus; control-plane overhead p95 <= 50ms; primed-hit submit-to-Assign p95 <= 25ms.
-3. Durability: `kill -9` the control-plane pod mid-drain of 500 queued tasks; after restart, every task reaches a terminal state, no result is lost for tasks that reported success before the kill, and total executions per task <= maxAttempts (at-least-once honored, idempotency dedupe verified).
+3. Durability: `kill -9` the control-plane BEAM process mid-drain of 500 queued tasks (via `kubectl exec` into the container; `kubectl delete pod` is a forbidden verb in this cluster); after restart, every task reaches a terminal state, no result is lost for tasks that reported success before the kill, and total executions per task <= maxAttempts (at-least-once honored, idempotency dedupe verified).
 4. Fairness: two synthetic principals at 10:1 submit ratio see service ratio within 1.5:1 while both have queued work.
 5. Enforcement: quota exhaustion and cap saturation produce 429/denials with audit appends, never queue collapse; stale capacity facts (daemon stream paused 20s) halt dispatch (fail-closed observed).
 6. Rollback drill: flipping `SEMGREP_DISPATCH` back to `fc-invoke` restores the old path within one monolith rollout, exercised once before the real cutover.
@@ -394,7 +400,8 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 
 - Zip/runtime-shim source lane (R1), sessions and banking (R2), serving/xDS/Envoy (R3), stateful volumes (R4), composite groups (R5), etcd facade (R6).
 - `ra`/Raft op-log tier, multi-node placement logic (seams only), CapacityRequest/UpcomingNode provisioner contract (homelab nodes are fixed; the contract activates with elastic nodepools).
-- NATS trigger adapter: deferred; NATS is not deployed in this cluster today (ADR agents/016 remains the candidate). Cron is the only v1 trigger.
+- NATS trigger adapter: deferred to the v1 release train (alongside R1), not dropped; NATS is not deployed in this cluster today (ADR agents/016 remains the candidate). Cron is the only R0 trigger adapter, but it sits behind the `TriggerAdapter` seam (Task 11) so NATS is an adapter, not a redesign. The ADR's "cron plus one queue adapter in v1" stands; R0 is a subset of v1, not a narrowing of it.
+- Failure destinations (forward failed tasks elsewhere): recorded follow-on; DLQ listing + redrive (Task 8) is the R0 surface.
 - Weighted fairness, priorities, exactly-once dedup, result object-store spill, Quota CRDs, bespoke UI or dashboard (kubectl printer columns are the dashboard).
 - Migrating the goosecracker agent or demos off fc-invoke (they stay on the deprecated daemon until R2 makes sessions first-class).
 
