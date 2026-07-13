@@ -1,0 +1,271 @@
+// Package embervm.node.v1 is the narrow gRPC contract between the EmberVM
+// control plane and a node daemon (embervm-noded). It is the clean seam the
+// noded fork is shaped by: the daemon owns Firecracker lifecycle behind these
+// RPCs, and NOTHING Firecracker-specific leaks across it (no jailer paths, no
+// snapshot file paths, no reverse-proxy or session-path semantics inherited
+// from the fc-invoke HTTP surface). Refs are opaque strings the control plane
+// stores and echoes back; only the daemon interprets them.
+//
+// The lifecycle this contract expresses, mapped from the forked fc-invoke node
+// layer (substrate/node/invoker):
+//
+//   BuildBase   pull OCI image -> bake rootfs -> cold boot -> health-gate on the
+//               guest ready path -> snapshot. Idempotent per (image digest,
+//               workload revision). The heavy, once-per-image operation.
+//   Prime       restore a pristine VM from a base snapshot, wait ready, park it
+//               idle on vsock. The pool-refill primitive; the control plane owns
+//               the pool, so this replaces fc-invoke's daemon-side warm base.
+//   Assign      deliver exactly one HTTP-semantics task to a primed VM over
+//               vsock, return the guest response plus usage stats, then DESTROY
+//               the VM regardless of outcome (task-class VMs are single-use, one
+//               assignment, no reuse across principals, vsock only / no NIC).
+//   Destroy     reap a primed or wedged VM out of band.
+//   WatchNode   server-streamed capacity heartbeat; the daemon is the health
+//               authority and this is the control plane's only source of node
+//               truth.
+//   GetNodeStatus  unary snapshot of the same facts, for polling fallback and
+//               startup reconciliation.
+//
+// Concurrency is owned by the control plane, NOT the daemon: the per-workload
+// semaphore of fc-invoke is deliberately dropped on the fork. The daemon
+// enforces only a node-level max-live-VM cap as a backstop and reports capacity
+// facts; the control plane decides what to Prime and Assign.
+//
+// Auth v1: mTLS is out of scope. The daemon listens on the pod network, gated
+// by Linkerd/Cilium policy plus a static bearer token from a Kubernetes Secret,
+// carried in gRPC call metadata (key "authorization: Bearer <token>"). The
+// upgrade path to mTLS or SPIFFE identities is additive: a new credential field
+// on the metadata, not a wire-breaking change to these messages.
+
+syntax = "proto3";
+
+package embervm.node.v1;
+
+option go_package = "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1;nodev1";
+
+// NodeService is the entire control-to-node surface. One control plane fans out
+// to N node daemons (v1: exactly one, from values); the service is identical
+// per node so multi-node needs no contract change.
+service NodeService {
+  // BuildBase turns an OCI image into a pristine base snapshot: pull, bake
+  // rootfs, cold boot, health-gate on the guest ready path, snapshot. Heavy
+  // (boot + health-gate + snapshot write); the control plane serializes these
+  // per node. Idempotent per (image_digest, workload_revision): a repeat call
+  // for an already-built base returns the existing snapshot_ref without
+  // rebuilding. FAILED_PRECONDITION if the image cannot be pulled or the guest
+  // never health-gates; the base is not published on failure.
+  rpc BuildBase(BuildBaseRequest) returns (BuildBaseResponse);
+
+  // Prime restores one pristine VM from snapshot_ref, waits for the guest ready
+  // path, and parks it idle on vsock. This is the pool-refill primitive the
+  // control plane calls to keep `floor` VMs warm per workload. Returns a vm_id
+  // naming the parked VM. RESOURCE_EXHAUSTED if the node-level live-VM backstop
+  // cap is hit; FAILED_PRECONDITION if snapshot_ref is unknown or unrestorable
+  // (a lost snapshot degrades to slower boots at the control plane, never to
+  // incorrect behavior).
+  rpc Prime(PrimeRequest) returns (PrimeResponse);
+
+  // Assign delivers exactly one HTTP-semantics task (method, path, headers,
+  // body; body capped at 8 MiB) to a primed vm_id over vsock and returns the
+  // guest's HTTP response plus usage stats. The daemon DESTROYS the VM after
+  // response delivery regardless of outcome: task-class VMs are single-use.
+  // Assign on an already-assigned or destroyed vm_id MUST fail with
+  // FAILED_PRECONDITION and no side effects (the VM is not touched, no second
+  // task runs). DEADLINE_EXCEEDED maps a guest that did not respond within the
+  // task timeout; the VM is still destroyed.
+  rpc Assign(AssignRequest) returns (AssignResponse);
+
+  // Destroy reaps a primed or wedged VM out of band (pool shrink, base
+  // turnover, drain). Idempotent: destroying an unknown or already-destroyed
+  // vm_id returns OK (the desired end-state already holds).
+  rpc Destroy(DestroyRequest) returns (DestroyResponse);
+
+  // WatchNode is a server-streamed heartbeat of capacity facts. The daemon is
+  // the health authority; the control plane consumes this as its only source of
+  // node truth and ages the facts out (unknown after 5s, down after 15s) if the
+  // stream drops. The daemon sends an initial NodeStatus immediately on
+  // subscribe, then on every material change and at a liveness interval.
+  rpc WatchNode(WatchNodeRequest) returns (stream NodeStatus);
+
+  // GetNodeStatus is a unary snapshot of the same facts WatchNode streams, for
+  // polling fallback (if streaming over the mesh proves flaky) and for control-
+  // plane startup reconciliation (existing base snapshots + parked VMs are
+  // reported so the control plane reconciles rather than rebuilding).
+  rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+}
+
+// Trace carries the cross-cutting identifiers every RPC threads for tracing and
+// correlation. workload is the CR name the operation is for; task_id/
+// correlation_id are opaque strings the control plane assigns (empty for pool
+// operations with no task, e.g. Prime/BuildBase).
+message Trace {
+  string workload = 1;
+  string task_id = 2;
+  string correlation_id = 3;
+}
+
+// ---- BuildBase -------------------------------------------------------------
+
+message BuildBaseRequest {
+  Trace trace = 1;
+  // image_ref is the OCI reference to bake (digest-pinned or tag). The daemon
+  // resolves a tag to a digest at build time; the digest comes back in the
+  // response so the control plane records the resolved identity (deploys are
+  // explicit, never tag drift).
+  string image_ref = 2;
+  // workload_revision is the control plane's opaque revision token for this
+  // workload's spec; together with the resolved image digest it forms the
+  // idempotency key for the base build.
+  string workload_revision = 3;
+  // Guest contract knobs (frozen contract): the port the guest HTTP server
+  // listens on over vsock, and the path that answers 200 when ready.
+  uint32 guest_port = 4;
+  string ready_path = 5;
+  // Resource shape of the base VM (vcpus, mem). memMib in particular sizes the
+  // snapshot and the restore footprint.
+  ResourceSpec resources = 6;
+  // init_env are environment values baked into the guest at base-build time
+  // (workload initEnv). Node-side image identity (rootfs path, harness init) is
+  // daemon configuration, NOT carried here.
+  map<string, string> init_env = 7;
+}
+
+message BuildBaseResponse {
+  // snapshot_ref is the OPAQUE handle the control plane stores in
+  // Workload.status and passes back to Prime. It is NOT a file path.
+  string snapshot_ref = 1;
+  // Resolved base metadata, recorded in status for auditability.
+  string image_digest = 2;
+  uint64 base_size_bytes = 3;
+  string arch = 4;
+  // already_built is true when this call was a no-op hit on an existing base
+  // for the same (image_digest, workload_revision) (idempotency observed).
+  bool already_built = 5;
+}
+
+// ---- Prime -----------------------------------------------------------------
+
+message PrimeRequest {
+  Trace trace = 1;
+  string snapshot_ref = 2;
+}
+
+message PrimeResponse {
+  // vm_id names the parked, pristine VM. Opaque; the control plane holds it in
+  // its primed-pool inventory and passes it to Assign or Destroy.
+  string vm_id = 1;
+}
+
+// ---- Assign ----------------------------------------------------------------
+
+// A task IS one HTTP request to the guest. For the task class method is always
+// POST; path defaults to the workload invokePath and is overridable per task.
+// Only headers the control plane forwards reach the guest (the submit API
+// strips everything except the allow-listed X-Ember-Guest-* set before this).
+message GuestRequest {
+  string method = 1;
+  string path = 2;
+  map<string, string> headers = 3;
+  // body is the guest request body, forwarded verbatim. Capped at 8 MiB (the
+  // submit API enforces the same cap); larger requests are rejected upstream.
+  bytes body = 4;
+}
+
+message AssignRequest {
+  Trace trace = 1;
+  string vm_id = 2;
+  GuestRequest request = 3;
+  // timeout_ms bounds the guest round-trip. On expiry the daemon returns
+  // DEADLINE_EXCEEDED and still destroys the VM.
+  uint32 timeout_ms = 4;
+}
+
+// GuestResponse is the guest's HTTP response, captured whole (the daemon reads
+// the body fully because the VM is destroyed immediately after; there is no
+// lazy streaming across this boundary the way fc-invoke streams to its HTTP
+// caller).
+message GuestResponse {
+  uint32 status_code = 1;
+  map<string, string> headers = 2;
+  bytes body = 3;
+}
+
+// UsageStats are the per-task resource facts sampled from the guest's host-side
+// /proc counters before the VM is destroyed. These feed the control plane's
+// metering (vCPU-seconds, GB-seconds) and the R0 latency budgets.
+message UsageStats {
+  int64 cpu_ms = 1;
+  int64 peak_rss_mib = 2;
+  int64 wall_ms = 3;
+}
+
+message AssignResponse {
+  GuestResponse response = 1;
+  UsageStats usage = 2;
+}
+
+// ---- Destroy ---------------------------------------------------------------
+
+message DestroyRequest {
+  Trace trace = 1;
+  string vm_id = 2;
+}
+
+message DestroyResponse {}
+
+// ---- Node status -----------------------------------------------------------
+
+message WatchNodeRequest {
+  // node_id echoes the identity the control plane configured for this daemon
+  // (from values). Purely for the control plane's own correlation; the daemon
+  // does not authenticate on it.
+  string node_id = 1;
+}
+
+message GetNodeStatusRequest {
+  string node_id = 1;
+}
+
+// WorkloadCapacity is the daemon's per-workload capacity view: how many primed
+// VMs are parked and ready, and what base build state the workload's snapshot
+// is in. The control plane reads free_primed_slots from ETS-cached copies of
+// this on the dispatch path (never from the durable store).
+message WorkloadCapacity {
+  string workload = 1;
+  // free_primed_slots is the count of parked, pristine, unassigned VMs for this
+  // workload on this node.
+  uint32 free_primed_slots = 2;
+  // snapshot_ref is the base this node currently has for the workload, empty if
+  // none is built here (the control plane then knows to BuildBase).
+  string snapshot_ref = 3;
+  BaseBuildState base_state = 4;
+}
+
+enum BaseBuildState {
+  BASE_BUILD_STATE_UNSPECIFIED = 0;
+  BASE_BUILD_STATE_NONE = 1;      // no base on this node for the workload
+  BASE_BUILD_STATE_BUILDING = 2;  // BuildBase in progress
+  BASE_BUILD_STATE_READY = 3;     // base built and restorable
+  BASE_BUILD_STATE_FAILED = 4;    // last BuildBase failed (see build_error)
+}
+
+// NodeStatus is the whole capacity fact set: per-workload primed slots and base
+// states, node-level memory/cpu headroom, and the draining flag. A draining
+// daemon reports draining=true and the control plane stops new assignments
+// immediately (fail-closed: no capacity facts means no dispatch).
+message NodeStatus {
+  string node_id = 1;
+  repeated WorkloadCapacity workloads = 2;
+  // Node-level headroom the control plane uses as a backstop against the
+  // node-level live-VM cap. mem_headroom_mib is free schedulable guest memory;
+  // live_vms is the current count against the node-level cap.
+  uint64 mem_headroom_mib = 3;
+  uint32 cpu_headroom_millicores = 4;
+  uint32 live_vms = 5;
+  uint32 max_live_vms = 6;
+  // draining true means the daemon is shutting down or cordoned; stop assigning.
+  bool draining = 7;
+  // build_error carries the last BuildBase failure string for any workload in
+  // BASE_BUILD_STATE_FAILED, surfaced into the Workload CR condition message.
+  string build_error = 8;
+}
