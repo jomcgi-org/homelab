@@ -13,7 +13,7 @@ data:
   alert.json: |
     {
       "alert": "Longhorn Unreachable",
-      "alertType": "METRICS_BASED_ALERT",
+      "alertType": "METRIC_BASED_ALERT",
       "ruleType": "threshold_rule",
       "version": "v5",
       "broadcastToAll": false,

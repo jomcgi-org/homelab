@@ -53,7 +53,7 @@ data:
   alert.json: |
     {
       "alert": {{ printf "%s SLO Burn Rate High" $slo.name | quote }},
-      "alertType": "METRICS_BASED_ALERT",
+      "alertType": "METRIC_BASED_ALERT",
       "ruleType": "threshold_rule",
       "version": "v5",
       "broadcastToAll": false,
@@ -138,7 +138,7 @@ data:
   alert.json: |
     {
       "alert": {{ printf "%s SLO Budget Exhausted" $slo.name | quote }},
-      "alertType": "METRICS_BASED_ALERT",
+      "alertType": "METRIC_BASED_ALERT",
       "ruleType": "threshold_rule",
       "version": "v5",
       "broadcastToAll": false,

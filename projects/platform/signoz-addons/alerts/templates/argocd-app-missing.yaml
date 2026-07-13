@@ -12,7 +12,7 @@ data:
   alert.json: |
     {
       "alert": "ArgoCD App Missing",
-      "alertType": "METRICS_BASED_ALERT",
+      "alertType": "METRIC_BASED_ALERT",
       "ruleType": "threshold_rule",
       "version": "v5",
       "broadcastToAll": false,
