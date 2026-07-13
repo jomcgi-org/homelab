@@ -104,6 +104,15 @@ message Trace {
   string correlation_id = 3;
 }
 
+// ResourceSpec is the VM resource shape, mirroring the Workload CR `resources`
+// block (vcpus 1-8, memMib 128-16384). It sizes the base VM at BuildBase;
+// mem_mib in particular sets the snapshot and restore footprint (see
+// BuildBaseRequest.resources).
+message ResourceSpec {
+  uint32 vcpus = 1;
+  uint32 mem_mib = 2;
+}
+
 // ---- BuildBase -------------------------------------------------------------
 
 message BuildBaseRequest {

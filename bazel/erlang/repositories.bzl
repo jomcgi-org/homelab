@@ -69,6 +69,25 @@ _HEX_DEPS = [
     ("plug_crypto", "2.1.1", "6470bce6ffe41c8bd497612ffde1a7e4af67f36a15eea5f921af71cf3e11247c"),
     ("thousand_island", "1.5.0", "708923d40523e43cf99041ab37a0d4b0ec426ac6438fa3716ab23d919eaeb412"),
     ("websock", "0.5.3", "6105453d7fac22c712ad66fab1d45abdf049868f253cf719b625151460b8b453"),
+    #   3. The gRPC + protobuf closure for the node.proto client (Task 3). The
+    #      protobuf package doubles as the codegen plugin: its escript
+    #      (protoc-gen-elixir, main_module Protobuf.Protoc.CLI) is what protoc runs
+    #      to emit .pb.ex, and generation of the gRPC Service/Stub modules moved
+    #      into protobuf itself (generator/service.ex), so the escript build needs
+    #      protobuf ALONE (jason is its only, optional, dep). At RUNTIME the
+    #      generated stub does `use GRPC.Service`/`use GRPC.Stub`, so the control
+    #      app additionally links grpc -> grpc_core -> {googleapis, jason,
+    #      protobuf, telemetry}. grpc's client transport is the already-pinned Mint
+    #      adapter (gun is grpc's OTHER, optional, transport and is not pulled), so
+    #      no gun/cowlib/cowboy server subtree enters; the whole group is pure
+    #      Elixir/Erlang (no NIF). telemetry (1.4.2), mint (1.9.1), and hpax are
+    #      shared with group 2. googleapis is a hard dep of grpc_core (a bundle of
+    #      precompiled google.* protos); its `~> 0.1.0` bound pins 0.1.0 exactly.
+    ("grpc", "1.0.2", "5ea5258e2ef6e0fd38191bb5d66f23575db6e208b256e9d2efe2c44da472d50f"),
+    ("grpc_core", "1.0.2", "73b916dc3f2767bd68f95a35507a9c2b389fb71997fad16558184f40b6fa148a"),
+    ("googleapis", "0.1.0", "1989a7244fd17d3eb5f3de311a022b656c3736b39740db46506157c4604bd212"),
+    ("jason", "1.4.5", "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"),
+    ("protobuf", "0.17.0", "ca6c91f6f63e2c147b47f03eefd10b80538aa6fc55ff4b12b795efb786b0152f"),
 ]
 
 # hex.pm's OTP build extracts to OTP-<ver>/ with erts-*/, lib/, and an Install
@@ -97,6 +116,29 @@ filegroup(
 exports_files(["bin/elixir"], visibility = ["//visibility:public"])
 """
 
+# Prebuilt protoc for node.proto codegen (Task 3). Same de-risk as the OTP
+# prebuilt: the release zip is fetched at repo-fetch time (host has network) and
+# the amd64 binary runs natively on the amd64-only RBE executor, so no protobuf
+# compiler is built from source. Single-arch by design: codegen is a build-host
+# operation whose .pb.go/.pb.ex outputs are architecture-independent. bin/protoc
+# is the compiler; include/ carries the well-known-type .protos protoc resolves
+# for imports (node.proto imports none today, but keep them for future protos).
+_PROTOC_BUILD = """
+filegroup(
+    name = "protoc",
+    srcs = ["bin/protoc"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "well_known_protos",
+    srcs = glob(["include/**/*.proto"]),
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["bin/protoc"], visibility = ["//visibility:public"])
+"""
+
 def _erlang_impl(_ctx):
     http_archive(
         # OTP version MUST match the apko image's Wolfi erlang-27 (27.3.4.2)
@@ -114,6 +156,12 @@ def _erlang_impl(_ctx):
         urls = ["https://github.com/elixir-lang/elixir/releases/download/v1.18.4/elixir-otp-27.zip"],
         sha256 = "5be18f35e329f7c5914a80dd9f323d7bbb144616df1ed16f6f0862a1900b4bb5",
         build_file_content = _ELIXIR_BUILD,
+    )
+    http_archive(
+        name = "protoc_linux_x86_64",
+        urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protoc-35.1-linux-x86_64.zip"],
+        sha256 = "6930ebf62bd4ea607b98fff052596c6ee564b9835b4ce172c75a3f53ae9d91b7",
+        build_file_content = _PROTOC_BUILD,
     )
     for name, version, sha in _HEX_DEPS:
         http_file(
@@ -143,5 +191,5 @@ def _erlang_impl(_ctx):
 
 erlang = module_extension(
     implementation = _erlang_impl,
-    doc = "Fetches the prebuilt ubuntu-22.04 OTP 27 (@otp_ubuntu2204_amd64), precompiled Elixir 1.18.4 (@elixir_1_18_4), and the control-plane hex dependency tarballs (@hex_*).",
+    doc = "Fetches the prebuilt ubuntu-22.04 OTP 27 (@otp_ubuntu2204_amd64), precompiled Elixir 1.18.4 (@elixir_1_18_4), the control-plane hex dependency tarballs (@hex_*), and the prebuilt protoc (@protoc_linux_x86_64) for node.proto codegen.",
 )

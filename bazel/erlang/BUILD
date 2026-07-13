@@ -5,7 +5,17 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 # The mix_release driver is consumed by the control package's release genrule.
 exports_files(
-    ["mix_release.sh"],
+    [
+        "mix_release.sh",
+        # node.proto Elixir codegen: the driver builds the protoc-gen-elixir
+        # escript from the protobuf hex package and runs protoc (see
+        # //projects/embervm/proto/embervm/node/v1:node_elixir_src).
+        "gen_elixir.sh",
+        "protoc_gen_elixir_mix.exs",
+        # Cross-language node.proto round-trip test driver (see
+        # //projects/embervm/proto/embervm/node/v1/roundtrip:node_roundtrip_test).
+        "roundtrip_test.sh",
+    ],
     visibility = ["//projects/embervm:__subpackages__"],
 )
 
@@ -21,13 +31,18 @@ filegroup(
         "@hex_elixir_make//file",
         "@hex_exqlite//file",
         "@hex_finch//file",
+        "@hex_googleapis//file",
+        "@hex_grpc//file",
+        "@hex_grpc_core//file",
         "@hex_hpax//file",
+        "@hex_jason//file",
         "@hex_mime//file",
         "@hex_mint//file",
         "@hex_nimble_options//file",
         "@hex_nimble_pool//file",
         "@hex_plug//file",
         "@hex_plug_crypto//file",
+        "@hex_protobuf//file",
         "@hex_telemetry//file",
         "@hex_thousand_island//file",
         "@hex_websock//file",
