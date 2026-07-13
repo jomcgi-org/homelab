@@ -42,7 +42,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
-from semgrep_scan.client import scan_files
+from semgrep_scan.client import scan_files, scan_files_hi
 from semgrep_scan.report import report_pr_scan
 
 logger = logging.getLogger("monolith.semgrep.webhook")
@@ -165,6 +165,13 @@ _GITHUB_TIMEOUT = 30.0
 # gather collapses it toward one round trip. The bound keeps a large PR from
 # opening hundreds of sockets or tripping GitHub secondary rate limits.
 _GATHER_CONCURRENCY = 8
+# Route diffs with at least this many changed files to the heavier semgrep-hi
+# workload (6 vCPU, parallel multi-file match) instead of the warm 1-vCPU
+# `semgrep`. Measured crossover (debug-pod sweep): semgrep-hi carries a fixed
+# ~0.9s/scan thread-pool overhead that makes it a net loss below ~5 files, and a
+# clear win above (8 heavy files: ~10.6s vs ~38.9s at 1 vCPU). Tune from the
+# per-cohort perf data once collected.
+_HEAVY_ROUTE_MIN_FILES = 5
 
 
 def _verify_signature(body: bytes, signature_header: str | None) -> None:
@@ -420,7 +427,11 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
         # measured on its own so it is both the App total_time and a clean
         # "how fast is our scanner" signal, independent of gather/report/status.
         t_scan = time.monotonic()
-        scan = await scan_files(files)
+        # Route large multi-file diffs to the heavier semgrep-hi workload (6 vCPU,
+        # parallel match); small diffs stay on the warm 1-vCPU `semgrep`, which is
+        # faster for them. Both share the same wire shape and response.
+        heavy = len(files) >= _HEAVY_ROUTE_MIN_FILES
+        scan = await (scan_files_hi(files) if heavy else scan_files(files))
         scan_execution_duration = time.monotonic() - t_scan
         if not isinstance(scan, dict) or scan.get("error"):
             logger.error(

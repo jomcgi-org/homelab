@@ -165,6 +165,31 @@ workloads:
     readyPath: /shim/ready
     sessioned: false
     requestTimeout: 90s
+  # semgrep-hi: the heavy multi-file diff route. Same warm mcp scan-server as
+  # `semgrep` (single-file engine, but it parallelizes a multi-file batch over
+  # target files), sized up to 6 vcpu + more memory so a large PR diff is matched
+  # in parallel instead of serially on one core. Measured (debug-pod sweep): a
+  # batch of N heavy files scales ~min(N, cores) - 6 vcpu does 8 heavy files in
+  # ~10.6s vs ~38.9s at 1 vcpu (~3.7x). It carries a ~0.9s/scan fixed thread-pool
+  # overhead that makes it a NET LOSS below ~5 files, so the monolith routes only
+  # large diffs here (semgrep_scan/router.py _HEAVY_ROUTE_MIN_FILES); small diffs
+  # stay on `semgrep`. concurrency:1 - big multi-file PRs are rare and this
+  # reserves 6 of node-4's 16 cores, so one at a time (queue the rare overlap).
+  # memMib 6144 covers a many-heavy-file parallel batch with headroom; a giant
+  # diff that still OOMs dies as a contained 503 (the per-VM memMib is the hard
+  # ceiling), never touching the node.
+  semgrep-hi:
+    image: semgrep-guest
+    rootfsPath: /disks/nvme-02/fc-invoke/semgrep/rootfs.ext4
+    harnessInit: /usr/local/bin/semgrep-guest-init
+    vcpus: 6
+    memMib: 6144
+    concurrency: 1
+    egressEnabled: false
+    warmBase: true
+    readyPath: /shim/ready
+    sessioned: false
+    requestTimeout: 90s
   # The semgrep-full workload (ADR tooling/011): a whole-repo INTERFILE scan. Same
   # semgrep-guest image as `semgrep`, but its lean init (harnessInit below) skips
   # the warm mcp scan-server and instead runs `semgrep scan --pro` as a subprocess
@@ -238,8 +263,9 @@ workloads:
 # A load test drives ONE workload to concurrency 16: semgrep 16 * 1536Mi = ~24Gi
 # or sandbox 16 * 512Mi = ~8Gi (a monolith one-run guard serializes load tests,
 # so they never stack). Even with a concurrent agent run (2 * 4096Mi = 8Gi), a
-# scheduled semgrep-full run (1 * 8192Mi = 8Gi), and ~1Gi daemon overhead the
-# worst case is ~41Gi, so 44Gi keeps margin (node-4 has 64Gi). This is a cgroup
+# scheduled semgrep-full run (1 * 8192Mi = 8Gi), a heavy-diff semgrep-hi run
+# (1 * 6144Mi = 6Gi), and ~1Gi daemon overhead the worst case is ~47Gi, so 50Gi
+# keeps margin (node-4 has 64Gi). This is a cgroup
 # CAP, not a request (that stays 2Gi below), so raising it does not overcommit
 # node scheduling; it only raises the OOM ceiling. semgrep-full is concurrency 1
 # and scheduled, so it rarely coincides with a manual load-test burst, but the
@@ -261,7 +287,7 @@ resources:
     cpu: 6000m
     memory: 2Gi
   limits:
-    memory: 44Gi
+    memory: 50Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the

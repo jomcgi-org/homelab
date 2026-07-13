@@ -93,6 +93,20 @@ async def scan_files(files: list[dict]) -> dict:
     return await _post_invoke("semgrep", files, SEMGREP_READ_TIMEOUT)
 
 
+async def scan_files_hi(files: list[dict]) -> dict:
+    """POST a large PR diff to the semgrep-hi fc-invoke workload and return findings.
+
+    Same wire shape and response as ``scan_files``, but targets ``/invoke/semgrep-hi``:
+    the warm mcp scan-server sized to 6 vCPU so a many-file diff is matched in
+    parallel over cores instead of serially on one. The monolith routes only large
+    diffs here (``router._HEAVY_ROUTE_MIN_FILES``); small diffs use ``scan_files``,
+    which is faster for them (semgrep-hi carries a fixed thread-pool overhead). Uses
+    the same read timeout as ``scan_files`` (a heavy diff scan is still seconds, and
+    parallelism keeps it under the daemon's 90s workload timeout).
+    """
+    return await _post_invoke("semgrep-hi", files, SEMGREP_READ_TIMEOUT)
+
+
 async def scan_files_full(files: list[dict]) -> dict:
     """POST the whole repo's file contents to the semgrep-full fc-invoke workload.
 
