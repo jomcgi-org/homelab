@@ -3,21 +3,27 @@ defmodule Embervm.Application do
   Root OTP application for the EmberVM control plane.
 
   R0 skeleton: the supervision tree holds the op-log (durable task-state
-  seam), the ETS hot-set task store built on top of it, and the health
-  endpoint. Later tasks add children under this same tree (the
-  WorkloadWatcher, the NodeRegistry, the Dispatcher, the submit-API
-  listener), which is exactly why the control plane is on the BEAM: each of
-  those is a supervised process with its own failure domain, restarted in
-  isolation.
+  seam), the ETS hot-set task store built on top of it, the Finch HTTP-client
+  pool (K8s API calls: TokenReview in Task 8, the CRD watch in Task 5), and the
+  Bandit-hosted `Embervm.Router` serving `/healthz` (and the `/v1` task routes
+  in Task 8). Later tasks add children under this same tree (the
+  WorkloadWatcher, the NodeRegistry, the Dispatcher), which is exactly why the
+  control plane is on the BEAM: each of those is a supervised process with its
+  own failure domain, restarted in isolation.
 
   Strategy is `:rest_for_one`, not `:one_for_one`: `Embervm.TaskStore` reads
   the op-log once on init to rebuild its ETS tables and otherwise depends on
   it being alive for every write. If `Embervm.OpLog.SQLite` crashes and
-  restarts, `:rest_for_one` also restarts every child listed after it (today
-  just `TaskStore`), so the rebuild-on-boot path runs again against the
-  op-log's post-restart state instead of leaving ETS stale against an op-log
-  that came back with (in the worst case) a different in-memory connection.
-  `Health` has no dependency on either, so ordering it last costs nothing.
+  restarts, `:rest_for_one` also restarts every child listed after it, so the
+  rebuild-on-boot path runs again against the op-log's post-restart state
+  instead of leaving ETS stale against an op-log that came back with (in the
+  worst case) a different in-memory connection. The ordering also puts `Finch`
+  and the `Bandit` listener LAST, after both the op-log and the task store: the
+  router's handlers call `TaskStore` (and, in Task 8, an auth reviewer over
+  Finch), so the HTTP surface must not start accepting requests until its
+  dependencies are up. `Finch` itself has no dependency on the op-log, but
+  sitting before `Bandit` guarantees the client pool exists the moment the
+  router can be hit.
   """
   use Application
 
@@ -28,7 +34,8 @@ defmodule Embervm.Application do
     children = [
       {Embervm.OpLog.SQLite, path: oplog_path()},
       {Embervm.TaskStore, []},
-      {Embervm.Health, port: port}
+      {Finch, name: Embervm.Finch},
+      {Bandit, plug: Embervm.Router, scheme: :http, port: port}
     ]
 
     opts = [strategy: :rest_for_one, name: Embervm.Supervisor]
