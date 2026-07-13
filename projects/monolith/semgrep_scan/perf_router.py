@@ -18,6 +18,7 @@ from semgrep_scan.perf_compare import (
     build_cohort_aggregates,
     build_comparisons,
     build_distributions,
+    build_trend,
 )
 from semgrep_scan.perf_store import ScanPerf
 
@@ -52,6 +53,7 @@ def _empty_response() -> dict:
         "comparisons": [],
         "aggregates": build_aggregates([]),
         "cohorts": build_cohort_aggregates([]),
+        "trend": build_trend([]),
         "distributions": build_distributions([], []),
         "window_start": None,
         "counts": {"homelab": 0, "managed": 0},
@@ -92,6 +94,7 @@ async def get_perf(
         "comparisons": comparisons,
         "aggregates": build_aggregates(comparisons),
         "cohorts": build_cohort_aggregates(comparisons),
+        "trend": build_trend(comparisons),
         "distributions": build_distributions(homelab, managed),
         "window_start": window_start,
         "counts": {"homelab": len(homelab), "managed": len(managed)},

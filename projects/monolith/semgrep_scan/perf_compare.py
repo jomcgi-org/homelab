@@ -11,7 +11,7 @@ only compares the datetimes it is given.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 _SIDE_FIELDS = ("scan_id", "total_time", "findings_total", "scan_completed_at")
@@ -399,6 +399,60 @@ def build_cohort_aggregates(comparisons: list[dict]) -> dict:
         "by_language": by_language,
         "total_pairs": len(pairs),
     }
+
+
+def build_trend(comparisons: list[dict], window_days: int = 7) -> dict:
+    """Rolling-window trend of the homelab-vs-managed speedup, for monitoring
+    whether changes widen or narrow the gap over time.
+
+    For each calendar day spanned by the matched PR pairs, computes the speedup
+    (managed_median / homelab_median, the same metric the cards use) plus the
+    homelab and managed medians over the trailing ``window_days`` days. The
+    overlapping windows smooth day-to-day pair-count noise so a real shift stands
+    out. Only two-sided PR pairs with a speedup and a completion date count.
+    """
+    dated: list[tuple] = []
+    for pair in comparisons:
+        if not (
+            pair.get("route_b")
+            and pair.get("sms")
+            and not pair.get("is_full_scan")
+            and pair.get("speedup") is not None
+        ):
+            continue
+        when = pair["route_b"].get("scan_completed_at") or pair["sms"].get(
+            "scan_completed_at"
+        )
+        if when is None:
+            continue
+        dated.append((when.date(), pair))
+
+    if not dated:
+        return {"points": [], "window_days": window_days}
+
+    day_min = min(day for day, _ in dated)
+    day_max = max(day for day, _ in dated)
+    points: list[dict] = []
+    day = day_min
+    while day <= day_max:
+        window_lo = day - timedelta(days=window_days - 1)
+        window = [p for d, p in dated if window_lo <= d <= day]
+        if window:
+            homelab_median = _median([p["route_b"]["total_time"] for p in window])
+            managed_median = _median([p["sms"]["total_time"] for p in window])
+            points.append(
+                {
+                    "date": day.isoformat(),
+                    "pairs": len(window),
+                    "homelab_median": homelab_median,
+                    "managed_median": managed_median,
+                    "speedup": (managed_median / homelab_median)
+                    if homelab_median and homelab_median > 0
+                    else None,
+                }
+            )
+        day += timedelta(days=1)
+    return {"points": points, "window_days": window_days}
 
 
 def build_distributions(route_b: list[dict], sms: list[dict]) -> dict:
