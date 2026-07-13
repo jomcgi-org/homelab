@@ -9,6 +9,7 @@ export async function load({ fetch }) {
       return {
         comparisons: [],
         aggregates: null,
+        cohorts: null,
         distributions: null,
         windowStart: null,
         counts: null,
@@ -19,6 +20,7 @@ export async function load({ fetch }) {
     return {
       comparisons: body.comparisons ?? [],
       aggregates: body.aggregates ?? null,
+      cohorts: body.cohorts ?? null,
       distributions: body.distributions ?? null,
       windowStart: body.window_start ?? null,
       counts: body.counts ?? null,

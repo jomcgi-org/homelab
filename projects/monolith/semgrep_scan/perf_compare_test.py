@@ -12,6 +12,7 @@ import pytest
 
 from semgrep_scan.perf_compare import (
     build_aggregates,
+    build_cohort_aggregates,
     build_comparisons,
     build_distributions,
 )
@@ -421,3 +422,76 @@ def test_distributions_empty_input_has_stable_shape():
                 "min": None,
                 "max": None,
             }
+
+
+# ── build_cohort_aggregates ──────────────────────
+
+
+def _cohort_pair(file_count, changed_lines, languages, homelab_t, managed_t):
+    return {
+        "is_full_scan": False,
+        "route_b": {"total_time": homelab_t},
+        "sms": {"total_time": managed_t},
+        "speedup": managed_t / homelab_t,
+        "cohort": {
+            "file_count": file_count,
+            "changed_lines": changed_lines,
+            "languages": languages,
+        },
+    }
+
+
+def test_build_cohort_aggregates_segments_by_files_lines_language():
+    comps = [
+        _cohort_pair(1, 10, {"python": 10}, 3.0, 45.0),
+        _cohort_pair(2, 30, {"python": 30}, 4.0, 44.0),
+        _cohort_pair(8, 300, {"go": 300}, 20.0, 60.0),
+    ]
+    out = build_cohort_aggregates(comps)
+    assert out["total_pairs"] == 3
+
+    by_files = {g["label"]: g["pairs"] for g in out["by_files"]}
+    assert by_files == {"1 file": 1, "2-4": 1, "5-9": 1}
+
+    by_lines = {g["label"]: g["pairs"] for g in out["by_lines"]}
+    assert by_lines == {"<50": 2, "200-499": 1}
+
+    by_lang = {g["label"]: g["pairs"] for g in out["by_language"]}
+    assert by_lang == {"python": 2, "go": 1}
+
+    one_file = next(g for g in out["by_files"] if g["label"] == "1 file")
+    assert one_file["speedup"] == 45.0 / 3.0
+
+
+def test_build_cohort_aggregates_ignores_pairs_without_cohort_or_full_scans():
+    comps = [
+        {
+            "is_full_scan": False,
+            "route_b": {"total_time": 3.0},
+            "sms": {"total_time": 40.0},
+            "speedup": 13.3,
+            "cohort": None,
+        },
+        {
+            "is_full_scan": True,
+            "route_b": {"total_time": 200.0},
+            "sms": {"total_time": 400.0},
+            "speedup": 2.0,
+            "cohort": {
+                "file_count": 5,
+                "changed_lines": 100,
+                "languages": {"python": 100},
+            },
+        },
+        {
+            "is_full_scan": False,
+            "route_b": None,
+            "sms": {"total_time": 40.0},
+            "speedup": None,
+            "cohort": None,
+        },
+    ]
+    out = build_cohort_aggregates(comps)
+    assert out["total_pairs"] == 0
+    assert out["by_files"] == []
+    assert out["by_language"] == []

@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from semgrep_scan.perf_compare import (
     build_aggregates,
+    build_cohort_aggregates,
     build_comparisons,
     build_distributions,
 )
@@ -40,6 +41,9 @@ def _row_to_dict(row: ScanPerf) -> dict:
         "total_time": row.total_time,
         "findings_total": row.findings_total,
         "scan_completed_at": row.scan_completed_at,
+        "file_count": row.file_count,
+        "changed_lines": row.changed_lines,
+        "languages": row.languages,
     }
 
 
@@ -47,6 +51,7 @@ def _empty_response() -> dict:
     return {
         "comparisons": [],
         "aggregates": build_aggregates([]),
+        "cohorts": build_cohort_aggregates([]),
         "distributions": build_distributions([], []),
         "window_start": None,
         "counts": {"homelab": 0, "managed": 0},
@@ -86,6 +91,7 @@ async def get_perf(
     return {
         "comparisons": comparisons,
         "aggregates": build_aggregates(comparisons),
+        "cohorts": build_cohort_aggregates(comparisons),
         "distributions": build_distributions(homelab, managed),
         "window_start": window_start,
         "counts": {"homelab": len(homelab), "managed": len(managed)},

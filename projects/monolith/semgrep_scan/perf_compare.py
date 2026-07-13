@@ -135,6 +135,20 @@ def _make_row(rb_row: Optional[dict], sms_row: Optional[dict], match_kind: str) 
         if rb_row is not None and sms_row is not None
         else None,
         "match_kind": match_kind,
+        # Diff cohort comes from the route-b row (the pair inherits it by commit);
+        # None when there is no route-b side or it was not backfilled.
+        "cohort": _cohort(rb_row),
+    }
+
+
+def _cohort(rb_row: Optional[dict]) -> Optional[dict]:
+    """The diff-shape cohort carried on a route-b row, or None."""
+    if rb_row is None or rb_row.get("file_count") is None:
+        return None
+    return {
+        "file_count": rb_row.get("file_count"),
+        "changed_lines": rb_row.get("changed_lines"),
+        "languages": rb_row.get("languages") or {},
     }
 
 
@@ -279,6 +293,112 @@ def build_aggregates(comparisons: list[dict]) -> dict:
             "findings_agree": sum(1 for rb, sms in findings_sides if rb == sms),
         }
     return out
+
+
+# (min, max_inclusive_or_None, label) buckets for cohort segmentation.
+_FILE_BUCKETS = [
+    (1, 1, "1 file"),
+    (2, 4, "2-4"),
+    (5, 9, "5-9"),
+    (10, 19, "10-19"),
+    (20, None, "20+"),
+]
+_LINE_BUCKETS = [
+    (0, 49, "<50"),
+    (50, 199, "50-199"),
+    (200, 499, "200-499"),
+    (500, None, "500+"),
+]
+
+
+def _bucket_label(value: int, buckets: list[tuple]) -> str | None:
+    for lo, hi, label in buckets:
+        if value >= lo and (hi is None or value <= hi):
+            return label
+    return None
+
+
+def _dominant_language(languages: dict) -> str | None:
+    """The language with the most changed lines in a cohort, or None."""
+    if not languages:
+        return None
+    return max(languages.items(), key=lambda kv: kv[1])[0]
+
+
+def _cohort_group(pairs: list[dict], key_fn) -> list[dict]:
+    """Group matched pairs by ``key_fn(pair)`` and summarise each group's speedup."""
+    groups: dict[str, list[dict]] = {}
+    for pair in pairs:
+        label = key_fn(pair)
+        if label is None:
+            continue
+        groups.setdefault(label, []).append(pair)
+    out = []
+    for label, group in groups.items():
+        homelab_median = _median([p["route_b"]["total_time"] for p in group])
+        managed_median = _median([p["sms"]["total_time"] for p in group])
+        out.append(
+            {
+                "label": label,
+                "pairs": len(group),
+                "homelab_median": homelab_median,
+                "managed_median": managed_median,
+                "speedup": (managed_median / homelab_median)
+                if homelab_median and homelab_median > 0
+                else None,
+            }
+        )
+    return out
+
+
+def build_cohort_aggregates(comparisons: list[dict]) -> dict:
+    """Segment matched PR pairs by diff shape so the page shows which cohorts are
+    at parity vs a major speedup.
+
+    Only two-sided PR pairs (not full scans) that carry a cohort and a speedup
+    count. Groups by changed-file-count bucket, changed-lines bucket, and dominant
+    language (the language with the most changed lines in the diff).
+    """
+    pairs = [
+        p
+        for p in comparisons
+        if p.get("route_b")
+        and p.get("sms")
+        and not p.get("is_full_scan")
+        and p.get("cohort")
+        and p.get("speedup") is not None
+    ]
+
+    def _ordered(items: list[dict], buckets: list[tuple]) -> list[dict]:
+        order = {label: i for i, (_, _, label) in enumerate(buckets)}
+        return sorted(items, key=lambda x: order.get(x["label"], 999))
+
+    by_files = _ordered(
+        _cohort_group(
+            pairs, lambda p: _bucket_label(p["cohort"]["file_count"], _FILE_BUCKETS)
+        ),
+        _FILE_BUCKETS,
+    )
+    by_lines = _ordered(
+        _cohort_group(
+            pairs,
+            lambda p: _bucket_label(
+                p["cohort"].get("changed_lines") or 0, _LINE_BUCKETS
+            ),
+        ),
+        _LINE_BUCKETS,
+    )
+    by_language = sorted(
+        _cohort_group(pairs, lambda p: _dominant_language(p["cohort"]["languages"])),
+        key=lambda x: x["pairs"],
+        reverse=True,
+    )
+    return {
+        "by_files": by_files,
+        "by_lines": by_lines,
+        "by_language": by_language,
+        "total_pairs": len(pairs),
+    }
 
 
 def build_distributions(route_b: list[dict], sms: list[dict]) -> dict:
