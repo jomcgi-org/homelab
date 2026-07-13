@@ -28,7 +28,10 @@ require (
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
-require github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+require (
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1 // indirect
+)
 
 require (
 	cloud.google.com/go/auth v0.18.1 // indirect
