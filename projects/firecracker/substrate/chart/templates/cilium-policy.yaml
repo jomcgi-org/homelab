@@ -39,6 +39,33 @@ spec:
         - ports:
             - port: {{ .Values.service.port | quote }}
               protocol: TCP
+          # L7 HTTP allow-list (ADR networking/003 #2). Narrows monolith-namespace
+          # callers from "any request on this port" to exactly the real invoke
+          # surface: POST /invoke/<workload>[/<session>]. Cilium matches `path` as an
+          # RE2 regex over the full request path, so `/invoke/.*` covers both the
+          # one-segment (/invoke/sandbox, /invoke/semgrep) and two-segment
+          # (/invoke/agent/{session}) forms plus any query string. `.` matches `/` in
+          # RE2, which is why a single `.*` spans the optional session segment.
+          #
+          # Applying rules.http redirects these flows through the per-node Envoy,
+          # which is also what makes Hubble emit the httpv2 metrics the companion
+          # SigNoz alert (signoz-addons/alerts/.../hubble-invoke-http.yaml) reads.
+          #
+          # Allow-list semantics: anything not listed is DENIED. Every in-cluster
+          # caller was verified to use POST /invoke/... only (sandbox, goosecracker
+          # runner, semgrep_scan, demos/loadtest); none GETs /healthz over the
+          # Service. The kubelet /healthz probe arrives via the separate
+          # `fromEntities: host, health` rule below (no toPorts, so all ports/paths
+          # allowed for those identities) and is unaffected by this L7 narrowing.
+          #
+          # Shadowing (ADR "L4 shadows L7" gotcha): no L4-only allow covers this port
+          # for the monolith source identity, this is the only toPorts on this rule,
+          # and the host/health rule is a different source identity, so the L7 filter
+          # is not shadowed and genuinely enforces.
+          rules:
+            http:
+              - method: "POST"
+                path: "/invoke/.*"
     {{- end }}
     # kubelet liveness/readiness probes originate from the node host. Linkerd
     # auto-authorized these; once an ingress rule makes the endpoint
