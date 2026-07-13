@@ -17,3 +17,23 @@ filegroup(
 )
 
 exports_files(["mix.exs"])
+
+# The control-plane OTP release, built by the prebuilt OTP + Elixir toolchain and
+# emitted as one deterministic tar rooted at opt/embervm/ (arch-independent .beam;
+# include_erts:false). Layered into the dual-arch apko image, which supplies
+# erlang at runtime. See bazel/erlang/mix_release.sh.
+genrule(
+    name = "release_tar",
+    srcs = [
+        "@otp_ubuntu2204_amd64//:otp",
+        "@otp_ubuntu2204_amd64//:Install",
+        "@elixir_1_18_4//:elixir",
+        "@elixir_1_18_4//:bin/elixir",
+        ":srcs",
+        "mix.exs",
+    ],
+    outs = ["embervm-release.tar"],
+    cmd = "$(location //bazel/erlang:mix_release.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location mix.exs)\" \"$@\"",
+    tools = ["//bazel/erlang:mix_release.sh"],
+    visibility = ["//projects/embervm:__subpackages__"],
+)
