@@ -1,12 +1,12 @@
 defmodule Embervm.MixProject do
   use Mix.Project
 
-  # EmberVM control plane. R0 skeleton: a supervision tree with a dependency-free
-  # health endpoint only. Deliberately NO hex deps yet, so the first Bazel/apko
-  # build only has to solve the from-source OTP+Elixir toolchain, not hermetic
-  # hex-dependency vendoring. gRPC (node.proto client), SQLite-WAL (op-log), and
-  # the HTTP submit API are added once a dep-free OTP release + ExUnit are proven
-  # green in CI.
+  # EmberVM control plane. The health endpoint stays dependency-free; hex deps
+  # enter here for the SQLite-WAL op-log (exqlite). They are vendored hermetically
+  # by bazel/erlang: the hex tarball closure is fetched at repo-fetch time and
+  # unpacked into deps/, then consumed below as `path:` deps so mix uses the Path
+  # SCM and never contacts hex.pm on the offline RBE executor (no mix.lock, no
+  # `mix deps.get`). gRPC (node.proto client) and the HTTP submit API follow.
   def project do
     [
       app: :embervm,
@@ -35,8 +35,22 @@ defmodule Embervm.MixProject do
     ]
   end
 
-  # No hex deps in the R0 skeleton (see the project/0 note above).
+  # Every dep is a `path:` dep pointing at deps/<name>/, which bazel/erlang unpacks
+  # from the hex tarball closure before mix runs (see the project/0 note). exqlite
+  # declares db_connection, elixir_make, and cc_precompiler as hex deps, and
+  # db_connection declares telemetry; declaring each here as a path dep with
+  # `override: true` forces the WHOLE graph through the Path SCM, so mix never
+  # reaches hex.pm. elixir_make and cc_precompiler are build-time only
+  # (`runtime: false`, kept out of the release). exqlite builds its bundled
+  # sqlite3.c from source (config :exqlite, force_build: true in config/config.exs)
+  # rather than downloading a precompiled NIF, which offline RBE cannot fetch.
   defp deps do
-    []
+    [
+      {:exqlite, path: "deps/exqlite"},
+      {:db_connection, path: "deps/db_connection", override: true},
+      {:telemetry, path: "deps/telemetry", override: true},
+      {:elixir_make, path: "deps/elixir_make", runtime: false, override: true},
+      {:cc_precompiler, path: "deps/cc_precompiler", runtime: false, override: true}
+    ]
   end
 end

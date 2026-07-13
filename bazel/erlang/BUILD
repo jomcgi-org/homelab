@@ -9,6 +9,21 @@ exports_files(
     visibility = ["//projects/embervm:__subpackages__"],
 )
 
+# The control-plane hex dependency closure (see repositories.bzl). Fetched as raw
+# hex tarballs; the mix_test.sh / mix_release.sh drivers unpack them into deps/ and
+# mix consumes them as path deps. Passed as trailing genrule args to both drivers.
+filegroup(
+    name = "hex_tarballs",
+    srcs = [
+        "@hex_cc_precompiler//file",
+        "@hex_db_connection//file",
+        "@hex_elixir_make//file",
+        "@hex_exqlite//file",
+        "@hex_telemetry//file",
+    ],
+    visibility = ["//projects/embervm:__subpackages__"],
+)
+
 # Smoke test: proves the prebuilt ubuntu-22.04 OTP boots and runs crypto ON the
 # RBE executor (the decisive de-risk before wiring mix/elixir + apko). Built by
 # `bazel test //...`; no-remote-cache so it re-verifies the live executor.
@@ -35,9 +50,10 @@ genrule(
         "@elixir_1_18_4//:bin/elixir",
         "//projects/embervm/control:srcs",
         "//projects/embervm/control:mix.exs",
+        ":hex_tarballs",
     ],
     outs = ["mix_test_smoke.txt"],
-    cmd = "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\"",
+    cmd = "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" $(locations :hex_tarballs)",
     tags = ["no-remote-cache"],
     tools = ["mix_test.sh"],
 )
