@@ -31,10 +31,11 @@ genrule(
         "@elixir_1_18_4//:bin/elixir",
         ":srcs",
         "mix.exs",
+        "@hex_archive//file",
         "//bazel/erlang:hex_tarballs",
     ],
     outs = ["embervm-release.tar"],
-    cmd = "$(location //bazel/erlang:mix_release.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location mix.exs)\" \"$@\" $(locations //bazel/erlang:hex_tarballs)",
+    cmd = "$(location //bazel/erlang:mix_release.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" $(locations //bazel/erlang:hex_tarballs)",
     tools = ["//bazel/erlang:mix_release.sh"],
     visibility = ["//projects/embervm:__subpackages__"],
 )

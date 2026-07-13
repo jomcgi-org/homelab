@@ -5,20 +5,26 @@
 # 1's toolchain (bin/erl was proved by otp_smoke).
 #
 # Args: $1 OTP Install script, $2 elixir bin/elixir anchor, $3 control mix.exs
-#       anchor, $4 output marker, $5.. hex dependency tarballs (may be empty).
+#       anchor, $4 output marker, $5 hex.ez archive, $6.. hex dependency tarballs
+#       (may be empty).
 set -euo pipefail
 
 install_script="$1"
 elixir_anchor="$2"
 mixexs="$3"
 out="$4"
-shift 4
+hex_ez="$5"
+shift 5
 # Remaining args ("$@") are hex dependency tarballs.
 
 # Absolutize the output before we cd away (Bazel passes it execroot-relative).
 case "$out" in
 /*) ;;
 *) out="$(pwd)/$out" ;;
+esac
+case "$hex_ez" in
+/*) ;;
+*) hex_ez="$(pwd)/$hex_ez" ;;
 esac
 
 otp_src="$(cd "$(dirname "$install_script")" && pwd)"
@@ -61,8 +67,19 @@ done
 "$work/otp/Install" -minimal "$work/otp" >/dev/null
 
 export PATH="$work/otp/bin:$work/elixir/bin:$PATH"
-export HOME="$work" # mix/hex write under $HOME; keep it in the sandbox
+export HOME="$work" # mix/hex write under $HOME (~/.mix); keep it in the sandbox
 export MIX_ENV=test
+# The executor env is stripped, so force UTF-8 filename handling (avoids the
+# latin1 native-encoding warning and any non-ASCII path mangling during compile).
+export ELIXIR_ERL_OPTIONS="+fnu"
+# Belt and suspenders: even with Hex registered, forbid any registry contact. The
+# path overrides mean resolution is fully local, so Hex must never reach the net.
+export HEX_OFFLINE=1
+
+# Register Hex offline from the staged archive. mix needs the Hex SCM to parse the
+# hex-style dep declarations inside our path deps (see repositories.bzl); this
+# install is from a local .ez, so it reaches no network.
+mix archive.install "$hex_ez" --force >&2
 
 cd "$work/control"
 # Deps are staged as path deps, so no network is needed. --no-deps-check keeps

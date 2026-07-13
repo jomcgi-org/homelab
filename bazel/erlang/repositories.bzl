@@ -96,6 +96,22 @@ def _erlang_impl(_ctx):
             downloaded_file_path = "%s-%s.tar" % (name, version),
         )
 
+    # The Hex package manager archive. Elixir's precompiled release does not bundle
+    # Hex, but mix needs the Hex SCM *registered* to even parse the hex-style dep
+    # declarations inside our path deps' own mix.exs files (e.g. exqlite declaring
+    # `{:db_connection, "~> 2.1"}`); without it mix aborts with "Could not find an
+    # SCM for dependency". The mix drivers `mix archive.install` this offline so no
+    # actual hex.pm fetch ever happens (the path overrides keep resolution local).
+    # This is the exact build mix itself installs for Elixir 1.18 (installs/1.18.0/
+    # hex.ez is an alias to the current Hex for that series); the pinned sha256
+    # makes a silent alias rotation fail the cold fetch loudly instead of drifting.
+    http_file(
+        name = "hex_archive",
+        urls = ["https://builds.hex.pm/installs/1.18.0/hex.ez"],
+        sha256 = "55ea0adcd1adf5d26db47fcc69b365af98cd8afc06c78434c29db73b45758a28",
+        downloaded_file_path = "hex.ez",
+    )
+
 erlang = module_extension(
     implementation = _erlang_impl,
     doc = "Fetches the prebuilt ubuntu-22.04 OTP 27 (@otp_ubuntu2204_amd64), precompiled Elixir 1.18.4 (@elixir_1_18_4), and the control-plane hex dependency tarballs (@hex_*).",
