@@ -50,11 +50,12 @@ defmodule Embervm.K8s do
     pools =
       case File.exists?(@ca_file) do
         true ->
-          %{
-            default: %{
-              conn_opts: [transport_opts: [verify: :verify_peer, cacertfile: @ca_file]]
-            }
-          }
+          # Each pool's value MUST be a keyword list, not a map: Finch runs it
+          # through NimbleOptions.validate, which only accepts keyword lists (a
+          # map crashes the pool at boot). This branch is deploy-only-reachable
+          # (guarded by the in-cluster CA file), so CI, which always takes the
+          # empty-pools branch below, cannot exercise it.
+          %{default: [conn_opts: [transport_opts: [verify: :verify_peer, cacertfile: @ca_file]]]}
 
         false ->
           %{}
