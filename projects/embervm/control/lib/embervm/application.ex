@@ -4,12 +4,13 @@ defmodule Embervm.Application do
 
   R0 skeleton: the supervision tree holds the op-log (durable task-state
   seam), the ETS hot-set task store built on top of it, the Finch HTTP-client
-  pool (K8s API calls: TokenReview in Task 8, the CRD watch in Task 5), and the
+  pool (K8s API calls: TokenReview in Task 8, the Workload CRD reconcile loop
+  here in Task 5), the `Embervm.WorkloadWatcher` reconciler, and the
   Bandit-hosted `Embervm.Router` serving `/healthz` (and the `/v1` task routes
   in Task 8). Later tasks add children under this same tree (the
-  WorkloadWatcher, the NodeRegistry, the Dispatcher), which is exactly why the
-  control plane is on the BEAM: each of those is a supervised process with its
-  own failure domain, restarted in isolation.
+  NodeRegistry, the Dispatcher), which is exactly why the control plane is on
+  the BEAM: each of those is a supervised process with its own failure
+  domain, restarted in isolation.
 
   Strategy is `:rest_for_one`, not `:one_for_one`: `Embervm.TaskStore` reads
   the op-log once on init to rebuild its ETS tables and otherwise depends on
@@ -45,6 +46,13 @@ defmodule Embervm.Application do
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
       Embervm.K8s.finch_child_spec(),
       {Embervm.Auth, allowed: allowed_service_accounts()},
+      # The Workload reconciler (Task 5): lists Workload CRs over the Finch
+      # pool above and writes Embervm.WorkloadCatalog, which TaskStore.cfg_for/1
+      # reads. Placed after Finch (needs it) and after TaskStore in the
+      # supervision list; TaskStore does not depend on the watcher being up
+      # (WorkloadCatalog.retry_config/1 tolerates the catalog table not
+      # existing yet), so their relative order here is not load-bearing.
+      Embervm.WorkloadWatcher,
       # Bandit + the router last: its handlers call Auth, TaskStore, and
       # SyncWait, so the HTTP surface must not accept requests until all are up.
       {Bandit, plug: Embervm.Router, scheme: :http, port: port}
