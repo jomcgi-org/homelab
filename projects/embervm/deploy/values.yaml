@@ -8,3 +8,13 @@ opLog:
   # Deployment is Recreate + 1 replica because SQLite is single-writer and the
   # volume is RWO.
   size: 2Gi
+
+# TokenReview allow-list: ServiceAccount usernames permitted to submit tasks
+# (Task 8). Empty means deny-all (fail-closed). In R0 the only entry is the
+# control plane's own ServiceAccount, which lets an operator round-trip a live
+# TokenReview-authed submit with `kubectl create token embervm -n embervm`; the
+# real consumer SAs (the monolith semgrep scanner) are added at the Task 14/15
+# side-by-side/shadow cutover, not here.
+auth:
+  allowedServiceAccounts:
+    - system:serviceaccount:embervm:embervm

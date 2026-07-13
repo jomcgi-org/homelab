@@ -47,7 +47,14 @@ defmodule Embervm.TaskStore do
   @doc """
   Submits a new task, or returns the existing one if `idempotency_key` was
   already seen for this workload. `attrs` is `%{tenant, principal, workload,
-  idempotency_key \\ nil, expires_at \\ nil}`.
+  idempotency_key \\ nil, expires_at \\ nil, request \\ nil}`.
+
+  `request` is the opaque guest-request envelope (path, content_type, guest
+  headers, base64 body) the submit API (Task 8) captures verbatim. It is stored
+  in the `submitted` op's payload, NOT projected into any column, so the durable
+  record is complete for the dispatcher (Task 11) to build its `AssignRequest`
+  from: an async 202 must not drop the body it accepted just because nothing
+  dispatches it yet.
   """
   @spec submit(GenServer.server(), map()) ::
           {:ok, :created, String.t()} | {:ok, :existing, String.t()} | {:error, term()}
@@ -92,6 +99,39 @@ defmodule Embervm.TaskStore do
   @spec get(GenServer.server(), String.t()) :: {:ok, map()} | :error
   def get(store \\ __MODULE__, task_id) do
     GenServer.call(store, {:get, task_id})
+  end
+
+  @doc """
+  Reads a task's stored result (until its TTL) from the durable result store,
+  returning `{:ok, map}`, `{:ok, nil}` (no result yet or TTL-reaped), or
+  `{:error, reason}`. Serves `GET /v1/tasks/{id}/result`; this is a result-store
+  read, never the ops log.
+  """
+  @spec get_result(GenServer.server(), String.t()) :: {:ok, map() | nil} | {:error, term()}
+  def get_result(store \\ __MODULE__, task_id) do
+    GenServer.call(store, {:get_result, task_id})
+  end
+
+  @doc """
+  Lists dead-lettered tasks for `workload`, newest first, paged by `:limit`
+  (default 50) and `:offset` (default 0). Serves `GET
+  /v1/workloads/{name}/dead-letters` from the ETS hot set (bounded and rare, so
+  a full scan is acceptable), never the op-log.
+  """
+  @spec list_dead_letters(GenServer.server(), String.t(), keyword()) :: {:ok, map()}
+  def list_dead_letters(store \\ __MODULE__, workload, opts \\ []) do
+    GenServer.call(store, {:list_dead_letters, workload, opts})
+  end
+
+  @doc """
+  Re-queues a dead-lettered task (`dead_lettered -> queued`), resetting its
+  attempt counter to 1 (a full fresh retry budget) and appending an audited
+  `redrive` op. Serves `POST /v1/tasks/{id}/redrive`. Fails `:illegal_transition`
+  for a task that is not dead-lettered.
+  """
+  @spec redrive(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def redrive(store \\ __MODULE__, task_id) do
+    GenServer.call(store, {:redrive, task_id})
   end
 
   # -- GenServer callbacks ---------------------------------------------------
@@ -264,6 +304,61 @@ defmodule Embervm.TaskStore do
     end
   end
 
+  def handle_call({:get_result, task_id}, _from, state) do
+    {:reply, Embervm.OpLog.SQLite.load_result(state.op_log, task_id), state}
+  end
+
+  def handle_call({:list_dead_letters, workload, opts}, _from, state) do
+    limit = Keyword.get(opts, :limit, 50)
+    offset = Keyword.get(opts, :offset, 0)
+
+    all =
+      :ets.foldl(
+        fn {_id, task}, acc ->
+          if task.workload == workload and task.state == :dead_lettered do
+            [task | acc]
+          else
+            acc
+          end
+        end,
+        [],
+        state.tasks
+      )
+      |> Enum.sort_by(& &1.submitted_at, :desc)
+
+    page = all |> Enum.drop(offset) |> Enum.take(limit)
+    {:reply, {:ok, %{items: page, total: length(all), limit: limit, offset: offset}}, state}
+  end
+
+  def handle_call({:redrive, task_id}, _from, state) do
+    with {:ok, task} <- fetch_task(state, task_id),
+         {:ok, next} <- TaskState.transition(task.state, :redrive) do
+      ts = state.clock.()
+
+      op = %Op{
+        kind: :redrive,
+        tenant: task.tenant,
+        principal: task.principal,
+        workload: task.workload,
+        task_id: task_id,
+        ts: ts,
+        payload: %{}
+      }
+
+      case Embervm.OpLog.SQLite.append(state.op_log, op) do
+        {:ok, _seq} ->
+          updated = %{task | state: next, attempt: 1, updated_at: ts}
+          :ets.insert(state.tasks, {task_id, updated})
+          {:reply, {:ok, updated}, state}
+
+        {:error, _reason} = error ->
+          {:reply, error, state}
+      end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
   # -- submit helpers --------------------------------------------------------
 
   defp do_submit(attrs, workload, idempotency_key, state) do
@@ -278,7 +373,11 @@ defmodule Embervm.TaskStore do
       workload: workload,
       task_id: task_id,
       ts: ts,
-      payload: %{idempotency_key: idempotency_key, expires_at: expires_at}
+      payload: %{
+        idempotency_key: idempotency_key,
+        expires_at: expires_at,
+        request: Map.get(attrs, :request)
+      }
     }
 
     case Embervm.OpLog.SQLite.append(state.op_log, op) do
@@ -347,6 +446,14 @@ defmodule Embervm.TaskStore do
       {:ok, _seq} ->
         updated = %{task | state: next_state, updated_at: ts}
         :ets.insert(state.tasks, {task.task_id, updated})
+        # Wake any sync-submit caller parked on this task the moment it settles
+        # terminal (succeeded or dead_lettered). No-op when nobody is parked, so
+        # it is safe to call on every transition; guarded to terminal states so
+        # intermediate assign/start transitions do not spuriously wake waiters.
+        if TaskState.terminal?(next_state) do
+          Embervm.SyncWait.notify(task.task_id, next_state)
+        end
+
         {:ok, updated}
 
       {:error, reason} ->
