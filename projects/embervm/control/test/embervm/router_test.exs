@@ -94,6 +94,25 @@ defmodule Embervm.RouterTest do
     assert view["attempt"] == 1
   end
 
+  test "a submit without X-Ember-Guest-Path stores NO path, so the workload invokePath applies" do
+    wl = unique("wl")
+    task_id = json(req(:post, "/v1/workloads/#{wl}/tasks", auth("good"), "x").body)["task_id"]
+
+    {:ok, env} = TaskStore.get_request(task_id)
+    # No "path" key: the dispatcher's `req_env["path"] || invoke_path` then falls
+    # back to the workload's invokePath (e.g. /invoke), not a hard-coded "/".
+    refute Map.has_key?(env, "path")
+  end
+
+  test "X-Ember-Guest-Path is recorded and overrides the workload invokePath" do
+    wl = unique("wl")
+    headers = auth("good") ++ [{"x-ember-guest-path", "/custom"}]
+    task_id = json(req(:post, "/v1/workloads/#{wl}/tasks", headers, "x").body)["task_id"]
+
+    {:ok, env} = TaskStore.get_request(task_id)
+    assert env["path"] == "/custom"
+  end
+
   test "Idempotency-Key dedupes a resubmit to the same task" do
     wl = unique("wl")
     key = unique("idem")

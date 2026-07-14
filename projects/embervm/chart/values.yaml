@@ -119,8 +119,14 @@ podSecurityContext:
 # status on in-cluster (see chart/templates/sample-workload.yaml). This is a
 # self-test, not a production workload: turn it off once Task 14 lands the
 # real semgrep/sandbox workload CRs.
+# The gated `echo` self-test workload is now DISABLED: the real `sandbox`
+# workload (Task 14) is a live task-class Workload the watcher catalogs and the
+# BaseBuilder actually builds, so it serves the watcher/RBAC round-trip that echo
+# was a placeholder for. Left enabled, echo's image is not provisioned, so
+# BaseBuilder retries its BuildBase in a tight loop and floods the logs with
+# FAILED_PRECONDITION. Re-enable only for isolated watcher testing.
 sampleWorkload:
-  enabled: true
+  enabled: false
   name: echo
 
 # The first REAL EmberVM workload (Task 14): the python sandbox. A task-class

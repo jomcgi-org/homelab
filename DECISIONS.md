@@ -136,6 +136,25 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   images.bzl limitation (silent clobber on shared-prefix keys) is a latent footgun
   worth a general fix (deep-merge the fragment) as a separate follow-up.
 
+### D14a.7 LIVE VM ACHIEVED, and the invokePath precedence bug it surfaced (chart 0.1.17)
+- **A real python task ran in a Firecracker microVM through the controller**
+  (chart 0.1.16): `POST /v1/workloads/sandbox/tasks?wait=true` with `{"code":
+  "print(6*7)"}` returned `{"stdout":"42\n","exit_code":0,"duration_ms":16}`, 200
+  OK. Chain verified: init container baked the ext4, BaseBuilder cold-booted +
+  snapshotted a real VM (status.snapshotRef=sandbox__..., BaseReady+BaseBuilt),
+  PoolManager primed a floor VM (primedFloorSatisfied=true), and the dispatched
+  Assign restored a VM and round-tripped the guest /invoke.
+- **Bug surfaced:** the FIRST submit dead-lettered (guest 404) because the Router
+  baked `path: "/"` into every submitted request, and the dispatcher prefers the
+  stored request path (`req_env["path"] || invoke_path`), so the workload's
+  `invokePath: /invoke` was dead unless the client sent `X-Ember-Guest-Path`. The
+  intended precedence is request-header > workload invokePath > "/". Fix: the
+  Router records a path ONLY when `X-Ember-Guest-Path` is set, so the dispatcher's
+  fallback to the catalog `invoke_path` works. Only a real end-to-end invocation
+  could catch this (router + dispatcher were unit-tested in isolation).
+- Also disabled the `echo` sample workload (its BuildBase failed in a tight loop
+  now that BaseBuilder is active; sandbox is the real watcher/RBAC exercise).
+
 ### D14a.5 Live-verify, not CI-verify
 - CI cannot run a real VM (no KVM in RBE). 14a is verified live AFTER merge+sync:
   the init container bakes the ext4, the Workload goes Ready with a snapshotRef
