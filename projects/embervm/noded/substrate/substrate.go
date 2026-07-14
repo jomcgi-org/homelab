@@ -24,6 +24,12 @@ type ClaimSpec struct {
 	// ThreadID is the per-claim bundle identity that names the on-disk bundle dir
 	// and the vsock socket path. Empty means "assign a fresh one".
 	ThreadID string
+	// Repo and Branch scoped an agent workspace in the fc-invoke lineage. The
+	// task class has no workspace concept, so the forked driver ignores them; they
+	// are carried only so the inherited driver package (copied verbatim, including
+	// its tests) compiles unchanged. Do not read them in noded code.
+	Repo   string
+	Branch string
 	// BaseSnapshotRef, when set, requests a restore from a warmed base snapshot
 	// for an instant ready start instead of a cold boot.
 	BaseSnapshotRef SnapshotRef
