@@ -90,7 +90,24 @@ defmodule Embervm.MixProject do
       {:grpc, path: "deps/grpc", override: true},
       {:grpc_core, path: "deps/grpc_core", override: true},
       {:googleapis, path: "deps/googleapis", override: true},
-      {:jason, path: "deps/jason", override: true}
+      {:jason, path: "deps/jason", override: true},
+      # OpenTelemetry tracing (Task 13): OTLP/gRPC export to SigNoz. Full flat
+      # closure (see bazel/erlang/repositories.bzl group 4). Two atoms differ from
+      # their hex package name: :hpack lives in deps/hpack_erl and :chatterbox in
+      # deps/ts_chatterbox (the deps dir is the PACKAGE name, the atom the APP name).
+      {:opentelemetry_api, path: "deps/opentelemetry_api", override: true},
+      {:opentelemetry, path: "deps/opentelemetry", override: true},
+      {:opentelemetry_exporter, path: "deps/opentelemetry_exporter", override: true},
+      {:opentelemetry_semantic_conventions,
+       path: "deps/opentelemetry_semantic_conventions", override: true},
+      {:grpcbox, path: "deps/grpcbox", override: true},
+      {:acceptor_pool, path: "deps/acceptor_pool", override: true},
+      {:ctx, path: "deps/ctx", override: true},
+      {:gproc, path: "deps/gproc", override: true},
+      {:chatterbox, path: "deps/ts_chatterbox", override: true},
+      {:hpack, path: "deps/hpack_erl", override: true},
+      {:tls_certificate_check, path: "deps/tls_certificate_check", override: true},
+      {:ssl_verify_fun, path: "deps/ssl_verify_fun", override: true}
     ]
   end
 end

@@ -15,3 +15,12 @@ config :exqlite, force_build: true
 # module tuple).
 config :logger, :default_handler,
   formatter: {Embervm.LogFormatter, %{}}
+
+# OpenTelemetry tracing (Task 13). Default OFF (traces_exporter: :none) so tests
+# and any endpoint-less run boot cleanly and export nothing; config/runtime.exs
+# turns on the OTLP/gRPC exporter when OTEL_EXPORTER_OTLP_ENDPOINT is set (the
+# SigNoz collector, wired by the chart). A batch processor buffers spans off the
+# hot path.
+config :opentelemetry,
+  span_processor: :batch,
+  traces_exporter: :none

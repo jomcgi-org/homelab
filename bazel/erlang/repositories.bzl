@@ -88,6 +88,27 @@ _HEX_DEPS = [
     ("googleapis", "0.1.0", "1989a7244fd17d3eb5f3de311a022b656c3736b39740db46506157c4604bd212"),
     ("jason", "1.4.5", "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"),
     ("protobuf", "0.17.0", "ca6c91f6f63e2c147b47f03eefd10b80538aa6fc55ff4b12b795efb786b0152f"),
+    #   4. OpenTelemetry tracing (Task 13) exporting OTLP/gRPC to SigNoz. The API +
+    #      SDK (opentelemetry, opentelemetry_api, semantic_conventions) plus the
+    #      OTLP exporter, whose transport is grpcbox -> {acceptor_pool, ctx, gproc,
+    #      ts_chatterbox -> hpack_erl} with TLS cert checking via
+    #      tls_certificate_check -> ssl_verify_fun. All pure Erlang/Elixir (no NIF),
+    #      so the amd64-only image is unaffected. Resolved from hex (latest stable,
+    #      co-released and mutually compatible). Package name != app name for
+    #      hpack_erl (app: hpack) and ts_chatterbox (app: chatterbox); mix.exs maps
+    #      those atoms to their deps/<package> path.
+    ("opentelemetry_api", "1.5.0", "f53ec8a1337ae4a487d43ac89da4bd3a3c99ddf576655d071deed8b56a2d5dda"),
+    ("opentelemetry", "1.7.0", "a9173b058c4549bf824cbc2f1d2fa2adc5cdedc22aa3f0f826951187bbd53131"),
+    ("opentelemetry_exporter", "1.10.0", "33a116ed7304cb91783f779dec02478f887c87988077bfd72840f760b8d4b952"),
+    ("opentelemetry_semantic_conventions", "1.27.0", "9681ccaa24fd3d810b4461581717661fd85ff7019b082c2dff89c7d5b1fc2864"),
+    ("grpcbox", "0.18.0", "5ec9f8fe664ab51201b32c117a61511a1f9d6316771e3891ba8a88d289a732ab"),
+    ("acceptor_pool", "1.0.1", "f172f3d74513e8edd445c257d596fc84dbdd56d2c6fa287434269648ae5a421e"),
+    ("ctx", "0.6.0", "a14ed2d1b67723dbebbe423b28d7615eb0bdcba6ff28f2d1f1b0a7e1d4aa5fc2"),
+    ("gproc", "1.2.0", "70c6f8c91fa5974296cd87974949d8eab953230414f31c4a623ff75131e0827a"),
+    ("ts_chatterbox", "0.16.0", "34c145c702f3a8d22f49a189eb34579ef3db68f9a98a82d19b5cf6e390aad54f"),
+    ("hpack_erl", "0.3.0", "d6137d7079169d8c485c6962dfe261af5b9ef60fbc557344511c1e65e3d95fb0"),
+    ("tls_certificate_check", "1.33.0", "cab9a7439e2dbfe91b38104f2d8a4b6d61dbc4d3a5ad59ac364713a88c6cfd9b"),
+    ("ssl_verify_fun", "1.1.7", "fe4c190e8f37401d30167c8c405eda19469f34577987c76dde613e838bbc67f8"),
 ]
 
 # hex.pm's OTP build extracts to OTP-<ver>/ with erts-*/, lib/, and an Install
