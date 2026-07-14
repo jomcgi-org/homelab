@@ -254,6 +254,26 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   soak is now in place (flip `dispatch: shadow`); gathering the evidence + the
   cutover flip is the remaining Task 16 work.
 
+## Task 16: semgrep cutover to EmberVM (direct cut, no soak)
+
+### D16.1 Direct cutover, not a 48h shadow soak (Joe's call: personal homelab)
+- The plan's Task 16 gates a cutover behind a >= 48h / >= 200-scan shadow soak with
+  divergence 0 plus a six-gate load/durability/fairness battery. For a personal
+  homelab with no external SLA, that enterprise-caution is overkill: cut over
+  directly and debug live. Flipped `semgrep.dispatch: fc-invoke -> embervm` in the
+  monolith deploy values, so the per-PR semgrep diff scan is now SERVED by EmberVM.
+- Env-only change (no chart bump): the monolith reads deploy/values.yaml from a git
+  `$values` ref (targetRevision HEAD), so the flip flows through on merge without an
+  image rebuild. fc-invoke's scan path stays deployed as the instant fallback
+  (revert the one value + rollout) until R1/R2 formally deprecates it.
+- De-risked by prior live verification: the EmberVM semgrep Workload returned
+  identical PRO findings (`subprocess-shell-true` etc.) for a scripted vuln. A
+  large real multi-file PR diff is the debug-live surface; the shadow machinery
+  (Task 15) remains available to compare if a regression appears.
+- The formal load/throughput/durability GATES (kill -9 drain, fairness ratio,
+  cap-16 absolute throughput) are the remaining enterprise-grade evidence, deferred
+  as unnecessary for personal use; run them if EmberVM ever takes external traffic.
+
 ## D12 known gaps accepted for R0 (documented, not fixed)
 - The `usage` projection ACCUMULATES (the only projection that does), so it is not
   idempotent under op replay (the future `read_from` replica path); safe today
