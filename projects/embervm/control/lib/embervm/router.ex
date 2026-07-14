@@ -409,18 +409,23 @@ defmodule Embervm.Router do
   # fields are included so op-log JSON never carries a null (nested nils are not
   # stripped by the encoder).
   defp build_request_env(conn, body) do
-    base = %{path: guest_path(conn), headers: guest_headers(conn), body_b64: Base.encode64(body)}
+    base = %{headers: guest_headers(conn), body_b64: Base.encode64(body)}
+
+    # Only record a guest path when X-Ember-Guest-Path is EXPLICITLY set, so the
+    # dispatcher falls back to the workload's `invokePath` (the intended default).
+    # Baking "/" here made invokePath dead: the dispatcher prefers the stored
+    # request path (`req_env["path"] || invoke_path`), so a "/" default always won
+    # and 404'd a guest that only serves /invoke.
+    base =
+      case header_value(conn, @path_header) do
+        nil -> base
+        path -> Map.put(base, :path, path)
+      end
 
     case header_value(conn, "content-type") do
       nil -> base
       ct -> Map.put(base, :content_type, ct)
     end
-  end
-
-  defp guest_path(conn) do
-    # Default is the workload's spec.source.invokePath; hard-coded `/` until the
-    # Task 5 catalog exists. X-Ember-Guest-Path overrides per submit.
-    header_value(conn, @path_header) || "/"
   end
 
   defp guest_headers(conn) do
