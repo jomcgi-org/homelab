@@ -87,6 +87,7 @@ export PATH="$work/otp/bin:$work/elixir/bin:$PATH"
 if [ -n "${MIX_REBAR3_SRC:-}" ]; then
 	cp "$MIX_REBAR3_SRC" "$work/otp/bin/rebar3"
 	chmod +x "$work/otp/bin/rebar3"
+	export MIX_REBAR3="$work/otp/bin/rebar3"
 fi
 export HOME="$work" # mix/hex write under $HOME (~/.mix); keep it in the sandbox
 export MIX_ENV=test
