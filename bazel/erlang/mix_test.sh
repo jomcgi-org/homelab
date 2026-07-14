@@ -80,6 +80,14 @@ done
 "$work/otp/Install" -minimal "$work/otp" >/dev/null
 
 export PATH="$work/otp/bin:$work/elixir/bin:$PATH"
+
+# rebar3 for mix-built rebar deps (OTel gRPC exporter chain, Task 13): the
+# genrule passes it absolute as MIX_REBAR3_SRC; stage onto the OTP bin (already on
+# PATH) so mix finds it. Absent (the pre-OTel closure) leaves the build unchanged.
+if [ -n "${MIX_REBAR3_SRC:-}" ]; then
+	cp "$MIX_REBAR3_SRC" "$work/otp/bin/rebar3"
+	chmod +x "$work/otp/bin/rebar3"
+fi
 export HOME="$work" # mix/hex write under $HOME (~/.mix); keep it in the sandbox
 export MIX_ENV=test
 # The executor env is stripped, so force UTF-8 filename handling (avoids the

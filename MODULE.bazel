@@ -684,4 +684,5 @@ use_repo(
     "hex_ts_chatterbox",
     "otp_ubuntu2204_amd64",
     "protoc_linux_x86_64",
+    "rebar3",
 )
