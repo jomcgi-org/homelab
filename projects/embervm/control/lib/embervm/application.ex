@@ -54,6 +54,14 @@ defmodule Embervm.Application do
       # tolerates the catalog table not existing yet), so their relative order
       # here is not load-bearing.
       Embervm.WorkloadWatcher,
+      # The node registry (Task 9): one supervised gRPC stream per configured node
+      # daemon, consuming WatchNode into the Embervm.NodeCapacity ETS table the
+      # dispatcher (Task 11) reads, and reassigning a downed node's in-flight tasks
+      # via Embervm.TaskStore. Placed after TaskStore (its reassignment path calls
+      # it) and after WorkloadWatcher; it dials the daemon directly over its own
+      # Mint gRPC connection, so it does not depend on the Finch pool. With no node
+      # wired (empty address), it supervises an empty node list and does nothing.
+      {Embervm.NodeRegistry, nodes: configured_nodes()},
       # Bandit + the router last: its handlers call Auth, TaskStore, and
       # SyncWait, so the HTTP surface must not accept requests until all are up.
       {Bandit, plug: Embervm.Router, scheme: :http, port: port}
@@ -83,6 +91,43 @@ defmodule Embervm.Application do
       nil -> nil
       "" -> nil
       path -> path
+    end
+  end
+
+  # The configured node daemons the registry consumes WatchNode from. v1 wires
+  # exactly one, from chart values (EMBERVM_NODE_ID + EMBERVM_NODE_ADDRESS); the
+  # registry interface takes a LIST so multi-node needs no reshaping here. An
+  # empty address (no daemon wired yet) yields an empty list, so the registry
+  # supervises nothing rather than crash-looping on a bad dial. The id falls back
+  # to the address when unset, purely for correlation labels.
+  #
+  # THIS STATIC-VALUES SOURCE IS SINGLE-NODE ONLY. It is correct today because
+  # noded is one node-pinned Deployment (replicas: 1) behind a ClusterIP Service,
+  # so the one address resolves to the one pod. It is NOT compatible with a
+  # DaemonSet: a ClusterIP Service load-balances a single stream to one arbitrary
+  # pod (the registry would see "one node" while N-1 daemons stay invisible, and
+  # read capacity from the wrong pod), and values cannot enumerate churning pod
+  # IPs. The multi-node source is endpoint discovery: a HEADLESS noded Service
+  # (clusterIP: None) plus an EndpointSlice/Pod watch that opens a stream per pod
+  # and ages one out when its pod drains. That swap changes ONLY this function
+  # (it produces the same [%{id, address}] list); Embervm.NodeRegistry, its ETS
+  # projection, age-out, and reassignment are unchanged. Land it when noded
+  # actually becomes a DaemonSet.
+  defp configured_nodes do
+    address = trimmed_env("EMBERVM_NODE_ADDRESS")
+    id = trimmed_env("EMBERVM_NODE_ID")
+
+    cond do
+      address == "" -> []
+      id == "" -> [%{id: address, address: address}]
+      true -> [%{id: id, address: address}]
+    end
+  end
+
+  defp trimmed_env(name) do
+    case System.get_env(name) do
+      nil -> ""
+      value -> String.trim(value)
     end
   end
 

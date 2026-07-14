@@ -43,11 +43,27 @@ opLog:
 
 # The single node daemon the control plane talks to (v1: exactly one). Address is
 # resolved in-cluster; the registry takes a list so multi-node needs no reshape.
+#
+# SINGLE-NODE ONLY while noded is a Deployment (replicas: 1) behind a ClusterIP
+# Service: the derived address resolves to the one pod. A DaemonSet across
+# multiple firecracker nodes cannot be served this way (a ClusterIP fans a single
+# stream out to a random pod); that requires a HEADLESS noded Service +
+# EndpointSlice discovery in the control plane, feeding the same list seam. See
+# Embervm.Application.configured_nodes/0.
 node:
-  # embervm-noded is a later PR (Task 4); this is the address the NodeRegistry
-  # dials once it exists.
+  # Correlation id the control plane configures for this daemon (echoed in
+  # WatchNodeRequest.node_id and used as the NodeRegistry's capacity-table key).
+  # The daemon reports its own node id in NodeStatus regardless; this is a label.
+  # noded is node-pinned to node-4 (homelab.io/firecracker=true).
+  id: node-4
+  # gRPC address the NodeRegistry dials. Empty means "derive the in-cluster
+  # embervm-noded Service DNS from the release" (see deployment.yaml); set this
+  # only to point the control plane at a daemon outside this release.
   address: ""
   # Static bearer token secret (1Password-provisioned) gating the daemon gRPC.
+  # Deferred to Task 11: noded currently runs open (noded.bearerTokenSecret.enabled
+  # false, mesh policy is the layer), so the registry dials plaintext with no
+  # metadata in v1.
   bearerTokenSecret: ""
 
 # TokenReview auth allow-list: ServiceAccount usernames permitted to submit tasks.

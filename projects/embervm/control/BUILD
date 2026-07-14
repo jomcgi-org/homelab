@@ -32,10 +32,15 @@ genrule(
         ":srcs",
         "mix.exs",
         "@hex_archive//file",
+        # Generated node.proto Elixir stub, staged into control/lib/ by
+        # mix_release.sh so Embervm.NodeRegistry (Task 9) enters the release.
+        # Promoting the gRPC deps to prod (mix.exs) + baking this stub is why the
+        # release image digest changes and this PR bumps the chart.
+        "//projects/embervm/proto/embervm/node/v1:node_elixir_src",
         "//bazel/erlang:hex_tarballs",
     ],
     outs = ["embervm-release.tar"],
-    cmd = "$(location //bazel/erlang:mix_release.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" $(locations //bazel/erlang:hex_tarballs)",
+    cmd = "$(location //bazel/erlang:mix_release.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations //bazel/erlang:hex_tarballs)",
     tools = ["//bazel/erlang:mix_release.sh"],
     visibility = ["//projects/embervm:__subpackages__"],
 )
