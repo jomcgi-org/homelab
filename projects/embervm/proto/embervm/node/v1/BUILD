@@ -100,5 +100,12 @@ genrule(
           "\"$(location :node_proto)\" " +
           "\"$@\"",
     tools = ["//bazel/erlang:gen_elixir.sh"],
-    visibility = ["//projects/embervm:__subpackages__"],
+    # //bazel/erlang also consumes this: mix_test_smoke (the general test lane)
+    # stages node.pb.ex into control/lib/ so prod code referencing the stubs
+    # compiles there, alongside the control:release_tar consumer under
+    # //projects/embervm. Both need to see this generated source.
+    visibility = [
+        "//bazel/erlang:__pkg__",
+        "//projects/embervm:__subpackages__",
+    ],
 )
