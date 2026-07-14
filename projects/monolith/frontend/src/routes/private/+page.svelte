@@ -1,5 +1,4 @@
 <script>
-  import { tick } from "svelte";
   import { deserialize } from "$app/forms";
   import { launcher } from "$lib/private/launcher.js";
   import ClusterChatPanel from "$lib/private/components/ClusterChatPanel.svelte";
@@ -37,9 +36,6 @@
   let github = $derived(
     dash?.github && !dash.github.error ? dash.github : null,
   );
-  let queues = $derived(
-    dash?.queues && !dash.queues.error ? dash.queues : null,
-  );
   let unhealthyKinds = $derived(
     health ? Object.entries(health.unhealthy ?? {}) : [],
   );
@@ -49,253 +45,6 @@
   let allClear = $derived(
     health?.healthy === true && (alerts == null || alerts.length === 0),
   );
-
-  // ── Capture ──────────────────────────────────
-  let note = $state("");
-  let sent = $state(false);
-  let captureRef = $state(null);
-  let ingestMode = $state(false);
-
-  $effect(() => {
-    captureRef?.focus();
-  });
-
-  let error = $state(false);
-
-  // ── Knowledge search overlay ─────────────────
-  let searchOpen = $state(false);
-  let searchQuery = $state("");
-  let searchResults = $state([]);
-  let selectedNote = $state(null);
-  let activeIndex = $state(-1);
-  let searching = $state(false);
-  let searchError = $state("");
-  let searchType = $state("all");
-  let savedCapture = $state("");
-  let searchInputRef = $state(null);
-
-  function openSearch() {
-    savedCapture = note;
-    searchOpen = true;
-    tick().then(() => searchInputRef?.focus());
-  }
-
-  function closeSearch() {
-    searchOpen = false;
-    note = savedCapture;
-    searchQuery = "";
-    searchResults = [];
-    selectedNote = null;
-    activeIndex = -1;
-    searching = false;
-    searchError = "";
-    tick().then(() => captureRef?.focus());
-  }
-
-  function slugify(s) {
-    return s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-  }
-
-  function renderNote(md) {
-    const blocks = md.replace(/^---\n[\s\S]*?\n---\n?/, "").split(/\n\n+/);
-    return blocks.map((block) => {
-      const h = block.match(/^(#{1,3}) (.+)$/m);
-      if (h) return { tag: `h${h[1].length}`, id: slugify(h[2]), text: h[2] };
-      return { tag: "p", text: block };
-    });
-  }
-
-  async function selectResult(result) {
-    try {
-      const formData = new FormData();
-      formData.append("note_id", result.note_id);
-      const res = await fetch("?/preview", {
-        method: "POST",
-        body: formData,
-      });
-      const outcome = deserialize(await res.text());
-      if (outcome.type === "success" && outcome.data?.note) {
-        selectedNote = { ...outcome.data.note, section: result.section };
-      }
-    } catch (e) {
-      console.error("Failed to fetch note:", e);
-    }
-  }
-
-  $effect(() => {
-    if (selectedNote?.content && selectedNote?.section) {
-      tick().then(() => {
-        const slug = slugify(selectedNote.section.replace(/^#+\s*/, ""));
-        document.getElementById(slug)?.scrollIntoView({ block: "start" });
-      });
-    }
-  });
-
-  $effect(() => {
-    function handleGlobalKeyDown(e) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "i") {
-        e.preventDefault();
-        ingestMode = !ingestMode;
-        note = "";
-        tick().then(() => captureRef?.focus());
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        if (!searchOpen) openSearch();
-      }
-      if (e.key === "Escape" && searchOpen) {
-        e.preventDefault();
-        closeSearch();
-      }
-      if (searchOpen && e.key === "ArrowLeft" && selectedNote) {
-        e.preventDefault();
-        selectedNote = null;
-      }
-      if (searchOpen && e.key === "ArrowDown" && !selectedNote && searchResults.length > 0) {
-        e.preventDefault();
-        activeIndex = Math.min(activeIndex + 1, searchResults.length - 1);
-      }
-      if (searchOpen && e.key === "ArrowUp" && !selectedNote && searchResults.length > 0) {
-        e.preventDefault();
-        activeIndex = Math.max(activeIndex - 1, -1);
-      }
-      if (searchOpen && e.key === "Enter" && !selectedNote && activeIndex >= 0) {
-        e.preventDefault();
-        const result = searchResults[activeIndex];
-        if (result) selectResult(result);
-      }
-    }
-    document.addEventListener("keydown", handleGlobalKeyDown);
-    return () => document.removeEventListener("keydown", handleGlobalKeyDown);
-  });
-
-  // ── Debounced search ───────────────────────────
-  let searchTimer;
-  let searchController;
-  $effect(() => {
-    clearTimeout(searchTimer);
-    searchController?.abort();
-    const q = searchQuery;
-    const type = searchType;
-    if (q.length < 2) {
-      searchResults = [];
-      searching = false;
-      return;
-    }
-    searching = true;
-    searchError = "";
-    searchTimer = setTimeout(async () => {
-      const controller = new AbortController();
-      searchController = controller;
-      try {
-        const formData = new FormData();
-        formData.append("q", q);
-        if (type !== "all") formData.append("type", type);
-        const res = await fetch("?/search", {
-          method: "POST",
-          body: formData,
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted) return;
-        const outcome = deserialize(await res.text());
-        if (outcome.type === "success") {
-          const d = outcome.data;
-          if (d.error) {
-            searchError = d.error;
-            searchResults = [];
-          } else {
-            searchResults = d.results;
-            activeIndex = -1;
-            searchError = "";
-          }
-        } else {
-          searchError = "search failed";
-          searchResults = [];
-        }
-      } catch (e) {
-        if (e.name !== "AbortError") {
-          searchError = "search unavailable";
-          searchResults = [];
-        }
-      } finally {
-        if (!controller.signal.aborted) {
-          searching = false;
-        }
-      }
-    }, 300);
-    return () => {
-      clearTimeout(searchTimer);
-      searchController?.abort();
-    };
-  });
-
-  async function submitCapture() {
-    if (!note.trim()) return;
-    try {
-      const formData = new FormData();
-      formData.append("content", note);
-      const res = await fetch("?/capture", {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) throw new Error();
-      sent = true;
-      setTimeout(() => {
-        note = "";
-        sent = false;
-        captureRef?.focus();
-      }, 500);
-    } catch {
-      error = true;
-      setTimeout(() => {
-        error = false;
-        captureRef?.focus();
-      }, 2000);
-    }
-  }
-
-  async function submitIngest() {
-    if (!note.trim()) return;
-    try {
-      const formData = new FormData();
-      formData.append("url", note.trim());
-      formData.append("source_type", detectSourceType(note.trim()));
-      const res = await fetch("?/ingest", {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) throw new Error();
-      sent = true;
-      setTimeout(() => {
-        note = "";
-        sent = false;
-        ingestMode = false;
-        captureRef?.focus();
-      }, 500);
-    } catch {
-      error = true;
-      setTimeout(() => {
-        error = false;
-        captureRef?.focus();
-      }, 2000);
-    }
-  }
-
-  function detectSourceType(url) {
-    if (/youtube\.com|youtu\.be/.test(url)) return "youtube";
-    return "webpage";
-  }
-
-  function captureKeyDown(e) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      ingestMode ? submitIngest() : submitCapture();
-    }
-  }
 
   // ── Schedule past/active logic ───────────────
   function timeToMinutes(timeStr) {
@@ -504,45 +253,6 @@
     </section>
 
     <div class="grid">
-      <!-- Capture -->
-      <section class="card card--capture">
-        <h2 class="section-label">Capture</h2>
-        <textarea
-          bind:this={captureRef}
-          class="capture-input"
-          class:capture-input--sent={sent}
-          value={note}
-          oninput={(e) => (note = e.target.value)}
-          onkeydown={captureKeyDown}
-          placeholder={ingestMode ? "paste a url…" : "write something…"}
-          spellcheck="false"
-          aria-label="Quick note"
-        ></textarea>
-        <footer class="capture-footer">
-          <span class="capture-hints">
-            <span class="capture-hint" class:capture-hint--error={error}>
-              {#if error}
-                failed
-              {:else if sent}
-                sent ✓
-              {:else if ingestMode && note.trim()}
-                {detectSourceType(note.trim())} · ⌘ enter
-              {:else if note.trim()}
-                ⌘ enter
-              {:else}
-                &nbsp;
-              {/if}
-            </span>
-            <span class="capture-hint">{ingestMode ? "⌘I ingest" : "⌘K search"}</span>
-          </span>
-          {#if ingestMode}
-            <span class="capture-mode">ingest</span>
-          {:else if note.length > 0}
-            <span class="capture-count">{note.length}</span>
-          {/if}
-        </footer>
-      </section>
-
       <!-- Today: events + tasks -->
       <section class="card card--today">
         <h2 class="section-label">Today</h2>
@@ -681,39 +391,7 @@
         {/if}
       </section>
 
-      <!-- Queues -->
-      <section class="card card--queues">
-        <h2 class="section-label">Queues</h2>
-        {#if queues == null}
-          <p class="unavail">unavailable</p>
-        {:else}
-          <p class="queue-counts">
-            <a href="/review" class="queue-link"
-              >{queues.notes_review_queue ?? 0} notes</a
-            >
-            <span class="dim">· {queues.gaps_review_queue ?? 0} gaps in review</span>
-          </p>
-          {#if (queues.scheduler_jobs ?? []).length > 0}
-            <ul class="plain-list">
-              {#each queues.scheduler_jobs ?? [] as job}
-                <li class="job-row" class:job-row--bad={job.last_status !== "ok"}>
-                  <span class="job-name">{job.name}</span>
-                  <span class="job-status">{job.last_status ?? "never ran"}</span>
-                  <span class="dim">{relTime(job.last_run_at)}</span>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        {/if}
-      </section>
-
-      <!-- Ask the cluster -->
-      <section class="card card--chat">
-        <h2 class="section-label">Ask the cluster</h2>
-        <ClusterChatPanel />
-      </section>
-
-      <!-- Launcher -->
+      <!-- Launcher: internal cluster-ops tools -->
       <section class="launcher">
         <h2 class="section-label">Launcher</h2>
         <div class="launcher-grid">
@@ -739,123 +417,14 @@
           {/each}
         </div>
       </section>
+
+      <!-- Ask the cluster: full-width, display-dominant -->
+      <section class="card card--chat">
+        <h2 class="section-label">Ask the cluster</h2>
+        <ClusterChatPanel />
+      </section>
     </div>
   </div>
-
-  {#if searchOpen}
-    <div class="search-overlay">
-      <div class="search-container">
-        <input
-          type="text"
-          class="search-input"
-          placeholder="search knowledge…"
-          bind:value={searchQuery}
-          bind:this={searchInputRef}
-        />
-        <div class="search-type-filters">
-          {#each ["all", "note", "paper", "article", "recipe"] as type}
-            <button
-              class="search-type-pill"
-              class:active={searchType === type}
-              onclick={() => (searchType = type)}
-            >
-              {type}
-            </button>
-          {/each}
-        </div>
-        {#if selectedNote}
-          <div class="search-preview">
-            <div class="search-preview-header">
-              <button
-                class="search-back"
-                onclick={() => {
-                  selectedNote = null;
-                }}
-              >
-                &larr; back &middot; esc
-              </button>
-              <h2 class="search-preview-title">{selectedNote.title}</h2>
-              {#if selectedNote.tags?.length}
-                <div class="search-preview-tags">
-                  {selectedNote.tags.join(" · ")}
-                </div>
-              {/if}
-            </div>
-            <div class="search-preview-content">
-              {#each renderNote(selectedNote.content) as block}
-                {#if block.tag === "h1"}
-                  <h1 id={block.id}>{block.text}</h1>
-                {:else if block.tag === "h2"}
-                  <h2 id={block.id}>{block.text}</h2>
-                {:else if block.tag === "h3"}
-                  <h3 id={block.id}>{block.text}</h3>
-                {:else}
-                  <p>{block.text}</p>
-                {/if}
-              {/each}
-            </div>
-          </div>
-        {:else}
-          {#if searchError}
-            <p class="search-status search-status--error">{searchError}</p>
-          {:else if searching && searchResults.length === 0}
-            <p class="search-status">searching…</p>
-          {:else if !searching && searchQuery.length >= 2 && searchResults.length === 0}
-            <p class="search-status">no results</p>
-          {/if}
-          {#if searchResults.length > 0}
-            <ul
-              class="search-results"
-              class:search-results--stale={searching}
-              role="listbox"
-              aria-label="Search results"
-            >
-              {#each searchResults as result, i}
-                <li
-                  class="search-result"
-                  class:active={activeIndex === i}
-                  role="option"
-                  aria-selected={activeIndex === i}
-                  onclick={() => {
-                    activeIndex = i;
-                    selectResult(result);
-                  }}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      activeIndex = i;
-                      selectResult(result);
-                    }
-                  }}
-                >
-                  <div class="search-result-title">
-                    {result.title}
-                    {#if result.type}
-                      <span class="search-result-badge">{result.type}</span>
-                    {/if}
-                  </div>
-                  {#if result.section || result.tags?.length}
-                    <div class="search-result-meta">
-                      {#if result.section}{result.section}{/if}
-                      {#if result.section && result.tags?.length}
-                        &nbsp;&middot;&nbsp;
-                      {/if}
-                      {#if result.tags?.length}
-                        {result.tags.join(" · ")}
-                      {/if}
-                    </div>
-                  {/if}
-                  {#if result.snippet}
-                    <div class="search-result-snippet">{result.snippet}</div>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        {/if}
-      </div>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -1053,24 +622,16 @@
     box-shadow: 0 1px 2px rgba(20, 16, 8, 0.03);
   }
 
-  .card--capture {
-    grid-column: span 7;
-  }
-
   .card--today {
     grid-column: span 5;
   }
 
   .card--shipping {
-    grid-column: span 5;
-  }
-
-  .card--queues {
-    grid-column: span 3;
+    grid-column: span 7;
   }
 
   .card--chat {
-    grid-column: span 4;
+    grid-column: 1 / -1;
   }
 
   .launcher {
@@ -1081,25 +642,14 @@
     margin-top: 10px;
   }
 
-  @media (max-width: 1080px) {
-    .card--capture,
+  @media (max-width: 900px) {
     .card--today,
-    .card--shipping,
-    .card--queues,
-    .card--chat {
-      grid-column: span 6;
+    .card--shipping {
+      grid-column: 1 / -1;
     }
   }
 
   @media (max-width: 700px) {
-    .card--capture,
-    .card--today,
-    .card--shipping,
-    .card--queues,
-    .card--chat {
-      grid-column: 1 / -1;
-    }
-
     .masthead {
       align-items: baseline;
     }
@@ -1117,23 +667,17 @@
     .pulse {
       animation-delay: 0.05s;
     }
-    .card--capture {
+    .card--today {
       animation-delay: 0.1s;
     }
-    .card--today {
+    .card--shipping {
       animation-delay: 0.15s;
     }
-    .card--shipping {
+    .launcher {
       animation-delay: 0.2s;
     }
-    .card--queues {
-      animation-delay: 0.25s;
-    }
     .card--chat {
-      animation-delay: 0.3s;
-    }
-    .launcher {
-      animation-delay: 0.35s;
+      animation-delay: 0.25s;
     }
 
     @keyframes rise {
@@ -1192,75 +736,6 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-  }
-
-  /* ── Capture ───────────────────────────────── */
-
-  .capture-input {
-    flex: 1;
-    min-height: 150px;
-    resize: none;
-    border: none;
-    outline: none;
-    background: transparent;
-    font-family: var(--font-ui);
-    font-size: 17px;
-    line-height: 1.75;
-    color: var(--ink);
-    padding: 2px 0 0;
-    letter-spacing: -0.005em;
-    transition: opacity 0.3s ease;
-  }
-
-  .capture-input::placeholder {
-    font-family: var(--font-display);
-    font-style: italic;
-    font-weight: 380;
-    color: var(--ink-3);
-  }
-
-  .capture-input--sent {
-    opacity: 0.1;
-  }
-
-  .capture-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding-top: 8px;
-    border-top: 1px solid var(--line);
-  }
-
-  .capture-hint {
-    font-size: 12px;
-    color: var(--ink-3);
-    letter-spacing: 0.03em;
-    transition: opacity 0.2s ease;
-  }
-
-  .capture-hints {
-    display: flex;
-    gap: 16px;
-    align-items: center;
-  }
-
-  .capture-hint--error {
-    color: var(--bad);
-  }
-
-  .capture-count {
-    font-size: 12px;
-    color: var(--ink-3);
-    opacity: 0.7;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .capture-mode {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-    color: var(--accent);
   }
 
   /* ── Schedule ──────────────────────────────── */
@@ -1467,54 +942,6 @@
     opacity: 0.45;
   }
 
-  /* ── Queues ────────────────────────────────── */
-
-  .queue-counts {
-    font-size: 13px;
-    color: var(--ink-2);
-    margin: 0;
-  }
-
-  .queue-link {
-    color: var(--accent);
-    font-weight: 650;
-    text-decoration: none;
-  }
-
-  .queue-link:hover {
-    text-decoration: underline;
-    text-underline-offset: 3px;
-  }
-
-  .job-row {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    font-size: 12px;
-    color: var(--ink-2);
-  }
-
-  .job-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .job-status {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--ink-3);
-    flex-shrink: 0;
-  }
-
-  .job-row--bad .job-status {
-    color: var(--bad);
-    font-weight: 700;
-  }
-
   /* ── Launcher ──────────────────────────────── */
 
   .launcher-grid {
@@ -1600,205 +1027,5 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  /* ── Knowledge search overlay ───────────────── */
-
-  .search-overlay {
-    position: fixed;
-    inset: 0;
-    background: color-mix(in srgb, var(--paper) 55%, transparent);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    z-index: 100;
-    overflow-y: auto;
-    padding: clamp(24px, 8vh, 88px) 16px 48px;
-  }
-
-  .search-container {
-    max-width: 720px;
-    margin: 0 auto;
-    background: var(--card-bg);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    box-shadow: 0 24px 70px -24px rgba(15, 12, 5, 0.35);
-    padding: 24px 28px 28px;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .search-container {
-      animation: rise 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
-    }
-  }
-
-  .search-input {
-    width: 100%;
-    font-family: var(--font-display);
-    font-size: 22px;
-    font-weight: 400;
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--line);
-    padding: 6px 0 10px;
-    color: var(--ink);
-    outline: none;
-  }
-
-  .search-input::placeholder {
-    font-style: italic;
-    color: var(--ink-3);
-  }
-
-  .search-type-filters {
-    display: flex;
-    gap: 8px;
-    margin: 14px 0;
-  }
-
-  .search-type-pill {
-    font-family: var(--font-ui);
-    font-size: 11px;
-    font-weight: 650;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--ink-3);
-    cursor: pointer;
-    background: none;
-    border: 1px solid transparent;
-    border-radius: 999px;
-    padding: 3px 10px;
-    transition:
-      color 0.15s ease,
-      border-color 0.15s ease,
-      background 0.15s ease;
-  }
-
-  .search-type-pill:hover {
-    color: var(--ink-2);
-  }
-
-  .search-type-pill.active {
-    color: var(--accent);
-    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-  }
-
-  .search-results {
-    list-style: none;
-    padding: 0;
-    margin: 8px 0 0;
-  }
-
-  .search-results--stale {
-    opacity: 0.5;
-  }
-
-  .search-result {
-    padding: 12px 12px;
-    margin: 0 -12px;
-    border-radius: 12px;
-    cursor: pointer;
-    transition: background 0.12s ease;
-  }
-
-  .search-result:hover,
-  .search-result.active {
-    background: var(--surface);
-  }
-
-  .search-result-title {
-    font-weight: 650;
-    font-size: 14px;
-    color: var(--ink);
-  }
-
-  .search-result-badge {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--accent);
-    margin-left: 8px;
-  }
-
-  .search-result-meta {
-    font-size: 12px;
-    color: var(--ink-3);
-    margin-top: 3px;
-  }
-
-  .search-result-snippet {
-    font-size: 13px;
-    color: var(--ink-2);
-    margin-top: 3px;
-    line-height: 1.5;
-  }
-
-  .search-status {
-    color: var(--ink-3);
-    margin-top: 14px;
-    font-size: 13px;
-    font-style: italic;
-  }
-
-  .search-status--error {
-    color: var(--bad);
-    font-style: normal;
-  }
-
-  /* ── Note preview ─────────────────────────── */
-
-  .search-preview-header {
-    border-bottom: 1px solid var(--line);
-    padding-bottom: 14px;
-    margin-bottom: 20px;
-  }
-  .search-back {
-    font-family: var(--font-ui);
-    font-size: 12px;
-    color: var(--ink-3);
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    margin-bottom: 12px;
-  }
-  .search-back:hover {
-    color: var(--ink-2);
-  }
-  .search-preview-title {
-    font-family: var(--font-display);
-    font-size: 24px;
-    font-weight: 500;
-    color: var(--ink);
-    margin: 0;
-  }
-  .search-preview-tags {
-    font-size: 12px;
-    color: var(--ink-3);
-    margin-top: 6px;
-  }
-  .search-preview-content h1,
-  .search-preview-content h2,
-  .search-preview-content h3 {
-    font-family: var(--font-display);
-    font-weight: 550;
-    color: var(--ink);
-    margin: 22px 0 10px;
-  }
-  .search-preview-content h1 {
-    font-size: 19px;
-  }
-  .search-preview-content h2 {
-    font-size: 17px;
-  }
-  .search-preview-content h3 {
-    font-size: 15px;
-  }
-  .search-preview-content p {
-    color: var(--ink-2);
-    line-height: 1.65;
-    margin: 0 0 14px;
-    white-space: pre-wrap;
   }
 </style>
