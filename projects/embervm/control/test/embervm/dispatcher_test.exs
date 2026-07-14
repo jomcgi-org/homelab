@@ -69,7 +69,8 @@ defmodule Embervm.DispatcherTest do
         wl => %{
           free_primed_slots: Keyword.get(opts, :free, 0),
           snapshot_ref: Keyword.get(opts, :snapshot_ref, "snap-#{wl}"),
-          base_state: Keyword.get(opts, :base_state, :BASE_BUILD_STATE_READY)
+          base_state: Keyword.get(opts, :base_state, :BASE_BUILD_STATE_READY),
+          primed_vm_ids: Keyword.get(opts, :primed_ids, [])
         }
       },
       mem_headroom_mib: 4096,
@@ -146,6 +147,42 @@ defmodule Embervm.DispatcherTest do
     assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
     assert {:ok, %{status_code: 200, body: "ok"}} = TaskStore.get_result(ctx.store, tid)
     assert Dispatcher.stats(ctx.name).warm_hits >= 1
+  end
+
+  test "adopts a node-reported primed vm into an empty inventory (control-plane restart recovery)" do
+    ctx = start_stack()
+    put_catalog(ctx, "wl-a", cap: 10)
+
+    # The restart deadlock: the node is AT its live cap with primed VMs from a
+    # prior control-plane incarnation (live == max, so no miss budget), and our
+    # inventory is empty (we never learned their vm_ids). Without adoption this is
+    # a permanent :no_capacity park. Adoption reads the node-reported primed vm_id
+    # and seeds inventory, so the queued task warm-dispatches to the running VM.
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-orphan-1"], live: 8, max: 8)
+
+    tid = submit(ctx, "wl-a", "p1")
+    # sweep runs adopt_inventory before draining (the periodic + boot path).
+    Dispatcher.sweep(ctx.name)
+
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+    assert Dispatcher.stats(ctx.name).warm_hits >= 1
+  end
+
+  test "adoption does not double-enqueue a vm already in inventory (dedup)" do
+    ctx = start_stack()
+    put_catalog(ctx, "wl-a", cap: 10)
+    # vm-1 is BOTH reported primed by the node AND already deposited (the Prime-
+    # then-deposit window where both the cast and adoption surface the same VM).
+    # No tasks, so nothing consumes it: inventory must hold exactly one copy.
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-1"], live: 8, max: 8)
+    Dispatcher.deposit(ctx.name, "node-4", "wl-a", "vm-1")
+
+    # Adoption runs on every sweep; vm-1 is already known, so re-adopting must not
+    # grow the inventory (a double-add would let two tasks assign one single-use VM).
+    Dispatcher.sweep(ctx.name)
+    Dispatcher.sweep(ctx.name)
+
+    assert Dispatcher.stats(ctx.name).inventory[{"node-4", "wl-a"}] == 1
   end
 
   test "miss path primes then assigns, counted as a miss" do

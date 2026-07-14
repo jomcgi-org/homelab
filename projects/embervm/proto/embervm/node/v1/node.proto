@@ -248,6 +248,15 @@ message WorkloadCapacity {
   // none is built here (the control plane then knows to BuildBase).
   string snapshot_ref = 3;
   BaseBuildState base_state = 4;
+  // primed_vm_ids lists the vm_id of every PRIMED (parked, unassigned) VM for
+  // this workload on this node. free_primed_slots is len(primed_vm_ids); the
+  // ids let a freshly (re)started control plane ADOPT the node's existing warm
+  // pool into its dispatch inventory instead of orphaning it. Without this, a
+  // control-plane restart loses its in-memory inventory while the node keeps the
+  // VMs alive (counting them against max_live_vms), so the new control plane can
+  // neither assign to them nor prime past them: dispatch deadlocks. The node is
+  // the source of truth for the pool; the control plane reconciles from this.
+  repeated string primed_vm_ids = 5;
 }
 
 enum BaseBuildState {

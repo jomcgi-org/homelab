@@ -278,9 +278,7 @@ defmodule Embervm.Dispatcher do
   end
 
   def handle_cast({:deposit, node_id, wl, vm_id}, state) do
-    q = Map.get(state.inventory, {node_id, wl}, :queue.new())
-    inventory = Map.put(state.inventory, {node_id, wl}, :queue.in(vm_id, q))
-    {:noreply, %{state | inventory: inventory} |> drain_workload(wl)}
+    {:noreply, state |> put_vm_if_unknown(node_id, wl, vm_id) |> drain_workload(wl)}
   end
 
   @impl true
@@ -624,7 +622,11 @@ defmodule Embervm.Dispatcher do
         send(owner, {:assign_done, self(), outcome})
       end)
 
-    meta = %{ref: ref, task_id: task_id, workload: wl, principal: pr, node_id: node_id, mode: mode}
+    # vm_id is carried in the meta (not just the worker's ctx) so known_vm_ids can
+    # see a warm-reserved VM that is out of inventory but still reported primed by
+    # the node until the Assign lands; without it adopt_inventory would re-adopt an
+    # in-flight VM and double-dispatch it. nil for a miss (the worker primes its own).
+    meta = %{ref: ref, task_id: task_id, workload: wl, principal: pr, node_id: node_id, mode: mode, vm_id: vm_id}
     %{state | workers: Map.put(state.workers, pid, meta)}
   end
 
@@ -920,11 +922,67 @@ defmodule Embervm.Dispatcher do
 
         state
         |> reduce_backlog(backlog, tracked)
+        |> adopt_inventory()
         |> drain_all()
 
       _ ->
         state
     end
+  end
+
+  # Reconcile the dispatch inventory with each node's reported primed pool: adopt
+  # every node-reported primed vm_id we do not already know into its {node,wl}
+  # inventory. This is what lets a RESTARTED control plane recover the node's warm
+  # pool (which outlives the control plane) instead of orphaning it: without it
+  # the fresh control plane has an empty inventory, cannot assign to the running
+  # primed VMs (it never learned their vm_ids), and cannot prime past them because
+  # they still count against the node's max_live_vms - dispatch deadlocks on
+  # :no_capacity forever (see node.proto WorkloadCapacity.primed_vm_ids).
+  #
+  # ADDITIVE only (never drops on a status read): a vm_id reserved for an in-flight
+  # assign is still reported primed by the node until the Assign lands, so dropping
+  # on status would race the reserve and could double-dispatch. A vm_id the node
+  # destroyed out of band (base turnover) self-corrects on its next use (one
+  # failed-then-retried assign), not here. Runs every sweep, so recovery lands
+  # within one sweep interval of the registry populating capacity after a restart.
+  defp adopt_inventory(state) do
+    facts = NodeCapacity.all(state.capacity_table)
+
+    Enum.reduce(facts, state, fn f, acc ->
+      node_id = f.configured_id
+
+      Enum.reduce(f.workloads || %{}, acc, fn {wl, wc}, acc2 ->
+        Enum.reduce(Map.get(wc, :primed_vm_ids, []) || [], acc2, fn vm_id, acc3 ->
+          put_vm_if_unknown(acc3, node_id, wl, vm_id)
+        end)
+      end)
+    end)
+  end
+
+  # Enqueue a primed vm_id into the {node,wl} inventory unless we already hold it
+  # (parked in any inventory queue, or reserved by an in-flight assign worker).
+  # Idempotent so the deposit cast and adopt_inventory - which both surface the
+  # same freshly primed VM, and can race in the window between Prime returning and
+  # the deposit cast being processed - never double-enqueue one vm_id, which would
+  # let two tasks assign to the same single-use VM.
+  defp put_vm_if_unknown(state, node_id, wl, vm_id) when is_binary(vm_id) and vm_id != "" do
+    if MapSet.member?(known_vm_ids(state), vm_id) do
+      state
+    else
+      q = Map.get(state.inventory, {node_id, wl}, :queue.new())
+      %{state | inventory: Map.put(state.inventory, {node_id, wl}, :queue.in(vm_id, q))}
+    end
+  end
+
+  defp put_vm_if_unknown(state, _node_id, _wl, _vm_id), do: state
+
+  # Every vm_id the dispatcher currently holds: parked in any inventory queue, or
+  # reserved by an in-flight assign worker. The dedup basis for inventory adds.
+  defp known_vm_ids(state) do
+    inv =
+      for {_k, q} <- state.inventory, id <- :queue.to_list(q), into: MapSet.new(), do: id
+
+    for {_pid, meta} <- state.workers, is_binary(Map.get(meta, :vm_id)), into: inv, do: meta.vm_id
   end
 
   defp reduce_backlog(state, backlog, tracked) do

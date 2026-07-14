@@ -512,9 +512,10 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	}
 }
 
-// workloadCapacities merges primed-slot counts with base build state per
+// workloadCapacities merges the primed vm_ids with base build state per
 // workload. Every workload that has a base OR primed VMs gets one entry.
-func (s *Server) workloadCapacities(primed map[string]uint32) []*nodev1.WorkloadCapacity {
+// free_primed_slots is the count of the primed ids so the two never disagree.
+func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.WorkloadCapacity {
 	byWorkload := make(map[string]*nodev1.WorkloadCapacity)
 	get := func(wl string) *nodev1.WorkloadCapacity {
 		c, ok := byWorkload[wl]
@@ -532,8 +533,10 @@ func (s *Server) workloadCapacities(primed map[string]uint32) []*nodev1.Workload
 		c.SnapshotRef = b.snapshotRef
 		c.BaseState = b.state
 	}
-	for wl, n := range primed {
-		get(wl).FreePrimedSlots = n
+	for wl, ids := range primed {
+		c := get(wl)
+		c.FreePrimedSlots = uint32(len(ids))
+		c.PrimedVmIds = ids
 	}
 	out := make([]*nodev1.WorkloadCapacity, 0, len(byWorkload))
 	for _, c := range byWorkload {

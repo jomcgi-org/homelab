@@ -471,6 +471,58 @@ func freePrimed(ns *nodev1.NodeStatus, workload string) uint32 {
 	return 0
 }
 
+func primedIDs(ns *nodev1.NodeStatus, workload string) []string {
+	for _, c := range ns.GetWorkloads() {
+		if c.GetWorkload() == workload {
+			return c.GetPrimedVmIds()
+		}
+	}
+	return nil
+}
+
+// TestNodeStatusReportsPrimedVMIDs: NodeStatus carries the vm_id of every primed
+// VM per workload (not just a count), so a restarted control plane can adopt the
+// node's warm pool into its dispatch inventory instead of orphaning it (which
+// would deadlock dispatch once the orphans fill max_live_vms).
+func TestNodeStatusReportsPrimedVMIDs(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newTestServer(t, drv, tr, 8)
+	seedBase(srv, "echo__deadbeef01", "echo")
+	ctx := context.Background()
+
+	want := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "echo__deadbeef01"})
+		if err != nil {
+			t.Fatalf("Prime %d: %v", i, err)
+		}
+		want[pr.GetVmId()] = true
+	}
+
+	ns, err := client.GetNodeStatus(ctx, &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetNodeStatus: %v", err)
+	}
+
+	got := primedIDs(ns, "echo")
+	if freePrimed(ns, "echo") != 2 {
+		t.Errorf("echo free_primed_slots = %d, want 2", freePrimed(ns, "echo"))
+	}
+	if len(got) != 2 {
+		t.Fatalf("echo primed_vm_ids = %v, want 2 ids", got)
+	}
+	for _, id := range got {
+		if !want[id] {
+			t.Errorf("primed_vm_ids has unexpected id %q (want one of the primed ids)", id)
+		}
+		delete(want, id)
+	}
+	if len(want) != 0 {
+		t.Errorf("primed_vm_ids missing primed ids: %v", want)
+	}
+}
+
 // ensure the fakes satisfy the seams the server uses.
 var (
 	_ vmDriver    = (*fakeDriver)(nil)

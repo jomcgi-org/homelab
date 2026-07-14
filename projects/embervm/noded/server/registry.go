@@ -87,17 +87,18 @@ func (r *vmRegistry) remove(id string) *vmEntry {
 	return e
 }
 
-// capacity reports the count of PRIMED (unassigned) VMs per workload and the
-// total number of live VMs (primed + assigning). The control plane reads the
-// primed counts as free_primed_slots.
-func (r *vmRegistry) capacity() (primedPerWorkload map[string]uint32, live int) {
+// capacity reports the PRIMED (unassigned) vm_ids per workload and the total
+// number of live VMs (primed + assigning). The control plane reads the primed
+// ids to ADOPT the node's warm pool into its dispatch inventory (so a control-
+// plane restart does not orphan them) and their count as free_primed_slots.
+func (r *vmRegistry) capacity() (primedPerWorkload map[string][]string, live int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	primedPerWorkload = make(map[string]uint32)
-	for _, e := range r.vms {
+	primedPerWorkload = make(map[string][]string)
+	for id, e := range r.vms {
 		e.mu.Lock()
 		if e.state == vmPrimed {
-			primedPerWorkload[e.workload]++
+			primedPerWorkload[e.workload] = append(primedPerWorkload[e.workload], id)
 		}
 		e.mu.Unlock()
 	}
