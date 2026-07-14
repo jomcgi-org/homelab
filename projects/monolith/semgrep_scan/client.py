@@ -104,13 +104,17 @@ async def _post_invoke(workload: str, files: list[dict], read_timeout: float) ->
         return {"error": f"semgrep scan failed: {exc}"}
 
 
-async def _post_embervm(files: list[dict], read_timeout: float) -> dict:
+async def _post_embervm(
+    files: list[dict], read_timeout: float, dedupe: bool = True
+) -> dict:
     """POST a diff scan to EmberVM's ``semgrep`` Workload; the EmberVM counterpart
     of ``_post_invoke``. Submits synchronously (``?wait=true``) so the guest's
     ScanResult comes back inline (EmberVM forwards the guest response verbatim, so
     the shape matches fc-invoke), with an Idempotency-Key from the content hash so
-    a webhook redelivery dedupes to the same task. Same error shape as
-    ``_post_invoke`` (a dict with a single ``error`` key on failure).
+    a webhook redelivery dedupes to the same task, unless ``dedupe`` is False (the
+    demo single-scan path), in which case the header is omitted so a fresh scan
+    always runs. Same error shape as ``_post_invoke`` (a dict with a single
+    ``error`` key on failure).
     """
     if not EMBERVM_URL:
         return {"error": "EMBERVM_URL is not configured"}
@@ -119,7 +123,9 @@ async def _post_embervm(files: list[dict], read_timeout: float) -> dict:
 
     timeout = httpx.Timeout(read_timeout, connect=SEMGREP_CONNECT_TIMEOUT)
     payload = {"files": files}
-    headers = {**auth_headers(), "Idempotency-Key": _content_key(files)}
+    headers = auth_headers()
+    if dedupe:
+        headers["Idempotency-Key"] = _content_key(files)
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -191,7 +197,7 @@ async def _shadow_scan(files: list[dict], fc_result: dict) -> None:
         logger.exception("semgrep shadow comparison failed")
 
 
-async def scan_files(files: list[dict]) -> dict:
+async def scan_files(files: list[dict], dedupe: bool = True) -> dict:
     """POST file contents to the semgrep diff workload and return findings.
 
     Each entry in ``files`` needs a ``path`` (repo-relative, used to pick rules
@@ -204,9 +210,16 @@ async def scan_files(files: list[dict]) -> dict:
     ``shadow`` serves from fc-invoke and mirrors to EmberVM asynchronously for
     finding-count comparison, with no user-facing effect. The caller contract
     (response/error shape, timeouts) is identical across modes.
+
+    ``dedupe`` (default True) controls whether the EmberVM path attaches the
+    Idempotency-Key header, so a webhook redelivery of the same diff collapses
+    to the same task. The demo single-scan handler passes ``dedupe=False`` so
+    every demo run is a genuinely fresh scan rather than a cached prior result.
+    Only the EmberVM dispatch path carries this header; fc-invoke has no
+    equivalent, so ``dedupe`` has no effect on the ``fc-invoke``/``shadow`` modes.
     """
     if SEMGREP_DISPATCH == "embervm":
-        return await _post_embervm(files, SEMGREP_READ_TIMEOUT)
+        return await _post_embervm(files, SEMGREP_READ_TIMEOUT, dedupe=dedupe)
 
     result = await _post_invoke("semgrep", files, SEMGREP_READ_TIMEOUT)
 

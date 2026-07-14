@@ -26,6 +26,12 @@
   let showsLoadTestTab = $derived(project.key === "python" || project.key === "semgrep");
   let loadTestWorkload = $derived(project.key === "python" ? "sandbox" : "semgrep");
 
+  // Backend-measured timing label. Only the semgrep demo now bypasses the
+  // idempotency dedupe (dedupe=false), so its timing is a genuine fresh scan;
+  // the python sandbox tab still reports a plain invocation time, so the label
+  // stays honest per project rather than saying "fresh scan" for everything.
+  let latencyLabel = $derived(project.key === "semgrep" ? "fresh scan" : "invocation");
+
   // Inputs, seeded from the project's sample so Run works with zero edits,
   // but everything stays editable.
   let pythonCode = $state(project.sample.code ?? "");
@@ -293,7 +299,7 @@
       </span>
       {#if result?.duration_ms != null}
         <span class="latency-item">
-          <span class="latency-label">invocation</span>
+          <span class="latency-label">{latencyLabel}</span>
           <span class="latency-value">{result.duration_ms}ms</span>
         </span>
       {/if}

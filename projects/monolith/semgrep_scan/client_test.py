@@ -110,6 +110,22 @@ async def test_embervm_mode_posts_to_submit_api_with_idempotency_key():
 
 
 @pytest.mark.asyncio
+async def test_embervm_mode_dedupe_false_omits_idempotency_key():
+    """The demo single-scan path passes dedupe=False so a fresh scan always
+    runs instead of hitting the idempotency result-store cache."""
+    _FakeClient.routes = {
+        "/v1/workloads/semgrep/tasks": _Resp({"findings": [], "errors": []})
+    }
+    monkeypatch_dispatch("embervm")
+
+    await client.scan_files(_FILES, dedupe=False)
+
+    assert len(_FakeClient.posts) == 1
+    post = _FakeClient.posts[0]
+    assert "Idempotency-Key" not in post["headers"]
+
+
+@pytest.mark.asyncio
 async def test_shadow_serves_fc_invoke_and_mirrors_to_embervm():
     _FakeClient.routes = {
         "/invoke/semgrep": _Resp({"findings": [{"rule_id": "r"}], "errors": []}),

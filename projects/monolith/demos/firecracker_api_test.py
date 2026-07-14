@@ -52,7 +52,7 @@ def test_python_returns_run_shape_with_trace_id(monkeypatch):
 
 
 def test_semgrep_returns_findings_shape_with_trace_id(monkeypatch):
-    async def fake_scan(files):
+    async def fake_scan(files, dedupe=True):
         assert files == [{"path": "a.py", "content": "x = 1"}]
         return {
             "findings": [{"path": "a.py", "line": 1, "rule_id": "r", "message": "m"}],
@@ -71,6 +71,26 @@ def test_semgrep_returns_findings_shape_with_trace_id(monkeypatch):
     assert body["errors"] == []
     assert isinstance(body["duration_ms"], (int, float))
     assert _HEX32.match(body["trace_id"])
+
+
+def test_semgrep_demo_bypasses_idempotency_dedupe(monkeypatch):
+    """The demo single-scan handler must pass dedupe=False so it always runs a
+    genuinely fresh scan instead of reading a cached prior result via the
+    EmberVM Idempotency-Key path (Task 4, R1)."""
+    captured = {}
+
+    async def fake_scan(files, dedupe=True):
+        captured["dedupe"] = dedupe
+        return {"findings": [], "errors": []}
+
+    monkeypatch.setattr(fc, "scan_files", fake_scan)
+
+    resp = _client().post(
+        "/api/demos/firecracker/semgrep",
+        json={"files": [{"path": "a.py", "content": "x = 1"}]},
+    )
+    assert resp.status_code == 200
+    assert captured["dedupe"] is False
 
 
 def test_goose_submit_returns_thread_id_with_trace_id(monkeypatch):
