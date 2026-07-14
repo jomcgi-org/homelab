@@ -35,6 +35,7 @@ defmodule Embervm.Auth do
   """
   use GenServer
   require Logger
+  require OpenTelemetry.Tracer, as: Tracer
 
   @default_ttl_ms 60_000
   @max_entries 4096
@@ -128,7 +129,13 @@ defmodule Embervm.Auth do
           # non-cached error reply instead.
           result =
             try do
-              state.reviewer.(token)
+              # The TokenReview network round-trip in its own span (Task 13): the
+              # 5-QPS incident taught us the guilty phase must never be
+              # uninstrumented. Root span (the Auth GenServer holds no request
+              # context); latency is what matters here.
+              Tracer.with_span "embervm.auth" do
+                state.reviewer.(token)
+              end
             catch
               kind, reason -> {:error, {:review_crashed, kind, reason}}
             end

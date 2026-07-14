@@ -38,3 +38,9 @@ auth:
 # usage at GET /v1/usage?principal=; everyone else is self-scoped.
 usageAdmins:
   - system:serviceaccount:embervm:embervm-embervm
+
+# OpenTelemetry tracing to SigNoz (Task 13), OTLP/gRPC on 4317 (the same
+# collector fc-invoke exports to). Turns on the exporter via config/runtime.exs.
+tracing:
+  endpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317"
+  serviceName: embervm-control

@@ -91,6 +91,16 @@ spec:
             - name: EMBERVM_USAGE_ADMINS
               value: {{ join "," .Values.usageAdmins | quote }}
             {{- end }}
+            {{- if .Values.tracing.endpoint }}
+            # OpenTelemetry OTLP/gRPC tracing to SigNoz (Task 13). Set enables the
+            # exporter (config/runtime.exs); unset leaves tracing off. Standard
+            # OTEL_* env: the SDK reads OTEL_SERVICE_NAME for the resource and the
+            # exporter reads the endpoint.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.tracing.serviceName | default "embervm-control" | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
