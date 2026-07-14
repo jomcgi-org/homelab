@@ -592,14 +592,24 @@ defmodule Embervm.BaseBuilder do
         w = %{w | retry_timer: nil}
         state = put_in(state.workloads[name], w)
 
-        if w.built_signature == signature(w) and w.snapshot_ref != nil do
-          # The desired base got built by some other path meanwhile; nothing to do.
-          state
-        else
-          state
-          |> enqueue(w.node_id, name)
-          |> write_base_status(w, :building)
-          |> maybe_start_build(w.node_id)
+        cond do
+          w.built_signature == signature(w) and w.snapshot_ref != nil ->
+            # The desired base got built by some other path meanwhile; nothing to do.
+            state
+
+          already_targeting?(state, w.node_id, name, signature(w)) ->
+            # A build for the current signature is already queued or in flight
+            # (a reconcile beat this stale timer message to it, or the timer
+            # double-fired). Re-driving would enqueue a redundant heavy build,
+            # so no-op. Same guard reconcile_desc uses, mirroring the streamer
+            # guard in Embervm.NodeRegistry's reconnect handler.
+            state
+
+          true ->
+            state
+            |> enqueue(w.node_id, name)
+            |> write_base_status(w, :building)
+            |> maybe_start_build(w.node_id)
         end
     end
   end
