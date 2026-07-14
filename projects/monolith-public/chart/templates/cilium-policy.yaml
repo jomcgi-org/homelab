@@ -17,7 +17,8 @@
 #     intended to flip ON during the maintenance window.
 #
 #   ciliumPolicy.egress.enabled  - the default-deny-OFF-cluster lockdown plus
-#     the single sanctioned Turnstile FQDN allow. Recommended to flip ON in a
+#     the single sanctioned Turnstile allow (Cloudflare siteverify), IP-pinned
+#     via toCIDRSet to Cloudflare's published ranges. Recommended to flip ON in a
 #     tested follow-up AFTER the window (watch flows with `hubble observe`), so
 #     an unproven egress deny is not stacked onto the irreversible CNI swap.
 #
@@ -112,54 +113,35 @@ spec:
       {{- include "monolith-public.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: web
   egress:
-    # DNS via the Cilium DNS proxy. This MUST be the ONLY rule that matches port
-    # 53 to kube-dns: the broad in-cluster allow below deliberately EXCLUDES 53,
-    # because a broad L4 allow covering 53 would nullify this rule's L7 dns
-    # portion (Cilium resolves overlapping rules toward the more permissive L4,
-    # so an L4-only allow shadows a matching L7 rule). If that happened, the DNS
-    # proxy would never learn challenges.cloudflare.com's IP and the toFQDNs
-    # allow below (which fails closed) would block Turnstile. Verify with
-    # `hubble observe` at rollout.
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: kube-system
-            k8s:k8s-app: kube-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: ANY
-          rules:
-            dns:
-              - matchPattern: "*"
-    # All in-cluster egress EXCEPT port 53 (carved out via the two ranges so DNS
-    # is served solely by the L7 proxy above). `cluster` covers pod endpoints
-    # (Postgres RO/RW, inference, embeddings, SeaweedFS); `host` + `remote-node`
-    # cover host-networked in-cluster dependencies that the `cluster` entity does
-    # not (the Linkerd EgressNetwork only denied OFF-cluster, so node-local
-    # traffic was allowed and must stay allowed here).
+    # All in-cluster egress (Postgres RO/RW, vLLM inference, embeddings,
+    # SeaweedFS S3) PLUS DNS, resolved at plain L4 through this same rule.
+    # `cluster` covers pod endpoints; `host` + `remote-node` cover host-networked
+    # in-cluster dependencies the `cluster` entity does not (the Linkerd
+    # EgressNetwork only denied OFF-cluster, so node-local traffic must stay
+    # allowed). Note: there is deliberately NO toFQDNs rule anywhere in this
+    # policy, so Cilium does NOT redirect the backend's DNS through the L7 proxy.
+    # That keeps kube-dns resolution off the cilium-agent DNS-proxy path (one
+    # fewer dependency for every in-cluster lookup the pod makes) and matches the
+    # frontend/imgproxy egress shape. The Turnstile allow below is IP-pinned
+    # (toCIDRSet), which needs no DNS-proxy learning, so no L7 DNS rule is needed.
     - toEntities:
         - cluster
         - host
         - remote-node
-      toPorts:
-        - ports:
-            - port: "1"
-              endPort: 52
-              protocol: TCP
-            - port: "54"
-              endPort: 65535
-              protocol: TCP
-            - port: "1"
-              endPort: 52
-              protocol: UDP
-            - port: "54"
-              endPort: 65535
-              protocol: UDP
-    # THE ONE SANCTIONED OFF-CLUSTER EGRESS (ADR 005, Public Chat V3). Turnstile
-    # siteverify. This is the only external host the public tier may reach; do
-    # not broaden it to a wildcard. Replaces the allow-turnstile-egress TLSRoute.
-    - toFQDNs:
-        - matchName: "challenges.cloudflare.com"
+    # THE ONE SANCTIONED OFF-CLUSTER EGRESS (ADR 005, Public Chat V3): Cloudflare
+    # Turnstile siteverify (challenges.cloudflare.com) on 443. This is the only
+    # external destination the public tier may reach; do not broaden the ports or
+    # add other CIDRs. Pinned to Cloudflare's published IP ranges (toCIDRSet)
+    # rather than a toFQDNs hostname match: Turnstile's DNS TTL is ~42s over a
+    # large rotating anycast pool, and a toFQDNs allow only opens the exact IPs
+    # the DNS proxy last observed for that TTL, so live siteverify connections
+    # were intermittently policy-DROPPED and failed CLOSED -> 5xx. The CIDR set is
+    # Cloudflare-only and stable; source of truth + provenance is the
+    # ciliumPolicy.egress.turnstileCidrs list in chart/values.yaml.
+    - toCIDRSet:
+        {{- range .Values.ciliumPolicy.egress.turnstileCidrs }}
+        - cidr: {{ . | quote }}
+        {{- end }}
       toPorts:
         - ports:
             - port: "443"
