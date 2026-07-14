@@ -1,0 +1,48 @@
+{{- if .Values.noded.workloads }}
+# Build script for the noded base-rootfs initContainers (Task 14). Kept in a
+# ConfigMap so it can be tuned without rebuilding the tools image. Each
+# per-workload rootfs-builder initContainer (see the range in
+# noded-deployment.yaml) runs this same script with its own GUEST_IMAGE and
+# BASE_ROOTFS_PATH, baking the guest filesystem into a read-only ext4 image the
+# workload's microVMs boot from. Ported from the fc-invoke rootfs-builder.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "embervm.noded.fullname" . }}-rootfs-builder
+  labels:
+    {{- include "embervm.noded.labels" . | nindent 4 }}
+data:
+  build-base-rootfs.sh: |
+    #!/bin/bash
+    # crane exports the guest filesystem for this node's architecture and
+    # mkfs.ext4 bakes it into an ext4 image on the mounted nvme disk, so no human
+    # on node-4 with sudo is needed to place a rootfs.
+    set -euo pipefail
+    : "${GUEST_IMAGE:?GUEST_IMAGE required}"
+    : "${BASE_ROOTFS_PATH:?BASE_ROOTFS_PATH required}"
+    size="${ROOTFS_SIZE:-2G}"
+    base_dir="$(dirname "$BASE_ROOTFS_PATH")"
+    marker="$base_dir/.guest-ref"
+    mkdir -p "$base_dir"
+    # Idempotent: skip the multi-GB rebuild when the base already matches the
+    # deployed guest image (pod restarts with an unchanged image are common).
+    if [ -f "$BASE_ROOTFS_PATH" ] && [ -f "$marker" ] && [ "$(cat "$marker")" = "$GUEST_IMAGE" ]; then
+      echo "base rootfs already current for $GUEST_IMAGE"
+      exit 0
+    fi
+    echo "building base rootfs from $GUEST_IMAGE"
+    rm -rf /work/root "$BASE_ROOTFS_PATH.tmp"
+    mkdir -p /work/root
+    # Pull the guest filesystem for THIS node's architecture (the builder image
+    # is multi-arch, so uname reflects the node); guest images are multi-arch.
+    case "$(uname -m)" in
+      x86_64) platform=linux/amd64 ;;
+      aarch64 | arm64) platform=linux/arm64 ;;
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+    esac
+    crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
+    mkfs.ext4 -q -F -L embervmbase -d /work/root "$BASE_ROOTFS_PATH.tmp" "$size"
+    mv -f "$BASE_ROOTFS_PATH.tmp" "$BASE_ROOTFS_PATH"
+    echo "$GUEST_IMAGE" > "$marker"
+    echo "base rootfs built at $BASE_ROOTFS_PATH ($size)"
+{{- end }}

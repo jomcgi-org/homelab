@@ -123,6 +123,29 @@ sampleWorkload:
   enabled: true
   name: echo
 
+# The first REAL EmberVM workload (Task 14): the python sandbox. A task-class
+# Workload whose guest image is baked into a base rootfs by the noded
+# rootfs-builder and cold-booted into a base snapshot on admission. See
+# templates/workload-sandbox.yaml. The image ref is sourced from
+# noded.sandbox.guestImage so it matches the rootfs-builder + node image table.
+sandboxWorkload:
+  enabled: true
+  name: sandbox
+  # The sandbox guest shim contract (projects/firecracker/sandbox): HTTP over
+  # vsock port 1027, ready at /shim/ready, one python snippet per /invoke.
+  port: 1027
+  readyPath: /shim/ready
+  invokePath: /invoke
+  vcpus: 1
+  memMib: 512
+  # Small footprint for the first live workload: a warm floor of 1 exercises the
+  # full base-build -> prime -> assign path; cap 4 bounds it well inside node-4's
+  # headroom alongside fc-invoke. Task 14b raises this and adds semgrep + the
+  # node-4 rebalancing for the full side-by-side.
+  floor: 1
+  cap: 4
+  timeoutSeconds: 30
+
 # embervm-noded: the node daemon (gRPC NodeService) that owns Firecracker microVM
 # lifecycle on node-4. A SECOND Deployment in this chart, privileged and node-
 # pinned, forked from the fc-invoke node layer (ADR embervm/001). It coexists with
@@ -171,10 +194,39 @@ noded:
     # guest path is a tmpfs, so one read-only rootfs file backs every microVM.
     kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
 
-  # Node-side image identity table (image_ref -> {rootfsPath[, harnessInit]}),
-  # rendered to EMBERVM_NODED_IMAGES. Empty until the control plane provisions
-  # guest images (Task 11+); BuildBase for an unknown image fails FAILED_PRECONDITION.
+  # Explicit node-side image identity overrides (image_ref -> {rootfsPath,
+  # harnessInit}). Normally empty: the table is DERIVED from noded.workloads +
+  # each workload's guestImage (see noded-deployment.yaml), so the ref matches the
+  # rootfs-builder and the Workload CR automatically. Entries here merge on top.
   images: {}
+
+  # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
+  # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
+  # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
+  rootfsBuilder:
+    image:
+      repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
+      tag: latest
+    # The sandbox base is small (python + libs); 2G leaves ample slack.
+    rootfsSize: 2G
+
+  # The python sandbox guest image, Bazel-pinned (helm_chart images=) from the
+  # frozen fc-invoke sandbox guest's .info provider, so the guest contract is
+  # unchanged (zero image changes, per the R0 plan). Consumed by the sandbox
+  # rootfs-builder init container and the sandbox Workload CR.
+  sandbox:
+    guestImage:
+      repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest
+      tag: latest
+
+  # Per-workload rootfs targets on the nvme scratch. The rootfs-builder writes
+  # each guest's ext4 here and EMBERVM_NODED_IMAGES maps the guest ref to it.
+  # Adding a workload here (with a matching noded.<name>.guestImage) provisions
+  # its base and enables an initContainer that bakes it.
+  workloads:
+    sandbox:
+      rootfsPath: /disks/nvme-02/embervm-noded/sandbox/rootfs.ext4
+      harnessInit: /usr/local/bin/sandbox-guest-init
 
   # Graceful-drain budget: on SIGTERM the daemon waits up to this long for in-
   # flight Assigns before exiting. terminationGracePeriodSeconds is set above it
@@ -182,13 +234,14 @@ noded:
   drain:
     timeoutSeconds: 60
 
-  # 256Mi req / 2Gi limit: fits the node-4 coexistence budget alongside fc-invoke
-  # (2Gi req / 50Gi limit). This release primes ZERO VMs (the dispatcher is Task
-  # 11), so the daemon idles well under 256Mi; the 2Gi ceiling covers the daemon
-  # plus ~1 future primed 1Gi VM. Grow the limit when the real pool lands.
+  # 256Mi req / 4Gi limit. The limit now covers the real sandbox pool (Task 14):
+  # cap 4 x 512Mi = 2Gi of live guest microVMs, plus the daemon (~256Mi), plus one
+  # transient cold-boot VM during a base build (512Mi) and FC restore/memfile
+  # overhead, with slack. Well inside node-4's headroom alongside fc-invoke
+  # (~41Gi worst case of 64Gi). Grow with the cap; Task 14b sizes for semgrep too.
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
     limits:
-      memory: 2Gi
+      memory: 4Gi

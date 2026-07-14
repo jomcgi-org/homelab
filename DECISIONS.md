@@ -86,7 +86,50 @@ Deviations here are intentional. Bugs are not deviations; they get fixed.
   accepts a bare `:forbidden` (principal unknown) for reviewers/fakes that do not
   surface it.
 
-### D12 known gaps accepted for R0 (documented, not fixed)
+## Task 14a: first live sandbox VM (chart 0.1.15)
+
+The plan's Task 14 lands semgrep + sandbox side-by-side with node-4 rebalancing.
+This is split: Task 14a gets ONE real python-sandbox microVM running end to end
+(the headline: prove EmberVM boots a real Firecracker VM through the controller),
+Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
+
+### D14a.1 Split Task 14 into 14a (live sandbox) and 14b (full side-by-side)
+- **Why:** the gating risk is the first real Assign (rootfs provisioning, FC cold
+  boot, snapshot, vsock), not breadth. Getting one sandbox VM live de-risks the
+  whole chain with the smallest surface; semgrep + rebalancing is mechanical once
+  it works. 14a keeps a small footprint (floor 1, cap 4) that fits node-4's
+  headroom WITHOUT touching fc-invoke, so no coexistence-budget change is needed
+  yet (14b does the 16->8 fc-invoke halving for the full-cap run).
+
+### D14a.2 noded rootfs provisioning ported from fc-invoke (was missing)
+- noded had a complete Firecracker driver but NO rootfs provisioning: `EMBERVM_
+  NODED_IMAGES` pointed at a pre-baked ext4 that nothing produced. Added a
+  rootfs-builder initContainer + ConfigMap (crane export + mkfs.ext4 onto the
+  nvme scratch), ported from the proven fc-invoke pattern, reusing fc-invoke's
+  rootfs-builder tool image. Idempotent via a `.guest-ref` marker.
+
+### D14a.3 EMBERVM_NODED_IMAGES is DERIVED, not a hand-maintained map
+- The guest image_ref must match in three places (rootfs-builder GUEST_IMAGE, the
+  noded image table key, the Workload CR source.image.ref) or BuildBase fails
+  FAILED_PRECONDITION. Rather than hand-sync a static `noded.images` map key to
+  the Bazel-pinned ref, the deployment DERIVES the table from `noded.workloads` +
+  each workload's `noded.<name>.guestImage`, so one pinned value flows to all
+  three consumers. Explicit `noded.images` entries still merge as overrides.
+
+### D14a.4 Guest image digest-pinned via Bazel, contract frozen
+- `noded.sandbox.guestImage` and `noded.rootfsBuilder.image` are pinned by
+  `helm_chart(images=)` from the fc-invoke guests' public `.info` providers (zero
+  image changes, per the plan). The sandbox guest contract is used verbatim: vsock
+  port 1027, `/shim/ready`, one python snippet per `/invoke`, `sandbox-guest-init`.
+
+### D14a.5 Live-verify, not CI-verify
+- CI cannot run a real VM (no KVM in RBE). 14a is verified live AFTER merge+sync:
+  the init container bakes the ext4, the Workload goes Ready with a snapshotRef
+  (BaseBuilder cold-booted + snapshotted a real VM), the PoolManager primes a
+  floor VM, and a `/invoke` submit runs python end to end. Recorded here as the
+  acceptance evidence once observed.
+
+## D12 known gaps accepted for R0 (documented, not fixed)
 - The `usage` projection ACCUMULATES (the only projection that does), so it is not
   idempotent under op replay (the future `read_from` replica path); safe today
   because R0 projects each op exactly once. Commented at the projection.
