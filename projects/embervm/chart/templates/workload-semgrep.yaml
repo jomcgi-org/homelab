@@ -1,0 +1,32 @@
+{{- if .Values.semgrepWorkload.enabled }}
+# The semgrep workload (Task 14b): EmberVM's named first consumer, side-by-side
+# with the fc-invoke semgrep path. Its guest image ref is the SAME Bazel-pinned
+# value the noded rootfs-builder bakes and EMBERVM_NODED_IMAGES keys on, so
+# BaseBuilder's BuildBase(ref) resolves on the node. The frozen fc-invoke semgrep
+# guest is used verbatim (vsock 1027, /shim/ready, /invoke).
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: {{ .Values.semgrepWorkload.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  class: task
+  source:
+    image:
+      # Must match the top-level semgrep.guestImage exactly (the derived
+      # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
+      ref: "{{ .Values.semgrep.guestImage.repository }}:{{ .Values.semgrep.guestImage.tag }}"
+      port: {{ .Values.semgrepWorkload.port }}
+      readyPath: {{ .Values.semgrepWorkload.readyPath | quote }}
+      invokePath: {{ .Values.semgrepWorkload.invokePath | quote }}
+  resources:
+    vcpus: {{ .Values.semgrepWorkload.vcpus }}
+    memMib: {{ .Values.semgrepWorkload.memMib }}
+  concurrency:
+    floor: {{ .Values.semgrepWorkload.floor }}
+    cap: {{ .Values.semgrepWorkload.cap }}
+  invocation:
+    timeoutSeconds: {{ .Values.semgrepWorkload.timeoutSeconds }}
+{{- end }}

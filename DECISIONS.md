@@ -162,6 +162,34 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   floor VM, and a `/invoke` submit runs python end to end. Recorded here as the
   acceptance evidence once observed.
 
+## Task 14b: semgrep side-by-side + node-4 rebalance (embervm 0.1.18, fc-invoke 0.4.82)
+
+### D14b.1 Plan-literal rebalance (Joe's call): halve fc-invoke, embervm to cap-16
+- Chose the plan-literal Option B over a modest-cap Option A. fc-invoke semgrep +
+  sandbox concurrency 16->8 (substrate chart), its memory limit 50Gi->40Gi
+  (worst case ~47->~35Gi). embervm adds a semgrep Workload (1 vcpu/1536Mi, floor 4,
+  cap 16) and raises sandbox to floor 4/cap 16; noded memory limit 4Gi->36Gi. The
+  rootfs-builder + derived EMBERVM_NODED_IMAGES pick up semgrep automatically from
+  the top-level `workloads.semgrep` + `semgrep.guestImage` pin.
+- **Node-4 memory arithmetic (63.4GiB allocatable):** the daemon memory LIMITS are
+  cgroup OOM ceilings, NOT scheduling reservations (both daemons keep tiny
+  requests), so the ceilings may oversubscribe (fc-invoke 40Gi + embervm 36Gi =
+  76Gi) without overcommitting node scheduling. This is safe because real
+  simultaneous cap-16 peak never occurs during side-by-side: production PR scans
+  stay on fc-invoke, so embervm idles at its floor (semgrep 4x1536 + sandbox 4x512
+  = 8Gi steady); at cutover fc-invoke drains so only embervm peaks; and
+  oom_score_adj kills guests before the daemon/DB. The absolute cap-16 throughput
+  gate is a post-drain Task 16 run (the plan's per-slot-normalization clause).
+- **Deferred:** the fc-invoke semgrep concurrency (and the whole fc-invoke scan
+  path) is restored-or-deprecated at the Task 16 cutover, not here.
+
+### D14b.2 semgrep guest is private; reused the existing ghcr pull path
+- The semgrep guest image is proprietary (Pro engine + rules). embervm's chart
+  already sets imagePullSecret.enabled with a 1Password-synced ghcr dockerconfig,
+  and the noded rootfs-builder init container mounts it (DOCKER_CONFIG=/ghcr) when
+  that flag is on, so crane pulls the private guest with no new wiring (the public
+  sandbox guest simply did not need it).
+
 ## D12 known gaps accepted for R0 (documented, not fixed)
 - The `usage` projection ACCUMULATES (the only projection that does), so it is not
   idempotent under op replay (the future `read_from` replica path); safe today

@@ -19,6 +19,8 @@ helm_chart(
         # top-level keys mirror fc-invoke's proven layout.
         "sandbox.guestImage": "//projects/firecracker/sandbox/guest:image.info",
         "rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
+        # Task 14b: the frozen fc-invoke semgrep guest. Distinct top-level key.
+        "semgrep.guestImage": "//projects/firecracker/semgrep/guest:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],
