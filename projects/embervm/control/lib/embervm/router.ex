@@ -422,6 +422,17 @@ defmodule Embervm.Router do
         path -> Map.put(base, :path, path)
       end
 
+    # Capture the W3C traceparent (Task 13 distributed tracing): stored in the
+    # submitted op so the dispatcher can restore the CALLER's trace context and
+    # nest the dispatch/guest_exec spans under it, joining the caller's trace (the
+    # demos waterfall). Async submit means the dispatch happens off-request, so
+    # the context must ride the durable op-log, not the live process context.
+    base =
+      case header_value(conn, "traceparent") do
+        nil -> base
+        tp -> Map.put(base, :traceparent, tp)
+      end
+
     case header_value(conn, "content-type") do
       nil -> base
       ct -> Map.put(base, :content_type, ct)

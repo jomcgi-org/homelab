@@ -274,6 +274,17 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   cap-16 absolute throughput) are the remaining enterprise-grade evidence, deferred
   as unnecessary for personal use; run them if EmberVM ever takes external traffic.
 
+### D13.3 Distributed trace propagation (caller trace joins EmberVM spans, 0.1.22)
+- EmberVM now restores the CALLER's W3C traceparent so its dispatch/guest_exec
+  spans nest under the caller's trace (the monolith demos page's httpx is
+  OTel-instrumented and auto-injects traceparent). Async submit means the context
+  rides the DURABLE op-log, not the live process: Router captures the traceparent
+  into the submitted request envelope; the dispatcher restores it
+  (`:otel_propagator_text_map.extract`, guarded) before opening the dispatch span.
+  The demos waterfall query (`WHERE traceID = trace_id`, service-agnostic) then
+  shows EmberVM's spans alongside the monolith's with no frontend change. Falls
+  back to the dispatcher's own context for trace-less submits (cron/retries).
+
 ## D12 known gaps accepted for R0 (documented, not fixed)
 - The `usage` projection ACCUMULATES (the only projection that does), so it is not
   idempotent under op replay (the future `read_from` replica path); safe today
