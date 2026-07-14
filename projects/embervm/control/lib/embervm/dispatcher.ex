@@ -70,10 +70,16 @@ defmodule Embervm.Dispatcher do
     * PUSH: `Embervm.TaskStore`'s `on_queued` hook casts `enqueue/1` on every
       transition INTO `queued` (submit-created, retry, redrive).
     * SWEEP: a boot + periodic reconcile over `TaskStore.list_backlog/1` re-drives
-      what a dropped push signal missed (a control-plane restart empties the
-      in-memory queues; `reassign_in_flight/0` on a downed node produces
-      `failed_retryable` out of band). Reassigned tasks retry immediately;
-      organic retryable failures wait the backoff `fail/2` returned.
+      what the push path cannot. A dropped `enqueue` cast or a restart that
+      empties the in-memory queues is re-enqueued; `reassign_in_flight/0` on a
+      downed node produces `failed_retryable` out of band and is retried. And an
+      in-flight (`assigned`/`running`) task with NO live worker tracking it is an
+      ORPHAN, a dispatcher restart dropped its workers, a partial assign/start
+      commit spawned none, or a completion's terminal op-log append failed, so it
+      is reclaimed by failing it as transport (at-least-once, through Retry). A
+      task a live worker still owns is skipped, so a running task is never
+      double-dispatched. This is what makes "no task lost" hold across restarts
+      and partial commits, not just across dropped push signals.
 
   ## deferred, on purpose
 
@@ -746,15 +752,24 @@ defmodule Embervm.Dispatcher do
 
   # -- backlog sweep ---------------------------------------------------------
 
-  # Reconcile against TaskStore's durable backlog: enqueue any queued task the
-  # in-memory queues do not hold (recovery / dropped push), and immediately retry
-  # any failed_retryable task with no pending retry timer (a node-down reassign,
-  # which produces failed_retryable out of band with no backoff owner). Then drain.
+  # Reconcile against TaskStore's durable backlog:
+  #   * queued -> enqueue any the in-memory queues do not hold (recovery / a
+  #     dropped push cast);
+  #   * failed_retryable with no pending retry timer -> retry now (a node-down
+  #     reassign produces these out of band with no backoff owner);
+  #   * assigned/running with NO live worker -> an ORPHAN (a dispatcher restart
+  #     dropped its workers, a partial assign/start commit spawned none, or a
+  #     completion's terminal op-log append failed): fail it as transport so it
+  #     re-queues through Retry (at-least-once). A task a live worker still owns
+  #     is skipped, so a genuinely-running task is never double-dispatched.
+  # Then drain.
   defp run_sweep(state) do
     case safe_call(fn -> Embervm.TaskStore.list_backlog(state.task_store) end) do
       {:ok, {:ok, backlog}} ->
+        tracked = state.workers |> Map.values() |> MapSet.new(& &1.task_id)
+
         state
-        |> reduce_backlog(backlog)
+        |> reduce_backlog(backlog, tracked)
         |> drain_all()
 
       _ ->
@@ -762,13 +777,15 @@ defmodule Embervm.Dispatcher do
     end
   end
 
-  defp reduce_backlog(state, backlog), do: Enum.reduce(backlog, state, &sweep_one/2)
+  defp reduce_backlog(state, backlog, tracked) do
+    Enum.reduce(backlog, state, fn item, acc -> sweep_one(item, acc, tracked) end)
+  end
 
-  defp sweep_one(%{state: :queued, task_id: tid, workload: wl, principal: pr}, state) do
+  defp sweep_one(%{state: :queued, task_id: tid, workload: wl, principal: pr}, state, _tracked) do
     do_enqueue(state, tid, wl, pr)
   end
 
-  defp sweep_one(%{state: :failed_retryable, task_id: tid}, state) do
+  defp sweep_one(%{state: :failed_retryable, task_id: tid}, state, _tracked) do
     if Map.has_key?(state.retry_timers, tid) do
       state
     else
@@ -777,7 +794,21 @@ defmodule Embervm.Dispatcher do
     end
   end
 
-  defp sweep_one(_other, state), do: state
+  defp sweep_one(%{state: inflight, task_id: tid}, state, tracked)
+       when inflight in [:assigned, :running] do
+    if MapSet.member?(tracked, tid) do
+      state
+    else
+      # Orphan reclaim: fail as transport, then (if retryable) arm the backoff
+      # timer exactly as the live-failure path does, so it re-queues on its own.
+      case safe_call(fn -> Embervm.TaskStore.fail(state.task_store, tid, :transport) end) do
+        {:ok, {:ok, _task, backoff}} -> arm_retry(state, tid, backoff)
+        _ -> state
+      end
+    end
+  end
+
+  defp sweep_one(_other, state, _tracked), do: state
 
   defp schedule_sweep(state) do
     Process.send_after(self(), :sweep, state.sweep_interval_ms)
