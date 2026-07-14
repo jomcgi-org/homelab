@@ -795,6 +795,14 @@ chat:
 # deploy/values.yaml; never hardcode it in a template.
 semgrep:
   fcInvokeUrl: ""
+  # EmberVM dual-path (R0 Task 15). embervmUrl is the EmberVM control-plane base
+  # URL; dispatch selects where the per-PR semgrep DIFF scan is served:
+  #   fc-invoke : serve from fc-invoke (default, unchanged).
+  #   embervm   : serve from EmberVM's semgrep Workload.
+  #   shadow    : serve from fc-invoke, mirror to EmberVM async for comparison.
+  # Empty embervmUrl or default dispatch keeps the served path on fc-invoke.
+  embervmUrl: ""
+  dispatch: "fc-invoke"
   # Shadow project override (Route B vs SMS comparison): when set, the relay
   # reports its App scans under THIS project name instead of the real repo, so
   # Route B (self-hosted) scans land in a SEPARATE Semgrep project from SMS's

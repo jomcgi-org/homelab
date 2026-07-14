@@ -218,6 +218,33 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
 - "Key transitions at info" is a lighter follow-on (the formatter + denial warn is
   the core structured-logging value).
 
+## Task 15: monolith EmberVM dual-path scan dispatch (monolith 0.285.186, embervm 0.1.20)
+
+### D15.1 Dual-path client + shadow mode, DORMANT behind the default flag
+- `projects/monolith/semgrep_scan/client.py` gains an EmberVM path and a
+  `SEMGREP_DISPATCH` flag (`fc-invoke` default | `embervm` | `shadow`). `embervm`
+  serves the per-PR diff from EmberVM's semgrep Workload (submit API, `?wait=true`,
+  Idempotency-Key from the content hash). `shadow` serves fc-invoke and mirrors to
+  EmberVM asynchronously (fire-and-forget, never affecting the served scan),
+  comparing finding-count/status and tallying `shadow_stats` + a structured warn on
+  divergence (the Task 16 gate signal). Only the `semgrep` DIFF workload is routed
+  (EmberVM has no semgrep-full/hi in R0); those stay on fc-invoke.
+- Shipped DORMANT: deploy values wire `embervmUrl` but keep `dispatch: fc-invoke`,
+  so the served path is unchanged. Flip to `shadow` to start the divergence soak,
+  then `embervm` at cutover. The monolith SA (`system:serviceaccount:monolith:
+  monolith`, already an fc-invoke caller) is added to EmberVM's auth allow-list now
+  so the flip authenticates immediately; no traffic until then.
+- Tests: `client_test.py` (globbed into the monolith py_test via `semgrep_scan/**`;
+  semgrep_scan is `gazelle:exclude`d, so NO new BUILD target) covers all three
+  modes, the Idempotency-Key, and shadow divergence/error tallying with a fake
+  httpx client.
+- **FLAGGED (external, not doable in-session): Task 16.** The shadow SOAK
+  (>= 48h or >= 200 real PR scans, divergence rate 0) and the six acceptance gates
+  (throughput/latency load test, kill -9 durability drill, fairness, enforcement,
+  rollback drill) require real elapsed time + a load harness. The code to RUN the
+  soak is now in place (flip `dispatch: shadow`); gathering the evidence + the
+  cutover flip is the remaining Task 16 work.
+
 ## D12 known gaps accepted for R0 (documented, not fixed)
 - The `usage` projection ACCUMULATES (the only projection that does), so it is not
   idempotent under op replay (the future `read_from` replica path); safe today
