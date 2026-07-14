@@ -347,6 +347,143 @@ defmodule Embervm.TaskStoreTest do
     assert ets_task.attempt == 1
   end
 
+  # -- read-time result TTL + dedupe expiry (ADR embervm/002) ----------------
+
+  # A clock we can move: get_result/dedupe read state.clock.() at call time, so a
+  # controllable clock lets one test observe "before expiry -> served, after ->
+  # 404" deterministically without sleeping.
+  defp movable_clock(initial) do
+    {:ok, agent} = Agent.start_link(fn -> initial end)
+    fun = fn -> Agent.get(agent, & &1) end
+    set = fn v -> Agent.update(agent, fn _ -> v end) end
+    {fun, set}
+  end
+
+  test "get_result 404s (returns nil) once the result is past its injected expiry", %{path: path} do
+    {clock, set_clock} = movable_clock(1_000)
+    {_op_log, store} = start_pair(path, clock: clock)
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, _} = TaskStore.assign(store, task_id)
+    {:ok, _} = TaskStore.start(store, task_id)
+
+    # Result expires at 5_000.
+    {:ok, _} =
+      TaskStore.succeed(store, task_id, %{
+        status_code: 200,
+        body: "DATA",
+        size_bytes: 4,
+        truncated: false,
+        expires_at: 5_000
+      })
+
+    # Clock 4_999 < expiry: served.
+    set_clock.(4_999)
+    assert {:ok, %{status_code: 200, body: "DATA"}} = TaskStore.get_result(store, task_id)
+
+    # Clock 5_001 > expiry: 404, even though no sweep ran.
+    set_clock.(5_001)
+    assert {:ok, nil} = TaskStore.get_result(store, task_id)
+  end
+
+  test "dedupe returns :existing for an in-flight (non-terminal) duplicate", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    attrs = %{tenant: "t1", principal: "p1", workload: "wl-a", idempotency_key: "inflight-1"}
+
+    {:ok, :created, id1} = TaskStore.submit(store, attrs)
+    # Move it in-flight (assigned): still non-terminal, so dedupe must suppress.
+    {:ok, _} = TaskStore.assign(store, id1)
+
+    {:ok, :existing, id2} = TaskStore.submit(store, attrs)
+    assert id1 == id2
+  end
+
+  test "dedupe resubmits fresh for a terminal task whose result has expired", %{path: path} do
+    {clock, set_clock} = movable_clock(1_000)
+    {op_log, store} = start_pair(path, clock: clock)
+
+    attrs = %{tenant: "t1", principal: "p1", workload: "wl-a", idempotency_key: "exp-1"}
+
+    {:ok, :created, id1} = TaskStore.submit(store, attrs)
+    {:ok, _} = TaskStore.assign(store, id1)
+    {:ok, _} = TaskStore.start(store, id1)
+
+    {:ok, _} =
+      TaskStore.succeed(store, id1, %{
+        status_code: 200,
+        body: "OLD",
+        size_bytes: 3,
+        truncated: false,
+        expires_at: 5_000
+      })
+
+    # Past the result TTL: dedupe treats the task as absent and runs a fresh submit.
+    set_clock.(6_000)
+    {:ok, :created, id2} = TaskStore.submit(store, attrs)
+    refute id2 == id1
+
+    # The old projection row is gone (evicted), so the fresh :submitted did not
+    # collide on the unique (workload, key) index, and its result is cleared.
+    assert {:ok, nil} = TaskStore.get_result(store, id1)
+    {:ok, task2} = TaskStore.get(store, id2)
+    assert task2.state == :queued
+
+    # Two :submitted ops now exist in the immutable journal (old + fresh), proving
+    # eviction pruned only the projection, not the ops.
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    assert Enum.count(ops, &(&1.kind == :submitted)) == 2
+  end
+
+  test "dedupe still returns :existing for a terminal task whose result is still live", %{path: path} do
+    {clock, _set} = movable_clock(1_000)
+    {_op_log, store} = start_pair(path, clock: clock)
+
+    attrs = %{tenant: "t1", principal: "p1", workload: "wl-a", idempotency_key: "live-1"}
+
+    {:ok, :created, id1} = TaskStore.submit(store, attrs)
+    {:ok, _} = TaskStore.assign(store, id1)
+    {:ok, _} = TaskStore.start(store, id1)
+
+    # Result expires far in the future relative to the (fixed 1_000) clock.
+    {:ok, _} =
+      TaskStore.succeed(store, id1, %{
+        status_code: 200,
+        body: "LIVE",
+        size_bytes: 4,
+        truncated: false,
+        expires_at: 1_000_000
+      })
+
+    {:ok, :existing, id2} = TaskStore.submit(store, attrs)
+    assert id1 == id2
+  end
+
+  test "expire transitions a queued task to failed_permanent with reason expired", %{path: path} do
+    {op_log, store} = start_pair(path)
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, expired} = TaskStore.expire(store, task_id)
+    assert expired.state == :failed_permanent
+
+    # Not chained into dead-letter: terminal at failed_permanent.
+    {:ok, ets_task} = TaskStore.get(store, task_id)
+    assert ets_task.state == :failed_permanent
+
+    # Recorded via the existing :failed op kind with reason expired, no new op kind.
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    failed = Enum.find(ops, &(&1.kind == :failed and &1.task_id == task_id))
+    assert failed.payload["reason"] == "expired"
+
+    # Expiring a non-queued task is an illegal transition.
+    assert {:error, {:illegal_transition, :failed_permanent, :expire}} =
+             TaskStore.expire(store, task_id)
+  end
+
   # -- Task 11 dispatcher seams ----------------------------------------------
 
   test "get_request returns the guest-request envelope stored in the submitted op", %{path: path} do

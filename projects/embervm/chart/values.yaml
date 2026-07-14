@@ -40,6 +40,15 @@ opLog:
   persistentVolume: true
   storageClass: longhorn
   size: 2Gi
+  # How often the supervised sweeper runs bounded-batch compaction (ADR
+  # embervm/002). Correctness (result TTLs) is enforced at read time, so this only
+  # governs how promptly reclaimed space is freed; hourly is ample for a 2Gi PVC.
+  sweepIntervalSeconds: 3600
+  # Age past which an append-only op is eligible for ops-journal prefix compaction,
+  # provided its task is not still live. Distinct from the 7-day terminal-task
+  # retention: this bounds the journal (which carries request payloads); older
+  # audit lives in SigNoz.
+  journalHorizonDays: 30
 
 # The single node daemon the control plane talks to (v1: exactly one). Address is
 # resolved in-cluster; the registry takes a list so multi-node needs no reshape.

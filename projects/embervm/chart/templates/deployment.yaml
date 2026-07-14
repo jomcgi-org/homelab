@@ -46,6 +46,13 @@ spec:
               value: {{ .Values.service.port | quote }}
             - name: EMBERVM_OPLOG_PATH
               value: /var/lib/embervm/oplog.db
+            # Op-log retention (ADR embervm/002): the scheduled sweeper's cadence
+            # and the ops-journal prefix-compaction horizon. Seconds/days in values
+            # are converted to the ms the runtime parses.
+            - name: EMBERVM_OPLOG_SWEEP_INTERVAL_MS
+              value: {{ mul .Values.opLog.sweepIntervalSeconds 1000 | quote }}
+            - name: EMBERVM_OPLOG_JOURNAL_HORIZON_MS
+              value: {{ mul .Values.opLog.journalHorizonDays 86400 1000 | quote }}
             # Node identity + address for Embervm.NodeRegistry (Task 9). The
             # registry takes a LIST internally; v1 wires exactly one node from
             # these two values.

@@ -290,10 +290,53 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   idempotent under op replay (the future `read_from` replica path); safe today
   because R0 projects each op exactly once. Commented at the projection.
 - Over-budget parked tasks can outlive their `expires_at` (queued-task TTL is not
-  enforced; `compact` only prunes terminal rows).
+  enforced; `compact` only prunes terminal rows). CLOSED in R1 Phase 0, see D-R1.0.4
+  (the dispatcher now expires a popped over-TTL queued task before dispatch).
 - `gb_seconds = peak_rss_mib x wall` under-bills vs a Firecracker VM's reserved
   `memMib`; the raw per-task `peak_rss_mib`/`cpu_ms`/`wall_ms` are stored in the op
   payload so the formula can be rebased later without losing history.
 - A daemon that never populates `UsageStats` bills zero (proto3 defaults);
   mitigated by a log-once warning on all-zero success usage and a non-zero
   assertion in the metering test.
+
+## R1 Phase 0: op-log retention and compaction (ADR embervm/002, chart bump)
+
+### D-R1.0.1 TTLs are enforced at READ time, independent of the sweeper
+- `TaskStore.get_result/2` and the submit dedupe path both filter a stored result
+  whose `expires_at` is past the injected clock, replying `{:ok, nil}` (a 404 at the
+  router). Correctness never waits on a sweep: a result 404s the instant its TTL
+  lapses. The filter lives in the store (where the clock is injected), so the op-log
+  `load_result/2` behaviour signature is unchanged.
+
+### D-R1.0.2 Dedupe keys on the SAME expiry signal, evicting the stale projection
+- An idempotency-key hit on a TERMINAL task whose result has expired treats the task
+  as absent and resubmits fresh, so "GET result 404s" and "resubmit runs fresh" stay
+  consistent. In-flight (non-terminal) duplicate suppression is preserved absolutely.
+  A fresh resubmit under a colliding key first calls the new `OpLog.evict_task/2`
+  (a projection prune, `DELETE FROM tasks`, results cascade via the FK; NOT an op),
+  so the fresh `:submitted` append does not trip the unique `(workload, key)` index.
+  The old task's ops stay in the journal until horizon compaction.
+
+### D-R1.0.3 Scheduled bounded-batch sweep + ops-journal prefix marker
+- A supervised `Embervm.OpLog.Compactor` (default hourly, values-configurable) loops
+  `compact/2` until `done`; each batch is a discrete call to the op-log's single
+  writer, so appends interleave between batches (the 5ms-append-budget guard).
+  `compact/2` is now ONE bounded batch (portable `DELETE ... WHERE rowid IN (SELECT
+  ... LIMIT ?)`, since Exqlite lacks `DELETE ... LIMIT`) returning per-table counts
+  plus the marker and `done`. The ops journal is prefix-compacted behind a durable
+  `compacted_through_seq` marker (a `meta` row): the marker advances only to a seq
+  where every op at or below it is older than the 30-day journal horizon AND not
+  owned by a live task, is monotonic (never decreases), and deletion is always a true
+  prefix. `read_from/2` below the marker returns `{:error, {:compacted, marker}}`,
+  distinct from an empty log, so a future replayer knows to load the projection
+  snapshot instead. The 30-day journal horizon and the 7-day terminal-task retention
+  are DISTINCT config (the journal carries request payloads; older audit is SigNoz).
+
+### D-R1.0.4 Dispatcher-side queued-task expiry (closes the D12 gap)
+- Added `{:queued, :expire} => :failed_permanent` to the FSM and `TaskStore.expire/2`
+  (reusing the existing `:failed` op with reason `expired`, no new op kind, no schema
+  change). The dispatcher, right after popping a queued task and BEFORE reserving a
+  VM, expires any task past its `expires_at` and skips dispatch, so an over-budget
+  parked task never runs after its deadline and never burns a primed VM. Expiry does
+  NOT dead-letter (it is not a processing failure; `failed_permanent` is terminal and
+  sufficient). This CLOSES the D12 "queued-task TTL not enforced" known gap.
