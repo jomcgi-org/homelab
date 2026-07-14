@@ -102,6 +102,12 @@ spec:
             - name: SEMGREP_DISPATCH
               value: {{ .Values.semgrep.dispatch | quote }}
             {{- end }}
+            {{- if .Values.sandbox.dispatch }}
+            # Where the python sandbox demo/tool is served (R0 cutover): fc-invoke
+            # (default) or embervm (EmberVM's sandbox Workload). Reuses EMBERVM_URL.
+            - name: SANDBOX_DISPATCH
+              value: {{ .Values.sandbox.dispatch | quote }}
+            {{- end }}
             {{- if .Values.semgrep.shadowProject }}
             # Route B shadow project: the relay reports App scans under this name
             # instead of the real repo, keeping self-hosted scans in a separate
