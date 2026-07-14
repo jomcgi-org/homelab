@@ -9,7 +9,7 @@ JobId is what counts as "new".
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -88,6 +88,121 @@ class TestPersist:
         jobs._persist([_vac("A")])
         with Session(engine) as s:
             assert s.get(Vacancy, "A").first_seen_at == first_seen
+
+
+def _insert(engine, job_id, *, closing, notified_discord=None, notified_whatsapp=None):
+    """Insert a single vacancy with explicit notification state (bypasses the
+    seed logic so a row can be born pending)."""
+    with Session(engine) as s:
+        v = Vacancy(**_vac(job_id, closing=closing))
+        v.notified_discord = notified_discord
+        v.notified_whatsapp = notified_whatsapp
+        s.add(v)
+        s.commit()
+
+
+@pytest.fixture(name="captured")
+def captured_fixture(monkeypatch):
+    """Capture the direct-to-outbox enqueue calls _notify_pending_sync makes.
+
+    The function does ``from chat.api import ...`` at call time, so patching the
+    chat.api attributes (not a local name) is what the local import picks up.
+    """
+    calls = {"discord": [], "whatsapp": []}
+    monkeypatch.setattr(
+        "chat.api.enqueue_message",
+        lambda session, channel_id, *, content=None, **_: calls["discord"].append(
+            (channel_id, content)
+        ),
+    )
+    monkeypatch.setattr(
+        "chat.api.enqueue_whatsapp_message",
+        lambda jid, content: calls["whatsapp"].append((jid, content)),
+    )
+    monkeypatch.setattr("chat.api.whatsapp_household_group_jids", lambda: ["g@g.us"])
+    return calls
+
+
+class TestSeedStamping:
+    def test_seed_rows_born_notified(self, engine):
+        # Every row on an empty-table seed is stamped so the switchover cannot
+        # dump the backlog into the chat.
+        jobs._persist([_vac("A")])
+        with Session(engine) as s:
+            a = s.get(Vacancy, "A")
+            assert a.notified_discord is not None
+            assert a.notified_whatsapp is not None
+
+    def test_nonseed_new_row_left_pending(self, engine):
+        jobs._persist([_vac("SEED")])  # seed run stamps SEED
+        jobs._persist([_vac("SEED"), _vac("A")])  # A is a new, non-seed insert
+        with Session(engine) as s:
+            a = s.get(Vacancy, "A")
+            assert a.notified_discord is None
+            assert a.notified_whatsapp is None
+
+
+class TestNotifyPending:
+    def test_enqueues_and_stamps_open_pending(self, engine, captured):
+        _insert(engine, "A", closing=date.today() + timedelta(days=5))
+        jobs._notify_pending_sync()
+        assert len(captured["discord"]) == 1
+        channel, content = captured["discord"][0]
+        assert channel == jobs.DISCORD_CHANNEL_ID
+        assert "1 new NHS Scotland" in content
+        assert captured["whatsapp"] == [("g@g.us", content)]
+        with Session(engine) as s:
+            a = s.get(Vacancy, "A")
+            assert a.notified_discord is not None
+            assert a.notified_whatsapp is not None
+
+    def test_skips_closed_vacancy(self, engine, captured):
+        _insert(engine, "A", closing=date.today() - timedelta(days=1))
+        jobs._notify_pending_sync()
+        assert captured["discord"] == []
+        assert captured["whatsapp"] == []
+        with Session(engine) as s:
+            assert s.get(Vacancy, "A").notified_discord is None
+
+    def test_does_not_renotify_already_stamped(self, engine, captured):
+        stamp = datetime.now(timezone.utc)
+        _insert(
+            engine,
+            "A",
+            closing=date.today() + timedelta(days=5),
+            notified_discord=stamp,
+            notified_whatsapp=stamp,
+        )
+        jobs._notify_pending_sync()
+        assert captured["discord"] == []
+        assert captured["whatsapp"] == []
+
+    def test_whatsapp_no_group_leaves_it_pending(self, engine, captured, monkeypatch):
+        # Discord still fires; WhatsApp stays NULL until a group is configured.
+        monkeypatch.setattr("chat.api.whatsapp_household_group_jids", lambda: [])
+        _insert(engine, "A", closing=date.today() + timedelta(days=5))
+        jobs._notify_pending_sync()
+        assert len(captured["discord"]) == 1
+        assert captured["whatsapp"] == []
+        with Session(engine) as s:
+            a = s.get(Vacancy, "A")
+            assert a.notified_discord is not None
+            assert a.notified_whatsapp is None
+
+    def test_discord_failure_isolated_and_retryable(
+        self, engine, captured, monkeypatch
+    ):
+        def boom(*_a, **_k):
+            raise RuntimeError("outbox down")
+
+        monkeypatch.setattr("chat.api.enqueue_message", boom)
+        _insert(engine, "A", closing=date.today() + timedelta(days=5))
+        jobs._notify_pending_sync()  # must not raise
+        with Session(engine) as s:
+            a = s.get(Vacancy, "A")
+            assert a.notified_discord is None  # left NULL -> retried next run
+            assert a.notified_whatsapp is not None  # WhatsApp still delivered
+        assert len(captured["whatsapp"]) == 1
 
 
 class TestBuildDigest:

@@ -44,6 +44,9 @@ from chat.whatsapp_session import enqueue_message_sync as enqueue_whatsapp_messa
 from chat.whatsapp_session import (
     group_jid_for_session as whatsapp_group_jid_for_session,
 )
+from chat.whatsapp_session import (
+    household_group_jids as whatsapp_household_group_jids,
+)
 
 __all__ = [
     "Plan",
@@ -80,4 +83,5 @@ __all__ = [
     "pardon_user",
     "whatsapp_checklist_final",
     "whatsapp_group_jid_for_session",
+    "whatsapp_household_group_jids",
 ]

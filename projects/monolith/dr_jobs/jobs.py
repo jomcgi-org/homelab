@@ -6,9 +6,13 @@ to a worker thread (asyncio.to_thread) so it never blocks the scheduler event
 loop, mirroring hikes.scrape_walks_handler. The scheduler passes a session, but
 the DB work uses its own session inside the thread.
 
-When the upsert inserts genuinely new vacancies (and the run was not the initial
-seed of an empty table), the handler posts a one-message Discord digest to the
-dr-jobs channel so the partner is pinged the day a post appears.
+Notification state lives on the vacancy row (``notified_discord`` /
+``notified_whatsapp``), so "was this posting announced?" is a column check, not
+cross-system archaeology. After the upsert the handler claims un-notified,
+still-open rows, enqueues one digest per channel directly to the outbox, and
+stamps the column only on a successful enqueue, so a failed send is retried next
+run (self-healing). Rows inserted on the initial seed of an empty table are born
+already-stamped, so the switchover never dumps the existing backlog.
 """
 
 import asyncio
@@ -26,9 +30,12 @@ logger = logging.getLogger("dr_jobs")
 # Client-level ceiling; per-request timeouts in scraper.py are tighter.
 SCRAPE_TIMEOUT_SECS = 60.0
 
-# Discord channel for the new-jobs digest (same server as the monolith bot).
-# notify() enqueues to the outbox; the leader's bot posts it. The bot must be a
-# member of this channel's server (the operative boundary; no app allow-list).
+# Discord channel for the new-jobs digest (guild/server 1501965852042330302,
+# channel #anna-jobs 1516663194699960382). We enqueue straight to
+# chat.discord_outbox; the leader's bot drains and posts it. The bot being a
+# member of the channel's server is the operative boundary (no app allow-list).
+# Enqueuing directly (not via agent.notify) is what keeps the DATABASE_URL-only
+# Argo job pod able to notify at all.
 DISCORD_CHANNEL_ID = os.environ.get("DR_JOBS_DISCORD_CHANNEL_ID", "1516663194699960382")
 
 # Cap the digest so a large batch (or first real scrape after a long gap) cannot
@@ -114,9 +121,51 @@ def _persist(vacancies: list[dict]) -> tuple[list[dict], int, bool]:
             # without a session.add in the loop.
 
         if new_rows:
+            if was_seed:
+                # Backlog on an empty-table deploy is born already-notified so
+                # the first scrape does not dump every existing posting into the
+                # chat. Symmetric with the migration's backfill of prod rows.
+                for row in new_rows:
+                    row.notified_discord = now
+                    row.notified_whatsapp = now
             session.add_all(new_rows)
         session.commit()
     return new_vacancies, updated, was_seed
+
+
+def _pending(session, column, today: date) -> list[models.Vacancy]:
+    """Vacancies not yet notified on ``column`` and not past their closing date.
+
+    An open closing date (or none) keeps a posting eligible; a closed one is
+    skipped so a retry cannot resurrect a stale listing.
+    """
+    from sqlmodel import or_, select
+
+    return list(
+        session.exec(
+            select(models.Vacancy).where(
+                column.is_(None),
+                or_(
+                    models.Vacancy.closing_date.is_(None),
+                    models.Vacancy.closing_date >= today,
+                ),
+            )
+        ).all()
+    )
+
+
+def _digest_dicts(rows: list[models.Vacancy]) -> list[dict]:
+    """Minimal dicts (title/town/closing_date) that build_digest consumes."""
+    return [
+        {"title": r.title, "town": r.town, "closing_date": r.closing_date} for r in rows
+    ]
+
+
+def _stamp(rows: list[models.Vacancy], attr: str, when: datetime) -> None:
+    """Mark ``rows`` notified on ``attr``; they are session-tracked and flush on
+    the caller's commit."""
+    for row in rows:
+        setattr(row, attr, when)
 
 
 def _fmt_closing(value: date | None) -> str:
@@ -143,15 +192,73 @@ def build_digest(new_vacancies: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def _send_digest(new_vacancies: list[dict]) -> None:
-    """Post the new-jobs digest to Discord. Never raises (a notify failure must
-    not fail an otherwise-successful scrape)."""
-    try:
-        from agent.api import notify
+def _notify_pending_sync() -> None:
+    """Claim un-notified, still-open vacancies and deliver one digest per channel.
 
-        await notify(build_digest(new_vacancies), channel=DISCORD_CHANNEL_ID)
-    except Exception:  # noqa: BLE001 - best-effort side channel
-        logger.warning("dr_jobs: failed to post new-jobs Discord digest", exc_info=True)
+    Source of truth is the row: ``notified_<channel> IS NULL`` plus an open
+    closing date means pending. On a successful enqueue we stamp the column, so a
+    failed send leaves it NULL and the next hourly run retries. Channels are
+    independent (a WhatsApp failure never blocks Discord) and each commits on its
+    own, so one channel's stamp is durable even if the other raises. Runs off the
+    event loop via asyncio.to_thread.
+    """
+    from chat.api import (
+        enqueue_message,
+        enqueue_whatsapp_message,
+        whatsapp_household_group_jids,
+    )
+    from sqlmodel import Session
+
+    from app.db import get_engine
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    with Session(get_engine()) as session:
+        # --- Discord (enqueue uses this session; caller commits) ---
+        try:
+            pending = _pending(session, models.Vacancy.notified_discord, today)
+            if pending:
+                enqueue_message(
+                    session,
+                    DISCORD_CHANNEL_ID,
+                    content=build_digest(_digest_dicts(pending)),
+                )
+                _stamp(pending, "notified_discord", now)
+                session.commit()
+                logger.info(
+                    "dr_jobs: enqueued Discord digest for %d vacancies", len(pending)
+                )
+        except Exception:  # noqa: BLE001 - best-effort; NULL column retries
+            session.rollback()
+            logger.warning(
+                "dr_jobs: Discord digest enqueue failed; will retry next run",
+                exc_info=True,
+            )
+
+        # --- WhatsApp (enqueue self-commits per group; enqueue-then-stamp so a
+        # failure leaves NULL rather than a silent miss) ---
+        try:
+            pending = _pending(session, models.Vacancy.notified_whatsapp, today)
+            jids = whatsapp_household_group_jids() if pending else []
+            if pending and jids:
+                digest = build_digest(_digest_dicts(pending))
+                for jid in jids:
+                    enqueue_whatsapp_message(jid, digest)
+                _stamp(pending, "notified_whatsapp", now)
+                session.commit()
+                logger.info(
+                    "dr_jobs: enqueued WhatsApp digest for %d vacancies to %d group(s)",
+                    len(pending),
+                    len(jids),
+                )
+            # No enabled household group -> leave NULL, retry once one exists.
+        except Exception:  # noqa: BLE001 - best-effort; NULL column retries
+            session.rollback()
+            logger.warning(
+                "dr_jobs: WhatsApp digest enqueue failed; will retry next run",
+                exc_info=True,
+            )
 
 
 async def scrape_nhs_handler(session) -> datetime | None:
@@ -183,8 +290,9 @@ async def scrape_nhs_handler(session) -> datetime | None:
         stats,
     )
 
-    # Suppress the digest on the initial backfill (every row is "new" then).
-    if new_vacancies and not was_seed:
-        await _send_digest(new_vacancies)
+    # Notification is driven by the row's notified_* columns, not this run's
+    # inserts: seed rows were stamped in _persist, so this only ever announces
+    # genuinely-new, still-open postings, and retries any prior failed send.
+    await asyncio.to_thread(_notify_pending_sync)
 
     return None

@@ -32,7 +32,12 @@ from datetime import datetime, timezone
 from sqlmodel import Session, select
 
 from app.db import get_engine
-from chat.models import GoosecrackerSession, GoosecrackerSteering, WhatsappOutbox
+from chat.models import (
+    GoosecrackerSession,
+    GoosecrackerSteering,
+    WhatsappGroup,
+    WhatsappOutbox,
+)
 from chat.whatsapp_outbox import (
     enqueue_edit,
     enqueue_message,
@@ -474,6 +479,24 @@ def enqueue_message_sync(group_jid: str, content: str) -> None:
     with Session(get_engine()) as session:
         enqueue_message(session, group_jid, content=content)
         session.commit()
+
+
+def household_group_jids() -> list[str]:
+    """Return the JIDs of enabled household-tier WhatsApp groups.
+
+    Cross-domain digests (e.g. dr-jobs) deliver by group JID. The JID is PII and
+    lives only in the DB (``chat.whatsapp_group``), never in git, so callers read
+    it here rather than from a config value. Synchronous; call via
+    ``asyncio.to_thread``. Mirrors how the morning digest fans out over groups.
+    """
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(WhatsappGroup.group_jid).where(
+                WhatsappGroup.enabled == True,  # noqa: E712 - SQL boolean, not `is`
+                WhatsappGroup.tier == "household",
+            )
+        ).all()
+    return list(rows)
 
 
 def group_jid_for_session(session_key: str) -> str:
