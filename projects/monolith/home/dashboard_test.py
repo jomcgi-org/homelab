@@ -34,19 +34,6 @@ async def test_build_dashboard_isolates_a_failing_section():
             AsyncMock(return_value={"open_prs": [], "recent_merges": []}),
         ),
         patch.object(
-            dashboard,
-            "_collect_queues",
-            AsyncMock(
-                return_value={
-                    "notes_review_queue": 0,
-                    "gaps_review_queue": 0,
-                    "tasks_daily": [],
-                    "tasks_weekly": [],
-                    "scheduler_jobs": [],
-                }
-            ),
-        ),
-        patch.object(
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
@@ -55,7 +42,6 @@ async def test_build_dashboard_isolates_a_failing_section():
     assert result["health"] == {"error": "k8s down"}
     assert result["alerts"] == {"firing": []}
     assert result["github"] == {"open_prs": [], "recent_merges": []}
-    assert result["queues"]["notes_review_queue"] == 0
     assert result["today"] == {"events": []}
     assert "cached_at" in result
 
@@ -75,25 +61,12 @@ async def test_build_dashboard_all_sections_healthy():
             AsyncMock(return_value={"open_prs": [], "recent_merges": []}),
         ),
         patch.object(
-            dashboard,
-            "_collect_queues",
-            AsyncMock(
-                return_value={
-                    "notes_review_queue": 2,
-                    "gaps_review_queue": 1,
-                    "tasks_daily": [],
-                    "tasks_weekly": [],
-                    "scheduler_jobs": [],
-                }
-            ),
-        ),
-        patch.object(
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
         result = await dashboard.build_dashboard(session=MagicMock())
 
-    for section in ("health", "alerts", "github", "queues", "today"):
+    for section in ("health", "alerts", "github", "today"):
         assert "error" not in result[section]
 
 
@@ -114,19 +87,6 @@ async def test_build_dashboard_multiple_sections_fail_independently():
             AsyncMock(return_value={"open_prs": [], "recent_merges": []}),
         ),
         patch.object(
-            dashboard,
-            "_collect_queues",
-            AsyncMock(
-                return_value={
-                    "notes_review_queue": 0,
-                    "gaps_review_queue": 0,
-                    "tasks_daily": [],
-                    "tasks_weekly": [],
-                    "scheduler_jobs": [],
-                }
-            ),
-        ),
-        patch.object(
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
@@ -135,7 +95,6 @@ async def test_build_dashboard_multiple_sections_fail_independently():
     assert "error" in result["health"]
     assert "error" in result["alerts"]
     assert "error" not in result["github"]
-    assert "error" not in result["queues"]
     assert "error" not in result["today"]
 
 

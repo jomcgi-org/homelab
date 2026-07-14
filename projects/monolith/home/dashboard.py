@@ -1,10 +1,9 @@
 """Dashboard aggregation for the private landing page.
 
-Fans out to cluster health, firing alerts, GitHub PR/CI status, knowledge
-review queues and task rollups, scheduler job health, and today's calendar
-events. Each collector is fail-soft: a failure in one section is caught and
-reported as {"error": str(exc)} for that section only, so a single flaky
-upstream (SigNoz, GitHub, the K8s API) never blanks the whole dashboard.
+Fans out to cluster health, firing alerts, GitHub PR/CI status, and today's
+calendar events. Each collector is fail-soft: a failure in one section is
+caught and reported as {"error": str(exc)} for that section only, so a single
+flaky upstream (SigNoz, GitHub, the K8s API) never blanks the whole dashboard.
 
 Private-tier only (registered in home.register, not home.register_public):
 the GitHub token, SigNoz alerts and cluster health rollup are not meant for
@@ -162,38 +161,6 @@ async def _collect_alerts(session) -> dict:
     return await fetch_alerts_live()
 
 
-async def _collect_queues(session) -> dict:
-    """Knowledge review-queue counts, task rollups, and scheduler job health."""
-    from knowledge.api import (
-        count_gaps_review_queue,
-        count_notes_review_queue,
-        list_tasks_daily,
-        list_tasks_weekly,
-    )
-    from scheduler.api import list_jobs
-
-    jobs = [
-        {
-            "name": job.name,
-            "last_status": job.last_status,
-            "last_run_at": job.last_run_at,
-            "next_run_at": job.next_run_at,
-        }
-        for job in list_jobs(session)
-    ]
-    # Failing/stuck jobs first: a job with a non-ok last_status (including
-    # never-run, last_status is None) sorts ahead of healthy ones.
-    jobs.sort(key=lambda j: 0 if j["last_status"] != "ok" else 1)
-
-    return {
-        "notes_review_queue": count_notes_review_queue(session),
-        "gaps_review_queue": count_gaps_review_queue(session),
-        "tasks_daily": list_tasks_daily(session),
-        "tasks_weekly": list_tasks_weekly(session),
-        "scheduler_jobs": jobs,
-    }
-
-
 async def _collect_today(session) -> dict:
     """Today's calendar events (same-domain, home.schedule)."""
     from home.schedule import get_today_events
@@ -208,12 +175,11 @@ async def build_dashboard(session) -> dict:
     {"error": str(exc)} for that section rather than failing the whole
     response.
     """
-    names = ("health", "alerts", "github", "queues", "today")
+    names = ("health", "alerts", "github", "today")
     results = await asyncio.gather(
         _collect_health(session),
         _collect_alerts(session),
         _collect_github(),
-        _collect_queues(session),
         _collect_today(session),
         return_exceptions=True,
     )
