@@ -127,17 +127,22 @@ defmodule Embervm.TaskStore do
   end
 
   @doc """
-  Every task currently in a dispatchable-backlog state: `queued` (waiting for a
-  primed VM) or `failed_retryable` (awaiting a retry the dispatcher must arm).
-  Returns lightweight records (`task_id`, `workload`, `principal`, `state`,
-  `attempt`) newest-submitted first, from the ETS hot set (never the op-log).
+  Every task the dispatcher's sweep must be able to reconcile: `queued` (waiting
+  for a primed VM), `failed_retryable` (awaiting a retry), and the in-flight
+  states `assigned`/`running`. Returns lightweight records (`task_id`,
+  `workload`, `principal`, `state`, `attempt`), sorted by `task_id`, from the ETS
+  hot set (never the op-log).
 
-  This is the dispatcher's boot + safety-sweep reconcile source. Two cases the
-  push-based `on_queued` hook cannot cover need it: (1) a control-plane restart,
-  where the op-log rebuild repopulates ETS but the dispatcher's in-memory fair
-  queues start empty, and (2) `reassign_in_flight/0` (a downed node), which
-  moves in-flight tasks to `failed_retryable` out of band with no dispatcher
-  notification. A slow periodic sweep over this list re-drives both.
+  This is the dispatcher's boot + safety-sweep reconcile source. It must include
+  in-flight states because a task can be durably `assigned`/`running` with NO
+  live worker owning it: a control-plane (or dispatcher-only) restart drops every
+  worker while the op-log rebuild leaves the task in-flight; a partial
+  `assign`-then-`start` commit leaves it `assigned` with no worker spawned; a
+  completion whose terminal op-log append failed leaves it `running`. The
+  dispatcher distinguishes such ORPHANS (no tracked worker) from genuinely
+  running tasks and reclaims only the former, so no task is lost. `queued` tasks
+  a dropped `on_queued` cast missed and `failed_retryable` tasks
+  `reassign_in_flight/0` produced out of band are re-driven the same way.
   """
   @spec list_backlog(GenServer.server()) :: {:ok, [map()]}
   def list_backlog(store \\ __MODULE__) do
@@ -374,7 +379,7 @@ defmodule Embervm.TaskStore do
     backlog =
       :ets.foldl(
         fn {_id, task}, acc ->
-          if task.state in [:queued, :failed_retryable] do
+          if task.state in [:queued, :failed_retryable, :assigned, :running] do
             [%{
                task_id: task.task_id,
                workload: task.workload,

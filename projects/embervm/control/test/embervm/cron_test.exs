@@ -52,6 +52,16 @@ defmodule Embervm.CronTest do
     assert next_week == dt(2026, 7, 20, 9, 0)
   end
 
+  test "day-of-week 7 is accepted as a Sunday alias (Vixie)" do
+    {:ok, cron} = Cron.parse("0 9 * * 7")
+    # 2026-07-19 is a Sunday, 2026-07-20 a Monday.
+    assert Cron.matches?(cron, dt(2026, 7, 19, 9, 0))
+    refute Cron.matches?(cron, dt(2026, 7, 20, 9, 0))
+    # And it still resolves the same as 0.
+    {:ok, zero} = Cron.parse("0 9 * * 0")
+    assert Cron.next(cron, dt(2026, 7, 15, 0, 0)) == Cron.next(zero, dt(2026, 7, 15, 0, 0))
+  end
+
   test "Vixie rule: restricted dom AND dow match on EITHER" do
     # "0 0 13 * 5" = midnight on the 13th OR any Friday.
     {:ok, cron} = Cron.parse("0 0 13 * 5")

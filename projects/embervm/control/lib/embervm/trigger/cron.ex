@@ -198,7 +198,7 @@ defmodule Embervm.Trigger.Cron do
             {Map.put(acc, key, sched), count}
 
           not future?(sched.next, now) ->
-            submit_trigger(state, sched)
+            submit_trigger(state, sched, now)
             {Map.put(acc, key, %{sched | next: recompute_next(sched, now)}), count + 1}
 
           true ->
@@ -219,8 +219,8 @@ defmodule Embervm.Trigger.Cron do
   # future?(t, now) is true when t is strictly after now (not yet due).
   defp future?(t, now), do: DateTime.compare(t, now) == :gt
 
-  defp submit_trigger(state, sched) do
-    now_ms = DateTime.to_unix(state.clock.(), :millisecond)
+  defp submit_trigger(state, sched, now) do
+    now_ms = DateTime.to_unix(now, :millisecond)
 
     attrs = %{
       tenant: @tenant,

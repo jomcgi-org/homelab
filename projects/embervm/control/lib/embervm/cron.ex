@@ -26,7 +26,10 @@ defmodule Embervm.Cron do
   @hour_range 0..23
   @dom_range 1..31
   @month_range 1..12
-  @dow_range 0..6
+  # Day-of-week accepts 0-7, where BOTH 0 and 7 mean Sunday (Vixie cron); 7 is
+  # normalized to 0 after parsing so matching against Date.day_of_week (mapped to
+  # 0..6) is uniform.
+  @dow_range 0..7
 
   # Safety bound: a valid cron matches within a year; give up past that so a
   # malformed spec that never matches cannot loop forever.
@@ -50,7 +53,7 @@ defmodule Embervm.Cron do
              hour: h,
              dom: d,
              month: mo,
-             dow: w,
+             dow: normalize_dow(w),
              dom_star: String.trim(dom) == "*",
              dow_star: String.trim(dow) == "*"
            }}
@@ -62,6 +65,13 @@ defmodule Embervm.Cron do
   end
 
   def parse(_), do: {:error, :not_a_string}
+
+  # 7 and 0 both mean Sunday; collapse 7 into 0 so matching is uniform against a
+  # 0..6 weekday. Applied after field parsing, so `*` (which expands to 0..7)
+  # also collapses cleanly.
+  defp normalize_dow(set) do
+    if MapSet.member?(set, 7), do: set |> MapSet.delete(7) |> MapSet.put(0), else: set
+  end
 
   @doc """
   The first `%DateTime{}` (in `from`'s time zone, UTC in practice) strictly after

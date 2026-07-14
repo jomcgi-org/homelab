@@ -305,6 +305,76 @@ defmodule Embervm.DispatcherTest do
     assert {:ok, []} = TaskStore.list_backlog(ctx.store)
   end
 
+  # -- orphan reclaim (restart / partial commit) -----------------------------
+
+  test "sweep reclaims an orphaned in-flight task with no live worker" do
+    suffix = System.unique_integer([:positive])
+    cap_table = :"ocap_#{suffix}"
+    cat_table = :"ocat_#{suffix}"
+    depth_table = :"odepth_#{suffix}"
+    disp_name = :"odisp_#{suffix}"
+
+    NodeCapacity.create(cap_table)
+    WorkloadCatalog.create(cat_table)
+    path = Path.join(System.tmp_dir!(), "embervm_orphan_#{suffix}.db")
+    on_exit(fn -> File.rm_rf!(path) end)
+
+    {:ok, op_log} = SQLite.start_link(name: nil, path: path)
+    {:ok, store} = TaskStore.start_link(name: nil, op_log: op_log, on_queued: fn t -> Dispatcher.enqueue(disp_name, t) end)
+
+    # A task durably `assigned` from a "previous incarnation": no dispatcher owned
+    # it (the one below starts fresh, so it has no worker tracking it). This models
+    # a dispatcher restart or a partial assign/start commit.
+    {:ok, :created, tid} =
+      TaskStore.submit(store, %{tenant: "t", principal: "p1", workload: "wl-a", request: %{path: "/", headers: %{}, body_b64: Base.encode64("")}})
+
+    {:ok, %{state: :assigned}} = TaskStore.assign(store, tid)
+
+    WorkloadCatalog.upsert(cat_table, "wl-a", %{
+      name: "wl-a",
+      namespace: "embervm",
+      cap: 10,
+      floor: 0,
+      invoke_path: "/",
+      timeout_ms: 5_000,
+      result_ttl_ms: 60_000,
+      result_max_bytes: 1_048_576,
+      retry: %{max_attempts: 3, backoff_ms: 1, backoff_cap_ms: 1, retry_on: [:transport]},
+      triggers: []
+    })
+
+    NodeCapacity.put(cap_table, "node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      workloads: %{"wl-a" => %{free_primed_slots: 0, snapshot_ref: "snap", base_state: :BASE_BUILD_STATE_READY}},
+      mem_headroom_mib: 4096,
+      cpu_headroom_millicores: 4000,
+      live_vms: 0,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 1_000_000
+    })
+
+    {:ok, _disp} =
+      Dispatcher.start_link(
+        name: disp_name,
+        task_store: store,
+        capacity_table: cap_table,
+        catalog_table: cat_table,
+        depth_table: depth_table,
+        clock: fn -> 1_000_000 end,
+        channel_fun: fn _ -> {:ok, :ch} end,
+        assign_fun: fn _ch, _req -> {:ok, success_resp()} end,
+        prime_fun: fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-1"}} end,
+        start_sweep: false
+      )
+
+    Dispatcher.sweep(disp_name)
+
+    # Reclaimed: failed as transport -> retried -> re-dispatched -> succeeded.
+    assert eventually(fn -> match?({:ok, %{state: :succeeded}}, TaskStore.get(store, tid)) end)
+  end
+
   # -- failure classification ------------------------------------------------
 
   test "guest 5xx retries through Retry until attempts exhaust, then dead-letters" do
