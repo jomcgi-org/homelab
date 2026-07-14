@@ -230,6 +230,14 @@ defmodule Embervm.Dispatcher do
       queue_depth_cap: Keyword.get(opts, :queue_depth_cap, @queue_depth_cap),
       share_fraction: Keyword.get(opts, :share_fraction, nil),
       sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, @sweep_interval_ms),
+      # Quota enforcement (Task 12): the Metering quota-cache table and the
+      # values-configured per-principal daily vCPU-second budgets. Read O(1) and
+      # fail-closed (per principal WITH a budget) when the cache is unreadable, so
+      # an over-budget principal is SKIPPED in the fair rotation (parked queued,
+      # no queued->failed FSM edge needed), unparking at day rollover. Empty
+      # budgets (the default) means no principal is ever skipped here.
+      quota_table: Keyword.get(opts, :quota_table, Embervm.Metering.table()),
+      quota_config: Keyword.get(opts, :quota_config, Embervm.Metering.quota_config()),
       # Dynamic state.
       queues: %{},
       queued_ids: MapSet.new(),
@@ -238,7 +246,7 @@ defmodule Embervm.Dispatcher do
       inflight_pr: %{},
       workers: %{},
       retry_timers: %{},
-      denials: %{cap: 0, principal_share: 0, stale_capacity: 0, no_capacity: 0},
+      denials: %{cap: 0, principal_share: 0, stale_capacity: 0, no_capacity: 0, quota: 0},
       warm_hits: 0,
       misses: 0
     }
@@ -292,7 +300,7 @@ defmodule Embervm.Dispatcher do
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     case Map.get(state.workers, pid) do
       nil -> {:noreply, state}
-      _ -> {:noreply, finish_worker(state, pid, {:failed, :transport, {:worker_down, reason}}, :no_flush)}
+      _ -> {:noreply, finish_worker(state, pid, {:failed, :transport, {:worker_down, reason}, nil}, :no_flush)}
     end
   end
 
@@ -385,13 +393,22 @@ defmodule Embervm.Dispatcher do
   # is dropped and the loop continues.
   defp dispatch_one(state, wl, entry, node_id, mode, snapshot_ref) do
     share = share_cap(state, wl, entry)
+    blocked = over_budget_principals(state, wl)
 
-    case fq_take(Map.get(state.queues, wl), wl, share, state.inflight_pr) do
+    case fq_take(Map.get(state.queues, wl), wl, share, state.inflight_pr, blocked) do
       {:none, fq} ->
-        # Nothing servable right now (queue empty, or every remaining principal is
-        # at its share). If a principal was skipped for share, record it.
+        # Nothing servable right now: queue empty, or every remaining principal is
+        # at its share or over its daily quota. Attribute to :quota when a quota
+        # block contributed (a metric, not an op-log append: a queued task parked
+        # for budget is re-evaluated every tick, so appending here would flood; the
+        # audit append happens once at submit, see Embervm.Router), else to share.
         state = %{state | queues: Map.put(state.queues, wl, fq)}
-        if fq_empty?(state.queues, wl), do: state, else: bump_denial(state, :principal_share)
+
+        cond do
+          fq_empty?(state.queues, wl) -> state
+          MapSet.size(blocked) > 0 -> bump_denial(state, :quota)
+          true -> bump_denial(state, :principal_share)
+        end
 
       {:ok, task_id, pr, fq} ->
         state = %{state | queues: Map.put(state.queues, wl, fq)}
@@ -597,8 +614,8 @@ defmodule Embervm.Dispatcher do
           }
 
           case assign_fun.(channel, assign_req) do
-            {:ok, %AssignResponse{response: %GuestResponse{} = resp}} ->
-              classify_response(resp, ctx)
+            {:ok, %AssignResponse{response: %GuestResponse{} = resp, usage: usage}} ->
+              classify_response(resp, ctx, usage)
 
             {:error, reason} ->
               _ = invalidate_fun.(ctx.node_id, channel)
@@ -611,7 +628,7 @@ defmodule Embervm.Dispatcher do
         end
 
       {:error, reason} ->
-        {:failed, :transport, {:no_channel, reason}}
+        {:failed, :transport, {:no_channel, reason}, nil}
     end
   end
 
@@ -663,14 +680,19 @@ defmodule Embervm.Dispatcher do
 
   # A well-formed guest HTTP response: 2xx/3xx succeeds (result stored, truncated
   # to result_max_bytes); a 5xx is a retryable :guest5xx; a 4xx is a permanent
-  # :guest4xx (the request itself is wrong, retrying reproduces it).
-  defp classify_response(%GuestResponse{status_code: code} = resp, ctx) do
+  # :guest4xx (the request itself is wrong, retrying reproduces it). Every guest
+  # response, success OR error, carries usage (the VM did measured work before
+  # answering), so the outcome carries the normalized stats to bill; a
+  # transport/timeout failure (classify_error) carries nil (nothing measured).
+  defp classify_response(%GuestResponse{status_code: code} = resp, ctx, usage) do
+    stats = Embervm.Usage.from_proto(usage)
+
     cond do
       code >= 500 and code <= 599 ->
-        {:failed, :guest5xx, {:guest_status, code}}
+        {:failed, :guest5xx, {:guest_status, code}, stats}
 
       code >= 400 and code <= 499 ->
-        {:failed, :guest4xx, {:guest_status, code}}
+        {:failed, :guest4xx, {:guest_status, code}, stats}
 
       true ->
         body = resp.body || ""
@@ -683,17 +705,18 @@ defmodule Embervm.Dispatcher do
            size_bytes: byte_size(body),
            truncated: truncated?,
            expires_at: ctx.result_expires_at
-         }}
+         }, stats}
     end
   end
 
   # A transport/RPC-level failure. DEADLINE_EXCEEDED (the guest did not answer in
   # time) is :timeout; everything else (UNAVAILABLE, FAILED_PRECONDITION for a
   # vm that vanished, RESOURCE_EXHAUSTED, a raw Mint error) is :transport, so it
-  # retries onto a freshly primed VM.
-  defp classify_error(%GRPC.RPCError{status: 4}), do: {:failed, :timeout, :deadline_exceeded}
-  defp classify_error(%GRPC.RPCError{} = e), do: {:failed, :transport, {:rpc, e.status}}
-  defp classify_error(reason), do: {:failed, :transport, reason}
+  # retries onto a freshly primed VM. No usage is reported for these (the guest
+  # never answered), so they bill nothing.
+  defp classify_error(%GRPC.RPCError{status: 4}), do: {:failed, :timeout, :deadline_exceeded, nil}
+  defp classify_error(%GRPC.RPCError{} = e), do: {:failed, :transport, {:rpc, e.status}, nil}
+  defp classify_error(reason), do: {:failed, :transport, reason, nil}
 
   defp truncate(body, max) when byte_size(body) <= max, do: {body, false}
   defp truncate(body, max) when max <= 0, do: {"", byte_size(body) > 0}
@@ -722,24 +745,36 @@ defmodule Embervm.Dispatcher do
     end
   end
 
+  defp apply_outcome(state, meta, {:succeeded, result, stats}) do
+    _ = safe(fn -> Embervm.TaskStore.succeed(state.task_store, meta.task_id, result, stats) end)
+    state
+  end
+
+  defp apply_outcome(state, meta, {:failed, reason, _detail, stats}) do
+    apply_failure(state, meta, reason, stats)
+  end
+
+  # Usage-less fallbacks (a bare `{:failed, reason}` from a path that never saw a
+  # guest response): bill nothing.
   defp apply_outcome(state, meta, {:succeeded, result}) do
     _ = safe(fn -> Embervm.TaskStore.succeed(state.task_store, meta.task_id, result) end)
     state
   end
 
   defp apply_outcome(state, meta, {:failed, reason, _detail}) do
-    apply_failure(state, meta, reason)
+    apply_failure(state, meta, reason, nil)
   end
 
   defp apply_outcome(state, meta, {:failed, reason}) do
-    apply_failure(state, meta, reason)
+    apply_failure(state, meta, reason, nil)
   end
 
-  # Drive the failure through TaskStore's Retry classification. A retryable
-  # failure comes back with a backoff we arm a timer for (this dispatcher owns
-  # retry scheduling); a permanent one is already dead-lettered by TaskStore.
-  defp apply_failure(state, meta, reason) do
-    case safe_call(fn -> Embervm.TaskStore.fail(state.task_store, meta.task_id, reason) end) do
+  # Drive the failure through TaskStore's Retry classification, passing any
+  # measured usage so a guest 4xx/5xx is still billed. A retryable failure comes
+  # back with a backoff we arm a timer for (this dispatcher owns retry
+  # scheduling); a permanent one is already dead-lettered by TaskStore.
+  defp apply_failure(state, meta, reason, stats) do
+    case safe_call(fn -> Embervm.TaskStore.fail(state.task_store, meta.task_id, reason, stats) end) do
       {:ok, {:ok, _task, backoff}} -> arm_retry(state, meta.task_id, backoff)
       _ -> state
     end
@@ -871,6 +906,29 @@ defmodule Embervm.Dispatcher do
     end
   end
 
+  # The set of a workload's currently-queued principals that are over their daily
+  # quota as of now (wall clock, to match the usage projection's day bucket). Only
+  # queued principals can be skipped in the rotation, so only they are checked.
+  # within_quota?/4 is fail-closed per principal WITH a budget; a principal with
+  # no configured budget is never in this set (quota is opt-in), so an unquota'd
+  # cluster computes an empty set and pays no per-tick cost.
+  defp over_budget_principals(state, wl) do
+    now = state.wall_clock.()
+
+    case Map.get(state.queues, wl) do
+      nil ->
+        MapSet.new()
+
+      fq ->
+        fq
+        |> fq_principals()
+        |> Enum.filter(fn pr ->
+          not Embervm.Metering.within_quota?(pr, now, state.quota_config, state.quota_table)
+        end)
+        |> MapSet.new()
+    end
+  end
+
   defp active_principals(state, wl) do
     queued = state.queues |> Map.get(wl, new_fq()) |> fq_principals()
 
@@ -915,19 +973,21 @@ defmodule Embervm.Dispatcher do
   end
 
   # Pop the next task in round-robin-across-principals / FIFO-within order,
-  # skipping principals already at their in-flight share. Walks at most one full
-  # rotation; returns {:none, fq} when nothing is servable (empty, or all
-  # remaining principals are share-capped), rotating skipped principals to the
-  # back so order is preserved.
-  defp fq_take(nil, _wl, _share, _inflight_pr), do: {:none, new_fq()}
+  # skipping principals already at their in-flight share OR in the `blocked` set
+  # (over their daily quota). Walks at most one full rotation; returns {:none, fq}
+  # when nothing is servable (empty, or all remaining principals are share-capped
+  # or quota-blocked), rotating skipped principals to the back so order is
+  # preserved (a quota-blocked principal is parked, not dropped: it becomes
+  # servable again when its budget resets at day rollover).
+  defp fq_take(nil, _wl, _share, _inflight_pr, _blocked), do: {:none, new_fq()}
 
-  defp fq_take(fq, wl, share, inflight_pr) do
-    fq_take(fq, wl, share, inflight_pr, MapSet.size(fq.members))
+  defp fq_take(fq, wl, share, inflight_pr, blocked) do
+    fq_take(fq, wl, share, inflight_pr, blocked, MapSet.size(fq.members))
   end
 
-  defp fq_take(fq, _wl, _share, _inflight_pr, 0), do: {:none, fq}
+  defp fq_take(fq, _wl, _share, _inflight_pr, _blocked, 0), do: {:none, fq}
 
-  defp fq_take(fq, wl, share, inflight_pr, remaining) do
+  defp fq_take(fq, wl, share, inflight_pr, blocked, remaining) do
     case :queue.out(fq.rotation) do
       {:empty, _} ->
         {:none, fq}
@@ -937,9 +997,9 @@ defmodule Embervm.Dispatcher do
         fifo = Map.get(fq.fifos, pr, :queue.new())
 
         cond do
-          pr_inflight >= share ->
-            # Over its share: rotate to the back, try the next principal.
-            fq_take(%{fq | rotation: :queue.in(pr, rot)}, wl, share, inflight_pr, remaining - 1)
+          pr_inflight >= share or MapSet.member?(blocked, pr) ->
+            # Over its share or over its quota: rotate to the back, try the next.
+            fq_take(%{fq | rotation: :queue.in(pr, rot)}, wl, share, inflight_pr, blocked, remaining - 1)
 
           :queue.is_empty(fifo) ->
             # Shouldn't happen (members implies non-empty), but drop it defensively.
@@ -948,6 +1008,7 @@ defmodule Embervm.Dispatcher do
               wl,
               share,
               inflight_pr,
+              blocked,
               remaining - 1
             )
 

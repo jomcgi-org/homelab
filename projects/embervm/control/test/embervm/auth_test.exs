@@ -51,8 +51,8 @@ defmodule Embervm.AuthTest do
     {reviewer, counter} = counting_reviewer(%{"tok" => {:ok, "system:serviceaccount:other:sa"}})
     auth = start_auth(reviewer)
 
-    assert {:error, :forbidden} = Auth.authenticate(auth, "tok")
-    assert {:error, :forbidden} = Auth.authenticate(auth, "tok")
+    assert {:error, {:forbidden, "system:serviceaccount:other:sa"}} = Auth.authenticate(auth, "tok")
+    assert {:error, {:forbidden, "system:serviceaccount:other:sa"}} = Auth.authenticate(auth, "tok")
     # Denials are not cached: the reviewer runs each time.
     assert Agent.get(counter, & &1) == 2
   end

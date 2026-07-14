@@ -24,3 +24,12 @@ auth:
   # the Task 14/15 cutover.
   allowedServiceAccounts:
     - system:serviceaccount:embervm:embervm-embervm
+
+# Metering, audit, and quotas (Task 12). Quota is left OFF in R0 (opt-in, empty =
+# no enforcement): per-principal daily vCPU-second budgets are set alongside the
+# real consumer SAs at the Task 14/15 cutover, once real tasks actually run (no
+# guest image exists to consume vCPU-seconds until Task 14). The usage-read admin
+# is the control plane's own ServiceAccount, so an operator can read fleet-wide
+# usage at GET /v1/usage?principal=; everyone else is self-scoped.
+usageAdmins:
+  - system:serviceaccount:embervm:embervm-embervm

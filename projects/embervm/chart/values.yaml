@@ -81,6 +81,25 @@ dispatcher:
   # the others. Set a fraction in (0, 1] to fix each principal's share instead.
   principalShareFraction: ""
 
+# Metering, audit, and quotas (Task 12). Quota is OPT-IN and asymmetric to the
+# auth allow-list: an empty budget map means quota is OFF (principals with no
+# configured budget are allowed), NOT deny-all. Budgets are per-principal DAILY
+# vCPU-second limits, reset at 00:00 UTC (~16:00-17:00 US Pacific), the day
+# boundary of the usage projection; document any timezone-sensitive expectation
+# here rather than "fixing" it live.
+quota:
+  # Map of ServiceAccount username -> daily vCPU-second budget. Rendered to
+  # EMBERVM_QUOTA_VCPU_SECONDS as `principal=budget` pairs.
+  # e.g. { "system:serviceaccount:embervm:foo": 3600 }
+  dailyVcpuSecondsPerPrincipal: {}
+  # Optional blanket daily budget for principals not named in the map above.
+  # Empty means no blanket budget (unlisted principals are unlimited).
+  defaultDailyVcpuSeconds: ""
+
+# ServiceAccount usernames allowed to read OTHER principals' usage at
+# GET /v1/usage (?principal=). Everyone else is self-scoped. Empty = self only.
+usageAdmins: []
+
 service:
   port: 8080
 

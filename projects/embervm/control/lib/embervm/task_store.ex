@@ -74,7 +74,19 @@ defmodule Embervm.TaskStore do
 
   @spec succeed(GenServer.server(), String.t(), map()) :: {:ok, map()} | {:error, term()}
   def succeed(store \\ __MODULE__, task_id, result) do
-    GenServer.call(store, {:succeed, task_id, result})
+    GenServer.call(store, {:succeed, task_id, result, nil})
+  end
+
+  @doc """
+  Like `succeed/3`, plus the task's raw usage stats (`%{cpu_ms, peak_rss_mib,
+  wall_ms}`, from `AssignResponse.usage`) which are billed into the op payload
+  and charged to the quota cache via the `on_metered` hook. `nil` usage charges
+  nothing. The dispatcher calls this on the success path.
+  """
+  @spec succeed(GenServer.server(), String.t(), map(), map() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def succeed(store, task_id, result, usage) do
+    GenServer.call(store, {:succeed, task_id, result, usage})
   end
 
   @doc """
@@ -88,7 +100,20 @@ defmodule Embervm.TaskStore do
   @spec fail(GenServer.server(), String.t(), atom()) ::
           {:ok, map()} | {:ok, map(), backoff_ms :: non_neg_integer()} | {:error, term()}
   def fail(store \\ __MODULE__, task_id, reason) do
-    GenServer.call(store, {:fail, task_id, reason})
+    GenServer.call(store, {:fail, task_id, reason, nil})
+  end
+
+  @doc """
+  Like `fail/3`, plus the task's raw usage stats when the failure still did
+  measured work (a guest 4xx/5xx returns a well-formed response WITH usage);
+  those are billed into the `:failed` op payload and charged to quota, so a
+  workload that burns CPU then errors is not free. `nil` usage (transport /
+  timeout failures, which report no usage) charges nothing.
+  """
+  @spec fail(GenServer.server(), String.t(), atom(), map() | nil) ::
+          {:ok, map()} | {:ok, map(), backoff_ms :: non_neg_integer()} | {:error, term()}
+  def fail(store, task_id, reason, usage) do
+    GenServer.call(store, {:fail, task_id, reason, usage})
   end
 
   @spec retry(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
@@ -124,6 +149,17 @@ defmodule Embervm.TaskStore do
   @spec get_request(GenServer.server(), String.t()) :: {:ok, map() | nil} | {:error, term()}
   def get_request(store \\ __MODULE__, task_id) do
     GenServer.call(store, {:get_request, task_id})
+  end
+
+  @doc """
+  Pages the metering `usage` projection (Task 12), serving `GET /v1/usage`. A
+  projection read delegated to the op-log, mirroring `get_result/2`: the router
+  talks only to this store, never the op-log directly. See
+  `Embervm.OpLog.list_usage/2` for the `opts` shape.
+  """
+  @spec list_usage(GenServer.server(), keyword()) :: {:ok, map()} | {:error, term()}
+  def list_usage(store \\ __MODULE__, opts \\ []) do
+    GenServer.call(store, {:list_usage, opts})
   end
 
   @doc """
@@ -203,11 +239,25 @@ defmodule Embervm.TaskStore do
     # cast, a no-op when no dispatcher is running (this store's own unit tests
     # start none), mirroring the WorkloadWatcher -> BaseBuilder trigger seam.
     on_queued = Keyword.get(opts, :on_queued, &Embervm.Dispatcher.enqueue/1)
+    # Fired AFTER a :succeeded/:failed op that carried usage lands durably, with
+    # %{principal, ts, stats}, so Embervm.Metering can charge the quota cache off
+    # the same write that recorded the durable usage. Defaults to a no-op so a
+    # store with no metering wired (unit tests) drops the signal; the durable
+    # `usage` projection is unaffected either way.
+    on_metered = Keyword.get(opts, :on_metered, fn _event -> :ok end)
 
     tasks = :ets.new(@tasks_table, [:set, :private])
     idem = :ets.new(@idem_table, [:set, :private])
 
-    state = %{op_log: op_log, id_fun: id_fun, clock: clock, on_queued: on_queued, tasks: tasks, idem: idem}
+    state = %{
+      op_log: op_log,
+      id_fun: id_fun,
+      clock: clock,
+      on_queued: on_queued,
+      on_metered: on_metered,
+      tasks: tasks,
+      idem: idem
+    }
 
     case rebuild(state) do
       :ok ->
@@ -300,26 +350,37 @@ defmodule Embervm.TaskStore do
     apply_transition(state, task_id, :start, :started, %{})
   end
 
-  def handle_call({:succeed, task_id, result}, _from, state) do
-    payload = %{
-      status_code: Map.fetch!(result, :status_code),
-      body: Map.get(result, :body),
-      size_bytes: Map.fetch!(result, :size_bytes),
-      truncated: Map.get(result, :truncated, false),
-      expires_at: Map.get(result, :expires_at)
-    }
+  def handle_call({:succeed, task_id, result, usage}, _from, state) do
+    payload =
+      %{
+        status_code: Map.fetch!(result, :status_code),
+        body: Map.get(result, :body),
+        size_bytes: Map.fetch!(result, :size_bytes),
+        truncated: Map.get(result, :truncated, false),
+        expires_at: Map.get(result, :expires_at)
+      }
+      |> maybe_put_usage(usage)
 
-    apply_transition(state, task_id, :succeed, :succeeded, payload)
+    case apply_transition(state, task_id, :succeed, :succeeded, payload) do
+      {:reply, {:ok, updated}, _state} = reply ->
+        notify_metered(state, updated, usage)
+        reply
+
+      other ->
+        other
+    end
   end
 
-  def handle_call({:fail, task_id, reason}, _from, state) do
+  def handle_call({:fail, task_id, reason, usage}, _from, state) do
     with {:ok, task} <- fetch_task(state, task_id) do
       cfg = cfg_for(task.workload)
       event = Embervm.Retry.classify(reason, task.attempt, cfg)
       next = TaskState.transition!(task.state, event)
+      payload = maybe_put_usage(%{state: next, reason: reason}, usage)
 
-      case append_and_update(state, task, :failed, next, %{state: next, reason: reason}) do
+      case append_and_update(state, task, :failed, next, payload) do
         {:ok, updated} ->
+          notify_metered(state, updated, usage)
           reply_after_fail(state, updated, event, task.attempt, cfg)
 
         {:error, _reason} = error ->
@@ -373,6 +434,10 @@ defmodule Embervm.TaskStore do
 
   def handle_call({:get_request, task_id}, _from, state) do
     {:reply, Embervm.OpLog.SQLite.load_request(state.op_log, task_id), state}
+  end
+
+  def handle_call({:list_usage, opts}, _from, state) do
+    {:reply, Embervm.OpLog.SQLite.list_usage(state.op_log, opts), state}
   end
 
   def handle_call(:list_backlog, _from, state) do
@@ -627,6 +692,36 @@ defmodule Embervm.TaskStore do
   defp notify_queued(state, task) do
     try do
       state.on_queued.(%{task_id: task.task_id, workload: task.workload, principal: task.principal})
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
+
+    :ok
+  end
+
+  # Bill raw usage stats into an op payload: the raw counters are kept per task
+  # (so the billing basis can be rebased later without losing history) alongside
+  # the computed vcpu_seconds/gb_seconds the `usage` projection accumulates. No
+  # `:usage` key is added when usage is nil, so the projection stays a no-op for
+  # transport/timeout failures and for any caller that reports nothing.
+  defp maybe_put_usage(payload, nil), do: payload
+
+  defp maybe_put_usage(payload, stats) when is_map(stats) do
+    Map.put(payload, :usage, Map.merge(stats, Embervm.Usage.billed(stats)))
+  end
+
+  # Signal the metering process that a task with usage settled durably. Like
+  # notify_queued: best-effort, caught, fire-and-forget, so a raise or missing
+  # hook never fails the (already durable) transition. The durable `usage`
+  # projection is written transactionally regardless of this hook; this only
+  # updates the advisory quota cache.
+  defp notify_metered(_state, _task, nil), do: :ok
+
+  defp notify_metered(state, task, stats) when is_map(stats) do
+    try do
+      state.on_metered.(%{principal: task.principal, ts: task.updated_at, stats: stats})
     rescue
       _ -> :ok
     catch

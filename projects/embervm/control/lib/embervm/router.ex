@@ -76,6 +76,10 @@ defmodule Embervm.Router do
     handle_dead_letters(conn, name)
   end
 
+  get "/v1/usage" do
+    handle_usage(conn)
+  end
+
   post "/v1/tasks/:id/redrive" do
     handle_redrive(conn, id)
   end
@@ -100,9 +104,21 @@ defmodule Embervm.Router do
       assign(conn, :principal, principal)
     else
       {:error, :no_token} ->
+        # Unauthenticated: deliberately NOT appended. Each append is an fsync, and
+        # letting an unauthenticated caller force durable writes is a
+        # write-amplification vector against the single-writer op-log.
         halt_json(conn, 401, %{error: "missing bearer token", retryable: false})
 
+      {:error, {:forbidden, username}} ->
+        # Authenticated but not allow-listed: a genuine, principal-named audit
+        # event, appended once per rejected request.
+        Embervm.Metering.record_denial(username, nil, :forbidden)
+        halt_json(conn, 403, %{error: "service account not permitted", retryable: false})
+
       {:error, :forbidden} ->
+        # A reviewer (or test fake) that does not surface the username: still a
+        # 403 audit event, principal unknown.
+        Embervm.Metering.record_denial(nil, nil, :forbidden)
         halt_json(conn, 403, %{error: "service account not permitted", retryable: false})
 
       {:error, _reason} ->
@@ -115,20 +131,41 @@ defmodule Embervm.Router do
   defp handle_submit(conn, workload) do
     principal = conn.assigns.principal
 
-    # Per-principal queue-depth cap: a synchronous 429 pre-check BEFORE the durable
-    # submit (the dispatcher owns the fair-queue depth; the FSM has no queued->fail
-    # edge, so a queued task cannot be terminally dropped after the fact). Advisory
-    # and coarse: the real reservation happens on enqueue, so a concurrent burst can
-    # momentarily overshoot, and a control plane with no dispatcher wired fails
-    # closed (denies) rather than admitting unbounded backlog.
-    if Embervm.Dispatcher.admit?(workload, principal) do
-      submit_admitted(conn, workload, principal)
-    else
-      send_json(conn, 429, %{
-        error: "per-principal queue depth cap exceeded for workload",
-        workload: workload,
-        retryable: true
-      })
+    # Two synchronous pre-checks BEFORE the durable submit, both because the FSM
+    # has no queued->failed edge (a queued task cannot be terminally dropped after
+    # the fact, so an unadmittable request must be rejected before it becomes one):
+    #
+    #   * queue-depth cap (dispatcher-owned): coarse per-principal abuse guard; the
+    #     real reservation happens on enqueue, so a concurrent burst can momentarily
+    #     overshoot, and a control plane with no dispatcher wired fails closed.
+    #   * daily vCPU-second quota (fail-closed): rejects a principal already at
+    #     budget so it cannot fill its own queue with tasks that would only park at
+    #     dispatch. This is the courtesy fast-fail; the dispatcher's rotation skip is
+    #     the actual enforcement point for a principal that goes over mid-flight.
+    #
+    # Each denial is appended once here (an authenticated, request-bounded audit
+    # record), not per dispatch tick.
+    cond do
+      not Embervm.Dispatcher.admit?(workload, principal) ->
+        Embervm.Metering.record_denial(principal, workload, :queue_depth)
+
+        send_json(conn, 429, %{
+          error: "per-principal queue depth cap exceeded for workload",
+          workload: workload,
+          retryable: true
+        })
+
+      not Embervm.Metering.within_quota?(principal) ->
+        Embervm.Metering.record_denial(principal, workload, :quota)
+
+        send_json(conn, 429, %{
+          error: "daily vCPU-second quota exhausted for principal",
+          workload: workload,
+          retryable: true
+        })
+
+      true ->
+        submit_admitted(conn, workload, principal)
     end
   end
 
@@ -280,6 +317,52 @@ defmodule Embervm.Router do
       limit: page.limit,
       offset: page.offset
     })
+  end
+
+  # GET /v1/usage: paged per-(principal, day) billed usage from the metering
+  # projection. Self-scoped by default (a caller sees only its own principal); a
+  # values-configured admin (usage_admins) may pass ?principal= to read one
+  # principal, or omit it to read all. `since` is a wall-clock ms floor, mapped to
+  # the projection's epoch-day bucket.
+  defp handle_usage(conn) do
+    principal = conn.assigns.principal
+    admin? = principal in Application.get_env(:embervm, :usage_admins, [])
+
+    filter_principal =
+      if admin?, do: Map.get(conn.query_params, "principal"), else: principal
+
+    since_day =
+      case int_param(conn, "since", nil) do
+        nil -> 0
+        ms -> div(ms, 86_400_000)
+      end
+
+    limit = conn |> int_param("limit", 100) |> clamp(1, 1000)
+    offset = conn |> int_param("offset", 0) |> max(0)
+
+    opts =
+      [since_day: since_day, limit: limit, offset: offset] ++
+        if(filter_principal, do: [principal: filter_principal], else: [])
+
+    {:ok, page} = TaskStore.list_usage(store(), opts)
+
+    send_json(conn, 200, %{
+      items: Enum.map(page.items, &usage_view/1),
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset
+    })
+  end
+
+  defp usage_view(row) do
+    %{
+      principal: row.principal,
+      day: row.day,
+      vcpu_seconds: row.vcpu_seconds,
+      gb_seconds: row.gb_seconds,
+      task_count: row.task_count,
+      updated_at: row.updated_at
+    }
   end
 
   defp handle_redrive(conn, task_id) do

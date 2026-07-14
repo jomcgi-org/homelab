@@ -54,9 +54,10 @@ defmodule Embervm.Auth do
 
   @doc """
   Authenticates `token`, returning `{:ok, principal}` for an allow-listed
-  ServiceAccount or `{:error, reason}` (`:unauthenticated`, `:forbidden`, or a
-  transport reason). Blocks the caller only for a cache miss on this token;
-  cache hits for other tokens are served concurrently.
+  ServiceAccount or `{:error, reason}` (`:unauthenticated`, `{:forbidden,
+  username}` for an authenticated-but-not-allow-listed SA so the caller can audit
+  WHO was rejected, or a transport reason). Blocks the caller only for a cache
+  miss on this token; cache hits for other tokens are served concurrently.
   """
   @spec authenticate(GenServer.server(), String.t()) ::
           {:ok, String.t()} | {:error, term()}
@@ -154,7 +155,9 @@ defmodule Embervm.Auth do
       now = state.clock.()
       {{:ok, username}, store(state, key, username, now)}
     else
-      {{:error, :forbidden}, state}
+      # Surface the username so the router can audit WHO was rejected. Still not
+      # cached (a pure success set, per the moduledoc).
+      {{:error, {:forbidden, username}}, state}
     end
   end
 
