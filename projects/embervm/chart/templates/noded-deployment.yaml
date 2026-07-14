@@ -42,6 +42,54 @@ spec:
       securityContext:
         runAsUser: 0
         runAsGroup: 0
+      {{- if .Values.noded.workloads }}
+      # Build each workload's base rootfs in-cluster from its pinned guest image
+      # (crane export + mkfs.ext4 onto the nvme scratch), so node-4 never needs a
+      # manual sudo rootfs placement. One builder per workload that declares a
+      # `noded.<name>.guestImage` block (Bazel pins its repository:tag from the
+      # guest image's .info provider); the builder bakes that guest's filesystem
+      # into the workload's rootfsPath. Idempotent (a marker skips the multi-GB
+      # rebuild when the guest ref is unchanged). Mirrors the fc-invoke pattern.
+      initContainers:
+        {{- range $name, $wl := .Values.noded.workloads }}
+        {{- $top := index $.Values.noded $name }}
+        {{- if and $top $top.guestImage $top.guestImage.repository }}
+        - name: build-{{ $name }}-rootfs
+          image: "{{ $.Values.noded.rootfsBuilder.image.repository }}:{{ $.Values.noded.rootfsBuilder.image.tag }}"
+          command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
+          env:
+            - name: GUEST_IMAGE
+              value: "{{ $top.guestImage.repository }}:{{ $top.guestImage.tag }}"
+            - name: BASE_ROOTFS_PATH
+              value: {{ $wl.rootfsPath | quote }}
+            - name: ROOTFS_SIZE
+              value: {{ $.Values.noded.rootfsBuilder.rootfsSize | quote }}
+            {{- if $.Values.imagePullSecret.enabled }}
+            - name: DOCKER_CONFIG
+              value: /ghcr
+            {{- end }}
+          volumeMounts:
+            - name: nvme
+              mountPath: {{ $.Values.noded.firecracker.nvmeRoot }}
+            - name: rootfs-builder-script
+              mountPath: /scripts
+              readOnly: true
+            - name: rootfs-builder-work
+              mountPath: /work
+            {{- if $.Values.imagePullSecret.enabled }}
+            - name: ghcr-creds
+              mountPath: /ghcr
+              readOnly: true
+            {{- end }}
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 512Mi
+        {{- end }}
+        {{- end }}
+      {{- end }}
       containers:
         - name: noded
           image: "{{ .Values.noded.image.repository }}:{{ .Values.noded.image.tag }}"
@@ -84,11 +132,22 @@ spec:
             {{- end }}
             - name: EMBERVM_NODED_DRAIN_TIMEOUT
               value: "{{ .Values.noded.drain.timeoutSeconds }}s"
-            # Node-side image identity table (image_ref -> rootfsPath[,harnessInit]),
-            # rendered as JSON. Empty until the control plane provisions guest images
-            # (Task 11+); BuildBase for an unknown image fails FAILED_PRECONDITION.
+            # Node-side image identity table (image_ref -> {rootfsPath, harnessInit}),
+            # rendered as JSON. Derived from noded.workloads + each workload's pinned
+            # guestImage so the ref here MATCHES the rootfs-builder GUEST_IMAGE and the
+            # Workload CR's source.image.ref exactly (BuildBase looks this map up by
+            # that ref; a mismatch fails FAILED_PRECONDITION). Explicit noded.images
+            # entries merge in as overrides. Empty (no workloads) => BuildBase denies.
             - name: EMBERVM_NODED_IMAGES
-              value: {{ .Values.noded.images | toJson | quote }}
+              {{- $imgs := deepCopy (.Values.noded.images | default dict) }}
+              {{- range $name, $wl := .Values.noded.workloads }}
+              {{- $top := index $.Values.noded $name }}
+              {{- if and $top $top.guestImage $top.guestImage.repository }}
+              {{- $ref := printf "%s:%s" $top.guestImage.repository $top.guestImage.tag }}
+              {{- $_ := set $imgs $ref (dict "rootfsPath" $wl.rootfsPath "harnessInit" $wl.harnessInit) }}
+              {{- end }}
+              {{- end }}
+              value: {{ $imgs | toJson | quote }}
             {{- if .Values.noded.bearerTokenSecret.enabled }}
             # Static bearer token gating the gRPC surface. When unset the daemon
             # runs open and warns; a Cilium/Linkerd policy is defence-in-depth.
@@ -126,4 +185,20 @@ spec:
           hostPath:
             path: {{ .Values.noded.firecracker.nvmeRoot }}
             type: Directory
+        {{- if .Values.noded.workloads }}
+        - name: rootfs-builder-script
+          configMap:
+            name: {{ include "embervm.noded.fullname" . }}-rootfs-builder
+            defaultMode: 0755
+        - name: rootfs-builder-work
+          emptyDir: {}
+        {{- if .Values.imagePullSecret.enabled }}
+        - name: ghcr-creds
+          secret:
+            secretName: {{ .Values.imagePullSecret.name }}
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+        {{- end }}
+        {{- end }}
 {{- end }}
