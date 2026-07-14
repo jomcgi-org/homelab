@@ -215,6 +215,11 @@ defmodule Embervm.Metering do
   def handle_cast({:denial, principal, workload, reason}, state) do
     kind = if reason == :quota, do: :quota_enforced, else: :denied
 
+    # Structured warn (Task 13): every request-scoped denial (quota, auth-forbidden,
+    # queue-depth) is logged with principal + workload + reason so it is searchable
+    # in SigNoz, alongside the durable op-log append below.
+    Logger.warning("embervm denial", principal: principal, workload: workload, reason: reason, kind: kind)
+
     op = %Op{
       kind: kind,
       tenant: state.tenant,

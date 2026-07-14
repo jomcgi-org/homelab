@@ -190,6 +190,34 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   that flag is on, so crane pulls the private guest with no new wiring (the public
   sandbox guest simply did not need it).
 
+## Task 13: observability (embervm 0.1.19) — structured logging done; OTLP tracing FLAGGED
+
+### D13.1 Structured JSON logging landed; OTLP tracing split off (dependency risk)
+- Task 13 has two halves: structured JSON logs and OTel traces. Landed the logging
+  half now (low risk, no new deps): `Embervm.LogFormatter` (an Erlang `:logger`
+  formatter emitting one JSON object per line via the built-in `:json` encoder,
+  defensively guarded so it can never crash logging), wired as the default handler
+  formatter in config.exs. Request-scoped denials now log a structured `warn` with
+  principal/workload/reason. The formatter MODULE is runtime-safe (guarded), but
+  the CONFIG key matters: `:default_handler, formatter: {mod, cfg}` (NOT
+  `:default_formatter`, which expects keyword opts and crashes app boot on a module
+  tuple). CI's release-boot smoke caught exactly that on the first push, which is
+  the real safety net absent a local test loop.
+- **FLAGGED (not done): OTLP tracing.** The traces half needs the OpenTelemetry
+  hex packages (opentelemetry, opentelemetry_api, opentelemetry_exporter,
+  opentelemetry_semantic_conventions) added to the hermetic hex closure
+  (bazel/erlang/repositories.bzl `_HEX_DEPS` + mix.exs path deps). The exporter
+  pulls `grpcbox` + its chain (gpb, chatterbox, ctx, acceptor_pool); grpcbox is
+  pure Erlang (plausible in-closure, which already builds the grpc/protobuf Erlang
+  stack + the exqlite NIF), but hand-resolving a ~10-package dep tree WITHOUT a
+  local `mix deps.get` is multi-CI-cycle work. Then manual spans at 8 call sites
+  (auth, enqueue, fair_wait, assign/prime_assign, guest_exec, result_store) with
+  explicit trace-context propagation across the dispatcher's `spawn_monitor` assign
+  worker boundary, plus the OTEL_* env wiring (SigNoz 4317 gRPC like fc-invoke).
+  Recon estimate: 1-2 focused days. Best done deps-first in a dedicated session.
+- "Key transitions at info" is a lighter follow-on (the formatter + denial warn is
+  the core structured-logging value).
+
 ## D12 known gaps accepted for R0 (documented, not fixed)
 - The `usage` projection ACCUMULATES (the only projection that does), so it is not
   idempotent under op replay (the future `read_from` replica path); safe today
