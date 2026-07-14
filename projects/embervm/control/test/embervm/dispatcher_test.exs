@@ -221,12 +221,18 @@ defmodule Embervm.DispatcherTest do
     ctx = start_stack(assign_fun: gated_assign(gate))
     # cap 4, two active principals -> share = 2 each.
     put_catalog(ctx, "wl-a", cap: 4)
-    put_facts(ctx, "wl-a", live: 0, max: 16)
 
-    # A has 5 tasks, B has 1. With share 2, A is held to 2 in-flight even though 4
-    # slots exist; B takes its 1. So the in-flight split is A:2, B:1 (not A:4).
+    # A has 5 tasks, B has 1. Queue BOTH before granting capacity so both are
+    # active at dispatch time (otherwise A, submitted first, greedily takes the
+    # whole cap while it is the only active principal, share = cap/1). With share
+    # 2, A is held to 2 in-flight even though 4 slots exist; B takes its 1. So the
+    # in-flight split is A:2, B:1 (not A:4).
     for _ <- 1..5, do: submit(ctx, "wl-a", "A")
     submit(ctx, "wl-a", "B")
+    assert eventually(fn -> Dispatcher.stats(ctx.name).queued == 6 end)
+
+    put_facts(ctx, "wl-a", live: 0, max: 16)
+    Dispatcher.sweep(ctx.name)
 
     assert eventually(fn ->
              ifp = Dispatcher.stats(ctx.name).inflight_pr

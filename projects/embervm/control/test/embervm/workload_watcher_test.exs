@@ -130,12 +130,13 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.retry.max_attempts == 5
     assert entry.retry.retry_on == [:transport, :timeout, :guest5xx]
 
-    # The watcher writes ONLY its own keys for a valid CR: observedGeneration and
-    # primedFloorSatisfied, and crucially NOT conditions (the BaseBuilder owns
-    # Ready/BaseBuilt, so the two merge-patches never clobber each other).
+    # The watcher writes ONLY its own key for a valid CR: observedGeneration.
+    # It does NOT write conditions (the BaseBuilder owns Ready/BaseBuilt) nor
+    # primedFloorSatisfied (the PoolManager owns it, Task 11), so the three
+    # writers' merge-patches never clobber each other.
     assert {_ns, "semgrep", status_map} = ready_status(recorded_calls(agent), "semgrep")
     assert status_map["observedGeneration"] == 1
-    assert status_map["primedFloorSatisfied"] == false
+    refute Map.has_key?(status_map, "primedFloorSatisfied")
     refute Map.has_key?(status_map, "conditions")
 
     # The build trigger fired with the base-shaping fields.

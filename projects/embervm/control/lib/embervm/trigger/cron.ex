@@ -123,7 +123,7 @@ defmodule Embervm.Trigger.Cron do
     schedules =
       for {key, spec} <- desired, into: %{} do
         case Map.get(state.schedules, key) do
-          %{cron: existing_cron, next: next} = kept when spec.cron_expr == existing_cron.expr ->
+          %{cron: existing_cron} = kept when spec.cron_expr == existing_cron.expr ->
             # Unchanged trigger: keep its pending next-fire.
             {key, %{kept | payload: spec.payload, invoke_path: spec.invoke_path, workload: spec.workload}}
 
