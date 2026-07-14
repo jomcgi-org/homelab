@@ -14,6 +14,12 @@ spec:
   strategy:
     type: Recreate
   selector:
+    # The control-plane selector is immutable (this is a live Deployment; adding a
+    # component label to the selector is a forbidden update), and the second
+    # Deployment in this chart (noded) is already selector-disjoint via a distinct
+    # app.kubernetes.io/name, so the shared-selector cross-routing this rule guards
+    # against cannot occur here.
+    # nosemgrep: require-component-label-in-selector
     matchLabels:
       {{- include "embervm.selectorLabels" . | nindent 6 }}
   template:
@@ -61,6 +67,14 @@ spec:
             # plane, so the env is only set when the list is non-empty.
             - name: EMBERVM_ALLOWED_SERVICE_ACCOUNTS
               value: {{ join "," .Values.auth.allowedServiceAccounts | quote }}
+            {{- end }}
+            # Fair dispatcher tuning (Task 11): per-principal queue-depth 429 cap
+            # and the optional fixed per-principal in-flight share fraction.
+            - name: EMBERVM_QUEUE_DEPTH_CAP
+              value: {{ .Values.dispatcher.queueDepthCap | quote }}
+            {{- if .Values.dispatcher.principalShareFraction }}
+            - name: EMBERVM_PRINCIPAL_SHARE_FRACTION
+              value: {{ .Values.dispatcher.principalShareFraction | quote }}
             {{- end }}
           readinessProbe:
             httpGet:

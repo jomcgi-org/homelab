@@ -109,6 +109,11 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def load_request(server \\ __MODULE__, task_id) do
+    GenServer.call(server, {:load_request, task_id})
+  end
+
+  @impl Embervm.OpLog
   def compact(server \\ __MODULE__, now_ms) do
     GenServer.call(server, {:compact, now_ms})
   end
@@ -154,6 +159,10 @@ defmodule Embervm.OpLog.SQLite do
 
   def handle_call({:load_result, task_id}, _from, state) do
     {:reply, do_load_result(state.conn, task_id), state}
+  end
+
+  def handle_call({:load_request, task_id}, _from, state) do
+    {:reply, do_load_request(state.conn, task_id), state}
   end
 
   def handle_call({:compact, now_ms}, _from, state) do
@@ -419,6 +428,38 @@ defmodule Embervm.OpLog.SQLite do
                created_at: created_at,
                expires_at: expires_at
              }}
+
+          :done ->
+            {:ok, nil}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    end
+  end
+
+  # Reads the guest-request envelope from a task's `submitted` op. The request
+  # lives only in the immutable ops log (payload_json), never a projected
+  # column, so this selects the earliest submitted op for the task (the
+  # ops_task_id_idx index makes it cheap) and pulls the `request` member out of
+  # the decoded payload. Keys come back as strings (:json.decode never restores
+  # atoms), which the dispatcher expects. {:ok, nil} for an unknown task or a
+  # submitted op that carried no request (an older record).
+  defp do_load_request(conn, task_id) do
+    sql = """
+    SELECT payload_json FROM ops
+    WHERE task_id=? AND kind='submitted' ORDER BY seq ASC LIMIT 1
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [task_id]) do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [payload_json]} ->
+            {:ok, Map.get(decode_payload(payload_json), "request")}
 
           :done ->
             {:ok, nil}

@@ -115,6 +115,24 @@ defmodule Embervm.Router do
   defp handle_submit(conn, workload) do
     principal = conn.assigns.principal
 
+    # Per-principal queue-depth cap: a synchronous 429 pre-check BEFORE the durable
+    # submit (the dispatcher owns the fair-queue depth; the FSM has no queued->fail
+    # edge, so a queued task cannot be terminally dropped after the fact). Advisory
+    # and coarse: the real reservation happens on enqueue, so a concurrent burst can
+    # momentarily overshoot, and a control plane with no dispatcher wired fails
+    # closed (denies) rather than admitting unbounded backlog.
+    if Embervm.Dispatcher.admit?(workload, principal) do
+      submit_admitted(conn, workload, principal)
+    else
+      send_json(conn, 429, %{
+        error: "per-principal queue depth cap exceeded for workload",
+        workload: workload,
+        retryable: true
+      })
+    end
+  end
+
+  defp submit_admitted(conn, workload, principal) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->
         attrs = %{

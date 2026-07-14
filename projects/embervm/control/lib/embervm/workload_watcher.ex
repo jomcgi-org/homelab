@@ -463,13 +463,14 @@ defmodule Embervm.WorkloadWatcher do
   end
 
   # Status for a VALID Workload: only the keys the watcher owns. Crucially it
-  # does NOT include `conditions`, so this merge-patch never overwrites the
-  # Ready/BaseBuilt array the BaseBuilder owns (merge-patch replaces arrays
-  # wholesale; disjoint keys are the whole reason the two writers coexist).
+  # does NOT include `conditions` (owned by the BaseBuilder) NOR
+  # `primedFloorSatisfied` (owned by the PoolManager, Task 11): merge-patch
+  # replaces arrays and overwrites keys wholesale, so the three writers coexist
+  # only by keeping their key sets disjoint. The watcher owns observedGeneration
+  # alone for the valid lane.
   defp write_valid_status(state, namespace, name, generation) do
     status_map = %{
-      "observedGeneration" => generation,
-      "primedFloorSatisfied" => false
+      "observedGeneration" => generation
     }
 
     case state.status_writer.(namespace, name, status_map) do
@@ -610,9 +611,25 @@ defmodule Embervm.WorkloadWatcher do
       timeout_ms: (Map.get(invocation, "timeoutSeconds") || 90) * 1000,
       result_ttl_ms: (Map.get(invocation, "resultTtlSeconds") || 86_400) * 1000,
       result_max_bytes: Map.get(invocation, "resultMaxBytes") || 1_048_576,
-      retry: parse_retry(Map.get(invocation, "retry") || %{})
+      retry: parse_retry(Map.get(invocation, "retry") || %{}),
+      # spec.triggers[] parsed for the cron TriggerAdapter (Task 11). Each entry is
+      # %{cron, payload}; the daemon-agnostic control plane fires each as an
+      # ordinary submit. An absent/empty list means no triggers.
+      triggers: parse_triggers(Map.get(spec, "triggers"))
     }
   end
+
+  # spec.triggers[] -> [%{cron, payload}]. The CRD requires `cron` per item and
+  # `payload` is arbitrary JSON (x-kubernetes-preserve-unknown-fields); a
+  # non-list or missing field yields an empty list, so a malformed triggers block
+  # simply schedules nothing rather than crashing the reconcile.
+  defp parse_triggers(list) when is_list(list) do
+    for t <- list, is_map(t), is_binary(Map.get(t, "cron")) do
+      %{cron: Map.get(t, "cron"), payload: Map.get(t, "payload")}
+    end
+  end
+
+  defp parse_triggers(_), do: []
 
   # Mirrors Embervm.Retry.retry_config()'s shape exactly (max_attempts,
   # backoff_ms, backoff_cap_ms, retry_on) so classify/2 and backoff_ms/2,3
