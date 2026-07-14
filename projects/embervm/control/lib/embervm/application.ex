@@ -46,6 +46,17 @@ defmodule Embervm.Application do
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
       Embervm.K8s.finch_child_spec(),
       {Embervm.Auth, allowed: allowed_service_accounts()},
+      # The base builder (Task 10): drives the node daemon's BuildBase RPC on
+      # Workload admission / spec change and writes status.snapshotRef +
+      # Ready/BaseBuilt conditions. Placed BEFORE the WorkloadWatcher on purpose:
+      # the watcher's boot LIST casts each valid Workload into the builder, so
+      # the builder must already be up to receive them, and under :rest_for_one a
+      # builder restart also restarts the watcher, whose re-LIST re-drives the
+      # (idempotent) reconcile. It writes status over the Finch pool above and
+      # dials the daemon over its own Mint gRPC connection (per build), so it
+      # depends on Finch but not on the watcher or node registry. Empty node
+      # config (no daemon wired) means it holds descriptors and builds nothing.
+      {Embervm.BaseBuilder, nodes: configured_nodes()},
       # The Workload informer (Task 5): LISTs then WATCHes Workload CRs over the
       # Finch pool above and writes Embervm.WorkloadCatalog, which
       # TaskStore.cfg_for/1 reads. Placed after Finch (its watch streams over

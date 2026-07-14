@@ -112,6 +112,12 @@ defmodule Embervm.WorkloadWatcher do
     lister = Keyword.get(opts, :lister, &Embervm.K8s.list_workloads/0)
     watcher_fun = Keyword.get(opts, :watcher_fun, &Embervm.K8s.watch_workloads/2)
     status_writer = Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3)
+    # The base-builder trigger seams (Task 10): a valid CR is handed to the
+    # BaseBuilder to drive its base build; an invalid or deleted one is
+    # forgotten. Both default to whereis-guarded no-ops when the builder is not
+    # running, so this watcher's own unit tests need not start one.
+    base_reconcile_fun = Keyword.get(opts, :base_reconcile_fun, &Embervm.BaseBuilder.reconcile/1)
+    base_forget_fun = Keyword.get(opts, :base_forget_fun, &Embervm.BaseBuilder.forget/1)
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     base_backoff = Keyword.get(opts, :base_backoff_ms, @base_backoff_ms)
     max_backoff = Keyword.get(opts, :max_backoff_ms, @max_backoff_ms)
@@ -125,6 +131,8 @@ defmodule Embervm.WorkloadWatcher do
       lister: lister,
       watcher_fun: watcher_fun,
       status_writer: status_writer,
+      base_reconcile_fun: base_reconcile_fun,
+      base_forget_fun: base_forget_fun,
       clock: clock,
       base_backoff: base_backoff,
       max_backoff: max_backoff,
@@ -320,7 +328,12 @@ defmodule Embervm.WorkloadWatcher do
   defp apply_event(state, %{"type" => "DELETED"} = event) do
     obj = Map.get(event, "object") || %{}
     name = get_in(obj, ["metadata", "name"])
-    if name, do: WorkloadCatalog.drop(state.table, name)
+
+    if name do
+      WorkloadCatalog.drop(state.table, name)
+      state.base_forget_fun.(name)
+    end
+
     advance_rv(state, obj)
   end
 
@@ -390,7 +403,10 @@ defmodule Embervm.WorkloadWatcher do
       |> Enum.reject(&is_nil/1)
 
     (WorkloadCatalog.all_names(state.table) -- seen)
-    |> Enum.each(&WorkloadCatalog.drop(state.table, &1))
+    |> Enum.each(fn name ->
+      WorkloadCatalog.drop(state.table, name)
+      state.base_forget_fun.(name)
+    end)
 
     if rv, do: %{state | resource_version: rv}, else: state
   end
@@ -414,22 +430,23 @@ defmodule Embervm.WorkloadWatcher do
           entry = catalog_entry(name, namespace, spec, floor, cap)
           WorkloadCatalog.upsert(state.table, name, entry)
 
-          # Valid in R0 is never Ready=True: the base builder that would make
-          # a snapshot ready is Task 10, not this watcher. Reporting False
-          # here is the honest status, not a placeholder bug.
-          write_status(
-            state,
-            namespace,
-            name,
-            generation,
-            ready_condition(state, "False", "BaseNotBuilt", "base snapshot not built yet (Task 10)")
-          )
+          # A valid Workload's Ready/BaseBuilt conditions are owned by the
+          # BaseBuilder (Task 10): it drives the base build and writes those
+          # conditions plus snapshotRef/snapshotDigest. The watcher writes only
+          # its own disjoint keys here (observedGeneration, primedFloorSatisfied)
+          # so the two merge-patches never clobber each other's conditions
+          # array, and hands the build descriptor to the builder.
+          write_valid_status(state, namespace, name, generation)
+          state.base_reconcile_fun.(build_desc(name, namespace, generation, spec, entry))
 
         {:error, reason_code, message} ->
           # Never serve an invalid CR: drop it from the catalog (it may have
           # been valid before an edit made it invalid) rather than leaving a
-          # stale entry that no longer matches spec.
+          # stale entry that no longer matches spec. Forget any base build for it
+          # too (a valid->invalid edit must stop building and clear its state);
+          # the watcher owns the Ready condition for the invalid lane.
           WorkloadCatalog.drop(state.table, name)
+          state.base_forget_fun.(name)
           write_status(state, namespace, name, generation, ready_condition(state, "False", reason_code, message))
       end
 
@@ -443,6 +460,47 @@ defmodule Embervm.WorkloadWatcher do
 
         get_in(cr, ["metadata", "name"])
     end
+  end
+
+  # Status for a VALID Workload: only the keys the watcher owns. Crucially it
+  # does NOT include `conditions`, so this merge-patch never overwrites the
+  # Ready/BaseBuilt array the BaseBuilder owns (merge-patch replaces arrays
+  # wholesale; disjoint keys are the whole reason the two writers coexist).
+  defp write_valid_status(state, namespace, name, generation) do
+    status_map = %{
+      "observedGeneration" => generation,
+      "primedFloorSatisfied" => false
+    }
+
+    case state.status_writer.(namespace, name, status_map) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "embervm workload watcher: status patch failed for #{namespace}/#{name}: #{inspect(reason)}"
+        )
+    end
+  end
+
+  # The build descriptor handed to the BaseBuilder for a valid Workload: the spec
+  # fields that shape the base plus the identity to write status back under.
+  # init_env is read from source.image.initEnv (the frozen guest contract's
+  # baked env); the rest reuse the already-parsed catalog entry.
+  defp build_desc(name, namespace, generation, spec, entry) do
+    init_env = get_in(spec, ["source", "image", "initEnv"]) || %{}
+
+    %{
+      name: name,
+      namespace: namespace,
+      generation: generation,
+      image_ref: entry.image_ref,
+      guest_port: entry.port,
+      ready_path: entry.ready_path,
+      vcpus: entry.vcpus,
+      mem_mib: entry.mem_mib,
+      init_env: init_env
+    }
   end
 
   defp write_status(state, namespace, name, generation, condition) do

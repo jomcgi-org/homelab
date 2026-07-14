@@ -39,18 +39,46 @@ defmodule Embervm.WorkloadWatcherTest do
     end
   end
 
+  # Injected base-builder trigger seams so the watcher tests never touch the
+  # application's real supervised Embervm.BaseBuilder (which boots in `mix test`).
+  # Records reconcile descriptors and forgotten names into an agent for
+  # assertions. Defaults keep the trigger inert for tests that only care about
+  # cataloging/status.
+  defp base_seams(opts \\ []) do
+    agent = Keyword.get(opts, :agent)
+
+    reconcile = fn desc ->
+      if agent, do: Agent.update(agent, fn s -> %{s | reconciled: s.reconciled ++ [desc]} end)
+      :ok
+    end
+
+    forget = fn name ->
+      if agent, do: Agent.update(agent, fn s -> %{s | forgotten: s.forgotten ++ [name]} end)
+      :ok
+    end
+
+    [base_reconcile_fun: reconcile, base_forget_fun: forget]
+  end
+
+  defp start_base_recorder do
+    {:ok, agent} = Agent.start_link(fn -> %{reconciled: [], forgotten: []} end)
+    agent
+  end
+
   # watch_startup: false means init spawns no streamer and arms no timer: every
   # reconcile is driven explicitly through reconcile_now/1, exactly as these
   # LIST-reconcile tests want. The informer/watch path is exercised separately
   # in the "watch stream" describe block below via an injected watcher_fun.
-  defp start_watcher(lister, status_writer, table) do
+  defp start_watcher(lister, status_writer, table, extra \\ []) do
     {:ok, pid} =
       WorkloadWatcher.start_link(
-        name: nil,
-        table: table,
-        lister: lister,
-        status_writer: status_writer,
-        watch_startup: false
+        [
+          name: nil,
+          table: table,
+          lister: lister,
+          status_writer: status_writer,
+          watch_startup: false
+        ] ++ Keyword.merge(base_seams(), extra)
       )
 
     pid
@@ -83,11 +111,12 @@ defmodule Embervm.WorkloadWatcherTest do
     Enum.filter(calls, fn {_ns, n, _status} -> n == name end) |> List.last()
   end
 
-  test "add: a valid CR is cataloged with parsed retry, status reports Ready=False/BaseNotBuilt" do
+  test "add: a valid CR is cataloged, writes watcher-owned status, and triggers the base builder" do
     table = unique_table()
     agent = start_recorder()
+    base = start_base_recorder()
     lister = fn -> {:ok, [valid_cr()]} end
-    watcher = start_watcher(lister, recording_status_writer(agent), table)
+    watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
 
     :ok = WorkloadWatcher.reconcile_now(watcher)
 
@@ -101,9 +130,23 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.retry.max_attempts == 5
     assert entry.retry.retry_on == [:transport, :timeout, :guest5xx]
 
+    # The watcher writes ONLY its own keys for a valid CR: observedGeneration and
+    # primedFloorSatisfied, and crucially NOT conditions (the BaseBuilder owns
+    # Ready/BaseBuilt, so the two merge-patches never clobber each other).
     assert {_ns, "semgrep", status_map} = ready_status(recorded_calls(agent), "semgrep")
     assert status_map["observedGeneration"] == 1
-    assert [%{"type" => "Ready", "status" => "False", "reason" => "BaseNotBuilt"}] = status_map["conditions"]
+    assert status_map["primedFloorSatisfied"] == false
+    refute Map.has_key?(status_map, "conditions")
+
+    # The build trigger fired with the base-shaping fields.
+    assert [desc] = Agent.get(base, & &1.reconciled)
+    assert desc.name == "semgrep"
+    assert desc.namespace == "embervm"
+    assert desc.generation == 1
+    assert desc.image_ref == "x"
+    assert desc.guest_port == 8080
+    assert desc.vcpus == 1
+    assert desc.mem_mib == 256
   end
 
   test "update: a changed generation and retry.maxAttempts updates the catalog entry" do
@@ -152,16 +195,21 @@ defmodule Embervm.WorkloadWatcherTest do
   test "invalid class: not cataloged, status reports Ready=False/ClassUnsupported, GenServer survives" do
     table = unique_table()
     agent = start_recorder()
+    base = start_base_recorder()
     cr = valid_cr(%{"spec" => %{"class" => "session"}})
     lister = fn -> {:ok, [cr]} end
-    watcher = start_watcher(lister, recording_status_writer(agent), table)
+    watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
 
     :ok = WorkloadWatcher.reconcile_now(watcher)
 
     assert WorkloadCatalog.fetch(table, "semgrep") == :error
 
+    # The watcher owns the Ready condition for the invalid lane, and forgets any
+    # base build for a now-invalid Workload (never triggers a build for it).
     assert {_ns, "semgrep", status_map} = ready_status(recorded_calls(agent), "semgrep")
     assert [%{"type" => "Ready", "status" => "False", "reason" => "ClassUnsupported"}] = status_map["conditions"]
+    assert Agent.get(base, & &1.reconciled) == []
+    assert "semgrep" in Agent.get(base, & &1.forgotten)
 
     assert Process.alive?(watcher)
   end
@@ -284,6 +332,8 @@ defmodule Embervm.WorkloadWatcherTest do
           # watch-end handler runs the resync LIST. (A :block episode would fire
           # the event but never end, so the resync would never trigger.) The
           # close is fast, so it goes through the backoff timer; keep that tiny.
+          base_reconcile_fun: fn _ -> :ok end,
+          base_forget_fun: fn _ -> :ok end,
           watcher_fun: scripted_watcher([{[error_event()], {:ok, :closed}}]),
           base_backoff_ms: 10,
           max_backoff_ms: 20,
@@ -311,6 +361,8 @@ defmodule Embervm.WorkloadWatcherTest do
           status_writer: recording_status_writer(agent),
           # First watch attempt errors; the second blocks (open). With a tiny
           # backoff the resync fires fast enough to assert without slowing CI.
+          base_reconcile_fun: fn _ -> :ok end,
+          base_forget_fun: fn _ -> :ok end,
           watcher_fun: scripted_watcher([{[], {:error, :boom}}, {[], :block}]),
           base_backoff_ms: 10,
           max_backoff_ms: 20,
@@ -356,6 +408,8 @@ defmodule Embervm.WorkloadWatcherTest do
           table: table,
           lister: lister,
           status_writer: recording_status_writer(agent),
+          base_reconcile_fun: fn _ -> :ok end,
+          base_forget_fun: fn _ -> :ok end,
           watcher_fun:
             scripted_watcher([{[], {:ok, :closed}}, {[added_event(named_cr("sandbox"))], :block}]),
           # min_watch_ms: 0 makes the (instant) fake close count as a healthy
@@ -383,12 +437,14 @@ defmodule Embervm.WorkloadWatcherTest do
     lister = fn -> {:ok, list_crs, "100"} end
 
     WorkloadWatcher.start_link(
-      name: nil,
-      table: table,
-      lister: lister,
-      status_writer: recording_status_writer(agent),
-      watcher_fun: scripted_watcher(episodes),
-      watch_startup: true
+      [
+        name: nil,
+        table: table,
+        lister: lister,
+        status_writer: recording_status_writer(agent),
+        watcher_fun: scripted_watcher(episodes),
+        watch_startup: true
+      ] ++ base_seams()
     )
   end
 
