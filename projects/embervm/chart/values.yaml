@@ -91,9 +91,12 @@ quota:
   # Map of ServiceAccount username -> daily vCPU-second budget. Rendered to
   # EMBERVM_QUOTA_VCPU_SECONDS as `principal=budget` pairs.
   # e.g. { "system:serviceaccount:embervm:foo": 3600 }
+  # A budget of 0 is a HARD STOP (denies that principal entirely); omit a
+  # principal to leave it unlimited.
   dailyVcpuSecondsPerPrincipal: {}
   # Optional blanket daily budget for principals not named in the map above.
-  # Empty means no blanket budget (unlisted principals are unlimited).
+  # Empty ("") means no blanket budget (unlisted principals are unlimited); 0
+  # means deny every unlisted principal by default.
   defaultDailyVcpuSeconds: ""
 
 # ServiceAccount usernames allowed to read OTHER principals' usage at

@@ -70,6 +70,9 @@ Deviations here are intentional. Bugs are not deviations; they get fixed.
   from bricking dispatch on a cluster that never opted into quotas. The auth
   allow-list stays deny-all (a security gate); quota is a resource-abuse gate.
   CRD-based `Quota` objects remain the follow-on; v1 budgets are values-configured.
+  A budget of exactly `0` is a HARD STOP (denies the principal entirely), consistent
+  end to end: the values parser accepts `0`, the Helm default guard renders `0`, and
+  the runtime gate (`used < budget`) denies at `0`. Omit a principal for unlimited.
 
 ### D12.6 Daily budget = UTC epoch-day
 - The `(principal, day)` key uses `div(op.ts, 86_400_000)` on the op's wall-clock

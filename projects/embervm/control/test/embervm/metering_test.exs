@@ -40,6 +40,17 @@ defmodule Embervm.MeteringTest do
     refute Metering.within_quota?("p1", @day5, quota, :embervm_no_such_table)
   end
 
+  test "a budget of exactly 0 is a hard stop (denies even at zero usage)" do
+    table = fresh_table()
+    quota = %{budgets: %{"p1" => 0.0}, default: nil}
+    # No charge at all, yet denied: 0 used is not < 0 budget.
+    refute Metering.within_quota?("p1", @day5, quota, table)
+
+    # 0 as the default denies an unlisted principal too.
+    default0 = %{budgets: %{}, default: 0.0}
+    refute Metering.within_quota?("anon", @day5, default0, table)
+  end
+
   test "charge accumulates cpu_ms and within_quota? enforces the vCPU-second budget" do
     table = fresh_table()
     quota = %{budgets: %{"p1" => 2.0}, default: nil}

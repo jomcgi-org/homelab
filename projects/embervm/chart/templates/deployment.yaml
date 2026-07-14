@@ -83,7 +83,7 @@ spec:
             - name: EMBERVM_QUOTA_VCPU_SECONDS
               value: {{ $pairs := list }}{{- range $p, $b := .Values.quota.dailyVcpuSecondsPerPrincipal }}{{ $pairs = append $pairs (printf "%s=%v" $p $b) }}{{- end }}{{ join "," $pairs | quote }}
             {{- end }}
-            {{- if .Values.quota.defaultDailyVcpuSeconds }}
+            {{- if ne (toString .Values.quota.defaultDailyVcpuSeconds) "" }}
             - name: EMBERVM_QUOTA_DEFAULT_VCPU_SECONDS
               value: {{ .Values.quota.defaultDailyVcpuSeconds | quote }}
             {{- end }}
