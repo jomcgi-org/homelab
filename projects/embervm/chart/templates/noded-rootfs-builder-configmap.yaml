@@ -1,4 +1,4 @@
-{{- if .Values.noded.workloads }}
+{{- if .Values.workloads }}
 # Build script for the noded base-rootfs initContainers (Task 14). Kept in a
 # ConfigMap so it can be tuned without rebuilding the tools image. Each
 # per-workload rootfs-builder initContainer (see the range in
