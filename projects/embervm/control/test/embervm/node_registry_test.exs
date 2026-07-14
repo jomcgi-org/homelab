@@ -222,4 +222,52 @@ defmodule Embervm.NodeRegistryTest do
     # The clean close drove a reconnect: connect_fun was called at least twice.
     eventually(fn -> Agent.get(connects, & &1) >= 2 end, 100)
   end
+
+  test "a wedged real streamer (emit then silent) ages to down, reassigns, kills, and reconnects" do
+    {:ok, connects} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> if Process.alive?(connects), do: Agent.stop(connects) end)
+    test_pid = self()
+
+    connect_fun = fn _address ->
+      Agent.update(connects, &(&1 + 1))
+      {:ok, :fake_channel}
+    end
+
+    # Emit one status, then block forever: the stream stays OPEN with no further
+    # data (a silent wedge), which the blocking-consumer cannot observe. Only the
+    # owner's age-out timer can catch it.
+    watch_fun = fn :fake_channel, node_id, emit ->
+      emit.(node_status(node_id: node_id))
+
+      receive do
+        :never -> {:ok, :closed}
+      end
+    end
+
+    {_reg, table} =
+      start_registry(
+        watch_startup: true,
+        connect_fun: connect_fun,
+        watch_fun: watch_fun,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        reassign_fun: fn id -> send(test_pid, {:reassigned, id}) end,
+        # Small age-out windows and backoff so the wedge is detected and the kill
+        # + reconnect happen quickly, with plenty of polling margin below.
+        unknown_after_ms: 30,
+        down_after_ms: 60,
+        age_check_ms: 15,
+        base_backoff_ms: 10,
+        max_backoff_ms: 10
+      )
+
+    # The first (soon-wedged) streamer connected and published its status.
+    eventually(fn -> NodeRegistry.capacity(table) != [] end, 200)
+
+    # The age-out timer catches the silent wedge and fires the reassignment path,
+    # even though the streamer process is alive and blocked (not crashed).
+    assert_receive {:reassigned, "node-4"}, 2_000
+
+    # The wedged streamer was killed and a fresh connection opened (recovery).
+    eventually(fn -> Agent.get(connects, & &1) >= 2 end, 200)
+  end
 end
