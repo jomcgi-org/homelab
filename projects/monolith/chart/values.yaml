@@ -793,6 +793,11 @@ chat:
 # tool POSTs changed files to. Empty disables the env injection (the tool then
 # returns a structured "not configured" error). The real address is set in
 # deploy/values.yaml; never hardcode it in a template.
+# The python sandbox demo/tool dispatch (R0 cutover): fc-invoke (default) or
+# embervm (EmberVM's sandbox Workload). Reuses semgrep.embervmUrl -> EMBERVM_URL.
+sandbox:
+  dispatch: "fc-invoke"
+
 semgrep:
   fcInvokeUrl: ""
   # EmberVM dual-path (R0 Task 15). embervmUrl is the EmberVM control-plane base

@@ -149,6 +149,12 @@ chat:
     itemPath: "vaults/k8s-homelab/items/discord-bot"
 
 # semgrep_scan MCP tool: the in-cluster fc-invoke daemon endpoint.
+# The python sandbox demo/tool is CUT OVER to EmberVM (2026-07-14): served by
+# EmberVM's sandbox Workload (live + verified). Revert to fc-invoke (one value +
+# rollout) if it regresses. fc-invoke's sandbox path stays deployed as fallback.
+sandbox:
+  dispatch: "embervm"
+
 semgrep:
   fcInvokeUrl: "http://fc-invoke.monolith.svc.cluster.local:8080"
   # EmberVM dual-path (R0 Task 15). URL wired now; dispatch stays `fc-invoke` so
