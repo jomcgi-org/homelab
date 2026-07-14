@@ -25,9 +25,13 @@ defmodule Embervm.TaskStoreTest do
 
     id_fun = Keyword.get(opts, :id_fun, sequential_id_fun())
     clock = Keyword.get(opts, :clock, sequential_clock())
+    # Default the on_queued hook to a no-op so an unnamed test store never casts
+    # into the application's supervised (global) dispatcher; tests that assert on
+    # the hook inject their own.
+    on_queued = Keyword.get(opts, :on_queued, fn _ -> :ok end)
 
     {:ok, store} =
-      TaskStore.start_link(op_log: op_log, name: nil, id_fun: id_fun, clock: clock)
+      TaskStore.start_link(op_log: op_log, name: nil, id_fun: id_fun, clock: clock, on_queued: on_queued)
 
     {op_log, store}
   end
@@ -341,5 +345,93 @@ defmodule Embervm.TaskStoreTest do
     {:ok, ets_task} = TaskStore.get(store, task_id)
     assert ets_task.state == :dead_lettered
     assert ets_task.attempt == 1
+  end
+
+  # -- Task 11 dispatcher seams ----------------------------------------------
+
+  test "get_request returns the guest-request envelope stored in the submitted op", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    request = %{path: "/run", headers: %{"x-a" => "1"}, body_b64: Base.encode64("hi"), content_type: "application/json"}
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a", request: request})
+
+    assert {:ok, env} = TaskStore.get_request(store, task_id)
+    # JSON round-trips atom keys to strings.
+    assert env["path"] == "/run"
+    assert env["headers"] == %{"x-a" => "1"}
+    assert env["body_b64"] == Base.encode64("hi")
+    assert env["content_type"] == "application/json"
+
+    assert {:ok, nil} = TaskStore.get_request(store, "no-such-task")
+  end
+
+  test "list_backlog returns queued and failed_retryable tasks only", %{path: path} do
+    # max_attempts 3 so the first transport failure is retryable (not dead-lettered).
+    {_op_log, store} = start_pair(path)
+
+    {:ok, :created, queued_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, :created, retry_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p2", workload: "wl-a"})
+
+    {:ok, :created, done_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p3", workload: "wl-a"})
+
+    # retry_id -> failed_retryable; done_id -> succeeded (excluded).
+    {:ok, _} = TaskStore.assign(store, retry_id)
+    {:ok, %{state: :failed_retryable}, _backoff} = TaskStore.fail(store, retry_id, :transport)
+
+    {:ok, _} = TaskStore.assign(store, done_id)
+    {:ok, _} = TaskStore.start(store, done_id)
+    {:ok, _} = TaskStore.succeed(store, done_id, %{status_code: 200, body: "", size_bytes: 0})
+
+    {:ok, backlog} = TaskStore.list_backlog(store)
+    ids = backlog |> Enum.map(& &1.task_id) |> Enum.sort()
+    assert ids == Enum.sort([queued_id, retry_id])
+    assert Enum.find(backlog, &(&1.task_id == retry_id)).state == :failed_retryable
+    assert Enum.find(backlog, &(&1.task_id == queued_id)).state == :queued
+  end
+
+  test "on_queued hook fires on submit-created, retry, and redrive", %{path: path} do
+    test_pid = self()
+    hook = fn %{task_id: tid, workload: wl, principal: pr} -> send(test_pid, {:queued, tid, wl, pr}) end
+
+    # wl_def is left uncataloged (cfg_for falls back to default_config, where
+    # transport is retryable at 3 attempts); wl_dlq is cataloged with
+    # max_attempts 1 so one failure dead-letters, reaching the redrive path.
+    # Unique names keep this async-safe against the shared global catalog table.
+    suffix = System.unique_integer([:positive])
+    wl_def = "wl-def-#{suffix}"
+    wl_dlq = "wl-dlq-#{suffix}"
+    default_table = WorkloadCatalog.table()
+    WorkloadCatalog.upsert(default_table, wl_dlq, %{name: wl_dlq, retry: %{max_attempts: 1, backoff_ms: 1, backoff_cap_ms: 1, retry_on: [:transport]}})
+    on_exit(fn -> WorkloadCatalog.drop(default_table, wl_dlq) end)
+
+    {_op_log, store} = start_pair(path, on_queued: hook)
+
+    # 1. submit-created fires the hook.
+    {:ok, :created, retry_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: wl_def})
+
+    assert_receive {:queued, ^retry_id, ^wl_def, "p1"}
+
+    # 2. retry (failed_retryable -> queued) fires the hook.
+    {:ok, _} = TaskStore.assign(store, retry_id)
+    {:ok, %{state: :failed_retryable}, _backoff} = TaskStore.fail(store, retry_id, :transport)
+    {:ok, %{state: :queued}} = TaskStore.retry(store, retry_id)
+    assert_receive {:queued, ^retry_id, ^wl_def, "p1"}
+
+    # 3. redrive (dead_lettered -> queued) fires the hook.
+    {:ok, :created, dlq_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p2", workload: wl_dlq})
+
+    assert_receive {:queued, ^dlq_id, ^wl_dlq, "p2"}
+    {:ok, _} = TaskStore.assign(store, dlq_id)
+    {:ok, %{state: :dead_lettered}} = TaskStore.fail(store, dlq_id, :transport)
+    {:ok, %{state: :queued}} = TaskStore.redrive(store, dlq_id)
+    assert_receive {:queued, ^dlq_id, ^wl_dlq, "p2"}
   end
 end

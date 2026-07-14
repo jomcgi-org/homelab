@@ -83,6 +83,15 @@ defmodule Embervm.OpLog do
   # way (streamed straight through at request time, never via this store).
   @callback load_result(server(), task_id :: String.t()) ::
               {:ok, map() | nil} | {:error, term()}
+  # Reads the opaque guest-request envelope captured in a task's `submitted`
+  # op payload (path, headers, base64 body, content type), or {:ok, nil} when
+  # the task has no submitted op (unknown id). Unlike load_result/2 this reads
+  # the immutable `ops` log (the submitted record is never projected into a
+  # column), which is exactly why the dispatcher (Task 11) needs a dedicated
+  # read: it rebuilds the `AssignRequest` from this at dispatch time rather
+  # than carrying the (up to 8 MiB) body in the ETS hot set or the fair queue.
+  @callback load_request(server(), task_id :: String.t()) ::
+              {:ok, map() | nil} | {:error, term()}
   @callback compact(server(), now_ms :: integer()) ::
               {:ok, %{results_deleted: non_neg_integer(), tasks_compacted: non_neg_integer()}}
               | {:error, term()}

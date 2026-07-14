@@ -70,6 +70,17 @@ node:
 auth:
   allowedServiceAccounts: []
 
+# Fair dispatcher tuning (Task 11). The pool floor/cap and invocation policy are
+# per-Workload in the CR; these are the cross-workload enforcement knobs.
+dispatcher:
+  # Per-principal queue-depth cap: submits beyond this many queued tasks for one
+  # principal are rejected 429 (a coarse abuse guard).
+  queueDepthCap: 10000
+  # Per-principal in-flight SHARE of a workload's cap. Empty means dynamic:
+  # cap / active-principals (min 1), so under contention no principal starves
+  # the others. Set a fraction in (0, 1] to fix each principal's share instead.
+  principalShareFraction: ""
+
 service:
   port: 8080
 

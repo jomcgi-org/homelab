@@ -113,6 +113,38 @@ defmodule Embervm.TaskStore do
   end
 
   @doc """
+  Reads the opaque guest-request envelope (path, headers, base64 body, content
+  type) captured in the task's `submitted` op, or `{:ok, nil}` if the task is
+  unknown. The dispatcher (Task 11) calls this at assign time to rebuild the
+  `AssignRequest`. It reads the immutable op-log (the request is never projected
+  into a column), so it is deliberately NOT held in the ETS hot set: a queued
+  task keeps its (up to 8 MiB) body out of memory and out of the fair queue
+  until the moment it is actually dispatched.
+  """
+  @spec get_request(GenServer.server(), String.t()) :: {:ok, map() | nil} | {:error, term()}
+  def get_request(store \\ __MODULE__, task_id) do
+    GenServer.call(store, {:get_request, task_id})
+  end
+
+  @doc """
+  Every task currently in a dispatchable-backlog state: `queued` (waiting for a
+  primed VM) or `failed_retryable` (awaiting a retry the dispatcher must arm).
+  Returns lightweight records (`task_id`, `workload`, `principal`, `state`,
+  `attempt`) newest-submitted first, from the ETS hot set (never the op-log).
+
+  This is the dispatcher's boot + safety-sweep reconcile source. Two cases the
+  push-based `on_queued` hook cannot cover need it: (1) a control-plane restart,
+  where the op-log rebuild repopulates ETS but the dispatcher's in-memory fair
+  queues start empty, and (2) `reassign_in_flight/0` (a downed node), which
+  moves in-flight tasks to `failed_retryable` out of band with no dispatcher
+  notification. A slow periodic sweep over this list re-drives both.
+  """
+  @spec list_backlog(GenServer.server()) :: {:ok, [map()]}
+  def list_backlog(store \\ __MODULE__) do
+    GenServer.call(store, :list_backlog)
+  end
+
+  @doc """
   Lists dead-lettered tasks for `workload`, newest first, paged by `:limit`
   (default 50) and `:offset` (default 0). Serves `GET
   /v1/workloads/{name}/dead-letters` from the ETS hot set (bounded and rare, so
@@ -160,11 +192,17 @@ defmodule Embervm.TaskStore do
     op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
     id_fun = Keyword.get(opts, :id_fun, &default_id/0)
     clock = Keyword.get(opts, :clock, &default_clock/0)
+    # Fired on every transition INTO :queued (submit-created, retry, redrive) with
+    # %{task_id, workload, principal}, so the dispatcher (Task 11) can enqueue the
+    # task into its fair queue. Defaults to the dispatcher's own whereis-guarded
+    # cast, a no-op when no dispatcher is running (this store's own unit tests
+    # start none), mirroring the WorkloadWatcher -> BaseBuilder trigger seam.
+    on_queued = Keyword.get(opts, :on_queued, &Embervm.Dispatcher.enqueue/1)
 
     tasks = :ets.new(@tasks_table, [:set, :private])
     idem = :ets.new(@idem_table, [:set, :private])
 
-    state = %{op_log: op_log, id_fun: id_fun, clock: clock, tasks: tasks, idem: idem}
+    state = %{op_log: op_log, id_fun: id_fun, clock: clock, on_queued: on_queued, tasks: tasks, idem: idem}
 
     case rebuild(state) do
       :ok ->
@@ -306,6 +344,7 @@ defmodule Embervm.TaskStore do
         {:ok, _seq} ->
           updated = %{task | state: next, attempt: task.attempt + 1, updated_at: ts}
           :ets.insert(state.tasks, {task_id, updated})
+          notify_queued(state, updated)
           {:reply, {:ok, updated}, state}
 
         {:error, _reason} = error ->
@@ -325,6 +364,35 @@ defmodule Embervm.TaskStore do
 
   def handle_call({:get_result, task_id}, _from, state) do
     {:reply, Embervm.OpLog.SQLite.load_result(state.op_log, task_id), state}
+  end
+
+  def handle_call({:get_request, task_id}, _from, state) do
+    {:reply, Embervm.OpLog.SQLite.load_request(state.op_log, task_id), state}
+  end
+
+  def handle_call(:list_backlog, _from, state) do
+    backlog =
+      :ets.foldl(
+        fn {_id, task}, acc ->
+          if task.state in [:queued, :failed_retryable] do
+            [%{
+               task_id: task.task_id,
+               workload: task.workload,
+               principal: task.principal,
+               state: task.state,
+               attempt: task.attempt
+             }
+             | acc]
+          else
+            acc
+          end
+        end,
+        [],
+        state.tasks
+      )
+      |> Enum.sort_by(& &1.task_id)
+
+    {:reply, {:ok, backlog}, state}
   end
 
   def handle_call({:list_dead_letters, workload, opts}, _from, state) do
@@ -368,6 +436,7 @@ defmodule Embervm.TaskStore do
         {:ok, _seq} ->
           updated = %{task | state: next, attempt: 1, updated_at: ts}
           :ets.insert(state.tasks, {task_id, updated})
+          notify_queued(state, updated)
           {:reply, {:ok, updated}, state}
 
         {:error, _reason} = error ->
@@ -434,6 +503,7 @@ defmodule Embervm.TaskStore do
           :ets.insert(state.idem, {{workload, idempotency_key}, task_id})
         end
 
+        notify_queued(state, task)
         {:reply, {:ok, :created, task_id}, state}
 
       {:error, _reason} = error ->
@@ -541,6 +611,24 @@ defmodule Embervm.TaskStore do
       {:error, _reason} ->
         :ok
     end
+  end
+
+  # Signal the dispatcher that a task is (freshly, or again) queued. Best-effort
+  # and fire-and-forget: the hook is a cast the dispatcher whereis-guards, so a
+  # store with no dispatcher wired (unit tests) or a dispatcher mid-restart just
+  # drops the signal, and the dispatcher's boot/periodic backlog sweep re-drives
+  # anything a dropped signal left behind. A raise in the hook must never fail
+  # the transition (already durable), so it is caught.
+  defp notify_queued(state, task) do
+    try do
+      state.on_queued.(%{task_id: task.task_id, workload: task.workload, principal: task.principal})
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
+
+    :ok
   end
 
   defp fetch_task(state, task_id) do

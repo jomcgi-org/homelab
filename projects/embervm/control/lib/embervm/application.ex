@@ -73,8 +73,36 @@ defmodule Embervm.Application do
       # Mint gRPC connection, so it does not depend on the Finch pool. With no node
       # wired (empty address), it supervises an empty node list and does nothing.
       {Embervm.NodeRegistry, nodes: configured_nodes()},
-      # Bandit + the router last: its handlers call Auth, TaskStore, and
-      # SyncWait, so the HTTP surface must not accept requests until all are up.
+      # The shared per-node gRPC channel holder (Task 11): one long-lived, reused
+      # Mint channel per node for the Prime/Assign hot path (unlike NodeRegistry/
+      # BaseBuilder, which each own their own channel and can afford a per-op
+      # connect). Lazy-dials and caches in persistent_term for lock-free worker
+      # reads; workers invalidate a channel on a transport error. With no node
+      # wired it caches nothing.
+      {Embervm.NodeChannel, nodes: configured_nodes()},
+      # The dispatcher (Task 11): the heart of R0. Owns the per-workload fair
+      # queues, the primed-VM inventory, the enforcement caps, and drives queued
+      # tasks to terminal via Assign. Placed AFTER TaskStore (drives its FSM +
+      # is the target of its on_queued hook), NodeRegistry (reads NodeCapacity),
+      # WorkloadWatcher (reads WorkloadCatalog), and NodeChannel (the assign
+      # channel). Under :rest_for_one a dispatcher restart loses its in-memory
+      # queues, which its boot backlog-sweep rebuilds from TaskStore.
+      {Embervm.Dispatcher, dispatcher_opts()},
+      # The pool manager (Task 11): the background refill loop keeping `floor`
+      # VMs primed per workload (floor-first, then proportional to queue depth),
+      # depositing primed vm_ids into the dispatcher's inventory and owning
+      # status.primedFloorSatisfied. After the dispatcher (it deposits into it)
+      # and after the node registry/watcher (it reads capacity + catalog). Primes
+      # nothing in R0 (no base is ready until guest images land, Task 14).
+      {Embervm.PoolManager, pool_opts()},
+      # The cron trigger adapter (Task 11): fires each Workload's spec.triggers[]
+      # cron as an ordinary submit (principal system:cron:<workload>); misfires
+      # during downtime are skipped, not replayed. After the watcher (reads the
+      # catalog's triggers) and TaskStore (submits into it).
+      Embervm.Trigger.Cron,
+      # Bandit + the router last: its handlers call Auth, TaskStore, SyncWait, and
+      # the dispatcher's admit? gate, so the HTTP surface must not accept requests
+      # until all are up.
       {Bandit, plug: Embervm.Router, scheme: :http, port: port}
     ]
 
@@ -139,6 +167,35 @@ defmodule Embervm.Application do
     case System.get_env(name) do
       nil -> ""
       value -> String.trim(value)
+    end
+  end
+
+  # Dispatcher tuning from the chart (values -> env). The share fraction, when
+  # set, caps each principal at that fraction of a workload's cap; unset (the
+  # default) means the dynamic cap/active-principals split.
+  defp dispatcher_opts do
+    [queue_depth_cap: queue_depth_cap()] ++ share_fraction_opt()
+  end
+
+  defp pool_opts, do: []
+
+  defp queue_depth_cap do
+    case trimmed_env("EMBERVM_QUEUE_DEPTH_CAP") do
+      "" -> 10_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  defp share_fraction_opt do
+    case trimmed_env("EMBERVM_PRINCIPAL_SHARE_FRACTION") do
+      "" ->
+        []
+
+      raw ->
+        case Float.parse(raw) do
+          {f, _} when f > 0 -> [share_fraction: f]
+          _ -> []
+        end
     end
   end
 
