@@ -92,6 +92,17 @@ defmodule Embervm.OpLog do
   # than carrying the (up to 8 MiB) body in the ETS hot set or the fair queue.
   @callback load_request(server(), task_id :: String.t()) ::
               {:ok, map() | nil} | {:error, term()}
+  # Pages the `usage` projection (Task 12): per-`(principal, day)` accumulated
+  # vCPU-seconds / GB-seconds / task_count, written transactionally with each
+  # `:succeeded`/`:failed` op that carried usage. This is the metering read the
+  # API serves `GET /v1/usage` from and the source `Embervm.Metering` rebuilds
+  # its quota cache from on boot. Opts: `:since_day` (integer epoch-day floor,
+  # default 0), `:principal` (optional exact filter), `:limit` (integer or
+  # `:infinity`, default 100), `:offset` (default 0). It is a projection read,
+  # never the raw ops log.
+  @callback list_usage(server(), opts :: keyword()) ::
+              {:ok, %{items: [map()], total: non_neg_integer(), limit: term(), offset: non_neg_integer()}}
+              | {:error, term()}
   @callback compact(server(), now_ms :: integer()) ::
               {:ok, %{results_deleted: non_neg_integer(), tasks_compacted: non_neg_integer()}}
               | {:error, term()}

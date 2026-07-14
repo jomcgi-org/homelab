@@ -32,6 +32,12 @@ defmodule Embervm.Application do
   def start(_type, _args) do
     port = http_port()
 
+    # Quota + usage-admin config into app-env BEFORE the supervisor starts, so the
+    # Dispatcher (reads the quota budgets at init) and the Router (reads them and
+    # the usage-admin list per request) see them. Empty budgets = quota off.
+    Application.put_env(:embervm, :quota, quota_config())
+    Application.put_env(:embervm, :usage_admins, usage_admins())
+
     children = [
       # The sync-wait waiter registry + park-count ETS owner come FIRST: every
       # terminal task-state write in TaskStore calls Embervm.SyncWait.notify,
@@ -41,7 +47,9 @@ defmodule Embervm.Application do
       {Registry, keys: :duplicate, name: Embervm.TaskWaiters},
       Embervm.SyncWait,
       {Embervm.OpLog.SQLite, path: oplog_path()},
-      {Embervm.TaskStore, []},
+      # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
+      # so Embervm.Metering charges the quota cache off the same durable write.
+      {Embervm.TaskStore, [on_metered: &Embervm.Metering.on_metered/1]},
       # Finch (the shared HTTP pool, TLS-pinned to the K8s CA in-cluster) before
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
       Embervm.K8s.finch_child_spec(),
@@ -80,13 +88,24 @@ defmodule Embervm.Application do
       # reads; workers invalidate a channel on a transport error. With no node
       # wired it caches nothing.
       {Embervm.NodeChannel, nodes: configured_nodes()},
+      # Metering, audit, and quotas (Task 12). Owns the public per-principal daily
+      # quota-cache ETS table (rebuilt on boot from the op-log's usage projection)
+      # and appends request-scoped denials. Placed AFTER OpLog.SQLite (it reads the
+      # usage projection on boot and appends denials) and BEFORE the Dispatcher and
+      # Router, which read its table and quota budgets: under :rest_for_one a
+      # Metering restart bounces the dispatcher (which rebuilds from backlog) and
+      # Bandit, the same price BaseBuilder/NodeRegistry already pay for their
+      # ordering. The TaskStore charge hook targets the module (the public table),
+      # not the process, so TaskStore may start earlier.
+      {Embervm.Metering, []},
       # The dispatcher (Task 11): the heart of R0. Owns the per-workload fair
       # queues, the primed-VM inventory, the enforcement caps, and drives queued
       # tasks to terminal via Assign. Placed AFTER TaskStore (drives its FSM +
       # is the target of its on_queued hook), NodeRegistry (reads NodeCapacity),
-      # WorkloadWatcher (reads WorkloadCatalog), and NodeChannel (the assign
-      # channel). Under :rest_for_one a dispatcher restart loses its in-memory
-      # queues, which its boot backlog-sweep rebuilds from TaskStore.
+      # WorkloadWatcher (reads WorkloadCatalog), NodeChannel (the assign channel),
+      # and Metering (reads its quota table + budgets). Under :rest_for_one a
+      # dispatcher restart loses its in-memory queues, which its boot backlog-sweep
+      # rebuilds from TaskStore.
       {Embervm.Dispatcher, dispatcher_opts()},
       # The pool manager (Task 11): the background refill loop keeping `floor`
       # VMs primed per workload (floor-first, then proportional to queue depth),
@@ -196,6 +215,70 @@ defmodule Embervm.Application do
           {f, _} when f > 0 -> [share_fraction: f]
           _ -> []
         end
+    end
+  end
+
+  # Per-principal daily vCPU-second budgets (Task 12), from the chart. Deliberately
+  # OPT-IN and asymmetric to the auth allow-list: empty means quota OFF (a
+  # principal with no configured budget is allowed), NOT deny-all. Fail-closed
+  # applies only to a principal that HAS a budget when the quota cache is
+  # unreadable. `EMBERVM_QUOTA_VCPU_SECONDS` is a comma list of `principal=budget`
+  # pairs; `EMBERVM_QUOTA_DEFAULT_VCPU_SECONDS` is an optional blanket budget for
+  # principals not named in the map. Budgets are vCPU-seconds (float).
+  defp quota_config do
+    %{budgets: quota_budgets(), default: quota_default()}
+  end
+
+  defp quota_budgets do
+    case System.get_env("EMBERVM_QUOTA_VCPU_SECONDS") do
+      nil ->
+        %{}
+
+      raw ->
+        raw
+        |> String.split(",", trim: true)
+        |> Enum.reduce(%{}, fn pair, acc ->
+          case String.split(pair, "=", parts: 2) do
+            [k, v] ->
+              case parse_pos_float(String.trim(v)) do
+                nil -> acc
+                budget -> Map.put(acc, String.trim(k), budget)
+              end
+
+            _ ->
+              acc
+          end
+        end)
+    end
+  end
+
+  defp quota_default do
+    case trimmed_env("EMBERVM_QUOTA_DEFAULT_VCPU_SECONDS") do
+      "" -> nil
+      raw -> parse_pos_float(raw)
+    end
+  end
+
+  defp parse_pos_float(raw) do
+    case Float.parse(raw) do
+      {f, _} when f > 0 -> f
+      _ -> nil
+    end
+  end
+
+  # ServiceAccount usernames allowed to read other principals' usage at
+  # GET /v1/usage (via ?principal=), from EMBERVM_USAGE_ADMINS (comma-separated).
+  # Everyone else is self-scoped. Empty = nobody is an admin (self-scope only).
+  defp usage_admins do
+    case System.get_env("EMBERVM_USAGE_ADMINS") do
+      nil ->
+        []
+
+      raw ->
+        raw
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
     end
   end
 

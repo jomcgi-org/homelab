@@ -71,8 +71,29 @@ defmodule Embervm.OpLog.SQLite do
       created_at INTEGER NOT NULL,
       expires_at INTEGER
     )
+    """,
+    # Metering projection (Task 12): accumulated billed usage per principal per
+    # UTC epoch-day. Written by the :succeeded/:failed projection (an accumulating
+    # upsert, the ONLY projection that adds rather than overwrites, see project/2),
+    # read paged by GET /v1/usage and by Embervm.Metering's boot rebuild. day is
+    # div(op.ts, 86_400_000) in the SAME wall-clock ms the op carries.
+    """
+    CREATE TABLE IF NOT EXISTS usage (
+      principal TEXT NOT NULL,
+      day INTEGER NOT NULL,
+      tenant TEXT NOT NULL,
+      vcpu_seconds REAL NOT NULL DEFAULT 0,
+      gb_seconds REAL NOT NULL DEFAULT 0,
+      task_count INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (principal, day)
+    )
     """
   ]
+
+  # One UTC day in ms: the `usage` projection buckets by epoch-day so a
+  # per-principal DAILY quota has a stable, replay-deterministic key.
+  @day_ms 86_400_000
 
   # -- Client API --------------------------------------------------------
 
@@ -111,6 +132,11 @@ defmodule Embervm.OpLog.SQLite do
   @impl Embervm.OpLog
   def load_request(server \\ __MODULE__, task_id) do
     GenServer.call(server, {:load_request, task_id})
+  end
+
+  @impl Embervm.OpLog
+  def list_usage(server \\ __MODULE__, opts \\ []) do
+    GenServer.call(server, {:list_usage, opts})
   end
 
   @impl Embervm.OpLog
@@ -163,6 +189,10 @@ defmodule Embervm.OpLog.SQLite do
 
   def handle_call({:load_request, task_id}, _from, state) do
     {:reply, do_load_request(state.conn, task_id), state}
+  end
+
+  def handle_call({:list_usage, opts}, _from, state) do
+    {:reply, do_list_usage(state.conn, opts), state}
   end
 
   def handle_call({:compact, now_ms}, _from, state) do
@@ -280,14 +310,20 @@ defmodule Embervm.OpLog.SQLite do
              ]),
            :done <- Sqlite3.step(conn, stmt),
            :ok <- Sqlite3.release(conn, stmt) do
-        :ok
+        project_usage(conn, op)
       end
     end
   end
 
   defp project(conn, %Op{kind: :failed} = op, _seq) do
     state = Map.fetch!(op.payload, :state)
-    update_task_state(conn, op.task_id, to_string(state), op.ts)
+
+    with :ok <- update_task_state(conn, op.task_id, to_string(state), op.ts) do
+      # A guest 4xx/5xx returns a well-formed AssignResponse WITH usage: it did
+      # real work, so it is charged. Transport/timeout failures carry no usage
+      # (payload has no :usage key), so project_usage is a no-op for them.
+      project_usage(conn, op)
+    end
   end
 
   defp project(conn, %Op{kind: :retried} = op, _seq) do
@@ -337,6 +373,50 @@ defmodule Embervm.OpLog.SQLite do
       :ok
     end
   end
+
+  # Accumulating usage upsert, run INSIDE the same transaction as the
+  # :succeeded/:failed op (see project/2), so a task's usage commits with its
+  # terminal transition or not at all: no separate flush, no unflushed window.
+  # A no-op when the op carried no usage (transport/timeout failures, or any
+  # older op predating metering). This is the one projection that ACCUMULATES
+  # rather than overwrites; that makes it non-idempotent under op replay (the
+  # future read_from/2 replica path), which is safe today because R0 projects
+  # each op exactly once at append. Bucketed by UTC epoch-day from op.ts.
+  defp project_usage(conn, %Op{payload: payload} = op) do
+    case Map.get(payload, :usage) do
+      usage when is_map(usage) ->
+        sql = """
+        INSERT INTO usage (principal, day, tenant, vcpu_seconds, gb_seconds, task_count, updated_at)
+        VALUES (?, ?, ?, ?, ?, 1, ?)
+        ON CONFLICT(principal, day) DO UPDATE SET
+          vcpu_seconds = vcpu_seconds + excluded.vcpu_seconds,
+          gb_seconds = gb_seconds + excluded.gb_seconds,
+          task_count = task_count + 1,
+          updated_at = excluded.updated_at
+        """
+
+        with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+             :ok <-
+               Sqlite3.bind(stmt, [
+                 op.principal,
+                 div(op.ts, @day_ms),
+                 op.tenant,
+                 to_float(Map.get(usage, :vcpu_seconds, 0)),
+                 to_float(Map.get(usage, :gb_seconds, 0)),
+                 op.ts
+               ]),
+             :done <- Sqlite3.step(conn, stmt),
+             :ok <- Sqlite3.release(conn, stmt) do
+          :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp to_float(n) when is_number(n), do: n * 1.0
+  defp to_float(_), do: 0.0
 
   defp existing_task_for_idempotency_key(_conn, _workload, nil), do: {:ok, nil}
 
@@ -470,6 +550,77 @@ defmodule Embervm.OpLog.SQLite do
 
       :ok = Sqlite3.release(conn, stmt)
       result
+    end
+  end
+
+  # Pages the usage projection (Task 12). Filters by an epoch-day floor and an
+  # optional exact principal, ordered stably by (principal, day) so offset paging
+  # is deterministic. `limit: :infinity` maps to SQLite's LIMIT -1 (no cap), used
+  # by Embervm.Metering's boot rebuild; the API path always passes a clamped
+  # integer limit so an unbounded scan never queues ahead of a completion append
+  # on this single-writer connection.
+  defp do_list_usage(conn, opts) do
+    since_day = Keyword.get(opts, :since_day, 0)
+    principal = Keyword.get(opts, :principal)
+    limit = Keyword.get(opts, :limit, 100)
+    offset = Keyword.get(opts, :offset, 0)
+
+    {where, filter_params} =
+      case principal do
+        nil -> {"day >= ?", [since_day]}
+        p -> {"day >= ? AND principal = ?", [since_day, p]}
+      end
+
+    limit_sql = if limit == :infinity, do: -1, else: limit
+
+    sql = """
+    SELECT principal, day, tenant, vcpu_seconds, gb_seconds, task_count, updated_at
+    FROM usage WHERE #{where}
+    ORDER BY principal ASC, day ASC
+    LIMIT ? OFFSET ?
+    """
+
+    with {:ok, total} <- count_usage(conn, where, filter_params),
+         {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, filter_params ++ [limit_sql, offset]) do
+      items = collect_usage(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, %{items: items, total: total, limit: limit, offset: offset}}
+    end
+  end
+
+  defp count_usage(conn, where, params) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "SELECT COUNT(*) FROM usage WHERE #{where}"),
+         :ok <- Sqlite3.bind(stmt, params) do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [n]} -> {:ok, n}
+          :done -> {:ok, 0}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    end
+  end
+
+  defp collect_usage(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [principal, day, tenant, vcpu_seconds, gb_seconds, task_count, updated_at]} ->
+        row = %{
+          principal: principal,
+          day: day,
+          tenant: tenant,
+          vcpu_seconds: vcpu_seconds,
+          gb_seconds: gb_seconds,
+          task_count: task_count,
+          updated_at: updated_at
+        }
+
+        collect_usage(conn, stmt, [row | acc])
+
+      :done ->
+        Enum.reverse(acc)
     end
   end
 

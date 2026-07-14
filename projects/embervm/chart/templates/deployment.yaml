@@ -76,6 +76,21 @@ spec:
             - name: EMBERVM_PRINCIPAL_SHARE_FRACTION
               value: {{ .Values.dispatcher.principalShareFraction | quote }}
             {{- end }}
+            # Metering + quotas (Task 12). Per-principal daily vCPU-second budgets
+            # rendered as `principal=budget` pairs (quota OFF when the map is
+            # empty), an optional blanket default, and the usage-read admin list.
+            {{- if .Values.quota.dailyVcpuSecondsPerPrincipal }}
+            - name: EMBERVM_QUOTA_VCPU_SECONDS
+              value: {{ $pairs := list }}{{- range $p, $b := .Values.quota.dailyVcpuSecondsPerPrincipal }}{{ $pairs = append $pairs (printf "%s=%v" $p $b) }}{{- end }}{{ join "," $pairs | quote }}
+            {{- end }}
+            {{- if .Values.quota.defaultDailyVcpuSeconds }}
+            - name: EMBERVM_QUOTA_DEFAULT_VCPU_SECONDS
+              value: {{ .Values.quota.defaultDailyVcpuSeconds | quote }}
+            {{- end }}
+            {{- if .Values.usageAdmins }}
+            - name: EMBERVM_USAGE_ADMINS
+              value: {{ join "," .Values.usageAdmins | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

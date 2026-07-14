@@ -45,7 +45,7 @@ defmodule Embervm.DispatcherTest do
         assign_fun: Keyword.get(opts, :assign_fun, fn _ch, _req -> {:ok, success_resp()} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}} end),
         start_sweep: false
-      ] ++ Keyword.take(opts, [:queue_depth_cap, :share_fraction, :stale_after_ms])
+      ] ++ Keyword.take(opts, [:queue_depth_cap, :share_fraction, :stale_after_ms, :quota_config, :quota_table, :wall_clock])
 
     {:ok, disp} = Dispatcher.start_link(disp_opts)
 
@@ -435,6 +435,36 @@ defmodule Embervm.DispatcherTest do
   defp new_gate do
     {:ok, agent} = Agent.start_link(fn -> false end)
     agent
+  end
+
+  # -- quota enforcement at dispatch (Task 12) -------------------------------
+
+  test "an over-budget principal is skipped in the rotation while others dispatch" do
+    day5 = 5 * 86_400_000
+    quota_table = :"quota_#{System.unique_integer([:positive])}"
+    :ets.new(quota_table, [:set, :public, :named_table, read_concurrency: true, write_concurrency: true])
+    # p1 is already over its 1.0 vCPU-second budget (2.0 charged); p2 has none.
+    :ets.insert(quota_table, {{"p1", div(day5, 86_400_000)}, 2000})
+
+    ctx =
+      start_stack(
+        quota_table: quota_table,
+        quota_config: %{budgets: %{"p1" => 1.0}, default: nil},
+        wall_clock: fn -> day5 end
+      )
+
+    put_catalog(ctx, "wl-q", cap: 10)
+    put_facts(ctx, "wl-q", free: 0, max: 8)
+
+    # Queue both principals, THEN drive a drain. p2 dispatches (miss-path prime),
+    # p1 is parked for quota (not dropped: no queued->failed edge).
+    over = submit(ctx, "wl-q", "p1")
+    under = submit(ctx, "wl-q", "p2")
+
+    assert eventually(fn -> state_of(ctx, under) == :succeeded end)
+    # p1 stays queued (parked), never failed or dispatched.
+    assert state_of(ctx, over) == :queued
+    assert Dispatcher.stats(ctx.name).denials.quota > 0
   end
 
   defp open_gate(agent), do: Agent.update(agent, fn _ -> true end)

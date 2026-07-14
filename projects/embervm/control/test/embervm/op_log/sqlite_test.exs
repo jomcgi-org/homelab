@@ -245,4 +245,151 @@ defmodule Embervm.OpLog.SQLiteTest do
 
     :ok = GenServer.stop(server)
   end
+
+  # -- usage projection (Task 12) --------------------------------------------
+
+  # ts on the same UTC day so both charges land in one (principal, day) row.
+  @day5 5 * 86_400_000
+
+  defp submit_task(server, task_id, principal, ts) do
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: principal,
+        workload: "wl",
+        task_id: task_id,
+        ts: ts,
+        payload: %{}
+      })
+  end
+
+  defp usage_payload(base, cpu_ms, peak_rss_mib, wall_ms) do
+    stats = %{cpu_ms: cpu_ms, peak_rss_mib: peak_rss_mib, wall_ms: wall_ms}
+    Map.put(base, :usage, Map.merge(stats, Embervm.Usage.billed(stats)))
+  end
+
+  test "succeeded/failed ops with usage accumulate into the usage projection", %{path: path} do
+    server = start_server(path)
+
+    submit_task(server, "u-a", "p1", @day5)
+    submit_task(server, "u-b", "p1", @day5 + 1)
+    submit_task(server, "u-c", "p2", @day5 + 2)
+
+    # p1: two succeeded tasks. cpu 2000ms -> 2.0 vcpu-s; rss 1024MiB, wall 4000ms
+    # -> (1024/1024)*(4000/1000) = 4.0 gb-s. Second: 1.0 vcpu-s, 1.0 gb-s.
+    succeed = %{status_code: 200, body: "", size_bytes: 0, truncated: false, expires_at: nil}
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl",
+        task_id: "u-a",
+        ts: @day5,
+        payload: usage_payload(succeed, 2000, 1024, 4000)
+      })
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl",
+        task_id: "u-b",
+        ts: @day5 + 1,
+        payload: usage_payload(succeed, 1000, 512, 2000)
+      })
+
+    # p2: a guest 4xx FAILURE that still did work is charged (1.5 vcpu-s).
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :failed,
+        tenant: "t1",
+        principal: "p2",
+        workload: "wl",
+        task_id: "u-c",
+        ts: @day5 + 2,
+        payload: usage_payload(%{state: :failed_permanent, reason: :guest4xx}, 1500, 256, 1000)
+      })
+
+    {:ok, page} = SQLite.list_usage(server, since_day: 0)
+
+    by_principal = Map.new(page.items, &{&1.principal, &1})
+
+    assert page.total == 2
+    assert by_principal["p1"].day == 5
+    assert by_principal["p1"].vcpu_seconds == 3.0
+    assert by_principal["p1"].gb_seconds == 5.0
+    assert by_principal["p1"].task_count == 2
+    assert by_principal["p2"].vcpu_seconds == 1.5
+    assert by_principal["p2"].task_count == 1
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "ops without usage do not touch the usage projection", %{path: path} do
+    server = start_server(path)
+
+    submit_task(server, "n-a", "p1", @day5)
+
+    # A transport failure carries no usage: no :usage key, so no usage row.
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :failed,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl",
+        task_id: "n-a",
+        ts: @day5,
+        payload: %{state: :failed_retryable, reason: :transport}
+      })
+
+    {:ok, page} = SQLite.list_usage(server, since_day: 0)
+    assert page.total == 0
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "list_usage filters by principal, floors by since_day, and pages", %{path: path} do
+    server = start_server(path)
+
+    succeed = %{status_code: 200, body: "", size_bytes: 0, truncated: false, expires_at: nil}
+
+    # p1 on day 5, p2 on day 5, p3 on day 6.
+    for {tid, pr, ts} <- [{"f-a", "p1", @day5}, {"f-b", "p2", @day5}, {"f-c", "p3", @day5 + 86_400_000}] do
+      submit_task(server, tid, pr, ts)
+
+      {:ok, _} =
+        SQLite.append(server, %Op{
+          kind: :succeeded,
+          tenant: "t1",
+          principal: pr,
+          workload: "wl",
+          task_id: tid,
+          ts: ts,
+          payload: usage_payload(succeed, 1000, 1024, 1000)
+        })
+    end
+
+    # Principal filter.
+    {:ok, only_p2} = SQLite.list_usage(server, principal: "p2")
+    assert only_p2.total == 1
+    assert [%{principal: "p2"}] = only_p2.items
+
+    # since_day floor: day 6 only.
+    {:ok, from6} = SQLite.list_usage(server, since_day: 6)
+    assert from6.total == 1
+    assert [%{principal: "p3", day: 6}] = from6.items
+
+    # Paging: three rows total, one per page, stable (principal, day) order.
+    {:ok, p0} = SQLite.list_usage(server, limit: 1, offset: 0)
+    {:ok, p1} = SQLite.list_usage(server, limit: 1, offset: 1)
+    assert p0.total == 3
+    assert [%{principal: "p1"}] = p0.items
+    assert [%{principal: "p2"}] = p1.items
+
+    :ok = GenServer.stop(server)
+  end
 end

@@ -28,6 +28,8 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :authenticator)
       Application.delete_env(:embervm, :sync_park_cap)
       Application.delete_env(:embervm, :sync_timeout_ms)
+      Application.delete_env(:embervm, :quota)
+      Application.delete_env(:embervm, :usage_admins)
     end)
 
     :ok
@@ -220,5 +222,62 @@ defmodule Embervm.RouterTest do
 
     resp = req(:post, "/v1/tasks/#{task_id}/redrive", auth("good"))
     assert resp.status == 409
+  end
+
+  # -- metering + quotas (Task 12) -------------------------------------------
+
+  # Drive a submitted task terminal with usage directly through the store (no
+  # dispatcher in R0), so GET /v1/usage has a row to serve.
+  defp bill(task_id, cpu_ms) do
+    {:ok, _} = TaskStore.assign(task_id)
+    {:ok, _} = TaskStore.start(task_id)
+
+    {:ok, _} =
+      TaskStore.succeed(
+        TaskStore,
+        task_id,
+        %{status_code: 200, body: "", size_bytes: 0, truncated: false, expires_at: nil},
+        %{cpu_ms: cpu_ms, peak_rss_mib: 1024, wall_ms: 1000}
+      )
+  end
+
+  test "GET /v1/usage returns the caller's own billed usage" do
+    wl = unique("wl")
+    task_id = json(req(:post, "/v1/workloads/#{wl}/tasks", auth("good"), "x").body)["task_id"]
+    bill(task_id, 3000)
+
+    resp = req(:get, "/v1/usage", auth("good"))
+    assert resp.status == 200
+
+    mine = Enum.find(json(resp.body)["items"], &(&1["principal"] == @allowed))
+    assert mine
+    # 3000ms = 3.0 vCPU-s; accumulates across this file's tests, so >=.
+    assert mine["vcpu_seconds"] >= 3.0
+  end
+
+  test "GET /v1/usage is self-scoped: a non-admin cannot read another principal" do
+    resp = req(:get, "/v1/usage?principal=#{URI.encode_www_form(@allowed)}", auth("good2"))
+    assert resp.status == 200
+    # good2 (principal-2, not an admin) is forced to its own scope, never @allowed.
+    refute Enum.any?(json(resp.body)["items"], &(&1["principal"] == @allowed))
+  end
+
+  test "a usage admin can read another principal via ?principal=" do
+    Application.put_env(:embervm, :usage_admins, ["principal-2"])
+
+    resp = req(:get, "/v1/usage?principal=#{URI.encode_www_form(@allowed)}", auth("good2"))
+    assert resp.status == 200
+    # Every returned row is the requested principal (the admin filter took effect).
+    assert Enum.all?(json(resp.body)["items"], &(&1["principal"] == @allowed))
+  end
+
+  test "submit is 429 when the principal's daily vCPU-second quota is exhausted" do
+    Application.put_env(:embervm, :quota, %{budgets: %{@allowed => 0.0}, default: nil})
+
+    resp = req(:post, "/v1/workloads/#{unique("wl")}/tasks", auth("good"), "x")
+    assert resp.status == 429
+    body = json(resp.body)
+    assert body["error"] =~ "quota"
+    assert body["retryable"] == true
   end
 end
