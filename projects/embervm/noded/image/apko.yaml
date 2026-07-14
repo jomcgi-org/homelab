@@ -5,10 +5,14 @@
 # @kata_firecracker bundle, so node-4 needs no /opt/kata install: it only provides
 # /dev/kvm and the nvme scratch dir (see projects/platform/firecracker-node).
 #
-# AMD64-ONLY: node-4 is the sole Firecracker node and is amd64, and FC snapshots
-# are arch-affine, so an aarch64 image no node could run would be dead weight.
-# This matches the embervm control image's amd64-only choice; if an arm64 FC node
-# ever joins, flip archs + apko_image(arm64=True) and rebuild the lock.
+# DUAL-ARCH, mirroring the fc-invoke daemon image this forks: the daemon binary is
+# pure Go (cross-compiles cleanly) and @kata_firecracker ships both arches, so the
+# image is a multi-arch index exactly like fc-invoke's. node-4 is amd64 and is the
+# only Firecracker node today, so the aarch64 manifest is currently unused, but
+# building it keeps this on the proven apko multiarch_tars path (the amd64-only +
+# multiarch_tars combination is an untested apko_image code path). Unlike the
+# embervm CONTROL image (amd64-only because exqlite ships an arch-specific NIF),
+# noded carries no arch-specific artifact, so dual-arch is free and lower-risk.
 #
 # LEAN by design: the daemon's driver boots one shared rootfs READ-ONLY per
 # microVM (the fc-invoke warm-base pattern, provisioner disabled), so it never
@@ -26,6 +30,7 @@ contents:
 
 archs:
   - x86_64
+  - aarch64
 
 environment:
   PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
