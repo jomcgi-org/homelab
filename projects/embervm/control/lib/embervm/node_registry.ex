@@ -448,12 +448,20 @@ defmodule Embervm.NodeRegistry do
   end
 
   # The node crossed into :down. Reassign its in-flight tasks (at-least-once, via
-  # the existing Retry policy) exactly once, and kill the current streamer if any
-  # so a wedged connection is dropped. The streamer is left registered so its
-  # ensuing :DOWN drives a backoff reconnect through handle_watch_end (forgetting
-  # it here would make the :DOWN a no-op and strand the node with no reconnect).
+  # the existing Retry policy) exactly once, then drop the current streamer if any
+  # so a wedged connection is torn down and reconnected.
+  #
+  # Ordering matters: we FORGET the streamer's pid before killing it, so a
+  # NodeStatus the streamer enqueued concurrently with this down-transition (a
+  # straggler still in our mailbox behind the age tick) is dropped by the
+  # handle_info pid guard rather than applied, which would otherwise resurrect the
+  # node to :healthy and republish capacity for a node we just declared down and
+  # reassigned. Because the pid is forgotten, the kill's ensuing :DOWN is ignored,
+  # so we schedule the backoff reconnect here explicitly instead of relying on it.
+  #
   # When the streamer is already closed (nil), a reconnect is already pending from
-  # the last watch end, so there is nothing to do.
+  # the last watch end (nil is only ever reached via forget_streamer, which is
+  # always immediately followed by handle_watch_end), so there is nothing to do.
   defp handle_node_down(state, node_id) do
     Logger.warning("embervm node registry: node #{node_id} is DOWN (stream silent > #{state.down_after_ms}ms)")
 
@@ -464,11 +472,14 @@ defmodule Embervm.NodeRegistry do
     end
 
     case state.node_runtime[node_id].streamer do
-      {pid, _ref} -> Process.exit(pid, :kill)
-      nil -> :ok
-    end
+      {pid, _ref} ->
+        state = forget_streamer(state, pid, node_id)
+        Process.exit(pid, :kill)
+        schedule_reconnect(state, node_id)
 
-    state
+      nil ->
+        state
+    end
   end
 
   # -- streamer lifecycle -----------------------------------------------------

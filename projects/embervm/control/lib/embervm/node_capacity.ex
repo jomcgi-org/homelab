@@ -42,8 +42,10 @@ defmodule Embervm.NodeCapacity do
   end
 
   @doc """
-  Writes one dispatchable node's capacity facts, keyed by its (daemon-reported)
-  node id. Only called by the registry for a node it has already decided is
+  Writes one dispatchable node's capacity facts, keyed by the CONFIGURED node id
+  (the registry's stable per-node key, used identically by `drop/2` and
+  `fetch/2`); the daemon-reported id is carried inside the facts map as
+  `:node_id`. Only called by the registry for a node it has already decided is
   dispatchable, so a row's mere presence is the dispatchable signal.
   """
   @spec put(atom(), String.t(), map()) :: true
