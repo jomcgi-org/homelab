@@ -467,6 +467,39 @@ defmodule Embervm.DispatcherTest do
     assert Dispatcher.stats(ctx.name).denials.quota > 0
   end
 
+  # -- queued-task expiry at dispatch (ADR embervm/002) ----------------------
+
+  test "a queued task popped past its expires_at is expired, not dispatched (no VM consumed)" do
+    {:ok, assigns} = Agent.start_link(fn -> 0 end)
+
+    count_assign = fn _ch, _req ->
+      Agent.update(assigns, &(&1 + 1))
+      {:ok, success_resp()}
+    end
+
+    # wall_clock is well past the task's expires_at, so at pop time the task is
+    # expired to failed_permanent and never assigned; the primed VM is untouched.
+    ctx = start_stack(assign_fun: count_assign, wall_clock: fn -> 2_000_000 end)
+    put_catalog(ctx, "wl-x", cap: 10)
+    put_facts(ctx, "wl-x", free: 1)
+    Dispatcher.deposit(ctx.name, "node-4", "wl-x", "vm-1")
+
+    {:ok, :created, tid} =
+      TaskStore.submit(ctx.store, %{
+        tenant: "t",
+        principal: "p1",
+        workload: "wl-x",
+        expires_at: 1_000,
+        request: %{path: "/", headers: %{}, body_b64: Base.encode64("")}
+      })
+
+    assert eventually(fn -> state_of(ctx, tid) == :failed_permanent end)
+    # Never dispatched: no assign call, so the primed VM was not consumed.
+    Process.sleep(50)
+    assert Agent.get(assigns, & &1) == 0
+    assert Map.get(Dispatcher.stats(ctx.name).inventory, {"node-4", "wl-x"}) == 1
+  end
+
   defp open_gate(agent), do: Agent.update(agent, fn _ -> true end)
 
   # An assign_fun that blocks (holding the task in-flight) until the gate opens,

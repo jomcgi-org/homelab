@@ -41,7 +41,8 @@ defmodule Embervm.TaskState do
     :fail_permanent,
     :retry,
     :dead_letter,
-    :redrive
+    :redrive,
+    :expire
   ]
 
   # The transition table. Every legal (state, event) pair the control plane
@@ -53,8 +54,16 @@ defmodule Embervm.TaskState do
   # leaves a terminal state, which is why it is enumerated explicitly rather
   # than folded into `:retry` (retry increments the attempt counter and only
   # applies to `:failed_retryable`; redrive RESETS the counter, see TaskStore).
+  #
+  # `:expire` (ADR embervm/002) moves a `:queued` task whose `expires_at` has
+  # passed straight to `:failed_permanent`: the dispatcher fires it when it pops a
+  # task past its TTL, so an over-budget parked task never dispatches after its
+  # deadline (closing the D12 queued-task-TTL gap). Only `:queued` needs it (only
+  # queued tasks are popped for dispatch); it does NOT dead-letter (expiry is not a
+  # processing failure).
   @transitions %{
     {:queued, :assign} => :assigned,
+    {:queued, :expire} => :failed_permanent,
     {:assigned, :start} => :running,
     {:assigned, :fail_retryable} => :failed_retryable,
     {:assigned, :fail_permanent} => :failed_permanent,
@@ -84,6 +93,7 @@ defmodule Embervm.TaskState do
           | :retry
           | :dead_letter
           | :redrive
+          | :expire
 
   @spec states() :: [state()]
   def states, do: @states

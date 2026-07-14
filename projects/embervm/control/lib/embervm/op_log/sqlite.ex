@@ -4,9 +4,17 @@ defmodule Embervm.OpLog.SQLite do
   GenServer owning one `Exqlite.Sqlite3` connection. Every append is one
   transaction that writes the immutable `ops` row and write-through projects
   it into the mutable `tasks`/`results` tables the dispatcher's ETS rebuild
-  (Task 7) reads on boot. The op-log itself (the `ops` table) is append-only
-  and is never rewritten by a projection; `compact/2` only prunes the
-  projection tables (expired results, terminal tasks past retention).
+  (Task 7) reads on boot. `compact/2` prunes the projection tables (expired
+  results, terminal tasks past retention) AND prefix-compacts the `ops` journal
+  itself (ADR embervm/002): ops are deleted from the front behind a durable
+  `compacted_through_seq` marker (a row in the `meta` table). The marker only
+  advances to a seq such that every op at or below it is older than the journal
+  horizon (default 30 days) AND not owned by a live (non-terminal) task, so the
+  deletion is always a true prefix (`seq <= marker`) and ops for in-flight work
+  are never removed regardless of age. A future replayer (a `ra` replica, the R6
+  watch) that starts below the marker learns that history is available only as
+  projected state, not as ops: `read_from/2` returns `{:error, {:compacted, _}}`
+  there rather than an empty log. GC never emits an op.
 
   WAL is chosen for local durability on the pod's PVC: readers never block
   the writer and vice versa, though in R0 we still serialize all access
@@ -24,9 +32,23 @@ defmodule Embervm.OpLog.SQLite do
   alias Exqlite.Sqlite3
 
   @terminal_states ["succeeded", "failed_permanent", "dead_lettered"]
+  # The complementary set: states a task can still leave, so its ops must never be
+  # prefix-compacted regardless of age. Used by the marker computation below.
+  @live_states ["queued", "assigned", "running", "failed_retryable"]
   # Seven days in milliseconds: default age (from last update) at which a
-  # terminal task is eligible for compaction.
+  # terminal task is eligible for compaction. This is the TERMINAL-TASK retention
+  # window and is DISTINCT from the ops-journal horizon below.
   @default_retention_ms 7 * 24 * 60 * 60 * 1000
+  # Thirty days in milliseconds: default age past which an op is eligible for
+  # prefix compaction, PROVIDED its task is not still live. The ops journal is
+  # the on-box book of record for recovery and recent audit; older audit is
+  # delegated to SigNoz (ADR embervm/002). DISTINCT from @default_retention_ms.
+  @default_journal_horizon_ms 30 * 24 * 60 * 60 * 1000
+  # Rows deleted per table per compact/2 batch: bounds how long the single writer
+  # holds the connection so appends queued behind it never blow the 5ms budget.
+  @default_compact_batch_size 500
+  # The meta key the durable ops-journal prefix marker lives at; absent reads 0.
+  @marker_key "compacted_through_seq"
 
   @ddl [
     """
@@ -88,6 +110,17 @@ defmodule Embervm.OpLog.SQLite do
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (principal, day)
     )
+    """,
+    # Durable single-row scalars for the op-log. Today it holds only the
+    # ops-journal prefix marker (`compacted_through_seq`): the newest op seq that
+    # has been prefix-compacted away, part of the durable OpLog contract so a
+    # future replayer knows history below it is projected state, not ops. Absent
+    # reads as 0.
+    """
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value INTEGER
+    )
     """
   ]
 
@@ -144,18 +177,47 @@ defmodule Embervm.OpLog.SQLite do
     GenServer.call(server, {:compact, now_ms})
   end
 
+  @impl Embervm.OpLog
+  def compacted_through(server \\ __MODULE__) do
+    GenServer.call(server, :compacted_through)
+  end
+
+  @impl Embervm.OpLog
+  def evict_task(server \\ __MODULE__, task_id) do
+    GenServer.call(server, {:evict_task, task_id})
+  end
+
+  # The op-log's database file size in bytes, for the sweeper's disk-usage log
+  # field (ADR embervm/002 rule 4). Reads the connection's own path from state so
+  # the Compactor never needs to know it; the WAL/SHM sidecars are not counted
+  # (the main db is what the retention policy bounds).
+  @spec db_size(GenServer.server()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def db_size(server \\ __MODULE__) do
+    GenServer.call(server, :db_size)
+  end
+
   # -- GenServer callbacks ------------------------------------------------
 
   @impl true
   def init(opts) do
     path = Keyword.get(opts, :path) || default_path()
     retention_ms = Keyword.get(opts, :retention_ms, @default_retention_ms)
+    journal_horizon_ms = Keyword.get(opts, :journal_horizon_ms, @default_journal_horizon_ms)
+    compact_batch_size = Keyword.get(opts, :compact_batch_size, @default_compact_batch_size)
 
     with {:ok, conn} <- Sqlite3.open(path),
          :ok <- apply_pragmas(conn),
          :ok <- apply_ddl(conn) do
       Logger.info("embervm op-log opened at #{path}")
-      {:ok, %{conn: conn, path: path, retention_ms: retention_ms}}
+
+      {:ok,
+       %{
+         conn: conn,
+         path: path,
+         retention_ms: retention_ms,
+         journal_horizon_ms: journal_horizon_ms,
+         compact_batch_size: compact_batch_size
+       }}
     else
       {:error, reason} -> {:stop, {:open_failed, reason}}
     end
@@ -196,7 +258,25 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   def handle_call({:compact, now_ms}, _from, state) do
-    {:reply, do_compact(state.conn, now_ms, state.retention_ms), state}
+    {:reply, do_compact(state.conn, now_ms, state), state}
+  end
+
+  def handle_call(:compacted_through, _from, state) do
+    {:reply, {:ok, read_marker(state.conn)}, state}
+  end
+
+  def handle_call({:evict_task, task_id}, _from, state) do
+    {:reply, do_evict_task(state.conn, task_id), state}
+  end
+
+  def handle_call(:db_size, _from, state) do
+    reply =
+      case File.stat(state.path) do
+        {:ok, %File.Stat{size: size}} -> {:ok, size}
+        {:error, reason} -> {:error, reason}
+      end
+
+    {:reply, reply, state}
   end
 
   # -- append + projection -------------------------------------------------
@@ -439,17 +519,29 @@ defmodule Embervm.OpLog.SQLite do
 
   # -- reads ---------------------------------------------------------------
 
+  # A caller asking for a `seq` below the durable prefix marker is asking for
+  # history that has been compacted away (it lives only as projected state now),
+  # which MUST be distinguishable from an empty-but-intact log so a replayer does
+  # not silently assume it saw the whole journal. `read_from/2` reads ops STRICTLY
+  # after `seq`, so any `seq >= marker` still sees every surviving op; only a
+  # `seq < marker` could miss compacted ops, hence the guard. See ADR embervm/002.
   defp do_read_from(conn, seq) do
-    sql = """
-    SELECT seq, ts, tenant, principal, workload, task_id, kind, payload_json
-    FROM ops WHERE seq > ? ORDER BY seq ASC
-    """
+    marker = read_marker(conn)
 
-    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [seq]) do
-      ops = collect_ops(conn, stmt, [])
-      :ok = Sqlite3.release(conn, stmt)
-      {:ok, ops}
+    if seq < marker do
+      {:error, {:compacted, marker}}
+    else
+      sql = """
+      SELECT seq, ts, tenant, principal, workload, task_id, kind, payload_json
+      FROM ops WHERE seq > ? ORDER BY seq ASC
+      """
+
+      with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+           :ok <- Sqlite3.bind(stmt, [seq]) do
+        ops = collect_ops(conn, stmt, [])
+        :ok = Sqlite3.release(conn, stmt)
+        {:ok, ops}
+      end
     end
   end
 
@@ -650,21 +742,46 @@ defmodule Embervm.OpLog.SQLite do
 
   # -- compaction ------------------------------------------------------------
 
-  # Prunes only the mutable projection tables. The ops table is the durable
-  # audit log and is never rewritten here; ops-table rotation/archival is a
-  # documented follow-on, not part of this seam.
-  defp do_compact(conn, now_ms, retention_ms) do
-    with {:ok, results_deleted} <- delete_expired_results(conn, now_ms),
-         {:ok, tasks_compacted} <- delete_terminal_tasks(conn, now_ms, retention_ms) do
-      {:ok, %{results_deleted: results_deleted, tasks_compacted: tasks_compacted}}
+  # ONE bounded batch (ADR embervm/002): at most `compact_batch_size` deletions
+  # per table so the single writer never holds the connection long enough to blow
+  # the 5ms append budget (the scheduled Compactor loops until `done`, and each
+  # batch is a discrete GenServer call, so queued appends interleave between them).
+  # Prunes the projection tables (expired results, terminal tasks past retention)
+  # AND prefix-compacts the ops journal behind the durable marker. `done` is true
+  # only when every table came in under the batch ceiling (nothing left to sweep).
+  defp do_compact(conn, now_ms, state) do
+    batch = state.compact_batch_size
+
+    with {:ok, results_deleted} <- delete_expired_results(conn, now_ms, batch),
+         {:ok, tasks_compacted} <- delete_terminal_tasks(conn, now_ms, state.retention_ms, batch),
+         {:ok, ops_compacted, marker} <- compact_ops(conn, now_ms, state.journal_horizon_ms, batch) do
+      done =
+        results_deleted < batch and tasks_compacted < batch and ops_compacted < batch
+
+      {:ok,
+       %{
+         results_deleted: results_deleted,
+         tasks_compacted: tasks_compacted,
+         ops_compacted: ops_compacted,
+         compacted_through: marker,
+         done: done
+       }}
     end
   end
 
-  defp delete_expired_results(conn, now_ms) do
-    sql = "DELETE FROM results WHERE expires_at IS NOT NULL AND expires_at < ?"
+  # Bounded DELETE via the portable rowid-subquery form: Exqlite's bundled SQLite
+  # is not built with SQLITE_ENABLE_UPDATE_DELETE_LIMIT, so `DELETE ... LIMIT` is
+  # unavailable; `DELETE ... WHERE rowid IN (SELECT rowid ... LIMIT ?)` bounds the
+  # batch on any build.
+  defp delete_expired_results(conn, now_ms, batch) do
+    sql = """
+    DELETE FROM results WHERE rowid IN (
+      SELECT rowid FROM results WHERE expires_at IS NOT NULL AND expires_at < ? LIMIT ?
+    )
+    """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [now_ms]),
+         :ok <- Sqlite3.bind(stmt, [now_ms, batch]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt),
          {:ok, changed} <- Sqlite3.changes(conn) do
@@ -672,17 +789,151 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  defp delete_terminal_tasks(conn, now_ms, retention_ms) do
+  defp delete_terminal_tasks(conn, now_ms, retention_ms, batch) do
     cutoff = now_ms - retention_ms
     placeholders = @terminal_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
-    sql = "DELETE FROM tasks WHERE state IN (#{placeholders}) AND updated_at < ?"
+
+    sql = """
+    DELETE FROM tasks WHERE rowid IN (
+      SELECT rowid FROM tasks WHERE state IN (#{placeholders}) AND updated_at < ? LIMIT ?
+    )
+    """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, @terminal_states ++ [cutoff]),
+         :ok <- Sqlite3.bind(stmt, @terminal_states ++ [cutoff, batch]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt),
          {:ok, changed} <- Sqlite3.changes(conn) do
       {:ok, changed}
+    end
+  end
+
+  # Advance the durable ops-journal prefix marker (monotonic, prefix-safe,
+  # horizon-bounded), then batch-delete `ops WHERE seq <= marker`.
+  #
+  # The marker may only reach a seq such that EVERY op at or below it is (a) older
+  # than the horizon AND (b) not owned by a live (non-terminal) task. We find the
+  # smallest seq that must stay BLOCKED (the first op that is either recent OR owned
+  # by a live task); the highest safely-compactable candidate is one below it. With
+  # no blocker at all, the whole log is compactable up to MAX(seq). The marker never
+  # decreases (`max(current, candidate)`), so a shrinking horizon or a task going
+  # live again can never un-compact already-projected history.
+  defp compact_ops(conn, now_ms, journal_horizon_ms, batch) do
+    cutoff = now_ms - journal_horizon_ms
+    current = read_marker(conn)
+
+    with {:ok, blocker} <- blocker_seq(conn, cutoff),
+         {:ok, candidate} <- marker_candidate(conn, blocker) do
+      new_marker = max(current, candidate)
+
+      with :ok <- write_marker(conn, new_marker),
+           {:ok, deleted} <- delete_ops_prefix(conn, new_marker, batch) do
+        {:ok, deleted, new_marker}
+      end
+    end
+  end
+
+  # The smallest seq that must NOT be compacted: the first op that is either newer
+  # than the horizon (ts >= cutoff) or owned by a live (non-terminal) task. NULL
+  # means no op is blocked, so the whole log is eligible.
+  defp blocker_seq(conn, cutoff) do
+    live_placeholders = @live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+
+    sql = """
+    SELECT MIN(seq) FROM ops
+    WHERE ts >= ?
+       OR task_id IN (SELECT task_id FROM tasks WHERE state IN (#{live_placeholders}))
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [cutoff] ++ @live_states) do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [seq]} -> {:ok, seq}
+          :done -> {:ok, nil}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    end
+  end
+
+  # No blocker -> the whole log is compactable up to its max seq (0 for an empty
+  # log). Otherwise everything strictly below the first blocked op is compactable.
+  defp marker_candidate(_conn, blocker) when is_integer(blocker), do: {:ok, blocker - 1}
+
+  defp marker_candidate(conn, nil) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "SELECT MAX(seq) FROM ops") do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [nil]} -> {:ok, 0}
+          {:row, [seq]} -> {:ok, seq}
+          :done -> {:ok, 0}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    end
+  end
+
+  defp delete_ops_prefix(conn, marker, batch) do
+    sql = """
+    DELETE FROM ops WHERE rowid IN (
+      SELECT rowid FROM ops WHERE seq <= ? LIMIT ?
+    )
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [marker, batch]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt),
+         {:ok, changed} <- Sqlite3.changes(conn) do
+      {:ok, changed}
+    end
+  end
+
+  # Reads the durable prefix marker (`meta.compacted_through_seq`); absent -> 0.
+  defp read_marker(conn) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "SELECT value FROM meta WHERE key = ?"),
+         :ok <- Sqlite3.bind(stmt, [@marker_key]) do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [value]} -> value
+          _ -> 0
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    else
+      _ -> 0
+    end
+  end
+
+  defp write_marker(conn, value) do
+    sql = """
+    INSERT INTO meta (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [@marker_key, value]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # Projection prune (no op emitted): drops one task's `tasks` row; its `results`
+  # row cascades (FK ON DELETE CASCADE, foreign_keys=ON). The dedupe path calls this
+  # before a fresh resubmit under a colliding idempotency key.
+  defp do_evict_task(conn, task_id) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "DELETE FROM tasks WHERE task_id = ?"),
+         :ok <- Sqlite3.bind(stmt, [task_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
     end
   end
 

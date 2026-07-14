@@ -246,6 +246,238 @@ defmodule Embervm.OpLog.SQLiteTest do
     :ok = GenServer.stop(server)
   end
 
+  # -- retention + prefix compaction (ADR embervm/002) -----------------------
+
+  test "evict_task deletes the task projection row and cascades its result", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl-ev",
+        task_id: "task-ev",
+        ts: 100,
+        payload: %{idempotency_key: "ev-key"}
+      })
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        task_id: "task-ev",
+        ts: 101,
+        payload: %{status_code: 200, body: "r", size_bytes: 1, truncated: false, expires_at: 9_999}
+      })
+
+    # Present before eviction.
+    assert {:ok, %{status_code: 200}} = SQLite.load_result(server, "task-ev")
+    {:ok, tasks} = SQLite.load_tasks(server)
+    assert Enum.any?(tasks, &(&1.task_id == "task-ev"))
+
+    assert :ok = SQLite.evict_task(server, "task-ev")
+
+    # Task row gone AND its result cascaded (FK ON DELETE CASCADE).
+    {:ok, tasks2} = SQLite.load_tasks(server)
+    refute Enum.any?(tasks2, &(&1.task_id == "task-ev"))
+    assert {:ok, nil} = SQLite.load_result(server, "task-ev")
+
+    # The immutable submitted op is untouched (only the projection was pruned).
+    {:ok, ops} = SQLite.read_from(server, 0)
+    assert Enum.any?(ops, &(&1.kind == :submitted and &1.task_id == "task-ev"))
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "compacted_through starts at 0 and advances after horizon compaction", %{path: path} do
+    # journal_horizon_ms 0: every op is immediately past the horizon, so a fully
+    # terminal log compacts its whole prefix.
+    server = start_server(path, journal_horizon_ms: 0)
+
+    assert {:ok, 0} = SQLite.compacted_through(server)
+
+    # A complete terminal task (submitted -> succeeded), all ops old (ts 100/101).
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl-c",
+        task_id: "task-c",
+        ts: 100,
+        payload: %{}
+      })
+
+    {:ok, last_seq} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        task_id: "task-c",
+        ts: 101,
+        payload: %{status_code: 200, body: "", size_bytes: 0, truncated: false, expires_at: nil}
+      })
+
+    # now well past ts, horizon 0: the whole prefix is eligible; task is terminal.
+    {:ok, res} = SQLite.compact(server, 10_000)
+    assert res.compacted_through == last_seq
+    assert res.ops_compacted == 2
+    assert {:ok, ^last_seq} = SQLite.compacted_through(server)
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "marker never advances past a live task's ops nor past the horizon", %{path: path} do
+    server = start_server(path, journal_horizon_ms: 1_000)
+
+    # Task L: submitted then assigned, still LIVE (non-terminal). Old ts.
+    {:ok, live_submit_seq} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl-l",
+        task_id: "task-l",
+        ts: 100,
+        payload: %{}
+      })
+
+    {:ok, _} =
+      SQLite.append(server, %Op{kind: :assigned, tenant: "t1", task_id: "task-l", ts: 101, payload: %{}})
+
+    # Task D: fully terminal, also old.
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl-d",
+        task_id: "task-d",
+        ts: 102,
+        payload: %{}
+      })
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        task_id: "task-d",
+        ts: 103,
+        payload: %{status_code: 200, body: "", size_bytes: 0, truncated: false, expires_at: nil}
+      })
+
+    # A RECENT op (ts 10_000), within the horizon at now=10_500 (cutoff 9_500).
+    {:ok, _} =
+      SQLite.append(server, %Op{kind: :denied, tenant: "t1", ts: 10_000, payload: %{}})
+
+    # cutoff = 10_500 - 1_000 = 9_500. The live task's submitted op (seq
+    # live_submit_seq) is the smallest blocked seq (owned by a non-terminal task),
+    # so the marker can only reach live_submit_seq - 1.
+    {:ok, res} = SQLite.compact(server, 10_500)
+    assert res.compacted_through == live_submit_seq - 1
+
+    # The live task's ops and the recent op are all still readable.
+    {:ok, ops} = SQLite.read_from(server, live_submit_seq - 1)
+    kinds = Enum.map(ops, & &1.kind)
+    assert :assigned in kinds
+    assert :denied in kinds
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "read_from below the marker errors as {:compacted, marker}, at/above returns ops", %{path: path} do
+    server = start_server(path, journal_horizon_ms: 0)
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl-r",
+        task_id: "task-r",
+        ts: 100,
+        payload: %{}
+      })
+
+    {:ok, last_seq} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        task_id: "task-r",
+        ts: 101,
+        payload: %{status_code: 200, body: "", size_bytes: 0, truncated: false, expires_at: nil}
+      })
+
+    {:ok, res} = SQLite.compact(server, 10_000)
+    marker = res.compacted_through
+    assert marker == last_seq
+
+    # A seq below the marker is compacted-away history, distinguishable from empty.
+    assert {:error, {:compacted, ^marker}} = SQLite.read_from(server, marker - 1)
+
+    # At the marker: intact (empty here, since everything <= marker is gone), NOT
+    # an error.
+    assert {:ok, []} = SQLite.read_from(server, marker)
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "compaction is bounded: a small batch_size finishes across successive calls", %{path: path} do
+    # batch_size 2, horizon 0: with 5 fully-terminal single-op-ish tasks whose ops
+    # all qualify, one compact/2 deletes at most 2 ops and reports done:false until
+    # the prefix is drained.
+    server = start_server(path, journal_horizon_ms: 0, compact_batch_size: 2)
+
+    # Five standalone audit ops (no task ownership blocks compaction), all old.
+    for i <- 1..5 do
+      {:ok, _} = SQLite.append(server, %Op{kind: :denied, tenant: "t1", ts: 100 + i, payload: %{}})
+    end
+
+    # First batch: 2 ops, not done.
+    {:ok, b1} = SQLite.compact(server, 10_000)
+    assert b1.ops_compacted == 2
+    assert b1.done == false
+    assert b1.compacted_through == 5
+
+    # Second batch: 2 more, still not done.
+    {:ok, b2} = SQLite.compact(server, 10_000)
+    assert b2.ops_compacted == 2
+    assert b2.done == false
+
+    # Third batch: last 1, now done (under the ceiling on every table).
+    {:ok, b3} = SQLite.compact(server, 10_000)
+    assert b3.ops_compacted == 1
+    assert b3.done == true
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "latency guard: an append between two compact batches lands and is present", %{path: path} do
+    # batch_size 1 forces multiple batches; because each compact/2 is a discrete
+    # GenServer call, an append issued between them is processed and its op survives
+    # (it is a fresh op, above the compacted prefix).
+    server = start_server(path, journal_horizon_ms: 0, compact_batch_size: 1)
+
+    for i <- 1..3 do
+      {:ok, _} = SQLite.append(server, %Op{kind: :denied, tenant: "t1", ts: 100 + i, payload: %{}})
+    end
+
+    {:ok, b1} = SQLite.compact(server, 10_000)
+    assert b1.done == false
+
+    # Interleaved append (a live op, ts newer): completes and is durable.
+    {:ok, mid_seq} =
+      SQLite.append(server, %Op{kind: :drain, tenant: "t1", ts: 20_000, payload: %{}})
+
+    {:ok, _b2} = SQLite.compact(server, 10_000)
+
+    # The interleaved op is still present (it is above the compacted prefix).
+    {:ok, ops} = SQLite.read_from(server, 0)
+    assert Enum.any?(ops, &(&1.seq == mid_seq and &1.kind == :drain))
+
+    :ok = GenServer.stop(server)
+  end
+
   # -- usage projection (Task 12) --------------------------------------------
 
   # ts on the same UTC day so both charges land in one (principal, day) row.

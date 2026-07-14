@@ -419,7 +419,35 @@ defmodule Embervm.Dispatcher do
 
   # Commit one task to a worker: reserve the VM (warm), drive queued->assigned->
   # running through the FSM, bump counters, spawn the assign worker, then recurse.
+  #
+  # First, TTL check (ADR embervm/002): a task popped past its `expires_at` is
+  # expired to failed_permanent and NEVER dispatched (no VM reserved, no primed VM
+  # consumed), then the loop continues draining. This runs BEFORE reserve_vm so an
+  # expired task cannot burn a primed VM. Wall clock, to match the wall-time
+  # `expires_at` the submit stamped.
   defp commit(state, wl, entry, node_id, mode, snapshot_ref, task_id, pr) do
+    if expired?(state, task_id) do
+      _ = safe(fn -> Embervm.TaskStore.expire(state.task_store, task_id) end)
+      release_depth(state, wl, pr)
+      state = Map.update!(state, :queued_ids, &MapSet.delete(&1, task_id))
+      drain_loop(state, wl, entry)
+    else
+      commit_dispatch(state, wl, entry, node_id, mode, snapshot_ref, task_id, pr)
+    end
+  end
+
+  # Whether the task's `expires_at` (wall-time ms, or nil for no TTL) has passed.
+  # Reads the ETS hot set (the dispatch hot path never touches the durable store);
+  # a task missing from ETS (a race) is treated as not-expired so the assign path's
+  # own not_found handling decides its fate.
+  defp expired?(state, task_id) do
+    case safe_call(fn -> Embervm.TaskStore.get(state.task_store, task_id) end) do
+      {:ok, {:ok, %{expires_at: exp}}} when is_integer(exp) -> state.wall_clock.() > exp
+      _ -> false
+    end
+  end
+
+  defp commit_dispatch(state, wl, entry, node_id, mode, snapshot_ref, task_id, pr) do
     {state, vm_id} = reserve_vm(state, node_id, wl, mode)
 
     with {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.assign(state.task_store, task_id) end),

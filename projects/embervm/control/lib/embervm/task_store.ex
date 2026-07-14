@@ -208,6 +208,21 @@ defmodule Embervm.TaskStore do
   end
 
   @doc """
+  Expires a queued task whose `expires_at` has passed: `queued -> failed_permanent`
+  with reason `expired`, appending the existing `:failed` op (no new op kind, no
+  schema change). The dispatcher calls this when it pops a queued task past its TTL,
+  so an over-budget parked task never dispatches after its deadline (ADR embervm/002,
+  closing the D12 queued-task-TTL gap). Fails `:illegal_transition` for any task not
+  currently `:queued` (only queued tasks are popped for dispatch). Expiry is not a
+  processing failure, so it does NOT chain into the dead-letter queue: `failed_permanent`
+  is terminal and sufficient.
+  """
+  @spec expire(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def expire(store \\ __MODULE__, task_id) do
+    GenServer.call(store, {:expire, task_id})
+  end
+
+  @doc """
   Reassigns every in-flight task (`assigned` or `running`) as a retryable
   transport failure and returns how many were reassigned. This is the
   at-least-once path `Embervm.NodeRegistry` calls when a node goes down: a task
@@ -335,10 +350,55 @@ defmodule Embervm.TaskStore do
 
     case idempotency_key && :ets.lookup(state.idem, {workload, idempotency_key}) do
       [{_key, existing_task_id}] ->
-        {:reply, {:ok, :existing, existing_task_id}, state}
+        dedupe_or_resubmit(attrs, workload, idempotency_key, existing_task_id, state)
 
       _ ->
         do_submit(attrs, workload, idempotency_key, state)
+    end
+  end
+
+  # An idempotency-key ETS hit. In-flight (non-terminal) duplicate suppression is
+  # ABSOLUTE: a still-queued/assigned/running/failed_retryable existing task means
+  # the resubmit is a duplicate of live work, so return :existing unchanged. For a
+  # TERMINAL existing task, dedupe holds only while its result is still serveable:
+  # we key the dedupe on the SAME read-time expiry signal as get_result/2 (ADR
+  # embervm/002 rule 1), so "the GET 404s" and "the resubmit runs fresh" stay
+  # consistent. When the cached result is gone (never had one, or past its TTL) the
+  # task is treated as ABSENT: evict its stale projection row (so the fresh
+  # :submitted append does not collide on the unique (workload, key) index), drop
+  # its ETS entries, and submit anew.
+  defp dedupe_or_resubmit(attrs, workload, idempotency_key, existing_task_id, state) do
+    case fetch_task(state, existing_task_id) do
+      {:ok, %{state: task_state}} ->
+        cond do
+          task_state not in TaskState.terminal_states() ->
+            {:reply, {:ok, :existing, existing_task_id}, state}
+
+          match?({:ok, result} when is_map(result), live_result(state, existing_task_id)) ->
+            {:reply, {:ok, :existing, existing_task_id}, state}
+
+          true ->
+            fresh_resubmit(attrs, workload, idempotency_key, existing_task_id, state)
+        end
+
+      {:error, _reason} ->
+        # ETS lost the id (a compaction/eviction race): submit fresh.
+        do_submit(attrs, workload, idempotency_key, state)
+    end
+  end
+
+  # Prune the stale existing task's durable projection row (results cascade) and its
+  # ETS entries, then submit fresh under the same key. The old task's immutable ops
+  # stay in the journal until horizon compaction; only the projection is pruned early.
+  defp fresh_resubmit(attrs, workload, idempotency_key, old_task_id, state) do
+    case Embervm.OpLog.SQLite.evict_task(state.op_log, old_task_id) do
+      :ok ->
+        :ets.delete(state.tasks, old_task_id)
+        :ets.delete(state.idem, {workload, idempotency_key})
+        do_submit(attrs, workload, idempotency_key, state)
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
     end
   end
 
@@ -429,7 +489,7 @@ defmodule Embervm.TaskStore do
   end
 
   def handle_call({:get_result, task_id}, _from, state) do
-    {:reply, Embervm.OpLog.SQLite.load_result(state.op_log, task_id), state}
+    {:reply, live_result(state, task_id), state}
   end
 
   def handle_call({:get_request, task_id}, _from, state) do
@@ -511,6 +571,18 @@ defmodule Embervm.TaskStore do
 
         {:error, _reason} = error ->
           {:reply, error, state}
+      end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:expire, task_id}, _from, state) do
+    with {:ok, task} <- fetch_task(state, task_id),
+         {:ok, next} <- TaskState.transition(task.state, :expire) do
+      case append_and_update(state, task, :failed, next, %{state: next, reason: :expired}) do
+        {:ok, updated} -> {:reply, {:ok, updated}, state}
+        {:error, _reason} = error -> {:reply, error, state}
       end
     else
       {:error, _reason} = error -> {:reply, error, state}
@@ -729,6 +801,23 @@ defmodule Embervm.TaskStore do
     end
 
     :ok
+  end
+
+  # Read-time result TTL (ADR embervm/002 rule 1): loads the stored result and
+  # treats one whose integer `expires_at` is already past (against the injected
+  # clock) as absent, replying {:ok, nil}. This makes GET /v1/tasks/{id}/result
+  # 404 the moment the TTL lapses, independent of whether the sweeper has run, and
+  # is the SAME signal the submit dedupe path keys on so the two stay consistent.
+  # The clock lives here in the store, so the filter stays here rather than in the
+  # op-log's load_result (whose behaviour signature is unchanged).
+  defp live_result(state, task_id) do
+    case Embervm.OpLog.SQLite.load_result(state.op_log, task_id) do
+      {:ok, %{expires_at: expires_at} = result} when is_integer(expires_at) ->
+        if expires_at < state.clock.(), do: {:ok, nil}, else: {:ok, result}
+
+      other ->
+        other
+    end
   end
 
   defp fetch_task(state, task_id) do

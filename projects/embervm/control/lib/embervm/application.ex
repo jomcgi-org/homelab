@@ -46,7 +46,7 @@ defmodule Embervm.Application do
       # rest_for_one chain costs nothing.
       {Registry, keys: :duplicate, name: Embervm.TaskWaiters},
       Embervm.SyncWait,
-      {Embervm.OpLog.SQLite, path: oplog_path()},
+      {Embervm.OpLog.SQLite, path: oplog_path(), journal_horizon_ms: journal_horizon_ms()},
       # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
       # so Embervm.Metering charges the quota cache off the same durable write.
       {Embervm.TaskStore, [on_metered: &Embervm.Metering.on_metered/1]},
@@ -119,6 +119,13 @@ defmodule Embervm.Application do
       # during downtime are skipped, not replayed. After the watcher (reads the
       # catalog's triggers) and TaskStore (submits into it).
       Embervm.Trigger.Cron,
+      # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
+      # the durable projection tables + ops-journal prefix. Placed LATE, right before
+      # Bandit: it depends ONLY on the op-log (which starts early), so under
+      # :rest_for_one a Compactor crash restarts only Bandit, the minimum blast
+      # radius. It adds no writer (each batch is a call to the op-log's single
+      # writer). Correctness (read-time TTLs) does not depend on it; it reclaims disk.
+      {Embervm.OpLog.Compactor, op_log: Embervm.OpLog.SQLite, interval_ms: sweep_interval_ms()},
       # Bandit + the router last: its handlers call Auth, TaskStore, SyncWait, and
       # the dispatcher's admit? gate, so the HTTP surface must not accept requests
       # until all are up.
@@ -149,6 +156,29 @@ defmodule Embervm.Application do
       nil -> nil
       "" -> nil
       path -> path
+    end
+  end
+
+  # The op-log sweeper cadence (EMBERVM_OPLOG_SWEEP_INTERVAL_MS, the chart wires
+  # this from values.opLog.sweepIntervalSeconds x 1000); default hourly. Distinct
+  # from the journal horizon below: this is HOW OFTEN we sweep, that is HOW OLD an
+  # op must be before it is eligible.
+  defp sweep_interval_ms do
+    case trimmed_env("EMBERVM_OPLOG_SWEEP_INTERVAL_MS") do
+      "" -> 3_600_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  # The ops-journal prefix-compaction horizon (EMBERVM_OPLOG_JOURNAL_HORIZON_MS,
+  # the chart wires this from values.opLog.journalHorizonDays x 86_400_000);
+  # default 30 days. An op younger than this (or owned by a live task) is never
+  # compacted. Distinct from the terminal-task 7-day retention baked into the
+  # op-log; this bounds the append-only journal, that bounds the tasks projection.
+  defp journal_horizon_ms do
+    case trimmed_env("EMBERVM_OPLOG_JOURNAL_HORIZON_MS") do
+      "" -> 30 * 24 * 60 * 60 * 1000
+      raw -> String.to_integer(raw)
     end
   end
 

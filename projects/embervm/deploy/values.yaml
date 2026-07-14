@@ -8,6 +8,10 @@ opLog:
   # Deployment is Recreate + 1 replica because SQLite is single-writer and the
   # volume is RWO.
   size: 2Gi
+  # Op-log retention (ADR embervm/002): hourly bounded-batch sweep; ops-journal
+  # prefix compaction past a 30-day horizon (older audit is in SigNoz).
+  sweepIntervalSeconds: 3600
+  journalHorizonDays: 30
 
 # TokenReview allow-list: ServiceAccount usernames permitted to submit tasks
 # (Task 8). Empty means deny-all (fail-closed). In R0 the only entry is the

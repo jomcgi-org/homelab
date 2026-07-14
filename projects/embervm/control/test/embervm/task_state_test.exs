@@ -11,6 +11,7 @@ defmodule Embervm.TaskStateTest do
 
   @legal %{
     {:queued, :assign} => :assigned,
+    {:queued, :expire} => :failed_permanent,
     {:assigned, :start} => :running,
     {:assigned, :fail_retryable} => :failed_retryable,
     {:assigned, :fail_permanent} => :failed_permanent,
@@ -23,7 +24,12 @@ defmodule Embervm.TaskStateTest do
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 10
+    # 11 legal edges now: the R0 ten plus {:queued, :expire} (ADR embervm/002).
+    assert map_size(@legal) == 11
+    # :expire is enumerated as an event, so the cartesian walk below covers every
+    # (state, :expire) pair (only the queued one is legal).
+    assert :expire in TaskState.events()
+    assert length(TaskState.events()) == 9
 
     for state <- TaskState.states(), event <- TaskState.events() do
       case Map.fetch(@legal, {state, event}) do
