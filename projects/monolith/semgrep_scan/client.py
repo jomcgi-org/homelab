@@ -13,6 +13,8 @@ reach through the FastMCP tool wrapper to run a scan.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import os
 
@@ -23,6 +25,26 @@ from shared.k8s_auth import auth_headers
 logger = logging.getLogger(__name__)
 
 FC_INVOKE_URL = os.environ.get("FC_INVOKE_URL", "")
+
+# EmberVM control-plane base URL (Task 15). The per-PR diff scan (``scan_files``)
+# can be routed to EmberVM's ``semgrep`` Workload instead of fc-invoke, selected by
+# SEMGREP_DISPATCH. EmberVM has only the ``semgrep`` diff workload in R0, so the
+# whole-repo (``semgrep-full``) and heavy-diff (``semgrep-hi``) paths stay on
+# fc-invoke regardless of the flag.
+EMBERVM_URL = os.environ.get("EMBERVM_URL", "")
+
+# Dispatch mode for the per-PR semgrep diff scan (ADR + R0 Task 15):
+#   fc-invoke : serve from fc-invoke (default, unchanged behaviour).
+#   embervm   : serve from EmberVM's semgrep Workload.
+#   shadow    : serve from fc-invoke AND mirror to EmberVM asynchronously,
+#               comparing finding-count/status and logging divergence with no
+#               user-facing effect (the reversible-cutover soak per the plan).
+SEMGREP_DISPATCH = os.environ.get("SEMGREP_DISPATCH", "fc-invoke")
+
+# Shadow divergence counters, queryable for the Task 16 acceptance gate. Process-
+# local (reset on restart); the per-divergence structured log is the durable
+# record in SigNoz.
+shadow_stats = {"total": 0, "match": 0, "diverged": 0, "embervm_error": 0}
 
 # Separate connect/read timeouts: a fast connect surfaces a down daemon quickly,
 # while a generous read budget (a bit over the daemon ScanTimeout) lets a large
@@ -82,15 +104,118 @@ async def _post_invoke(workload: str, files: list[dict], read_timeout: float) ->
         return {"error": f"semgrep scan failed: {exc}"}
 
 
+async def _post_embervm(files: list[dict], read_timeout: float) -> dict:
+    """POST a diff scan to EmberVM's ``semgrep`` Workload; the EmberVM counterpart
+    of ``_post_invoke``. Submits synchronously (``?wait=true``) so the guest's
+    ScanResult comes back inline (EmberVM forwards the guest response verbatim, so
+    the shape matches fc-invoke), with an Idempotency-Key from the content hash so
+    a webhook redelivery dedupes to the same task. Same error shape as
+    ``_post_invoke`` (a dict with a single ``error`` key on failure).
+    """
+    if not EMBERVM_URL:
+        return {"error": "EMBERVM_URL is not configured"}
+    if not files:
+        return {"error": "no files provided to scan"}
+
+    timeout = httpx.Timeout(read_timeout, connect=SEMGREP_CONNECT_TIMEOUT)
+    payload = {"files": files}
+    headers = {**auth_headers(), "Idempotency-Key": _content_key(files)}
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{EMBERVM_URL}/v1/workloads/semgrep/tasks?wait=true",
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError as exc:
+        logger.exception("embervm connection failed")
+        return {"error": f"could not reach embervm: {exc}"}
+    except httpx.HTTPStatusError as exc:
+        logger.exception("embervm returned an error status")
+        return {
+            "error": (
+                f"embervm returned HTTP {exc.response.status_code}: "
+                f"{exc.response.text[:500]}"
+            )
+        }
+    except Exception as exc:  # noqa: BLE001: surface any failure as structured error
+        logger.exception("embervm semgrep scan failed")
+        return {"error": f"embervm semgrep scan failed: {exc}"}
+
+
+def _content_key(files: list[dict]) -> str:
+    """A stable idempotency key from the scan's file contents (path + content),
+    order-independent, so a webhook redelivery of the same diff dedupes to the
+    same EmberVM task."""
+    digest = hashlib.sha256()
+    for f in sorted(files, key=lambda e: e.get("path", "")):
+        digest.update(f.get("path", "").encode())
+        digest.update(b"\0")
+        digest.update(f.get("content", "").encode())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _finding_count(result: dict) -> int:
+    findings = result.get("findings")
+    return len(findings) if isinstance(findings, list) else -1
+
+
+async def _shadow_scan(files: list[dict], fc_result: dict) -> None:
+    """Fire-and-forget shadow (Task 15): run the same diff on EmberVM, compare
+    finding-count and error status to the served fc-invoke result, and log any
+    divergence. NEVER raises: a shadow failure must not affect the served scan."""
+    try:
+        shadow_stats["total"] += 1
+        ev_result = await _post_embervm(files, SEMGREP_READ_TIMEOUT)
+
+        if "error" in ev_result:
+            shadow_stats["embervm_error"] += 1
+            logger.warning(
+                "semgrep shadow: embervm path errored: %s", ev_result["error"]
+            )
+            return
+
+        fc_n, ev_n = _finding_count(fc_result), _finding_count(ev_result)
+        if fc_n == ev_n:
+            shadow_stats["match"] += 1
+        else:
+            shadow_stats["diverged"] += 1
+            logger.warning(
+                "semgrep shadow: finding-count divergence fc=%d embervm=%d", fc_n, ev_n
+            )
+    except Exception:  # noqa: BLE001: shadow must never affect the served path
+        logger.exception("semgrep shadow comparison failed")
+
+
 async def scan_files(files: list[dict]) -> dict:
-    """POST file contents to the fc-invoke semgrep workload and return findings.
+    """POST file contents to the semgrep diff workload and return findings.
 
     Each entry in ``files`` needs a ``path`` (repo-relative, used to pick rules
     and report locations) and a ``content`` (the whole current file text). On
     success returns the daemon response: a ``findings`` list plus an ``errors``
     list. On failure returns a dict with a single ``error`` key.
+
+    Dispatch is selected by ``SEMGREP_DISPATCH`` (Task 15): ``fc-invoke`` (default)
+    serves from fc-invoke; ``embervm`` serves from EmberVM's semgrep Workload;
+    ``shadow`` serves from fc-invoke and mirrors to EmberVM asynchronously for
+    finding-count comparison, with no user-facing effect. The caller contract
+    (response/error shape, timeouts) is identical across modes.
     """
-    return await _post_invoke("semgrep", files, SEMGREP_READ_TIMEOUT)
+    if SEMGREP_DISPATCH == "embervm":
+        return await _post_embervm(files, SEMGREP_READ_TIMEOUT)
+
+    result = await _post_invoke("semgrep", files, SEMGREP_READ_TIMEOUT)
+
+    if SEMGREP_DISPATCH == "shadow" and EMBERVM_URL and files and "error" not in result:
+        # Mirror asynchronously; do NOT await (no added latency, no user effect).
+        # The event loop keeps the pending task alive until it completes.
+        asyncio.ensure_future(_shadow_scan(files, result))
+
+    return result
 
 
 async def scan_files_hi(files: list[dict]) -> dict:

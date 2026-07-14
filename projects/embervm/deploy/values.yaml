@@ -24,6 +24,11 @@ auth:
   # the Task 14/15 cutover.
   allowedServiceAccounts:
     - system:serviceaccount:embervm:embervm-embervm
+    # The monolith ServiceAccount (Task 15): admits the monolith's semgrep_scan
+    # client when SEMGREP_DISPATCH is flipped to embervm/shadow. Same SA the
+    # monolith already uses to call fc-invoke. Added now so the dual-path code is
+    # ready to authenticate the moment the flag flips; no traffic until then.
+    - system:serviceaccount:monolith:monolith
 
 # Metering, audit, and quotas (Task 12). Quota is left OFF in R0 (opt-in, empty =
 # no enforcement): per-principal daily vCPU-second budgets are set alongside the

@@ -90,6 +90,18 @@ spec:
             - name: FC_INVOKE_URL
               value: {{ .Values.semgrep.fcInvokeUrl | quote }}
             {{- end }}
+            {{- if .Values.semgrep.embervmUrl }}
+            # EmberVM control-plane URL + dispatch mode (R0 Task 15). The per-PR
+            # semgrep diff scan can be served from EmberVM's semgrep Workload, or
+            # shadow-mirrored to it, selected by SEMGREP_DISPATCH. Default
+            # `fc-invoke` keeps the served path unchanged until cutover.
+            - name: EMBERVM_URL
+              value: {{ .Values.semgrep.embervmUrl | quote }}
+            {{- end }}
+            {{- if .Values.semgrep.dispatch }}
+            - name: SEMGREP_DISPATCH
+              value: {{ .Values.semgrep.dispatch | quote }}
+            {{- end }}
             {{- if .Values.semgrep.shadowProject }}
             # Route B shadow project: the relay reports App scans under this name
             # instead of the real repo, keeping self-hosted scans in a separate
