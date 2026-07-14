@@ -303,6 +303,39 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(count, & &1) == 0
   end
 
+  test "a stale retry message while a build is in flight does not enqueue a second build" do
+    agent = start_recorder()
+    test_pid = self()
+    {:ok, count} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, req ->
+      Agent.update(count, &(&1 + 1))
+      send(test_pid, {:building, req.trace.workload, self()})
+
+      receive do
+        {:go, result} -> result
+      end
+    end
+
+    builder = start_builder(status_writer: recording_status_writer(agent), build_fun: build_fun)
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_receive {:building, "w", worker}, 1_000
+
+    # Simulate a stale backoff timer firing (its {:retry, name} message racing a
+    # build already in flight for the current signature). It must be a no-op, not
+    # a second enqueue.
+    send(builder, {:retry, "w"})
+    Process.sleep(30)
+
+    send(worker, {:go, {:ok, resp("snap1")}})
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap1"}, latest(agent, "w")) end)
+
+    # Exactly one build ran despite the stale retry.
+    Process.sleep(30)
+    assert Agent.get(count, & &1) == 1
+  end
+
   # -- forget -----------------------------------------------------------------
 
   test "forgetting a workload mid-queue drops it without building" do
