@@ -605,10 +605,14 @@ defmodule Embervm.Dispatcher do
   # classifies the result into a terminal outcome. Returns a 2- or 3-tuple the
   # GenServer applies to the FSM.
   defp run_assign(ctx, channel_fun, invalidate_fun, assign_fun, prime_fun, get_request_fun) do
-    # Attach the dispatcher's OTel context so this worker's spans nest under the
-    # dispatch trace (Task 13), then open the top dispatch span. `pool_hit` marks
-    # the warm (primed) vs miss (prime-then-assign) path, per the span-attr spec.
-    _ = OpenTelemetry.Ctx.attach(Map.get(ctx, :otel_ctx, :undefined))
+    req_env = fetch_request(get_request_fun, ctx.task_id)
+
+    # Restore the CALLER's trace context (the traceparent the submit carried, e.g.
+    # the demos page whose httpx is OTel-instrumented) so the dispatch/guest_exec
+    # spans join the caller's trace and appear in its waterfall. Falls back to the
+    # dispatcher's own context (cron, retries, or a submit with no trace). Then
+    # open the top dispatch span; `pool_hit` marks warm vs miss.
+    _ = restore_trace_ctx(req_env, ctx)
 
     Tracer.with_span "embervm.dispatch", %{
       attributes: %{
@@ -619,13 +623,32 @@ defmodule Embervm.Dispatcher do
         "ember.pool_hit" => ctx.mode == :warm
       }
     } do
-      do_run_assign(ctx, channel_fun, invalidate_fun, assign_fun, prime_fun, get_request_fun)
+      do_run_assign(ctx, req_env, channel_fun, invalidate_fun, assign_fun, prime_fun)
     end
   end
 
-  defp do_run_assign(ctx, channel_fun, invalidate_fun, assign_fun, prime_fun, get_request_fun) do
-    req_env = fetch_request(get_request_fun, ctx.task_id)
+  # Prefer the caller's W3C traceparent (propagated through the op-log's submitted
+  # request env) so EmberVM's spans nest under the caller's trace; else the
+  # dispatcher's captured context.
+  defp restore_trace_ctx(req_env, ctx) do
+    case Map.get(req_env, "traceparent") do
+      tp when is_binary(tp) and tp != "" ->
+        # Guarded: a propagator hiccup must never crash the assign worker; worst
+        # case the spans export un-nested (a separate trace), never a lost task.
+        try do
+          :otel_propagator_text_map.extract([{"traceparent", tp}])
+        rescue
+          _ -> :ok
+        catch
+          _, _ -> :ok
+        end
 
+      _ ->
+        OpenTelemetry.Ctx.attach(Map.get(ctx, :otel_ctx, :undefined))
+    end
+  end
+
+  defp do_run_assign(ctx, req_env, channel_fun, invalidate_fun, assign_fun, prime_fun) do
     case channel_fun.(ctx.node_id) do
       {:ok, channel} ->
         with {:ok, vm_id} <- ensure_vm(ctx, channel, prime_fun) do
