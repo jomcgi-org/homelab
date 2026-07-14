@@ -95,9 +95,10 @@ genrule(
         # compiles in the general test lane. Nothing generated is checked in.
         "//projects/embervm/proto/embervm/node/v1:node_elixir_src",
         ":hex_tarballs",
+        "@rebar3//file",
     ],
     outs = ["mix_test_smoke.txt"],
-    cmd = "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
+    cmd = "MIX_REBAR3_SRC=\"$$(pwd)/$(location @rebar3//file)\" $(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
     tags = ["no-remote-cache"],
     tools = ["mix_test.sh"],
 )

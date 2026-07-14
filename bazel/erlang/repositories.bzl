@@ -210,6 +210,19 @@ def _erlang_impl(_ctx):
         downloaded_file_path = "hex.ez",
     )
 
+    # rebar3 (Task 13): mix builds rebar-project deps (the OpenTelemetry gRPC
+    # exporter's Erlang chain: gproc, grpcbox, ts_chatterbox, ...) by shelling out
+    # to rebar3, which the prior all-mix closure never needed. The release asset is
+    # a self-contained, arch-independent escript; the mix drivers stage it onto the
+    # OTP bin (already on PATH) so mix finds it. Offline + SHA-pinned.
+    http_file(
+        name = "rebar3",
+        urls = ["https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3"],
+        sha256 = "d2d31cfb98904b8e4917300a75f870de12cb5167cd6214d1043e973a56668a54",
+        downloaded_file_path = "rebar3",
+        executable = True,
+    )
+
 erlang = module_extension(
     implementation = _erlang_impl,
     doc = "Fetches the prebuilt ubuntu-22.04 OTP 27 (@otp_ubuntu2204_amd64), precompiled Elixir 1.18.4 (@elixir_1_18_4), the control-plane hex dependency tarballs (@hex_*), and the prebuilt protoc (@protoc_linux_x86_64) for node.proto codegen.",

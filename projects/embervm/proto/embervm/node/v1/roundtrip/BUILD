@@ -23,9 +23,11 @@ genrule(
         "//bazel/erlang:hex_tarballs",
         "//projects/embervm/proto/embervm/node/v1:node_elixir_src",
         "node_roundtrip_test.exs",
+        "@rebar3//file",
     ],
     outs = ["node_roundtrip_test.txt"],
-    cmd = "$(location //bazel/erlang:roundtrip_test.sh) " +
+    cmd = "MIX_REBAR3_SRC=\"$$(pwd)/$(location @rebar3//file)\" " +
+          "$(location //bazel/erlang:roundtrip_test.sh) " +
           "\"$(location @otp_ubuntu2204_amd64//:Install)\" " +
           "\"$(location @elixir_1_18_4//:bin/elixir)\" " +
           "\"$(location //projects/embervm/control:mix.exs)\" " +
