@@ -631,22 +631,46 @@ defmodule Embervm.Dispatcher do
   # request env) so EmberVM's spans nest under the caller's trace; else the
   # dispatcher's captured context.
   defp restore_trace_ctx(req_env, ctx) do
-    case Map.get(req_env, "traceparent") do
-      tp when is_binary(tp) and tp != "" ->
-        # Guarded: a propagator hiccup must never crash the assign worker; worst
-        # case the spans export un-nested (a separate trace), never a lost task.
+    case parse_traceparent(Map.get(req_env, "traceparent")) do
+      {trace_id, span_id, flags} ->
+        # Set the CALLER's span as the remote parent so the dispatch/guest_exec
+        # spans nest under the caller's trace (parse the W3C traceparent directly
+        # rather than via the text-map propagator, which needs propagator config we
+        # do not carry). Guarded: a trace hiccup must never crash the assign worker.
         try do
-          :otel_propagator_text_map.extract([{"traceparent", tp}])
+          remote = :otel_tracer.from_remote_span(trace_id, span_id, flags)
+          OpenTelemetry.Tracer.set_current_span(remote)
         rescue
           _ -> :ok
         catch
           _, _ -> :ok
         end
 
-      _ ->
+      :error ->
         OpenTelemetry.Ctx.attach(Map.get(ctx, :otel_ctx, :undefined))
     end
   end
+
+  # Parse a W3C `traceparent` (`<ver>-<32hex trace>-<16hex span>-<2hex flags>`)
+  # into integer ids, or :error for anything malformed/absent.
+  defp parse_traceparent(tp) when is_binary(tp) do
+    case String.split(tp, "-") do
+      [_ver, trace_hex, span_hex, flags_hex]
+      when byte_size(trace_hex) == 32 and byte_size(span_hex) == 16 ->
+        with {trace_id, ""} <- Integer.parse(trace_hex, 16),
+             {span_id, ""} <- Integer.parse(span_hex, 16),
+             {flags, ""} <- Integer.parse(flags_hex, 16) do
+          {trace_id, span_id, flags}
+        else
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp parse_traceparent(_), do: :error
 
   defp do_run_assign(ctx, req_env, channel_fun, invalidate_fun, assign_fun, prime_fun) do
     case channel_fun.(ctx.node_id) do
