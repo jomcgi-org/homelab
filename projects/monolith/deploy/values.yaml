@@ -167,7 +167,7 @@ semgrep:
   # verified returning identical PRO findings. Revert to "fc-invoke" (one value +
   # rollout) if a real PR diff regresses. fc-invoke's scan path stays deployed as
   # the instant fallback until R1/R2 formally deprecates it.
-  dispatch: "embervm"
+  dispatch: "fc-invoke"
   # Route B shadow project (Route B vs SMS comparison): self-hosted scans report
   # here instead of jomcgi/homelab, so they land in a separate Semgrep project.
   # UNSET this single value at cutover to report to the real project.
