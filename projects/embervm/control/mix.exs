@@ -71,24 +71,26 @@ defmodule Embervm.MixProject do
       {:mint, path: "deps/mint", override: true},
       {:nimble_options, path: "deps/nimble_options", override: true},
       {:nimble_pool, path: "deps/nimble_pool", override: true},
-      # node.proto gRPC client (Task 3): protobuf is both the wire runtime and the
-      # source of the generated Embervm.Node.V1.* stubs (which `use GRPC.Service`
-      # / `use GRPC.Stub`); grpc -> grpc_core -> {googleapis, jason, protobuf,
-      # telemetry} is the client stack. The Mint transport reuses the already-
-      # pinned mint (grpc's gun transport is optional and not pulled), so no
-      # gun/cowlib/cowboy server subtree enters. See bazel/erlang/repositories.bzl.
+      # node.proto gRPC client (Task 3 codegen; Task 9 consumer): protobuf is both
+      # the wire runtime and the source of the generated Embervm.Node.V1.* stubs
+      # (which `use GRPC.Service` / `use GRPC.Stub`); grpc -> grpc_core ->
+      # {googleapis, jason, protobuf, telemetry} is the client stack. The Mint
+      # transport reuses the already-pinned mint (grpc's gun transport is optional
+      # and not pulled), so no gun/cowlib/cowboy server subtree enters. See
+      # bazel/erlang/repositories.bzl.
       #
-      # `only: :test` for now: Task 3 ships codegen + the cross-language round-trip
-      # test but no lib/ code calls the node client yet, so keeping these out of
-      # :prod leaves the release image (release_tar) byte-identical and this PR
-      # non-deploying. Task 4 (the dispatcher) promotes them to prod deps and
-      # bumps the chart when the client actually enters the release. Prod control
-      # code encodes JSON via OTP's built-in :json, not jason.
-      {:protobuf, path: "deps/protobuf", only: :test, override: true},
-      {:grpc, path: "deps/grpc", only: :test, override: true},
-      {:grpc_core, path: "deps/grpc_core", only: :test, override: true},
-      {:googleapis, path: "deps/googleapis", only: :test, override: true},
-      {:jason, path: "deps/jason", only: :test, override: true}
+      # Prod scope as of Task 9: Embervm.NodeRegistry consumes the WatchNode stream
+      # in lib/, so these enter the release. The generated node.pb.ex is staged
+      # into lib/embervm/node/v1/ at build time by bazel/erlang/mix_test.sh and
+      # mix_release.sh (never committed; see the proto codegen genrule), the same
+      # injection the round-trip test uses. Promoting these off `only: :test`
+      # changes the release image digest, so this PR bumps the chart. All pure
+      # Elixir/Erlang, no new NIF, so the amd64-only image is unaffected.
+      {:protobuf, path: "deps/protobuf", override: true},
+      {:grpc, path: "deps/grpc", override: true},
+      {:grpc_core, path: "deps/grpc_core", override: true},
+      {:googleapis, path: "deps/googleapis", override: true},
+      {:jason, path: "deps/jason", override: true}
     ]
   end
 end

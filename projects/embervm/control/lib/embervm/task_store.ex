@@ -134,6 +134,25 @@ defmodule Embervm.TaskStore do
     GenServer.call(store, {:redrive, task_id})
   end
 
+  @doc """
+  Reassigns every in-flight task (`assigned` or `running`) as a retryable
+  transport failure and returns how many were reassigned. This is the
+  at-least-once path `Embervm.NodeRegistry` calls when a node goes down: a task
+  that was on the node when its daemon stopped answering must be retried because
+  we cannot know whether the guest completed. Each task flows through the exact
+  same `Embervm.Retry` classification as any other transport failure (`:transport`
+  is retryable by default), so a task with budget left becomes `failed_retryable`
+  (the dispatcher's `retry/2` later moves it back to `queued`) and one whose
+  budget is exhausted becomes `failed_permanent` and is dead-lettered, no
+  special node-down code path. In v1 there is exactly one node, so "in-flight" is
+  precisely "on the downed node"; multi-node filtering by assigned node is Task
+  11's concern once tasks record where they were dispatched.
+  """
+  @spec reassign_in_flight(GenServer.server()) :: {:ok, non_neg_integer()}
+  def reassign_in_flight(store \\ __MODULE__) do
+    GenServer.call(store, {:reassign_in_flight, :transport})
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -359,6 +378,20 @@ defmodule Embervm.TaskStore do
     end
   end
 
+  def handle_call({:reassign_in_flight, reason}, _from, state) do
+    in_flight =
+      :ets.foldl(
+        fn {_id, task}, acc ->
+          if task.state in [:assigned, :running], do: [task | acc], else: acc
+        end,
+        [],
+        state.tasks
+      )
+
+    Enum.each(in_flight, fn task -> reassign_one(state, task, reason) end)
+    {:reply, {:ok, length(in_flight)}, state}
+  end
+
   # -- submit helpers --------------------------------------------------------
 
   defp do_submit(attrs, workload, idempotency_key, state) do
@@ -481,6 +514,33 @@ defmodule Embervm.TaskStore do
   defp reply_after_fail(state, task, :fail_retryable, prior_attempt, cfg) do
     backoff = Embervm.Retry.backoff_ms(prior_attempt, cfg)
     {:reply, {:ok, task, backoff}, state}
+  end
+
+  # Reassigns one in-flight task as a failure of `reason` (see
+  # reassign_in_flight/1). Mirrors the {:fail, ...} handler's classify ->
+  # transition -> append path, including the permanent-failure dead-letter chain,
+  # but discards the reply/backoff (the caller reassigns a whole batch and only
+  # needs the count). Best-effort per task: an op-log append error for one task is
+  # logged-by-omission and does not abort the batch, since a downed node's other
+  # tasks must still be reassigned.
+  defp reassign_one(state, task, reason) do
+    cfg = cfg_for(task.workload)
+    event = Embervm.Retry.classify(reason, task.attempt, cfg)
+    next = TaskState.transition!(task.state, event)
+
+    case append_and_update(state, task, :failed, next, %{state: next, reason: reason}) do
+      {:ok, updated} when event == :fail_permanent ->
+        case TaskState.transition(updated.state, :dead_letter) do
+          {:ok, dl} -> append_and_update(state, updated, :dead_lettered, dl, %{})
+          {:error, _} -> :ok
+        end
+
+      {:ok, _updated} ->
+        :ok
+
+      {:error, _reason} ->
+        :ok
+    end
   end
 
   defp fetch_task(state, task_id) do

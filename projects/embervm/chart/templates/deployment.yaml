@@ -40,9 +40,20 @@ spec:
               value: {{ .Values.service.port | quote }}
             - name: EMBERVM_OPLOG_PATH
               value: /var/lib/embervm/oplog.db
+            # Node identity + address for Embervm.NodeRegistry (Task 9). The
+            # registry takes a LIST internally; v1 wires exactly one node from
+            # these two values.
+            - name: EMBERVM_NODE_ID
+              value: {{ .Values.node.id | quote }}
             {{- if .Values.node.address }}
             - name: EMBERVM_NODE_ADDRESS
               value: {{ .Values.node.address | quote }}
+            {{- else if .Values.noded.enabled }}
+            # No explicit node.address override: derive the in-cluster noded
+            # Service DNS from the release name (survives a release rename, per
+            # the Helm service-name convention) rather than hardcoding it.
+            - name: EMBERVM_NODE_ADDRESS
+              value: {{ printf "%s.%s.svc.cluster.local:%d" (include "embervm.noded.fullname" .) .Release.Namespace (int .Values.noded.grpcPort) | quote }}
             {{- end }}
             {{- if .Values.auth.allowedServiceAccounts }}
             # TokenReview allow-list: ServiceAccount usernames permitted to

@@ -5,8 +5,8 @@
 # 1's toolchain (bin/erl was proved by otp_smoke).
 #
 # Args: $1 OTP Install script, $2 elixir bin/elixir anchor, $3 control mix.exs
-#       anchor, $4 output marker, $5 hex.ez archive, $6.. hex dependency tarballs
-#       (may be empty).
+#       anchor, $4 output marker, $5 hex.ez archive, $6 generated node.pb.ex,
+#       $7.. hex dependency tarballs (may be empty).
 set -euo pipefail
 
 install_script="$1"
@@ -14,7 +14,8 @@ elixir_anchor="$2"
 mixexs="$3"
 out="$4"
 hex_ez="$5"
-shift 5
+node_pb_ex="$6"
+shift 6
 # Remaining args ("$@") are hex dependency tarballs.
 
 # Absolutize the output before we cd away (Bazel passes it execroot-relative).
@@ -25,6 +26,10 @@ esac
 case "$hex_ez" in
 /*) ;;
 *) hex_ez="$(pwd)/$hex_ez" ;;
+esac
+case "$node_pb_ex" in
+/*) ;;
+*) node_pb_ex="$(pwd)/$node_pb_ex" ;;
 esac
 
 otp_src="$(cd "$(dirname "$install_script")" && pwd)"
@@ -47,6 +52,14 @@ trap 'rm -rf "$work"' EXIT
 cp -RL "$otp_src"/. "$work/otp/"
 cp -RL "$elixir_src"/. "$work/elixir/"
 cp -RL "$control_src"/. "$work/control/"
+
+# Inject the generated node.proto Elixir stub into the app (mix globs lib/**).
+# It is a build product kept out of the committed control/ (see the proto codegen
+# genrule), so prod lib/ code that references Embervm.Node.V1.* (Task 9's
+# NodeRegistry) only compiles once it is staged here, the same injection the
+# round-trip test and the release build use.
+mkdir -p "$work/control/lib/embervm/node/v1"
+cp "$node_pb_ex" "$work/control/lib/embervm/node/v1/node.pb.ex"
 
 # Unpack each hex dependency tarball into deps/<name>/. Hex tarballs nest the
 # source inside contents.tar.gz; the control mix.exs consumes each as a `path:`

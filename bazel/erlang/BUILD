@@ -77,10 +77,14 @@ genrule(
         "//projects/embervm/control:srcs",
         "//projects/embervm/control:mix.exs",
         "@hex_archive//file",
+        # Generated node.proto Elixir stub, staged into control/lib/ by mix_test.sh
+        # so prod lib/ code referencing Embervm.Node.V1.* (Task 9's NodeRegistry)
+        # compiles in the general test lane. Nothing generated is checked in.
+        "//projects/embervm/proto/embervm/node/v1:node_elixir_src",
         ":hex_tarballs",
     ],
     outs = ["mix_test_smoke.txt"],
-    cmd = "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" $(locations :hex_tarballs)",
+    cmd = "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
     tags = ["no-remote-cache"],
     tools = ["mix_test.sh"],
 )
