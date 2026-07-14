@@ -159,7 +159,10 @@ workloads:
     # them is an accepted trade for absolute throughput. Past 16 there is no
     # silicon left, only queue depth. See the cpu request below, which
     # weight-protects the scan cores under contention.
-    concurrency: 16
+    # Halved 16 -> 8 for the EmberVM side-by-side (R0 Task 14b): node-4 now hosts
+    # both scan stacks, so fc-invoke yields half its semgrep slots to make room for
+    # embervm's semgrep pool. Restored (or fc-invoke deprecated) at cutover.
+    concurrency: 8
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -252,7 +255,10 @@ workloads:
     # Same core reasoning as semgrep (see its comment). Measured at 12:
     # 52.4/s (+31% over 6), run p50 198ms. Short runs have non-CPU phases
     # (restore, vsock I/O), so 16 also fills scheduler gaps.
-    concurrency: 16
+    # Halved 16 -> 8 for the EmberVM side-by-side (R0 Task 14b), same reasoning as
+    # semgrep above: fc-invoke yields half its sandbox slots to node-4's new
+    # embervm sandbox pool. Restored (or fc-invoke deprecated) at cutover.
+    concurrency: 8
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -260,12 +266,14 @@ workloads:
     requestTimeout: 30s
 
 # Memory limit holds the capped peak of every workload's guests plus the daemon.
-# A load test drives ONE workload to concurrency 16: semgrep 16 * 1536Mi = ~24Gi
-# or sandbox 16 * 512Mi = ~8Gi (a monolith one-run guard serializes load tests,
-# so they never stack). Even with a concurrent agent run (2 * 4096Mi = 8Gi), a
-# scheduled semgrep-full run (1 * 8192Mi = 8Gi), a heavy-diff semgrep-hi run
-# (1 * 6144Mi = 6Gi), and ~1Gi daemon overhead the worst case is ~47Gi, so 50Gi
-# keeps margin (node-4 has 64Gi). This is a cgroup
+# R0 Task 14b halved semgrep + sandbox concurrency 16 -> 8 to share node-4 with
+# the embervm scan stack, so the worst case drops accordingly: a load test now
+# drives ONE workload to concurrency 8 (semgrep 8 * 1536Mi = ~12Gi or sandbox
+# 8 * 512Mi = ~4Gi; a monolith one-run guard serializes load tests, so they never
+# stack). Even with a concurrent agent run (2 * 4096Mi = 8Gi), a scheduled
+# semgrep-full run (1 * 8192Mi = 8Gi), a heavy-diff semgrep-hi run (1 * 6144Mi =
+# 6Gi), and ~1Gi daemon overhead the worst case is ~35Gi, so 40Gi keeps margin
+# and yields ~10Gi of node OOM-ceiling budget to embervm. This is a cgroup
 # CAP, not a request (that stays 2Gi below), so raising it does not overcommit
 # node scheduling; it only raises the OOM ceiling. semgrep-full is concurrency 1
 # and scheduled, so it rarely coincides with a manual load-test burst, but the
@@ -287,7 +295,7 @@ resources:
     cpu: 6000m
     memory: 2Gi
   limits:
-    memory: 50Gi
+    memory: 40Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the

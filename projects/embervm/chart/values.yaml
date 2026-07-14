@@ -144,13 +144,28 @@ sandboxWorkload:
   invokePath: /invoke
   vcpus: 1
   memMib: 512
-  # Small footprint for the first live workload: a warm floor of 1 exercises the
-  # full base-build -> prime -> assign path; cap 4 bounds it well inside node-4's
-  # headroom alongside fc-invoke. Task 14b raises this and adds semgrep + the
-  # node-4 rebalancing for the full side-by-side.
-  floor: 1
-  cap: 4
+  # Task 14b full side-by-side: floor 4 / cap 16 matches the plan's sizing (and
+  # fc-invoke's pre-halving sandbox cap). See the node-4 memory arithmetic on
+  # noded.resources below.
+  floor: 4
+  cap: 16
   timeoutSeconds: 30
+
+# The semgrep workload (Task 14b): EmberVM's named first consumer, side-by-side
+# with fc-invoke's semgrep path (which is halved 16->8 in the substrate chart to
+# make room). Same frozen guest contract as fc-invoke (vsock 1027, /shim/ready,
+# /invoke), 1 vcpu / 1536Mi / 90s, floor 4 / cap 16.
+semgrepWorkload:
+  enabled: true
+  name: semgrep
+  port: 1027
+  readyPath: /shim/ready
+  invokePath: /invoke
+  vcpus: 1
+  memMib: 1536
+  floor: 4
+  cap: 16
+  timeoutSeconds: 90
 
 # Guest-image rootfs provisioning (Task 14), laid out FLAT at top level (NOT
 # under `noded`) because helm_images_values (Bazel image pinning) emits one YAML
@@ -165,6 +180,9 @@ workloads:
   sandbox:
     rootfsPath: /disks/nvme-02/embervm-noded/sandbox/rootfs.ext4
     harnessInit: /usr/local/bin/sandbox-guest-init
+  semgrep:
+    rootfsPath: /disks/nvme-02/embervm-noded/semgrep/rootfs.ext4
+    harnessInit: /usr/local/bin/semgrep-guest-init
 
 # The python sandbox guest image, Bazel-pinned (helm_chart images="sandbox.guestImage")
 # from the frozen fc-invoke sandbox guest's .info provider, so the guest contract
@@ -176,6 +194,14 @@ sandbox:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest
     tag: latest
 
+# The semgrep guest image, Bazel-pinned (helm_chart images="semgrep.guestImage")
+# from the frozen fc-invoke semgrep guest's .info provider. Distinct top-level key
+# (never noded.*) so the image pin does not collide, per D14a.6.
+semgrep:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest
+    tag: latest
+
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
 # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
 # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
@@ -183,8 +209,10 @@ rootfsBuilder:
   image:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
     tag: latest
-  # The sandbox base is small (python + libs); 2G leaves ample slack.
-  rootfsSize: 2G
+  # 4G covers the largest guest (semgrep: engine + rules + python); the sandbox
+  # base is smaller but a uniform size keeps the builder simple (matches
+  # fc-invoke's 4G). The ext4 is sparse, so an oversized fs costs little.
+  rootfsSize: 4G
 
 # embervm-noded: the node daemon (gRPC NodeService) that owns Firecracker microVM
 # lifecycle on node-4. A SECOND Deployment in this chart, privileged and node-
@@ -247,14 +275,24 @@ noded:
   drain:
     timeoutSeconds: 60
 
-  # 256Mi req / 4Gi limit. The limit now covers the real sandbox pool (Task 14):
-  # cap 4 x 512Mi = 2Gi of live guest microVMs, plus the daemon (~256Mi), plus one
-  # transient cold-boot VM during a base build (512Mi) and FC restore/memfile
-  # overhead, with slack. Well inside node-4's headroom alongside fc-invoke
-  # (~41Gi worst case of 64Gi). Grow with the cap; Task 14b sizes for semgrep too.
+  # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
+  # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it
+  # does not overcommit node scheduling, exactly like fc-invoke's 50Gi cap.
+  #
+  # embervm worst case (both workloads at cap, no serialization):
+  #   semgrep 16 x 1536Mi = 24Gi + sandbox 16 x 512Mi = 8Gi + ~2Gi transient
+  #   base-build cold-boot + ~0.3Gi daemon ~= 34Gi -> 36Gi ceiling.
+  #
+  # node-4 has 63.4GiB allocatable. The two daemons' CEILINGS oversubscribe
+  # (fc-invoke halved ~40Gi + embervm 36Gi = 76Gi), which is SAFE because these
+  # are cgroup caps, not reservations: real simultaneous cap-16 peak never occurs
+  # during side-by-side (production PR scans stay on fc-invoke, so embervm idles at
+  # its floor: semgrep 4x1536 + sandbox 4x512 = 8Gi steady), and post-drain only
+  # embervm peaks (fc-invoke drained). oom_score_adj kills guests before the
+  # daemon/DB. The absolute cap-16 throughput run is a post-drain Task 16 gate.
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
     limits:
-      memory: 4Gi
+      memory: 36Gi
