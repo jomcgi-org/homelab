@@ -472,7 +472,11 @@ defmodule Embervm.OpLog.SQLiteTest do
     {:ok, _b2} = SQLite.compact(server, 10_000)
 
     # The interleaved op is still present (it is above the compacted prefix).
-    {:ok, ops} = SQLite.read_from(server, 0)
+    # Read from the marker, not seq 0: compaction advanced the prefix past the
+    # seed ops, so read_from(0) correctly errors {:compacted, marker}; the live
+    # interleaved op lives above the marker and read_from(marker) returns it.
+    {:ok, marker} = SQLite.compacted_through(server)
+    {:ok, ops} = SQLite.read_from(server, marker)
     assert Enum.any?(ops, &(&1.seq == mid_seq and &1.kind == :drain))
 
     :ok = GenServer.stop(server)
