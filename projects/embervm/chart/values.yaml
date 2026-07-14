@@ -146,6 +146,40 @@ sandboxWorkload:
   cap: 4
   timeoutSeconds: 30
 
+# Guest-image rootfs provisioning (Task 14), laid out FLAT at top level (NOT
+# under `noded`) because helm_images_values (Bazel image pinning) emits one YAML
+# block per dotted key, so keys sharing a top-level prefix collide on parse. Each
+# Bazel-pinned image is therefore its own top-level key, mirroring fc-invoke.
+
+# Per-workload base-rootfs targets on the nvme scratch. The rootfs-builder writes
+# each guest's ext4 here and the noded EMBERVM_NODED_IMAGES table maps the guest
+# ref to it. Adding a workload here (with a matching top-level <name>.guestImage)
+# provisions its base and enables an initContainer that bakes it.
+workloads:
+  sandbox:
+    rootfsPath: /disks/nvme-02/embervm-noded/sandbox/rootfs.ext4
+    harnessInit: /usr/local/bin/sandbox-guest-init
+
+# The python sandbox guest image, Bazel-pinned (helm_chart images="sandbox.guestImage")
+# from the frozen fc-invoke sandbox guest's .info provider, so the guest contract
+# is unchanged (zero image changes, per the R0 plan). Consumed by the sandbox
+# rootfs-builder init container, the derived EMBERVM_NODED_IMAGES, and the sandbox
+# Workload CR (all three refs derive from here, so they always match).
+sandbox:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest
+    tag: latest
+
+# The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
+# workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
+# fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
+rootfsBuilder:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
+    tag: latest
+  # The sandbox base is small (python + libs); 2G leaves ample slack.
+  rootfsSize: 2G
+
 # embervm-noded: the node daemon (gRPC NodeService) that owns Firecracker microVM
 # lifecycle on node-4. A SECOND Deployment in this chart, privileged and node-
 # pinned, forked from the fc-invoke node layer (ADR embervm/001). It coexists with
@@ -195,38 +229,11 @@ noded:
     kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
 
   # Explicit node-side image identity overrides (image_ref -> {rootfsPath,
-  # harnessInit}). Normally empty: the table is DERIVED from noded.workloads +
-  # each workload's guestImage (see noded-deployment.yaml), so the ref matches the
-  # rootfs-builder and the Workload CR automatically. Entries here merge on top.
+  # harnessInit}). Normally empty: the table is DERIVED from the top-level
+  # `workloads` map + each workload's `<name>.guestImage` (see
+  # noded-deployment.yaml), so the ref matches the rootfs-builder and the Workload
+  # CR automatically. Entries here merge on top.
   images: {}
-
-  # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
-  # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
-  # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
-  rootfsBuilder:
-    image:
-      repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
-      tag: latest
-    # The sandbox base is small (python + libs); 2G leaves ample slack.
-    rootfsSize: 2G
-
-  # The python sandbox guest image, Bazel-pinned (helm_chart images=) from the
-  # frozen fc-invoke sandbox guest's .info provider, so the guest contract is
-  # unchanged (zero image changes, per the R0 plan). Consumed by the sandbox
-  # rootfs-builder init container and the sandbox Workload CR.
-  sandbox:
-    guestImage:
-      repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest
-      tag: latest
-
-  # Per-workload rootfs targets on the nvme scratch. The rootfs-builder writes
-  # each guest's ext4 here and EMBERVM_NODED_IMAGES maps the guest ref to it.
-  # Adding a workload here (with a matching noded.<name>.guestImage) provisions
-  # its base and enables an initContainer that bakes it.
-  workloads:
-    sandbox:
-      rootfsPath: /disks/nvme-02/embervm-noded/sandbox/rootfs.ext4
-      harnessInit: /usr/local/bin/sandbox-guest-init
 
   # Graceful-drain budget: on SIGTERM the daemon waits up to this long for in-
   # flight Assigns before exiting. terminationGracePeriodSeconds is set above it

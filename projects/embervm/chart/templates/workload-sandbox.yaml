@@ -17,8 +17,9 @@ spec:
   class: task
   source:
     image:
-      # Must match noded.sandbox.guestImage exactly (see noded-deployment.yaml).
-      ref: "{{ .Values.noded.sandbox.guestImage.repository }}:{{ .Values.noded.sandbox.guestImage.tag }}"
+      # Must match the top-level sandbox.guestImage exactly (the derived
+      # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
+      ref: "{{ .Values.sandbox.guestImage.repository }}:{{ .Values.sandbox.guestImage.tag }}"
       port: {{ .Values.sandboxWorkload.port }}
       readyPath: {{ .Values.sandboxWorkload.readyPath | quote }}
       invokePath: {{ .Values.sandboxWorkload.invokePath | quote }}

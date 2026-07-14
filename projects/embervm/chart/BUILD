@@ -12,9 +12,13 @@ helm_chart(
         # rootfs by the noded rootfs-builder) and the rootfs-builder tool image,
         # digest-pinned from their .info providers so the guest contract is
         # unchanged. Their .info targets are public (apko_image), so cross-project
-        # references are allowed.
-        "noded.sandbox.guestImage": "//projects/firecracker/sandbox/guest:image.info",
-        "noded.rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
+        # references are allowed. These MUST be DISTINCT top-level keys (not
+        # noded.*): helm_images_values emits one YAML block per dotted key, so two
+        # keys sharing a top-level prefix (e.g. noded.image + noded.sandbox.*)
+        # collapse to the last on parse (duplicate-key), dropping the others. Flat
+        # top-level keys mirror fc-invoke's proven layout.
+        "sandbox.guestImage": "//projects/firecracker/sandbox/guest:image.info",
+        "rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

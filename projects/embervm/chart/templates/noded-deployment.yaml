@@ -42,20 +42,20 @@ spec:
       securityContext:
         runAsUser: 0
         runAsGroup: 0
-      {{- if .Values.noded.workloads }}
+      {{- if .Values.workloads }}
       # Build each workload's base rootfs in-cluster from its pinned guest image
       # (crane export + mkfs.ext4 onto the nvme scratch), so node-4 never needs a
       # manual sudo rootfs placement. One builder per workload that declares a
-      # `noded.<name>.guestImage` block (Bazel pins its repository:tag from the
+      # top-level `<name>.guestImage` block (Bazel pins its repository:tag from the
       # guest image's .info provider); the builder bakes that guest's filesystem
       # into the workload's rootfsPath. Idempotent (a marker skips the multi-GB
       # rebuild when the guest ref is unchanged). Mirrors the fc-invoke pattern.
       initContainers:
-        {{- range $name, $wl := .Values.noded.workloads }}
-        {{- $top := index $.Values.noded $name }}
+        {{- range $name, $wl := .Values.workloads }}
+        {{- $top := index $.Values $name }}
         {{- if and $top $top.guestImage $top.guestImage.repository }}
         - name: build-{{ $name }}-rootfs
-          image: "{{ $.Values.noded.rootfsBuilder.image.repository }}:{{ $.Values.noded.rootfsBuilder.image.tag }}"
+          image: "{{ $.Values.rootfsBuilder.image.repository }}:{{ $.Values.rootfsBuilder.image.tag }}"
           command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
           env:
             - name: GUEST_IMAGE
@@ -63,7 +63,7 @@ spec:
             - name: BASE_ROOTFS_PATH
               value: {{ $wl.rootfsPath | quote }}
             - name: ROOTFS_SIZE
-              value: {{ $.Values.noded.rootfsBuilder.rootfsSize | quote }}
+              value: {{ $.Values.rootfsBuilder.rootfsSize | quote }}
             {{- if $.Values.imagePullSecret.enabled }}
             - name: DOCKER_CONFIG
               value: /ghcr
@@ -140,8 +140,8 @@ spec:
             # entries merge in as overrides. Empty (no workloads) => BuildBase denies.
             - name: EMBERVM_NODED_IMAGES
               {{- $imgs := deepCopy (.Values.noded.images | default dict) }}
-              {{- range $name, $wl := .Values.noded.workloads }}
-              {{- $top := index $.Values.noded $name }}
+              {{- range $name, $wl := .Values.workloads }}
+              {{- $top := index $.Values $name }}
               {{- if and $top $top.guestImage $top.guestImage.repository }}
               {{- $ref := printf "%s:%s" $top.guestImage.repository $top.guestImage.tag }}
               {{- $_ := set $imgs $ref (dict "rootfsPath" $wl.rootfsPath "harnessInit" $wl.harnessInit) }}
@@ -185,7 +185,7 @@ spec:
           hostPath:
             path: {{ .Values.noded.firecracker.nvmeRoot }}
             type: Directory
-        {{- if .Values.noded.workloads }}
+        {{- if .Values.workloads }}
         - name: rootfs-builder-script
           configMap:
             name: {{ include "embervm.noded.fullname" . }}-rootfs-builder

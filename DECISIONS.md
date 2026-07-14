@@ -122,6 +122,20 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   image changes, per the plan). The sandbox guest contract is used verbatim: vsock
   port 1027, `/shim/ready`, one python snippet per `/invoke`, `sandbox-guest-init`.
 
+### D14a.6 helm_images_values collides on shared-prefix dotted keys (chart 0.1.16 fix)
+- First live deploy (0.1.15) CrashLooped the rootfs-builder with `MANIFEST_UNKNOWN`
+  pulling `sandbox/guest:latest`: the Bazel image pin did not apply, leaving the
+  values default. ROOT CAUSE: `bazel/helm/images.bzl` emits one top-level YAML
+  block per dotted image key, so three keys sharing a prefix (`noded.image`,
+  `noded.sandbox.guestImage`, `noded.rootfsBuilder.image`) produce three duplicate
+  `noded:` keys that collapse to the last on parse, dropping the guest-image pin
+  AND clobbering `noded.image` itself back to `:latest`.
+- Fix: give each Bazel-pinned image a DISTINCT top-level key (`sandbox.guestImage`,
+  `rootfsBuilder.image`, flat top-level `workloads`), mirroring fc-invoke's proven
+  layout. `noded.image` stays the sole `noded.*` pinned key. The underlying
+  images.bzl limitation (silent clobber on shared-prefix keys) is a latent footgun
+  worth a general fix (deep-merge the fragment) as a separate follow-up.
+
 ### D14a.5 Live-verify, not CI-verify
 - CI cannot run a real VM (no KVM in RBE). 14a is verified live AFTER merge+sync:
   the init container bakes the ext4, the Workload goes Ready with a snapshotRef
