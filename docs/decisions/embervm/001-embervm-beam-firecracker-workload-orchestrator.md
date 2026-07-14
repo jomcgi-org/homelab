@@ -137,7 +137,7 @@ Rungs share primitives, not dates. Each rung names its target, its first consume
 
 | Rung | Target capability | First consumer | New primitive(s) | v1 invariant that keeps it reachable | Status |
 | ---- | ----------------- | -------------- | ---------------- | ------------------------------------ | ------ |
-| R0 Tasks | Durable, fair, retried task execution | Scan fleet | Dispatcher, op-log, Workload CRD, image source | (baseline) | Decided, v1 |
+| R0 Tasks | Durable, fair, retried task execution | Scan fleet | Dispatcher, op-log, Workload CRD, image source | (baseline) | Shipped 2026-07-14 |
 | R1 Zip lane | Zero-toolchain internal functions | Monolith FaaS migration | Runtime bases + bootstrap shim | Uniform HTTP contract; `source` as oneOf | Decided, v1.x |
 | R2 Sessions | Bank/relight stateful sandboxes | Agent sandboxes | Idle-bank, snapshot tiering, per-session tokens | Invocation front-end split from placement; lineage rule | Decided |
 | R3 Serving | Warm request serving at fleet scale | Tenant web APIs | xDS programming, two-tier Envoy option | Control plane off the hit path | Decided |
@@ -145,7 +145,7 @@ Rungs share primitives, not dates. Each rung names its target, its first consume
 | R5 Composite | Multi-VM groups with private networks | Ephemeral k8s environments, DB clusters | Group lifecycle, per-group subnets | Group-shaped room in the CRD schema | Recorded |
 | R6 Facade | Virtual control planes, hard multi-tenancy | (own ADRs) | etcd-shim over the op-log | Per-tenant op-log partitioning | Future ADR |
 
-Status legend: **Decided** rungs are commitments (v1 marks initial release scope); **Recorded** rungs prevent foreclosure without committing; **Future ADR** rungs require their own decision records before any commitment exists.
+Status legend: **Shipped** rungs are live in production (closure evidence in the rung's plan under `docs/plans/`); **Decided** rungs are commitments (v1 marks initial release scope); **Recorded** rungs prevent foreclosure without committing; **Future ADR** rungs require their own decision records before any commitment exists.
 
 **R1 resolves the [agents/045](../agents/045-faas-on-fc-invoke-sandbox-runtime.md) relationship**: EmberVM is built first and the monolith routes to it. The 045 registry/URL surface survives as a consumer; its execution semantics migrate. Nothing FaaS-shaped is built on the monolith in the meantime, so no dispatch layer is built twice.
 

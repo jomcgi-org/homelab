@@ -414,3 +414,38 @@ Tasks within a PR may be reordered; PRs are the review and rollback boundaries. 
 | Node-4 memory cannot host both stacks at useful concurrency | Task 14 arithmetic | Shrink shadow-phase caps (floor 2 / cap 8) and accept a slower gate run; gates compare per-slot efficiency, not absolute peak |
 | gRPC-over-Linkerd streaming quirks with `WatchNode` | Task 9 soak | Fall back to polling `GetNodeStatus` every 2s; the registry interface hides the difference |
 | Guest contract drift discovered under EmberVM (subtle fc-invoke ingress behavior the guests depended on) | Task 14 finding-equality check | Fix in noded, never in guests; the contract stays frozen |
+
+---
+
+## Closure (R0 shipped 2026-07-14)
+
+All 16 tasks landed on main (PR chain #3462 through #3505 plus the cutover
+commits); both the semgrep and sandbox Workloads are Ready in the `embervm`
+namespace and the monolith serves the per-PR semgrep diff scan and the python
+sandbox demo from EmberVM (`semgrep.dispatch: embervm`,
+`sandbox.dispatch: embervm` in `projects/monolith/deploy/values.yaml`).
+fc-invoke's scan and sandbox paths stay deployed as the one-value rollback.
+
+Deviations from this plan, all recorded in `DECISIONS.md` at the repo root:
+
+- **Task 15 shadow soak skipped.** Direct cut instead of the 48h / 200-scan
+  divergence soak: personal homelab, no external SLA. De-risked by a live
+  finding-equality check (identical Pro findings for a scripted vulnerable
+  input). The shadow machinery shipped and remains one values flip away.
+- **Task 16 gates deferred, not run.** The six-gate battery (throughput,
+  latency, kill -9 durability, fairness, enforcement, rollback drill) is
+  recorded as the remaining enterprise-grade evidence, to be run if EmberVM
+  ever takes external traffic. The durability drill (gate 3) is the highest
+  value of the six and needs no load harness; it is picked up as a Phase 0
+  task in the R1 plan.
+- **Sandbox demo cut over ahead of schedule.** The plan scoped demos to stay
+  on fc-invoke until R2; the python sandbox path moved with the scan fleet.
+  The goosecracker agent stays on fc-invoke as planned.
+- **Control-plane image is amd64-only** (deliberate; the dual-arch
+  requirement is held for the noded image, which is dual-arch).
+
+Recorded follow-ons picked up by the R1 plan (2026-07-14): wiring the op-log
+compaction timer (`OpLog.compact/2` exists and is tested but nothing schedules
+it), read-time result-TTL enforcement, ops-journal retention policy
+(ADR embervm/002), and the optional semgrep-full cron move to
+`spec.triggers`.

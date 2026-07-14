@@ -1,5 +1,13 @@
 # substrate (fc-invoke)
 
+> **Deprecation notice (2026-07-14, EmberVM R0 cutover):** the semgrep per-PR
+> diff scan and the python sandbox demo path are now served by EmberVM
+> (`projects/embervm/`, ADR embervm/001); fc-invoke's scan and sandbox
+> workloads stay deployed only as the instant rollback path (one monolith
+> values flip). The goosecracker agent and the remaining demos stay on
+> fc-invoke until EmberVM R2 makes sessions first-class, after which this
+> daemon is retired. New consumers should target EmberVM, not fc-invoke.
+
 The host-side daemon that runs configured workloads inside Firecracker micro-VMs
 (ADR 030). Callers `POST /invoke/{workload}[/{session}]`; fc-invoke claims a
 micro-VM (warm snapshot restore or cold boot), reverse-proxies the HTTP request to
