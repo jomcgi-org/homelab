@@ -155,7 +155,13 @@ semgrep:
   # the served scan path is UNCHANGED (the EmberVM/shadow code is dormant). Flip
   # to `shadow` to start the divergence soak, then `embervm` at cutover (Task 16).
   embervmUrl: "http://embervm-embervm.embervm.svc.cluster.local:8080"
-  dispatch: "fc-invoke"
+  # CUT OVER to EmberVM (R0 Task 16, 2026-07-14): the per-PR semgrep diff scan is
+  # now served by EmberVM's semgrep Workload. Personal homelab, so a direct cut +
+  # debug-live rather than a 48h shadow soak; the EmberVM semgrep workload was
+  # verified returning identical PRO findings. Revert to "fc-invoke" (one value +
+  # rollout) if a real PR diff regresses. fc-invoke's scan path stays deployed as
+  # the instant fallback until R1/R2 formally deprecates it.
+  dispatch: "embervm"
   # Route B shadow project (Route B vs SMS comparison): self-hosted scans report
   # here instead of jomcgi/homelab, so they land in a separate Semgrep project.
   # UNSET this single value at cutover to report to the real project.
