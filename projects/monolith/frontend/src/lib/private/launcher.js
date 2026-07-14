@@ -1,19 +1,17 @@
 // Private launcher registry for the dashboard's launcher strip.
 //
-// Internal hrefs are browser paths on private.jomcgi.dev (hooks.js reroutes
-// them under /private internally, so no /private prefix here). Note that
-// /app/* on the private host is only gateway-routed for signoz/argocd/
-// longhorn; the public tier's /app/* apps are NOT served there (the reroute
-// would send /app/grimoire to /private/app/grimoire, which 404s), so the
-// public apps are linked absolute to the apex and open in a new tab.
-import { apps } from "$lib/public/apps.js";
-
+// Scope: internal cluster-ops tools and repos Joe logs into and uses, not the
+// public /app/* apps (those live on the apex and are reachable at jomcgi.dev).
+//
+// Internal hrefs are browser paths on private.jomcgi.dev. The gateway-proxied
+// UIs (argocd/signoz/longhorn) live under /app/<name> (Envoy strips the prefix
+// and forwards to the real pod); /perf is a first-party route served by the
+// monolith itself. External tools open in a new tab.
 export const launcher = [
-  { label: "Notes", desc: "knowledge graph", href: "/notes" },
-  { label: "Review", desc: "knowledge review queue", href: "/review" },
-  { label: "Chat", desc: "knowledge graph explorer", href: "/chat" },
-  { label: "SigNoz", desc: "logs, traces, metrics", href: "/app/signoz" },
   { label: "ArgoCD", desc: "GitOps deploys", href: "/app/argocd" },
+  { label: "SigNoz", desc: "logs, traces, metrics", href: "/app/signoz" },
+  { label: "Longhorn", desc: "cluster storage", href: "/app/longhorn" },
+  { label: "Perf", desc: "semgrep scan perf", href: "/perf" },
   {
     label: "BuildBuddy",
     desc: "CI",
@@ -26,16 +24,4 @@ export const launcher = [
     href: "https://github.com/jomcgi/homelab",
     external: true,
   },
-  {
-    label: "Docs",
-    desc: "runbooks + ADRs",
-    href: "https://jomcgi.dev/docs",
-    external: true,
-  },
-  ...apps.map((a) => ({
-    label: a.label,
-    desc: a.desc,
-    href: `https://jomcgi.dev${a.href}`,
-    external: true,
-  })),
 ];

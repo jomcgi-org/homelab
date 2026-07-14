@@ -151,8 +151,10 @@
   .cluster-chat {
     display: flex;
     flex-direction: column;
-    min-height: 220px;
-    max-height: 420px;
+    /* Full-width panel at the foot of the dashboard: the log gets the room so
+     * the transcript dominates and the input is a slim rail beneath it. */
+    min-height: 300px;
+    max-height: 560px;
     font-family: var(--font);
   }
 
@@ -177,7 +179,9 @@
   .msg {
     font-size: 13px;
     line-height: 1.5;
-    max-width: 90%;
+    /* Cap the measure on the now-wide panel so lines stay readable instead of
+     * running the full width; still 90% on narrow screens. */
+    max-width: min(90%, 720px);
   }
 
   .msg--user {
