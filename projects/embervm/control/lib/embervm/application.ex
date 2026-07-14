@@ -240,7 +240,7 @@ defmodule Embervm.Application do
         |> Enum.reduce(%{}, fn pair, acc ->
           case String.split(pair, "=", parts: 2) do
             [k, v] ->
-              case parse_pos_float(String.trim(v)) do
+              case parse_budget(String.trim(v)) do
                 nil -> acc
                 budget -> Map.put(acc, String.trim(k), budget)
               end
@@ -255,13 +255,19 @@ defmodule Embervm.Application do
   defp quota_default do
     case trimmed_env("EMBERVM_QUOTA_DEFAULT_VCPU_SECONDS") do
       "" -> nil
-      raw -> parse_pos_float(raw)
+      raw -> parse_budget(raw)
     end
   end
 
-  defp parse_pos_float(raw) do
+  # A budget of exactly 0 is VALID and means "deny this principal entirely": the
+  # runtime gate (Embervm.Metering.within_quota?/4) compares `used < budget`, so a
+  # 0 budget always denies. Accepting 0 here keeps the config surface consistent
+  # with that runtime meaning (a 0 in values is a hard stop, not silently
+  # unlimited). A negative or unparseable value is dropped (nil = no budget =
+  # allowed, the opt-in default).
+  defp parse_budget(raw) do
     case Float.parse(raw) do
-      {f, _} when f > 0 -> f
+      {f, _} when f >= 0 -> f
       _ -> nil
     end
   end
