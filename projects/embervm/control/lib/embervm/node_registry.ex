@@ -375,7 +375,12 @@ defmodule Embervm.NodeRegistry do
          %{
            free_primed_slots: wc.free_primed_slots,
            snapshot_ref: wc.snapshot_ref,
-           base_state: wc.base_state
+           base_state: wc.base_state,
+           # The vm_ids of this node's primed VMs for the workload, so the
+           # dispatcher can adopt an existing warm pool into its inventory after
+           # a control-plane restart instead of orphaning it (see Dispatcher
+           # adopt_inventory). Empty list when the daemon reports none.
+           primed_vm_ids: wc.primed_vm_ids
          }}
       end
 
