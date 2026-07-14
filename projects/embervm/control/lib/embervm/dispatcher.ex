@@ -95,6 +95,7 @@ defmodule Embervm.Dispatcher do
 
   use GenServer
   require Logger
+  require OpenTelemetry.Tracer, as: Tracer
 
   alias Embervm.{NodeCapacity, WorkloadCatalog}
 
@@ -572,6 +573,7 @@ defmodule Embervm.Dispatcher do
     ctx = %{
       task_id: task_id,
       workload: wl,
+      principal: pr,
       node_id: node_id,
       mode: mode,
       vm_id: vm_id,
@@ -579,7 +581,11 @@ defmodule Embervm.Dispatcher do
       invoke_path: entry.invoke_path,
       timeout_ms: entry.timeout_ms,
       result_max_bytes: entry.result_max_bytes,
-      result_expires_at: wall + entry.result_ttl_ms
+      result_expires_at: wall + entry.result_ttl_ms,
+      # Capture the current OTel context HERE (in the dispatcher process) so the
+      # assign worker, spawned below, can attach it and nest its spans under the
+      # dispatch trace across the process boundary (no automatic propagation).
+      otel_ctx: OpenTelemetry.Ctx.get_current()
     }
 
     {pid, ref} =
@@ -599,6 +605,25 @@ defmodule Embervm.Dispatcher do
   # classifies the result into a terminal outcome. Returns a 2- or 3-tuple the
   # GenServer applies to the FSM.
   defp run_assign(ctx, channel_fun, invalidate_fun, assign_fun, prime_fun, get_request_fun) do
+    # Attach the dispatcher's OTel context so this worker's spans nest under the
+    # dispatch trace (Task 13), then open the top dispatch span. `pool_hit` marks
+    # the warm (primed) vs miss (prime-then-assign) path, per the span-attr spec.
+    _ = OpenTelemetry.Ctx.attach(Map.get(ctx, :otel_ctx, :undefined))
+
+    Tracer.with_span "embervm.dispatch", %{
+      attributes: %{
+        "ember.task_id" => ctx.task_id,
+        "ember.workload" => ctx.workload,
+        "ember.principal" => ctx.principal,
+        "ember.node_id" => ctx.node_id,
+        "ember.pool_hit" => ctx.mode == :warm
+      }
+    } do
+      do_run_assign(ctx, channel_fun, invalidate_fun, assign_fun, prime_fun, get_request_fun)
+    end
+  end
+
+  defp do_run_assign(ctx, channel_fun, invalidate_fun, assign_fun, prime_fun, get_request_fun) do
     req_env = fetch_request(get_request_fun, ctx.task_id)
 
     case channel_fun.(ctx.node_id) do
@@ -613,7 +638,7 @@ defmodule Embervm.Dispatcher do
             timeout_ms: ctx.timeout_ms
           }
 
-          case assign_fun.(channel, assign_req) do
+          case guest_exec(assign_fun, channel, assign_req, ctx) do
             {:ok, %AssignResponse{response: %GuestResponse{} = resp, usage: usage}} ->
               classify_response(resp, ctx, usage)
 
@@ -643,12 +668,27 @@ defmodule Embervm.Dispatcher do
     {:ok, vm_id}
   end
 
-  defp ensure_vm(%{workload: wl, snapshot_ref: ref} = _ctx, channel, prime_fun) do
+  defp ensure_vm(%{workload: wl, snapshot_ref: ref} = ctx, channel, prime_fun) do
     req = %PrimeRequest{trace: %Trace{workload: wl}, snapshot_ref: ref || ""}
 
-    case prime_fun.(channel, req) do
+    result =
+      Tracer.with_span "embervm.prime", %{
+        attributes: %{"ember.workload" => wl, "ember.task_id" => ctx.task_id}
+      } do
+        prime_fun.(channel, req)
+      end
+
+    case result do
       {:ok, %PrimeResponse{vm_id: vm_id}} -> {:ok, vm_id}
       {:error, reason} -> {:error, :prime_failed, reason}
+    end
+  end
+
+  # The guest Assign RPC (the actual guest execution) in its own span, so guest
+  # latency is never the uninstrumented phase (the fc-invoke 5-QPS lesson).
+  defp guest_exec(assign_fun, channel, assign_req, ctx) do
+    Tracer.with_span "embervm.guest_exec", %{attributes: %{"ember.task_id" => ctx.task_id}} do
+      assign_fun.(channel, assign_req)
     end
   end
 

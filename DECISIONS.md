@@ -203,20 +203,29 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   `:default_formatter`, which expects keyword opts and crashes app boot on a module
   tuple). CI's release-boot smoke caught exactly that on the first push, which is
   the real safety net absent a local test loop.
-- **FLAGGED (not done): OTLP tracing.** The traces half needs the OpenTelemetry
-  hex packages (opentelemetry, opentelemetry_api, opentelemetry_exporter,
-  opentelemetry_semantic_conventions) added to the hermetic hex closure
-  (bazel/erlang/repositories.bzl `_HEX_DEPS` + mix.exs path deps). The exporter
-  pulls `grpcbox` + its chain (gpb, chatterbox, ctx, acceptor_pool); grpcbox is
-  pure Erlang (plausible in-closure, which already builds the grpc/protobuf Erlang
-  stack + the exqlite NIF), but hand-resolving a ~10-package dep tree WITHOUT a
-  local `mix deps.get` is multi-CI-cycle work. Then manual spans at 8 call sites
-  (auth, enqueue, fair_wait, assign/prime_assign, guest_exec, result_store) with
-  explicit trace-context propagation across the dispatcher's `spawn_monitor` assign
-  worker boundary, plus the OTEL_* env wiring (SigNoz 4317 gRPC like fc-invoke).
-  Recon estimate: 1-2 focused days. Best done deps-first in a dedicated session.
-- "Key transitions at info" is a lighter follow-on (the formatter + denial warn is
-  the core structured-logging value).
+### D13.2 OTLP tracing LANDED (embervm 0.1.21)
+- The traces half is now implemented (was flagged as risky). Added the 12-package
+  OpenTelemetry closure to the hermetic hex build (repositories.bzl `_HEX_DEPS` +
+  the hex_tarballs filegroup + MODULE.bazel `use_repo` + mix.exs path deps). Two
+  concrete hermetic gaps surfaced in CI and were fixed deps-first (debug-as-we-go):
+  (1) every hex repo must be exported via `use_repo` in MODULE.bazel, not just
+  listed in `_HEX_DEPS`; (2) the exporter's Erlang deps (gproc, grpcbox,
+  ts_chatterbox, ...) are rebar projects, so `rebar3` had to be bundled (a fetched
+  arch-independent escript staged onto the OTP bin, passed absolute as
+  MIX_REBAR3_SRC + exported as MIX_REBAR3, wired into all THREE mix drivers:
+  mix_test / mix_release / roundtrip). All pure Erlang/Elixir (no NIF). Closure
+  compiles + release boots green.
+- Spans: `embervm.auth` (the TokenReview, the 5-QPS-lesson span), `embervm.dispatch`
+  (the assign worker, with OTel context captured in the dispatcher and ATTACHED in
+  the spawn_monitor worker so spans nest across the process boundary), and children
+  `embervm.prime` (miss-path restore) + `embervm.guest_exec` (the Assign RPC). Span
+  attrs ember.task_id/workload/principal/node_id/pool_hit.
+- Tracing is OFF by default (config.exs `traces_exporter: :none`); config/runtime.exs
+  enables OTLP/gRPC when OTEL_EXPORTER_OTLP_ENDPOINT is set (the chart points it at
+  SigNoz 4317, like fc-invoke). Submit-side and result_store spans + a single-root
+  trace via op-log context propagation are lighter follow-ons; the execution-path
+  spans (auth/dispatch/prime/guest_exec) carry the latency the R0 gates need.
+- "Key transitions at info" logging remains a lighter follow-on.
 
 ## Task 15: monolith EmberVM dual-path scan dispatch (monolith 0.285.186, embervm 0.1.20)
 
