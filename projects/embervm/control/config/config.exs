@@ -6,3 +6,12 @@ import Config
 # would fail; from-source uses the executor's cc/make. The build host and every
 # cluster node are amd64, so the resulting amd64 NIF is correct for deployment.
 config :exqlite, force_build: true
+
+# Structured JSON logs (Task 13): set the DEFAULT HANDLER's formatter to our
+# custom Erlang :logger formatter, so every line is one JSON object SigNoz's
+# pod-log pipeline ingests as structured fields. NOTE: this is :default_handler
+# (which accepts `formatter: {module, config}`), NOT :default_formatter (which
+# expects keyword options for Elixir's BUILT-IN formatter and crashes boot on a
+# module tuple).
+config :logger, :default_handler,
+  formatter: {Embervm.LogFormatter, %{}}
