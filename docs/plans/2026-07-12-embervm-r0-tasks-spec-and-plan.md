@@ -425,6 +425,9 @@ namespace and the monolith serves the per-PR semgrep diff scan and the python
 sandbox demo from EmberVM (`semgrep.dispatch: embervm`,
 `sandbox.dispatch: embervm` in `projects/monolith/deploy/values.yaml`).
 fc-invoke's scan and sandbox paths stay deployed as the one-value rollback.
+(Superseded 2026-07-14 by the durability drill below: both paths were reverted to
+`fc-invoke` after the drill found EmberVM dispatch does not recover from a
+control-plane restart. See "Durability drill run" at the end of this section.)
 
 Deviations from this plan, all recorded in `DECISIONS.md` at the repo root:
 
@@ -449,3 +452,45 @@ compaction timer (`OpLog.compact/2` exists and is tested but nothing schedules
 it), read-time result-TTL enforcement, ops-journal retention policy
 (ADR embervm/002), and the optional semgrep-full cron move to
 `spec.triggers`.
+
+### Durability drill run (2026-07-14, Task 16 gate 3)
+
+Ran the deferred kill -9 durability drill and the rollback drill live.
+
+**Drill A: control-plane crash durability = PASS (data), FAIL (dispatch recovery).**
+Delivered an unclean SIGKILL to the control-plane BEAM (via `kubectl delete pod
+--grace-period=1`; the BEAM is pid 1, so an in-namespace `kill -9` is
+kernel-ignored and the kubelet must deliver the signal). The op-log survived
+perfectly: on reopen SQLite replayed ~148 KB of un-checkpointed WAL into the main
+DB (`oplog.db` 225,280 to 274,432 bytes, WAL truncated to 0), `restartCount=0`,
+no corruption, clean `op-log opened`, zero errors post-boot. Data durability is
+solid.
+
+But the crash exposed a dispatch-recovery regression: after the restart, EmberVM
+accepts tasks into the durable op-log (WAL grows) but never dispatches them to the
+node. No microVM boots; a synchronous `?wait=true` scan hits the 90 s read timeout
+and returns an error. **Reproduced on a graceful restart too**, so it is not
+specific to the uncleanness: the common factor is the control-plane booting
+against an already-running noded. At that point it logs `GRPC.Client.Connection
+stopping as requested` and the NodeRegistry's fail-closed capacity ETS never
+repopulates, so the Dispatcher parks every task. The original boot worked only
+because noded came up after the control-plane (econnrefused, retry, WatchNode
+stream establishes). Likely a WatchNode stream-lifecycle / boot-ordering bug in
+node re-registration. Untested recovery lever, left for the fix: restart the noded
+so it reconnects into the up control-plane (the working reconnect path).
+
+**Drill B: rollback lever = PASS both directions.** Flipping
+`semgrep.dispatch` between `embervm` and `fc-invoke` reroutes the served scan path
+on a single values change with no chart bump (values read via the `$values` git
+HEAD source), rolled out in ~40 s each way. Verified by the op-log growth signal:
+under `fc-invoke` a triggered scan leaves the EmberVM op-log untouched and returns
+findings in ~0.5 s; under `embervm` the request lands on the control-plane (WAL
+grows) but, given the dispatch bug above, times out.
+
+**Prod protection.** Because the dispatch bug makes `embervm` return timeouts on
+every scan and does not self-heal on restart, both EmberVM-dispatched live paths
+were reverted to the proven fc-invoke fallback: `semgrep.dispatch: fc-invoke` and
+`sandbox.dispatch: fc-invoke` (PR chain #3512, #3513, #3515). This supersedes the
+cutover recorded above. Keep prod on fc-invoke until the dispatch-recovery bug is
+fixed in the control plane; the cutover back to EmberVM is then a one-value flip.
+EmberVM is left idle and wedged, which is harmless while nothing routes to it.
