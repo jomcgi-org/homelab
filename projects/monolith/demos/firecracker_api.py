@@ -126,12 +126,14 @@ async def run_semgrep(body: SemgrepRequest) -> dict:
     """Scan supplied files with Semgrep in the fc-invoke workload.
 
     The scan path does not report its own timing, so duration_ms is the wall
-    time measured around the call here.
+    time measured around the call here. Passes ``dedupe=False`` so the demo
+    always runs a genuinely fresh scan instead of hitting the idempotency
+    result-store cache (the webhook/PR scan path keeps the default dedupe).
     """
     with _tracer.start_as_current_span("demo.semgrep", context=Context()):
         trace_id = _current_trace_id()
         started = perf_counter()
-        result = await scan_files(body.files)
+        result = await scan_files(body.files, dedupe=False)
         elapsed_ms = (perf_counter() - started) * 1000
 
     return {
