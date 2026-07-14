@@ -36,3 +36,11 @@ class Vacancy(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     first_seen_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_seen_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     scraped_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Per-channel notification state (source of truth for the new-jobs digest).
+    # NULL = pending, a timestamp = delivered. The scrape claims NULL+open rows,
+    # enqueues one digest per channel, and stamps only on a successful enqueue,
+    # so a failed send is retried next run. Seed/backfilled rows are born stamped
+    # so the switchover never dumps the existing backlog. See dr_jobs/jobs.py and
+    # migration 20260713000000_dr_jobs_notified_columns.sql.
+    notified_discord: datetime | None = None
+    notified_whatsapp: datetime | None = None
