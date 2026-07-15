@@ -32,6 +32,7 @@ multirun(
         "//projects/embervm/chart:chart.push",
         "//projects/embervm/image:image.push",
         "//projects/embervm/noded/image:image.push",
+        "//projects/embervm/runtimes/python:image.push",
         "//projects/firecracker/git-mirror/chart:chart.push",
         "//projects/firecracker/git-mirror:image.push",
         "//projects/firecracker/goosecracker/guest-init:image.push",
