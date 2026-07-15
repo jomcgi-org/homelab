@@ -54,7 +54,10 @@ spec:
         {{- range $name, $wl := .Values.workloads }}
         {{- $top := index $.Values $name }}
         {{- if and $top $top.guestImage $top.guestImage.repository }}
-        - name: build-{{ $name }}-rootfs
+        # kebabcase the workload key: it doubles as this initContainer's name, an
+        # RFC 1123 label that must be lowercase (the camelCase key runtimePython
+        # would render build-runtimePython-rootfs, which the apiserver rejects).
+        - name: build-{{ $name | kebabcase }}-rootfs
           image: "{{ $.Values.rootfsBuilder.image.repository }}:{{ $.Values.rootfsBuilder.image.tag }}"
           command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
           env:
