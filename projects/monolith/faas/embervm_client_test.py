@@ -91,6 +91,31 @@ async def test_submit_connect_error_raises_transport_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_submit_timeout_raises_embervm_timeout(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timed out")
+
+    _mock_client(monkeypatch, handler)
+    with pytest.raises(embervm_client.EmberVMTimeout):
+        await embervm_client.submit(
+            "echo-fn",
+            body=b"{}",
+            guest_path="/invoke",
+            extra_guest_headers=None,
+            read_timeout=5.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_embervm_timeout_is_transport_error_subclass():
+    # Task 10's smoke path catches the base class and retries; a timeout must
+    # still be caught there, so EmberVMTimeout IS an EmberVMTransportError.
+    assert issubclass(
+        embervm_client.EmberVMTimeout, embervm_client.EmberVMTransportError
+    )
+
+
+@pytest.mark.asyncio
 async def test_submit_unconfigured_url_raises(monkeypatch):
     monkeypatch.setattr(embervm_client, "EMBERVM_URL", "")
     with pytest.raises(embervm_client.EmberVMTransportError):
