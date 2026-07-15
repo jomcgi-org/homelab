@@ -67,7 +67,7 @@ defmodule Embervm.NodeRegistry do
 
   alias Embervm.NodeCapacity
 
-  alias Embervm.Node.V1.{NodeService, NodeStatus, WatchNodeRequest, WorkloadCapacity}
+  alias Embervm.Node.V1.{NodeService, NodeStatus, SessionSnapshot, SessionVm, WatchNodeRequest, WorkloadCapacity}
 
   @unknown_after_ms 5_000
   @down_after_ms 15_000
@@ -393,9 +393,41 @@ defmodule Embervm.NodeRegistry do
       live_vms: s.live_vms,
       max_live_vms: s.max_live_vms,
       draining: false,
-      updated_at: now
+      updated_at: now,
+      # Session facts (R2): the node's LIVE session VMs and BANKED snapshot
+      # inventory, plus the sessions snapshot-dir disk usage. These are the source
+      # of truth Embervm.SessionManager reconciles its ETS residency + banked
+      # inventory against on boot and every sweep (adoption), and the disk numbers
+      # the LRU capacity-eviction policy reads. Empty/zero when a daemon never sets
+      # them (wire-compatible), which reads as "no session state, no disk pressure".
+      session_vms: session_vms_from_status(s),
+      session_snapshots: session_snapshots_from_status(s),
+      snapshot_disk_free_bytes: s.snapshot_disk_free_bytes,
+      snapshot_disk_used_bytes: s.snapshot_disk_used_bytes
     }
   end
+
+  defp session_vms_from_status(%NodeStatus{session_vms: vms}) when is_list(vms) do
+    for %SessionVm{} = v <- vms do
+      %{vm_id: v.vm_id, session_id: v.session_id, workload: v.workload}
+    end
+  end
+
+  defp session_vms_from_status(_s), do: []
+
+  defp session_snapshots_from_status(%NodeStatus{session_snapshots: snaps}) when is_list(snaps) do
+    for %SessionSnapshot{} = snap <- snaps do
+      %{
+        snapshot_ref: snap.snapshot_ref,
+        session_id: snap.session_id,
+        workload: snap.workload,
+        size_bytes: snap.size_bytes,
+        created_at_unix_ms: snap.created_at_unix_ms
+      }
+    end
+  end
+
+  defp session_snapshots_from_status(_s), do: []
 
   # -- age-out state machine --------------------------------------------------
 

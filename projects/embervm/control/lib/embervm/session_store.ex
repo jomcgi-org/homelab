@@ -86,6 +86,22 @@ defmodule Embervm.SessionStore do
   end
 
   @doc """
+  Applies a TRANSIENT FSM edge to a session WITHOUT an op-log append: the ETS-only
+  move into a mid-operation state (`banking`, `relighting`) that a crash heals from
+  node inventory rather than from the durable log (there is no `session_banking`/
+  `session_relighting` op kind by design, standing decision: the durable log records
+  only completed lifecycle transitions). `event` must be a legal FSM edge from the
+  session's current state; an illegal edge is `{:error, {:illegal_transition, ...}}`.
+  Keeps residency + per-workload counts consistent, exactly like `transition/6`, but
+  never touches the op-log, so it must ONLY be used for states a later durable op
+  (`session_banked`/`session_relit`) or adoption will resolve.
+  """
+  @spec mark(GenServer.server(), String.t(), atom()) :: {:ok, map()} | {:error, term()}
+  def mark(store \\ __MODULE__, session_id, event) do
+    GenServer.call(store, {:mark, session_id, event})
+  end
+
+  @doc """
   Records a `session_invoked` op (usage only, NO request/response bodies) against a
   running session: a non-state-changing write-through (running -> running) so it is
   NOT an FSM transition. Bumps `last_invoke_at` and charges usage to the quota cache
@@ -137,6 +153,42 @@ defmodule Embervm.SessionStore do
   @spec counts(GenServer.server(), String.t()) :: %{live: non_neg_integer(), banked: non_neg_integer()}
   def counts(store \\ __MODULE__, workload) do
     GenServer.call(store, {:counts, workload})
+  end
+
+  @doc """
+  Every session in the hot set (a full ETS scan), for the adoption reconcile that
+  compares the durable projection against the node's reported inventory. Rare (boot
+  + every registry sweep), never on the invoke path.
+  """
+  @spec all(GenServer.server()) :: [map()]
+  def all(store \\ __MODULE__) do
+    GenServer.call(store, :all)
+  end
+
+  @doc """
+  Adoption: FORCE a session's ETS state to `new_state` (one of `running`/`banked`)
+  from authoritative node truth, bypassing the FSM (adoption is idempotent and
+  derived from what the node actually holds, so it must be total over limbo states
+  the FSM cannot bridge, e.g. a `banking` session whose node reports a live VM).
+  Updates residency + per-workload counts, drops residency for `banked`, and does
+  NOT append an op (the durable log already recorded the last completed transition;
+  adoption only re-derives the transient ETS view). A no-op for an unknown or
+  already-terminal session (never resurrects a terminal row). Returns `:ok`.
+  """
+  @spec adopt_state(GenServer.server(), String.t(), :running | :banked) :: :ok
+  def adopt_state(store \\ __MODULE__, session_id, new_state) do
+    GenServer.call(store, {:adopt_state, session_id, new_state})
+  end
+
+  @doc """
+  Adoption: rebind a session the node reports as a LIVE VM to `{node_id, vm_id}`,
+  writing the residency fact and the ETS row's `vm_id`/`node_id` WITHOUT an FSM
+  transition or an op-log append (residency is a lossy fact the node owns, not
+  durable state). A no-op for an unknown session. Returns `:ok`.
+  """
+  @spec adopt_residency(GenServer.server(), String.t(), String.t(), String.t()) :: :ok
+  def adopt_residency(store \\ __MODULE__, session_id, node_id, vm_id) do
+    GenServer.call(store, {:adopt_residency, session_id, node_id, vm_id})
   end
 
   @doc """
@@ -252,6 +304,10 @@ defmodule Embervm.SessionStore do
     do_transition(state, session_id, event, op_kind, payload, updates)
   end
 
+  def handle_call({:mark, session_id, event}, _from, state) do
+    do_mark(state, session_id, event)
+  end
+
   def handle_call({:record_invoke, session_id, usage}, _from, state) do
     do_record_invoke(state, session_id, usage)
   end
@@ -286,6 +342,48 @@ defmodule Embervm.SessionStore do
 
   def handle_call({:counts, workload}, _from, state) do
     {:reply, Map.get(state.counts, workload, %{live: 0, banked: 0}), state}
+  end
+
+  def handle_call(:all, _from, state) do
+    all = :ets.foldl(fn {_id, session}, acc -> [session | acc] end, [], state.sessions)
+    {:reply, all, state}
+  end
+
+  def handle_call({:adopt_state, session_id, new_state}, _from, state)
+      when new_state in [:running, :banked] do
+    case fetch(state, session_id) do
+      {:ok, %{state: cur}} when cur in [:expired, :evicted, :destroyed, :failed] ->
+        # Never resurrect a terminal session from a stale node fact.
+        {:reply, :ok, state}
+
+      {:ok, session} ->
+        if session.state == new_state do
+          {:reply, :ok, state}
+        else
+          ts = state.clock.()
+          updated = %{session | state: new_state, updated_at: ts}
+          :ets.insert(state.sessions, {session_id, updated})
+          state = bump_counts(state, session.state, new_state, session.workload)
+          state = apply_residency(state, session.state, updated)
+          {:reply, :ok, state}
+        end
+
+      {:error, _} ->
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:adopt_residency, session_id, node_id, vm_id}, _from, state) do
+    case fetch(state, session_id) do
+      {:ok, session} ->
+        updated = %{session | node_id: node_id, vm_id: vm_id}
+        :ets.insert(state.sessions, {session_id, updated})
+        :ets.insert(state.residency, {session_id, {node_id, vm_id}})
+        {:reply, :ok, state}
+
+      {:error, _} ->
+        {:reply, :ok, state}
+    end
   end
 
   def handle_call({:list, workload, opts}, _from, state) do
@@ -385,6 +483,23 @@ defmodule Embervm.SessionStore do
         {:ok, updated, state} -> {:reply, {:ok, updated}, state}
         {:error, reason} -> {:reply, {:error, reason}, state}
       end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # Transient ETS-only FSM move (no op-log append): banking/relighting entry markers
+  # a later completion op or adoption resolves. Keeps residency + counts in step with
+  # the ETS state exactly like append_and_update, minus the durable write.
+  defp do_mark(state, session_id, event) do
+    with {:ok, session} <- fetch(state, session_id),
+         {:ok, next} <- SessionState.transition(session.state, event) do
+      ts = state.clock.()
+      updated = %{session | state: next, updated_at: ts}
+      :ets.insert(state.sessions, {session_id, updated})
+      state = bump_counts(state, session.state, next, session.workload)
+      state = apply_residency(state, session.state, updated)
+      {:reply, {:ok, updated}, state}
     else
       {:error, _reason} = error -> {:reply, error, state}
     end

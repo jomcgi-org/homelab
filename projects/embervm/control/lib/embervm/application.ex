@@ -134,7 +134,7 @@ defmodule Embervm.Application do
       {Embervm.SessionStore, [on_metered: &Embervm.Metering.on_metered/1]},
       {Registry, keys: :unique, name: Embervm.SessionRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Embervm.SessionSupervisor},
-      {Embervm.SessionManager, session_opts: session_opts()},
+      {Embervm.SessionManager, session_manager_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -275,6 +275,68 @@ defmodule Embervm.Application do
   # in production (the session process uses its real NodeChannel/SessionAssign
   # defaults); tests inject fake daemon seams here.
   defp session_opts, do: []
+
+  # SessionManager config: the session-process seams plus the R2 policy knobs the
+  # chart wires from values (the reconcile/sweep cadences, the snapshot-disk low
+  # watermark for LRU eviction, and the per-principal wake-rate limit). Defaults keep
+  # the timers ON in production; a 0 disables the corresponding sweep.
+  defp session_manager_opts do
+    [
+      session_opts: session_opts(),
+      reconcile_interval_ms: session_reconcile_interval_ms(),
+      sweep_interval_ms: session_sweep_interval_ms(),
+      disk_low_watermark_bytes: session_disk_low_watermark_bytes()
+    ] ++ wake_opts()
+  end
+
+  # Adoption reconcile cadence (EMBERVM_SESSION_RECONCILE_INTERVAL_MS); default 10s,
+  # matching the registry sweep tempo so a restart's residency/limbo heal lands fast.
+  defp session_reconcile_interval_ms do
+    case trimmed_env("EMBERVM_SESSION_RECONCILE_INTERVAL_MS") do
+      "" -> 10_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  # TTL/eviction sweep cadence (EMBERVM_SESSION_SWEEP_INTERVAL_MS); default 30s. This
+  # is the safety net for expiry/GC/disk-pressure; invoke-time expiry is the primary
+  # expiry check (ADR 002 rule 1), so this cadence is not correctness-critical.
+  defp session_sweep_interval_ms do
+    case trimmed_env("EMBERVM_SESSION_SWEEP_INTERVAL_MS") do
+      "" -> 30_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  # Snapshot-disk low watermark in bytes (EMBERVM_SESSION_DISK_LOW_WATERMARK_BYTES).
+  # Unset disables disk-pressure eviction (nil): the watermark alert (Task 9) is the
+  # only signal until a value is configured. A configured value arms LRU eviction.
+  defp session_disk_low_watermark_bytes do
+    case trimmed_env("EMBERVM_SESSION_DISK_LOW_WATERMARK_BYTES") do
+      "" -> nil
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  # Wake-rate limit (relight-triggering invokes per principal per window). Configured
+  # via EMBERVM_SESSION_WAKE_MAX + EMBERVM_SESSION_WAKE_WINDOW_MS; unset uses the
+  # SessionManager module defaults (30 / 60s). A max of 0 disables the limit.
+  defp wake_opts do
+    max =
+      case trimmed_env("EMBERVM_SESSION_WAKE_MAX") do
+        "" -> nil
+        raw -> String.to_integer(raw)
+      end
+
+    window =
+      case trimmed_env("EMBERVM_SESSION_WAKE_WINDOW_MS") do
+        "" -> nil
+        raw -> String.to_integer(raw)
+      end
+
+    [wake_max: max, wake_window_ms: window]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
 
   defp queue_depth_cap do
     case trimmed_env("EMBERVM_QUEUE_DEPTH_CAP") do

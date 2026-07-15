@@ -64,8 +64,10 @@ defmodule Embervm.SessionState do
     :create_ready,
     :bank,
     :bank_ready,
+    :bank_abort,
     :relight,
     :relight_ready,
+    :relight_abort,
     :expire,
     :evict,
     :destroy,
@@ -77,12 +79,20 @@ defmodule Embervm.SessionState do
   @transitions %{
     # Create: a claimed/primed VM is live.
     {:creating, :create_ready} => :running,
-    # Idle-bank (PR-4): running -> banking (bank RPC in flight) -> banked.
+    # Idle-bank: running -> banking (bank RPC in flight) -> banked. The bank_abort
+    # edge (banking -> running) is the ETS-only recovery when the Bank RPC fails: the
+    # VM is still alive, so the session returns to running (no durable op; the failed
+    # bank left no snapshot). banking is a transient, crash-healed-from-node state.
     {:running, :bank} => :banking,
     {:banking, :bank_ready} => :banked,
-    # Relight-on-invoke (PR-4): banked -> relighting (relight RPC in flight) -> running.
+    {:banking, :bank_abort} => :running,
+    # Relight-on-invoke: banked -> relighting (relight RPC in flight) -> running. The
+    # relight_abort edge (relighting -> banked) is the ETS-only recovery when a
+    # transient (non-precondition) relight failure leaves the snapshot intact: the
+    # session returns to banked and a later invoke re-relights.
     {:banked, :relight} => :relighting,
     {:relighting, :relight_ready} => :running,
+    {:relighting, :relight_abort} => :banked,
     # Max-lifetime expiry: a live or banked session past its deadline.
     {:running, :expire} => :expired,
     {:banked, :expire} => :expired,
