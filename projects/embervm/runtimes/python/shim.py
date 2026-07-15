@@ -141,7 +141,9 @@ def _archive_bytes(device_path: str) -> bytes:
     eocd = raw.rfind(b"PK\x05\x06")
     # Diagnostic (device size + where the zip actually ends) so a bad attach or
     # unexpected padding is legible in the guest console, not an opaque BadZipFile.
-    sys.stderr.write(f"ember-shim: archive device {device_path} bytes={len(raw)} eocd={eocd}\n")
+    sys.stderr.write(
+        f"ember-shim: archive device {device_path} bytes={len(raw)} eocd={eocd}\n"
+    )
     sys.stderr.flush()
     if eocd < 0:
         raise ValueError(
