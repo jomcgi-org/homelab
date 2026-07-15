@@ -1,0 +1,43 @@
+# FaaS ingestion (ADR 045 / embervm R1, Task 10): the monolith owns each
+# function's Workload CR in the embervm namespace (a function IS a Workload). It
+# creates/patches/deletes those CRs dynamically and reads their status while
+# waiting for Ready. This namespace-scoped Role in the embervm namespace grants
+# exactly those verbs to the monolith ServiceAccount (which lives in the
+# monolith release namespace). apiGroups is "embervm.dev" (the CRD's API group,
+# not the "workloads.embervm.dev" CRD object name).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "monolith.fullname" . }}-faas
+  namespace: embervm
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+rules:
+  # workload.py: create_namespaced_custom_object (create), 409->
+  # patch_namespaced_custom_object merge-patch (patch),
+  # get_namespaced_custom_object in wait_ready (get),
+  # delete_namespaced_custom_object (delete). list/watch/update granted for
+  # parity with future reconcile reads; no over-grant beyond the CR verbs.
+  - apiGroups: ["embervm.dev"]
+    resources: ["workloads"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # wait_ready reads status.conditions; status is a subresource on the CRD.
+  - apiGroups: ["embervm.dev"]
+    resources: ["workloads/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "monolith.fullname" . }}-faas
+  namespace: embervm
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "monolith.fullname" . }}-faas
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "monolith.fullname" . }}
+    namespace: {{ .Release.Namespace }}

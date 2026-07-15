@@ -125,6 +125,25 @@ def get_archive(name: str, sha256: str) -> bytes | None:
     return resp["Body"].read()
 
 
+def delete_archive(name: str, sha256: str) -> None:
+    """Delete the archive object, ignoring a missing bucket/key.
+
+    Best-effort teardown for the ingestion rollback / DELETE paths: a leaked
+    object is harmless (the registry row is the authoritative record), so a
+    NoSuchKey/NoSuchBucket is swallowed rather than raised.
+    """
+    from botocore.exceptions import ClientError
+
+    client = _client()
+    try:
+        client.delete_object(Bucket=_bucket(), Key=_object_key(name, sha256))
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "NoSuchBucket", "404"):
+            return
+        raise
+
+
 def code_uri(name: str, sha256: str) -> str:
     """Return the in-cluster read URL noded GETs for this archive.
 

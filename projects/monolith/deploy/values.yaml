@@ -155,6 +155,14 @@ chat:
 sandbox:
   dispatch: "embervm"
 
+# FaaS zip-lane function registry (ADR 045 / embervm R1). The read base matches
+# the CRD samples' codeUri host (projects/embervm/crd/samples/workload-echo-fn.yaml)
+# so storage.code_uri() and noded resolve archives at the same URL. S3 write
+# endpoint/creds are the shared SeaweedFS ones (stars block).
+faas:
+  s3ReadBase: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+  s3Bucket: "faas"
+
 semgrep:
   fcInvokeUrl: "http://fc-invoke.monolith.svc.cluster.local:8080"
   # EmberVM dual-path (R0 Task 15). URL wired now; dispatch stays `fc-invoke` so

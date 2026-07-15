@@ -3507,6 +3507,52 @@ py_test(
 )
 
 py_test(
+    name = "faas_runtime_test",
+    srcs = ["faas/runtime_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "faas_embervm_client_test",
+    srcs = ["faas/embervm_client_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "faas_workload_test",
+    srcs = ["faas/workload_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//kubernetes_asyncio",
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "faas_router_test",
+    srcs = ["faas/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//pytest",
+        "@pip//python_multipart",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "stars_models_test",
     srcs = ["stars/models_test.py"],
     imports = ["."],
