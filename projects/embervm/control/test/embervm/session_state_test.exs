@@ -15,8 +15,10 @@ defmodule Embervm.SessionStateTest do
     {:creating, :create_ready} => :running,
     {:running, :bank} => :banking,
     {:banking, :bank_ready} => :banked,
+    {:banking, :bank_abort} => :running,
     {:banked, :relight} => :relighting,
     {:relighting, :relight_ready} => :running,
+    {:relighting, :relight_abort} => :banked,
     {:running, :expire} => :expired,
     {:banked, :expire} => :expired,
     {:banked, :evict} => :evicted,
@@ -32,8 +34,8 @@ defmodule Embervm.SessionStateTest do
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 17
-    assert length(SessionState.events()) == 9
+    assert map_size(@legal) == 19
+    assert length(SessionState.events()) == 11
     assert length(SessionState.states()) == 9
 
     for state <- SessionState.states(), event <- SessionState.events() do

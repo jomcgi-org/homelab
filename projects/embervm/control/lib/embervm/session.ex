@@ -42,11 +42,27 @@ defmodule Embervm.Session do
   silently. The parked caller gets the error; every still-queued caller gets a
   `{:error, :failed}` (the router 410s them). This process then stops.
 
-  ## the idle timer seam (PR-4)
+  ## the idle-bank timer (Task 7)
 
-  The idle-bank timer (Task 7) is armed here but is inert in PR-3: this module
-  leaves the `idle_bank_ms` seam and a `:maybe_bank` message stub so PR-4 wires
-  the bank without reshaping the process. PR-3 never banks.
+  A live session with ZERO in-flight and ZERO queued invokes for `idle_bank_ms`
+  banks: releasing its live VM while retaining state on a node-disk snapshot. This
+  process owns ONLY the quiescence detection and the timer; when it fires on a
+  genuinely idle session it ASKS the manager to bank (`SessionManager.bank/2`) and,
+  if the manager ADMITS the bank (`:ok`), STOPS immediately, handing the whole bank
+  lifecycle (the RPC, the durable `session_banked` append, and failure recovery) to
+  the manager, which runs the RPC OFF its own process so a bank never head-of-line-
+  blocks other sessions' routing (gate 3). A banked session has no process.
+
+  If the manager REFUSES the bank (another bank in flight on the node, the disk
+  fail-closed gate, or the session already moved off running), this process re-arms
+  the timer and stays live. The timer is armed whenever the process goes quiescent
+  and cancelled whenever work arrives, so it only ever fires on a genuinely idle
+  session; an idle-bank that races an invoke re-checks quiescence and re-arms rather
+  than banks. `idle_bank_ms` nil/0 disables banking entirely (the session never
+  idle-banks; only expiry/destroy/relight-cycle ends it).
+
+  All timers use `Process.send_after` with an injectable `idle_bank_ms`, and tests
+  drive `:maybe_bank` directly for determinism.
   """
 
   use GenServer, restart: :transient
@@ -99,6 +115,10 @@ defmodule Embervm.Session do
       timeout_ms: Keyword.get(opts, :timeout_ms, 90_000),
       idle_bank_ms: Keyword.get(opts, :idle_bank_ms, nil),
       session_store: Keyword.get(opts, :session_store, Embervm.SessionStore),
+      # The SessionManager this process calls back to for a bank (node-global policy
+      # lives there). Defaults to the supervised singleton; the manager injects itself.
+      manager: Keyword.get(opts, :manager, Embervm.SessionManager),
+      bank_fun: Keyword.get(opts, :bank_fun, &default_bank_call/2),
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       assign_fun: Keyword.get(opts, :assign_fun, &default_session_assign/2),
@@ -106,10 +126,12 @@ defmodule Embervm.Session do
       # FIFO of {from, req} waiting their turn; the head runs when no worker is in
       # flight. `worker` is the {pid, ref, from} of the in-flight invoke, or nil.
       queue: :queue.new(),
-      worker: nil
+      worker: nil,
+      # The armed idle-bank timer ref (nil when disarmed).
+      idle_timer: nil
     }
 
-    {:ok, state}
+    {:ok, arm_idle_timer(state)}
   end
 
   @impl true
@@ -122,9 +144,15 @@ defmodule Embervm.Session do
     if :queue.len(state.queue) >= state.queue_cap do
       {:reply, {:error, :queue_full}, state}
     else
-      state = %{state | queue: :queue.in({from, req}, state.queue)}
+      # Work arrived: disarm the idle timer so a bank cannot start while a caller is
+      # queued or in flight (the bank re-arms once the session goes quiescent again).
+      state = state |> disarm_idle_timer() |> enqueue(from, req)
       {:noreply, maybe_start_next(state)}
     end
+  end
+
+  defp enqueue(state, from, req) do
+    %{state | queue: :queue.in({from, req}, state.queue)}
   end
 
   @impl true
@@ -159,15 +187,78 @@ defmodule Embervm.Session do
     fail_and_stop(state, {:worker_down, down_reason})
   end
 
-  # The idle-bank timer (PR-4). Inert in PR-3: no idle_bank_ms is set, so this is
-  # never scheduled; the clause exists so PR-4 wires banking without reshaping.
-  def handle_info(:maybe_bank, state), do: {:noreply, state}
+  # The idle-bank timer fired. ASK the manager to bank ONLY if still quiescent (no
+  # worker, empty queue); a stale timer (idle_timer already cleared) is ignored. On
+  # admission (:ok) the manager owns the bank from here, so this process STOPS. On a
+  # refusal it re-arms and stays live.
+  def handle_info(:maybe_bank, %{idle_timer: nil} = state), do: {:noreply, state}
+
+  def handle_info(:maybe_bank, state) do
+    state = %{state | idle_timer: nil}
+
+    if quiescent?(state) do
+      case ask_bank(state) do
+        :ok ->
+          # Admitted: the manager now owns the whole bank lifecycle. A banked session
+          # has no process, so stop. If the manager's async bank later FAILS, the
+          # manager restarts a session process from the durable row (adoption/relight),
+          # so nothing is lost by stopping here.
+          {:stop, :normal, state}
+
+        {:error, _reason} ->
+          {:noreply, arm_idle_timer(state)}
+      end
+    else
+      # Raced an invoke: re-arm and try again once idle.
+      {:noreply, arm_idle_timer(state)}
+    end
+  end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # -- idle-bank -------------------------------------------------------------
+
+  defp quiescent?(state), do: is_nil(state.worker) and :queue.is_empty(state.queue)
+
+  # Ask the manager to admit a bank. The manager owns the per-node bank cap, the disk
+  # fail-closed gate, the Bank RPC (run off its process), the durable session_banked
+  # append, and failure recovery. A raise/exit is treated as a refusal (re-arm).
+  defp ask_bank(state) do
+    state.bank_fun.(state.manager, state.session_id)
+  rescue
+    _ -> {:error, :bank_call_raised}
+  catch
+    _, _ -> {:error, :bank_call_raised}
+  end
+
+  # Arm the idle-bank timer if banking is enabled and it is not already armed. A nil
+  # or non-positive idle_bank_ms disables banking (the timer is never scheduled).
+  defp arm_idle_timer(%{idle_bank_ms: ms} = state) when is_integer(ms) and ms > 0 do
+    if state.idle_timer do
+      state
+    else
+      %{state | idle_timer: Process.send_after(self(), :maybe_bank, ms)}
+    end
+  end
+
+  defp arm_idle_timer(state), do: state
+
+  defp disarm_idle_timer(%{idle_timer: nil} = state), do: state
+
+  defp disarm_idle_timer(%{idle_timer: ref} = state) do
+    _ = Process.cancel_timer(ref)
+    %{state | idle_timer: nil}
+  end
+
+  defp default_bank_call(manager, session_id) do
+    Embervm.SessionManager.bank(manager, session_id)
+  end
 
   # -- invoke dispatch -------------------------------------------------------
 
   # Start the head of the queue if nothing is in flight; otherwise leave it queued.
+  # When the queue empties with no worker, the session is quiescent: arm the idle
+  # timer so a sustained idle period banks.
   defp maybe_start_next(%{worker: nil} = state) do
     case :queue.out(state.queue) do
       {{:value, {from, req}}, rest} ->
@@ -175,7 +266,7 @@ defmodule Embervm.Session do
         %{state | queue: rest, worker: {pid, ref, from}}
 
       {:empty, _} ->
-        state
+        arm_idle_timer(state)
     end
   end
 

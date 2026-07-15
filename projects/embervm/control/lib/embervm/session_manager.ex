@@ -52,10 +52,35 @@ defmodule Embervm.SessionManager do
   use GenServer
   require Logger
 
-  alias Embervm.{NodeCapacity, SessionStore, WorkloadCatalog}
-  alias Embervm.Node.V1.{PrimeRequest, PrimeResponse, Trace}
+  alias Embervm.{NodeCapacity, SessionPlacement, SessionState, SessionStore, WorkloadCatalog}
+
+  alias Embervm.Node.V1.{
+    BankRequest,
+    BankResponse,
+    EvictSnapshotRequest,
+    PrimeRequest,
+    PrimeResponse,
+    RelightRequest,
+    RelightResponse,
+    Trace
+  }
 
   @registry Embervm.SessionRegistry
+
+  # Per-node concurrent-bank cap: banking writes GiBs, so serialize per node like
+  # base builds (the node daemon also refuses a second concurrent bank, but the
+  # control plane must not even ISSUE a second one and stack the I/O).
+  @default_bank_concurrency 1
+
+  # Wake-rate limit: relight-triggering invokes per principal per window. A relight
+  # restores a full 2 GiB snapshot, so a burst of misses is an asymmetric-cost DoS
+  # lever; excess relights get 429 WITHOUT touching the node.
+  @default_wake_max 30
+  @default_wake_window_ms 60_000
+
+  # Three consecutive bank failures fail the session and destroy its VM: a session
+  # that cannot bank must not squat live capacity forever.
+  @bank_fail_limit 3
 
   # -- Client API ------------------------------------------------------------
 
@@ -99,6 +124,47 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:destroy, session_id})
   end
 
+  @doc """
+  Banks an idle session (called by its `Embervm.Session` process when its idle
+  timer fires and it is quiescent). Enforces the per-node concurrent-bank cap and
+  the disk fail-closed gate here (node-global policy, serialized through this
+  process), runs the `Bank` RPC, and appends `session_banked` (generation+1). On
+  `:ok` the caller (the session process) stops itself: a banked session has no
+  process. Returns `:ok`, `{:error, :bank_busy}` (another bank in flight on the
+  node), `{:error, :disk_unknown}` (fail-closed: missing disk facts, stay live),
+  or `{:error, reason}` on a daemon failure (the session stays running, the caller
+  re-arms its timer and counts the failure).
+  """
+  @spec bank(GenServer.server(), String.t()) :: :ok | {:error, term()}
+  def bank(server \\ __MODULE__, session_id) do
+    GenServer.call(server, {:bank, session_id}, :infinity)
+  end
+
+  @doc """
+  Runs one adoption reconcile synchronously (the same code the boot continue and
+  the periodic sweep run) and returns after it completes. Reconciles the ETS
+  projection against every node's reported `session_vms` + `session_snapshots`:
+  rebinds live session VMs to fresh processes, heals `banking`/`relighting` limbo,
+  fails sessions whose VM AND snapshot both vanished, and evicts orphaned
+  snapshots. Tests drive adoption deterministically through this.
+  """
+  @spec reconcile(GenServer.server()) :: :ok
+  def reconcile(server \\ __MODULE__) do
+    GenServer.call(server, :reconcile, :infinity)
+  end
+
+  @doc """
+  Runs one capacity/TTL sweep synchronously: expires sessions past `expires_at`
+  (live -> destroy VM, banked -> EvictSnapshot), GCs banked sessions untouched past
+  `bankedTtlSeconds`, and evicts banked sessions LRU while any node is below its
+  snapshot-disk low watermark. Tests drive it deterministically; production fires
+  it on the sweeper timer.
+  """
+  @spec sweep(GenServer.server()) :: :ok
+  def sweep(server \\ __MODULE__) do
+    GenServer.call(server, :sweep, :infinity)
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -117,13 +183,65 @@ defmodule Embervm.SessionManager do
       claim_fun: Keyword.get(opts, :claim_fun, &default_claim/3),
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
+      # Daemon session verb seams (Bank/Relight/EvictSnapshot). Injected for tests;
+      # production dials the real NodeService stub over the shared NodeChannel.
+      bank_fun: Keyword.get(opts, :bank_fun, &default_bank/2),
+      relight_fun: Keyword.get(opts, :relight_fun, &default_relight/2),
+      evict_fun: Keyword.get(opts, :evict_fun, &default_evict/2),
       # Extra opts threaded into every started Embervm.Session (the daemon seams),
       # so a test can inject a fake session_assign into the spawned process.
       session_opts: Keyword.get(opts, :session_opts, []),
-      tenant: Keyword.get(opts, :tenant, "homelab")
+      tenant: Keyword.get(opts, :tenant, "homelab"),
+      # Per-node concurrent-bank cap: node_id -> count of banks in flight on it. A
+      # node at its cap refuses a new bank (the session stays live, re-arms its timer).
+      bank_concurrency: Keyword.get(opts, :bank_concurrency, @default_bank_concurrency),
+      bank_inflight: %{},
+      # session_id -> %{node_id: n} for banks currently running async, so a mid-bank
+      # invoke can park (relighting ledger) and be relit once the bank completes.
+      banking: %{},
+      # session_id -> consecutive bank-failure count. Lives HERE (not in the session
+      # process, which stops on admission) so three strikes across bank attempts fails
+      # the session. Cleared on a successful bank or a successful invoke-driven relight.
+      bank_failures: %{},
+      # Snapshot-disk low watermark (bytes): when a node's snapshot_disk_free_bytes
+      # is below this, disk-pressure eviction fires. nil = eviction disabled.
+      disk_low_watermark_bytes: Keyword.get(opts, :disk_low_watermark_bytes, nil),
+      # Wake-rate limit: max relight-triggering invokes per principal per window.
+      wake_max: Keyword.get(opts, :wake_max, @default_wake_max),
+      wake_window_ms: Keyword.get(opts, :wake_window_ms, @default_wake_window_ms),
+      # principal -> [relight timestamps within the window]. Sliding-window counter.
+      wake_events: %{},
+      # session_id -> [{from, req}] parked callers waiting on an in-flight relight,
+      # so concurrent invokes to one banked session share ONE relight instead of
+      # racing two. Also the crash-consistency ledger: a relight appends session_relit
+      # ONLY after the daemon returns a live vm_id, and until then these callers park.
+      relighting: %{},
+      # The registry sweep (adoption) and the TTL/eviction sweep cadences. Distinct
+      # timers; both clock-injected and disable-able for tests (interval 0 = off).
+      reconcile_interval_ms: Keyword.get(opts, :reconcile_interval_ms, 0),
+      sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, 0)
     }
 
-    {:ok, state}
+    # session_opts always carry a manager reference so the per-session idle timer can
+    # call back for a bank; a test-supplied :manager wins (an isolated harness).
+    state = %{state | session_opts: Keyword.put_new(state.session_opts, :manager, self())}
+
+    if state.reconcile_interval_ms > 0 or state.sweep_interval_ms > 0 do
+      {:ok, state, {:continue, :boot}}
+    else
+      {:ok, state}
+    end
+  end
+
+  # Boot: run one adoption reconcile against whatever the node registry has already
+  # populated, then arm the periodic reconcile + sweep timers. Reconcile runs first
+  # so the residency/limbo heal lands before the first sweep can evict on it.
+  @impl true
+  def handle_continue(:boot, state) do
+    state = do_reconcile(state)
+    schedule(:reconcile, state.reconcile_interval_ms)
+    schedule(:sweep, state.sweep_interval_ms)
+    {:noreply, state}
   end
 
   @impl true
@@ -136,14 +254,24 @@ defmodule Embervm.SessionManager do
     # the session process's own FIFO parks the caller. So we reply the pid to the
     # caller path via a spawned forwarder, keeping the manager responsive. Simpler:
     # forward synchronously from a short task so the manager is not the bottleneck.
-    route = resolve_route(state, session_id)
-
-    case route do
+    case resolve_route(state, session_id) do
       {:live, pid} ->
         # Forward off the manager so a long guest round-trip does not serialize other
         # sessions' routing through this one GenServer.
         _ = spawn_forward(pid, req, from)
         {:noreply, state}
+
+      # A banked session: this invoke is a lifecycle MISS. Park the caller and (if it
+      # is the first for this session) trigger a relight, subject to the per-principal
+      # wake-rate limit. Concurrent invokes to the same banked session share the one
+      # relight (they all park under relighting[session_id]).
+      {:relight, session} ->
+        {:noreply, park_and_relight(state, session, from, req)}
+
+      # A relight is already in flight for this session (started by an earlier
+      # invoke): just park behind it. Drained when the relight completes.
+      {:relighting, _session} ->
+        {:noreply, park_relighting(state, session_id, from, req)}
 
       {:error, _reason} = error ->
         {:reply, error, state}
@@ -151,8 +279,52 @@ defmodule Embervm.SessionManager do
   end
 
   def handle_call({:destroy, session_id}, _from, state) do
-    {:reply, do_destroy(state, session_id), state}
+    {reply, state} = do_destroy(state, session_id)
+    {:reply, reply, state}
   end
+
+  def handle_call({:bank, session_id}, _from, state) do
+    {reply, state} = do_bank(state, session_id)
+    {:reply, reply, state}
+  end
+
+  def handle_call(:reconcile, _from, state) do
+    {:reply, :ok, do_reconcile(state)}
+  end
+
+  def handle_call(:sweep, _from, state) do
+    {:reply, :ok, do_sweep(state)}
+  end
+
+  # The async result of an in-flight relight worker (spawned by park_and_relight):
+  # {:ok, node_id, vm_id, relight_ms} on a live restore, or {:error, reason}. On
+  # success, crash-consistently append session_relit (AFTER the daemon returned a
+  # live vm_id), start the session process, and drain the parked callers into it.
+  # On failure, fail the session (snapshot_lost -> 410) and 410 the parked callers.
+  @impl true
+  def handle_info({:relight_done, session_id, outcome}, state) do
+    {:noreply, finish_relight(state, session_id, outcome)}
+  end
+
+  # The async bank worker finished: complete the durable transition + failure
+  # recovery on this (serialized) process. See finish_bank.
+  def handle_info({:bank_done, session_id, node_id, outcome}, state) do
+    {:noreply, finish_bank(state, session_id, node_id, outcome)}
+  end
+
+  def handle_info(:reconcile, state) do
+    state = do_reconcile(state)
+    schedule(:reconcile, state.reconcile_interval_ms)
+    {:noreply, state}
+  end
+
+  def handle_info(:sweep, state) do
+    state = do_sweep(state)
+    schedule(:sweep, state.sweep_interval_ms)
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
 
   # -- create ----------------------------------------------------------------
 
@@ -210,39 +382,11 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # PR-3 placement: the first fresh, non-draining, ready node with live-VM budget.
-  # `Embervm.SessionPlacement` (PR-4, Task 8) replaces this with rendezvous hashing
-  # over the ready node list; the interface (workload -> {node_id, snapshot_ref}) is
-  # the same, so that swap does not touch this module's create flow.
+  # Placement (Task 8): the front-end never inspects node facts. SessionPlacement
+  # owns the choice (rendezvous hash over ready nodes with budget) and returns the
+  # node + its base snapshot_ref (for Prime on a claim miss).
   defp pick_node(state, workload) do
-    NodeCapacity.all(state.capacity_table)
-    |> Enum.find_value({:error, :no_capacity}, fn f ->
-      wc = Map.get(f.workloads || %{}, workload)
-
-      cond do
-        wc == nil -> false
-        not base_ready?(wc) -> false
-        not has_budget?(f) -> false
-        true -> {:ok, f.configured_id, Map.get(wc, :snapshot_ref)}
-      end
-    end)
-  end
-
-  defp base_ready?(wc) do
-    ready =
-      case Map.get(wc, :base_state) do
-        :BASE_BUILD_STATE_READY -> true
-        3 -> true
-        _ -> false
-      end
-
-    ref = Map.get(wc, :snapshot_ref)
-    ready and is_binary(ref) and ref != ""
-  end
-
-  defp has_budget?(f) do
-    max = Map.get(f, :max_live_vms, 0)
-    max > 0 and Map.get(f, :live_vms, 0) < max
+    SessionPlacement.node_for_create(workload, state.capacity_table)
   end
 
   # Claim a primed VM from the dispatcher's inventory, or Prime one on a miss (the
@@ -321,6 +465,9 @@ defmodule Embervm.SessionManager do
         vm_id: vm_id,
         queue_cap: entry.session.invoke_queue_cap,
         timeout_ms: entry.timeout_ms,
+        # Arm the idle-bank timer (Task 7): a live session with zero in-flight and
+        # zero queued invokes for this long calls back to bank/2. Zero disables it.
+        idle_bank_ms: entry.session.idle_bank_seconds * 1000,
         session_store: state.session_store,
         # Register under the session id so the router/manager resolve the pid.
         name: {:via, Registry, {state.registry, session_id}}
@@ -336,22 +483,93 @@ defmodule Embervm.SessionManager do
     DynamicSupervisor.start_child(state.supervisor, spec)
   end
 
+  # Start (or restart) a session process from a durable session row + its catalog
+  # entry, used by relight and adoption (which have the row, not the create args).
+  # A catalog miss (workload deleted) is surfaced so the caller can fail the session
+  # rather than start a process with no config.
+  defp start_session_from_row(state, session, node_id, vm_id) do
+    case fetch_session_workload(state, session.workload) do
+      {:ok, entry} ->
+        start_session_process(state, session.session_id, session.workload, session.principal, entry, node_id, vm_id)
+
+      {:error, reason} ->
+        {:error, {:no_catalog_entry, reason}}
+    end
+  end
+
   # -- invoke routing --------------------------------------------------------
 
   defp resolve_route(state, session_id) do
     case SessionStore.get(state.session_store, session_id) do
+      # Invoke-time expiry (ADR 002 rule 1): expiry must NOT depend on sweep cadence.
+      # An invoke arriving on a running/banked session past its deadline expires it
+      # HERE (destroy VM / evict snapshot) and 410s the caller, so a session never
+      # serves an invoke past expires_at even between sweeps.
+      {:ok, %{state: st, expires_at: exp} = session}
+      when st in [:running, :banked] and is_integer(exp) ->
+        if exp <= state.clock.() do
+          _ = expire_session(state, session)
+          {:error, {:gone, "expired"}}
+        else
+          resolve_non_expired(state, session_id)
+        end
+
+      _ ->
+        resolve_non_expired(state, session_id)
+    end
+  end
+
+  # resolve_route's tail, after the invoke-time expiry check (kept separate so the
+  # expiry guard does not have to re-list every route arm). Re-reads the row (the
+  # expiry guard already fetched it, but a re-read keeps this arm total and simple).
+  defp resolve_non_expired(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :running} = _session} ->
         case Registry.lookup(state.registry, session_id) do
           [{pid, _}] -> {:live, pid}
-          # Running per the durable store but no process: a restart-limbo the PR-4
-          # adoption sweep rebinds. PR-3 has no adoption, so surface a transient
-          # error rather than pretend the VM is reachable.
+          # Running per the durable store but no process: a restart-limbo the
+          # adoption sweep rebinds. Surface a transient error rather than pretend the
+          # VM is reachable; the boot reconcile heals it to a live process shortly.
           [] -> {:error, {:not_ready, :running}}
+        end
+
+      # Banked: an invoke is a relight MISS. If a relight is already in flight
+      # (started by an earlier concurrent invoke), park behind it; otherwise this is
+      # the first invoke, which triggers the relight.
+      {:ok, %{state: :banked} = session} ->
+        if Map.has_key?(state.relighting, session_id) do
+          {:relighting, session}
+        else
+          {:relight, session}
+        end
+
+      {:ok, %{state: :relighting} = session} ->
+        # A relight the manager is driving (parked callers pending). Park behind it.
+        # A `relighting` durable state with NO in-flight relight in this process is a
+        # restart limbo the reconcile heals; treat as a transient not_ready so the
+        # caller retries after the heal rather than double-driving a relight.
+        if Map.has_key?(state.relighting, session_id) do
+          {:relighting, session}
+        else
+          {:error, {:not_ready, :relighting}}
+        end
+
+      # A bank is in flight: an invoke mid-bank PARKS and is relit after the bank
+      # completes (no cancel path; banking is short). Park in the relighting ledger;
+      # finish_bank relights the parked callers once the session is banked.
+      {:ok, %{state: :banking} = session} ->
+        if Map.has_key?(state.banking, session_id) do
+          {:relighting, session}
+        else
+          # A `banking` durable state with no in-flight bank in this process is a
+          # restart limbo the reconcile heals; transient not_ready so the caller
+          # retries after the heal.
+          {:error, {:not_ready, :banking}}
         end
 
       {:ok, %{state: session_state}} ->
         cond do
-          session_state in [:creating, :banking, :relighting] -> {:error, {:not_ready, session_state}}
+          session_state == :creating -> {:error, {:not_ready, :creating}}
           # terminal: 410 with the recorded reason.
           true -> {:error, {:gone, terminal_reason(state, session_id, session_state)}}
         end
@@ -384,35 +602,830 @@ defmodule Embervm.SessionManager do
     end)
   end
 
+  # -- bank (Task 7) ---------------------------------------------------------
+
+  # ADMIT a bank (synchronous, fast): enforce the per-node concurrent-bank cap and
+  # the disk fail-closed gate (node-global policy, serialized on this process), mark
+  # ETS `banking` (so a concurrent invoke parks), reserve the node's bank slot, and
+  # spawn the async bank WORKER (the RPC + durable append run OFF this process, so a
+  # multi-second bank never head-of-line-blocks another session's routing, gate 3).
+  # Replies `:ok` (admitted; the caller session process stops) or a refusal (the
+  # caller re-arms its timer and stays live).
+  defp do_bank(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
+      when is_binary(node_id) and is_binary(vm_id) ->
+        cond do
+          bank_at_cap?(state, node_id) ->
+            {{:error, :bank_busy}, state}
+
+          not disk_ok_for_bank?(state, node_id) ->
+            # Fail-closed: with missing/over-watermark disk facts, do NOT bank onto a
+            # possibly-full disk. The session stays live and re-arms its timer.
+            {{:error, :disk_unknown}, state}
+
+          true ->
+            admit_bank(state, session, node_id, vm_id)
+        end
+
+      {:ok, _session} ->
+        # Not a bankable state (already banked/terminal/relighting): a benign race,
+        # the timer fired against a session that moved on. Refuse so the caller does
+        # NOT stop on a false admission; if the session truly moved to banked/terminal
+        # its process is already stopping anyway.
+        {{:error, :not_bankable}, state}
+
+      :error ->
+        {{:error, :not_found}, state}
+    end
+  end
+
+  defp admit_bank(state, session, node_id, vm_id) do
+    case SessionStore.mark(state.session_store, session.session_id, :bank) do
+      {:ok, _} ->
+        state =
+          state
+          |> incr_bank_inflight(node_id)
+          |> Map.update!(:banking, &Map.put(&1, session.session_id, %{node_id: node_id}))
+
+        spawn_bank_worker(state, session, node_id, vm_id)
+        {:ok, state}
+
+      {:error, reason} ->
+        {{:error, {:mark, reason}}, state}
+    end
+  end
+
+  # The async bank worker: Bank RPC on the node, then report the result back to the
+  # manager. It does NOT append the durable op itself (the manager serializes the
+  # store transition + inflight release on {:bank_done}), keeping the op-log's
+  # single-writer discipline and the failure-recovery decision on one process.
+  defp spawn_bank_worker(state, session, node_id, vm_id) do
+    owner = self()
+    channel_fun = state.channel_fun
+    bank_fun = state.bank_fun
+    session_id = session.session_id
+    workload = session.workload
+    parent_base_ref = session.base_snapshot_ref
+    generation = (session.generation || 0) + 1
+
+    spawn(fn ->
+      outcome =
+        with {:ok, channel} <- channel_fun.(node_id),
+             {:ok, %BankResponse{snapshot_ref: ref, size_bytes: size}} when is_binary(ref) and ref != "" <-
+               safe_bank(bank_fun, channel, workload, session_id, vm_id) do
+          {:ok, ref, size, generation, parent_base_ref}
+        else
+          other -> {:error, other}
+        end
+
+      send(owner, {:bank_done, session_id, node_id, outcome})
+    end)
+  end
+
+  # The async bank completed (a {:bank_done} message on the manager). Release the
+  # node's bank slot and the banking marker, then:
+  #   * on success: transition `banking -[bank_ready]-> banked` with the durable
+  #     session_banked op (generation+1, snapshot fact), clear the failure streak,
+  #     and if a mid-bank invoke parked, immediately relight it;
+  #   * on failure: mark ETS `banking -[bank_abort]-> running` (the VM is still alive,
+  #     no snapshot written), count the failure, and either restart a session process
+  #     (so it can serve invokes + retry) or, at three strikes, fail + destroy the VM.
+  defp finish_bank(state, session_id, node_id, outcome) do
+    state =
+      state
+      |> decr_bank_inflight(node_id)
+      |> Map.update!(:banking, &Map.delete(&1, session_id))
+
+    case SessionStore.get(state.session_store, session_id) do
+      # Destroyed/expired mid-bank: the durable state is already terminal. On a
+      # successful bank the produced snapshot is orphaned and adoption reaps it; drain
+      # any mid-bank parked callers gone. Never resurrect a terminal session.
+      {:ok, %{state: st}} when st in [:expired, :evicted, :destroyed, :failed] ->
+        drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
+
+      _ ->
+        finish_bank_active(state, session_id, node_id, outcome)
+    end
+  end
+
+  defp finish_bank_active(state, session_id, node_id, outcome) do
+    case outcome do
+      {:ok, ref, size, generation, parent_base_ref} ->
+        _ =
+          SessionStore.transition(
+            state.session_store,
+            session_id,
+            :bank_ready,
+            :session_banked,
+            %{snapshot_ref: ref, size_bytes: size, generation: generation, parent_base_ref: parent_base_ref},
+            %{snapshot_ref: ref, snapshot_size_bytes: size, generation: generation, node_id: node_id, vm_id: nil}
+          )
+
+        Logger.info("embervm session banked", session_id: session_id, node_id: node_id)
+        state = clear_bank_failures(state, session_id)
+        relight_parked_after_bank(state, session_id)
+
+      {:error, reason} ->
+        handle_bank_failure(state, session_id, reason)
+    end
+  end
+
+  # A mid-bank invoke parked in the relighting ledger while the bank ran. Now the
+  # session is banked, relight it (subject to the wake-rate limit) and drain the
+  # parked callers into the relit process. No parked caller = nothing to do.
+  defp relight_parked_after_bank(state, session_id) do
+    case Map.get(state.relighting, session_id) do
+      nil ->
+        state
+
+      _waiters ->
+        case SessionStore.get(state.session_store, session_id) do
+          {:ok, %{state: :banked} = session} -> start_relight(state, session)
+          # Raced a destroy/expire: drain the waiters gone.
+          _ -> drain_relight_waiters(state, session_id, {:error, {:gone, "unavailable"}})
+        end
+    end
+  end
+
+  # A bank failed: ETS back to running, count the strike. Three strikes fail the
+  # session + destroy its VM; under the limit, restart a session process so the live
+  # VM keeps serving and its idle timer will retry the bank.
+  defp handle_bank_failure(state, session_id, reason) do
+    _ = SessionStore.mark(state.session_store, session_id, :bank_abort)
+    failures = Map.get(state.bank_failures, session_id, 0) + 1
+    Logger.warning("embervm session bank failed", session_id: session_id, reason: inspect(reason), consecutive: failures)
+
+    if failures >= @bank_fail_limit do
+      state = clear_bank_failures(state, session_id)
+
+      case SessionStore.get(state.session_store, session_id) do
+        {:ok, session} ->
+          fail_session_and_destroy(state, session)
+          # Any mid-bank parked callers: the session is failed now.
+          drain_relight_waiters(state, session_id, {:error, {:gone, "failed"}})
+
+        :error ->
+          state
+      end
+    else
+      state = %{state | bank_failures: Map.put(state.bank_failures, session_id, failures)}
+      restart_running_process(state, session_id)
+    end
+  end
+
+  # Restart a session process for a running session that lost its process (a failed
+  # bank: the process stopped on admission but the VM is still live). Idempotent: a
+  # session that already has a process is left alone.
+  defp restart_running_process(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
+      when is_binary(node_id) and is_binary(vm_id) ->
+        case Registry.lookup(state.registry, session_id) do
+          [{_pid, _}] ->
+            state
+
+          [] ->
+            _ = start_session_from_row(state, session, node_id, vm_id)
+            state
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp fail_session_and_destroy(state, session) do
+    _ = destroy_vm(state, session)
+    fail_session(state, session.session_id, :failed, "bank_failed_three_strikes")
+    state
+  end
+
+  defp clear_bank_failures(state, session_id) do
+    %{state | bank_failures: Map.delete(state.bank_failures, session_id)}
+  end
+
+  # A node is at its bank cap when the count of in-flight banks on it reaches the
+  # per-node concurrency limit (default 1).
+  defp bank_at_cap?(state, node_id) do
+    Map.get(state.bank_inflight, node_id, 0) >= state.bank_concurrency
+  end
+
+  # Disk is OK to bank when eviction is disabled (no watermark configured) OR the
+  # node reports snapshot_disk_free_bytes strictly ABOVE the low watermark. Missing
+  # disk facts (node absent from the capacity table, or a nil free-bytes field) are
+  # fail-closed: not OK. This never banks onto a disk we cannot prove has room.
+  defp disk_ok_for_bank?(%{disk_low_watermark_bytes: nil}, _node_id), do: true
+
+  defp disk_ok_for_bank?(state, node_id) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        free = Map.get(fact, :snapshot_disk_free_bytes)
+        is_integer(free) and free > state.disk_low_watermark_bytes
+
+      :error ->
+        false
+    end
+  end
+
+  defp incr_bank_inflight(state, node_id) do
+    %{state | bank_inflight: Map.update(state.bank_inflight, node_id, 1, &(&1 + 1))}
+  end
+
+  defp decr_bank_inflight(state, node_id) do
+    %{state | bank_inflight: Map.update(state.bank_inflight, node_id, 0, &max(&1 - 1, 0))}
+  end
+
+  defp safe_bank(bank_fun, channel, workload, session_id, vm_id) do
+    req = %BankRequest{trace: %Trace{workload: workload}, vm_id: vm_id, session_id: session_id}
+    bank_fun.(channel, req)
+  rescue
+    e -> {:error, {:bank_raised, e}}
+  catch
+    kind, reason -> {:error, {:bank_raised, {kind, reason}}}
+  end
+
+  # -- relight-on-invoke (Task 8) --------------------------------------------
+
+  # First invoke on a banked session: apply the wake-rate limit, then either park +
+  # start a relight, or 429 the caller without touching the node.
+  defp park_and_relight(state, session, from, req) do
+    principal = session.principal
+
+    if wake_allowed?(state, principal) do
+      state = record_wake(state, principal)
+      state = park_relighting(state, session.session_id, from, req)
+      start_relight(state, session)
+    else
+      audit_denial(state, principal, session.workload, :wake_rate)
+      GenServer.reply(from, {:error, :wake_rate_limited})
+      state
+    end
+  end
+
+  # Park a caller behind an in-flight relight for its session (FIFO within the
+  # session), draining them all into the fresh process once the relight lands.
+  defp park_relighting(state, session_id, from, req) do
+    waiters = Map.get(state.relighting, session_id, [])
+    %{state | relighting: Map.put(state.relighting, session_id, waiters ++ [{from, req}])}
+  end
+
+  # Kick off the relight: mark ETS banked -[relight]-> relighting (ETS-only, no op;
+  # crash-consistency requires session_relit land only AFTER the daemon returns a
+  # live vm_id, see finish_relight), then spawn a worker that Relights on the
+  # resident node and reports back.
+  defp start_relight(state, session) do
+    case SessionStore.mark(state.session_store, session.session_id, :relight) do
+      {:ok, _} ->
+        spawn_relight_worker(state, session)
+        state
+
+      {:error, _} ->
+        # Illegal (session moved off banked concurrently): drain any parked callers
+        # for it as not_ready so they retry.
+        drain_relight_waiters(state, session.session_id, {:error, {:not_ready, :banked}})
+    end
+  end
+
+  defp spawn_relight_worker(state, session) do
+    owner = self()
+    capacity_table = state.capacity_table
+    channel_fun = state.channel_fun
+    relight_fun = state.relight_fun
+    clock = state.clock
+    session_id = session.session_id
+
+    spawn(fn ->
+      outcome =
+        case SessionPlacement.node_for_relight(session, capacity_table) do
+          {:ok, node_id} ->
+            t0 = clock.()
+
+            with {:ok, channel} <- channel_fun.(node_id),
+                 {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
+                   safe_relight(relight_fun, channel, session) do
+              {:ok, node_id, vm_id, clock.() - t0}
+            else
+              {:error, reason} -> classify_relight_error(reason)
+              other -> classify_relight_error({:relight_failed, other})
+            end
+
+          {:error, :snapshot_lost} ->
+            {:error, :snapshot_lost}
+        end
+
+      send(owner, {:relight_done, session_id, outcome})
+    end)
+  end
+
+  defp safe_relight(relight_fun, channel, session) do
+    req = %RelightRequest{
+      trace: %Trace{workload: session.workload},
+      snapshot_ref: session.snapshot_ref,
+      session_id: session.session_id
+    }
+
+    relight_fun.(channel, req)
+  rescue
+    e -> {:error, {:relight_raised, e}}
+  catch
+    kind, reason -> {:error, {:relight_raised, {kind, reason}}}
+  end
+
+  # A FAILED_PRECONDITION from Relight means the snapshot is unrestorable: the
+  # session is lost (snapshot_lost -> 410). Any other transport error is a retryable
+  # relight failure (the snapshot is NOT deleted on a failed restore, per the proto),
+  # surfaced as a generic error the parked caller sees; the session stays banked.
+  defp classify_relight_error(%GRPC.RPCError{status: 9}), do: {:error, :snapshot_lost}
+  defp classify_relight_error({:relight_failed, %GRPC.RPCError{status: 9}}), do: {:error, :snapshot_lost}
+  defp classify_relight_error(reason), do: {:error, {:relight, reason}}
+
+  # Relight completed. On success: append session_relit (NOW, after a live vm_id),
+  # move ETS to running with the fresh residency, start the process, and drain the
+  # parked callers into it. On snapshot_lost: fail the session, evict the snapshot,
+  # 410 the parked callers. On a transient relight error: leave the session banked
+  # and reply the error to parked callers (they may retry, re-relighting).
+  defp finish_relight(state, session_id, outcome) do
+    case SessionStore.get(state.session_store, session_id) do
+      # The session went terminal mid-relight (a concurrent destroy/expire): the
+      # relight's live VM, if any, is orphaned and adoption/next-sweep reaps it. Drain
+      # any parked callers gone and drop the ledger. Never start a process for a
+      # terminal session.
+      {:ok, %{state: st}} when st in [:expired, :evicted, :destroyed, :failed] ->
+        drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
+
+      _ ->
+        finish_relight_active(state, session_id, outcome)
+    end
+  end
+
+  defp finish_relight_active(state, session_id, outcome) do
+    case outcome do
+      {:ok, node_id, vm_id, relight_ms} ->
+        session = get_session!(state, session_id)
+
+        _ =
+          SessionStore.transition(
+            state.session_store,
+            session_id,
+            :relight_ready,
+            :session_relit,
+            %{snapshot_ref: session.snapshot_ref, generation: session.generation, relight_ms: relight_ms},
+            %{node_id: node_id, vm_id: vm_id}
+          )
+
+        state = clear_bank_failures(state, session_id)
+
+        case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id) do
+          {:ok, pid} ->
+            Logger.info("embervm session relit", session_id: session_id, relight_ms: relight_ms)
+            drain_relight_into_process(state, session_id, pid)
+
+          {:error, reason} ->
+            fail_session(state, session_id, :failed, "relit process start failed: #{inspect(reason)}")
+            drain_relight_waiters(state, session_id, {:error, :failed})
+        end
+
+      {:error, :snapshot_lost} ->
+        session = get_session!(state, session_id)
+        fail_session(state, session_id, :snapshot_lost, "snapshot_lost")
+        _ = evict_snapshot(state, session)
+        drain_relight_waiters(state, session_id, {:error, {:gone, "snapshot_lost"}})
+
+      {:error, reason} ->
+        # Transient (non-precondition) failure: the snapshot is intact (the proto
+        # never deletes it on a failed restore), so return ETS relighting -> banked
+        # (ETS-only, no op) and reply the error. A later invoke re-relights.
+        Logger.warning("embervm session relight failed", session_id: session_id, reason: inspect(reason))
+        _ = SessionStore.mark(state.session_store, session_id, :relight_abort)
+        drain_relight_waiters(state, session_id, {:error, {:relight_failed, reason}})
+    end
+  end
+
+  # Drain every parked caller for a relit session by forwarding its req into the
+  # fresh session process (FIFO order), then clear the relighting ledger. Each
+  # forward runs off the manager so a long guest round-trip does not serialize.
+  defp drain_relight_into_process(state, session_id, pid) do
+    waiters = Map.get(state.relighting, session_id, [])
+    for {from, req} <- waiters, do: spawn_forward(pid, req, from)
+    %{state | relighting: Map.delete(state.relighting, session_id)}
+  end
+
+  # Reply `reply` to every parked caller for a session (a failed/lost relight) and
+  # clear the ledger.
+  defp drain_relight_waiters(state, session_id, reply) do
+    waiters = Map.get(state.relighting, session_id, [])
+    for {from, _req} <- waiters, do: GenServer.reply(from, reply)
+    %{state | relighting: Map.delete(state.relighting, session_id)}
+  end
+
+  # -- wake-rate limit (Task 8) ----------------------------------------------
+
+  # A sliding-window per-principal relight count: allowed while the count of relight
+  # timestamps within the window is below wake_max. wake_max <= 0 disables the limit
+  # entirely (never rate-limit), matching "0 = off" config idioms; a positive limit
+  # is enforced.
+  defp wake_allowed?(%{wake_max: max}, _principal) when not is_integer(max) or max <= 0, do: true
+
+  defp wake_allowed?(state, principal) do
+    now = state.clock.()
+    recent = recent_wakes(state, principal, now)
+    length(recent) < state.wake_max
+  end
+
+  defp record_wake(state, principal) do
+    now = state.clock.()
+    recent = recent_wakes(state, principal, now)
+    %{state | wake_events: Map.put(state.wake_events, principal, [now | recent])}
+  end
+
+  defp recent_wakes(state, principal, now) do
+    cutoff = now - state.wake_window_ms
+
+    state.wake_events
+    |> Map.get(principal, [])
+    |> Enum.filter(&(&1 > cutoff))
+  end
+
+  # -- adoption (Task 8) -----------------------------------------------------
+
+  # Reconcile the ETS projection against every node's reported session inventory
+  # (the #3517 drill lesson applied to sessions: the node is the source of truth,
+  # the control plane adopts, NEVER reaps on a transient disconnect). For each
+  # non-terminal session:
+  #
+  #   * running/relighting/banking with a node-reported LIVE VM -> rebind residency
+  #     and (re)start the process bound to that vm_id. Heals a control-plane restart
+  #     (the durable state is running but the process is gone) and heals banking/
+  #     relighting limbo where the node actually holds a live VM.
+  #   * banked, or banking/relighting where the node reports the SNAPSHOT (not a VM)
+  #     -> heal ETS to banked (the bank/relight did not complete; the snapshot is the
+  #     truth). No process.
+  #   * neither a VM nor a snapshot reported for the session -> the VM and snapshot
+  #     both vanished (node death after a live-only session, or an out-of-band wipe):
+  #     mark it failed. This is the ONLY reaping, and only when node truth confirms
+  #     the state is gone, never on a transient absence of the whole node's facts.
+  #
+  # Then evict snapshots the node reports whose session row is terminal or absent.
+  #
+  # NEVER reap when a node's facts are simply missing (a disconnect): a session on a
+  # node not currently in the capacity table is left untouched, exactly the pool's
+  # additive-only rule.
+  defp do_reconcile(state) do
+    facts = NodeCapacity.all(state.capacity_table)
+    live_vms = index_session_vms(facts)
+    snapshots = index_session_snapshots(facts)
+
+    state =
+      SessionStore.all(state.session_store)
+      |> Enum.reject(&SessionState.terminal?(&1.state))
+      |> Enum.reduce(state, fn session, acc ->
+        adopt_one(acc, session, live_vms, snapshots)
+      end)
+
+    evict_orphan_snapshots(state, facts)
+  end
+
+  # vm session_id -> {node_id, vm_id}; snapshot session_id -> {node_id, snapshot_ref}.
+  defp index_session_vms(facts) do
+    for f <- facts, v <- Map.get(f, :session_vms, []) || [], into: %{} do
+      {v.session_id, {f.configured_id, v.vm_id}}
+    end
+  end
+
+  defp index_session_snapshots(facts) do
+    for f <- facts, s <- Map.get(f, :session_snapshots, []) || [], into: %{} do
+      {s.session_id, {f.configured_id, s.snapshot_ref}}
+    end
+  end
+
+  defp adopt_one(state, session, live_vms, snapshots) do
+    sid = session.session_id
+
+    cond do
+      # The node reports a LIVE VM for this session: rebind it (residency + process),
+      # regardless of whether ETS thinks it is running/banking/relighting.
+      Map.has_key?(live_vms, sid) ->
+        {node_id, vm_id} = Map.fetch!(live_vms, sid)
+        adopt_live(state, session, node_id, vm_id)
+
+      # No live VM, but the node reports its SNAPSHOT: it is banked (or a bank/relight
+      # that did not finish leaving only the snapshot). Heal ETS to banked.
+      Map.has_key?(snapshots, sid) ->
+        heal_to_banked(state, session, snapshots)
+
+      # A session the current node facts cover neither as a VM nor a snapshot. Only
+      # reap if the node whose id the session records IS reporting (its absence is
+      # then authoritative, the state truly vanished); if that node is not in the
+      # facts at all (a disconnect), leave the session untouched.
+      node_reporting?(state, session.node_id) ->
+        fail_session(state, sid, :failed, "vm_and_snapshot_vanished")
+        state
+
+      true ->
+        state
+    end
+  end
+
+  # Rebind a live session VM to a fresh process (idempotent). Forces ETS to running
+  # from node truth (a banking/relighting/creating limbo whose node actually holds a
+  # live VM), writes the residency fact + vm_id, and starts a process if none runs.
+  defp adopt_live(state, session, node_id, vm_id) do
+    SessionStore.adopt_state(state.session_store, session.session_id, :running)
+    SessionStore.adopt_residency(state.session_store, session.session_id, node_id, vm_id)
+
+    case Registry.lookup(state.registry, session.session_id) do
+      [{_pid, _}] ->
+        # Already has a process (adoption ran twice, or the process outlived a sweep):
+        # leave it. The residency/state heal above is idempotent.
+        state
+
+      [] ->
+        case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id) do
+          {:ok, _pid} ->
+            Logger.info("embervm session adopted (live)", session_id: session.session_id, node_id: node_id)
+            state
+
+          {:error, reason} ->
+            Logger.warning("embervm session adopt-live start failed",
+              session_id: session.session_id,
+              reason: inspect(reason)
+            )
+
+            state
+        end
+    end
+  end
+
+  # A session the node reports only as a snapshot: it is banked. Force ETS to banked
+  # (idempotent) so a banking/relighting limbo whose bank/relight did not complete
+  # resolves to the truth (the snapshot exists, no VM), dropping residency so the
+  # next invoke routes as a relight miss.
+  defp heal_to_banked(state, %{state: :banked}, _snapshots), do: state
+
+  defp heal_to_banked(state, session, _snapshots) do
+    SessionStore.adopt_state(state.session_store, session.session_id, :banked)
+    Logger.info("embervm session adopted (banked)", session_id: session.session_id)
+    state
+  end
+
+  defp node_reporting?(state, node_id) when is_binary(node_id) do
+    match?({:ok, _}, NodeCapacity.fetch(state.capacity_table, node_id))
+  end
+
+  defp node_reporting?(_state, _node_id), do: false
+
+  # Evict snapshots a node reports whose session row is terminal or absent: the
+  # session is gone but its snapshot squats disk. EvictSnapshot is idempotent, so a
+  # double-evict is harmless.
+  defp evict_orphan_snapshots(state, facts) do
+    for f <- facts, snap <- Map.get(f, :session_snapshots, []) || [] do
+      case SessionStore.get(state.session_store, snap.session_id) do
+        {:ok, %{state: st}} when st in [:expired, :evicted, :destroyed, :failed] ->
+          _ = evict_snapshot_on_node(state, f.configured_id, snap.snapshot_ref, f.node_id)
+
+        :error ->
+          _ = evict_snapshot_on_node(state, f.configured_id, snap.snapshot_ref, f.node_id)
+
+        _ ->
+          :ok
+      end
+    end
+
+    state
+  end
+
+  # -- sweep: expiry, banked-TTL GC, disk-pressure eviction (Task 7) ---------
+
+  defp do_sweep(state) do
+    now = state.clock.()
+
+    state
+    |> sweep_expiry(now)
+    |> sweep_banked_ttl(now)
+    |> sweep_disk_pressure()
+  end
+
+  # Max-lifetime expiry (independent of the invoke-time check): any non-terminal
+  # session past expires_at is expired. Live -> destroy the VM; banked -> evict the
+  # snapshot. Appends session_expired either way.
+  defp sweep_expiry(state, now) do
+    SessionStore.all(state.session_store)
+    # Only running/banked have an :expire FSM edge; a transient banking/relighting/
+    # creating session settles within a sweep and is expired on the next pass.
+    |> Enum.filter(fn s -> s.state in [:running, :banked] end)
+    |> Enum.filter(fn s -> is_integer(s.expires_at) and s.expires_at <= now end)
+    |> Enum.reduce(state, fn session, acc -> expire_session(acc, session) end)
+  end
+
+  defp expire_session(state, session) do
+    if session.state == :banked do
+      _ = evict_snapshot(state, session)
+    else
+      _ = stop_session_process(state, session.session_id, session)
+    end
+
+    _ =
+      SessionStore.transition(
+        state.session_store,
+        session.session_id,
+        :expire,
+        :session_expired,
+        %{reason: :expired},
+        %{}
+      )
+
+    Logger.info("embervm session expired", session_id: session.session_id)
+    state
+  end
+
+  # Banked-TTL GC: a banked session untouched (last_invoke_at, or banked-at via
+  # updated_at) for longer than its workload's bankedTtlSeconds is evicted
+  # (session_evicted, reason idle_ttl).
+  defp sweep_banked_ttl(state, now) do
+    SessionStore.all(state.session_store)
+    |> Enum.filter(&(&1.state == :banked))
+    |> Enum.reduce(state, fn session, acc ->
+      case fetch_session_workload(acc, session.workload) do
+        {:ok, entry} ->
+          ttl_ms = entry.session.banked_ttl_seconds * 1000
+          last = session.last_invoke_at || session.updated_at || 0
+
+          if now - last >= ttl_ms do
+            evict_banked(acc, session, :idle_ttl)
+          else
+            acc
+          end
+
+        {:error, _} ->
+          acc
+      end
+    end)
+  end
+
+  # Disk-pressure eviction: for each node below its snapshot-disk low watermark,
+  # evict banked sessions LRU by last_invoke_at (NEVER live, NEVER non-session
+  # snapshots) until free bytes rise above the watermark. Each an audited
+  # session_evicted, reason disk_pressure. Disabled when no watermark is configured.
+  defp sweep_disk_pressure(%{disk_low_watermark_bytes: nil} = state), do: state
+
+  defp sweep_disk_pressure(state) do
+    NodeCapacity.all(state.capacity_table)
+    |> Enum.reduce(state, fn fact, acc -> evict_node_to_watermark(acc, fact) end)
+  end
+
+  defp evict_node_to_watermark(state, fact) do
+    free = Map.get(fact, :snapshot_disk_free_bytes)
+    watermark = state.disk_low_watermark_bytes
+
+    if is_integer(free) and free < watermark do
+      # Victims: this node's banked sessions, coldest first. We evict until the
+      # projected freed bytes lift us over the watermark (we cannot re-read node
+      # disk mid-sweep, so we project free += snapshot_size_bytes per eviction).
+      victims = banked_victims_on_node(state, fact.configured_id)
+      evict_until_watermark(state, victims, free, watermark)
+    else
+      state
+    end
+  end
+
+  # Banked sessions whose recorded node_id is this node, coldest last_invoke_at
+  # first. We LRU across the node's workloads (a per-workload banked_lru merged and
+  # re-sorted), so the globally coldest banked session on the pressured node goes
+  # first regardless of workload.
+  defp banked_victims_on_node(state, node_id) do
+    SessionStore.all(state.session_store)
+    |> Enum.filter(fn s -> s.state == :banked and s.node_id == node_id end)
+    |> Enum.sort_by(&(&1.last_invoke_at || 0), :asc)
+  end
+
+  defp evict_until_watermark(state, [], _free, _watermark), do: state
+
+  defp evict_until_watermark(state, _victims, free, watermark) when free >= watermark, do: state
+
+  defp evict_until_watermark(state, [session | rest], free, watermark) do
+    state = evict_banked(state, session, :disk_pressure)
+    projected_free = free + (session.snapshot_size_bytes || 0)
+    evict_until_watermark(state, rest, projected_free, watermark)
+  end
+
+  # Evict a banked session: EvictSnapshot on its node, append session_evicted with
+  # the reason. The session becomes terminal (evicted -> next invoke 410s).
+  defp evict_banked(state, session, reason) do
+    _ = evict_snapshot(state, session)
+
+    _ =
+      SessionStore.transition(
+        state.session_store,
+        session.session_id,
+        :evict,
+        :session_evicted,
+        %{reason: reason},
+        %{}
+      )
+
+    Logger.warning("embervm session evicted", session_id: session.session_id, reason: reason)
+    state
+  end
+
+  # -- snapshot eviction RPC -------------------------------------------------
+
+  defp evict_snapshot(state, %{node_id: node_id, snapshot_ref: ref}) when is_binary(node_id) and is_binary(ref) do
+    evict_snapshot_on_node(state, node_id, ref, node_id)
+  end
+
+  defp evict_snapshot(_state, _session), do: :ok
+
+  defp evict_snapshot_on_node(state, node_id, snapshot_ref, _reported_id)
+       when is_binary(node_id) and is_binary(snapshot_ref) do
+    with {:ok, channel} <- state.channel_fun.(node_id) do
+      req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: snapshot_ref}
+
+      try do
+        state.evict_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp evict_snapshot_on_node(_state, _node_id, _ref, _reported), do: :ok
+
+  # -- shared fail path ------------------------------------------------------
+
+  # Fail a session terminally with a machine-readable reason (snapshot_lost, etc.).
+  # Best-effort; a store error is logged, not raised (adoption/relight callers must
+  # keep going).
+  defp fail_session(state, session_id, reason, detail) do
+    case SessionStore.transition(
+           state.session_store,
+           session_id,
+           :fail,
+           :session_failed,
+           %{reason: reason, detail: detail},
+           %{}
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, err} ->
+        Logger.warning("embervm session fail transition failed", session_id: session_id, error: inspect(err))
+        :error
+    end
+  end
+
+  defp get_session!(state, session_id) do
+    {:ok, session} = SessionStore.get(state.session_store, session_id)
+    session
+  end
+
+  defp schedule(_msg, interval) when interval <= 0, do: :ok
+  defp schedule(msg, interval), do: Process.send_after(self(), msg, interval)
+
   # -- destroy ---------------------------------------------------------------
 
   defp do_destroy(state, session_id) do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: session_state}} when session_state in [:expired, :evicted, :destroyed, :failed] ->
-        {:ok, :already_terminal}
+        {{:ok, :already_terminal}, state}
 
       {:ok, session} ->
         destroy_live(state, session)
 
       :error ->
-        {:error, :not_found}
+        {{:error, :not_found}, state}
     end
   end
 
-  # Stop the session process (which owns and, on terminate, releases the VM), then
-  # record session_destroyed. A live session has a process; a banked one does not
-  # (its VM is already gone, only the snapshot remains, whose eviction is PR-4).
+  # Destroy a session: tear down whatever it holds. A live session (running/banking/
+  # relighting) has a process + VM, stopped and destroyed here; a banked session has
+  # only a snapshot, evicted here. Then record session_destroyed. Any parked relight
+  # waiters are drained gone (the session is being destroyed). Returns {reply, state}
+  # so the drained relighting ledger is threaded back.
   defp destroy_live(state, session) do
-    _ = stop_session_process(state, session.session_id, session)
+    if session.state == :banked do
+      _ = evict_snapshot(state, session)
+    else
+      _ = stop_session_process(state, session.session_id, session)
+    end
 
-    SessionStore.transition(
-      state.session_store,
-      session.session_id,
-      :destroy,
-      :session_destroyed,
-      %{reason: :destroyed},
-      %{}
-    )
+    state = drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
+
+    reply =
+      SessionStore.transition(
+        state.session_store,
+        session.session_id,
+        :destroy,
+        :session_destroyed,
+        %{reason: :destroyed},
+        %{}
+      )
+
+    {reply, state}
   end
 
   # Terminate the session process and destroy its VM. We destroy the VM HERE (not in
@@ -483,6 +1496,18 @@ defmodule Embervm.SessionManager do
 
   defp default_prime(channel, %PrimeRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.prime(channel, req)
+  end
+
+  defp default_bank(channel, %BankRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.bank(channel, req)
+  end
+
+  defp default_relight(channel, %RelightRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.relight(channel, req)
+  end
+
+  defp default_evict(channel, %EvictSnapshotRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
   end
 
   defp default_clock, do: System.system_time(:millisecond)
