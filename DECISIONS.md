@@ -500,3 +500,33 @@ calls the verbs yet; daemon mechanics only). Flagged for post-impl review.
   VMs are tracked in a SEPARATE `sessionRegistry` (never the task `vmRegistry`) and
   reported only in `NodeStatus.session_vms`, never in any `primed_vm_ids`. This is
   the isolation invariant: a session VM can never be adopted into the task pool.
+
+## R2 Phase 1: lifecycle core (PR-3, embervm 0.1.38)
+
+Tasks 5-6 (SessionStore/FSM/tokens + SessionManager/create/API) choices where the
+plan was silent. Flagged for post-impl review.
+
+### D-R2.2.1 Primed-VM claim goes through a new Dispatcher.claim/3 (single-writer inventory)
+- Create claims a primed pristine VM via a new `Dispatcher.claim/3` that atomically
+  pops a vm_id from the `{node, workload}` inventory (reusing `reserve_vm`),
+  serialized through the dispatcher, so a session claim and a task dispatch can never
+  pop the same single-use VM. On a claim miss SessionManager Primes inline (create
+  latency is not the per-invoke hot path). Chosen over reaching into the dispatcher's
+  private inventory (which would break the single-writer invariant).
+
+### D-R2.2.2 Placement is inline (first-ready-node-with-budget) until PR-4
+- SessionManager picks a node inline with a minimal first-ready-with-budget choice.
+  `SessionPlacement` (rendezvous hash) is PR-4/Task 8 with the same
+  `workload -> {node, snapshot_ref}` interface, so the swap will not touch create.
+
+### D-R2.2.3 session_invoked is a non-FSM write (record_invoke), not an FSM edge
+- `SessionStore.record_invoke/3` is running->running (rejects non-running) and charges
+  the usage projection (D12.1) like tasks, rather than forcing an FSM edge for every
+  invoke. An invoke is not a lifecycle transition; the FSM stays about bank/relight.
+
+### D-R2.2.4 Invoke on a running-but-processless session is 409 not_ready (PR-4 heals it)
+- A `running` session whose GenServer is absent (a control-plane-restart limbo that
+  PR-4 adoption will heal) returns `{:not_ready, :running}` -> 409, since no adoption
+  path exists yet in PR-3 to rebind the process. `base_digest` at create is the image
+  ref placeholder; PR-4 threads the BaseBuilder-resolved digest when relight lineage
+  needs it.
