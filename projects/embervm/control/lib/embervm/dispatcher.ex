@@ -293,6 +293,18 @@ defmodule Embervm.Dispatcher do
     {:noreply, finish_worker(state, pid, outcome, :flush)}
   end
 
+  # A miss worker reports the vm_id it just primed. Stamp it into the worker's meta
+  # so known_vm_ids counts it immediately, closing the window where adopt_inventory
+  # would see the node reporting a just-primed miss VM as primed and re-adopt it
+  # (the VM is single-use and about to be assigned by this same worker). Ignored if
+  # the worker already finished (pid gone).
+  def handle_info({:vm_primed, pid, vm_id}, state) do
+    case Map.get(state.workers, pid) do
+      nil -> {:noreply, state}
+      meta -> {:noreply, put_in(state.workers[pid], %{meta | vm_id: vm_id})}
+    end
+  end
+
   # A worker died without reporting (it always sends {:assign_done, ...} in the
   # normal path, so a bare DOWN is an abnormal exit): treat as a transport
   # failure so the task retries at-least-once, exactly as a downed node would.
@@ -603,6 +615,12 @@ defmodule Embervm.Dispatcher do
       node_id: node_id,
       mode: mode,
       vm_id: vm_id,
+      # The dispatcher pid, so a MISS worker can report the vm_id it primes back
+      # here the instant it has one (see ensure_vm): that closes the window where
+      # a just-primed miss VM is reported primed by the node but invisible to
+      # known_vm_ids (meta.vm_id still nil), which adopt_inventory would otherwise
+      # briefly re-adopt.
+      owner: owner,
       snapshot_ref: snapshot_ref,
       invoke_path: entry.invoke_path,
       timeout_ms: entry.timeout_ms,
@@ -756,8 +774,15 @@ defmodule Embervm.Dispatcher do
       end
 
     case result do
-      {:ok, %PrimeResponse{vm_id: vm_id}} -> {:ok, vm_id}
-      {:error, reason} -> {:error, :prime_failed, reason}
+      {:ok, %PrimeResponse{vm_id: vm_id}} ->
+        # Tell the dispatcher the vm_id we just primed so it lands in this worker's
+        # meta immediately; until then adopt_inventory cannot see this in-flight
+        # miss VM (the node reports it primed) and could briefly re-adopt it.
+        send(ctx.owner, {:vm_primed, self(), vm_id})
+        {:ok, vm_id}
+
+      {:error, reason} ->
+        {:error, :prime_failed, reason}
     end
   end
 

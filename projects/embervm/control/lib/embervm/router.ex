@@ -12,6 +12,8 @@ defmodule Embervm.Router do
     * `GET  /v1/tasks/:id/result`      the stored result (until its TTL).
     * `GET  /v1/workloads/:name/dead-letters`  paged DLQ listing.
     * `POST /v1/tasks/:id/redrive`     re-queue a dead-lettered task (audited).
+    * `GET  /v1/nodes`                 read-only node health + dispatcher snapshot
+      (operational introspection: capacity facts, inventory, denials).
     * `GET  /healthz`                  unauthenticated liveness/readiness.
 
   ## Task envelope
@@ -78,6 +80,10 @@ defmodule Embervm.Router do
 
   get "/v1/usage" do
     handle_usage(conn)
+  end
+
+  get "/v1/nodes" do
+    handle_nodes(conn)
   end
 
   post "/v1/tasks/:id/redrive" do
@@ -363,6 +369,77 @@ defmodule Embervm.Router do
       task_count: row.task_count,
       updated_at: row.updated_at
     }
+  end
+
+  # Read-only operational introspection. Added after the R0 dispatch-recovery
+  # drill, which was slow to diagnose precisely because there was no way to see
+  # live NodeRegistry/Dispatcher state (the release is not distributed, so no IEx
+  # remote, and there was no debug endpoint). Returns each configured node's health
+  # and capacity facts (including primed_vm_ids, the seam of the adoption fix) plus
+  # the dispatcher's queue/inventory/denial snapshot. Behind the same /v1 auth as
+  # every other route; a slow/failed status call degrades to an empty snapshot
+  # rather than failing the request.
+  defp handle_nodes(conn) do
+    send_json(conn, 200, %{nodes: nodes_snapshot(), dispatch: dispatch_snapshot()})
+  end
+
+  defp nodes_snapshot do
+    Embervm.NodeRegistry.status()
+    |> Enum.map(fn {node_id, s} ->
+      %{
+        node_id: node_id,
+        health: s.health,
+        draining: s.draining,
+        dispatchable: s.dispatchable,
+        connected: s.connected,
+        address: s.address,
+        facts: node_facts_view(s.facts)
+      }
+    end)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
+  end
+
+  defp node_facts_view(nil), do: nil
+
+  defp node_facts_view(f) do
+    %{
+      live_vms: Map.get(f, :live_vms),
+      max_live_vms: Map.get(f, :max_live_vms),
+      mem_headroom_mib: Map.get(f, :mem_headroom_mib),
+      updated_at: Map.get(f, :updated_at),
+      workloads:
+        for {wl, wc} <- Map.get(f, :workloads, %{}), into: %{} do
+          {wl,
+           %{
+             free_primed_slots: Map.get(wc, :free_primed_slots),
+             base_state: Map.get(wc, :base_state),
+             snapshot_ref: Map.get(wc, :snapshot_ref),
+             primed_vm_ids: Map.get(wc, :primed_vm_ids, [])
+           }}
+        end
+    }
+  end
+
+  defp dispatch_snapshot do
+    s = Embervm.Dispatcher.stats()
+
+    %{
+      denials: s.denials,
+      warm_hits: s.warm_hits,
+      misses: s.misses,
+      queued: s.queued,
+      workers: s.workers,
+      queue_depth: s.queue_depth,
+      # inventory is keyed by {node_id, workload}; stringify the tuple key for JSON.
+      inventory: for({{node, wl}, len} <- s.inventory, into: %{}, do: {"#{node}/#{wl}", len})
+    }
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
   end
 
   defp handle_redrive(conn, task_id) do
