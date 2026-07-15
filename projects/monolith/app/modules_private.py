@@ -19,6 +19,7 @@ import chat.module
 import cluster.module
 import demos.module
 import dr_jobs.module
+import faas.module
 import grimoire.module
 import hikes.module
 import home.module
@@ -47,6 +48,7 @@ ALL_MODULES: tuple[Module, ...] = (
     campsites.module.MODULE,
     worldcup.module.MODULE,
     artifact.module.MODULE,
+    faas.module.MODULE,
     demos.module.MODULE,
     # MCP-only domains (no HTTP routes of their own). Placed here, before
     # semgrep_scan, so MCP tool registration order matches the historical

@@ -798,6 +798,16 @@ chat:
 sandbox:
   dispatch: "fc-invoke"
 
+# FaaS zip-lane function registry (ADR 045 / embervm R1). s3ReadBase is the
+# in-cluster SeaweedFS S3 read host noded GETs function archives from; it must
+# match the CRD samples' codeUri host so storage.code_uri() and noded agree on
+# the URL shape. Required whenever the faas domain is composed (storage.code_uri
+# raises if FAAS_S3_READ_BASE is unset). s3Bucket is optional (code defaults to
+# "faas").
+faas:
+  s3ReadBase: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+  s3Bucket: "faas"
+
 semgrep:
   fcInvokeUrl: ""
   # EmberVM dual-path (R0 Task 15). embervmUrl is the EmberVM control-plane base
