@@ -632,6 +632,17 @@ defmodule Embervm.Router do
               retryable: true
             })
 
+          {:error, :wake_rate_limited} ->
+            # The per-principal wake-rate limit (relight-triggering invokes) tripped:
+            # 429 WITHOUT having touched the node (the asymmetric-cost relight was
+            # never issued). Retryable once the window drains.
+            send_json(conn, 429, %{
+              error: "session wake-rate limit exceeded",
+              reason: "wake_rate",
+              session_id: session_id,
+              retryable: true
+            })
+
           {:error, :not_found} ->
             send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
 
