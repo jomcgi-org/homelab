@@ -193,12 +193,22 @@ func (r *sessionRegistry) remove(id string) *sessionEntry {
 }
 
 // snapshot returns a copy of every live session VM, for building NodeStatus.
-func (r *sessionRegistry) snapshot() []sessionEntry {
+// sessionView is a lock-free, read-only projection of a sessionEntry. It omits the
+// mutex so callers can range over the returned slice without tripping the copylocks
+// vet check (a sessionEntry embeds sync.Mutex and must never be copied by value).
+type sessionView struct {
+	vmID        string
+	sessionID   string
+	workload    string
+	snapshotRef string
+}
+
+func (r *sessionRegistry) snapshot() []sessionView {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]sessionEntry, 0, len(r.vms))
+	out := make([]sessionView, 0, len(r.vms))
 	for _, e := range r.vms {
-		out = append(out, sessionEntry{
+		out = append(out, sessionView{
 			vmID:      e.vmID,
 			sessionID: e.sessionID,
 			workload:  e.workload,
@@ -210,12 +220,12 @@ func (r *sessionRegistry) snapshot() []sessionEntry {
 // snapshotWithRefs returns a copy of every live session VM including its source
 // snapshotRef, for the EvictSnapshot in-use guard (evicting a bundle a live VM was
 // relit from is refused).
-func (r *sessionRegistry) snapshotWithRefs() []sessionEntry {
+func (r *sessionRegistry) snapshotWithRefs() []sessionView {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]sessionEntry, 0, len(r.vms))
+	out := make([]sessionView, 0, len(r.vms))
 	for _, e := range r.vms {
-		out = append(out, sessionEntry{
+		out = append(out, sessionView{
 			vmID:        e.vmID,
 			sessionID:   e.sessionID,
 			workload:    e.workload,
