@@ -201,6 +201,20 @@ defmodule Embervm.SessionBankRelightTest do
     end
   end
 
+  defp wait_until(fun, tries \\ 200) do
+    cond do
+      fun.() ->
+        :ok
+
+      tries > 0 ->
+        Process.sleep(5)
+        wait_until(fun, tries - 1)
+
+      true ->
+        flunk("wait_until condition never became true")
+    end
+  end
+
   # -- idle-bank -------------------------------------------------------------
 
   test "idle-bank fires only when quiescent: banks an idle session, releasing its VM" do
@@ -256,14 +270,28 @@ defmodule Embervm.SessionBankRelightTest do
     put_workload(ctx, "wl")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
 
-    # Each :maybe_bank admission fails; after three, the session is failed + destroyed.
+    # Each :maybe_bank admission STOPS the session process; a failed bank re-starts
+    # it with a FRESH pid (strikes 1-2) or, at three, fails + destroys it. Wait for
+    # the re-start (a new pid) before the next send so a strike is never dropped by
+    # racing a not-yet-restarted process. Deterministic, not a fixed sleep (which
+    # raced the async re-start once the store's clock became an Agent round-trip).
     for _ <- 1..3 do
-      case Registry.lookup(ctx.registry, created.session_id) do
-        [{pid, _}] -> send(pid, :maybe_bank)
-        [] -> :ok
-      end
+      old =
+        case Registry.lookup(ctx.registry, created.session_id) do
+          [{pid, _}] ->
+            send(pid, :maybe_bank)
+            pid
 
-      Process.sleep(20)
+          [] ->
+            nil
+        end
+
+      wait_until(fn ->
+        case Registry.lookup(ctx.registry, created.session_id) do
+          [{pid, _}] -> pid != old
+          [] -> match?({:ok, %{state: :failed}}, SessionStore.get(ctx.store, created.session_id))
+        end
+      end)
     end
 
     wait_state(ctx, created.session_id, :failed)
