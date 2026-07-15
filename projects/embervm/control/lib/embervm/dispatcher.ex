@@ -196,6 +196,20 @@ defmodule Embervm.Dispatcher do
   end
 
   @doc """
+  Atomically claims one primed vm_id from `{node_id, workload}` inventory for a
+  session create (R2), removing it from the pool exactly as a warm dispatch does:
+  the vm_id is single-use, so removing it the instant it is committed to a session
+  is the same destroy-on-assign accounting a task claim gets. Returns
+  `{:ok, vm_id}` on a hit, or `:miss` when no primed VM is parked for that
+  `{node, workload}` (the caller then Primes one itself). Serialized through this
+  GenServer so a session claim and a task dispatch can never pop the same VM.
+  """
+  @spec claim(GenServer.server(), String.t(), String.t()) :: {:ok, String.t()} | :miss
+  def claim(server \\ __MODULE__, node_id, workload) do
+    GenServer.call(server, {:claim, node_id, workload})
+  end
+
+  @doc """
   Runs one backlog reconcile synchronously (the same code the periodic sweep
   runs) and returns after it plus the drain it triggers complete. Tests drive
   recovery/reassign paths through this deterministically with `start_sweep:
@@ -286,6 +300,13 @@ defmodule Embervm.Dispatcher do
 
   def handle_call(:sweep, _from, state) do
     {:reply, :ok, run_sweep(state)}
+  end
+
+  def handle_call({:claim, node_id, wl}, _from, state) do
+    case reserve_vm(state, node_id, wl, :warm) do
+      {new_state, vm_id} when is_binary(vm_id) -> {:reply, {:ok, vm_id}, new_state}
+      {new_state, nil} -> {:reply, :miss, new_state}
+    end
   end
 
   @impl true

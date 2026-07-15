@@ -119,6 +119,22 @@ defmodule Embervm.Application do
       # during downtime are skipped, not replayed. After the watcher (reads the
       # catalog's triggers) and TaskStore (submits into it).
       Embervm.Trigger.Cron,
+      # Session lifecycle (R2). The SessionStore (ETS hot set over the durable
+      # `sessions` projection, rebuilt on boot) comes first; the SessionRegistry
+      # (session_id -> live Embervm.Session pid) and the SessionSupervisor
+      # (DynamicSupervisor for the per-live-session processes) next; the
+      # SessionManager (create/destroy/route brain) last, since it starts children
+      # into the supervisor and reads the store/registry. Placed AFTER Metering
+      # (create reads the quota table + budgets), the Dispatcher (create CLAIMs a
+      # primed VM from its inventory), and NodeChannel (the SessionAssign channel),
+      # and BEFORE the Router (its session handlers call the manager + store). Under
+      # :rest_for_one a SessionStore restart bounces the manager and Router, which
+      # rebuild from the durable projection. With no node wired, create denies
+      # :no_capacity and nothing runs, exactly like the dispatcher in R0.
+      {Embervm.SessionStore, [on_metered: &Embervm.Metering.on_metered/1]},
+      {Registry, keys: :unique, name: Embervm.SessionRegistry},
+      {DynamicSupervisor, strategy: :one_for_one, name: Embervm.SessionSupervisor},
+      {Embervm.SessionManager, session_opts: session_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -254,6 +270,11 @@ defmodule Embervm.Application do
   end
 
   defp pool_opts, do: []
+
+  # Extra opts threaded into every Embervm.Session the SessionManager starts. Empty
+  # in production (the session process uses its real NodeChannel/SessionAssign
+  # defaults); tests inject fake daemon seams here.
+  defp session_opts, do: []
 
   defp queue_depth_cap do
     case trimmed_env("EMBERVM_QUEUE_DEPTH_CAP") do

@@ -118,11 +118,110 @@ paths:
               schema: { $ref: "#/components/schemas/TaskView" }
         "404": { description: No such task. }
         "409": { description: Task is not dead-lettered. }
+  /v1/workloads/{name}/sessions:
+    post:
+      summary: Create a stateful session on a session-class workload (management auth).
+      description: >-
+        Assigns a primed pristine VM from the pool (principal-bound at claim) and
+        returns a per-session capability token EXACTLY ONCE. The invocation
+        front-end never computes placement; the control plane owns node choice.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "201":
+          description: Session created. The session_token is returned only here.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionCreated" }
+        "403": { description: Workload is not class session, or the caller is not allow-listed. }
+        "404": { description: Unknown workload. }
+        "429":
+          description: >-
+            Create denied: session cap (live+banked >= maxSessions), workload cap
+            (live >= concurrency.cap), daily quota exhausted, or no ready capacity.
+            The reason field distinguishes them.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      summary: Paged listing of a workload's sessions, newest first (management auth).
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1, maximum: 500 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0, minimum: 0 } }
+      responses:
+        "200":
+          description: Session page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionPage" }
+  /v1/sessions/{id}/invoke:
+    post:
+      summary: Invoke a session (SESSION TOKEN auth only; a management token is rejected).
+      description: >-
+        The bearer token MUST be this session's own capability token. The request
+        body is forwarded verbatim to the guest (max 8 MiB); X-Ember-Guest-Path
+        overrides the guest path and X-Ember-Guest-* headers are forwarded (prefix
+        stripped). The guest response is returned VERBATIM including its headers.
+        Sync-only, at-most-once, never retried by the platform.
+      security:
+        - sessionToken: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200": { description: The guest response, returned verbatim (any status the guest returns). }
+        "401": { description: Missing session token. }
+        "403": { description: Invalid session token (including a management token). }
+        "409": { description: Session not ready (creating/banking/relighting). }
+        "410":
+          description: Session is terminal (expired/evicted/destroyed/failed); create a fresh one.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { description: Body exceeds 8 MiB. }
+        "429": { description: Per-session invoke queue is full. }
+        "502": { description: The invoke failed at the daemon; the session is now failed. }
+  /v1/sessions/{id}:
+    get:
+      summary: Session state and metadata (management OR the session's own token).
+      security:
+        - bearerAuth: []
+        - sessionToken: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Session view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionView" }
+        "401": { description: Missing bearer token. }
+        "403": { description: Not authorized to read this session. }
+        "404": { description: No such session. }
+    delete:
+      summary: Destroy a session (management auth); its VM and/or snapshot are reclaimed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Destroyed (idempotent for an already-terminal session). }
+        "404": { description: No such session. }
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
+    sessionToken:
+      type: http
+      scheme: bearer
+      description: >-
+        A per-session capability token, minted at create and returned once. It
+        authenticates exactly one session id (verified by hash, constant-time) and
+        never enters the guest. Distinct from the management ServiceAccount bearer.
   schemas:
     TaskRef:
       type: object
@@ -156,4 +255,42 @@ components:
       properties:
         error: { type: string }
         task_id: { type: string }
+        session_id: { type: string }
+        reason: { type: string, description: Machine-readable denial/error reason. }
         retryable: { type: boolean }
+    SessionCreated:
+      type: object
+      properties:
+        session_id: { type: string, description: "s-<26-char ULID>." }
+        session_token:
+          type: string
+          description: The per-session capability token. Returned ONCE; store it as a secret.
+        expires_at: { type: integer, description: "Max-lifetime deadline, epoch ms." }
+        base_digest: { type: string, description: The birth base the session is pinned to. }
+        state: { type: string, enum: [running] }
+    SessionView:
+      type: object
+      properties:
+        session_id: { type: string }
+        workload: { type: string }
+        principal: { type: string }
+        state:
+          type: string
+          enum: [creating, running, banking, banked, relighting, expired, evicted, destroyed, failed]
+        generation: { type: integer, description: Increments on every bank (lineage). }
+        base_digest: { type: string }
+        created_at: { type: integer, description: epoch ms }
+        last_invoke_at: { type: integer, description: epoch ms }
+        expires_at: { type: integer, description: epoch ms }
+        updated_at: { type: integer, description: epoch ms }
+        terminal_reason: { type: string, description: Set once the session is terminal. }
+    SessionPage:
+      type: object
+      properties:
+        workload: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SessionView" }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
