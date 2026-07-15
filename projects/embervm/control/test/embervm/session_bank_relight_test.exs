@@ -54,15 +54,19 @@ defmodule Embervm.SessionBankRelightTest do
     path = Path.join(System.tmp_dir!(), "embervm_bankrelight_test_#{suffix}.db")
     on_exit(fn -> File.rm_rf!(path) end)
 
+    # The clock must be shared by the store and the manager: the store stamps
+    # updated_at/last_invoke_at and the manager sweep compares against them, so a
+    # split clock (a real wall-clock in the store vs the test Agent in the sweep)
+    # makes now-last hugely negative and the TTL GC never fires. Create it FIRST.
+    clock_pid = Keyword.get(opts, :clock_pid, start_clock())
+    clock = fn -> now(clock_pid) end
+
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
-    {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log)
+    {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log, clock: clock)
 
     registry = :"breg_#{suffix}"
     {:ok, _} = Registry.start_link(keys: :unique, name: registry)
     {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
-
-    clock_pid = Keyword.get(opts, :clock_pid, start_clock())
-    clock = fn -> now(clock_pid) end
 
     test_pid = self()
 
@@ -496,7 +500,7 @@ defmodule Embervm.SessionBankRelightTest do
     {:ok, session_a} = SessionStore.get(ctx.store, a.session_id)
     # Record an invoke on a so its last_invoke_at is set (warmer than b's nil/0).
     assert session_a.state == :running
-    _ = SessionStore.record_invoke(ctx.store, a.session_id, %{cpu_ms: 1})
+    _ = SessionStore.record_invoke(ctx.store, a.session_id, %{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1})
     :ok = force_idle_bank(ctx, a.session_id)
 
     # Node reports both snapshots and a free-bytes BELOW the watermark (pressure).
