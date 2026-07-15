@@ -661,7 +661,10 @@ defmodule Embervm.BaseBuilder do
   # push any superseded ref onto the turnover list (Task 11 seam), and reset
   # backoff.
   defp apply_result(state, w, built_sig, {:ok, %BuildBaseResponse{} = resp}) do
-    turned_over? = w.snapshot_ref && w.snapshot_ref != resp.snapshot_ref
+    # Strict boolean (not `&&`): a first build has w.snapshot_ref == nil, and
+    # `nil && _` returns nil, which the strict `and` on the base_refs guard below
+    # rejects with BadBooleanError. `!=` always yields a boolean.
+    turned_over? = w.snapshot_ref != nil and w.snapshot_ref != resp.snapshot_ref
 
     superseded =
       if turned_over?, do: [w.snapshot_ref | w.superseded_refs], else: w.superseded_refs
