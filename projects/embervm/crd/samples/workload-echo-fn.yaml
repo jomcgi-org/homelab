@@ -1,0 +1,38 @@
+# Zip-lane echo function (R1, ADR embervm/002). The end-to-end smoke test of the
+# whole zip lane: a real echo `handler(event, context)` shipped as a zip archive.
+# The control plane resolves `runtime: python312` to the pinned runtime-python
+# base image, hands noded the archive URL + sha256, and the runtime shim unpacks
+# and imports `app.handle` guest-side before the base is snapshotted. A task
+# submit restores a microVM and returns the handler's echoed event.
+#
+# The archive is projects/embervm/runtimes/python/testdata/echo/echo.zip; its
+# sha256 below MUST match the uploaded bytes (noded verifies it). See
+# projects/embervm/runtimes/python/testdata/echo/README.md for the upload +
+# apply + submit + cleanup procedure.
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: echo-fn
+  namespace: embervm
+spec:
+  class: task
+  source:
+    zip:
+      runtime: python312
+      # In-cluster SeaweedFS S3 read URL noded GETs. The object is uploaded to
+      # s3://faas/echo-fn/<sha256>.zip (see testdata/echo/README.md).
+      codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/faas/echo-fn/53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b.zip
+      # Hex SHA-256 of echo.zip (noded verifies; also feeds the base-build
+      # change-detect signature so a new zip rebuilds the base).
+      sha256: 53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b
+      handler: app.handle
+      invokePath: /invoke
+      readyPath: /shim/ready
+  resources:
+    vcpus: 1
+    memMib: 512
+  concurrency:
+    floor: 1
+    cap: 4
+  invocation:
+    timeoutSeconds: 30
