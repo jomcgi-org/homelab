@@ -1038,6 +1038,15 @@ func sessionSnapRefs(ns *nodev1.NodeStatus) []string {
 	return out
 }
 
+func containsStr(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestSessionAssignSurvives: SessionAssign delivers a request to a live session VM
 // and the VM SURVIVES (no reap), unlike Assign. A second SessionAssign to the same
 // vm_id succeeds against the still-live VM.
@@ -1230,8 +1239,12 @@ func TestBankRelightRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetNodeStatus: %v", err)
 	}
-	if refs := sessionSnapRefs(ns); len(refs) != 1 || refs[0] != bankResp.GetSnapshotRef() {
-		t.Errorf("session_snapshots = %v, want [%s]", refs, bankResp.GetSnapshotRef())
+	// The banked snapshot is in the inventory. The birth ref primeSessionVM relit
+	// from also lingers (Relight keeps its source snapshot until re-bank/evict, and
+	// Bank does not evict the pre-relight source), so assert the banked ref is
+	// PRESENT rather than sole.
+	if refs := sessionSnapRefs(ns); !containsStr(refs, bankResp.GetSnapshotRef()) {
+		t.Errorf("session_snapshots = %v, want to contain the banked ref %s", refs, bankResp.GetSnapshotRef())
 	}
 	if ids := sessionVMIDs(ns); len(ids) != 0 {
 		t.Errorf("session_vms = %v, want empty after Bank", ids)
@@ -1262,9 +1275,10 @@ func TestBankRelightRoundTrip(t *testing.T) {
 	if got := string(resp.GetResponse().GetBody()); got != "state:accreted-x=42" {
 		t.Fatalf("post-relight body = %q, want the pre-bank state marker", got)
 	}
-	// Relight best-effort-posted the guest clock resync (200 path).
-	if tr.clockPostCount() != 1 {
-		t.Errorf("clock resync posts = %d, want 1", tr.clockPostCount())
+	// Relight best-effort-posted the guest clock resync (200 path): one from
+	// primeSessionVM's Relight, one from the Relight here.
+	if tr.clockPostCount() != 2 {
+		t.Errorf("clock resync posts = %d, want 2", tr.clockPostCount())
 	}
 }
 
