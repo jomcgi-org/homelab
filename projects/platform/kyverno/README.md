@@ -20,7 +20,7 @@ flowchart LR
 
 ## Architecture
 
-The chart deploys four Kyverno controllers plus three custom ClusterPolicies:
+The chart deploys four Kyverno controllers plus four custom ClusterPolicies:
 
 - **Admission Controller** - Intercepts API server requests to mutate and validate resources against policies
 - **Background Controller** - Applies policies retroactively to existing resources (not just new ones)
@@ -32,6 +32,7 @@ Custom policies included:
 - **OTel Injection** (`inject-otel-env-vars`) - Mutates Deployments, StatefulSets, and DaemonSets to inject `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` environment variables
 - **Require Resource Requests** (`require-resource-requests`) - Audits workloads for missing CPU/memory resource requests
 - **Clone Monolith PG Secret** (`clone-monolith-pg-app`) - Clones the monolith Postgres app secret into target namespaces
+- **Clone SigNoz API Key** (`clone-signoz-api-key`) - Replicates the SigNoz `signoz-api-key` secret from the `signoz` namespace into the namespaces that call the SigNoz API
 
 ## Key Features
 
