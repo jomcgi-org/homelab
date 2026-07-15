@@ -35,6 +35,13 @@ defmodule Embervm.OpLog.SQLite do
   # The complementary set: states a task can still leave, so its ops must never be
   # prefix-compacted regardless of age. Used by the marker computation below.
   @live_states ["queued", "assigned", "running", "failed_retryable"]
+
+  # Session lifecycle states (R2), mirroring the task retention discipline. A
+  # non-terminal (live) session pins its ops against prefix compaction and is
+  # never pruned by the retention sweep, exactly as a live task does; a terminal
+  # session prunes past retention and releases its ops for compaction.
+  @session_terminal_states ["expired", "evicted", "destroyed", "failed"]
+  @session_live_states ["creating", "running", "banking", "banked", "relighting"]
   # Seven days in milliseconds: default age (from last update) at which a
   # terminal task is eligible for compaction. This is the TERMINAL-TASK retention
   # window and is DISTINCT from the ops-journal horizon below.
@@ -59,6 +66,7 @@ defmodule Embervm.OpLog.SQLite do
       principal TEXT,
       workload TEXT,
       task_id TEXT,
+      session_id TEXT,
       kind TEXT NOT NULL,
       payload_json TEXT NOT NULL DEFAULT '{}'
     )
@@ -112,6 +120,36 @@ defmodule Embervm.OpLog.SQLite do
       PRIMARY KEY (principal, day)
     )
     """,
+    # Session projection (R2): the durable lifecycle + lineage row per session,
+    # write-through projected from the session_* ops (see project/2). The lineage
+    # fields (base_snapshot_ref, base_digest, generation, snapshot_ref) are schema
+    # from the first banked byte (ADR embervm/001 standing decision 4/5): a session
+    # is pinned to its birth base and records its parent lineage forever, and
+    # `generation` increments on every bank. token_sha256 is the sha256 of the
+    # per-session capability token (the plaintext token is never stored). A
+    # non-terminal session pins its ops against compaction and is never pruned by
+    # retention, exactly like a live task.
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+      session_id TEXT PRIMARY KEY,
+      tenant TEXT NOT NULL,
+      principal TEXT,
+      workload TEXT,
+      state TEXT NOT NULL,
+      node_id TEXT,
+      base_snapshot_ref TEXT,
+      base_digest TEXT,
+      generation INTEGER NOT NULL DEFAULT 0,
+      snapshot_ref TEXT,
+      snapshot_size_bytes INTEGER,
+      token_sha256 TEXT,
+      created_at INTEGER NOT NULL,
+      last_invoke_at INTEGER,
+      expires_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      terminal_reason TEXT
+    )
+    """,
     # Durable single-row scalars for the op-log. Today it holds only the
     # ops-journal prefix marker (`compacted_through_seq`): the newest op seq that
     # has been prefix-compacted away, part of the durable OpLog contract so a
@@ -156,6 +194,11 @@ defmodule Embervm.OpLog.SQLite do
   @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
     GenServer.call(server, :load_tasks)
+  end
+
+  @impl Embervm.OpLog
+  def load_sessions(server \\ __MODULE__) do
+    GenServer.call(server, :load_sessions)
   end
 
   @impl Embervm.OpLog
@@ -247,6 +290,10 @@ defmodule Embervm.OpLog.SQLite do
     {:reply, do_load_tasks(state.conn), state}
   end
 
+  def handle_call(:load_sessions, _from, state) do
+    {:reply, do_load_sessions(state.conn), state}
+  end
+
   def handle_call({:load_result, task_id}, _from, state) do
     {:reply, do_load_result(state.conn, task_id), state}
   end
@@ -302,8 +349,8 @@ defmodule Embervm.OpLog.SQLite do
 
   defp insert_op(conn, %Op{} = op) do
     sql = """
-    INSERT INTO ops (ts, tenant, principal, workload, task_id, kind, payload_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, kind, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -314,6 +361,7 @@ defmodule Embervm.OpLog.SQLite do
              op.principal,
              op.workload,
              op.task_id,
+             op.session_id,
              Atom.to_string(op.kind),
              # An ETF {:blob, _}, not JSON, so a binary body persists byte-exact
              # (see encode_payload/1).
@@ -444,10 +492,131 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  # -- session projection (R2) ----------------------------------------------
+  #
+  # Write-through onto the `sessions` table, the same discipline as tasks: the
+  # op row is already written (insert_op above), and this projects its effect.
+  # session_created inserts the lineage-bearing row; bank/relight/invoke update
+  # the relevant columns; the terminal kinds set a terminal state + reason.
+
+  defp project(conn, %Op{kind: :session_created} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO sessions
+      (session_id, tenant, principal, workload, state, node_id,
+       base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
+       token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL)
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.session_id,
+             op.tenant,
+             op.principal,
+             op.workload,
+             # Create yields an immediately-live session (assigned from the primed
+             # pool); the transient FSM "creating" is a process concern, so the
+             # durable projected state defaults to "running" unless scripted.
+             Map.get(payload, :state, "running"),
+             Map.get(payload, :node_id),
+             Map.get(payload, :base_snapshot_ref),
+             Map.get(payload, :base_digest),
+             Map.get(payload, :token_sha256),
+             op.ts,
+             Map.get(payload, :expires_at),
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # session_invoked: usage + last_invoke, NO state change and NO request/response
+  # bodies in the payload (at-most-once, data minimization). Charges the same
+  # (principal, day) usage projection tasks do (D12.1), in this same transaction.
+  defp project(conn, %Op{kind: :session_invoked} = op, _seq) do
+    sql = "UPDATE sessions SET last_invoke_at=?, updated_at=? WHERE session_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.ts, op.session_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      project_usage(conn, op)
+    end
+  end
+
+  # session_banked: the VM is snapshotted and destroyed. Records the new snapshot
+  # ref + size and bumps generation (every bank increments it, the lineage rule).
+  defp project(conn, %Op{kind: :session_banked} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    UPDATE sessions
+    SET state='banked', snapshot_ref=?, snapshot_size_bytes=?, generation=?, updated_at=?
+    WHERE session_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(payload, :snapshot_ref),
+             Map.get(payload, :size_bytes),
+             Map.get(payload, :generation, 0),
+             op.ts,
+             op.session_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # session_relit: restored to a live VM from its banked snapshot; back to running.
+  defp project(conn, %Op{kind: :session_relit} = op, _seq) do
+    sql = "UPDATE sessions SET state='running', updated_at=? WHERE session_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.session_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  defp project(conn, %Op{kind: :session_expired} = op, _seq),
+    do: terminate_session(conn, op, "expired")
+
+  defp project(conn, %Op{kind: :session_evicted} = op, _seq),
+    do: terminate_session(conn, op, "evicted")
+
+  defp project(conn, %Op{kind: :session_destroyed} = op, _seq),
+    do: terminate_session(conn, op, "destroyed")
+
+  defp project(conn, %Op{kind: :session_failed} = op, _seq),
+    do: terminate_session(conn, op, "failed")
+
   # Audit-only kinds: no task/result projection.
   defp project(_conn, %Op{kind: kind}, _seq)
        when kind in [:denied, :base_built, :primed, :vm_destroyed, :quota_enforced, :drain] do
     :ok
+  end
+
+  # A terminal session transition: set the terminal state + a machine-readable
+  # reason (defaulting to the state itself when the payload omits one).
+  defp terminate_session(conn, %Op{} = op, state) do
+    reason = to_string(Map.get(op.payload, :reason, state))
+    sql = "UPDATE sessions SET state=?, terminal_reason=?, updated_at=? WHERE session_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [state, reason, op.ts, op.session_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
   end
 
   defp update_task_state(conn, task_id, state, ts) do
@@ -539,7 +708,7 @@ defmodule Embervm.OpLog.SQLite do
       {:error, {:compacted, marker}}
     else
       sql = """
-      SELECT seq, ts, tenant, principal, workload, task_id, kind, payload_json
+      SELECT seq, ts, tenant, principal, workload, task_id, session_id, kind, payload_json
       FROM ops WHERE seq > ? ORDER BY seq ASC
       """
 
@@ -554,7 +723,7 @@ defmodule Embervm.OpLog.SQLite do
 
   defp collect_ops(conn, stmt, acc) do
     case Sqlite3.step(conn, stmt) do
-      {:row, [seq, ts, tenant, principal, workload, task_id, kind, payload_json]} ->
+      {:row, [seq, ts, tenant, principal, workload, task_id, session_id, kind, payload_json]} ->
         op = %Op{
           seq: seq,
           ts: ts,
@@ -562,6 +731,7 @@ defmodule Embervm.OpLog.SQLite do
           principal: principal,
           workload: workload,
           task_id: task_id,
+          session_id: session_id,
           kind: String.to_existing_atom(kind),
           payload: decode_payload(payload_json)
         }
@@ -583,6 +753,70 @@ defmodule Embervm.OpLog.SQLite do
       tasks = collect_tasks(conn, stmt, [])
       :ok = Sqlite3.release(conn, stmt)
       {:ok, tasks}
+    end
+  end
+
+  defp do_load_sessions(conn) do
+    sql = """
+    SELECT session_id, tenant, principal, workload, state, node_id,
+           base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
+           token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason
+    FROM sessions
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      sessions = collect_sessions(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, sessions}
+    end
+  end
+
+  defp collect_sessions(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row,
+       [
+         session_id,
+         tenant,
+         principal,
+         workload,
+         state,
+         node_id,
+         base_snapshot_ref,
+         base_digest,
+         generation,
+         snapshot_ref,
+         snapshot_size_bytes,
+         token_sha256,
+         created_at,
+         last_invoke_at,
+         expires_at,
+         updated_at,
+         terminal_reason
+       ]} ->
+        session = %{
+          session_id: session_id,
+          tenant: tenant,
+          principal: principal,
+          workload: workload,
+          state: state,
+          node_id: node_id,
+          base_snapshot_ref: base_snapshot_ref,
+          base_digest: base_digest,
+          generation: generation,
+          snapshot_ref: snapshot_ref,
+          snapshot_size_bytes: snapshot_size_bytes,
+          token_sha256: token_sha256,
+          created_at: created_at,
+          last_invoke_at: last_invoke_at,
+          expires_at: expires_at,
+          updated_at: updated_at,
+          terminal_reason: terminal_reason
+        }
+
+        collect_sessions(conn, stmt, [session | acc])
+
+      :done ->
+        Enum.reverse(acc)
     end
   end
 
@@ -763,18 +997,45 @@ defmodule Embervm.OpLog.SQLite do
 
     with {:ok, results_deleted} <- delete_expired_results(conn, now_ms, batch),
          {:ok, tasks_compacted} <- delete_terminal_tasks(conn, now_ms, state.retention_ms, batch),
+         {:ok, sessions_compacted} <- delete_terminal_sessions(conn, now_ms, state.retention_ms, batch),
          {:ok, ops_compacted, marker} <- compact_ops(conn, now_ms, state.journal_horizon_ms, batch) do
       done =
-        results_deleted < batch and tasks_compacted < batch and ops_compacted < batch
+        results_deleted < batch and tasks_compacted < batch and sessions_compacted < batch and
+          ops_compacted < batch
 
       {:ok,
        %{
          results_deleted: results_deleted,
          tasks_compacted: tasks_compacted,
+         sessions_compacted: sessions_compacted,
          ops_compacted: ops_compacted,
          compacted_through: marker,
          done: done
        }}
+    end
+  end
+
+  # Prune terminal session projection rows past the 7-day retention, the same
+  # cutoff and bounded-batch discipline as terminal tasks. A non-terminal session
+  # is never pruned (its state is not in @session_terminal_states), and its ops
+  # remain pinned against compaction by blocker_seq. Bounded via the rowid
+  # subquery form (DELETE ... LIMIT is unavailable on the bundled SQLite).
+  defp delete_terminal_sessions(conn, now_ms, retention_ms, batch) do
+    cutoff = now_ms - retention_ms
+    placeholders = @session_terminal_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+
+    sql = """
+    DELETE FROM sessions WHERE rowid IN (
+      SELECT rowid FROM sessions WHERE state IN (#{placeholders}) AND updated_at < ? LIMIT ?
+    )
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, @session_terminal_states ++ [cutoff, batch]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt),
+         {:ok, changed} <- Sqlite3.changes(conn) do
+      {:ok, changed}
     end
   end
 
@@ -843,19 +1104,24 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   # The smallest seq that must NOT be compacted: the first op that is either newer
-  # than the horizon (ts >= cutoff) or owned by a live (non-terminal) task. NULL
-  # means no op is blocked, so the whole log is eligible.
+  # than the horizon (ts >= cutoff), owned by a live (non-terminal) task, OR owned
+  # by a live (non-terminal) session. The session clause is the R2 never-compact-a-
+  # live-session rule: a non-terminal session pins its ops exactly as a live task
+  # does, so its lineage/lifecycle history stays replayable until it terminates.
+  # NULL means no op is blocked, so the whole log is eligible.
   defp blocker_seq(conn, cutoff) do
     live_placeholders = @live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+    session_live_placeholders = @session_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
 
     sql = """
     SELECT MIN(seq) FROM ops
     WHERE ts >= ?
        OR task_id IN (SELECT task_id FROM tasks WHERE state IN (#{live_placeholders}))
+       OR session_id IN (SELECT session_id FROM sessions WHERE state IN (#{session_live_placeholders}))
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [cutoff] ++ @live_states) do
+         :ok <- Sqlite3.bind(stmt, [cutoff] ++ @live_states ++ @session_live_states) do
       result =
         case Sqlite3.step(conn, stmt) do
           {:row, [seq]} -> {:ok, seq}
@@ -978,12 +1244,41 @@ defmodule Embervm.OpLog.SQLite do
   # live column set first and only adds what is missing. Fresh AND upgraded DBs both
   # end with the same shape; old result rows keep headers NULL, read back as %{}.
   defp apply_migrations(conn) do
+    with :ok <- migrate_results_headers(conn),
+         :ok <- migrate_ops_session_id(conn) do
+      :ok
+    end
+  end
+
+  defp migrate_results_headers(conn) do
     with {:ok, cols} <- table_columns(conn, "results") do
       if "headers" in cols do
         :ok
       else
         Sqlite3.execute(conn, "ALTER TABLE results ADD COLUMN headers TEXT")
       end
+    end
+  end
+
+  # R2: the additive nullable `ops.session_id` column plus its index. A fresh DB
+  # already built the column from the CREATE TABLE (and skips the ALTER), so this
+  # only fires on a DB created before R2; the ALTER-after-DDL guard is the
+  # D-R1.2.1 precedent. The index is created here (not in @ddl) so it always runs
+  # AFTER the column exists on both fresh and upgraded DBs. `sessions` itself is a
+  # whole new table, so `CREATE TABLE IF NOT EXISTS` in @ddl handles both cases;
+  # no ALTER is needed for it.
+  defp migrate_ops_session_id(conn) do
+    with {:ok, cols} <- table_columns(conn, "ops"),
+         :ok <- add_column_if_missing(conn, cols, "session_id", "ALTER TABLE ops ADD COLUMN session_id TEXT") do
+      Sqlite3.execute(conn, "CREATE INDEX IF NOT EXISTS ops_session_id_idx ON ops(session_id)")
+    end
+  end
+
+  defp add_column_if_missing(conn, cols, column, alter_sql) do
+    if column in cols do
+      :ok
+    else
+      Sqlite3.execute(conn, alter_sql)
     end
   end
 
