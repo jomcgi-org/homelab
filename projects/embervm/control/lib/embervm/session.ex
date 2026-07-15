@@ -67,8 +67,10 @@ defmodule Embervm.Session do
 
   use GenServer, restart: :transient
   require Logger
+  require OpenTelemetry.Tracer, as: Tracer
 
   alias Embervm.Node.V1.{GuestRequest, GuestResponse, SessionAssignRequest, SessionAssignResponse, Trace}
+  alias Embervm.SessionTrace
 
   # -- Client API ------------------------------------------------------------
 
@@ -152,7 +154,10 @@ defmodule Embervm.Session do
   end
 
   defp enqueue(state, from, req) do
-    %{state | queue: :queue.in({from, req}, state.queue)}
+    # Stamp the enqueue time (native units) so the worker can emit a `queue_wait`
+    # span covering park -> dispatch (Task 9: the FIFO wait is a latency phase the
+    # Task 11 gates must read from spans).
+    %{state | queue: :queue.in({from, req, :opentelemetry.timestamp()}, state.queue)}
   end
 
   @impl true
@@ -261,8 +266,8 @@ defmodule Embervm.Session do
   # timer so a sustained idle period banks.
   defp maybe_start_next(%{worker: nil} = state) do
     case :queue.out(state.queue) do
-      {{:value, {from, req}}, rest} ->
-        {pid, ref} = spawn_invoke_worker(state, req)
+      {{:value, {from, req, enqueued_at}}, rest} ->
+        {pid, ref} = spawn_invoke_worker(state, req, enqueued_at)
         %{state | queue: rest, worker: {pid, ref, from}}
 
       {:empty, _} ->
@@ -272,30 +277,59 @@ defmodule Embervm.Session do
 
   defp maybe_start_next(state), do: state
 
-  defp spawn_invoke_worker(state, req) do
+  defp spawn_invoke_worker(state, req, enqueued_at) do
     owner = self()
     node_id = state.node_id
     vm_id = state.vm_id
     session_id = state.session_id
     workload = state.workload
+    principal = state.principal
     timeout_ms = state.timeout_ms
     channel_fun = state.channel_fun
     invalidate_fun = state.invalidate_fun
     assign_fun = state.assign_fun
 
     spawn_monitor(fn ->
+      # Restore the invoke ROOT span (carried on the req from the router) as the
+      # remote parent so this worker's phase spans nest under the caller's trace.
+      SessionTrace.restore_parent(Map.get(req, :traceparent))
+
+      # queue_wait: park -> dispatch. Emitted with an explicit start_time = enqueue
+      # so the span reflects the real FIFO wait (this worker only starts once the
+      # session is free), ending now as the guest_exec begins.
+      Tracer.with_span "embervm.session.queue_wait",
+                       %{
+                         start_time: enqueued_at,
+                         attributes: %{
+                           "ember.session_id" => session_id,
+                           "ember.workload" => workload,
+                           "ember.principal" => principal
+                         }
+                       } do
+        :ok
+      end
+
       outcome =
-        run_invoke(%{
-          node_id: node_id,
-          vm_id: vm_id,
-          session_id: session_id,
-          workload: workload,
-          timeout_ms: timeout_ms,
-          req: req,
-          channel_fun: channel_fun,
-          invalidate_fun: invalidate_fun,
-          assign_fun: assign_fun
-        })
+        Tracer.with_span "embervm.session.guest_exec",
+                         %{
+                           attributes: %{
+                             "ember.session_id" => session_id,
+                             "ember.workload" => workload,
+                             "ember.principal" => principal
+                           }
+                         } do
+          run_invoke(%{
+            node_id: node_id,
+            vm_id: vm_id,
+            session_id: session_id,
+            workload: workload,
+            timeout_ms: timeout_ms,
+            req: req,
+            channel_fun: channel_fun,
+            invalidate_fun: invalidate_fun,
+            assign_fun: assign_fun
+          })
+        end
 
       send(owner, {:invoke_done, self(), outcome})
     end)
@@ -384,7 +418,7 @@ defmodule Embervm.Session do
   end
 
   defp drain_queue_as_failed(state) do
-    for {from, _req} <- :queue.to_list(state.queue) do
+    for {from, _req, _enqueued_at} <- :queue.to_list(state.queue) do
       GenServer.reply(from, {:error, :failed})
     end
   end

@@ -39,8 +39,9 @@ defmodule Embervm.Router do
   use Plug.Router
 
   require Logger
+  require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{SyncWait, TaskState, TaskStore}
+  alias Embervm.{SessionTrace, SyncWait, TaskState, TaskStore}
 
   # Single tenant in v1 (the `homelab` tenant); the column is still carried on
   # every record so multi-tenant is a data change, not a schema change.
@@ -584,19 +585,36 @@ defmodule Embervm.Router do
   # task-envelope allow-list + 8 MiB cap via the SessionManager, and returns the
   # guest response VERBATIM including headers.
   defp handle_session_invoke(conn, session_id) do
-    with {:ok, token} <- bearer_token(conn),
-         {:ok, _session} <- verify_session_token(session_id, token) do
-      proxy_invoke(conn, session_id)
-    else
-      {:error, :no_token} ->
-        halt_json(conn, 401, %{error: "missing session token", retryable: false})
+    # Restore the CALLER's trace context (the traceparent their httpx/OTel client
+    # carried), then open the session-invoke ROOT span so `auth`, `queue_wait`,
+    # `relight`, and `guest_exec` all nest under it AND under the caller's trace
+    # (the R0 "guilty phase must never be uninstrumented" rule, Task 9). Same
+    # `from_remote_span` idiom the dispatcher uses; see Embervm.SessionTrace.
+    SessionTrace.restore_parent(header_value(conn, "traceparent"))
 
-      {:error, :terminal} ->
-        # A valid token on a terminal session: 410 with the recorded reason.
-        session_gone(conn, session_id)
+    Tracer.with_span "embervm.session.invoke", %{
+      attributes: %{"ember.session_id" => session_id}
+    } do
+      with {:ok, token} <- bearer_token(conn),
+           {:ok, session} <- verify_session_token_span(session_id, token) do
+        Tracer.set_attributes(%{
+          "ember.workload" => Map.get(session, :workload),
+          "ember.principal" => Map.get(session, :principal),
+          "ember.session_state" => to_string(Map.get(session, :state))
+        })
 
-      {:error, _} ->
-        halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
+        proxy_invoke(conn, session_id)
+      else
+        {:error, :no_token} ->
+          halt_json(conn, 401, %{error: "missing session token", retryable: false})
+
+        {:error, :terminal} ->
+          # A valid token on a terminal session: 410 with the recorded reason.
+          session_gone(conn, session_id)
+
+        {:error, _} ->
+          halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
+      end
     end
   end
 
@@ -607,7 +625,12 @@ defmodule Embervm.Router do
           method: "POST",
           path: guest_path(conn),
           headers: guest_headers(conn),
-          body: body
+          body: body,
+          # Serialize the invoke ROOT span so the downstream queue_wait/relight/
+          # guest_exec spans (which run in other processes across GenServer.call and
+          # spawn boundaries, where the OTel process context does not follow) nest
+          # under it. nil when tracing is off (CI). See Embervm.SessionTrace.
+          traceparent: SessionTrace.current_traceparent()
         }
 
         case session_manager().invoke(session_manager_server(), session_id, req) do
@@ -729,6 +752,15 @@ defmodule Embervm.Router do
   # `{:ok, session} | {:error, :terminal | :unauthorized | :not_found}`.
   defp verify_session_token(session_id, token) do
     session_store().verify_token(session_store_server(), session_id, token)
+  end
+
+  # The `auth` child span (Task 9): the session-token verify is the invoke's auth
+  # phase, kept as its own span so the Task 11 gates can attribute auth latency
+  # (mirrors the dispatcher's embervm.auth span for TokenReview).
+  defp verify_session_token_span(session_id, token) do
+    Tracer.with_span "embervm.session.auth", %{attributes: %{"ember.session_id" => session_id}} do
+      verify_session_token(session_id, token)
+    end
   end
 
   defp session_gone(conn, session_id) do

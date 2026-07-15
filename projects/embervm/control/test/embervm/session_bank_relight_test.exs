@@ -98,7 +98,14 @@ defmodule Embervm.SessionBankRelightTest do
         # Timers off by default: tests drive reconcile/1 + sweep/1 explicitly.
         reconcile_interval_ms: 0,
         sweep_interval_ms: 0
-      ] ++ Keyword.take(opts, [:disk_low_watermark_bytes, :wake_max, :wake_window_ms, :bank_concurrency])
+      ] ++
+        Keyword.take(opts, [
+          :disk_low_watermark_bytes,
+          :wake_max,
+          :wake_window_ms,
+          :bank_concurrency,
+          :status_writer
+        ])
 
     {:ok, mgr} = SessionManager.start_link(mgr_opts)
 
@@ -549,5 +556,55 @@ defmodule Embervm.SessionBankRelightTest do
 
   defp snap_fact(session_id) do
     %{snapshot_ref: "snap-#{session_id}", session_id: session_id, workload: "wl", size_bytes: 2_000, created_at_unix_ms: 0}
+  end
+
+  # -- status.sessions counts (Task 9) ---------------------------------------
+
+  describe "status.sessions counts" do
+    test "the sweep writes {live,banked} + summary for a session workload" do
+      test_pid = self()
+
+      writer = fn ns, name, status_map ->
+        send(test_pid, {:status, ns, name, status_map})
+        :ok
+      end
+
+      ctx = start_stack(status_writer: writer)
+      put_workload(ctx, "wl")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+
+      :ok = SessionManager.sweep(ctx.mgr)
+
+      assert_receive {:status, "embervm", "wl",
+                      %{"sessions" => %{"live" => 1, "banked" => 0}, "sessionsSummary" => "1 live / 0 banked"}}
+
+      # Bank it: the next sweep reflects live -> banked.
+      :ok = force_idle_bank(ctx, created.session_id)
+      :ok = SessionManager.sweep(ctx.mgr)
+
+      assert_receive {:status, "embervm", "wl",
+                      %{"sessions" => %{"live" => 0, "banked" => 1}, "sessionsSummary" => "0 live / 1 banked"}}
+    end
+
+    test "the write is DEBOUNCED: an unchanged count does not re-patch" do
+      test_pid = self()
+
+      writer = fn ns, name, status_map ->
+        send(test_pid, {:status, ns, name, status_map})
+        :ok
+      end
+
+      ctx = start_stack(status_writer: writer)
+      put_workload(ctx, "wl")
+      {:ok, _created} = SessionManager.create(ctx.mgr, "wl", "p1")
+
+      :ok = SessionManager.sweep(ctx.mgr)
+      assert_receive {:status, "embervm", "wl", %{"sessions" => %{"live" => 1, "banked" => 0}}}
+
+      # A second sweep with the SAME counts must not write again (change-detected,
+      # like the PoolManager's primedFloorSatisfied debounce).
+      :ok = SessionManager.sweep(ctx.mgr)
+      refute_receive {:status, "embervm", "wl", _}, 50
+    end
   end
 end
