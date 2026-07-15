@@ -42,6 +42,10 @@ type fakeDriver struct {
 	snapshots     int
 	live          int
 	failClaim     error
+	// failSnapshotSession injects a Bank snapshot failure. The real driver tears
+	// the VM down on any snapshot error (a bank is destructive), so the fake
+	// mirrors that by decrementing live before returning the error.
+	failSnapshotSession error
 	// lastClaim records the most recent ClaimSpec. The zip lane no longer attaches
 	// an archive drive (it hydrates over vsock), so a test asserts the build guest
 	// claimed with only its rootfs (no extra drive fields exist on ClaimSpec now).
@@ -129,6 +133,14 @@ func (f *fakeDriver) SnapshotSession(_ context.Context, _ substrate.Handle, snap
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.snapshotSessions++
+	if f.failSnapshotSession != nil {
+		// Mirror the real driver: a bank error tears the VM down (Release), so the
+		// live count drops even though no bundle is produced.
+		if f.live > 0 {
+			f.live--
+		}
+		return substrate.SnapshotRef{}, f.failSnapshotSession
+	}
 	if f.sessionBundles == nil {
 		f.sessionBundles = map[string]string{}
 	}
@@ -1258,6 +1270,48 @@ func TestBankRelightRoundTrip(t *testing.T) {
 
 // TestRelightUnknownRefFails: a Relight for a snapshot_ref not in the banked
 // inventory is FAILED_PRECONDITION and never restores.
+func TestBankSnapshotFailureRemovesStaleEntry(t *testing.T) {
+	// A bank whose snapshot fails must NOT leave a stale session VM behind: the
+	// driver tears the VM down (a bank is destructive), so the server drops the
+	// registry entry rather than misreport a dead VM as live session capacity.
+	drv := &fakeDriver{failSnapshotSession: context.Canceled}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-9", "echo", "sref-9", "")
+	ctx := context.Background()
+
+	_, err := client.Bank(ctx, &nodev1.BankRequest{
+		VmId:      vmID,
+		SessionId: "s-9",
+		Trace:     &nodev1.Trace{Workload: "echo"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("failed Bank error = %v, want FailedPrecondition", err)
+	}
+	// The VM was torn down (live capacity released) and is not reported live.
+	if drv.LiveCount() != 0 {
+		t.Errorf("LiveCount after failed Bank = %d, want 0 (VM torn down)", drv.LiveCount())
+	}
+	ns, err := client.GetNodeStatus(ctx, &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetNodeStatus: %v", err)
+	}
+	if ids := sessionVMIDs(ns); len(ids) != 0 {
+		t.Errorf("session_vms = %v, want empty after a failed Bank", ids)
+	}
+	// The in-flight guard went with the entry: a SessionAssign on the dead id is an
+	// unknown-vm FailedPrecondition, not a stuck guard.
+	_, err = client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+		VmId:      vmID,
+		SessionId: "s-9",
+		Request:   &nodev1.GuestRequest{Body: []byte("x")},
+		TimeoutMs: 1000,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("post-failure SessionAssign = %v, want FailedPrecondition (unknown vm)", err)
+	}
+}
+
 func TestRelightUnknownRefFails(t *testing.T) {
 	drv := &fakeDriver{}
 	tr := &fakeTransport{}

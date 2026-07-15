@@ -544,6 +544,17 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 	if inst == nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot-session of unknown handle %q", h.ID)
 	}
+	// A bank is destructive: the VM is destined for teardown regardless of outcome.
+	// Any failure AFTER the handle is confirmed tears the VM down here (it may be
+	// running, or stranded paused mid-snapshot), so a failed bank NEVER leaves a
+	// live or paused handle behind for the server to misreport as session capacity.
+	// On success the VM is left paused; the caller (server Bank) destroys it.
+	banked := false
+	defer func() {
+		if !banked {
+			_ = d.Release(ctx, h)
+		}
+	}()
 	if err := os.MkdirAll(d.sessionDir(snapshotRef), 0o700); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir session bundle: %w", err)
 	}
@@ -556,9 +567,6 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause session: %w", err)
 	}
 	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
-		// The VM is stranded paused and will be destroyed by the caller anyway, but
-		// tear it down here so a failed bank never leaves a live paused handle.
-		_ = d.Release(ctx, h)
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: create session snapshot: %w", err)
 	}
 	// Publish memfile before snapfile: a restore reads the snapfile to locate the
@@ -569,6 +577,7 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 	if err := os.Rename(snapTmp, snapPath); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish session snapfile: %w", err)
 	}
+	banked = true
 	return substrate.SnapshotRef{
 		ID:        snapshotRef,
 		Node:      d.cfg.Node,
