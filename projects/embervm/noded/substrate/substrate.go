@@ -36,6 +36,17 @@ type ClaimSpec struct {
 	// Arch pins CPU architecture; Firecracker snapshots are non-portable and a
 	// mismatched restore fails closed.
 	Arch string
+	// ExtraDrivePath, when set, is a host file the driver attaches to a COLD-BOOT
+	// microVM as a secondary (non-root) virtio-blk device, landing at /dev/vdb in
+	// the guest. It backs the R1 zip lane: noded writes the fetched, sha256-verified
+	// archive bytes to this path and attaches it so the runtime shim can read the
+	// zip from EMBER_ARCHIVE_DEVICE (default /dev/vdb) at build time. Ignored on a
+	// restore (BaseSnapshotRef set): the archive is only needed once, at build.
+	ExtraDrivePath string
+	// ExtraDriveReadOnly attaches ExtraDrivePath read-only. The zip archive is
+	// always attached read-only (noded owns opaque bytes; the guest never writes
+	// back through the device), so the zip lane sets this true.
+	ExtraDriveReadOnly bool
 }
 
 // Handle is an opaque reference to a claimed, live microVM. It is only valid

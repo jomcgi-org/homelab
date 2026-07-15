@@ -291,6 +291,29 @@ noded:
   drain:
     timeoutSeconds: 60
 
+  # R1 zip lane (Task 6): a BuildBase zip source is a runtime image plus a zip
+  # archive noded fetches, sha256-verifies, and attaches read-only as /dev/vdb to
+  # the build VM (the runtime shim unpacks it guest-side; noded never inspects the
+  # bytes).
+  #
+  # Read-path decision: noded fetches the archive over the POD network from the
+  # in-cluster SeaweedFS S3 endpoint (the same one the monolith chat-blobs pattern
+  # uses, http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333). The control plane
+  # mints a fully-qualified archive_url against that endpoint and passes it in the
+  # BuildBaseRequest, so noded needs no endpoint or bucket in its own config, only
+  # the fetch timeout and size cap below. The zero-egress policy applies to task
+  # microVMs, not the host daemon: this GET is the daemon's own pod-network call,
+  # not guest egress. R1 starts on the UNAUTHENTICATED in-cluster read path (the
+  # bucket is cluster-internal and mesh-gated); if a private bucket is needed
+  # later, credentials arrive here as a 1Password-provisioned secret, additive.
+  zipLane:
+    # Bounds a single archive HTTP GET so a hung filer cannot stall a BuildBase.
+    fetchTimeout: 60s
+    # Caps the fetched archive bytes (disk/memory backstop; bytes are opaque).
+    # Quoted so Helm keeps the exact integer string (an unquoted large number
+    # renders in scientific notation, which strconv.ParseInt would reject).
+    maxBytes: "536870912" # 512 MiB
+
   # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
   # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it
   # does not overcommit node scheduling, exactly like fc-invoke's 50Gi cap.
