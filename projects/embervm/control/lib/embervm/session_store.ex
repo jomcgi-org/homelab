@@ -277,7 +277,7 @@ defmodule Embervm.SessionStore do
             true -> {:ok, session}
           end
 
-        :error ->
+        {:error, {:not_found, _}} ->
           {:error, :not_found}
       end
 
