@@ -147,7 +147,7 @@ defmodule Embervm.SessionBankRelightTest do
       namespace: "embervm",
       class: "session",
       image_ref: "img@sha256:abc",
-      invoke_path: "/",
+      invoke_path: Keyword.get(opts, :invoke_path, "/"),
       timeout_ms: 90_000,
       cap: Keyword.get(opts, :cap, 8),
       floor: 1,
@@ -403,6 +403,51 @@ defmodule Embervm.SessionBankRelightTest do
 
     assert {:error, :closed} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
     assert_receive {:invalidated, _, _}, 200
+  end
+
+  test "a bare invoke (no explicit path) forwards the workload's invokePath to the guest" do
+    test_pid = self()
+
+    capture_assign = fn _ch, req ->
+      send(test_pid, {:guest_path, req.request.path})
+
+      {:ok,
+       %SessionAssignResponse{
+         response: %GuestResponse{status_code: 200, headers: %{}, body: req.request.body},
+         usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+         suspect: false
+       }}
+    end
+
+    ctx = start_stack(assign_fun: capture_assign)
+    # The shim serves only /invoke; a bare invoke must forward THAT, not "/".
+    put_workload(ctx, "wl", invoke_path: "/invoke")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+
+    {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+    assert_receive {:guest_path, "/invoke"}
+  end
+
+  test "an explicit request path overrides the workload invokePath" do
+    test_pid = self()
+
+    capture_assign = fn _ch, req ->
+      send(test_pid, {:guest_path, req.request.path})
+
+      {:ok,
+       %SessionAssignResponse{
+         response: %GuestResponse{status_code: 200, headers: %{}, body: req.request.body},
+         usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+         suspect: false
+       }}
+    end
+
+    ctx = start_stack(assign_fun: capture_assign)
+    put_workload(ctx, "wl", invoke_path: "/invoke")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+
+    {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{path: "/custom", body: "x"})
+    assert_receive {:guest_path, "/custom"}
   end
 
   # -- adoption matrix -------------------------------------------------------

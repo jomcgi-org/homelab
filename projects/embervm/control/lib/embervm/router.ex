@@ -682,10 +682,10 @@ defmodule Embervm.Router do
   end
 
   defp guest_path(conn) do
-    case header_value(conn, @path_header) do
-      nil -> "/"
-      path -> path
-    end
+    # Only an EXPLICIT X-Ember-Guest-Path sets the guest path; absent, return nil so
+    # the session process falls back to the workload's invokePath (the shim serves
+    # only /invoke, so a baked "/" default 404s the guest, the R1 baked-path trap).
+    header_value(conn, @path_header)
   end
 
   # GET /v1/sessions/:id (management OR session token). The management-auth plug is

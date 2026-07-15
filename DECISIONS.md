@@ -712,3 +712,26 @@ Task 10 choices where the plan was silent (sessioned run_python across guest + c
   until this fix deploys and the drill re-runs green. The closure never claimed the gates
   passed live (it flagged the drill as pending), so it is not false, but the plan Closure
   section should gain a "post-ship fix" note once the drill is green. Flagged for Joe.
+
+### D-R2.7.3 Session invoke forwarded guest path "/" (shim serves only /invoke) -> 404; fixed to fall back to invokePath
+- The re-run drill (post D-R2.7.2) showed create->first-invoke now REACHES the guest
+  (the control-plane adoption fix worked: the 404 body was Go's `404 page not found`, not
+  the Elixir router's JSON, and the session SURVIVED the invoke = the guest's 4xx treated
+  as the guest's answer). But every invoke 404'd: the session invoke handler baked the
+  guest path to "/" when no `X-Ember-Guest-Path` header was set, and the sandbox shim's mux
+  serves ONLY `/invoke` (+`/invoke/`), so "/" hit the ServeMux default 404. This is the
+  SAME R1 baked-path trap the router's own comment warns about (baking "/" makes invokePath
+  dead), reintroduced on the session path. The real monolith client sets no guest-path
+  header either, so the session invoke was never wired end to end.
+- FIX (control-plane only, mirrors the R1/task default): `guest_path/1` returns nil when
+  `X-Ember-Guest-Path` is absent (was "/"); the Session process defaults a nil req path to
+  the workload's `invokePath` (`run_invoke`: `Map.get(ctx.req, :path) || ctx.invoke_path`).
+  `invoke_path` is threaded from the catalog entry through `start_session_process` (covers
+  both create and relight/adoption restart) with a "/invoke" default in `Session.init`. An
+  EXPLICIT X-Ember-Guest-Path still overrides. Tests: bare-invoke-forwards-invokePath +
+  explicit-path-overrides (Elixir). Bumps the embervm chart to 0.1.43.
+- LESSON (recurring, now twice in R2): the sandbox shim mux is FIXED at /invoke regardless
+  of the workload spec, so any path the control plane forwards MUST resolve to the
+  workload's invokePath. Two integration seams (registry adoption D-R2.7.2, guest path
+  D-R2.7.3) were both invisible to every unit test because each side was faked; only the
+  live drill drove a real control-plane -> gRPC -> shim -> guest invoke. Flagged for Joe.
