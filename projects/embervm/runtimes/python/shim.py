@@ -1,10 +1,12 @@
 """EmberVM python runtime bootstrap shim (ADR embervm/002, R1 zip lane).
 
-This shim is PID 1 (or close to it) inside a disposable python-runtime microVM.
-An adopter of the zip lane brings only a zip archive containing a
-`handler(event, context)` callable; noded attaches that archive as a read-only
-block device (default /dev/vdb, Task 6) and boots this base image. On boot the
-shim, entirely guest-side:
+This shim runs inside a disposable python-runtime microVM, launched by the guest
+init (a raw Firecracker boot ignores the OCI entrypoint, so Task 7 must wire a
+PID-1 harnessInit that mounts a tmpfs over /tmp then execs this shim, see README
+"Boot integration"). An adopter of the zip lane brings only a zip archive
+containing a `handler(event, context)` callable; noded attaches that archive as a
+read-only block device (default /dev/vdb, Task 6) and boots this base image. On
+boot the shim, entirely guest-side:
 
   1. Locates the archive block device and unpacks it into a tmpfs workdir.
      The host NEVER unpacks: the archive crosses the boundary as opaque bytes
