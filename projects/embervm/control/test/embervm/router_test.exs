@@ -263,7 +263,9 @@ defmodule Embervm.RouterTest do
 
     resp = req(:post, "/v1/workloads/#{wl}/tasks?wait=true", headers, "x")
     assert resp.status == 200
-    assert header(resp, "content-type") == "application/octet-stream"
+    # Plug's put_resp_content_type appends "; charset=utf-8" to the fallback, the
+    # same as the pre-change behavior, so match the prefix rather than the exact value.
+    assert header(resp, "content-type") |> String.starts_with?("application/octet-stream")
     assert header(resp, "x-ember-truncated") == "false"
   end
 
