@@ -1,8 +1,19 @@
 # ADR 045: FaaS on the fc-invoke Sandbox Runtime
 
 **Author:** Joe McGinley
-**Status:** Accepted
+**Status:** Accepted (execution semantics migrated to EmberVM, see note below)
 **Created:** 2026-07-05
+
+> **Execution update (2026-07-15):** the registry, the unique-name rule, the
+> test-run gate, the visibility tiers, and the `/functions/<name>` URL surface
+> decided here shipped as specified, but the EXECUTION substrate migrated from
+> per-request code injection into the shared `sandbox` workload to a per-function
+> EmberVM `zip` Workload (its own baked snapshot), per the [embervm/001](../embervm/001-embervm-beam-firecracker-workload-orchestrator.md)
+> roadmap ("R1 resolves the agents/045 relationship"). A function IS an EmberVM
+> Workload; EmberVM never learns what a "function" is. Shipped in EmberVM R1
+> (`docs/plans/2026-07-14-embervm-r1-zip-lane-spec-and-plan.md`), live at
+> `https://jomcgi.dev/functions/og-image`. This does not change any decision
+> below; it changes only where the code runs.
 
 ---
 
