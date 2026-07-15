@@ -77,6 +77,38 @@ func (r *vmRegistry) claimForAssign(id string) (*vmEntry, bool) {
 	return e, true
 }
 
+// claimForSession atomically REMOVES a primed VM from the task registry so it can
+// be adopted into the session registry on a session's first SessionAssign. The
+// create path primes/claims a session's VM through the shared warm pool, so it
+// lands here in the task registry (Prime always adds here); the first SessionAssign
+// promotes it out of this registry and into the session registry (see
+// Server.adoptPrimedSession). Returns (nil,false) when the id is unknown or not
+// primed (already assigned, destroyed, or already adopted), which SessionAssign
+// maps to FAILED_PRECONDITION. It also requires the primed VM's workload to MATCH
+// the adopting session's workload: a session may only adopt a VM primed from its own
+// (class:session) base, so a task-class primed vm_id can never be hijacked as a
+// session VM (defense in depth; the control plane never names a foreign vm_id). An
+// empty workload never matches a real VM, so it always rejects. Unlike claimForAssign
+// this DELETES the entry: the VM is leaving the task registry entirely to live as a
+// session VM, so it must never be reported as a primed task slot again.
+func (r *vmRegistry) claimForSession(id, workload string) (*vmEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.vms[id]
+	if !ok {
+		return nil, false
+	}
+	e.mu.Lock()
+	if e.state != vmPrimed || e.workload != workload {
+		e.mu.Unlock()
+		return nil, false
+	}
+	e.state = vmAssigned
+	e.mu.Unlock()
+	delete(r.vms, id)
+	return e, true
+}
+
 // remove deletes an id from the map and returns its entry (nil if absent). Used
 // by Assign's single-use teardown and by Destroy's idempotent reap.
 func (r *vmRegistry) remove(id string) *vmEntry {

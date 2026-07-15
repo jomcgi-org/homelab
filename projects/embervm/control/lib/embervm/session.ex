@@ -372,13 +372,25 @@ defmodule Embervm.Session do
              }, Embervm.Usage.from_proto(usage)}
 
           {:error, reason} ->
-            _ = ctx.invalidate_fun.(ctx.node_id, channel)
+            maybe_invalidate(ctx, channel, reason)
             {:error, classify_error(reason)}
         end
 
       {:error, reason} ->
         {:error, {:no_channel, reason}}
     end
+  end
+
+  # Only a TRANSPORT fault means the shared node channel is bad and must be torn
+  # down. A server-returned gRPC status (%GRPC.RPCError{}) rode a HEALTHY channel to
+  # get here, so invalidating it would needlessly disconnect every other session
+  # sharing that channel (D-R2.7.2). Leave the channel up on any server status;
+  # invalidate only on a raw transport error (Mint.TransportError, :closed, etc.).
+  defp maybe_invalidate(_ctx, _channel, %GRPC.RPCError{}), do: :ok
+
+  defp maybe_invalidate(ctx, channel, _reason) do
+    _ = ctx.invalidate_fun.(ctx.node_id, channel)
+    :ok
   end
 
   defp classify_error(%GRPC.RPCError{status: 4}), do: :deadline_exceeded

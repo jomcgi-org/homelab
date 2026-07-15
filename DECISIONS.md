@@ -675,3 +675,40 @@ Task 10 choices where the plan was silent (sessioned run_python across guest + c
   holds, condition 2 (agent-sandbox upstream traction) still open. Goosecracker remains
   the last fc-invoke consumer; its migration onto the session class is the R2.x follow-on
   that triggers retiring the fc-invoke substrate.
+
+### D-R2.7.2 Session invoke was broken in prod (registry gap); fixed by lazy adoption on first SessionAssign
+- **The live drill (D-R2.7.1) caught a real bug the CI-green mechanisms all missed:** every
+  first invoke on a freshly created session returned 502 and the session went `failed`.
+  ROOT CAUSE: session create primes/claims its VM through the shared warm pool, so noded's
+  `Prime` lands it in the TASK registry (`s.vms`); but `SessionAssign` only accepts VMs from
+  the disjoint SESSION registry (`s.sessionVMs`), which until now was populated ONLY by
+  `Relight`. So the create -> first-invoke path was never wired: SessionAssign hit "unknown
+  session VM" -> FAILED_PRECONDITION (status 9) -> control plane 502 + failed the session.
+  Tasks work because task `Assign` reads the same `s.vms` that `Prime` writes; sessions had
+  no equivalent bridge. Every unit test passed because each side was tested against its own
+  fake; nothing drove a real control-plane -> gRPC -> noded session invoke end to end. This
+  is exactly the integration seam a mock hides, and the reason the live drill was worth running.
+- **FIX (Option C, simplest of three):** `SessionAssign` ADOPTS a primed VM from the task
+  registry into the session registry on the first invoke (`Server.adoptPrimedSession` +
+  `vmRegistry.claimForSession`), gated by a WORKLOAD MATCH (a session may only adopt a VM
+  primed from its own class:session base; the request's `trace.workload` must equal the
+  primed VM's workload). The registry comment already anticipated this ("add registers a
+  freshly relit OR primed-into-session VM"), so it is the intended seam. Rejected Option A/B
+  (a new create-time noded verb + proto + control-plane round-trip): more surface, an extra
+  round-trip at create, no benefit since the physical VM is already a session VM and only its
+  bookkeeping was wrong. Rejected the unguarded adopt: it would let a task-class primed vm_id
+  be hijacked as a session (broke `TestSessionAssignTaskClassVMRejected`); the workload guard
+  restores that invariant as defense-in-depth (the control plane never names a foreign vm_id,
+  but noded enforces it anyway).
+- **Two secondaries fixed in the same PR:** (1) `Session.run_invoke` invalidated the SHARED
+  node channel on ANY invoke error, including a server-returned `%GRPC.RPCError{}` that rode a
+  healthy channel; tearing it down would disconnect every other session multiplexed on it.
+  Now `maybe_invalidate/3` invalidates ONLY on a transport fault, never on a server gRPC
+  status. (2) `NodeChannel` had no `handle_info/2`, so the linked Mint connection's normal
+  `{:EXIT, _, :normal}` on every channel teardown logged a spurious `no_handle_info` error
+  report; added a swallowing clause. Both are hygiene, not the root cause.
+- **Honesty note on the closure:** ADR 001 marks R2 "Shipped 2026-07-15" (D-R2.7.1). The drill
+  showed the invoke path was functionally broken at that moment, so the label was optimistic
+  until this fix deploys and the drill re-runs green. The closure never claimed the gates
+  passed live (it flagged the drill as pending), so it is not false, but the plan Closure
+  section should gain a "post-ship fix" note once the drill is green. Flagged for Joe.

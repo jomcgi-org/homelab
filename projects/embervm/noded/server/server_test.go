@@ -420,6 +420,15 @@ func seedBase(s *Server, snapshotRef, workload string) {
 	s.bases.readyBuild(snapshotRef, workload, "img@sha256:deadbeef", "/shim/ready", 2048)
 }
 
+func contains(ids []string, id string) bool {
+	for _, s := range ids {
+		if s == id {
+			return true
+		}
+	}
+	return false
+}
+
 // TestPrimeAssignAutoDestroy is the core lifecycle: Prime parks a VM, Assign
 // delivers one task and returns the echoed guest response plus usage, and the VM
 // is destroyed exactly once after the response.
@@ -1123,6 +1132,91 @@ func TestSessionAssignTaskClassVMRejected(t *testing.T) {
 	}
 	if _, releases, _, _ := drv.counts(); releases != 0 {
 		t.Errorf("SessionAssign on a task VM reaped it: releases=%d, want 0", releases)
+	}
+}
+
+// TestSessionAssignAdoptsPrimedVM: a session's FIRST invoke arrives with its VM
+// still in the TASK registry, because create primes/claims through the shared warm
+// pool (Prime always lands a VM there). SessionAssign must ADOPT the primed VM of a
+// MATCHING workload into the session registry and serve the invoke; the VM then
+// SURVIVES as a session VM for subsequent invokes. This is the create->first-invoke
+// path the live drill found unwired (it returned FAILED_PRECONDITION -> 502).
+func TestSessionAssignAdoptsPrimedVM(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	seedBase(srv, "sess__base01", "sandbox-session")
+	ctx := context.Background()
+
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "sess__base01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	vmID := pr.GetVmId()
+
+	// Precondition: the primed VM is a primed TASK slot, not yet a session VM.
+	if primed, _ := srv.vms.capacity(); !contains(primed["sandbox-session"], vmID) {
+		t.Fatalf("primed VM %q not in the task registry before adoption", vmID)
+	}
+
+	// First invoke adopts (workload matches); second uses the normal session path.
+	for i := 0; i < 2; i++ {
+		resp, err := client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+			VmId:      vmID,
+			SessionId: "s-adopt",
+			Trace:     &nodev1.Trace{Workload: "sandbox-session"},
+			Request:   &nodev1.GuestRequest{Method: "POST", Path: "/invoke", Body: []byte("hi")},
+			TimeoutMs: 1000,
+		})
+		if err != nil {
+			t.Fatalf("SessionAssign %d (adopt): %v", i, err)
+		}
+		if got := string(resp.GetResponse().GetBody()); got != "ok:hi" {
+			t.Errorf("SessionAssign %d body = %q, want ok:hi", i, got)
+		}
+	}
+
+	// Postcondition: the VM left the task registry (never a primed slot again) and
+	// survived as one live session VM.
+	if primed, _ := srv.vms.capacity(); contains(primed["sandbox-session"], vmID) {
+		t.Errorf("adopted VM still reported as a primed task slot")
+	}
+	if _, releases, _, _ := drv.counts(); releases != 0 {
+		t.Errorf("adoption destroyed the VM: releases=%d, want 0", releases)
+	}
+	if got := drv.LiveCount(); got != 1 {
+		t.Errorf("LiveCount = %d, want 1 (one surviving session VM)", got)
+	}
+}
+
+// TestSessionAssignAdoptWorkloadMismatchRejected: a primed VM of a DIFFERENT
+// workload than the session is never hijacked as a session VM. The adopt guard
+// requires the primed VM's workload to equal the session's, so a mismatch stays
+// FAILED_PRECONDITION and leaves the primed VM untouched.
+func TestSessionAssignAdoptWorkloadMismatchRejected(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	seedBase(srv, "other__base01", "other-workload")
+	ctx := context.Background()
+
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "other__base01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	_, err = client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+		VmId:      pr.GetVmId(),
+		SessionId: "s-mismatch",
+		Trace:     &nodev1.Trace{Workload: "sandbox-session"}, // != the VM's workload
+		Request:   &nodev1.GuestRequest{Body: []byte("x")},
+		TimeoutMs: 1000,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (workload mismatch)", status.Code(err))
+	}
+	// The primed VM was NOT adopted or destroyed: still a primed task slot.
+	if primed, _ := srv.vms.capacity(); !contains(primed["other-workload"], pr.GetVmId()) {
+		t.Errorf("mismatched-workload primed VM was consumed by a failed adopt")
 	}
 }
 
