@@ -145,3 +145,18 @@ per registration.
 
 Runs as uid/gid 65532 (`runtime` account), `runAsNonRoot` convention. Dual-arch
 (x86_64 + aarch64) via the standard apko pipeline.
+
+## Boot integration (deferred to Task 7, REQUIRED before this image serves)
+
+The shim is set as the apko OCI `entrypoint`, but a raw Firecracker boot ignores
+OCI image config entirely and boots `init=<HarnessInit>` (see the noded driver's
+`bootArgs`, and the sibling sandbox note in
+`projects/firecracker/sandbox/guest/apko.yaml`). So this image cannot boot-and-serve
+on its own yet: nothing runs the shim as PID 1, and nothing mounts the tmpfs the
+shim's unpack dir (`/tmp/ember-app`) needs on a read-only rootfs.
+
+When Task 7 wires a `runtime-python` workload, it must add a PID-1 harnessInit
+(mirroring `projects/firecracker/sandbox/guest-init/`) that mounts a tmpfs over
+`/tmp`, then execs `python3 /usr/local/bin/ember-runtime-shim`. Until that init
+exists, this image builds and its shim unit-tests pass, but no workload should
+reference it.
