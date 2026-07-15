@@ -132,6 +132,14 @@ spec:
             {{- end }}
             - name: EMBERVM_NODED_DRAIN_TIMEOUT
               value: "{{ .Values.noded.drain.timeoutSeconds }}s"
+            # R1 zip lane: bounds a single archive HTTP GET and caps the fetched
+            # bytes. The archive_url is minted by the control plane (fully-qualified
+            # SeaweedFS S3 read URL); noded fetches it on the pod network. See
+            # noded.zipLane in values.yaml for the read-path decision.
+            - name: EMBERVM_NODED_ARCHIVE_FETCH_TIMEOUT
+              value: {{ .Values.noded.zipLane.fetchTimeout | quote }}
+            - name: EMBERVM_NODED_ARCHIVE_MAX_BYTES
+              value: {{ .Values.noded.zipLane.maxBytes | quote }}
             # Node-side image identity table (image_ref -> {rootfsPath, harnessInit}),
             # rendered as JSON. Derived from noded.workloads + each workload's pinned
             # guestImage so the ref here MATCHES the rootfs-builder GUEST_IMAGE and the

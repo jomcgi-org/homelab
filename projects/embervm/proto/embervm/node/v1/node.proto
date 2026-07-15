@@ -115,16 +115,48 @@ message ResourceSpec {
 
 // ---- BuildBase -------------------------------------------------------------
 
+// ZipSource is the R1 "zip lane" base source: a runtime base image plus a zip
+// archive (containing a `handler`) fetched and attached read-only to the build
+// VM, where the runtime shim unpacks and imports it before the snapshot is
+// taken. The unpacked, handler-imported state is baked into the base snapshot,
+// so the archive is only needed at build time, never at restore. noded treats
+// the archive as OPAQUE, sha256-verified bytes: it NEVER unpacks or inspects it
+// (zip-slip/bomb surfaces stay inside the disposable guest the shim owns).
+message ZipSource {
+  // runtime_image_ref names the runtime base image (e.g. the python runtime) the
+  // daemon resolves to a node-side rootfs, exactly like BuildBaseRequest.image_ref
+  // for the image lane. The zip is layered on top of this runtime at build time.
+  string runtime_image_ref = 1;
+  // archive_url is where noded fetches the zip from over the pod network (the
+  // in-cluster SeaweedFS S3/filer read path). The daemon HTTP GETs the bytes; the
+  // control plane owns upload and URL minting.
+  string archive_url = 2;
+  // archive_sha256 is the hex-encoded SHA-256 of the archive bytes. noded verifies
+  // the fetched bytes against it and FAILS the build (FAILED_PRECONDITION) on a
+  // mismatch, so a corrupted or swapped archive can never be baked into a base.
+  string archive_sha256 = 3;
+}
+
 message BuildBaseRequest {
   Trace trace = 1;
+  // source selects how the base is built. The IMAGE lane (image_ref) bakes an OCI
+  // image directly; the ZIP lane (zip) layers an adopter's zip archive onto a
+  // runtime base image. Exactly one is set. The legacy top-level image_ref (field
+  // 2) is the image lane's original, unwrapped form and is still honoured when the
+  // oneof is unset, so this addition is wire-compatible.
+  oneof source {
+    ZipSource zip = 8;
+  }
   // image_ref is the OCI reference to bake (digest-pinned or tag). The daemon
   // resolves a tag to a digest at build time; the digest comes back in the
   // response so the control plane records the resolved identity (deploys are
-  // explicit, never tag drift).
+  // explicit, never tag drift). Set for the IMAGE lane (or left set as the
+  // pre-oneof default); the ZIP lane leaves it empty and sets source.zip instead.
   string image_ref = 2;
   // workload_revision is the control plane's opaque revision token for this
   // workload's spec; together with the resolved image digest it forms the
-  // idempotency key for the base build.
+  // idempotency key for the base build. For the ZIP lane the idempotency key is
+  // (runtime image digest, archive sha256) instead (see server.baseKeyForZip).
   string workload_revision = 3;
   // Guest contract knobs (frozen contract): the port the guest HTTP server
   // listens on over vsock, and the path that answers 200 when ready.

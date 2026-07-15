@@ -96,6 +96,16 @@ type Config struct {
 	// Default "127.0.0.1:8888".
 	EgressSidecarAddr string
 
+	// ArchiveFetchTimeout bounds a single zip-lane archive HTTP GET (the R1 zip
+	// lane fetches the archive from the in-cluster SeaweedFS read path on the pod
+	// network). A hung filer must not stall a BuildBase indefinitely. Default 60s.
+	ArchiveFetchTimeout time.Duration
+	// ArchiveMaxBytes caps how many bytes a zip-lane archive fetch buffers before
+	// failing, so a runaway or malicious archive_url cannot exhaust node memory or
+	// the scratch disk. The bytes are opaque to noded (the guest shim unpacks);
+	// this is only a size backstop. Default 512 MiB.
+	ArchiveMaxBytes int64
+
 	// Images maps a gRPC BuildBase image_ref to its node-side identity. Parsed
 	// from EMBERVM_NODED_IMAGES (inline JSON object) or _FILE (path, precedence).
 	// Empty is valid: BuildBase for an unknown image fails FAILED_PRECONDITION,
@@ -124,6 +134,8 @@ func Load() (Config, error) {
 		RestoreReadyTimeout: 2 * time.Second,
 		DrainTimeout:        60 * time.Second,
 		EgressSidecarAddr:   getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
+		ArchiveFetchTimeout: 60 * time.Second,
+		ArchiveMaxBytes:     512 << 20,
 	}
 
 	if c.Node == "" {
@@ -141,6 +153,16 @@ func Load() (Config, error) {
 	}
 	if err := parseDuration("EMBERVM_NODED_DRAIN_TIMEOUT", &c.DrainTimeout); err != nil {
 		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_ARCHIVE_FETCH_TIMEOUT", &c.ArchiveFetchTimeout); err != nil {
+		return Config{}, err
+	}
+	if v := os.Getenv("EMBERVM_NODED_ARCHIVE_MAX_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid EMBERVM_NODED_ARCHIVE_MAX_BYTES %q: %w", v, err)
+		}
+		c.ArchiveMaxBytes = n
 	}
 
 	images, err := loadImages()

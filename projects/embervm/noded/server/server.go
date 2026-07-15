@@ -64,6 +64,10 @@ const (
 	// material change. It is below the control plane's 5s "unknown" ageing window
 	// so a healthy node never looks stale.
 	livenessInterval = 2 * time.Second
+	// defaultArchiveMaxBytes bounds a zip-lane archive fetch when the config leaves
+	// ArchiveMaxBytes unset (0). 512 MiB matches config.Load's default and is a
+	// disk/memory backstop only; the bytes are opaque to noded.
+	defaultArchiveMaxBytes = 512 << 20
 )
 
 // vmDriver is the subset of the fcvm driver the restore/assign/destroy paths
@@ -128,6 +132,10 @@ type Server struct {
 	// Overridable in tests.
 	memHeadroom func() uint64
 
+	// httpClient fetches zip-lane archives from the in-cluster SeaweedFS read path
+	// over the pod network. Overridable in tests (a fake archive server).
+	httpClient *http.Client
+
 	vms   *vmRegistry
 	bases *baseRegistry
 
@@ -164,6 +172,9 @@ func New(opts Options) *Server {
 		subs:           make(map[chan struct{}]struct{}),
 	}
 	s.memHeadroom = readMemHeadroomMib
+	// The fetch timeout is the per-attempt bound; a per-request context (below)
+	// enforces the same budget so a slow filer cannot pin a build.
+	s.httpClient = &http.Client{Timeout: opts.Config.ArchiveFetchTimeout}
 	return s
 }
 
@@ -182,6 +193,16 @@ func (s *Server) BuildBase(ctx context.Context, req *nodev1.BuildBaseRequest) (*
 	if s.newBuildDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: base building not configured")
 	}
+	if req.GetZip() != nil {
+		return s.buildBaseZip(ctx, req)
+	}
+	return s.buildBaseImage(ctx, req)
+}
+
+// buildBaseImage is the original IMAGE-lane BuildBase: resolve image_ref to a
+// node-side rootfs, cold-boot, health-gate, snapshot. Idempotent per (image_ref,
+// workload_revision).
+func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseRequest) (*nodev1.BuildBaseResponse, error) {
 	imageRef := req.GetImageRef()
 	if imageRef == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: image_ref required")
@@ -192,6 +213,80 @@ func (s *Server) BuildBase(ctx context.Context, req *nodev1.BuildBaseRequest) (*
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: image %q not provisioned on this node", imageRef)
 	}
 	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision())
+	// The control plane records the resolved image identity; without an OCI pull
+	// the ref IS the identity for R0 (deploys are digest-pinned upstream).
+	return s.driveBuild(ctx, req, baseKey, imageRef, img, "")
+}
+
+// buildBaseZip is the R1 ZIP-lane BuildBase: fetch the adopter's archive from the
+// SeaweedFS read path, verify its sha256, write it to a raw block file on the
+// node, and cold-boot the runtime image with that file attached read-only as
+// /dev/vdb so the guest shim unpacks and imports the handler before the snapshot.
+// Idempotent per (runtime image digest, archive sha256): the block file is always
+// deleted after the build (success or failure), since the archive is baked into
+// the snapshot and never needed at restore.
+func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest) (*nodev1.BuildBaseResponse, error) {
+	zip := req.GetZip()
+	runtimeRef := zip.GetRuntimeImageRef()
+	if runtimeRef == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: zip.runtime_image_ref required")
+	}
+	if zip.GetArchiveUrl() == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: zip.archive_url required")
+	}
+	if zip.GetArchiveSha256() == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: zip.archive_sha256 required")
+	}
+	workload := req.GetTrace().GetWorkload()
+	img, ok := s.cfg.Images[runtimeRef]
+	if !ok {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q not provisioned on this node", runtimeRef)
+	}
+	// Idempotency key is (runtime image digest, archive sha256): a re-registration
+	// of the SAME archive on the SAME runtime is a no-op hit. The runtime ref is
+	// the digest for R0 (deploys are digest-pinned upstream), mirroring the image
+	// lane where image_ref IS the identity.
+	imageDigest := runtimeRef
+	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256())
+
+	// Short-circuit on an already-built base BEFORE fetching the archive: an
+	// idempotent repeat must not re-download or re-attach.
+	if existing, ok := s.bases.get(baseKey); ok && existing.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		return &nodev1.BuildBaseResponse{
+			SnapshotRef:   existing.snapshotRef,
+			ImageDigest:   existing.imageDigest,
+			BaseSizeBytes: uint64(existing.sizeBytes),
+			Arch:          s.cfg.Arch,
+			AlreadyBuilt:  true,
+		}, nil
+	}
+
+	// Fetch + verify BEFORE claiming the build guest so a bad archive fails cheaply
+	// (no cold boot wasted). noded handles opaque bytes only; the guest shim owns
+	// unpack and zip-slip defence.
+	blockPath, err := s.fetchArchiveToBlockFile(ctx, baseKey, zip.GetArchiveUrl(), zip.GetArchiveSha256())
+	if err != nil {
+		return nil, err // already a *status.Error with the right code
+	}
+	// Always remove the block file: the archive is baked into the snapshot at build
+	// time and never needed at restore, so it must not leak on ANY path (success or
+	// failure). Removing before driveBuild's cold boot would pull the drive; the
+	// deferred remove runs after driveBuild returns.
+	defer func() {
+		if rerr := os.Remove(blockPath); rerr != nil && !os.IsNotExist(rerr) {
+			s.logger.Warn("noded: remove zip archive block file", "base", baseKey, "path", blockPath, "err", rerr)
+		}
+	}()
+
+	return s.driveBuild(ctx, req, baseKey, imageDigest, img, blockPath)
+}
+
+// driveBuild is the shared tail of both lanes: the idempotency short-circuit,
+// per-key build serialization, cold boot + health-gate + snapshot, and the
+// ready/fail bookkeeping. extraDrivePath, when set (zip lane), is attached
+// read-only as /dev/vdb to the build guest.
+func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, baseKey, imageDigest string, img config.Image, extraDrivePath string) (*nodev1.BuildBaseResponse, error) {
+	workload := req.GetTrace().GetWorkload()
 	readyPath := req.GetReadyPath()
 	if readyPath == "" {
 		readyPath = defaultReadyPath
@@ -226,15 +321,12 @@ func (s *Server) BuildBase(ctx context.Context, req *nodev1.BuildBaseRequest) (*
 		MemMib:      int(res.GetMemMib()),
 	})
 
-	sizeBytes, err := s.runBuild(ctx, bd, baseKey, readyPath)
+	sizeBytes, err := s.runBuild(ctx, bd, baseKey, readyPath, extraDrivePath)
 	if err != nil {
 		s.bases.failBuild(baseKey, err.Error())
 		s.signalChange()
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: build base %q: %v", baseKey, err)
 	}
-	// The control plane records the resolved image identity; without an OCI pull
-	// the ref IS the identity for R0 (deploys are digest-pinned upstream).
-	imageDigest := imageRef
 	s.bases.readyBuild(baseKey, workload, imageDigest, readyPath, sizeBytes)
 	s.signalChange()
 	return &nodev1.BuildBaseResponse{
@@ -248,8 +340,14 @@ func (s *Server) BuildBase(ctx context.Context, req *nodev1.BuildBaseRequest) (*
 
 // runBuild cold-boots a build guest, waits for readiness, snapshots it into the
 // base bundle, and always discards the build VM (the base lives in the bundle).
-func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPath string) (int64, error) {
+// extraDrivePath, when set, is attached read-only as /dev/vdb (the zip lane's
+// archive device).
+func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPath, extraDrivePath string) (int64, error) {
 	spec := substrate.ClaimSpec{Arch: s.cfg.Arch, ThreadID: newID("build")}
+	if extraDrivePath != "" {
+		spec.ExtraDrivePath = extraDrivePath
+		spec.ExtraDriveReadOnly = true
+	}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
 		return 0, fmt.Errorf("cold boot: %w", err)
@@ -273,6 +371,82 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPat
 		return 0, fmt.Errorf("snapshot: %w", err)
 	}
 	return ref.SizeBytes, nil
+}
+
+// fetchArchiveToBlockFile GETs the zip archive from archiveURL over the pod
+// network, verifies the bytes against wantSha256, and writes them to a raw block
+// file under the snapshot root keyed by baseKey. The file is the read-only
+// secondary drive the build guest reads the archive from. On ANY error the
+// partial file is removed and a *status.Error with the right code is returned:
+//   - InvalidArgument for a malformed wantSha256,
+//   - FailedPrecondition for a fetch failure, an over-size archive, or a sha256
+//     mismatch (a corrupted or swapped archive must never reach a base).
+//
+// noded NEVER unpacks or inspects the bytes: zip-slip/bomb defence lives in the
+// disposable guest's shim (Task 5).
+func (s *Server) fetchArchiveToBlockFile(ctx context.Context, baseKey, archiveURL, wantSha256 string) (string, error) {
+	wantSha256 = strings.ToLower(strings.TrimSpace(wantSha256))
+	if _, err := hex.DecodeString(wantSha256); err != nil || len(wantSha256) != 64 {
+		return "", status.Errorf(codes.InvalidArgument, "noded: zip.archive_sha256 must be 64 hex chars, got %q", wantSha256)
+	}
+
+	// Bound the fetch by the configured timeout even if the caller's context is
+	// longer, so a hung filer cannot pin a build past the budget.
+	fetchCtx := ctx
+	if s.cfg.ArchiveFetchTimeout > 0 {
+		var cancel context.CancelFunc
+		fetchCtx, cancel = context.WithTimeout(ctx, s.cfg.ArchiveFetchTimeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, archiveURL, nil)
+	if err != nil {
+		return "", status.Errorf(codes.FailedPrecondition, "noded: build zip archive request: %v", err)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", status.Errorf(codes.FailedPrecondition, "noded: fetch zip archive: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", status.Errorf(codes.FailedPrecondition, "noded: fetch zip archive: unexpected status %d", resp.StatusCode)
+	}
+
+	dir := filepath.Join(s.cfg.SnapshotRoot, "archives")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", status.Errorf(codes.FailedPrecondition, "noded: mkdir archive dir: %v", err)
+	}
+	blockPath := filepath.Join(dir, baseKey+".img")
+	f, err := os.OpenFile(blockPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", status.Errorf(codes.FailedPrecondition, "noded: create archive block file: %v", err)
+	}
+	// Cap the copy so a runaway or malicious URL cannot exhaust the scratch disk;
+	// exceeding the cap fails the build (an over-size archive is not honoured).
+	limit := s.cfg.ArchiveMaxBytes
+	if limit <= 0 {
+		limit = defaultArchiveMaxBytes
+	}
+	h := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, limit+1))
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(blockPath)
+		return "", status.Errorf(codes.FailedPrecondition, "noded: read zip archive: %v", copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(blockPath)
+		return "", status.Errorf(codes.FailedPrecondition, "noded: flush zip archive: %v", closeErr)
+	}
+	if n > limit {
+		_ = os.Remove(blockPath)
+		return "", status.Errorf(codes.FailedPrecondition, "noded: zip archive exceeds %d-byte cap", limit)
+	}
+	gotSha256 := hex.EncodeToString(h.Sum(nil))
+	if gotSha256 != wantSha256 {
+		_ = os.Remove(blockPath)
+		return "", status.Errorf(codes.FailedPrecondition, "noded: zip archive sha256 mismatch: got %s want %s", gotSha256, wantSha256)
+	}
+	return blockPath, nil
 }
 
 // ---- Prime -----------------------------------------------------------------
@@ -669,6 +843,21 @@ var baseKeyUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 // capacity report; the hash suffix keys the bundle per image+revision.
 func baseKeyFor(workload, imageRef, revision string) string {
 	sum := sha256.Sum256([]byte(imageRef + "\x00" + revision))
+	sig := hex.EncodeToString(sum[:])[:12]
+	wl := baseKeyUnsafe.ReplaceAllString(workload, "_")
+	if wl == "" {
+		wl = "wl"
+	}
+	return wl + "__" + sig
+}
+
+// baseKeyForZip derives the base key (== the opaque snapshot_ref) for a ZIP-lane
+// build. Its idempotency inputs are (runtime image digest, archive sha256): the
+// same archive on the same runtime keys the same base, so a re-registration is a
+// no-op hit. The workload prefix is recoverable on startup for the capacity
+// report, mirroring baseKeyFor.
+func baseKeyForZip(workload, imageDigest, archiveSha256 string) string {
+	sum := sha256.Sum256([]byte("zip\x00" + imageDigest + "\x00" + archiveSha256))
 	sig := hex.EncodeToString(sum[:])[:12]
 	wl := baseKeyUnsafe.ReplaceAllString(workload, "_")
 	if wl == "" {
