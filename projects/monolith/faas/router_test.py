@@ -181,6 +181,70 @@ def test_name_conflict_is_last_write_wins_not_409(client, session, fakes):
 
 
 # --------------------------------------------------------------------------- #
+# Idempotency: an unchanged re-registration is a server-side no-op (Task 12)
+# --------------------------------------------------------------------------- #
+
+
+def test_identical_reregistration_is_a_noop(client, session, fakes):
+    """Re-posting the same zip + config does no upload, no CR upsert, no smoke.
+
+    This is the "idempotent by zip sha" property the CI-invoked og-image
+    registration relies on: a no-change re-run must not restore a VM to re-smoke.
+    """
+    assert _post(client).status_code == 201
+    fn_first = get_function(session, "echo-fn")
+    first_smoke = fn_first.last_smoke_at
+
+    # Clear recorded side effects, then re-register byte-identical (same _zip_bytes).
+    fakes["put_calls"].clear()
+    fakes["upsert_calls"].clear()
+    fakes["submit_calls"].clear()
+
+    resp = _post(client)
+    assert resp.status_code == 201
+    assert resp.json().get("unchanged") is True
+
+    # No side effects at all: the archive was not re-uploaded, the CR not
+    # re-upserted, and crucially no smoke invocation (no VM restored).
+    assert fakes["put_calls"] == []
+    assert fakes["upsert_calls"] == []
+    assert fakes["submit_calls"] == []
+    # The visibility gate is untouched (same last_smoke_at, still visible).
+    assert get_function(session, "echo-fn").last_smoke_at == first_smoke
+
+
+def test_visibility_change_is_not_a_noop(client, session, fakes):
+    """Same zip but a changed visibility re-runs the full gate (re-smokes)."""
+    assert _post(client, visibility="private").status_code == 201
+    fakes["submit_calls"].clear()
+
+    resp = _post(client, visibility="public")
+    assert resp.status_code == 201
+    assert resp.json().get("unchanged") is not True
+    # A real change: the smoke gate ran again and the row is now public.
+    assert len(fakes["submit_calls"]) == 1
+    assert get_function(session, "echo-fn").visibility == "public"
+
+
+def test_unsmoked_row_is_not_short_circuited(client, session, fakes):
+    """A prior registration that never smoked (invisible) is not a no-op target.
+
+    If a first attempt failed its smoke (no visible row), re-registering the same
+    zip must take the full path and try to smoke again, not silently short-circuit.
+    """
+    fakes["smoke"] = _FakeResponse(500, "boom")
+    assert _post(client).status_code == 502
+    assert get_function(session, "echo-fn") is None  # nothing visible
+    fakes["smoke"] = _FakeResponse(200, '{"ok": true}')
+    fakes["submit_calls"].clear()
+
+    resp = _post(client)
+    assert resp.status_code == 201
+    assert resp.json().get("unchanged") is not True
+    assert len(fakes["submit_calls"]) == 1
+
+
+# --------------------------------------------------------------------------- #
 # Validation rejections (no row persisted)
 # --------------------------------------------------------------------------- #
 

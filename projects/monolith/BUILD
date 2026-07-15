@@ -3565,6 +3565,21 @@ py_test(
     ],
 )
 
+# The og-image function (Task 12): a real Pillow render is exercised in CI (PIL
+# is a monolith pip dep), plus the deterministic-zip bundler that "idempotent by
+# zip sha" depends on. faas/functions/og_image/app.py is guest code globbed into
+# :monolith_backend only so this test can import it.
+py_test(
+    name = "faas_og_image_test",
+    srcs = ["faas/functions/og_image/og_image_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pillow",
+        "@pip//pytest",
+    ],
+)
+
 py_test(
     name = "stars_models_test",
     srcs = ["stars/models_test.py"],
