@@ -417,7 +417,8 @@ defmodule Embervm.TaskStore do
         body: Map.get(result, :body),
         size_bytes: Map.fetch!(result, :size_bytes),
         truncated: Map.get(result, :truncated, false),
-        expires_at: Map.get(result, :expires_at)
+        expires_at: Map.get(result, :expires_at),
+        headers: Map.get(result, :headers, %{})
       }
       |> maybe_put_usage(usage)
 

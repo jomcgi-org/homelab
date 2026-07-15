@@ -91,7 +91,8 @@ defmodule Embervm.OpLog.SQLite do
       size_bytes INTEGER NOT NULL,
       truncated INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
-      expires_at INTEGER
+      expires_at INTEGER,
+      headers TEXT
     )
     """,
     # Metering projection (Task 12): accumulated billed usage per principal per
@@ -207,7 +208,8 @@ defmodule Embervm.OpLog.SQLite do
 
     with {:ok, conn} <- Sqlite3.open(path),
          :ok <- apply_pragmas(conn),
-         :ok <- apply_ddl(conn) do
+         :ok <- apply_ddl(conn),
+         :ok <- apply_migrations(conn) do
       Logger.info("embervm op-log opened at #{path}")
 
       {:ok,
@@ -371,8 +373,8 @@ defmodule Embervm.OpLog.SQLite do
     with :ok <- update_task_state(conn, op.task_id, "succeeded", op.ts) do
       sql = """
       INSERT OR REPLACE INTO results
-        (task_id, status_code, body, size_bytes, truncated, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (task_id, status_code, body, size_bytes, truncated, created_at, expires_at, headers)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       """
 
       payload = op.payload
@@ -386,7 +388,8 @@ defmodule Embervm.OpLog.SQLite do
                Map.fetch!(payload, :size_bytes),
                bool_to_int(Map.get(payload, :truncated, false)),
                op.ts,
-               Map.get(payload, :expires_at)
+               Map.get(payload, :expires_at),
+               encode_headers(Map.get(payload, :headers, %{}))
              ]),
            :done <- Sqlite3.step(conn, stmt),
            :ok <- Sqlite3.release(conn, stmt) do
@@ -581,7 +584,7 @@ defmodule Embervm.OpLog.SQLite do
 
   defp do_load_result(conn, task_id) do
     sql = """
-    SELECT status_code, body, size_bytes, truncated, created_at, expires_at
+    SELECT status_code, body, size_bytes, truncated, created_at, expires_at, headers
     FROM results WHERE task_id=?
     """
 
@@ -589,7 +592,7 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- Sqlite3.bind(stmt, [task_id]) do
       result =
         case Sqlite3.step(conn, stmt) do
-          {:row, [status_code, body, size_bytes, truncated, created_at, expires_at]} ->
+          {:row, [status_code, body, size_bytes, truncated, created_at, expires_at, headers]} ->
             {:ok,
              %{
                task_id: task_id,
@@ -598,7 +601,8 @@ defmodule Embervm.OpLog.SQLite do
                size_bytes: size_bytes,
                truncated: truncated == 1,
                created_at: created_at,
-               expires_at: expires_at
+               expires_at: expires_at,
+               headers: decode_headers(headers)
              }}
 
           :done ->
@@ -961,6 +965,41 @@ defmodule Embervm.OpLog.SQLite do
     end)
   end
 
+  # Additive, idempotent schema migrations for op-log DBs created before a column
+  # existed. `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so a new
+  # column on `results` (the guest response `headers` map, stored as JSON) has to be
+  # added with ALTER TABLE. SQLite raises "duplicate column name" if the column is
+  # already present (a fresh DB just built it from the CREATE), so this checks the
+  # live column set first and only adds what is missing. Fresh AND upgraded DBs both
+  # end with the same shape; old result rows keep headers NULL, read back as %{}.
+  defp apply_migrations(conn) do
+    with {:ok, cols} <- table_columns(conn, "results") do
+      if "headers" in cols do
+        :ok
+      else
+        Sqlite3.execute(conn, "ALTER TABLE results ADD COLUMN headers TEXT")
+      end
+    end
+  end
+
+  defp table_columns(conn, table) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "PRAGMA table_info(#{table})") do
+      cols = collect_column_names(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, cols}
+    end
+  end
+
+  # PRAGMA table_info rows are [cid, name, type, notnull, dflt_value, pk]; the name
+  # is column 1. Accumulates every row's name so the migration can test membership.
+  defp collect_column_names(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [_cid, name | _rest]} -> collect_column_names(conn, stmt, [name | acc])
+      :done -> acc
+      {:error, _reason} -> acc
+    end
+  end
+
   defp default_path do
     case System.get_env("EMBERVM_OPLOG_PATH") do
       nil -> tmp_path()
@@ -1000,4 +1039,30 @@ defmodule Embervm.OpLog.SQLite do
   defp decode_payload(json) when is_binary(json) do
     :json.decode(json)
   end
+
+  # Guest response headers (a string->string map) ride the `results.headers` column
+  # as a JSON object. An empty/absent map is stored as NULL so old rows and
+  # headerless results are indistinguishable and both read back as %{}.
+  defp encode_headers(headers) when is_map(headers) and map_size(headers) == 0, do: nil
+
+  defp encode_headers(headers) when is_map(headers) do
+    headers |> :json.encode() |> :erlang.iolist_to_binary()
+  end
+
+  defp encode_headers(_), do: nil
+
+  # NULL (old rows, headerless results) and a malformed blob both default to %{},
+  # so a read never crashes on a pre-migration record (backward compatibility).
+  defp decode_headers(nil), do: %{}
+
+  defp decode_headers(json) when is_binary(json) do
+    case :json.decode(json) do
+      map when is_map(map) -> map
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  defp decode_headers(_), do: %{}
 end

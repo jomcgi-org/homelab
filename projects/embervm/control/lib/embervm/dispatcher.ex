@@ -846,7 +846,8 @@ defmodule Embervm.Dispatcher do
            body: stored,
            size_bytes: byte_size(body),
            truncated: truncated?,
-           expires_at: ctx.result_expires_at
+           expires_at: ctx.result_expires_at,
+           headers: resp.headers || %{}
          }, stats}
     end
   end
