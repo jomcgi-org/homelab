@@ -3553,6 +3553,19 @@ py_test(
 )
 
 py_test(
+    name = "faas_invoke_router_test",
+    srcs = ["faas/invoke_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "stars_models_test",
     srcs = ["stars/models_test.py"],
     imports = ["."],

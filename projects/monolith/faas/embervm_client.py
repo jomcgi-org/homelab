@@ -43,6 +43,16 @@ class EmberVMTransportError(RuntimeError):
     """
 
 
+class EmberVMTimeout(EmberVMTransportError):
+    """Raised specifically on a read/connect timeout (``httpx.TimeoutException``).
+
+    A subclass of :class:`EmberVMTransportError` so Task 10's smoke path (which
+    catches the base class and retries once) still catches a timeout unchanged.
+    The invocation router (Task 11) catches this subclass first to map a timeout
+    to 504 while a connect failure maps to 502.
+    """
+
+
 async def submit(
     name: str,
     *,
@@ -72,6 +82,9 @@ async def submit(
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             return await client.post(url, content=body, headers=headers)
-    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+    except httpx.TimeoutException as exc:
+        logger.warning("embervm submit timed out for %s: %s", name, exc)
+        raise EmberVMTimeout(str(exc)) from exc
+    except httpx.TransportError as exc:
         logger.warning("embervm submit transport error for %s: %s", name, exc)
         raise EmberVMTransportError(str(exc)) from exc
