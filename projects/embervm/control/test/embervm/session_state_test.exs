@@ -1,0 +1,81 @@
+defmodule Embervm.SessionStateTest do
+  @moduledoc """
+  Exhaustively walks the (state, event) cartesian product against the session
+  FSM's transition table: every legal pair returns the documented next state, and
+  every illegal pair is rejected the same way (never silently accepted, never a
+  different error shape). Mirrors Embervm.TaskStateTest; the totality of the
+  illegal-transition rejection is what a bank/relight/destroy path relies on to
+  fail loudly instead of corrupting state.
+  """
+  use ExUnit.Case, async: true
+
+  alias Embervm.SessionState
+
+  @legal %{
+    {:creating, :create_ready} => :running,
+    {:running, :bank} => :banking,
+    {:banking, :bank_ready} => :banked,
+    {:banked, :relight} => :relighting,
+    {:relighting, :relight_ready} => :running,
+    {:running, :expire} => :expired,
+    {:banked, :expire} => :expired,
+    {:banked, :evict} => :evicted,
+    {:creating, :destroy} => :destroyed,
+    {:running, :destroy} => :destroyed,
+    {:banking, :destroy} => :destroyed,
+    {:banked, :destroy} => :destroyed,
+    {:relighting, :destroy} => :destroyed,
+    {:creating, :fail} => :failed,
+    {:running, :fail} => :failed,
+    {:banking, :fail} => :failed,
+    {:relighting, :fail} => :failed
+  }
+
+  test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
+    assert map_size(@legal) == 17
+    assert length(SessionState.events()) == 9
+    assert length(SessionState.states()) == 9
+
+    for state <- SessionState.states(), event <- SessionState.events() do
+      case Map.fetch(@legal, {state, event}) do
+        {:ok, expected_next} ->
+          assert SessionState.transition(state, event) == {:ok, expected_next},
+                 "expected #{inspect({state, event})} -> {:ok, #{inspect(expected_next)}}"
+
+          assert SessionState.transition!(state, event) == expected_next
+
+        :error ->
+          assert SessionState.transition(state, event) ==
+                   {:error, {:illegal_transition, state, event}},
+                 "expected #{inspect({state, event})} to be illegal"
+
+          assert_raise SessionState.IllegalTransition, fn ->
+            SessionState.transition!(state, event)
+          end
+      end
+    end
+  end
+
+  test "no event leaves a terminal state (terminals are absorbing)" do
+    for state <- SessionState.terminal_states(), event <- SessionState.events() do
+      assert SessionState.transition(state, event) == {:error, {:illegal_transition, state, event}}
+    end
+  end
+
+  test "terminal?/1 is true only for the four terminal states" do
+    expected = MapSet.new([:expired, :evicted, :destroyed, :failed])
+
+    for state <- SessionState.states() do
+      assert SessionState.terminal?(state) == MapSet.member?(expected, state)
+    end
+
+    assert MapSet.new(SessionState.terminal_states()) == expected
+  end
+
+  test "terminal_op_kind/1 maps each terminal state to its op kind" do
+    assert SessionState.terminal_op_kind(:expired) == :session_expired
+    assert SessionState.terminal_op_kind(:evicted) == :session_evicted
+    assert SessionState.terminal_op_kind(:destroyed) == :session_destroyed
+    assert SessionState.terminal_op_kind(:failed) == :session_failed
+  end
+end
