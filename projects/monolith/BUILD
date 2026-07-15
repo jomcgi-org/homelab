@@ -25,6 +25,7 @@
 # gazelle:exclude campsites
 # gazelle:exclude grimoire
 # gazelle:exclude grimoire_chat
+# gazelle:exclude faas
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
@@ -87,6 +88,7 @@ _BACKEND_SRCS = glob(
         "campsites/**/*.py",
         "grimoire/**/*.py",
         "grimoire_chat/**/*.py",
+        "faas/**/*.py",
     ],
     exclude = [
         # pytest discovers both *_test.py (sibling convention) and
@@ -275,6 +277,7 @@ py_library(
             "campsites/**/*.py",
             "grimoire/**/*.py",
             "grimoire_chat/**/*.py",
+            "faas/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -3478,6 +3481,28 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "faas_models_test",
+    srcs = ["faas/models_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "faas_storage_test",
+    srcs = ["faas/storage_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//boto3",
+        "@pip//pytest",
     ],
 )
 
