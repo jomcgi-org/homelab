@@ -120,7 +120,9 @@ defmodule Embervm.ZipLaneEchoTest do
     disp_name = :"ziplane_disp_#{suffix}"
     test_pid = self()
 
-    WorkloadCatalog.create(cat_table)
+    # The WorkloadWatcher owns the catalog table: its init calls
+    # WorkloadCatalog.create(cat_table), so the test must NOT pre-create it (a
+    # named ETS table cannot be created twice: "table name already exists").
     NodeCapacity.create(cap_table)
 
     # -- BaseBuilder over a fake daemon: a ZipSource build -> a snapshot. ------
