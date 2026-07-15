@@ -593,3 +593,33 @@ choices where the plan was silent. Flagged for post-impl review.
   request volume), negligible for a homelab; a periodic prune of empty-window keys is
   a recorded follow-on, not done. **FLAG FOR JOE** only if principal cardinality ever
   grows unbounded.
+
+## R2 Phase 3: operability (PR-5, embervm 0.1.40)
+
+Task 9 choices where the plan was silent. Flagged for post-impl review.
+
+### D-R2.5.1 Snapshot-disk alert reuses existing hostmetrics, no new Elixir metric export
+- The noded exports no snapshot-disk metric and the snapshot scratch is a hostPath (not
+  a PVC), so the op-log alert's kubeletstats `k8s.volume` metric cannot see it. Rather
+  than add an OTel METRICS SDK to the Elixir control plane (a fragile multi-place
+  hermetic-hex + MODULE.bazel change, disproportionate for an alert), the alert is
+  sourced from the already-scraped k8s-infra hostmetrics `system.filesystem.usage`
+  gauge, filtered to node-4's NVMe mountpoint that holds `embervm-noded/snapshots`.
+  Zero new export; whole-scratch usage (bases + snapshots share it) is the right
+  exhaustion axis. Alert notifies via `incidentio` (the only channel registered in
+  signoz-alerts; the plan's "homelab channel" maps to it, same as every other embervm
+  alert). No chart bump: the alerts chart is git-HEAD-synced, not OCI-pinned.
+
+### D-R2.5.2 status.sessions counts written on the sweep tick, change-detected
+- The control plane patches `status.sessions {live,banked}` + `sessionsSummary` on the
+  existing 30s sweep tick, debounced per workload against a written-counts map (the
+  PoolManager `primedFloorSatisfied` pattern), never per-transition. Disjoint status
+  keys so it does not collide with pool/base status writes.
+
+### D-R2.5.3 Session spans nest via a threaded traceparent, not OTel process context
+- OTel process context does not cross `GenServer.call`/`spawn`, so the invoke root span
+  is opened at the router and its W3C traceparent threaded through the plain `req` map
+  (`session_trace.ex`, reusing the dispatcher's `:otel_tracer.from_remote_span` idiom,
+  not a new tracing layer). Timer/API-driven bank/create/evict have no caller trace, so
+  they are root spans (consistent with the dispatcher's prime/auth spans). The Task 11
+  gates (relight p95, bank p95, state-persistence) are derivable from spans alone.
