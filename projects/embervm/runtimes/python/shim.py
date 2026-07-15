@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import io
 import json
 import os
 import socket
@@ -123,6 +124,35 @@ def _is_within(base: str, target: str) -> bool:
     return target_real == base_real or target_real.startswith(base_real + os.sep)
 
 
+def _archive_bytes(device_path: str) -> bytes:
+    """Read the zip from device_path, trimmed to the archive's true end.
+
+    The archive arrives on a raw block device (Task 6) whose size is rounded UP to
+    a sector boundary, so it carries trailing zero padding past the zip's real end.
+    zipfile locates the End-Of-Central-Directory record by scanning backward from
+    the device end; that padding makes it declare "File is not a zip file". So read
+    the raw bytes and cut at the true end: the last EOCD signature (PK\\x05\\x06)
+    plus its 22-byte record and any archive comment. A plain zip file (the tests)
+    is returned whole; a padded block device is trimmed. zipfile then parses an
+    exact, padding-free archive.
+    """
+    with open(device_path, "rb") as f:
+        raw = f.read()
+    eocd = raw.rfind(b"PK\x05\x06")
+    # Diagnostic (device size + where the zip actually ends) so a bad attach or
+    # unexpected padding is legible in the guest console, not an opaque BadZipFile.
+    sys.stderr.write(f"ember-shim: archive device {device_path} bytes={len(raw)} eocd={eocd}\n")
+    sys.stderr.flush()
+    if eocd < 0:
+        raise ValueError(
+            f"archive device {device_path!r} holds no zip end-of-central-directory record"
+        )
+    # The EOCD record is 22 bytes; its last 2 bytes are the comment length. The
+    # archive ends after the record plus that comment.
+    comment_len = int.from_bytes(raw[eocd + 20 : eocd + 22], "little")
+    return raw[: eocd + 22 + comment_len]
+
+
 def unpack_archive(device_path: str, dest: str) -> str:
     """Unpack the zip at device_path into dest and return dest.
 
@@ -131,7 +161,7 @@ def unpack_archive(device_path: str, dest: str) -> str:
     guest-side only; the host never sees the expanded tree.
     """
     os.makedirs(dest, exist_ok=True)
-    with zipfile.ZipFile(device_path) as zf:
+    with zipfile.ZipFile(io.BytesIO(_archive_bytes(device_path))) as zf:
         for member in zf.namelist():
             # Directory entries end in "/"; skip explicit creation, the file
             # writes below make parents as needed.
