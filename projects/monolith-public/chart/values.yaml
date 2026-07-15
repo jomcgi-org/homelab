@@ -595,6 +595,14 @@ cfIngress:
     rateLimit:
       requests: 100
       unit: Minute
+    # Rate limit for the public FaaS invocation route (/functions/*, Task 13).
+    # Envoy Local (per-gateway, shared across clients) coarse burst cap, layered
+    # ON TOP of the EmberVM per-principal daily quota (the real abuse backstop;
+    # DECISIONS.md D-R1.3.1). og-image is low-volume (one fetch per social share),
+    # so 120/min is generous; lower it if abuse appears.
+    functionsRateLimit:
+      requests: 120
+      unit: Minute
 
 # CiliumNetworkPolicy gates (ADR platform/012). templates/cilium-policy.yaml is
 # the Cilium translation of the Linkerd policy chain; both gates default off so

@@ -84,9 +84,47 @@ spec:
       timeouts:
         request: 60s
 ---
+# /functions/ -> the public FaaS invocation backend (Task 13, ADR agents/045).
+# A backend-served API surface (like /img -> imgproxy), NOT a SvelteKit page:
+# external OG-image scrapers fetch jomcgi.dev/functions/og-image directly, so it
+# routes straight to the -web backend on its OWN HTTPRoute rather than through the
+# frontend SSR. The backend mounts ONLY the public invocation router here (no
+# /api/functions ingestion), and it resolves only visibility=public functions
+# (get_public_function), so a private function 404s. Its own route (separate from
+# the page route) carries a dedicated rate-limit below.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-functions
+  labels:
+    ingress-tier: {{ .Values.cfIngress.public.tier }}
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.cfIngress.public.gateway.name }}
+      namespace: {{ .Values.cfIngress.public.gateway.namespace }}
+  hostnames:
+    - {{ .Values.cfIngress.public.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /functions/
+      backendRefs:
+        - name: {{ include "monolith-public.fullname" . }}-web
+          port: {{ .Values.web.service.port | int }}
+      timeouts:
+        request: 60s
+---
 {{- $rlParams := dict
   "name" (printf "%s-public" (include "monolith-public.fullname" .))
   "rateLimit" .Values.cfIngress.public.rateLimit
 }}
 {{- include "cf-ingress.rate-limit" $rlParams }}
+---
+{{- $fnRlParams := dict
+  "name" (printf "%s-functions" (include "monolith-public.fullname" .))
+  "rateLimit" .Values.cfIngress.public.functionsRateLimit
+}}
+{{- include "cf-ingress.rate-limit" $fnRlParams }}
 {{- end }}
