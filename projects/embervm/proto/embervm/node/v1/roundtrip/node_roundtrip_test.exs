@@ -16,14 +16,18 @@ defmodule Embervm.NodeRoundtripTest do
 
   alias Embervm.Node.V1.{
     AssignRequest,
+    BankRequest,
     BuildBaseRequest,
     DestroyRequest,
+    EvictSnapshotRequest,
     GetNodeStatusRequest,
     GuestRequest,
     NodeService,
     NodeStatus,
     PrimeRequest,
+    RelightRequest,
     ResourceSpec,
+    SessionAssignRequest,
     Trace,
     WatchNodeRequest
   }
@@ -76,6 +80,63 @@ defmodule Embervm.NodeRoundtripTest do
     {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
     assert ns.node_id == "node-4"
     assert ns.max_live_vms == 10
+  end
+
+  test "session verbs round-trip across the wire (R2 additive contract)", %{channel: ch} do
+    # SessionAssign: deliver-without-destroy. The fake echoes the body/path AND
+    # the session_id (into a header) so we prove the new session_id field crossed.
+    {:ok, sa} =
+      NodeService.Stub.session_assign(ch, %SessionAssignRequest{
+        vm_id: "vm-s1",
+        request: %GuestRequest{method: "POST", path: "/invoke", body: "state"},
+        timeout_ms: 1_000,
+        session_id: "s-abc"
+      })
+
+    assert sa.response.status_code == 200
+    assert sa.response.body == "state"
+    assert sa.response.headers["x-echo-path"] == "/invoke"
+    assert sa.response.headers["x-session-id"] == "s-abc"
+    assert sa.usage.wall_ms == 6
+    assert sa.suspect == false
+
+    # Bank: derives the snapshot_ref from the session_id.
+    {:ok, bank} = NodeService.Stub.bank(ch, %BankRequest{vm_id: "vm-s1", session_id: "s-abc"})
+    assert bank.snapshot_ref == "sessions/s-abc"
+    assert bank.size_bytes == 2048
+
+    # Relight: derives the vm_id from the snapshot_ref.
+    {:ok, relit} =
+      NodeService.Stub.relight(ch, %RelightRequest{
+        snapshot_ref: "sessions/s-abc",
+        session_id: "s-abc"
+      })
+
+    assert relit.vm_id == "vm:sessions/s-abc"
+
+    # EvictSnapshot: idempotent, returns an empty response.
+    assert {:ok, _} =
+             NodeService.Stub.evict_snapshot(ch, %EvictSnapshotRequest{
+               snapshot_ref: "sessions/s-abc"
+             })
+  end
+
+  test "NodeStatus reports session facts (R2 additive fields)", %{channel: ch} do
+    {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
+
+    assert [vm] = ns.session_vms
+    assert vm.vm_id == "vm-s1"
+    assert vm.session_id == "s-sess1"
+    assert vm.workload == "sandbox-session"
+
+    assert [snap] = ns.session_snapshots
+    assert snap.snapshot_ref == "sessions/s-sess2"
+    assert snap.session_id == "s-sess2"
+    assert snap.size_bytes == 4096
+    assert snap.created_at_unix_ms == 1_700_000_000_000
+
+    assert ns.snapshot_disk_free_bytes == 9_000_000_000
+    assert ns.snapshot_disk_used_bytes == 1_000_000_000
   end
 
   test "WatchNode server-streams heartbeats in order", %{channel: ch} do

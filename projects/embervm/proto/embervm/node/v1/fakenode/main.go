@@ -62,11 +62,66 @@ func (fakeServer) Destroy(_ context.Context, _ *nodev1.DestroyRequest) (*nodev1.
 	return &nodev1.DestroyResponse{}, nil
 }
 
+// SessionAssign echoes the request body and path back like Assign, but proves
+// deliver-without-destroy by echoing the session_id it was handed into a
+// response header the client asserts on (the VM "survives", so the session id
+// is still meaningful). suspect is left false (a clean round trip).
+func (fakeServer) SessionAssign(_ context.Context, req *nodev1.SessionAssignRequest) (*nodev1.SessionAssignResponse, error) {
+	return &nodev1.SessionAssignResponse{
+		Response: &nodev1.GuestResponse{
+			StatusCode: 200,
+			Headers: map[string]string{
+				"x-echo-path":  req.GetRequest().GetPath(),
+				"x-session-id": req.GetSessionId(),
+			},
+			Body: req.GetRequest().GetBody(),
+		},
+		Usage:   &nodev1.UsageStats{CpuMs: 4, PeakRssMib: 5, WallMs: 6},
+		Suspect: false,
+	}, nil
+}
+
+// Bank derives a snapshot_ref from the session_id so the client can prove the
+// request field crossed the wire, and returns a fixed size.
+func (fakeServer) Bank(_ context.Context, req *nodev1.BankRequest) (*nodev1.BankResponse, error) {
+	return &nodev1.BankResponse{
+		SnapshotRef: "sessions/" + req.GetSessionId(),
+		SizeBytes:   2048,
+	}, nil
+}
+
+// Relight derives a vm_id from the snapshot_ref so the client can prove the
+// restore request crossed the wire intact.
+func (fakeServer) Relight(_ context.Context, req *nodev1.RelightRequest) (*nodev1.RelightResponse, error) {
+	return &nodev1.RelightResponse{VmId: "vm:" + req.GetSnapshotRef()}, nil
+}
+
+// EvictSnapshot is idempotent and returns an empty response for any ref.
+func (fakeServer) EvictSnapshot(_ context.Context, _ *nodev1.EvictSnapshotRequest) (*nodev1.EvictSnapshotResponse, error) {
+	return &nodev1.EvictSnapshotResponse{}, nil
+}
+
 func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequest) (*nodev1.NodeStatus, error) {
 	return &nodev1.NodeStatus{
 		NodeId:     req.GetNodeId(),
 		LiveVms:    1,
 		MaxLiveVms: 10,
+		// Session facts (R2): deterministic, so the client can assert the new
+		// repeated/scalar status fields round-trip.
+		SessionVms: []*nodev1.SessionVm{
+			{VmId: "vm-s1", SessionId: "s-sess1", Workload: "sandbox-session"},
+		},
+		SessionSnapshots: []*nodev1.SessionSnapshot{
+			{
+				SnapshotRef:     "sessions/s-sess2",
+				SessionId:       "s-sess2",
+				Workload:        "sandbox-session",
+				SizeBytes:       4096,
+				CreatedAtUnixMs: 1_700_000_000_000,
+			},
+		},
+		SnapshotDiskFreeBytes: 9_000_000_000,
+		SnapshotDiskUsedBytes: 1_000_000_000,
 	}, nil
 }
 
