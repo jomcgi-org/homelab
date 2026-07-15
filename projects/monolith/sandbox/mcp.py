@@ -5,6 +5,10 @@ the supplied code (and optional input files) to the in-cluster ``fc-invoke``
 ``sandbox`` workload (ADR agents/044) and returns the structured execution
 result. The daemon URL is injected from Helm values as ``FC_INVOKE_URL`` and
 is never hardcoded here.
+
+With an optional ``session`` handle the run is served by the EmberVM session
+class (R2, ADR embervm/001): state persists best-effort across calls sharing
+the handle, and a reset is surfaced as ``session_reset`` in the response.
 """
 
 from __future__ import annotations
@@ -14,15 +18,28 @@ from sandbox.client import run_python_in_sandbox
 
 
 @mcp.tool
-async def run_python(code: str, files: list[dict] | None = None) -> dict:
+async def run_python(
+    code: str, files: list[dict] | None = None, session: str | None = None
+) -> dict:
     """Run a short Python 3.12 script in an isolated, zero-egress sandbox.
 
-    The sandbox is a one-shot Firecracker microVM: nothing persists between
-    calls, there is no network access at all, and the run is killed after
-    about 25 seconds of wall-clock time. Use it for exact computation
+    By default the sandbox is a one-shot Firecracker microVM: nothing persists
+    between calls, there is no network access at all, and the run is killed
+    after about 25 seconds of wall-clock time. Use it for exact computation
     (arithmetic, date math, unit conversions, statistics, simulations),
     parsing or crunching pasted data, or generating a quick chart, rather
     than estimating an answer from memory.
+
+    Optional stateful sessions: pass a stable session handle (any short string
+    of your choosing, reused across calls) to keep one long-lived interpreter
+    warm so variables, imported modules, and files written to the working
+    directory carry over from one call to the next, instead of starting cold
+    each snippet. State is best-effort: it persists across turns but MAY be
+    reset if the session sits idle too long, is evicted under disk pressure, or
+    a snippet times out. When that happens the response carries session_reset
+    true and the interpreter is empty again, so re-run any setup (imports,
+    variable definitions, files) the later code depends on. There is still no
+    network in a session. Omit session for the classic one-shot run.
 
     Available besides the Python 3.12 standard library: numpy, pandas,
     scipy, matplotlib (headless "Agg" backend, save figures to files rather
@@ -46,13 +63,18 @@ async def run_python(code: str, files: list[dict] | None = None) -> dict:
         files: Optional input files to write into the working directory
             before running code. Each entry needs a path (relative
             filename) and content_b64 (its content, base64-encoded).
+        session: Optional session handle. Absent runs one-shot (no state).
+            Present keeps state warm across calls that reuse the same handle,
+            best-effort (see above).
 
     Returns:
         On success, the daemon's structured result: stdout, stderr,
         exit_code, duration_ms, truncated (whether any output was cut off to
         stay under the response size cap), and files (any regular files
         present in the working directory after the run that weren't given as
-        input, base64-encoded under content_b64 next to their path). On
-        failure, a dict with a single error key describing what went wrong.
+        input, base64-encoded under content_b64 next to their path). In session
+        mode, session_reset is true when the persisted state was lost before
+        this run. On failure, a dict with a single error key describing what
+        went wrong.
     """
-    return await run_python_in_sandbox(code, files=files)
+    return await run_python_in_sandbox(code, files=files, session=session)

@@ -2,6 +2,7 @@ package shim
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -49,6 +50,20 @@ func WithReady(fn func() bool) Option {
 	}
 }
 
+// WithClock installs a handler for POST /shim/clock. The endpoint sets the
+// guest wall clock from a posted epoch-ms body ({"epoch_ms": <int>}); it is
+// the resync target the node calls after a session relight (EmberVM R2 Task 4)
+// so a restored guest's clock does not lag the wall time by however long it was
+// banked. Best-effort by contract: when no clock handler is installed the route
+// is absent and a caller's POST 404s, which the node treats as "guest without
+// the endpoint, skip and log" rather than an error. fn receives the requested
+// epoch ms and returns an error only if the set genuinely failed.
+func WithClock(fn func(epochMs int64) error) Option {
+	return func(s *Server) {
+		s.clock = fn
+	}
+}
+
 // Server is an HTTP server that dispatches /invoke requests to a Handler and
 // exposes a /shim/* control surface. It serves over any net.Listener (vsock
 // in production, TCP/UDS in tests), making it fully testable without
@@ -57,6 +72,7 @@ type Server struct {
 	h     Handler
 	chain Chain
 	ready func() bool
+	clock func(epochMs int64) error
 	srv   *http.Server
 }
 
@@ -96,6 +112,12 @@ func (s *Server) mux() *http.ServeMux {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 	})
+	// POST /shim/clock is registered only when a clock handler is installed, so
+	// a guest without one leaves the route absent and the node's post-relight
+	// resync 404s harmlessly (best-effort, EmberVM R2 Task 4).
+	if s.clock != nil {
+		mux.HandleFunc("POST /shim/clock", s.clockHandler)
+	}
 	mux.HandleFunc("/invoke", s.invokeHandler)
 	mux.HandleFunc("/invoke/", s.invokeHandler)
 	return mux
@@ -128,6 +150,28 @@ func (s *Server) invokeHandler(w http.ResponseWriter, r *http.Request) {
 	if resp != nil {
 		_, _ = w.Write(resp.Body)
 	}
+}
+
+// clockHandler decodes {"epoch_ms": <int>} and calls the installed clock
+// function. A malformed body is 400; a non-positive epoch is 400 (a clock set
+// to the epoch is never intended); a set failure is 500. Success is 204.
+func (s *Server) clockHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		EpochMs int64 `json:"epoch_ms"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, fmt.Sprintf("bad clock request: %s", err), http.StatusBadRequest)
+		return
+	}
+	if body.EpochMs <= 0 {
+		http.Error(w, "epoch_ms must be positive", http.StatusBadRequest)
+		return
+	}
+	if err := s.clock(body.EpochMs); err != nil {
+		http.Error(w, fmt.Sprintf("set clock failed: %s", err), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // Serve accepts and handles HTTP connections on ln until ln is closed. It

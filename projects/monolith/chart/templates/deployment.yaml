@@ -123,6 +123,13 @@ spec:
             - name: SANDBOX_DISPATCH
               value: {{ .Values.sandbox.dispatch | quote }}
             {{- end }}
+            {{- if .Values.sandbox.sessionWorkload }}
+            # The EmberVM session-class workload backing sessioned run_python
+            # (R2, ADR embervm/001). Sessions are created under this workload;
+            # the one-shot task class stays on `sandbox`. Reuses EMBERVM_URL.
+            - name: SANDBOX_SESSION_WORKLOAD
+              value: {{ .Values.sandbox.sessionWorkload | quote }}
+            {{- end }}
             {{- if .Values.semgrep.shadowProject }}
             # Route B shadow project: the relay reports App scans under this name
             # instead of the real repo, keeping self-hosted scans in a separate

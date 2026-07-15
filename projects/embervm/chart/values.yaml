@@ -167,6 +167,44 @@ sandboxWorkload:
   cap: 16
   timeoutSeconds: 30
 
+# The sandbox-session workload (EmberVM R2, ADR embervm/001): the sessioned
+# variant of the sandbox, R2's named first consumer (sessioned run_python). Same
+# guest image + Bazel-pinned digest as `sandbox` above (both derive from
+# .Values.sandbox.guestImage), so one baked rootfs serves both; the kernel mode
+# is opt-in per request. class=session with a spec.session block.
+#
+# Node-4 disk arithmetic (bounded, not discovered; ADR 002 rule 4): memMib 2048
+# means a full bank snapshot is ~2 GiB; maxSessions 8 (live + banked) caps the
+# snapshot dir at 8 x 2 GiB = 16 GiB worst case, plus up to cap (4) live VMs at
+# 2 GiB RAM each. The Task 9 watermark alert + LRU eviction are the backstop.
+sandboxSessionWorkload:
+  enabled: true
+  name: sandbox-session
+  # Same frozen guest shim contract as the one-shot sandbox: vsock 1027,
+  # /shim/ready, /invoke. The session mode is selected by the request body
+  # ({"mode":"session"}), not a different path.
+  port: 1027
+  readyPath: /shim/ready
+  invokePath: /invoke
+  vcpus: 1
+  memMib: 2048
+  # floor: pristine VMs kept warm for fast session create. cap: max live
+  # session VMs. Small on purpose (see the disk arithmetic above).
+  floor: 1
+  cap: 4
+  session:
+    # Bank an idle session (no in-flight, no queued invoke) after 2 minutes.
+    idleBankSeconds: 120
+    # Version-convergence bound: a session rides its birth base until this
+    # expires (6h), then the next invoke 410s onto the current base.
+    maxLifetimeSeconds: 21600
+    # GC a banked snapshot untouched this long (here, the full 6h lifetime).
+    bankedTtlSeconds: 21600
+    # Max sessions (live + banked) for this workload.
+    maxSessions: 8
+    # Max invokes queued behind the one in-flight invoke per session.
+    invokeQueueCap: 4
+
 # The semgrep workload (Task 14b): EmberVM's named first consumer, side-by-side
 # with fc-invoke's semgrep path (which is halved 16->8 in the substrate chart to
 # make room). Same frozen guest contract as fc-invoke (vsock 1027, /shim/ready,

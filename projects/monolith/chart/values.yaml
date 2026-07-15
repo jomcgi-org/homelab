@@ -797,6 +797,10 @@ chat:
 # embervm (EmberVM's sandbox Workload). Reuses semgrep.embervmUrl -> EMBERVM_URL.
 sandbox:
   dispatch: "fc-invoke"
+  # The EmberVM session-class workload backing sessioned run_python (R2, ADR
+  # embervm/001). Sessions are created here; the one-shot task class stays on
+  # `sandbox`. Empty falls back to the client default ("sandbox-session").
+  sessionWorkload: "sandbox-session"
 
 # FaaS zip-lane function registry (ADR 045 / embervm R1). s3ReadBase is the
 # in-cluster SeaweedFS S3 read host noded GETs function archives from; it must

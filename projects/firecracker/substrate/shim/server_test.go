@@ -83,6 +83,73 @@ func TestServerHealthzAndReady(t *testing.T) {
 	})
 }
 
+// TestClockEndpoint verifies POST /shim/clock: it is absent (404) without a
+// clock handler, calls the handler with the posted epoch on a valid body,
+// rejects a non-positive epoch (400) and a malformed body (400), and surfaces a
+// handler failure as 500.
+func TestClockEndpoint(t *testing.T) {
+	noop := func(_ context.Context, _ *Request) (*Response, error) {
+		return &Response{Status: http.StatusOK}, nil
+	}
+
+	t.Run("absent without a clock handler", func(t *testing.T) {
+		srv := NewServer(noop)
+		req := httptest.NewRequest(http.MethodPost, "/shim/clock", strings.NewReader(`{"epoch_ms":1}`))
+		w := httptest.NewRecorder()
+		srv.mux().ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("got %d, want 404 (no clock handler installed)", w.Code)
+		}
+	})
+
+	t.Run("calls the handler with the posted epoch", func(t *testing.T) {
+		var got int64
+		srv := NewServer(noop, WithClock(func(epochMs int64) error {
+			got = epochMs
+			return nil
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/shim/clock", strings.NewReader(`{"epoch_ms":1700000000000}`))
+		w := httptest.NewRecorder()
+		srv.mux().ServeHTTP(w, req)
+		if w.Code != http.StatusNoContent {
+			t.Errorf("got %d, want 204", w.Code)
+		}
+		if got != 1700000000000 {
+			t.Errorf("clock fn got %d, want 1700000000000", got)
+		}
+	})
+
+	t.Run("rejects a non-positive epoch", func(t *testing.T) {
+		srv := NewServer(noop, WithClock(func(int64) error { return nil }))
+		req := httptest.NewRequest(http.MethodPost, "/shim/clock", strings.NewReader(`{"epoch_ms":0}`))
+		w := httptest.NewRecorder()
+		srv.mux().ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("got %d, want 400", w.Code)
+		}
+	})
+
+	t.Run("rejects a malformed body", func(t *testing.T) {
+		srv := NewServer(noop, WithClock(func(int64) error { return nil }))
+		req := httptest.NewRequest(http.MethodPost, "/shim/clock", strings.NewReader("not json"))
+		w := httptest.NewRecorder()
+		srv.mux().ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("got %d, want 400", w.Code)
+		}
+	})
+
+	t.Run("surfaces a set failure as 500", func(t *testing.T) {
+		srv := NewServer(noop, WithClock(func(int64) error { return fmt.Errorf("nope") }))
+		req := httptest.NewRequest(http.MethodPost, "/shim/clock", strings.NewReader(`{"epoch_ms":1}`))
+		w := httptest.NewRecorder()
+		srv.mux().ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("got %d, want 500", w.Code)
+		}
+	})
+}
+
 // TestServerUnknownPath404 verifies that requests to unregistered paths
 // receive a 404 response.
 func TestServerUnknownPath404(t *testing.T) {

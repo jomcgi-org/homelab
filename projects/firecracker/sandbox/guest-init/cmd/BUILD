@@ -3,6 +3,8 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library")
 go_library(
     name = "cmd_lib",
     srcs = [
+        "clock_linux.go",
+        "clock_other.go",
         "main.go",
         "mount_linux.go",
         "mount_other.go",
@@ -17,10 +19,10 @@ go_library(
         "//projects/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
-            "@org_golang_x_sys//unix",
+            "@org_golang_x_sys//unix:go_default_library",
         ],
         "@rules_go//go/platform:linux": [
-            "@org_golang_x_sys//unix",
+            "@org_golang_x_sys//unix:go_default_library",
         ],
         "//conditions:default": [],
     }),

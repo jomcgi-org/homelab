@@ -952,7 +952,9 @@ def create_agent(
         "chart. Prefer it over starting an agent thread when the goal is an "
         "output, not a change."
     )
-    async def run_python(ctx: RunContext[ChatDeps], code: str) -> str:
+    async def run_python(
+        ctx: RunContext[ChatDeps], code: str, session: str | None = None
+    ) -> str:
         """Run a short Python script in an isolated sandbox and return its output. No network.
 
         To hand back a chart or file, save it with a plain relative filename
@@ -963,8 +965,15 @@ def create_agent(
         For tabular data, use the baked helper: `from sandbox_tools import
         render_table` then render_table(headers, rows, title=None) writes a
         styled table.png for you.
+
+        Pass a stable session handle (any short string you reuse across calls)
+        to keep variables, imports, and files warm across calls instead of
+        starting cold each time. State is best-effort and may reset if the
+        session goes idle, is evicted, or a snippet times out; when it resets
+        the output says so, and you must re-run any setup the later code needs.
+        Omit session for a clean one-shot run.
         """
-        result = await run_python_in_sandbox(code)
+        result = await run_python_in_sandbox(code, session=session)
         if result.get("error"):
             return f"sandbox error: {result['error']}"
         for f in result.get("files", []):
@@ -975,6 +984,11 @@ def create_agent(
             except (KeyError, ValueError):
                 continue
         parts = []
+        if result.get("session_reset"):
+            parts.append(
+                "[session was reset: prior variables, imports, and files are "
+                "gone; re-run any setup this code depends on]"
+            )
         if result.get("stdout"):
             parts.append(result["stdout"])
         if result.get("stderr"):

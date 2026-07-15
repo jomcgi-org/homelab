@@ -66,11 +66,25 @@ type ExecFile struct {
 }
 
 // ExecRequest is the /invoke/sandbox request body.
+//
+// Mode selects the execution model. When empty (the default) the request is a
+// one-shot: Code runs as main.py in a fresh, discarded per-invoke workdir with
+// no state carried to the next call. This is the byte-identical task-class and
+// deprecated-fc-invoke contract; the field is omitempty so an unset Mode never
+// changes the wire shape a one-shot caller sends. When Mode == "session" the
+// request is served by the persistent kernel (kernel.go): Code runs in one
+// long-lived python3 child whose module namespace and /tmp/session workdir
+// accrete across calls (EmberVM R2 sessioned run_python, ADR embervm/001).
 type ExecRequest struct {
 	Code           string     `json:"code"`
 	Files          []ExecFile `json:"files,omitempty"`
 	TimeoutSeconds int        `json:"timeout_seconds,omitempty"`
+	Mode           string     `json:"mode,omitempty"`
 }
+
+// ModeSession is the ExecRequest.Mode value that routes a request to the
+// persistent session kernel instead of the one-shot path.
+const ModeSession = "session"
 
 // ExecResult is the /invoke/sandbox response body. Timeout, a nonzero exit
 // code, and output truncation are all represented here rather than as
@@ -84,6 +98,11 @@ type ExecResult struct {
 	DurationMs int64      `json:"duration_ms"`
 	Truncated  bool       `json:"truncated,omitempty"`
 	Error      string     `json:"error,omitempty"`
+	// SessionReset is set only in session mode: it reports that the persistent
+	// namespace was lost before or during this snippet (a fresh child was
+	// started for it), so variables, imports, and files from prior snippets are
+	// gone. The one-shot path never sets it (omitempty keeps its wire shape).
+	SessionReset bool `json:"session_reset,omitempty"`
 }
 
 // Handle is the shim.Handler for the sandbox workload: decode one
@@ -99,6 +118,13 @@ func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 	}
 	if strings.TrimSpace(req.Code) == "" {
 		return badRequest("code is required")
+	}
+
+	// Session mode routes to the persistent kernel; the one-shot path below is
+	// untouched and stays byte-identical for an absent Mode (the task class and
+	// the deprecated fc-invoke path both send no Mode).
+	if req.Mode == ModeSession {
+		return handleSession(req)
 	}
 
 	workdir, err := os.MkdirTemp("/tmp", "sandbox-exec-")
