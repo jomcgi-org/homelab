@@ -9,6 +9,7 @@ defmodule Embervm.OpLog.SQLiteTest do
 
   alias Embervm.OpLog.Op
   alias Embervm.OpLog.SQLite
+  alias Exqlite.Sqlite3
 
   setup do
     path = Path.join(System.tmp_dir!(), "embervm_oplog_test_#{System.unique_integer([:positive, :monotonic])}.db")
@@ -695,5 +696,130 @@ defmodule Embervm.OpLog.SQLiteTest do
     assert [%{principal: "p2"}] = p1.items
 
     :ok = GenServer.stop(server)
+  end
+
+  # -- binary payloads (op payloads are ETF blobs, not JSON) -----------------
+
+  test "a binary (non-UTF-8) result body round-trips instead of crashing the writer",
+       %{path: path} do
+    server = start_server(path)
+    # First byte 0x89 (137) is exactly the byte that crashed the old JSON encoder
+    # ({:invalid_byte, 137}) and cascaded a control-plane restart; the body also
+    # carries a NUL and 0xFF so any UTF-8-assuming path would corrupt it.
+    png = <<0x89, "PNG", 13, 10, 26, 10, 0, 1, 2, 0xFA, 0xFF>>
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "og-image",
+        task_id: "task-bin",
+        ts: 100,
+        payload: %{idempotency_key: "k", expires_at: nil}
+      })
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        task_id: "task-bin",
+        ts: 101,
+        payload: %{
+          status_code: 200,
+          body: png,
+          size_bytes: byte_size(png),
+          truncated: false,
+          headers: %{"Content-Type" => "image/png"},
+          expires_at: 9_999
+        }
+      })
+
+    # The immutable ops journal keeps the exact bytes and the string-keyed shape.
+    {:ok, ops} = SQLite.read_from(server, 0)
+    succeeded = Enum.find(ops, &(&1.kind == :succeeded))
+    assert succeeded.payload["body"] == png
+    assert succeeded.payload["status_code"] == 200
+    assert succeeded.payload["headers"] == %{"Content-Type" => "image/png"}
+
+    # The projected result row also carries the binary body back verbatim.
+    {:ok, result} = SQLite.load_result(server, "task-bin")
+    assert result.body == png
+    assert result.status_code == 200
+
+    # Durable across a reopen (persisted on disk as an ETF blob).
+    :ok = GenServer.stop(server)
+    server2 = start_server(path)
+    {:ok, ops2} = SQLite.read_from(server2, 0)
+    assert Enum.find(ops2, &(&1.kind == :succeeded)).payload["body"] == png
+    :ok = GenServer.stop(server2)
+  end
+
+  test "a binary request body round-trips through load_request", %{path: path} do
+    server = start_server(path)
+    raw = <<0x89, 0, 0xFF, "req-bytes", 200>>
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "og-image",
+        task_id: "task-req",
+        ts: 100,
+        payload: %{
+          idempotency_key: "k",
+          expires_at: nil,
+          request: %{
+            method: "POST",
+            path: "/invoke",
+            body: raw,
+            headers: %{"Content-Type" => "application/octet-stream"}
+          }
+        }
+      })
+
+    {:ok, request} = SQLite.load_request(server, "task-req")
+    # Keys come back as strings (the dispatcher's contract) and the binary body
+    # survives intact through the nested map.
+    assert request["method"] == "POST"
+    assert request["body"] == raw
+    assert request["headers"] == %{"Content-Type" => "application/octet-stream"}
+    :ok = GenServer.stop(server)
+  end
+
+  test "a legacy JSON payload row still decodes to string keys (upgrade compatibility)",
+       %{path: path} do
+    # Seed the schema with a real (ETF) op, stop, then inject a row whose
+    # payload_json is a JSON object the way a pre-upgrade build wrote it. On
+    # reopen, decode_payload must read it via the JSON branch (first byte "{" =
+    # 123, not the ETF version byte 131), so tasks in flight across the upgrade
+    # are not lost.
+    server = start_server(path)
+
+    {:ok, _} =
+      SQLite.append(server, %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{reason: "seed"}})
+
+    :ok = GenServer.stop(server)
+
+    {:ok, conn} = Sqlite3.open(path)
+    json = ~s({"status_code":200,"body":"legacy","size_bytes":6})
+
+    {:ok, stmt} =
+      Sqlite3.prepare(
+        conn,
+        "INSERT INTO ops (ts,tenant,principal,workload,task_id,kind,payload_json) VALUES (?,?,?,?,?,?,?)"
+      )
+
+    :ok = Sqlite3.bind(stmt, [2, "t1", "p1", "wl", "task-legacy", "succeeded", json])
+    :done = Sqlite3.step(conn, stmt)
+    :ok = Sqlite3.release(conn, stmt)
+    :ok = Sqlite3.close(conn)
+
+    server2 = start_server(path)
+    {:ok, ops} = SQLite.read_from(server2, 0)
+    legacy = Enum.find(ops, &(&1.task_id == "task-legacy"))
+    assert legacy.payload == %{"status_code" => 200, "body" => "legacy", "size_bytes" => 6}
+    :ok = GenServer.stop(server2)
   end
 end
