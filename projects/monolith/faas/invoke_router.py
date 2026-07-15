@@ -88,7 +88,19 @@ async def invoke_function(
     fn = get_visible_function(session, name)
     if fn is None:
         return _json(404, {"error": "function not found"})
+    return await relay_to_function(name, request, subpath)
 
+
+async def relay_to_function(name: str, request: Request, subpath: str) -> Response:
+    """Marshal ``request`` into an EmberVM sync submit for ``name`` and relay back.
+
+    Split out of ``invoke_function`` so the public-tier router
+    (``invoke_router_public``) reuses the identical marshaling and response
+    mapping and cannot drift from the private path. The caller is responsible for
+    the visibility lookup BEFORE calling this (the private router admits any
+    smoke-passed function; the public router admits only ``visibility=public``),
+    so this function assumes the function is already authorized to serve.
+    """
     body = await request.body()
     raw_query = request.url.query
     guest_path = INVOKE_PATH + (f"?{raw_query}" if raw_query else "")

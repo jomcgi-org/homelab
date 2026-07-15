@@ -21,3 +21,19 @@ def register(app: FastAPI) -> None:
 
     app.include_router(router)
     app.include_router(invoke_router)
+
+
+def register_public(app: FastAPI) -> None:
+    """Mount ONLY the public-tier invocation router (Task 13).
+
+    The public origin serves ``/functions/<name>`` for ``visibility=public``
+    functions only (``invoke_router_public``). It deliberately does NOT mount the
+    ingestion API (``/api/functions``): registration is the authenticated
+    private-tier author surface (standing decision 7), and the public tier has no
+    ``/api`` ingress at all (public-tier checklist item 2). This closure must not
+    import ``faas.router``/``faas.storage``/``faas.workload`` (the private write
+    path); ``main_public_imports_test`` enforces that.
+    """
+    from faas.invoke_router_public import router as invoke_public_router
+
+    app.include_router(invoke_public_router)

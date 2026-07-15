@@ -93,6 +93,25 @@ def get_visible_function(session: Session, name: str) -> Function | None:
     return function
 
 
+def get_public_function(session: Session, name: str) -> Function | None:
+    """Return the function row only if it is smoke-passed AND visibility=public.
+
+    The public-tier invocation router (Task 13) filters on BOTH conditions in the
+    query: a private function (or an un-smoked one) is invisible on the public
+    origin and 404s, so the public tier can never invoke a private function even
+    though ``public_reader`` can SELECT the whole ``faas.function`` table (the
+    grant is table-wide; the row-level filter is here). See the public-tier
+    checklist item 4 (grant is necessary but not sufficient; the query must
+    filter).
+    """
+    function = session.get(Function, name)
+    if function is None or function.last_smoke_at is None:
+        return None
+    if function.visibility != "public":
+        return None
+    return function
+
+
 def list_functions(session: Session, *, visible_only: bool = False) -> list[Function]:
     """List all functions, optionally filtered to smoke-passed (visible) ones."""
     stmt = select(Function)
