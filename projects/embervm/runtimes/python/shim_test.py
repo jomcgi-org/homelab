@@ -1,15 +1,19 @@
 """Unit tests for the EmberVM python runtime bootstrap shim (R1 zip lane).
 
 The shim is stdlib-only plain python, so these run without a microVM, without
-vsock, and without the baked runtime image: unpack (including a zip-slip
-rejection), handler import success/failure, event/response marshaling in both
-directions (including a base64 binary body), bootstrap-override selection, and
-an end-to-end HTTP round-trip over a plain TCP socket standing in for vsock.
+vsock, and without the baked runtime image: unpack from raw bytes (including a
+zip-slip rejection), handler import success/failure, event/response marshaling in
+both directions (including a base64 binary body), bootstrap-override selection,
+the vsock-hydration flow (POST /shim/hydrate -> ready -> invoke echoes; a bad
+archive leaves ready False; invoke-before-hydrate is 503), and an end-to-end HTTP
+round-trip over a plain TCP socket standing in for vsock.
 """
 
 from __future__ import annotations
 
 import base64
+import io
+import os
 import stat
 import sys
 import threading
@@ -22,70 +26,57 @@ import pytest
 import shim
 
 
-def _write_zip(path: str, members: dict[str, bytes]) -> None:
-    with zipfile.ZipFile(path, "w") as zf:
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
         for name, data in members.items():
             zf.writestr(name, data)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
-# unpack
+# unpack (raw bytes; no block device, no padding)
 # ---------------------------------------------------------------------------
 
 
 def test_unpack_extracts_members(tmp_path):
-    archive = tmp_path / "app.zip"
-    _write_zip(str(archive), {"app.py": b"x = 1\n", "pkg/mod.py": b"y = 2\n"})
+    archive = _zip_bytes({"app.py": b"x = 1\n", "pkg/mod.py": b"y = 2\n"})
     dest = tmp_path / "out"
 
-    shim.unpack_archive(str(archive), str(dest))
+    shim.unpack_archive(archive, str(dest))
 
     assert (dest / "app.py").read_bytes() == b"x = 1\n"
     assert (dest / "pkg" / "mod.py").read_bytes() == b"y = 2\n"
 
 
-def test_unpack_tolerates_block_device_padding(tmp_path):
-    # The archive arrives on a raw block device whose size is rounded up to a
-    # sector, so the zip is followed by trailing zero padding. zipfile's backward
-    # EOCD scan chokes on that ("File is not a zip file"); the shim must trim to
-    # the archive's true end. Simulate it by appending zeros past the zip.
-    archive = tmp_path / "app.zip"
-    _write_zip(str(archive), {"app.py": b"z = 3\n"})
-    padded = tmp_path / "vdb.img"
-    raw = archive.read_bytes()
-    padded.write_bytes(raw + b"\x00" * (512 - len(raw) % 512))
+def test_unpack_accepts_bytesio(tmp_path):
+    archive = _zip_bytes({"app.py": b"z = 3\n"})
     dest = tmp_path / "out"
 
-    shim.unpack_archive(str(padded), str(dest))
+    shim.unpack_archive(io.BytesIO(archive), str(dest))
 
     assert (dest / "app.py").read_bytes() == b"z = 3\n"
 
 
-def test_archive_bytes_errors_when_no_eocd(tmp_path):
-    junk = tmp_path / "vdb.img"
-    junk.write_bytes(b"\x00" * 4096)
-    with pytest.raises(ValueError, match="end-of-central-directory"):
-        shim._archive_bytes(str(junk))
+def test_unpack_bad_zip_raises(tmp_path):
+    dest = tmp_path / "out"
+    with pytest.raises(zipfile.BadZipFile):
+        shim.unpack_archive(b"\x00" * 4096, str(dest))
 
 
 def test_unpack_rejects_zip_slip(tmp_path):
     # A member with a traversal path must abort the whole unpack, never writing
     # outside dest.
-    archive = tmp_path / "evil.zip"
-    with zipfile.ZipFile(str(archive), "w") as zf:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("../escape.py", b"pwned = True\n")
     dest = tmp_path / "out"
 
     with pytest.raises(ValueError, match="zip-slip"):
-        shim.unpack_archive(str(archive), str(dest))
+        shim.unpack_archive(buf.getvalue(), str(dest))
 
     # The escape target must not exist.
     assert not (tmp_path / "escape.py").exists()
-
-
-def test_find_archive_device_missing(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        shim.find_archive_device(str(tmp_path / "nope"))
 
 
 # ---------------------------------------------------------------------------
@@ -252,26 +243,116 @@ def test_response_from_return_json_payload():
 
 
 # ---------------------------------------------------------------------------
+# hydrate flow (unit-level, no HTTP)
+# ---------------------------------------------------------------------------
+
+
+def _fresh_state(tmp_path, monkeypatch, handler_symbol="app.handle"):
+    """A ShimState whose UNPACK_DIR is redirected under tmp_path.
+
+    hydrate() unpacks into shim.UNPACK_DIR (/tmp/ember-app in prod); point it at
+    a per-test dir so tests do not collide or need a writable /tmp/ember-app.
+    """
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    return shim.ShimState(invoke_path="/invoke", handler_symbol=handler_symbol)
+
+
+def test_hydrate_imports_and_flips_ready(tmp_path, monkeypatch, isolated_imports):
+    state = _fresh_state(tmp_path, monkeypatch, "app.handle")
+    archive = _zip_bytes(
+        {"app.py": b"def handle(event, context):\n    return {'body': 'ok'}\n"}
+    )
+    assert state.is_ready() is False
+
+    shim.hydrate(state, archive)
+
+    assert state.is_ready() is True
+    assert state.hydrated is True
+    assert callable(state.handler)
+
+
+def test_hydrate_bad_zip_leaves_not_ready(tmp_path, monkeypatch, isolated_imports):
+    state = _fresh_state(tmp_path, monkeypatch)
+    with pytest.raises(zipfile.BadZipFile):
+        shim.hydrate(state, b"not a zip at all")
+    assert state.is_ready() is False
+    assert state.handler is None
+
+
+def test_hydrate_import_error_leaves_not_ready(tmp_path, monkeypatch, isolated_imports):
+    state = _fresh_state(tmp_path, monkeypatch, "app.handle")
+    # A syntactically broken module fails to import: hydrate raises, ready False.
+    archive = _zip_bytes({"app.py": b"this is not valid python :::\n"})
+    with pytest.raises(SyntaxError):
+        shim.hydrate(state, archive)
+    assert state.is_ready() is False
+
+
+def test_hydrate_rejects_zip_slip(tmp_path, monkeypatch, isolated_imports):
+    state = _fresh_state(tmp_path, monkeypatch)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../escape.py", b"pwned = True\n")
+    with pytest.raises(ValueError, match="zip-slip"):
+        shim.hydrate(state, buf.getvalue())
+    assert state.is_ready() is False
+
+
+def test_hydrate_selects_bootstrap_override(tmp_path, monkeypatch, isolated_imports):
+    # An executable `bootstrap` at the archive root is exec'd instead of importing
+    # a python handler. hydrate calls exec_bootstrap, which would replace the
+    # process; stub it so the test observes the selection without an execv.
+    #
+    # _find_bootstrap's own executable-bit detection is covered by
+    # test_find_bootstrap_executable (a real chmod'd file); here we stub it to
+    # return a path, because zipfile.extractall's restoration of the Unix exec bit
+    # from external_attr varies by Python version (3.14 drops it), and this test is
+    # about the hydrate BRANCH, not zip mode preservation.
+    state = _fresh_state(tmp_path, monkeypatch)
+    execed: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        shim, "exec_bootstrap", lambda path: execed.setdefault("path", path)
+    )
+    monkeypatch.setattr(
+        shim, "_find_bootstrap", lambda app_dir: os.path.join(app_dir, "bootstrap")
+    )
+
+    archive = _zip_bytes({"bootstrap": b"#!/bin/sh\necho hi\n"})
+    shim.hydrate(state, archive)
+
+    assert execed["path"].endswith("/bootstrap")
+    # bootstrap owns readiness after execv; the python-import path did not flip it.
+    assert state.handler is None
+    assert state.is_ready() is False
+
+
+# ---------------------------------------------------------------------------
 # HTTP serving round-trip (TCP stands in for vsock)
 # ---------------------------------------------------------------------------
 
 
-def _run_server(handler, ready, invoke_path="/invoke"):
+def _run_server(state, invoke_path="/invoke"):
     """Start a TCP-backed ThreadingHTTPServer using the shim's request handler.
 
     The production server binds AF_VSOCK; the request-handling logic under test
     is identical, so a loopback TCP server exercises the full contract without
     the vsock kernel module (absent on CI runners).
     """
-    cls = shim.make_request_handler(handler, ready, invoke_path)
+    cls = shim.make_request_handler(state, invoke_path)
     server = ThreadingHTTPServer(("127.0.0.1", 0), cls)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
 
 
+def _new_state(invoke_path="/invoke", handler_symbol="app.handle"):
+    return shim.ShimState(invoke_path=invoke_path, handler_symbol=handler_symbol)
+
+
 def test_healthz_always_200():
-    server, _thread = _run_server(handler=None, ready=lambda: False)
+    # healthz answers 200 even before hydration (Prime's liveness probe).
+    server, _thread = _run_server(_new_state())
     try:
         conn = HTTPConnection("127.0.0.1", server.server_port)
         conn.request("GET", shim.HEALTHZ_PATH)
@@ -281,9 +362,8 @@ def test_healthz_always_200():
         server.server_close()
 
 
-def test_ready_reflects_import():
-    # not ready
-    server, _t = _run_server(handler=None, ready=lambda: False)
+def test_ready_503_before_hydrate():
+    server, _t = _run_server(_new_state())
     try:
         conn = HTTPConnection("127.0.0.1", server.server_port)
         conn.request("GET", shim.READY_PATH)
@@ -292,54 +372,124 @@ def test_ready_reflects_import():
         server.shutdown()
         server.server_close()
 
-    # ready
-    def handler(event, context):
-        return {"statusCode": 200, "body": "ok"}
 
-    server, _t = _run_server(handler=handler, ready=lambda: True)
+def test_invoke_before_hydrate_is_503():
+    server, _t = _run_server(_new_state())
     try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", "/invoke", body=b"x")
+        assert conn.getresponse().status == 503
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_hydrate_then_ready_then_invoke(tmp_path, monkeypatch, isolated_imports):
+    # The end-to-end build flow over HTTP: POST /shim/hydrate delivers the archive,
+    # /shim/ready flips to 200, and the invoke path then echoes through the handler.
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    state = _new_state()
+    server, _t = _run_server(state)
+    try:
+        archive = _zip_bytes(
+            {
+                "app.py": (
+                    b"def handle(event, context):\n"
+                    b"    return {'statusCode': 200, 'body': 'echo:' + (event['body'] or '')}\n"
+                )
+            }
+        )
+
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", shim.HYDRATE_PATH, body=archive)
+        assert conn.getresponse().status == 200
+
         conn = HTTPConnection("127.0.0.1", server.server_port)
         conn.request("GET", shim.READY_PATH)
         assert conn.getresponse().status == 200
-    finally:
-        server.shutdown()
-        server.server_close()
 
-
-def test_invoke_round_trip():
-    def handler(event, context):
-        assert event["httpMethod"] == "POST"
-        assert event["body"] == "ping"
-        return {"statusCode": 202, "headers": {"X-Echo": "1"}, "body": "pong"}
-
-    server, _t = _run_server(handler=handler, ready=lambda: True)
-    try:
         conn = HTTPConnection("127.0.0.1", server.server_port)
         conn.request("POST", "/invoke", body=b"ping")
         resp = conn.getresponse()
-        assert resp.status == 202
-        assert resp.getheader("X-Echo") == "1"
-        assert resp.read() == b"pong"
+        assert resp.status == 200
+        assert resp.read() == b"echo:ping"
     finally:
         server.shutdown()
         server.server_close()
 
 
-def test_invoke_binary_body_round_trip():
-    binary = bytes(range(256))
-
-    def handler(event, context):
-        assert event["isBase64Encoded"] is True
-        received = base64.b64decode(event["body"])
-        # echo the bytes back base64-encoded
-        return {
-            "statusCode": 200,
-            "body": base64.b64encode(received).decode("ascii"),
-            "isBase64Encoded": True,
-        }
-
-    server, _t = _run_server(handler=handler, ready=lambda: True)
+def test_hydrate_bad_zip_over_http_leaves_not_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    state = _new_state()
+    server, _t = _run_server(state)
     try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", shim.HYDRATE_PATH, body=b"not a zip")
+        assert conn.getresponse().status == 422
+
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("GET", shim.READY_PATH)
+        assert conn.getresponse().status == 503
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_hydrate_empty_body_is_400(tmp_path, monkeypatch):
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    state = _new_state()
+    server, _t = _run_server(state)
+    try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", shim.HYDRATE_PATH, body=b"")
+        assert conn.getresponse().status == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_second_hydrate_after_ready_is_409(tmp_path, monkeypatch, isolated_imports):
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    state = _new_state()
+    server, _t = _run_server(state)
+    try:
+        archive = _zip_bytes(
+            {"app.py": b"def handle(event, context):\n    return {'body': 'ok'}\n"}
+        )
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", shim.HYDRATE_PATH, body=archive)
+        assert conn.getresponse().status == 200
+
+        # A repeat hydrate once ready is a 409 Conflict (idempotency choice).
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", shim.HYDRATE_PATH, body=archive)
+        assert conn.getresponse().status == 409
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_invoke_binary_body_round_trip(tmp_path, monkeypatch, isolated_imports):
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    state = _new_state()
+    server, _t = _run_server(state)
+    binary = bytes(range(256))
+    try:
+        # A handler that echoes the (base64) body straight back, so binary bytes
+        # survive the JSON marshal in both directions.
+        archive = _zip_bytes(
+            {
+                "app.py": (
+                    b"def handle(event, context):\n"
+                    b"    return {'statusCode': 200, 'body': event['body'],"
+                    b" 'isBase64Encoded': event['isBase64Encoded']}\n"
+                )
+            }
+        )
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", shim.HYDRATE_PATH, body=archive)
+        assert conn.getresponse().status == 200
+
         conn = HTTPConnection("127.0.0.1", server.server_port)
         conn.request("POST", "/invoke", body=binary)
         resp = conn.getresponse()
@@ -350,12 +500,22 @@ def test_invoke_binary_body_round_trip():
         server.server_close()
 
 
-def test_invoke_handler_exception_is_502():
-    def handler(event, context):
-        raise RuntimeError("boom")
-
-    server, _t = _run_server(handler=handler, ready=lambda: True)
+def test_invoke_handler_exception_is_502(tmp_path, monkeypatch, isolated_imports):
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    state = _new_state()
+    server, _t = _run_server(state)
     try:
+        archive = _zip_bytes(
+            {
+                "app.py": (
+                    b"def handle(event, context):\n    raise RuntimeError('boom')\n"
+                )
+            }
+        )
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", shim.HYDRATE_PATH, body=archive)
+        assert conn.getresponse().status == 200
+
         conn = HTTPConnection("127.0.0.1", server.server_port)
         conn.request("POST", "/invoke", body=b"x")
         resp = conn.getresponse()
@@ -366,20 +526,18 @@ def test_invoke_handler_exception_is_502():
         server.server_close()
 
 
-def test_invoke_when_not_ready_is_503():
-    server, _t = _run_server(handler=None, ready=lambda: False)
+def test_invoke_wrong_path_is_404(tmp_path, monkeypatch, isolated_imports):
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    state = _new_state()
+    server, _t = _run_server(state)
     try:
+        archive = _zip_bytes(
+            {"app.py": b"def handle(event, context):\n    return 'ok'\n"}
+        )
         conn = HTTPConnection("127.0.0.1", server.server_port)
-        conn.request("POST", "/invoke", body=b"x")
-        assert conn.getresponse().status == 503
-    finally:
-        server.shutdown()
-        server.server_close()
+        conn.request("POST", shim.HYDRATE_PATH, body=archive)
+        assert conn.getresponse().status == 200
 
-
-def test_invoke_wrong_path_is_404():
-    server, _t = _run_server(handler=lambda e, c: "ok", ready=lambda: True)
-    try:
         conn = HTTPConnection("127.0.0.1", server.server_port)
         conn.request("POST", "/nope", body=b"x")
         assert conn.getresponse().status == 404

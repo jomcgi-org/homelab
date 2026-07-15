@@ -1,31 +1,47 @@
 """EmberVM python runtime bootstrap shim (ADR embervm/002, R1 zip lane).
 
 This shim runs inside a disposable python-runtime microVM, launched by the guest
-init (a raw Firecracker boot ignores the OCI entrypoint, so Task 7 must wire a
-PID-1 harnessInit that mounts a tmpfs over /tmp then execs this shim, see README
-"Boot integration"). An adopter of the zip lane brings only a zip archive
-containing a `handler(event, context)` callable; noded attaches that archive as a
-read-only block device (default /dev/vdb, Task 6) and boots this base image. On
-boot the shim, entirely guest-side:
+init (a raw Firecracker boot ignores the OCI entrypoint, so Task 7 wires a PID-1
+harnessInit that mounts a tmpfs over /tmp then execs this shim, see README "Boot
+integration"). An adopter of the zip lane brings only a zip archive containing a
+`handler(event, context)` callable.
 
-  1. Locates the archive block device and unpacks it into a tmpfs workdir.
-     The host NEVER unpacks: the archive crosses the boundary as opaque bytes
-     and is expanded only here, inside the throwaway guest.
-  2. If the archive root holds an executable file named `bootstrap`, execs it
-     instead of importing python (the any-language escape hatch). That process
-     is then responsible for serving the same frozen guest contract.
-  3. Otherwise imports the configured handler symbol (env EMBER_HANDLER, default
-     `app.handle`) and serves the frozen guest contract over HTTP on vsock port
-     1027 (embervm noded's GuestHTTPPort):
+The archive is NOT attached as a block device (that design truncated the archive
+tail and pinned the snapshot to a node-local backing file). Instead noded fetches
+and sha256-verifies the archive into memory host-side, boots this guest with NO
+archive drive, and POSTs the clean bytes to the build-only /shim/hydrate endpoint
+over the existing vsock HTTP channel (port 1027). The shim unpacks those bytes to
+tmpfs, imports the handler, and only THEN flips /shim/ready to 200. The snapshot
+noded then takes is memory + rootfs only: self-contained and portable (shippable
+to S3/OCI, restorable on any node), because there is no archive backing file for
+the restore to depend on.
+
+The build/boot flow, entirely guest-side:
+
+  1. On boot the shim starts its vsock HTTP server immediately and serves, but is
+     NOT ready and has no handler. State: hydrated=False, ready=False.
+  2. A build-only POST /shim/hydrate delivers the raw zip bytes (clean, no
+     padding). The shim unpacks them into a tmpfs workdir. The host NEVER unpacks:
+     the archive crosses the boundary as opaque bytes and is expanded only here,
+     inside the throwaway guest.
+  3. If the archive root holds an executable file named `bootstrap`, execs it
+     instead of importing python (the any-language escape hatch). That process is
+     then responsible for serving the same frozen guest contract.
+  4. Otherwise imports the configured handler symbol (env EMBER_HANDLER, default
+     `app.handle`). On success ready flips True; the shim then serves the frozen
+     guest contract over HTTP on vsock port 1027 (embervm noded's GuestHTTPPort):
        - GET  /shim/healthz  -> 200 always (liveness; noded's Prime probe).
-       - GET  /shim/ready    -> 200 ONLY after a successful handler import,
-                                503 otherwise. noded's BuildBase health-gates on
-                                this, so an import failure keeps the base VM from
-                                ever going ready and the error surfaces later in
-                                the Workload condition.
-       - POST <invokePath>   -> marshal the HTTP request into an event dict,
-                                call handler(event, context), marshal the return
-                                into the HTTP response.
+       - POST /shim/hydrate  -> build-only; unpack + import, flip ready on success
+                                (200) or report the error (4xx/5xx) leaving ready
+                                False. See below for idempotency.
+       - GET  /shim/ready    -> 200 ONLY after a successful hydrate+import, 503
+                                otherwise. noded's BuildBase health-gates on this,
+                                so a hydrate failure keeps the base VM from ever
+                                going ready and the error surfaces later in the
+                                Workload condition.
+       - POST <invokePath>   -> marshal the HTTP request into an event dict, call
+                                handler(event, context), marshal the return into
+                                the HTTP response. 503 before the shim is ready.
 
 Event/response shape (normative, Lambda-compatible-enough):
   request  event    = {httpMethod, path, queryStringParameters, headers,
@@ -52,6 +68,7 @@ import os
 import socket
 import stat
 import sys
+import threading
 import traceback
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -74,7 +91,6 @@ GUEST_HTTP_PORT = 1027
 # server.defaultInvokePath, NOT "/" (a request that carries no path falls back
 # to /invoke on the host side, so the shim must listen there by default).
 DEFAULT_HANDLER = "app.handle"
-DEFAULT_ARCHIVE_DEVICE = "/dev/vdb"
 DEFAULT_INVOKE_PATH = "/invoke"
 
 # Where the archive is unpacked. A tmpfs mount is expected over /tmp (the rootfs
@@ -84,6 +100,7 @@ UNPACK_DIR = "/tmp/ember-app"
 
 READY_PATH = "/shim/ready"
 HEALTHZ_PATH = "/shim/healthz"
+HYDRATE_PATH = "/shim/hydrate"
 
 
 class InvocationContext:
@@ -98,19 +115,26 @@ class InvocationContext:
         self.invoke_path = invoke_path
 
 
-def find_archive_device(configured: str) -> str:
-    """Return the archive block-device path to read the zip from.
+class ShimState:
+    """Mutable guest-side state, shared by the request handler across threads.
 
-    The configured path (env EMBER_ARCHIVE_DEVICE, default /dev/vdb) is used
-    as-is when it exists. It is returned even when it is not a block device so
-    tests can point it at a plain file; the caller (unpack_archive) validates
-    the contents are a real zip and fails loudly otherwise.
+    The shim boots un-hydrated (no handler, not ready) and serves anyway, so
+    noded's Prime liveness probe answers immediately. A build-only POST to
+    /shim/hydrate populates `handler` and flips `ready` True under the lock;
+    /shim/ready and the invoke path read `ready` to gate.
     """
-    if not configured:
-        raise ValueError("archive device path is empty")
-    if not os.path.exists(configured):
-        raise FileNotFoundError(f"archive device not found: {configured}")
-    return configured
+
+    def __init__(self, invoke_path: str, handler_symbol: str) -> None:
+        self.invoke_path = invoke_path
+        self.handler_symbol = handler_symbol
+        self._lock = threading.Lock()
+        self.handler: Callable[[Any, Any], Any] | None = None
+        self.hydrated = False
+        self.ready = False
+
+    def is_ready(self) -> bool:
+        with self._lock:
+            return self.ready
 
 
 def _is_within(base: str, target: str) -> bool:
@@ -124,46 +148,21 @@ def _is_within(base: str, target: str) -> bool:
     return target_real == base_real or target_real.startswith(base_real + os.sep)
 
 
-def _archive_bytes(device_path: str) -> bytes:
-    """Read the zip from device_path, trimmed to the archive's true end.
+def unpack_archive(archive: bytes | io.BytesIO, dest: str) -> str:
+    """Unpack the raw zip bytes into dest and return dest.
 
-    The archive arrives on a raw block device (Task 6) whose size is rounded UP to
-    a sector boundary, so it carries trailing zero padding past the zip's real end.
-    zipfile locates the End-Of-Central-Directory record by scanning backward from
-    the device end; that padding makes it declare "File is not a zip file". So read
-    the raw bytes and cut at the true end: the last EOCD signature (PK\\x05\\x06)
-    plus its 22-byte record and any archive comment. A plain zip file (the tests)
-    is returned whole; a padded block device is trimmed. zipfile then parses an
-    exact, padding-free archive.
+    `archive` is the clean, padding-free zip bytes (or a BytesIO over them) that
+    noded delivered over /shim/hydrate; there is no block device and no trailing
+    padding to trim. Rejects zip-slip: any member whose destination escapes dest
+    (via "../" or an absolute path) aborts the whole unpack with a ValueError.
+    This runs guest-side only; the host never sees the expanded tree.
     """
-    with open(device_path, "rb") as f:
-        raw = f.read()
-    eocd = raw.rfind(b"PK\x05\x06")
-    # Diagnostic (device size + where the zip actually ends) so a bad attach or
-    # unexpected padding is legible in the guest console, not an opaque BadZipFile.
-    sys.stderr.write(
-        f"ember-shim: archive device {device_path} bytes={len(raw)} eocd={eocd}\n"
-    )
-    sys.stderr.flush()
-    if eocd < 0:
-        raise ValueError(
-            f"archive device {device_path!r} holds no zip end-of-central-directory record"
-        )
-    # The EOCD record is 22 bytes; its last 2 bytes are the comment length. The
-    # archive ends after the record plus that comment.
-    comment_len = int.from_bytes(raw[eocd + 20 : eocd + 22], "little")
-    return raw[: eocd + 22 + comment_len]
-
-
-def unpack_archive(device_path: str, dest: str) -> str:
-    """Unpack the zip at device_path into dest and return dest.
-
-    Rejects zip-slip: any member whose destination escapes dest (via "../" or
-    an absolute path) aborts the whole unpack with a ValueError. This runs
-    guest-side only; the host never sees the expanded tree.
-    """
+    if isinstance(archive, io.BytesIO):
+        buf = archive
+    else:
+        buf = io.BytesIO(archive)
     os.makedirs(dest, exist_ok=True)
-    with zipfile.ZipFile(io.BytesIO(_archive_bytes(device_path))) as zf:
+    with zipfile.ZipFile(buf) as zf:
         for member in zf.namelist():
             # Directory entries end in "/"; skip explicit creation, the file
             # writes below make parents as needed.
@@ -197,7 +196,7 @@ def load_handler(app_dir: str, handler_symbol: str) -> Callable[[Any, Any], Any]
 
     app_dir is prepended to sys.path so the adopter's top-level modules import.
     Raises on a missing module, a missing attribute, or a non-callable target;
-    the caller turns any raise into a non-ready shim (ready never flips).
+    the caller turns any raise into a failed hydrate (ready never flips).
     """
     if app_dir not in sys.path:
         sys.path.insert(0, app_dir)
@@ -213,6 +212,34 @@ def load_handler(app_dir: str, handler_symbol: str) -> Callable[[Any, Any], Any]
     if not callable(handler):
         raise TypeError(f"handler {handler_symbol!r} is not callable")
     return handler
+
+
+def hydrate(state: ShimState, archive: bytes) -> None:
+    """Unpack the archive bytes, run the bootstrap check, import the handler.
+
+    On success sets state.handler, state.hydrated, and state.ready True. On any
+    failure (bad zip, zip-slip, import error) raises with state.ready left False;
+    the caller (do_POST) turns the raise into a non-2xx hydrate response and
+    writes the traceback to the console.
+
+    A `bootstrap` executable in the archive root replaces this process via execv
+    (the any-language escape hatch): the call never returns, so the shim is
+    handed wholesale to bootstrap, which owns serving the contract.
+    """
+    app_dir = unpack_archive(archive, UNPACK_DIR)
+    bootstrap = _find_bootstrap(app_dir)
+    if bootstrap is not None:
+        # Any-language escape hatch: hand the whole guest over to bootstrap. It
+        # never returns; it must serve the contract itself (including readiness).
+        sys.stderr.write(f"ember-shim: exec bootstrap {bootstrap}\n")
+        sys.stderr.flush()
+        exec_bootstrap(bootstrap)
+        return  # unreachable; execv replaced the process
+    handler = load_handler(app_dir, state.handler_symbol)
+    with state._lock:  # noqa: SLF001 (state's own module)
+        state.handler = handler
+        state.hydrated = True
+        state.ready = True
 
 
 def event_from_request(
@@ -302,14 +329,14 @@ def _encode_body(body: Any, is_b64: bool) -> bytes:
 
 
 def make_request_handler(
-    handler: Callable[[Any, Any], Any] | None,
-    ready: Callable[[], bool],
+    state: ShimState,
     invoke_path: str,
 ) -> type[BaseHTTPRequestHandler]:
     """Build the BaseHTTPRequestHandler class serving the frozen contract.
 
-    handler may be None (import failed): the control routes still answer, but
-    /shim/ready reports 503 via `ready`, and any POST returns 503 too.
+    All handler/ready state lives in `state`, mutated by a successful hydrate.
+    Before hydration /shim/ready reports 503 and any POST to the invoke path is
+    503; /shim/healthz is 200 throughout so noded's Prime probe answers.
     """
 
     class ShimHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -335,20 +362,23 @@ def make_request_handler(
                 self._send(200, {}, b"")
                 return
             if path == READY_PATH:
-                if ready():
+                if state.is_ready():
                     self._send(200, {}, b"")
                 else:
-                    self._send(503, {}, b"shim not ready: handler import failed")
+                    self._send(503, {}, b"shim not ready: not hydrated")
                 return
             self._send(404, {}, b"not found")
 
         def do_POST(self) -> None:  # noqa: N802 (http.server naming)
             path = self.path.split("?", 1)[0]
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
+            if path == HYDRATE_PATH:
+                self._handle_hydrate()
+                return
             if path != invoke_path:
                 self._send(404, {}, b"not found")
                 return
-            if handler is None or not ready():
+            if not state.is_ready() or state.handler is None:
                 self._send(503, {}, b"shim not ready")
                 return
 
@@ -358,7 +388,7 @@ def make_request_handler(
             event = event_from_request(self.command, path, query, req_headers, raw_body)
             context = InvocationContext(invoke_path)
             try:
-                result = handler(event, context)
+                result = state.handler(event, context)
                 status, headers, body = response_from_return(result)
             except Exception:  # noqa: BLE001 (any handler error is a 502)
                 tb = traceback.format_exc()
@@ -367,6 +397,31 @@ def make_request_handler(
                 self._send(502, {"Content-Type": "text/plain"}, tb.encode("utf-8"))
                 return
             self._send(status, headers, body)
+
+        def _handle_hydrate(self) -> None:
+            # Idempotency: a second hydrate after the shim is already ready is a
+            # 409 Conflict (the base is built; re-delivering the archive is a
+            # caller error, not a silent success). The build path hydrates once.
+            if state.is_ready():
+                self._send(409, {}, b"shim already hydrated")
+                return
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            archive = self.rfile.read(length) if length else b""
+            if not archive:
+                self._send(400, {}, b"hydrate: empty archive body")
+                return
+            try:
+                hydrate(state, archive)
+            except Exception:  # noqa: BLE001 (bad zip / zip-slip / import error)
+                tb = traceback.format_exc()
+                sys.stderr.write("ember-shim: hydrate failed\n")
+                sys.stderr.write(tb)
+                sys.stderr.flush()
+                # 422: the bytes were received fine but could not be turned into a
+                # ready handler (unprocessable archive). ready stays False.
+                self._send(422, {"Content-Type": "text/plain"}, tb.encode("utf-8"))
+                return
+            self._send(200, {}, b"hydrated")
 
     return ShimHTTPRequestHandler
 
@@ -428,44 +483,18 @@ def exec_bootstrap(bootstrap_path: str) -> None:
 
 def main() -> int:
     handler_symbol = os.environ.get("EMBER_HANDLER", DEFAULT_HANDLER)
-    device = os.environ.get("EMBER_ARCHIVE_DEVICE", DEFAULT_ARCHIVE_DEVICE)
     invoke_path = os.environ.get("EMBER_INVOKE_PATH", DEFAULT_INVOKE_PATH)
     port = int(os.environ.get("EMBER_HTTP_PORT", str(GUEST_HTTP_PORT)))
 
-    handler: Callable[[Any, Any], Any] | None = None
-    try:
-        resolved_device = find_archive_device(device)
-        app_dir = unpack_archive(resolved_device, UNPACK_DIR)
+    # Boot un-hydrated: serve immediately (so Prime's healthz probe answers) but
+    # report not-ready until a POST /shim/hydrate unpacks + imports the handler.
+    state = ShimState(invoke_path=invoke_path, handler_symbol=handler_symbol)
 
-        bootstrap = _find_bootstrap(app_dir)
-        if bootstrap is not None:
-            # Any-language escape hatch: hand the whole guest over to bootstrap.
-            # It never returns; it must serve the contract itself.
-            sys.stderr.write(f"ember-shim: exec bootstrap {bootstrap}\n")
-            sys.stderr.flush()
-            exec_bootstrap(bootstrap)
-            return 0  # unreachable; execv replaced the process
-
-        handler = load_handler(app_dir, handler_symbol)
-    except Exception:  # noqa: BLE001
-        # Import/unpack failure: write the traceback for guest-log shipping and
-        # keep serving with handler=None so /shim/ready reports 503 forever.
-        # BuildBase health-gates on ready, so the base never goes ready and the
-        # failure surfaces in the Workload condition instead of hanging silently.
-        tb = traceback.format_exc()
-        sys.stderr.write("ember-shim: handler bootstrap failed\n")
-        sys.stderr.write(tb)
-        sys.stderr.flush()
-
-    # ready() closes over the resolved handler: true only once import succeeded.
-    def ready() -> bool:
-        return handler is not None
-
-    request_handler_cls = make_request_handler(handler, ready, invoke_path)
+    request_handler_cls = make_request_handler(state, invoke_path)
     server = VsockHTTPServer((VMADDR_CID_ANY, port), request_handler_cls)
     sys.stderr.write(
         f"ember-shim: serving on vsock port {port} invokePath={invoke_path} "
-        f"ready={handler is not None}\n"
+        f"handler={handler_symbol} (awaiting hydrate)\n"
     )
     sys.stderr.flush()
     serve(server)

@@ -3,9 +3,9 @@
 The zero-toolchain "zip lane" runtime base (ADR embervm/002). An adopter brings
 only a zip archive containing a `handler(event, context)` callable; this image
 bakes Python 3.12, a fixed dependency subset, and a bootstrap shim that, inside
-a disposable Firecracker guest, unpacks the archive, imports the handler, and
-serves the frozen HTTP-over-vsock guest contract. No Bazel, no apko, no build
-step for the adopter.
+a disposable Firecracker guest, receives the archive over vsock, unpacks it,
+imports the handler, and serves the frozen HTTP-over-vsock guest contract. No
+Bazel, no apko, no build step for the adopter.
 
 ## What the adopter ships
 
@@ -23,10 +23,19 @@ A single zip archive. Two shapes:
    runs on this base.
 
 The shim unpacks the archive into a tmpfs workdir **guest-side only**: the host
-(noded) never unpacks it. The archive crosses the boundary as opaque bytes on a
-read-only block device (Task 6) and is expanded only inside the throwaway VM. A
-zip-slip attempt (a member whose path escapes the unpack dir) aborts the whole
-unpack.
+(noded) never unpacks it. noded fetches and sha256-verifies the archive into
+memory, boots this guest with **no archive drive**, and POSTs the clean bytes to
+the build-only `/shim/hydrate` endpoint over the existing vsock HTTP channel; the
+shim expands them only inside the throwaway VM. A zip-slip attempt (a member whose
+path escapes the unpack dir) aborts the whole hydrate.
+
+The archive is deliberately **not** attached as a block device. That earlier
+design truncated the archive tail (Firecracker floors a virtio-blk device to
+whole 512-byte sectors) and pinned the base snapshot to a node-local backing
+file (the snapshot recorded the archive drive, so a restore needed the `.img` to
+exist). Hydrating over vsock deletes both bug classes: the snapshot is memory +
+rootfs only, self-contained and portable (shippable to S3/OCI, restorable on any
+node).
 
 ## Baked dependency subset (registration-time contract)
 
@@ -56,24 +65,43 @@ The shim serves HTTP/1.1 over an `AF_VSOCK` listener on **port 1027**
 (embervm noded's `vsockproto.GuestHTTPPort`; the host dials it via the
 Firecracker CONNECT handshake). Routes:
 
-| Method + path      | Behavior                                                         |
-| ------------------ | ---------------------------------------------------------------- |
-| `GET /shim/healthz`| Always `200` (liveness; noded's Prime probe).                    |
-| `GET /shim/ready`  | `200` **only** after a successful handler import, else `503`.    |
-| `POST <invokePath>`| Marshal the request into `event`, call the handler, marshal back.|
+| Method + path       | Behavior                                                         |
+| ------------------- | ---------------------------------------------------------------- |
+| `GET /shim/healthz` | Always `200` (liveness; noded's Prime probe).                    |
+| `POST /shim/hydrate`| Build-only. Body is the raw zip bytes; unpack + import, flip ready on success (`200`), or report the error leaving ready `False`. See below. |
+| `GET /shim/ready`   | `200` **only** after a successful hydrate + handler import, else `503`. |
+| `POST <invokePath>` | Marshal the request into `event`, call the handler, marshal back.|
 
 `invokePath` defaults to `/invoke` (matching noded's `defaultInvokePath`) and is
 set via `EMBER_INVOKE_PATH`. A `POST` to any other path is `404`; a `POST`
-before the handler is ready is `503`.
+before the shim is ready is `503`.
+
+### Hydration (the build handshake)
+
+On boot the shim starts its vsock HTTP server immediately and answers
+`/shim/healthz`, but has no handler and reports `/shim/ready` as `503`. The build
+sequence is: noded boots the guest (no archive drive), primes the vsock path with
+a `/shim/healthz` probe, POSTs the archive bytes to `/shim/hydrate`, then polls
+`/shim/ready` until `200`, then snapshots. On a `/shim/hydrate`:
+
+- **success** (`200`): the shim unpacked the archive to tmpfs and imported the
+  handler; `/shim/ready` now returns `200`.
+- **empty body** (`400`), **unprocessable archive** (`422`, a bad zip, a zip-slip
+  member, or an import error): `/shim/ready` stays `503` and the traceback is
+  written to the guest console. noded fails the build with no snapshot.
+- **already hydrated** (`409`): a second hydrate once the shim is ready is a
+  conflict, not a silent re-import. The build path hydrates exactly once.
 
 ### Readiness gates the base build
 
-`GET /shim/ready` returns `200` **only** once the handler imported cleanly. If
-the archive is missing, the module fails to import, the symbol is absent, or it
-is not callable, ready never flips. noded's `BuildBase` health-gates on this, so
-a broken function never produces a ready base; the shim writes the full
-traceback to stdout/stderr (shipped in the guest logs), and the failure surfaces
-later in the Workload condition rather than hanging silently.
+`GET /shim/ready` returns `200` **only** once a `/shim/hydrate` unpacked the
+archive and the handler imported cleanly. If the archive is a bad zip, the module
+fails to import, the symbol is absent, or it is not callable, the hydrate returns
+a `4xx`/`5xx` and ready never flips. noded's `BuildBase` health-gates on
+`/shim/ready`, so a broken function never produces a ready base; the shim writes
+the full traceback to stdout/stderr (shipped in the guest logs) and returns it in
+the hydrate response body, and the failure surfaces in the Workload condition
+rather than hanging silently.
 
 ### Event and response shape
 
@@ -134,12 +162,11 @@ handler call, not at module import / boot time.
 All read at boot; the defaults are baked into the image and can be overridden
 per registration.
 
-| Env var                | Default        | Meaning                                            |
-| ---------------------- | -------------- | -------------------------------------------------- |
-| `EMBER_HANDLER`        | `app.handle`   | `module.attr` of the python handler callable.      |
-| `EMBER_ARCHIVE_DEVICE` | `/dev/vdb`     | Block device the read-only archive is attached at. |
-| `EMBER_INVOKE_PATH`    | `/invoke`      | HTTP path the shim serves the handler on.          |
-| `EMBER_HTTP_PORT`      | `1027`         | vsock port (the frozen contract port; do not move).|
+| Env var             | Default      | Meaning                                             |
+| ------------------- | ------------ | --------------------------------------------------- |
+| `EMBER_HANDLER`     | `app.handle` | `module.attr` of the python handler callable.       |
+| `EMBER_INVOKE_PATH` | `/invoke`    | HTTP path the shim serves the handler on.           |
+| `EMBER_HTTP_PORT`   | `1027`       | vsock port (the frozen contract port; do not move). |
 
 ## Non-root
 

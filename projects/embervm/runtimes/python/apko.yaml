@@ -46,7 +46,6 @@ environment:
   # override them per registration (see README.md). Baked so a raw boot with no
   # env still has the frozen contract defaults.
   EMBER_HANDLER: app.handle
-  EMBER_ARCHIVE_DEVICE: /dev/vdb
   EMBER_INVOKE_PATH: /invoke
 
 paths:
