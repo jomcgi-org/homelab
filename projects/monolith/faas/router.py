@@ -3,10 +3,13 @@
 ``POST /api/functions`` is the only code-submission surface (standing decision 7):
 an authenticated author uploads a zip + manifest; the endpoint validates it,
 uploads the archive, upserts the function's ``Workload`` CR, waits for it to go
-``Ready``, runs one smoke invocation through EmberVM, and only then makes the
-registry row visible (``mark_smoked``). Any failure after the archive upload
-rolls back so no visible function is ever left half-registered (the ADR 045 core
-security property: a function that fails its smoke run never gets a URL).
+``Ready``, runs one smoke invocation through EmberVM, and only then writes the
+registry row (visible via ``mark_smoked``). The registry row is written LAST, so
+a function that fails its smoke run never gets a URL (the ADR 045 core security
+property). Re-registration is safe: because the row is written only after a green
+smoke, a failed re-registration leaves the prior working row untouched and
+reverts only the CR, so a live function is never destroyed or made to 404 by a
+broken new upload (plan Task 10: no zero-usable-base window).
 
 ``DELETE /api/functions/{name}`` tears down the CR, the row, and the archive.
 
@@ -112,14 +115,54 @@ async def register_function(
         )
 
     # Name conflict is an authorized last-write-wins overwrite (standing decision
-    # 6): the authenticated author is replacing their own function. Not a 409.
-    _ = get_function(session, name)
+    # 6): the authenticated author is replacing their own function. Capture the
+    # prior row's CR-relevant values FIRST so a failed re-registration can revert
+    # to the still-working prior version instead of destroying it. The registry
+    # row is written only after the new zip passes its smoke (below), so on any
+    # earlier failure the prior row stays visible untouched and we revert only the
+    # Workload CR. EmberVM's no-gap turnover keeps the old base serving throughout,
+    # so a re-registration never opens a zero-usable-base window (plan Task 10).
+    prior = get_function(session, name)
+    prior_cr = (
+        {
+            "code_uri": prior.code_uri,
+            "sha256": prior.zip_sha256,
+            "handler": prior.handler,
+            "runtime": prior.runtime,
+        }
+        if prior is not None
+        else None
+    )
 
-    # --- Orchestrate (any failure past here rolls back to no visible function) ---
+    # --- Orchestrate (the registry row is written LAST, only after a green smoke) ---
     sha256 = hashlib.sha256(zipbytes).hexdigest()
     storage.put_archive(name, sha256, zipbytes)
     uri = storage.code_uri(name, sha256)
 
+    spec = workload.build_workload_spec(
+        code_uri=uri, sha256=sha256, handler=handler, runtime=runtime
+    )
+    await workload.upsert_workload(name, spec)
+
+    ok, msg = await workload.wait_ready(name, timeout_s=_READY_TIMEOUT_S)
+    if not ok:
+        await _rollback(session, name, sha256, prior_cr)
+        raise HTTPException(
+            status_code=502, detail=f"function did not become ready: {msg}"
+        )
+
+    resp = await _smoke(name)
+    if resp is None or not (200 <= resp.status_code < 300):
+        detail = resp.text[:500] if resp is not None else "smoke transport failure"
+        await _rollback(session, name, sha256, prior_cr)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "smoke invocation failed", "detail": detail},
+        )
+
+    # Smoke passed: NOW write/overwrite the registry row and make it visible. On a
+    # re-registration this is the point the prior row is replaced; on any earlier
+    # failure the prior row was left intact and serving.
     upsert_function(
         session,
         name=name,
@@ -130,28 +173,6 @@ async def register_function(
         code_uri=uri,
         created_by=created_by,
     )
-
-    spec = workload.build_workload_spec(
-        code_uri=uri, sha256=sha256, handler=handler, runtime=runtime
-    )
-    await workload.upsert_workload(name, spec)
-
-    ok, msg = await workload.wait_ready(name, timeout_s=_READY_TIMEOUT_S)
-    if not ok:
-        await _rollback(session, name, sha256)
-        raise HTTPException(
-            status_code=502, detail=f"function did not become ready: {msg}"
-        )
-
-    resp = await _smoke(name)
-    if resp is None or not (200 <= resp.status_code < 300):
-        detail = resp.text[:500] if resp is not None else "smoke transport failure"
-        await _rollback(session, name, sha256)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "smoke invocation failed", "detail": detail},
-        )
-
     mark_smoked(session, name)
     return {
         "name": name,
@@ -190,21 +211,48 @@ async def _smoke(name: str):
     return None
 
 
-async def _rollback(session: Session, name: str, sha256: str) -> None:
-    """Undo a failed registration: delete the CR, the row, and the archive.
+async def _rollback(
+    session: Session, name: str, sha256: str, prior_cr: dict | None
+) -> None:
+    """Undo a failed registration WITHOUT destroying a prior working version.
 
-    Best-effort on the CR and archive (a leaked object is harmless); the registry
-    row deletion is what guarantees no visible function remains.
+    The registry row is written only after a green smoke, so on failure there is
+    no new row to remove and no prior row is ever deleted here. If this was a
+    re-registration (``prior_cr`` set), revert the Workload CR to the prior zip so
+    the previously-working function keeps serving (EmberVM kept its base under the
+    no-gap turnover property) and the prior row stays visible. If this was a first
+    registration (``prior_cr`` None), tear the CR down. The newly-uploaded archive
+    is deleted either way, unless the restored prior CR still references it (an
+    identical-content re-registration where the new sha equals the prior sha).
     """
-    try:
-        await workload.delete_workload(name)
-    except Exception:  # noqa: BLE001: rollback must not mask the original failure
-        logger.warning("rollback: delete_workload failed for %s", name, exc_info=True)
-    delete_function(session, name)
-    try:
-        storage.delete_archive(name, sha256)
-    except Exception:  # noqa: BLE001: leaked archive object is harmless
-        logger.debug("rollback: delete_archive failed for %s", name, exc_info=True)
+    if prior_cr is not None:
+        try:
+            await workload.upsert_workload(
+                name,
+                workload.build_workload_spec(
+                    code_uri=prior_cr["code_uri"],
+                    sha256=prior_cr["sha256"],
+                    handler=prior_cr["handler"],
+                    runtime=prior_cr["runtime"],
+                ),
+            )
+        except Exception:  # noqa: BLE001: rollback must not mask the original failure
+            logger.warning(
+                "rollback: could not restore prior CR for %s", name, exc_info=True
+            )
+    else:
+        try:
+            await workload.delete_workload(name)
+        except Exception:  # noqa: BLE001: rollback must not mask the original failure
+            logger.warning(
+                "rollback: delete_workload failed for %s", name, exc_info=True
+            )
+
+    if prior_cr is None or prior_cr["sha256"] != sha256:
+        try:
+            storage.delete_archive(name, sha256)
+        except Exception:  # noqa: BLE001: leaked archive object is harmless
+            logger.debug("rollback: delete_archive failed for %s", name, exc_info=True)
 
 
 @router.delete("/{name}", status_code=204)

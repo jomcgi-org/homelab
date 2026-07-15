@@ -265,6 +265,46 @@ def test_smoke_transport_error_both_attempts_rolls_back(client, session, fakes):
     assert get_function(session, "echo-fn") is None
 
 
+def test_failed_reregistration_preserves_prior_function(client, session, fakes):
+    """A broken re-registration must not destroy or hide the prior working function.
+
+    Regression guard: the registry row is written only after a green smoke, so a
+    re-registration whose new zip fails leaves the prior row visible and reverts
+    only the CR (to the prior zip), never a zero-usable-base window.
+    """
+    # First registration succeeds and is visible (v1).
+    assert _post(client, handler="app.v1", zip=_zip_bytes(32)).status_code == 201
+    fn_v1 = get_function(session, "echo-fn")
+    assert fn_v1 is not None and fn_v1.last_smoke_at is not None
+    prior_sha = fn_v1.zip_sha256
+    prior_smoke = fn_v1.last_smoke_at
+
+    # Re-register the same name with a distinct zip whose smoke fails.
+    fakes["upsert_calls"].clear()
+    fakes["delete_workload_calls"].clear()
+    fakes["delete_archive_calls"].clear()
+    fakes["smoke"] = _FakeResponse(500, "boom")
+    resp = _post(client, handler="app.v2", zip=_zip_bytes(64))
+    assert resp.status_code == 502
+
+    # The prior working function is untouched: still visible, still the v1 zip.
+    fn_after = get_function(session, "echo-fn")
+    assert fn_after is not None
+    assert fn_after.handler == "app.v1"
+    assert fn_after.zip_sha256 == prior_sha
+    assert fn_after.last_smoke_at == prior_smoke
+
+    # Rollback reverted the CR to the prior zip and never deleted the workload.
+    assert fakes["delete_workload_calls"] == []
+    assert fakes["upsert_calls"], "expected a CR restore upsert"
+    restore_name, restore_spec = fakes["upsert_calls"][-1]
+    assert restore_name == "echo-fn"
+    assert restore_spec["source"]["zip"]["sha256"] == prior_sha
+    # Only the new (failed) archive was cleaned up; the prior archive is kept.
+    assert fakes["delete_archive_calls"]
+    assert all(sha != prior_sha for _n, sha in fakes["delete_archive_calls"])
+
+
 # --------------------------------------------------------------------------- #
 # DELETE
 # --------------------------------------------------------------------------- #
