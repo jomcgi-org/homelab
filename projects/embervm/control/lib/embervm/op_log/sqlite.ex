@@ -315,6 +315,8 @@ defmodule Embervm.OpLog.SQLite do
              op.workload,
              op.task_id,
              Atom.to_string(op.kind),
+             # An ETF {:blob, _}, not JSON, so a binary body persists byte-exact
+             # (see encode_payload/1).
              encode_payload(op.payload)
            ]),
          :done <- Sqlite3.step(conn, stmt),
@@ -384,7 +386,9 @@ defmodule Embervm.OpLog.SQLite do
              Sqlite3.bind(stmt, [
                op.task_id,
                Map.fetch!(payload, :status_code),
-               Map.get(payload, :body),
+               # {:blob, _} forces BLOB binding so a non-UTF-8 body (a PNG) is
+               # stored byte-exact; a plain binary would bind as TEXT.
+               blob(Map.get(payload, :body)),
                Map.fetch!(payload, :size_bytes),
                bool_to_int(Map.get(payload, :truncated, false)),
                op.ts,
@@ -621,9 +625,10 @@ defmodule Embervm.OpLog.SQLite do
   # lives only in the immutable ops log (payload_json), never a projected
   # column, so this selects the earliest submitted op for the task (the
   # ops_task_id_idx index makes it cheap) and pulls the `request` member out of
-  # the decoded payload. Keys come back as strings (:json.decode never restores
-  # atoms), which the dispatcher expects. {:ok, nil} for an unknown task or a
-  # submitted op that carried no request (an older record).
+  # the decoded payload. Keys come back as strings (decode_payload normalizes both
+  # the legacy JSON and the new ETF-blob forms to string keys), which the
+  # dispatcher expects. {:ok, nil} for an unknown task or a submitted op that
+  # carried no request (an older record).
   defp do_load_request(conn, task_id) do
     sql = """
     SELECT payload_json FROM ops
@@ -1016,29 +1021,52 @@ defmodule Embervm.OpLog.SQLite do
   defp bool_to_int(false), do: 0
   defp bool_to_int(nil), do: 0
 
-  # -- JSON -------------------------------------------------------------
+  # Wrap a binary as an Exqlite {:blob, _} so it binds via sqlite3_bind_blob and
+  # stores byte-exact (a plain binary binds as TEXT). nil (a bodyless result)
+  # passes through as a NULL bind.
+  defp blob(nil), do: nil
+  defp blob(bin) when is_binary(bin), do: {:blob, bin}
 
-  # Normalizes a payload map before encoding: drops nil-valued keys and
-  # stringifies atom values, so :json.encode/1 never sees an atom it can't
-  # represent and decode/1 round-trips to plain strings/numbers/maps only.
-  # Keys are already expected to be atoms or strings; :json.encode/1 handles
-  # atom keys directly, so only values need normalizing here.
+  # -- payload codec ----------------------------------------------------
+
+  # Op payloads are stored as an Erlang External Term Format binary
+  # (:erlang.term_to_binary/1), bound as a {:blob, _} so SQLite keeps the exact
+  # bytes. This replaces the previous :json.encode/1: JSON cannot represent a
+  # non-UTF-8 binary, so a task whose result (or request) body was binary (e.g.
+  # a PNG, first byte 0x89 = 137) crashed the writer with {:invalid_byte, 137}
+  # and cascaded a control-plane restart. ETF round-trips ANY term, so a binary
+  # body persists byte-exact. Payloads are this node's own trusted data (never
+  # untrusted external input), so binary_to_term/1 on read is safe here.
   defp encode_payload(payload) when is_map(payload) do
-    payload
-    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-    |> Map.new(fn {k, v} -> {k, normalize_value(v)} end)
-    |> :json.encode()
-    |> :erlang.iolist_to_binary()
+    {:blob, :erlang.term_to_binary(payload)}
   end
 
-  # nil is already dropped by encode_payload/1 before this runs; booleans are
-  # atoms too but :json.encode/1 handles true/false natively so they pass through.
-  defp normalize_value(v) when is_atom(v) and not is_boolean(v), do: Atom.to_string(v)
-  defp normalize_value(v), do: v
+  # An ETF blob begins with the version byte 131; legacy rows written before this
+  # change are JSON objects beginning with "{" (123). The first byte disambiguates
+  # the two formats during the retention overlap, so old and new rows both read
+  # back correctly. binary_to_term/1 restores the original atom-keyed map, which
+  # `stringify/1` coerces into the string-keyed shape :json.decode/1 produced, so
+  # every reader (the dispatcher's request envelope, replay) is unchanged.
+  defp decode_payload(<<131, _::binary>> = term) do
+    term |> :erlang.binary_to_term() |> stringify()
+  end
 
   defp decode_payload(json) when is_binary(json) do
     :json.decode(json)
   end
+
+  # Coerces a binary_to_term result into the exact shape :json.decode/1 yields
+  # for a legacy row: string keys, non-boolean atom values stringified, and
+  # nil-valued map keys dropped (encode used to reject them before JSON encoding).
+  # Binaries, numbers, booleans and lists pass through, so a binary body survives
+  # intact while staying contract-compatible with the JSON path for all readers.
+  defp stringify(map) when is_map(map) do
+    for {k, v} <- map, not is_nil(v), into: %{}, do: {to_string(k), stringify(v)}
+  end
+
+  defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
+  defp stringify(v) when is_atom(v) and not is_boolean(v), do: Atom.to_string(v)
+  defp stringify(v), do: v
 
   # Guest response headers (a string->string map) ride the `results.headers` column
   # as a JSON object. An empty/absent map is stored as NULL so old rows and

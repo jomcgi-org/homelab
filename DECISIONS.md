@@ -340,3 +340,36 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   parked task never runs after its deadline and never burns a primed VM. Expiry does
   NOT dead-letter (it is not a processing failure; `failed_permanent` is terminal and
   sufficient). This CLOSES the D12 "queued-task TTL not enforced" known gap.
+
+## R1 Phase 2: FaaS consumer (og-image surfaced an op-log durability bug)
+
+### D-R1.2.1 Op payloads are stored as ETF blobs, not JSON (binary-body crash fix)
+- **Found:** registering the first binary-returning function (og-image, Task 12)
+  crashed the control plane. The guest produced a valid PNG, but
+  `Embervm.OpLog.SQLite.encode_payload/1` JSON-encoded the `:succeeded` op payload
+  (which embeds the result `body`), and `:json.encode/1` rejects a non-UTF-8 binary
+  with `{:invalid_byte, 137}` (137 = 0x89, PNG's first byte). That crashed the
+  `OpLog.SQLite` GenServer, cascaded to `TaskStore`, and briefly restarted the
+  control-plane router (self-healed by the supervisor in ~15s; semgrep/sandbox
+  unaffected; the monolith's smoke gate saw a transport error and rolled the
+  registration back, so no poison-pill CR persisted). The `:submitted` request-body
+  path had the same latent exposure (a binary request body would crash identically).
+- **Did instead (Joe's call among 3 options):** store the op payload as an Erlang
+  External Term Format binary (`:erlang.term_to_binary/1`), bound as an Exqlite
+  `{:blob, _}`, replacing `:json.encode/1`. ETF round-trips ANY term, so a binary
+  body persists byte-exact. `decode_payload/1` disambiguates by first byte (ETF
+  version tag 131 vs JSON `{` = 123), so rows written before the upgrade still
+  decode via the JSON branch during the 30-day journal retention overlap. A
+  `stringify/1` normalizer coerces the `binary_to_term` result (atom keys) into the
+  exact string-keyed shape `:json.decode/1` yielded, so every reader (the
+  dispatcher's request envelope via `load_request`, replay via `read_from`) is
+  unchanged. Also wrapped the `results.body` bind as `{:blob, _}` (was a plain
+  binary bound as TEXT) so the projected result row stores a PNG byte-exact too.
+- **Cost accepted:** the `ops.payload_json` column no longer holds JSON, so SQL
+  JSON-function queryability of op payloads is lost. Nothing queries it that way
+  (verified: only plain `SELECT payload_json`), and the payloads are this node's own
+  trusted data, so `binary_to_term/1` on read is safe.
+- **Tests:** ExUnit covers a binary result body round-trip (append -> `read_from` +
+  `load_result`, survives reopen), a binary request body via `load_request`, and a
+  legacy JSON row still decoding to string keys (upgrade compatibility).
+- **Approved:** yes (Joe picked the ETF-blob option; flagged here for post-impl review).
