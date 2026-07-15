@@ -530,3 +530,48 @@ plan was silent. Flagged for post-impl review.
   path exists yet in PR-3 to rebind the process. `base_digest` at create is the image
   ref placeholder; PR-4 threads the BaseBuilder-resolved digest when relight lineage
   needs it.
+
+## R2 Phase 2: bank/relight, placement, adoption (PR-4)
+
+Tasks 7-8 (idle-bank/expiry/GC/eviction + relight-on-invoke/placement/adoption)
+choices where the plan was silent. Flagged for post-impl review.
+
+### D-R2.4.1 `banking`/`relighting` are ETS-only transient states, not durable ops
+- The op-log has no `session_banking`/`session_relighting` kind by design: it records
+  only COMPLETED lifecycle transitions (`session_banked`/`session_relit`). Entering
+  `banking`/`relighting` is an ETS-only move via a new `SessionStore.mark/3` (FSM edge,
+  no append); a crash mid-op heals from node inventory (the node reports either the
+  live VM or the completed snapshot, never both gone silently), not from the durable
+  log. Recovery edges `bank_abort` (banking->running) and `relight_abort`
+  (relighting->banked) are the ETS-only rollbacks on a transient RPC failure. Chosen
+  over adding two more op kinds, which would durably persist a state the FSM already
+  guarantees is transient and crash-healed.
+
+### D-R2.4.2 The bank runs async OFF the manager process (gate 3)
+- `SessionManager.bank/2` ADMITS synchronously (per-node concurrent-bank cap + disk
+  fail-closed gate + `mark(:bank)`), then spawns a worker for the Bank RPC and
+  completes the durable `session_banked` append on a `{:bank_done}` message. This keeps
+  the multi-second bank off the manager's message loop, so a bank never head-of-line-
+  blocks another session's routing (gate 3). The consequence: the per-session idle
+  process STOPS on admission and the three-consecutive-bank-failures counter lives in
+  the MANAGER (`bank_failures` map), not the (now-stopped) session process; three
+  strikes fails + destroys the VM, a strike under the limit restarts a session process.
+
+### D-R2.4.3 Adoption forces ETS state via a total `adopt_state/3`, never the FSM
+- Reconcile derives ETS purely from node truth and must be total over FSM-unbridgeable
+  limbo (e.g. a `banking` session whose node reports a live VM has no `banking->running`
+  FSM edge). `SessionStore.adopt_state/3` sets the ETS state directly (running/banked,
+  no op, never resurrects a terminal row) and `adopt_residency/4` rebinds the VM fact.
+  Reaping (mark failed) happens ONLY when the recorded node IS reporting and covers the
+  session as neither a VM nor a snapshot (authoritative vanish); a node absent from the
+  capacity table (a disconnect) leaves the session untouched (the #3517 reap-free rule).
+
+### D-R2.4.4 Mid-bank invokes park then relight; disk fail-closed is watermark-scoped
+- An invoke arriving while a session is `banking` parks in the relight ledger and is
+  relit once the bank completes (no cancel path; banking is short), matching the plan.
+  The disk fail-closed gate only bites when a snapshot-disk low watermark IS configured:
+  with none configured (eviction disabled) banking proceeds, since there is no disk
+  policy to fail closed against. The wake-rate limit is a per-principal sliding-window
+  counter (default 30/min); the FIRST banked-invoke consumes a token and relights,
+  excess ones 429 without a node hit. Mid-bank parked invokes are not re-wake-charged
+  (they arrived before the bank finished; the narrow window is not a burst lever).
