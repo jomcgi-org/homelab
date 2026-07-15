@@ -36,6 +36,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -110,6 +111,26 @@ type transport interface {
 	RoundTrip(ctx context.Context, udsPath string, req *http.Request) (*http.Response, error)
 }
 
+// sessionDriver is the subset of the fcvm driver the R2 session verbs need on top
+// of vmDriver: bank a live session VM to a self-contained bundle, relight (restore)
+// a VM from a banked bundle, and remove a banked bundle from disk. The real
+// *driver.Driver satisfies it; tests inject a fake. It is a separate seam from
+// vmDriver so a Server built without session support (older tests) still compiles,
+// and so a reviewer sees exactly which driver mechanics the session path reuses
+// (the base-bundle snapshot/restore path, under a sessions/ prefix).
+type sessionDriver interface {
+	// SnapshotSession pauses a live session VM and writes a self-contained session
+	// bundle (memfile + snapfile, the base-bundle format) under sessions/<ref>. It
+	// does NOT resume: the caller Releases the VM immediately after (Bank destroys).
+	SnapshotSession(ctx context.Context, h substrate.Handle, snapshotRef string) (substrate.SnapshotRef, error)
+	// RestoreSession launches a fresh VM from a banked session bundle and resumes it.
+	RestoreSession(ctx context.Context, snapshotRef string) (substrate.Handle, error)
+	// RemoveSessionBundle deletes a banked session bundle from disk (idempotent).
+	RemoveSessionBundle(snapshotRef string) error
+	// SessionsDir is the directory holding banked session bundles, rescanned on start.
+	SessionsDir() string
+}
+
 // BuildDriverSpec parameterises a per-image cold-boot driver.
 type BuildDriverSpec struct {
 	RootfsPath  string
@@ -122,9 +143,10 @@ type BuildDriverSpec struct {
 type Server struct {
 	nodev1.UnimplementedNodeServiceServer
 
-	cfg       config.Config
-	driver    vmDriver
-	transport transport
+	cfg           config.Config
+	driver        vmDriver
+	sessionDriver sessionDriver
+	transport     transport
 	// newBuildDriver builds a cold-boot driver for one image's rootfs+sizing.
 	// nil disables BuildBase (used by tests that only exercise Prime/Assign).
 	newBuildDriver func(BuildDriverSpec) BuildDriver
@@ -138,8 +160,10 @@ type Server struct {
 	// over the pod network. Overridable in tests (a fake archive server).
 	httpClient *http.Client
 
-	vms   *vmRegistry
-	bases *baseRegistry
+	vms         *vmRegistry
+	bases       *baseRegistry
+	sessionVMs  *sessionRegistry
+	sessionSnap *sessionSnapshotRegistry
 
 	drainingMu sync.RWMutex
 	draining   bool
@@ -150,8 +174,13 @@ type Server struct {
 
 // Options configures a Server.
 type Options struct {
-	Config         config.Config
-	Driver         vmDriver
+	Config config.Config
+	Driver vmDriver
+	// SessionDriver serves the R2 session verbs (bank/relight/evict). It may be nil
+	// in tests that only exercise the task-class path; the session handlers then
+	// return Unimplemented. In production the same *driver.Driver satisfies both
+	// Driver and SessionDriver.
+	SessionDriver  sessionDriver
 	Transport      transport
 	NewBuildDriver func(BuildDriverSpec) BuildDriver
 	Logger         *slog.Logger
@@ -166,11 +195,14 @@ func New(opts Options) *Server {
 	s := &Server{
 		cfg:            opts.Config,
 		driver:         opts.Driver,
+		sessionDriver:  opts.SessionDriver,
 		transport:      opts.Transport,
 		newBuildDriver: opts.NewBuildDriver,
 		logger:         logger,
 		vms:            newVMRegistry(),
 		bases:          newBaseRegistry(),
+		sessionVMs:     newSessionRegistry(),
+		sessionSnap:    newSessionSnapshotRegistry(),
 		subs:           make(map[chan struct{}]struct{}),
 	}
 	s.memHeadroom = readMemHeadroomMib
@@ -465,7 +497,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
 	}
-	if s.cfg.MaxLiveVMs > 0 && s.driver.LiveCount() >= s.cfg.MaxLiveVMs {
+	if s.cfg.MaxLiveVMs > 0 && s.liveVMCount() >= s.cfg.MaxLiveVMs {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.cfg.MaxLiveVMs)
 	}
 	base, ok := s.bases.get(ref)
@@ -620,8 +652,277 @@ func (s *Server) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1
 	if e := s.vms.remove(req.GetVmId()); e != nil {
 		s.reap(e.handle, e.egressCancel)
 		s.signalChange()
+		return &nodev1.DestroyResponse{}, nil
+	}
+	// A session VM destroyed out of band (e.g. the control plane tearing down a
+	// suspect or terminal session) lives in the distinct session registry.
+	if e := s.sessionVMs.remove(req.GetVmId()); e != nil {
+		s.reap(e.handle, func() {})
+		s.signalChange()
 	}
 	return &nodev1.DestroyResponse{}, nil
+}
+
+// liveVMCount is the node-wide count of live microVMs for the backstop cap:
+// task-pool VMs plus live session VMs. The fcvm driver's own live map is the
+// authority (both Prime and RestoreSession claim through the same driver), so its
+// LiveCount already sums both; this helper names the invariant at the call site
+// (session VMs count against max_live_vms exactly like task VMs).
+func (s *Server) liveVMCount() int {
+	return s.driver.LiveCount()
+}
+
+// ---- Session verbs (R2) ----------------------------------------------------
+
+// SessionAssign delivers exactly one HTTP task to a LIVE session vm_id over vsock
+// and returns the guest response plus usage WITHOUT destroying the VM (the
+// opposite of Assign's single-use destroy tail: a session survives across
+// invocations). A per-vm in-flight guard serializes calls: a concurrent
+// SessionAssign or Bank on the same vm_id is rejected FAILED_PRECONDITION. An
+// unknown, task-class, or mid-bank vm_id is likewise FAILED_PRECONDITION. On a
+// guest timeout the VM is LEFT ALIVE and the response carries suspect=true so the
+// control plane decides whether to destroy it.
+func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignRequest) (*nodev1.SessionAssignResponse, error) {
+	vmID := req.GetVmId()
+	e, ok := s.sessionVMs.beginInFlight(vmID)
+	if !ok {
+		// Unknown session VM, or an op already in flight on it (a concurrent
+		// SessionAssign or an in-progress Bank). Task-class VMs live in a different
+		// registry and are never found here.
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not assignable (unknown, task-class, mid-bank, or a call is already in flight)", vmID)
+	}
+	// The VM SURVIVES: clear the in-flight guard on return, never reap.
+	defer e.endInFlight()
+
+	gr := req.GetRequest()
+	method := gr.GetMethod()
+	if method == "" {
+		method = http.MethodPost
+	}
+	path := gr.GetPath()
+	if path == "" {
+		path = defaultInvokePath
+	}
+	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
+	if timeout <= 0 {
+		timeout = defaultAssignTimeout
+	}
+	rtCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(rtCtx, method, "http://vsock"+path, bytes.NewReader(gr.GetBody()))
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "noded: build guest request: %v", err)
+	}
+	for k, v := range gr.GetHeaders() {
+		httpReq.Header.Set(k, v)
+	}
+
+	uds := s.driver.VsockUDSPath(e.handle.ThreadID)
+	t0 := time.Now()
+	resp, err := s.transport.RoundTrip(rtCtx, uds, httpReq)
+	if err != nil {
+		// Timeout or transport fault: the VM is LEFT ALIVE (unlike Assign). Flag it
+		// suspect so the control plane can decide to destroy it, and map a deadline to
+		// DEADLINE_EXCEEDED so the caller can distinguish it.
+		if errors.Is(err, context.DeadlineExceeded) || rtCtx.Err() == context.DeadlineExceeded {
+			return nil, status.Errorf(codes.DeadlineExceeded, "noded: session guest did not respond within %s (vm left alive, suspect)", timeout)
+		}
+		return &nodev1.SessionAssignResponse{
+			Response: &nodev1.GuestResponse{StatusCode: uint32(http.StatusBadGateway)},
+			Usage:    &nodev1.UsageStats{WallMs: time.Since(t0).Milliseconds()},
+			Suspect:  true,
+		}, nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGuestResponseBytes))
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: read session guest response: %v", err)
+	}
+	wallMs := time.Since(t0).Milliseconds()
+
+	usage := &nodev1.UsageStats{WallMs: wallMs}
+	if stats, serr := s.driver.Stats(e.handle); serr == nil {
+		usage.CpuMs = stats.CPUMillis
+		usage.PeakRssMib = stats.PeakRSSMib
+	} else {
+		s.logger.Debug("noded: session guest stats unavailable", "vm", vmID, "err", serr)
+	}
+
+	return &nodev1.SessionAssignResponse{
+		Response: &nodev1.GuestResponse{
+			StatusCode: uint32(resp.StatusCode),
+			Headers:    flattenHeaders(resp.Header),
+			Body:       body,
+		},
+		Usage: usage,
+	}, nil
+}
+
+// Bank pauses a live session VM, writes a full self-contained snapshot bundle
+// (memfile + rootfs state, the same format bases use) under the sessions/ prefix,
+// destroys the VM, and returns the opaque {snapshot_ref, size_bytes}. It refuses
+// FAILED_PRECONDITION while a SessionAssign is in flight on that vm_id (the
+// control plane's session process guarantees ordering; this guard is the
+// daemon-side backstop). The produced snapshot enters the in-memory banked
+// inventory so it is reported in NodeStatus even before the next disk rescan.
+func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.BankResponse, error) {
+	if s.sessionDriver == nil {
+		return nil, status.Error(codes.Unimplemented, "noded: session banking not configured")
+	}
+	vmID := req.GetVmId()
+	// Take the in-flight guard: a Bank cannot proceed while a SessionAssign holds the
+	// VM, and while the guard is held no new SessionAssign can start.
+	e, ok := s.sessionVMs.beginInFlight(vmID)
+	if !ok {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not bankable (unknown, task-class, or a call is already in flight)", vmID)
+	}
+	// The Bank destroys the VM, so it never clears the guard: on success the entry is
+	// removed; on failure the VM is left alive but the guard is released so a retry or
+	// a SessionAssign can proceed.
+	snapshotRef := newID("sess")
+	ref, err := s.sessionDriver.SnapshotSession(ctx, e.handle, snapshotRef)
+	if err != nil {
+		e.endInFlight()
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank session vm %q: %v", vmID, err)
+	}
+	// Destroy the VM: the session releases its live capacity and holds only disk.
+	if removed := s.sessionVMs.remove(vmID); removed != nil {
+		s.reap(removed.handle, func() {})
+	}
+	s.sessionSnap.add(sessionSnapshotEntry{
+		snapshotRef:     ref.ID,
+		sessionID:       req.GetSessionId(),
+		workload:        req.GetTrace().GetWorkload(),
+		sizeBytes:       ref.SizeBytes,
+		createdAtUnixMs: time.Now().UnixMilli(),
+	})
+	s.signalChange()
+	return &nodev1.BankResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
+}
+
+// Relight restores a VM from a banked session snapshot_ref (the deliver-without-
+// destroy sibling of Prime's restore), waits for guest readiness with the same
+// vsockhttp WaitReady mechanics Prime uses (150ms attempts, 2s RestoreReadyTimeout),
+// and returns the fresh vm_id. After ready it best-effort POSTs the wall-clock
+// epoch-ms to the guest /shim/clock so time-dependent code resumes with a correct
+// clock; a 404 (a guest without the endpoint) is skipped and logged, never an
+// error. FAILED_PRECONDITION if the ref is unknown or unrestorable; the snapshot is
+// NEVER deleted on a failed restore (the control plane decides).
+func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*nodev1.RelightResponse, error) {
+	if s.sessionDriver == nil {
+		return nil, status.Error(codes.Unimplemented, "noded: session relight not configured")
+	}
+	if s.isDraining() {
+		return nil, status.Error(codes.Unavailable, "noded: draining")
+	}
+	ref := req.GetSnapshotRef()
+	if ref == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
+	}
+	if s.cfg.MaxLiveVMs > 0 && s.liveVMCount() >= s.cfg.MaxLiveVMs {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.cfg.MaxLiveVMs)
+	}
+	if !s.sessionSnap.has(ref) {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: unknown session snapshot_ref %q", ref)
+	}
+	h, err := s.sessionDriver.RestoreSession(ctx, ref)
+	if err != nil {
+		// The snapshot is left on disk (never deleted on a failed restore).
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight session snapshot %q: %v", ref, err)
+	}
+	uds := s.driver.VsockUDSPath(h.ThreadID)
+
+	// Shake out the post-restore vsock RX-queue race, then health-gate on the short
+	// restore budget (same mechanics as Prime).
+	primeCtx, cancelPrime := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	if perr := s.transport.Prime(primeCtx, uds); perr != nil {
+		s.logger.Warn("noded: session vsock prime did not complete; readiness poll will retry past the race", "vm", h.ID, "err", perr)
+	}
+	cancelPrime()
+
+	readyCtx, cancelReady := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	readyErr := s.transport.WaitReady(readyCtx, uds, defaultReadyPath)
+	cancelReady()
+	if readyErr != nil {
+		// A restore that never health-gates is discarded; the snapshot stays on disk
+		// for the control plane to decide (never a silent blank VM).
+		s.reap(h, func() {})
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: relit guest not ready: %v", readyErr)
+	}
+
+	// Best-effort guest clock resync: a restored guest's wall clock is frozen at the
+	// bank instant, so POST the current epoch-ms to /shim/clock. A 404 (a guest
+	// without the endpoint) is skipped and logged, NEVER an error.
+	s.resyncGuestClock(ctx, uds, h.ID)
+
+	s.sessionVMs.add(&sessionEntry{
+		vmID:        h.ID,
+		sessionID:   req.GetSessionId(),
+		workload:    req.GetTrace().GetWorkload(),
+		snapshotRef: ref,
+		handle:      h,
+	})
+	s.signalChange()
+	return &nodev1.RelightResponse{VmId: h.ID}, nil
+}
+
+// resyncGuestClock POSTs the current wall-clock epoch-ms to the guest /shim/clock
+// endpoint over vsock so a relit guest resumes with a correct clock. It is
+// strictly best-effort: any transport error, a non-2xx, or a 404 (a guest build
+// without the endpoint) is logged and swallowed, never surfaced. The daemon does
+// not fail a relight on a clock-resync miss.
+func (s *Server) resyncGuestClock(ctx context.Context, uds, vmID string) {
+	rtCtx, cancel := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	defer cancel()
+	body := []byte(strconv.FormatInt(time.Now().UnixMilli(), 10))
+	httpReq, err := http.NewRequestWithContext(rtCtx, http.MethodPost, "http://vsock/shim/clock", bytes.NewReader(body))
+	if err != nil {
+		s.logger.Debug("noded: build clock resync request failed", "vm", vmID, "err", err)
+		return
+	}
+	httpReq.Header.Set("Content-Type", "text/plain")
+	resp, err := s.transport.RoundTrip(rtCtx, uds, httpReq)
+	if err != nil {
+		s.logger.Debug("noded: clock resync round-trip failed (best-effort)", "vm", vmID, "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	if resp.StatusCode == http.StatusNotFound {
+		s.logger.Info("noded: guest has no /shim/clock endpoint; skipping clock resync", "vm", vmID)
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.logger.Warn("noded: clock resync rejected (best-effort, ignored)", "vm", vmID, "status", resp.StatusCode)
+	}
+}
+
+// EvictSnapshot deletes a banked session snapshot bundle from node disk. It is
+// idempotent (an unknown ref is OK: the desired end-state already holds) and
+// refuses FAILED_PRECONDITION while a LIVE session VM relit from this ref is still
+// running (evicting a bundle out from under a live relit VM would lose the state
+// needed to re-bank it).
+func (s *Server) EvictSnapshot(_ context.Context, req *nodev1.EvictSnapshotRequest) (*nodev1.EvictSnapshotResponse, error) {
+	if s.sessionDriver == nil {
+		return nil, status.Error(codes.Unimplemented, "noded: session eviction not configured")
+	}
+	ref := req.GetSnapshotRef()
+	if ref == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
+	}
+	// In-use guard: refuse while a live session VM was relit from this ref.
+	for _, e := range s.sessionVMs.snapshotWithRefs() {
+		if e.snapshotRef == ref {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: session snapshot %q is in use by live vm %q", ref, e.vmID)
+		}
+	}
+	if err := s.sessionDriver.RemoveSessionBundle(ref); err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: evict session snapshot %q: %v", ref, err)
+	}
+	s.sessionSnap.remove(ref)
+	s.signalChange()
+	return &nodev1.EvictSnapshotResponse{}, nil
 }
 
 // ---- Node status -----------------------------------------------------------
@@ -672,12 +973,17 @@ func (s *Server) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStrea
 
 // nodeStatus assembles the current capacity fact set.
 func (s *Server) nodeStatus() *nodev1.NodeStatus {
-	primed, live := s.vms.capacity()
+	primed, taskLive := s.vms.capacity()
 	caps := s.workloadCapacities(primed)
 	maxLive := s.cfg.MaxLiveVMs
 	if maxLive < 0 {
 		maxLive = 0
 	}
+	// Session VMs count against the node live-VM total alongside task-pool VMs.
+	sessionVMs := s.sessionVMsStatus()
+	live := taskLive + len(sessionVMs)
+	snaps := s.sessionSnapshotsStatus()
+	freeBytes, usedBytes := s.snapshotDiskUsage()
 	return &nodev1.NodeStatus{
 		NodeId:                s.cfg.Node,
 		Workloads:             caps,
@@ -687,7 +993,44 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		MaxLiveVms:            uint32(maxLive),
 		Draining:              s.isDraining(),
 		BuildError:            s.bases.firstBuildError(),
+		SessionVms:            sessionVMs,
+		SessionSnapshots:      snaps,
+		SnapshotDiskFreeBytes: freeBytes,
+		SnapshotDiskUsedBytes: usedBytes,
 	}
+}
+
+// sessionVMsStatus projects the live session-VM registry into the NodeStatus
+// message shape. These are reported ONLY here, never in
+// WorkloadCapacity.primed_vm_ids, so a session VM is never adopted into the
+// single-use task pool.
+func (s *Server) sessionVMsStatus() []*nodev1.SessionVm {
+	live := s.sessionVMs.snapshot()
+	out := make([]*nodev1.SessionVm, 0, len(live))
+	for _, e := range live {
+		out = append(out, &nodev1.SessionVm{
+			VmId:      e.vmID,
+			SessionId: e.sessionID,
+			Workload:  e.workload,
+		})
+	}
+	return out
+}
+
+// sessionSnapshotsStatus projects the banked-snapshot inventory into NodeStatus.
+func (s *Server) sessionSnapshotsStatus() []*nodev1.SessionSnapshot {
+	snaps := s.sessionSnap.snapshot()
+	out := make([]*nodev1.SessionSnapshot, 0, len(snaps))
+	for _, e := range snaps {
+		out = append(out, &nodev1.SessionSnapshot{
+			SnapshotRef:     e.snapshotRef,
+			SessionId:       e.sessionID,
+			Workload:        e.workload,
+			SizeBytes:       uint64(e.sizeBytes),
+			CreatedAtUnixMs: e.createdAtUnixMs,
+		})
+	}
+	return out
 }
 
 // workloadCapacities merges the primed vm_ids with base build state per
@@ -785,6 +1128,53 @@ func (s *Server) reap(h substrate.Handle, egressCancel func()) {
 	}
 }
 
+// snapshotDiskUsage reports the sessions snapshot dir filesystem's free and used
+// bytes so the control plane's LRU eviction and the watermark alert can see disk
+// pressure. It statfs()es the sessions dir (or the snapshot root if the sessions
+// dir does not exist yet). Best-effort: any error yields (0, 0), which the control
+// plane's fail-closed disk policy reads as "no facts" (it then initiates no new
+// banks rather than banking onto a possibly-full disk).
+func (s *Server) snapshotDiskUsage() (freeBytes, usedBytes uint64) {
+	dir := s.snapshotSessionsDir()
+	if dir == "" {
+		return 0, 0
+	}
+	// statfs needs an existing path; fall back to the snapshot root, then give up.
+	target := dir
+	if _, err := os.Stat(target); err != nil {
+		target = s.cfg.SnapshotRoot
+		if target == "" {
+			return 0, 0
+		}
+		if _, err := os.Stat(target); err != nil {
+			return 0, 0
+		}
+	}
+	var st unix.Statfs_t
+	if err := unix.Statfs(target, &st); err != nil {
+		s.logger.Debug("noded: statfs sessions dir", "dir", target, "err", err)
+		return 0, 0
+	}
+	bsize := uint64(st.Bsize) //nolint:unconvert // Bsize is int64 on linux, uint32 on darwin
+	freeBytes = st.Bavail * bsize
+	usedBytes = (st.Blocks - st.Bfree) * bsize
+	return freeBytes, usedBytes
+}
+
+// snapshotSessionsDir is the directory holding banked session bundles. It prefers
+// the session driver's own SessionsDir (the single source of truth for the path);
+// when no session driver is wired (task-only tests) it derives it from the config
+// snapshot root, and returns "" if neither is available.
+func (s *Server) snapshotSessionsDir() string {
+	if s.sessionDriver != nil {
+		return s.sessionDriver.SessionsDir()
+	}
+	if s.cfg.SnapshotRoot == "" {
+		return ""
+	}
+	return filepath.Join(s.cfg.SnapshotRoot, "sessions")
+}
+
 // ---- startup base reconciliation -------------------------------------------
 
 // ReconcileBasesFromDisk scans SnapshotRoot/bases for base bundles left by a
@@ -829,6 +1219,70 @@ func (s *Server) ReconcileBasesFromDisk() {
 	}
 	if n > 0 {
 		s.logger.Info("noded: reconciled existing base snapshots", "count", n)
+		s.signalChange()
+	}
+}
+
+// ReconcileSessionsFromDisk scans the sessions snapshot dir for banked session
+// bundles left by a prior daemon incarnation and seeds the in-memory banked
+// inventory, so a restarted daemon reports what banked sessions survive and the
+// control plane adopts them (a banked session survives a daemon restart; a live
+// one does not, its Firecracker child having died with the daemon). A bundle dir
+// name is the opaque snapshot_ref; session_id/workload are unknown for a disk-only
+// entry (the control plane rebinds them by adoption from its own projection). A
+// missing dir or unreadable entries are ignored (fresh node). The sessions dir is
+// (re)created 0700 so a banked bundle (a principal's memory image) is never
+// world-readable.
+func (s *Server) ReconcileSessionsFromDisk() {
+	root := s.snapshotSessionsDir()
+	if root == "" {
+		return
+	}
+	// Ensure the dir exists with tight perms even on a fresh node, so the first Bank
+	// never races a 0755 MkdirAll and leaves a world-readable window.
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		s.logger.Warn("noded: create sessions dir", "root", root, "err", err)
+	} else {
+		// MkdirAll respects umask; force 0700 so an existing looser dir is tightened.
+		if err := os.Chmod(root, 0o700); err != nil {
+			s.logger.Warn("noded: chmod sessions dir 0700", "root", root, "err", err)
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			s.logger.Warn("noded: scan session bundles", "root", root, "err", err)
+		}
+		return
+	}
+	n := 0
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		ref := ent.Name()
+		snapfile := filepath.Join(root, ref, "snapfile")
+		fi, err := os.Stat(snapfile)
+		if err != nil {
+			// A dir without a snapfile is a half-written or evicted-in-progress bundle;
+			// skip (a half-written bank never reports as restorable).
+			continue
+		}
+		size := fi.Size()
+		var createdMs int64 = fi.ModTime().UnixMilli()
+		memfile := filepath.Join(root, ref, "memfile")
+		if mfi, err := os.Stat(memfile); err == nil {
+			size += mfi.Size()
+		}
+		s.sessionSnap.add(sessionSnapshotEntry{
+			snapshotRef:     ref,
+			sizeBytes:       size,
+			createdAtUnixMs: createdMs,
+		})
+		n++
+	}
+	if n > 0 {
+		s.logger.Info("noded: reconciled existing session snapshots", "count", n)
 		s.signalChange()
 	}
 }

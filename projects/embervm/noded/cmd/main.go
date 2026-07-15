@@ -85,8 +85,13 @@ func run(logger *slog.Logger) error {
 	}
 
 	srv := server.New(server.Options{
-		Config:         cfg,
-		Driver:         restoreDriver,
+		Config: cfg,
+		Driver: restoreDriver,
+		// The same restore driver serves the R2 session verbs: SnapshotSession /
+		// RestoreSession / RemoveSessionBundle reuse its base-bundle snapshot/restore
+		// mechanics under a sessions/ prefix, and its live map already counts session
+		// VMs against the node cap.
+		SessionDriver:  restoreDriver,
 		Transport:      transport,
 		NewBuildDriver: newBuild,
 		Logger:         logger,
@@ -94,6 +99,10 @@ func run(logger *slog.Logger) error {
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.
 	srv.ReconcileBasesFromDisk()
+	// Report node-local BANKED session snapshots left by a prior incarnation so the
+	// control plane adopts surviving banked sessions (live session VMs died with the
+	// prior daemon; their last banked snapshot, if any, stays restorable).
+	srv.ReconcileSessionsFromDisk()
 
 	var serverOpts []grpc.ServerOption
 	if cfg.BearerToken != "" {

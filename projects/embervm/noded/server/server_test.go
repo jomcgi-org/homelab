@@ -10,6 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +46,22 @@ type fakeDriver struct {
 	// an archive drive (it hydrates over vsock), so a test asserts the build guest
 	// claimed with only its rootfs (no extra drive fields exist on ClaimSpec now).
 	lastClaim substrate.ClaimSpec
+
+	// Session-driver seam (R2). sessionBundles is the in-memory stand-in for the
+	// on-disk sessions/ dir: a Bank writes a ref -> marker entry (the "state" the
+	// guest banked), a Relight reads it back, and an Evict deletes it. This lets a
+	// server test prove state persistence across bank/relight without real
+	// Firecracker: the marker written by SnapshotSession is exactly what
+	// RestoreSession makes readable again (see restoreMarkers).
+	sessionBundles map[string]string // snapshot_ref -> banked state marker
+	// restoreMarkers maps a relit threadID back to the marker its bundle carried, so
+	// a fake transport can echo the persisted state on the post-relight round-trip.
+	restoreMarkers   map[string]string // threadID -> marker
+	sessionsDir      string
+	snapshotSessions int
+	restoreSessions  int
+	removeSessions   int
+	nextBankMarker   string // the marker the NEXT Bank persists (the pre-bank guest state)
 }
 
 func (f *fakeDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
@@ -101,6 +121,65 @@ func (f *fakeDriver) SnapshotBase(_ context.Context, _ substrate.Handle, baseKey
 	return substrate.SnapshotRef{ID: baseKey, Base: true, SizeBytes: 4096}, nil
 }
 
+// SnapshotSession banks the fake VM: it persists the pre-bank marker (nextBankMarker)
+// under the produced snapshot_ref, and does NOT resume (the server destroys the VM
+// after). It decrements the live count like a real snapshot-then-destroy would once
+// the server calls Release, so it does not touch f.live here.
+func (f *fakeDriver) SnapshotSession(_ context.Context, _ substrate.Handle, snapshotRef string) (substrate.SnapshotRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshotSessions++
+	if f.sessionBundles == nil {
+		f.sessionBundles = map[string]string{}
+	}
+	f.sessionBundles[snapshotRef] = f.nextBankMarker
+	return substrate.SnapshotRef{ID: snapshotRef, Node: "node-4", Arch: "amd64", SizeBytes: 8192}, nil
+}
+
+// RestoreSession relights a fake VM from a banked bundle: the ref must have been
+// banked (else it errors, exactly the unrestorable-ref case Relight maps to
+// FAILED_PRECONDITION), and the restored handle's threadID is bound to the banked
+// marker so a post-relight round-trip can echo the persisted state.
+func (f *fakeDriver) RestoreSession(_ context.Context, snapshotRef string) (substrate.Handle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	marker, ok := f.sessionBundles[snapshotRef]
+	if !ok {
+		return substrate.Handle{}, context.Canceled // stand-in for "bundle missing"
+	}
+	f.restoreSessions++
+	f.claims++
+	f.live++
+	threadID := "relit-" + snapshotRef
+	if f.restoreMarkers == nil {
+		f.restoreMarkers = map[string]string{}
+	}
+	f.restoreMarkers[threadID] = marker
+	return substrate.Handle{ThreadID: threadID, ID: "vm-" + threadID, Node: "node-4"}, nil
+}
+
+func (f *fakeDriver) RemoveSessionBundle(snapshotRef string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removeSessions++
+	delete(f.sessionBundles, snapshotRef)
+	return nil
+}
+
+func (f *fakeDriver) SessionsDir() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessionsDir
+}
+
+// markerForThread returns the banked marker bound to a relit threadID (for the
+// state-persistence assertion via a fake transport).
+func (f *fakeDriver) markerForThread(threadID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.restoreMarkers[threadID]
+}
+
 func (f *fakeDriver) counts() (claims, releases, removeBundles, statsCalls int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -120,17 +199,33 @@ type fakeTransport struct {
 	hydrates     int
 	hydrateBytes []byte
 	hydrateErr   error
+
+	// clockPosts counts best-effort POST /shim/clock calls (Relight's guest clock
+	// resync); clockStatus is the status the fake returns for them (0 => 200). A 404
+	// exercises the "guest without the endpoint" skip-and-log path.
+	clockPosts  int
+	clockStatus int
+	// stateSource, when set, lets a round-trip echo persisted session state so a
+	// server test can prove state survived a bank/relight. It maps the dialed
+	// udsPath to the marker the relit VM's bundle carried.
+	stateSource func(udsPath string) string
+	// blockRoundTrip, when non-nil, is closed-gated: a round-trip waits on it before
+	// returning, so a test can hold a SessionAssign "in flight" and prove the per-vm
+	// serialization guard rejects a concurrent call.
+	blockRoundTrip chan struct{}
 }
 
-func (f *fakeTransport) WaitReady(_ context.Context, _, _ string) error { return f.waitReadyErr }
-func (f *fakeTransport) Prime(_ context.Context, _ string) error        { return nil }
+func (f *fakeTransport) WaitReady(_ context.Context, _, _ string) error {
+	return f.waitReadyErr // nosemgrep: no-bare-error-return
+}
+func (f *fakeTransport) Prime(_ context.Context, _ string) error { return nil }
 
 func (f *fakeTransport) Hydrate(_ context.Context, _ string, archive []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hydrates++
 	if f.hydrateErr != nil {
-		return f.hydrateErr
+		return f.hydrateErr // nosemgrep: no-bare-error-return
 	}
 	// Copy: the caller's slice is a bytes.Reader source that outlives this call, but
 	// copy so a later mutation cannot alias the captured bytes.
@@ -150,20 +245,58 @@ func (f *fakeTransport) hydratedBytes() []byte {
 	return f.hydrateBytes
 }
 
-func (f *fakeTransport) RoundTrip(_ context.Context, _ string, req *http.Request) (*http.Response, error) {
+func (f *fakeTransport) RoundTrip(ctx context.Context, udsPath string, req *http.Request) (*http.Response, error) {
+	// Best-effort guest clock resync (Relight): count it and return the configured
+	// status (default 200); a 404 exercises the skip-and-log path.
+	if req.URL.Path == "/shim/clock" {
+		f.mu.Lock()
+		f.clockPosts++
+		st := f.clockStatus
+		f.mu.Unlock()
+		if st == 0 {
+			st = http.StatusOK
+		}
+		return &http.Response{StatusCode: st, Body: io.NopCloser(bytes.NewReader(nil))}, nil
+	}
+
 	f.mu.Lock()
 	f.roundTrips++
 	rtErr := f.roundTripErr
+	block := f.blockRoundTrip
+	stateSource := f.stateSource
 	f.mu.Unlock()
+
+	// Hold the call "in flight" if a test gated it, so a concurrent SessionAssign can
+	// prove the per-vm serialization guard rejects it.
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if rtErr != nil {
 		return nil, rtErr
 	}
 	body, _ := io.ReadAll(req.Body)
+	echo := "ok:" + string(body)
+	// A relit session VM echoes the state its bundle carried (proving persistence).
+	if stateSource != nil {
+		if marker := stateSource(udsPath); marker != "" {
+			echo = "state:" + marker
+		}
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"X-Echo": []string{"1"}},
-		Body:       io.NopCloser(bytes.NewReader([]byte("ok:" + string(body)))),
+		Body:       io.NopCloser(bytes.NewReader([]byte(echo))),
 	}, nil
+}
+
+func (f *fakeTransport) clockPostCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.clockPosts
 }
 
 func (f *fakeTransport) roundTripCount() int {
@@ -202,6 +335,73 @@ func newTestServer(t *testing.T, drv *fakeDriver, tr *fakeTransport, maxLive int
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return nodev1.NewNodeServiceClient(conn), s
+}
+
+// newSessionTestServer wires a Server with the fakeDriver serving BOTH the task
+// vmDriver seam and the R2 sessionDriver seam, so session verbs (Bank/Relight/
+// EvictSnapshot) are live. The transport's stateSource is bound to the driver so a
+// relit VM's round-trip echoes the persisted marker (state-persistence proof).
+func newSessionTestServer(t *testing.T, drv *fakeDriver, tr *fakeTransport, maxLive int) (nodev1.NodeServiceClient, *Server) {
+	t.Helper()
+	dir := t.TempDir()
+	drv.sessionsDir = dir
+	// Echo persisted session state on a relit VM's round-trip: parse the threadID out
+	// of the fake uds path (/tmp/<threadID>.sock) and look up its banked marker.
+	tr.stateSource = func(udsPath string) string {
+		base := strings.TrimPrefix(udsPath, "/tmp/")
+		threadID := strings.TrimSuffix(base, ".sock")
+		return drv.markerForThread(threadID)
+	}
+	s := New(Options{
+		Config:        config.Config{Arch: "amd64", Node: "node-4", MaxLiveVMs: maxLive, SnapshotRoot: dir},
+		Driver:        drv,
+		SessionDriver: drv,
+		Transport:     tr,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	s.memHeadroom = func() uint64 { return 0 }
+
+	lis := bufconn.Listen(1 << 20)
+	gs := grpc.NewServer()
+	nodev1.RegisterNodeServiceServer(gs, s)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial bufconn: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return nodev1.NewNodeServiceClient(conn), s
+}
+
+// primeSessionVM relights a session VM directly through the server so a test starts
+// from a live session VM. It banks a throwaway marker first (Relight requires a
+// known banked ref), returning the live vm_id.
+func primeSessionVM(t *testing.T, srv *Server, drv *fakeDriver, sessionID, workload, ref, marker string) string {
+	t.Helper()
+	drv.mu.Lock()
+	if drv.sessionBundles == nil {
+		drv.sessionBundles = map[string]string{}
+	}
+	drv.sessionBundles[ref] = marker
+	drv.mu.Unlock()
+	srv.sessionSnap.add(sessionSnapshotEntry{snapshotRef: ref, sessionID: sessionID, workload: workload})
+	resp, err := srv.Relight(context.Background(), &nodev1.RelightRequest{
+		Trace:       &nodev1.Trace{Workload: workload},
+		SnapshotRef: ref,
+		SessionId:   sessionID,
+	})
+	if err != nil {
+		t.Fatalf("primeSessionVM Relight: %v", err)
+	}
+	return resp.GetVmId()
 }
 
 func seedBase(s *Server, snapshotRef, workload string) {
@@ -807,9 +1007,465 @@ func TestNodeStatusReportsPrimedVMIDs(t *testing.T) {
 	}
 }
 
+// ---- R2 session verb tests -------------------------------------------------
+
+// sessionVMIDs / sessionSnapRefs extract the session facts from a NodeStatus.
+func sessionVMIDs(ns *nodev1.NodeStatus) []string {
+	out := make([]string, 0, len(ns.GetSessionVms()))
+	for _, v := range ns.GetSessionVms() {
+		out = append(out, v.GetVmId())
+	}
+	return out
+}
+
+func sessionSnapRefs(ns *nodev1.NodeStatus) []string {
+	out := make([]string, 0, len(ns.GetSessionSnapshots()))
+	for _, s := range ns.GetSessionSnapshots() {
+		out = append(out, s.GetSnapshotRef())
+	}
+	return out
+}
+
+// TestSessionAssignSurvives: SessionAssign delivers a request to a live session VM
+// and the VM SURVIVES (no reap), unlike Assign. A second SessionAssign to the same
+// vm_id succeeds against the still-live VM.
+func TestSessionAssignSurvives(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-1", "echo", "sref-1", "")
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		resp, err := client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+			VmId:      vmID,
+			SessionId: "s-1",
+			Request:   &nodev1.GuestRequest{Method: "POST", Path: "/invoke", Body: []byte("hi")},
+			TimeoutMs: 1000,
+		})
+		if err != nil {
+			t.Fatalf("SessionAssign %d: %v", i, err)
+		}
+		if resp.GetSuspect() {
+			t.Errorf("SessionAssign %d marked suspect on a clean response", i)
+		}
+		if got := string(resp.GetResponse().GetBody()); got != "ok:hi" {
+			t.Errorf("body = %q, want ok:hi", got)
+		}
+	}
+	// The VM was never released (survives across invocations).
+	if _, releases, removeBundles, _ := drv.counts(); releases != 0 || removeBundles != 0 {
+		t.Errorf("SessionAssign destroyed the VM: releases=%d removeBundles=%d, want 0/0", releases, removeBundles)
+	}
+	if got := drv.LiveCount(); got != 1 {
+		t.Errorf("LiveCount after two SessionAssigns = %d, want 1 (VM survives)", got)
+	}
+}
+
+// TestSessionAssignUnknownVM rejects a SessionAssign for an unknown vm_id with
+// FAILED_PRECONDITION and no driver interaction.
+func TestSessionAssignUnknownVM(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, _ := newSessionTestServer(t, drv, tr, 8)
+	_, err := client.SessionAssign(context.Background(), &nodev1.SessionAssignRequest{
+		VmId:    "vm-nope",
+		Request: &nodev1.GuestRequest{Body: []byte("x")},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", status.Code(err))
+	}
+	if tr.roundTripCount() != 0 {
+		t.Error("unknown SessionAssign round-tripped to a guest")
+	}
+}
+
+// TestSessionAssignTaskClassVMRejected: a task-pool vm_id (in the OTHER registry)
+// is not a session VM, so SessionAssign rejects it FAILED_PRECONDITION and never
+// destroys the primed task VM.
+func TestSessionAssignTaskClassVMRejected(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	seedBase(srv, "echo__task01", "echo")
+	ctx := context.Background()
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "echo__task01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	_, err = client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+		VmId:    pr.GetVmId(),
+		Request: &nodev1.GuestRequest{Body: []byte("x")},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (task-class vm not a session)", status.Code(err))
+	}
+	if _, releases, _, _ := drv.counts(); releases != 0 {
+		t.Errorf("SessionAssign on a task VM reaped it: releases=%d, want 0", releases)
+	}
+}
+
+// TestSessionAssignTimeoutLeavesAlive: a guest timeout yields DEADLINE_EXCEEDED but
+// the session VM is LEFT ALIVE (unlike Assign, which destroys). A subsequent
+// SessionAssign still reaches the (now responsive) VM.
+func TestSessionAssignTimeoutLeavesAlive(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{roundTripErr: context.DeadlineExceeded}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-2", "echo", "sref-2", "")
+
+	_, err := client.SessionAssign(context.Background(), &nodev1.SessionAssignRequest{
+		VmId:      vmID,
+		Request:   &nodev1.GuestRequest{Body: []byte("slow")},
+		TimeoutMs: 50,
+	})
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("code = %v, want DeadlineExceeded", status.Code(err))
+	}
+	// VM left alive.
+	if _, releases, _, _ := drv.counts(); releases != 0 {
+		t.Errorf("timed-out SessionAssign destroyed the VM: releases=%d, want 0", releases)
+	}
+	if drv.LiveCount() != 1 {
+		t.Errorf("LiveCount after timeout = %d, want 1 (VM survives)", drv.LiveCount())
+	}
+}
+
+// TestSessionInFlightGuard: a concurrent SessionAssign on the same vm_id is
+// rejected FAILED_PRECONDITION while the first is in flight (the per-vm
+// serialization guard the contract requires).
+func TestSessionInFlightGuard(t *testing.T) {
+	drv := &fakeDriver{}
+	gate := make(chan struct{})
+	tr := &fakeTransport{blockRoundTrip: gate}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-3", "echo", "sref-3", "")
+	ctx := context.Background()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+			VmId:      vmID,
+			Request:   &nodev1.GuestRequest{Body: []byte("first")},
+			TimeoutMs: 5000,
+		})
+		firstDone <- err
+	}()
+
+	// Wait until the first round-trip is in flight (guard held).
+	deadline := time.Now().Add(2 * time.Second)
+	for tr.roundTripCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("first SessionAssign never entered its round-trip")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// A concurrent SessionAssign is rejected by the in-flight guard.
+	_, err := client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+		VmId:      vmID,
+		Request:   &nodev1.GuestRequest{Body: []byte("concurrent")},
+		TimeoutMs: 5000,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("concurrent SessionAssign code = %v, want FailedPrecondition", status.Code(err))
+	}
+
+	close(gate) // release the first
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first SessionAssign: %v", err)
+	}
+}
+
+// TestBankRelightRoundTrip is the headline: Bank a live session VM to a restorable
+// ref (VM destroyed), then Relight from that ref (fresh VM), and prove STATE
+// PERSISTED across the bank/relight (a marker written pre-bank is read post-relight
+// via the fake driver+transport). Also asserts the banked snapshot appears in
+// NodeStatus with a size, and Bank did not leave the VM live.
+func TestBankRelightRoundTrip(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-4", "echo", "sref-birth", "")
+	ctx := context.Background()
+
+	// The guest "accretes" state before the bank; the fake persists this marker.
+	drv.mu.Lock()
+	drv.nextBankMarker = "accreted-x=42"
+	drv.mu.Unlock()
+
+	bankResp, err := client.Bank(ctx, &nodev1.BankRequest{
+		VmId:      vmID,
+		SessionId: "s-4",
+		Trace:     &nodev1.Trace{Workload: "echo"},
+	})
+	if err != nil {
+		t.Fatalf("Bank: %v", err)
+	}
+	if bankResp.GetSnapshotRef() == "" || bankResp.GetSizeBytes() == 0 {
+		t.Fatalf("Bank resp = %+v, want a ref and non-zero size", bankResp)
+	}
+	// The VM was destroyed by the bank (live capacity released).
+	if _, releases, removeBundles, _ := drv.counts(); releases != 1 || removeBundles != 1 {
+		t.Errorf("Bank did not destroy the VM: releases=%d removeBundles=%d, want 1/1", releases, removeBundles)
+	}
+	if drv.LiveCount() != 0 {
+		t.Errorf("LiveCount after Bank = %d, want 0 (VM destroyed)", drv.LiveCount())
+	}
+
+	// The banked snapshot is in the inventory / NodeStatus, but the vm is gone.
+	ns, err := client.GetNodeStatus(ctx, &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetNodeStatus: %v", err)
+	}
+	if refs := sessionSnapRefs(ns); len(refs) != 1 || refs[0] != bankResp.GetSnapshotRef() {
+		t.Errorf("session_snapshots = %v, want [%s]", refs, bankResp.GetSnapshotRef())
+	}
+	if ids := sessionVMIDs(ns); len(ids) != 0 {
+		t.Errorf("session_vms = %v, want empty after Bank", ids)
+	}
+
+	// Relight from the banked ref: fresh VM, and its round-trip echoes the persisted
+	// state (proving the marker survived the bank/relight).
+	rl, err := client.Relight(ctx, &nodev1.RelightRequest{
+		SnapshotRef: bankResp.GetSnapshotRef(),
+		SessionId:   "s-4",
+		Trace:       &nodev1.Trace{Workload: "echo"},
+	})
+	if err != nil {
+		t.Fatalf("Relight: %v", err)
+	}
+	if rl.GetVmId() == "" || rl.GetVmId() == vmID {
+		t.Fatalf("relit vm_id = %q, want a fresh id (was %q)", rl.GetVmId(), vmID)
+	}
+	resp, err := client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+		VmId:      rl.GetVmId(),
+		SessionId: "s-4",
+		Request:   &nodev1.GuestRequest{Body: []byte("read-state")},
+		TimeoutMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("post-relight SessionAssign: %v", err)
+	}
+	if got := string(resp.GetResponse().GetBody()); got != "state:accreted-x=42" {
+		t.Fatalf("post-relight body = %q, want the pre-bank state marker", got)
+	}
+	// Relight best-effort-posted the guest clock resync (200 path).
+	if tr.clockPostCount() != 1 {
+		t.Errorf("clock resync posts = %d, want 1", tr.clockPostCount())
+	}
+}
+
+// TestRelightUnknownRefFails: a Relight for a snapshot_ref not in the banked
+// inventory is FAILED_PRECONDITION and never restores.
+func TestRelightUnknownRefFails(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, _ := newSessionTestServer(t, drv, tr, 8)
+	_, err := client.Relight(context.Background(), &nodev1.RelightRequest{SnapshotRef: "ghost-ref"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", status.Code(err))
+	}
+	if drv.restoreSessions != 0 {
+		t.Errorf("unknown Relight restored a VM: restoreSessions=%d", drv.restoreSessions)
+	}
+}
+
+// TestRelightClock404Skipped: a guest without /shim/clock returns 404 for the
+// resync POST; Relight treats it as skip-and-log, NOT an error, and still succeeds.
+func TestRelightClock404Skipped(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{clockStatus: http.StatusNotFound}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	// Bank a ref into inventory to relight.
+	vmID := primeSessionVM(t, srv, drv, "s-5", "echo", "sref-5", "m")
+	_ = vmID
+	rl, err := client.Relight(context.Background(), &nodev1.RelightRequest{SnapshotRef: "sref-5", SessionId: "s-5"})
+	if err != nil {
+		t.Fatalf("Relight with a 404 clock endpoint should still succeed: %v", err)
+	}
+	if rl.GetVmId() == "" {
+		t.Fatal("Relight returned an empty vm_id")
+	}
+	if tr.clockPostCount() != 2 { // one from primeSessionVM's Relight, one here
+		t.Errorf("clock posts = %d, want 2", tr.clockPostCount())
+	}
+}
+
+// TestEvictSnapshotInUseGuardAndIdempotency: EvictSnapshot refuses while a live VM
+// was relit from the ref (in-use guard), succeeds once no live VM references it,
+// and is idempotent (an unknown ref is OK).
+func TestEvictSnapshotInUseGuardAndIdempotency(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	ctx := context.Background()
+
+	// A live session VM relit from sref-live.
+	vmID := primeSessionVM(t, srv, drv, "s-6", "echo", "sref-live", "m")
+	srv.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "sref-live", sessionID: "s-6", workload: "echo", sizeBytes: 1})
+
+	// In-use: refused while the relit VM runs.
+	_, err := client.EvictSnapshot(ctx, &nodev1.EvictSnapshotRequest{SnapshotRef: "sref-live"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("in-use evict code = %v, want FailedPrecondition", status.Code(err))
+	}
+
+	// Destroy the live VM, then evict succeeds.
+	if _, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: vmID}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if _, err := client.EvictSnapshot(ctx, &nodev1.EvictSnapshotRequest{SnapshotRef: "sref-live"}); err != nil {
+		t.Fatalf("evict after destroy: %v", err)
+	}
+	if drv.removeSessions != 1 {
+		t.Errorf("removeSessions = %d, want 1", drv.removeSessions)
+	}
+	// Idempotent: unknown ref is OK.
+	if _, err := client.EvictSnapshot(ctx, &nodev1.EvictSnapshotRequest{SnapshotRef: "never-banked"}); err != nil {
+		t.Fatalf("idempotent evict of unknown ref: %v", err)
+	}
+}
+
+// TestSessionInventoryRescanOnRestart: a daemon that starts with banked bundles on
+// disk rescans them into the inventory and reports them in NodeStatus (the adoption
+// source of truth), while live session VMs do NOT survive (their FC children died).
+func TestSessionInventoryRescanOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	// Seed two banked bundles on disk (snapfile + memfile under sessions/<ref>).
+	sessRoot := filepath.Join(dir, "sessions")
+	for _, ref := range []string{"sref-a", "sref-b"} {
+		bd := filepath.Join(sessRoot, ref)
+		if err := os.MkdirAll(bd, 0o700); err != nil {
+			t.Fatalf("mkdir bundle: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(bd, "snapfile"), []byte("snap"), 0o600); err != nil {
+			t.Fatalf("write snapfile: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(bd, "memfile"), []byte("mem-bytes"), 0o600); err != nil {
+			t.Fatalf("write memfile: %v", err)
+		}
+	}
+	// A half-written bundle (no snapfile) must NOT be reported as restorable.
+	if err := os.MkdirAll(filepath.Join(sessRoot, "sref-halfwritten"), 0o700); err != nil {
+		t.Fatalf("mkdir half-written: %v", err)
+	}
+
+	drv := &fakeDriver{sessionsDir: sessRoot}
+	s := New(Options{
+		Config:        config.Config{Arch: "amd64", Node: "node-4", MaxLiveVMs: 8, SnapshotRoot: dir},
+		Driver:        drv,
+		SessionDriver: drv,
+		Transport:     &fakeTransport{},
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	s.memHeadroom = func() uint64 { return 0 }
+	s.ReconcileSessionsFromDisk()
+
+	ns := s.nodeStatus()
+	refs := sessionSnapRefs(ns)
+	sort.Strings(refs)
+	if len(refs) != 2 || refs[0] != "sref-a" || refs[1] != "sref-b" {
+		t.Fatalf("rescanned session_snapshots = %v, want [sref-a sref-b] (half-written skipped)", refs)
+	}
+	// No live session VMs survive a restart.
+	if ids := sessionVMIDs(ns); len(ids) != 0 {
+		t.Errorf("session_vms after restart = %v, want empty (live VMs died with the daemon)", ids)
+	}
+	// The sessions dir is 0700 (a banked bundle holds a principal's memory image).
+	fi, err := os.Stat(sessRoot)
+	if err != nil {
+		t.Fatalf("stat sessions dir: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o700 {
+		t.Errorf("sessions dir perms = %o, want 0700", perm)
+	}
+}
+
+// TestSessionVMsExcludedFromPrimedPool is the pool-separation invariant: a live
+// session VM appears in NodeStatus.session_vms and in live_vms, but NEVER in any
+// workload's primed_vm_ids (it must never be adopted into the single-use task pool).
+func TestSessionVMsExcludedFromPrimedPool(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	ctx := context.Background()
+
+	// One primed task VM and one live session VM, both for workload "echo".
+	seedBase(srv, "echo__pool01", "echo")
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "echo__pool01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	sessVM := primeSessionVM(t, srv, drv, "s-7", "echo", "sref-pool", "")
+
+	ns, err := client.GetNodeStatus(ctx, &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetNodeStatus: %v", err)
+	}
+
+	// The session VM is in session_vms.
+	if ids := sessionVMIDs(ns); len(ids) != 1 || ids[0] != sessVM {
+		t.Errorf("session_vms = %v, want [%s]", ids, sessVM)
+	}
+	// The session VM is NOT in echo's primed_vm_ids (only the primed task VM is).
+	primed := primedIDs(ns, "echo")
+	if len(primed) != 1 || primed[0] != pr.GetVmId() {
+		t.Errorf("echo primed_vm_ids = %v, want just the task VM [%s]", primed, pr.GetVmId())
+	}
+	for _, id := range primed {
+		if id == sessVM {
+			t.Fatalf("session VM %q leaked into primed_vm_ids (would be adopted into the task pool)", sessVM)
+		}
+	}
+	// Session VMs count against live_vms: 1 primed task + 1 live session = 2.
+	if ns.GetLiveVms() != 2 {
+		t.Errorf("live_vms = %d, want 2 (task + session both count)", ns.GetLiveVms())
+	}
+}
+
+// TestBankInFlightGuardRefuses: a Bank is refused FAILED_PRECONDITION while a
+// SessionAssign is in flight on the same vm_id (the daemon-side ordering backstop).
+func TestBankInFlightGuardRefuses(t *testing.T) {
+	drv := &fakeDriver{}
+	gate := make(chan struct{})
+	tr := &fakeTransport{blockRoundTrip: gate}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-8", "echo", "sref-8", "")
+	ctx := context.Background()
+
+	assignDone := make(chan struct{})
+	go func() {
+		_, _ = client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+			VmId:      vmID,
+			Request:   &nodev1.GuestRequest{Body: []byte("x")},
+			TimeoutMs: 5000,
+		})
+		close(assignDone)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for tr.roundTripCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("SessionAssign never entered its round-trip")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	_, err := client.Bank(ctx, &nodev1.BankRequest{VmId: vmID, SessionId: "s-8"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("Bank during in-flight assign code = %v, want FailedPrecondition", status.Code(err))
+	}
+	if drv.snapshotSessions != 0 {
+		t.Errorf("refused Bank still snapshotted: snapshotSessions=%d, want 0", drv.snapshotSessions)
+	}
+	close(gate)
+	<-assignDone
+}
+
 // ensure the fakes satisfy the seams the server uses.
 var (
-	_ vmDriver    = (*fakeDriver)(nil)
-	_ BuildDriver = (*fakeDriver)(nil)
-	_ transport   = (*fakeTransport)(nil)
+	_ vmDriver      = (*fakeDriver)(nil)
+	_ BuildDriver   = (*fakeDriver)(nil)
+	_ sessionDriver = (*fakeDriver)(nil)
+	_ transport     = (*fakeTransport)(nil)
 )
