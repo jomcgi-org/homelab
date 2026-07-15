@@ -63,9 +63,13 @@ spec:
 {{- end }}
 {{- if .Values.web.enabled }}
 ---
-# The backend ("web") is reachable ONLY by the frontend SSR pod (in-cluster,
-# via API_BASE / CHAT_API_BASE). The gateway never reaches the backend directly
-# (there is no /api ingress rule). Replaces the allow-web-clients
+# The backend ("web") is reachable by the frontend SSR pod (in-cluster, via
+# API_BASE / CHAT_API_BASE) AND, for the public FaaS invocation surface only, by
+# the Cloudflare/Envoy gateway (R1 Task 13). The gateway only ROUTES /functions/*
+# to the backend (its own dedicated HTTPRoute; every other path goes to the
+# frontend), and the backend mounts only public read-only routes
+# (main_public_routes_test enforces it), so this L4 allow exposes nothing beyond
+# the pre-vetted public functions. Replaces the allow-web-clients
 # AuthorizationPolicy + the web-clients MeshTLSAuthentication (the frontend's
 # own mesh identity).
 apiVersion: cilium.io/v2
@@ -84,6 +88,16 @@ spec:
         - matchLabels:
             {{- include "monolith-public.selectorLabels" . | nindent 12 }}
             app.kubernetes.io/component: frontend
+      toPorts:
+        - ports:
+            - port: {{ .Values.web.containerPort | quote }}
+              protocol: TCP
+    # The Envoy gateway reaches the backend directly for /functions/<name> only
+    # (Task 13): its HTTPRoute routes just that path prefix here, so no /api
+    # traffic arrives from the gateway. Mirrors the frontend-ingress gateway rule.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: envoy-gateway-system
       toPorts:
         - ports:
             - port: {{ .Values.web.containerPort | quote }}
