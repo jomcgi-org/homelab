@@ -44,6 +44,30 @@ def test_unpack_extracts_members(tmp_path):
     assert (dest / "pkg" / "mod.py").read_bytes() == b"y = 2\n"
 
 
+def test_unpack_tolerates_block_device_padding(tmp_path):
+    # The archive arrives on a raw block device whose size is rounded up to a
+    # sector, so the zip is followed by trailing zero padding. zipfile's backward
+    # EOCD scan chokes on that ("File is not a zip file"); the shim must trim to
+    # the archive's true end. Simulate it by appending zeros past the zip.
+    archive = tmp_path / "app.zip"
+    _write_zip(str(archive), {"app.py": b"z = 3\n"})
+    padded = tmp_path / "vdb.img"
+    raw = archive.read_bytes()
+    padded.write_bytes(raw + b"\x00" * (512 - len(raw) % 512))
+    dest = tmp_path / "out"
+
+    shim.unpack_archive(str(padded), str(dest))
+
+    assert (dest / "app.py").read_bytes() == b"z = 3\n"
+
+
+def test_archive_bytes_errors_when_no_eocd(tmp_path):
+    junk = tmp_path / "vdb.img"
+    junk.write_bytes(b"\x00" * 4096)
+    with pytest.raises(ValueError, match="end-of-central-directory"):
+        shim._archive_bytes(str(junk))
+
+
 def test_unpack_rejects_zip_slip(tmp_path):
     # A member with a traversal path must abort the whole unpack, never writing
     # outside dest.
