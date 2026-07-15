@@ -261,6 +261,75 @@ func TestDriverClaimFromMissingBaseErrors(t *testing.T) {
 	}
 }
 
+// TestDriverSessionSnapshotRestoreRoundTrip proves the R2 session bank/relight
+// mechanic on the real driver: snapshot a live session VM into a self-contained
+// bundle under sessions/<ref> (SnapshotSession, no resume, so the caller destroys),
+// then relight a fresh VM from that bundle (RestoreSession). It REUSES the base
+// bundle format exactly (memfile + snapfile), so the session bundle is portable and
+// restorable just like a base. Finally RemoveSessionBundle reclaims the bundle and
+// a subsequent relight fails (the bundle is gone).
+func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+
+	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "sess-live"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	ref, err := d.SnapshotSession(ctx, h, "sref-abc123")
+	if err != nil {
+		t.Fatalf("SnapshotSession: %v", err)
+	}
+	if ref.ID != "sref-abc123" || ref.Node != "node-4" || ref.Arch != "amd64" || ref.SizeBytes == 0 {
+		t.Fatalf("unexpected session ref: %+v", ref)
+	}
+	if ref.Base {
+		t.Fatalf("a session snapshot must not be flagged Base")
+	}
+	// The bundle lives under sessions/<ref>, never bases/ or a per-thread dir.
+	snap := d.sessionSnapfile("sref-abc123")
+	if _, err := os.Stat(snap); err != nil {
+		t.Fatalf("session bundle snapfile missing under sessions/: %v", err)
+	}
+	// SnapshotSession does not resume; the caller destroys the VM.
+	if err := d.Release(ctx, h); err != nil {
+		t.Fatalf("Release banked VM: %v", err)
+	}
+	if d.LiveCount() != 0 {
+		t.Fatalf("LiveCount after bank+release = %d, want 0", d.LiveCount())
+	}
+
+	// Relight a fresh VM from the banked bundle: a new microVM id and a fresh thread.
+	h2, err := d.RestoreSession(ctx, "sref-abc123")
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	if h2.ID == "" || h2.ID == h.ID {
+		t.Fatalf("relit VM should have a fresh id, got %q (was %q)", h2.ID, h.ID)
+	}
+	if d.LiveCount() != 1 {
+		t.Fatalf("LiveCount after relight = %d, want 1", d.LiveCount())
+	}
+	if err := d.Release(ctx, h2); err != nil {
+		t.Fatalf("Release relit VM: %v", err)
+	}
+
+	// Evict the bundle; a subsequent relight then fails (the state is gone).
+	if err := d.RemoveSessionBundle("sref-abc123"); err != nil {
+		t.Fatalf("RemoveSessionBundle: %v", err)
+	}
+	if _, err := os.Stat(d.sessionDir("sref-abc123")); !os.IsNotExist(err) {
+		t.Fatalf("session bundle dir should be gone after evict, stat err=%v", err)
+	}
+	if _, err := d.RestoreSession(ctx, "sref-abc123"); err == nil {
+		t.Fatal("relight of an evicted session bundle should error")
+	}
+	// Idempotent evict: removing an already-gone bundle is not an error.
+	if err := d.RemoveSessionBundle("sref-abc123"); err != nil {
+		t.Fatalf("idempotent RemoveSessionBundle: %v", err)
+	}
+}
+
 func TestDriverExecNotHostProvided(t *testing.T) {
 	d := testDriver(t)
 	if _, err := d.Exec(context.Background(), substrate.Handle{}, substrate.Request{}); err == nil {

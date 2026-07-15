@@ -113,6 +113,188 @@ func (r *vmRegistry) liveCount() int {
 	return len(r.vms)
 }
 
+// ---- session VM registry ---------------------------------------------------
+
+// sessionEntry is one LIVE session microVM the daemon supervises. Unlike a task
+// vmEntry it is NOT single-use: a session VM survives every SessionAssign and is
+// removed only by a Bank (snapshot + destroy) or an out-of-band Destroy. The
+// inFlight flag is the per-vm in-flight serialization guard: at most one
+// SessionAssign or Bank may hold a session VM at a time (the control plane
+// serializes anyway; this is the daemon-side backstop the contract requires).
+type sessionEntry struct {
+	vmID        string
+	sessionID   string
+	workload    string
+	snapshotRef string // the base ref it was relit/primed from (for correlation)
+	handle      substrate.Handle
+
+	mu       sync.Mutex // guards inFlight
+	inFlight bool
+}
+
+// sessionRegistry is the daemon's inventory of LIVE session microVMs, keyed by the
+// opaque vm_id the control plane holds. It is kept DISTINCT from the task
+// vmRegistry so a session VM is never reported in primed_vm_ids and never adopted
+// into the single-use task pool, while still counting against the node live-VM cap
+// (liveCount sums both registries at the call sites).
+type sessionRegistry struct {
+	mu  sync.Mutex
+	vms map[string]*sessionEntry
+}
+
+func newSessionRegistry() *sessionRegistry {
+	return &sessionRegistry{vms: make(map[string]*sessionEntry)}
+}
+
+// add registers a freshly relit (or primed-into-session) live session VM.
+func (r *sessionRegistry) add(e *sessionEntry) {
+	r.mu.Lock()
+	r.vms[e.vmID] = e
+	r.mu.Unlock()
+}
+
+// beginInFlight marks a session VM busy for a SessionAssign or Bank. It returns
+// (entry, true) only when the id names a known session VM with no operation
+// already in flight; a concurrent op on the same vm_id gets (nil, false), which
+// the caller maps to FAILED_PRECONDITION. An unknown id also returns (nil, false).
+func (r *sessionRegistry) beginInFlight(id string) (*sessionEntry, bool) {
+	r.mu.Lock()
+	e, ok := r.vms[id]
+	r.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inFlight {
+		return nil, false
+	}
+	e.inFlight = true
+	return e, true
+}
+
+// endInFlight clears the in-flight guard for a session VM that is still live
+// (after a SessionAssign returns). A Bank instead remove()s the entry, so it never
+// calls this.
+func (e *sessionEntry) endInFlight() {
+	e.mu.Lock()
+	e.inFlight = false
+	e.mu.Unlock()
+}
+
+// remove deletes an id from the map and returns its entry (nil if absent). Used by
+// Bank's snapshot-and-destroy tail and by an out-of-band Destroy.
+func (r *sessionRegistry) remove(id string) *sessionEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	delete(r.vms, id)
+	return e
+}
+
+// snapshot returns a copy of every live session VM, for building NodeStatus.
+func (r *sessionRegistry) snapshot() []sessionEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]sessionEntry, 0, len(r.vms))
+	for _, e := range r.vms {
+		out = append(out, sessionEntry{
+			vmID:      e.vmID,
+			sessionID: e.sessionID,
+			workload:  e.workload,
+		})
+	}
+	return out
+}
+
+// snapshotWithRefs returns a copy of every live session VM including its source
+// snapshotRef, for the EvictSnapshot in-use guard (evicting a bundle a live VM was
+// relit from is refused).
+func (r *sessionRegistry) snapshotWithRefs() []sessionEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]sessionEntry, 0, len(r.vms))
+	for _, e := range r.vms {
+		out = append(out, sessionEntry{
+			vmID:        e.vmID,
+			sessionID:   e.sessionID,
+			workload:    e.workload,
+			snapshotRef: e.snapshotRef,
+		})
+	}
+	return out
+}
+
+// ---- banked session snapshot inventory -------------------------------------
+
+// sessionSnapshotEntry is one BANKED session snapshot bundle on node disk. The
+// daemon rescans the sessions dir on start to seed this inventory and maintains it
+// in memory as Bank adds and EvictSnapshot removes entries. It is the source of
+// truth the control plane reconciles banked-session state from (a banked session
+// survives a daemon restart; a live one does not, because its Firecracker child
+// dies with the daemon).
+type sessionSnapshotEntry struct {
+	snapshotRef     string
+	sessionID       string
+	workload        string
+	sizeBytes       int64
+	createdAtUnixMs int64
+}
+
+// sessionSnapshotRegistry is the in-memory banked-snapshot inventory, keyed by
+// snapshot_ref. It is seeded from disk on start (session_id/workload are unknown
+// for a disk-only entry until the control plane rebinds by adoption) and updated
+// on Bank/EvictSnapshot.
+type sessionSnapshotRegistry struct {
+	mu    sync.Mutex
+	snaps map[string]*sessionSnapshotEntry
+}
+
+func newSessionSnapshotRegistry() *sessionSnapshotRegistry {
+	return &sessionSnapshotRegistry{snaps: make(map[string]*sessionSnapshotEntry)}
+}
+
+// add records a banked snapshot (from a Bank or a startup rescan). A rescan-seeded
+// entry may carry an empty session_id/workload; a later Bank for the same ref
+// overwrites it with the known identity.
+func (r *sessionSnapshotRegistry) add(e sessionSnapshotEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snaps[e.snapshotRef] = &sessionSnapshotEntry{
+		snapshotRef:     e.snapshotRef,
+		sessionID:       e.sessionID,
+		workload:        e.workload,
+		sizeBytes:       e.sizeBytes,
+		createdAtUnixMs: e.createdAtUnixMs,
+	}
+}
+
+// has reports whether a snapshot_ref is a known banked session snapshot.
+func (r *sessionSnapshotRegistry) has(ref string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.snaps[ref]
+	return ok
+}
+
+// remove deletes a snapshot_ref from the inventory (after EvictSnapshot). Idempotent.
+func (r *sessionSnapshotRegistry) remove(ref string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.snaps, ref)
+}
+
+// snapshot returns a copy of every banked snapshot entry, for building NodeStatus.
+func (r *sessionSnapshotRegistry) snapshot() []sessionSnapshotEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]sessionSnapshotEntry, 0, len(r.snaps))
+	for _, e := range r.snaps {
+		out = append(out, *e)
+	}
+	return out
+}
+
 // baseEntry records the daemon's knowledge of one built (or building/failed)
 // base snapshot, keyed by its snapshot_ref (== the driver base key). It is what
 // BuildBase records for idempotency and what WatchNode reports so the control

@@ -256,6 +256,26 @@ func (d *Driver) baseDir(key string) string {
 func (d *Driver) baseSnapfile(key string) string { return filepath.Join(d.baseDir(key), "snapfile") }
 func (d *Driver) baseMemfile(key string) string  { return filepath.Join(d.baseDir(key), "memfile") }
 
+// SessionsDir is the parent directory holding all banked SESSION snapshot bundles
+// (one bundle dir per session snapshot_ref). It is a sibling of bases/ under the
+// snapshot root so a session bundle is never confused with a base or a per-thread
+// bundle, and so the daemon can rescan exactly this dir on start to report its
+// banked-session inventory. Callers own its 0700 permission and daemon-ownership.
+func (d *Driver) SessionsDir() string { return filepath.Join(d.cfg.SnapshotRoot, "sessions") }
+
+// sessionDir is the bundle directory for one banked session snapshot, keyed by an
+// opaque session snapshot_ref. It sits under sessions/ so it is never confused
+// with a base (bases/) or a per-thread (SnapshotRoot/<threadID>) bundle.
+func (d *Driver) sessionDir(ref string) string { return filepath.Join(d.SessionsDir(), ref) }
+
+func (d *Driver) sessionSnapfile(ref string) string {
+	return filepath.Join(d.sessionDir(ref), "snapfile")
+}
+
+func (d *Driver) sessionMemfile(ref string) string {
+	return filepath.Join(d.sessionDir(ref), "memfile")
+}
+
 // loadInto launches a fresh Firecracker process for threadID and restores it
 // from the given snapfile + memfile (File backend, resume). Used by both
 // thread-snapshot restore and warm-base restore.
@@ -494,6 +514,100 @@ func (d *Driver) RemoveBaseBundle(baseKey string) error {
 	}
 	if err := os.RemoveAll(d.baseDir(baseKey)); err != nil {
 		return fmt.Errorf("driver: remove base bundle: %w", err)
+	}
+	return nil
+}
+
+// SnapshotSession captures a LIVE session microVM into a self-contained session
+// bundle keyed by the opaque snapshot_ref, under sessions/<ref>. It is the R2
+// session-bank mechanic and REUSES the base-bundle format exactly (a full memfile
+// + snapfile, no archive backing file), so a session snapshot is as portable and
+// restorable as a base: the memory image IS the session state.
+//
+// Unlike SnapshotBase, it does NOT resume the guest: a Bank pauses, snapshots, and
+// then the caller destroys the VM (the session releases its live capacity and
+// holds only disk). Pausing before the snapshot is required so the memfile is a
+// consistent point-in-time image; leaving the VM paused is fine because the caller
+// Releases the handle immediately after. On a snapshot failure the VM is torn down
+// (a stranded paused VM would squat capacity), matching SnapshotBase's failure
+// posture.
+//
+// The bundle is written to temp paths and renamed into place (memfile before
+// snapfile, so a concurrent restore reading the snapfile always finds its memfile),
+// the same publish discipline the base path uses. The sessions dir is created 0700
+// so a banked bundle (a principal's memory image) is never world-readable.
+func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapshotRef string) (substrate.SnapshotRef, error) {
+	if snapshotRef == "" {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: SnapshotSession requires a snapshot_ref")
+	}
+	inst := d.get(h.ID)
+	if inst == nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot-session of unknown handle %q", h.ID)
+	}
+	if err := os.MkdirAll(d.sessionDir(snapshotRef), 0o700); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir session bundle: %w", err)
+	}
+	snapPath := d.sessionSnapfile(snapshotRef)
+	memPath := d.sessionMemfile(snapshotRef)
+	snapTmp := snapPath + ".tmp"
+	memTmp := memPath + ".tmp"
+
+	if err := inst.client.Pause(ctx); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause session: %w", err)
+	}
+	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
+		// The VM is stranded paused and will be destroyed by the caller anyway, but
+		// tear it down here so a failed bank never leaves a live paused handle.
+		_ = d.Release(ctx, h)
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create session snapshot: %w", err)
+	}
+	// Publish memfile before snapfile: a restore reads the snapfile to locate the
+	// memfile, so the memfile must already be in place when the snapfile appears.
+	if err := os.Rename(memTmp, memPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish session memfile: %w", err)
+	}
+	if err := os.Rename(snapTmp, snapPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish session snapfile: %w", err)
+	}
+	return substrate.SnapshotRef{
+		ID:        snapshotRef,
+		Node:      d.cfg.Node,
+		Arch:      d.cfg.Arch,
+		SizeBytes: bundleSize(snapPath, memPath),
+	}, nil
+}
+
+// RestoreSession launches a fresh Firecracker process and loads a banked SESSION
+// bundle (sessions/<snapshotRef>), resuming it so the guest continues exactly where
+// it was banked. It is the R2 relight mechanic and REUSES loadInto (the same path
+// warm-base restore uses); the restored handle gets a fresh microVM id and a fresh
+// thread id (the bundle carries its own embedded vsock config, so the thread id is
+// just the new host bundle dir). A missing bundle is an error the caller maps to
+// FAILED_PRECONDITION (the control plane then decides; the snapshot is never
+// deleted on a failed restore).
+func (d *Driver) RestoreSession(ctx context.Context, snapshotRef string) (substrate.Handle, error) {
+	if snapshotRef == "" {
+		return substrate.Handle{}, fmt.Errorf("driver: RestoreSession requires a snapshot_ref")
+	}
+	snapPath := d.sessionSnapfile(snapshotRef)
+	if _, err := os.Stat(snapPath); err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: session bundle missing for %q: %w", snapshotRef, err)
+	}
+	// A restored session gets its own fresh thread (host bundle dir + vsock socket);
+	// the bundle's embedded config is re-bound into it by loadInto.
+	threadID := newID("sess")
+	return d.loadInto(ctx, threadID, snapPath, d.sessionMemfile(snapshotRef), "restore.sock")
+}
+
+// RemoveSessionBundle deletes a banked session snapshot's on-disk bundle
+// (sessions/<snapshotRef>). It is the R2 EvictSnapshot mechanic. Idempotent: a
+// missing bundle is not an error (RemoveAll on an absent path succeeds).
+func (d *Driver) RemoveSessionBundle(snapshotRef string) error {
+	if snapshotRef == "" {
+		return fmt.Errorf("driver: RemoveSessionBundle requires a snapshot_ref")
+	}
+	if err := os.RemoveAll(d.sessionDir(snapshotRef)); err != nil {
+		return fmt.Errorf("driver: remove session bundle: %w", err)
 	}
 	return nil
 }
