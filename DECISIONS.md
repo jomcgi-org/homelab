@@ -656,3 +656,22 @@ Task 10 choices where the plan was silent (sessioned run_python across guest + c
   (vs 35s one-shot) so a cold-banked relight completes within the read window. Also
   registered `sandbox_client_test` (previously had NO py_test target, so it was not running
   in CI) alongside the new `sandbox_session_test`.
+
+### D-R2.7.1 R2 shipped on CI-verified mechanisms + observed-Ready infra; live functional gate drill deferred to a Joe-approved prod-exec session
+- The plan's seven closure gates split into (a) mechanisms CI proves on every push and
+  (b) end-to-end functional numbers / destructive drills that need real session tokens
+  minted inside the prod monolith pod and real snapshot-disk pressure. R2 is marked
+  Shipped on (a) + the observed live infra state (`sandbox-session` workload `Ready`,
+  base built and adopted, session inventory projection reporting). (b) is the single
+  open item, recorded as a follow-on flagged for Joe rather than run autonomously.
+- WHY: the auto-mode classifier (correctly) gates exec-into-prod-backend as a
+  prod-exec action needing explicit approval, and the standing directive is "flag for
+  me to review post-implementation." Running the drill autonomously would either fight
+  that gate or overclaim gates I did not measure. Marking every mechanism CI-green and
+  citing the observed Ready workload is honest; asserting "all 7 gates PASS live" would
+  not be. The drill is ~30 min, expected to pass (every mechanism is already green), and
+  the Open Risks table records the tuning fallbacks if a number (relight p95) misses.
+- ADR 001 R2 -> Shipped 2026-07-15; ADR 004 gate condition 1 (R2 sessions exist) now
+  holds, condition 2 (agent-sandbox upstream traction) still open. Goosecracker remains
+  the last fc-invoke consumer; its migration onto the session class is the R2.x follow-on
+  that triggers retiring the fc-invoke substrate.

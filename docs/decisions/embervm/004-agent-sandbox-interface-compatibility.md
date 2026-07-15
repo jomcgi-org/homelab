@@ -4,6 +4,16 @@
 **Status:** Accepted
 **Created:** 2026-07-13
 
+> **Gate status (2026-07-15):** condition 1 of the adapter gate (below) now holds.
+> R2 sessions shipped: the session lifecycle verbs (`SessionAssign` / `Bank` /
+> `Relight` / `EvictSnapshot`), per-session tokens, idle-bank, relight-on-invoke,
+> and claim-from-the-banked-floor all exist in ember and are CI-verified and
+> deployed (roadmap R2 in [ADR 001](001-embervm-beam-firecracker-workload-orchestrator.md)).
+> The interface-to-substrate mapping below was honoured as built, so the adapter
+> remains a translation layer rather than a redesign. Condition 2 (agent-sandbox
+> upstream traction) is still the open gate: the adapter is not built until it
+> holds. See the R2 plan's Closure section for gate evidence.
+
 ---
 
 ## Problem
