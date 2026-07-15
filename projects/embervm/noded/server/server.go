@@ -66,7 +66,8 @@ const (
 	livenessInterval = 2 * time.Second
 	// defaultArchiveMaxBytes bounds a zip-lane archive fetch when the config leaves
 	// ArchiveMaxBytes unset (0). 512 MiB matches config.Load's default and is a
-	// disk/memory backstop only; the bytes are opaque to noded.
+	// daemon-memory backstop (the archive is read into memory for vsock hydration,
+	// never written to disk); the bytes are opaque to noded.
 	defaultArchiveMaxBytes = 512 << 20
 )
 
@@ -105,6 +106,7 @@ type BuildDriver interface {
 type transport interface {
 	WaitReady(ctx context.Context, udsPath, readyPath string) error
 	Prime(ctx context.Context, udsPath string) error
+	Hydrate(ctx context.Context, udsPath string, archive []byte) error
 	RoundTrip(ctx context.Context, udsPath string, req *http.Request) (*http.Response, error)
 }
 
@@ -214,17 +216,18 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 	}
 	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision())
 	// The control plane records the resolved image identity; without an OCI pull
-	// the ref IS the identity for R0 (deploys are digest-pinned upstream).
-	return s.driveBuild(ctx, req, baseKey, imageRef, img, "")
+	// the ref IS the identity for R0 (deploys are digest-pinned upstream). The image
+	// lane carries no archive and never hydrates (nil archive).
+	return s.driveBuild(ctx, req, baseKey, imageRef, img, nil)
 }
 
 // buildBaseZip is the R1 ZIP-lane BuildBase: fetch the adopter's archive from the
-// SeaweedFS read path, verify its sha256, write it to a raw block file on the
-// node, and cold-boot the runtime image with that file attached read-only as
-// /dev/vdb so the guest shim unpacks and imports the handler before the snapshot.
-// Idempotent per (runtime image digest, archive sha256): the block file is always
-// deleted after the build (success or failure), since the archive is baked into
-// the snapshot and never needed at restore.
+// SeaweedFS read path, verify its sha256 into memory, cold-boot the runtime image
+// with NO archive drive, then hydrate the guest shim over vsock (POST
+// /shim/hydrate) with the clean bytes so it unpacks and imports the handler before
+// the snapshot. The snapshot is memory + rootfs only, with no archive backing
+// file, so it is self-contained and portable (shippable, restorable on any node).
+// Idempotent per (runtime image digest, archive sha256).
 func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest) (*nodev1.BuildBaseResponse, error) {
 	zip := req.GetZip()
 	runtimeRef := zip.GetRuntimeImageRef()
@@ -261,31 +264,25 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 		}, nil
 	}
 
-	// Fetch + verify BEFORE claiming the build guest so a bad archive fails cheaply
-	// (no cold boot wasted). noded handles opaque bytes only; the guest shim owns
-	// unpack and zip-slip defence.
-	blockPath, err := s.fetchArchiveToBlockFile(ctx, baseKey, zip.GetArchiveUrl(), zip.GetArchiveSha256())
+	// Fetch + verify into memory BEFORE claiming the build guest so a bad archive
+	// fails cheaply (no cold boot wasted). noded handles opaque bytes only; the
+	// guest shim owns unpack and zip-slip defence. The bytes never touch disk: they
+	// are hydrated over vsock after boot, so there is no block file to leak or to
+	// pin the snapshot to.
+	archive, err := s.fetchAndVerifyArchive(ctx, zip.GetArchiveUrl(), zip.GetArchiveSha256())
 	if err != nil {
 		return nil, err // already a *status.Error with the right code
 	}
-	// Always remove the block file: the archive is baked into the snapshot at build
-	// time and never needed at restore, so it must not leak on ANY path (success or
-	// failure). Removing before driveBuild's cold boot would pull the drive; the
-	// deferred remove runs after driveBuild returns.
-	defer func() {
-		if rerr := os.Remove(blockPath); rerr != nil && !os.IsNotExist(rerr) {
-			s.logger.Warn("noded: remove zip archive block file", "base", baseKey, "path", blockPath, "err", rerr)
-		}
-	}()
 
-	return s.driveBuild(ctx, req, baseKey, imageDigest, img, blockPath)
+	return s.driveBuild(ctx, req, baseKey, imageDigest, img, archive)
 }
 
 // driveBuild is the shared tail of both lanes: the idempotency short-circuit,
 // per-key build serialization, cold boot + health-gate + snapshot, and the
-// ready/fail bookkeeping. extraDrivePath, when set (zip lane), is attached
-// read-only as /dev/vdb to the build guest.
-func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, baseKey, imageDigest string, img config.Image, extraDrivePath string) (*nodev1.BuildBaseResponse, error) {
+// ready/fail bookkeeping. archive, when non-nil (zip lane), is hydrated into the
+// build guest over vsock (POST /shim/hydrate) after boot and before the readiness
+// wait; the image lane passes nil and never hydrates.
+func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, baseKey, imageDigest string, img config.Image, archive []byte) (*nodev1.BuildBaseResponse, error) {
 	workload := req.GetTrace().GetWorkload()
 	readyPath := req.GetReadyPath()
 	if readyPath == "" {
@@ -321,7 +318,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		MemMib:      int(res.GetMemMib()),
 	})
 
-	sizeBytes, err := s.runBuild(ctx, bd, baseKey, readyPath, extraDrivePath)
+	sizeBytes, err := s.runBuild(ctx, bd, baseKey, readyPath, archive)
 	if err != nil {
 		s.bases.failBuild(baseKey, err.Error())
 		s.signalChange()
@@ -338,16 +335,17 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	}, nil
 }
 
-// runBuild cold-boots a build guest, waits for readiness, snapshots it into the
-// base bundle, and always discards the build VM (the base lives in the bundle).
-// extraDrivePath, when set, is attached read-only as /dev/vdb (the zip lane's
-// archive device).
-func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPath, extraDrivePath string) (int64, error) {
+// runBuild cold-boots a build guest, (for the zip lane) hydrates it with the
+// archive over vsock, waits for readiness, snapshots it into the base bundle, and
+// always discards the build VM (the base lives in the bundle). The build guest is
+// claimed with only its rootfs drive; the archive, when non-nil, crosses over
+// vsock as a clean HTTP body, so the snapshot carries no archive backing file.
+//
+// Sequence: Claim (cold boot) -> Prime (drain the vsock path via /shim/healthz)
+// -> Hydrate (POST the archive; zip lane only) -> WaitReady (/shim/ready flips 200
+// only after the shim unpacks + imports the handler) -> SnapshotBase.
+func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPath string, archive []byte) (int64, error) {
 	spec := substrate.ClaimSpec{Arch: s.cfg.Arch, ThreadID: newID("build")}
-	if extraDrivePath != "" {
-		spec.ExtraDrivePath = extraDrivePath
-		spec.ExtraDriveReadOnly = true
-	}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
 		return 0, fmt.Errorf("cold boot: %w", err)
@@ -361,9 +359,31 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPat
 		}
 	}()
 
+	uds := bd.VsockUDSPath(h.ThreadID)
+
+	// Zip lane: prime the vsock path open, then hydrate the shim with the archive
+	// BEFORE the readiness wait. The shim serves /shim/healthz immediately but stays
+	// not-ready until this hydrate unpacks the archive and imports the handler, so
+	// WaitReady below is what health-gates the imported handler. A hydrate failure
+	// (bad zip, zip-slip, import error) fails the build: no snapshot.
+	if archive != nil {
+		primeCtx, cancelPrime := context.WithTimeout(ctx, s.cfg.BootReadyTimeout)
+		if perr := s.transport.Prime(primeCtx, uds); perr != nil {
+			s.logger.Warn("noded: build vsock prime did not complete; hydrate will retry the dial", "base", baseKey, "err", perr)
+		}
+		cancelPrime()
+
+		hydrateCtx, cancelHydrate := context.WithTimeout(ctx, s.cfg.BootReadyTimeout)
+		herr := s.transport.Hydrate(hydrateCtx, uds, archive)
+		cancelHydrate()
+		if herr != nil {
+			return 0, fmt.Errorf("hydrate archive: %w", herr)
+		}
+	}
+
 	readyCtx, cancel := context.WithTimeout(ctx, s.cfg.BootReadyTimeout)
 	defer cancel()
-	if err := s.transport.WaitReady(readyCtx, bd.VsockUDSPath(h.ThreadID), readyPath); err != nil {
+	if err := s.transport.WaitReady(readyCtx, uds, readyPath); err != nil {
 		return 0, fmt.Errorf("guest readiness: %w", err)
 	}
 	ref, err := bd.SnapshotBase(ctx, h, baseKey)
@@ -373,21 +393,22 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPat
 	return ref.SizeBytes, nil
 }
 
-// fetchArchiveToBlockFile GETs the zip archive from archiveURL over the pod
-// network, verifies the bytes against wantSha256, and writes them to a raw block
-// file under the snapshot root keyed by baseKey. The file is the read-only
-// secondary drive the build guest reads the archive from. On ANY error the
-// partial file is removed and a *status.Error with the right code is returned:
+// fetchAndVerifyArchive GETs the zip archive from archiveURL over the pod network,
+// reads it into memory bounded by the size cap, and verifies the bytes against
+// wantSha256. The clean bytes are returned for vsock hydration; nothing is written
+// to disk, so there is no block file to leak and the resulting snapshot has no
+// archive backing dependency. On ANY error a *status.Error with the right code is
+// returned:
 //   - InvalidArgument for a malformed wantSha256,
 //   - FailedPrecondition for a fetch failure, an over-size archive, or a sha256
 //     mismatch (a corrupted or swapped archive must never reach a base).
 //
 // noded NEVER unpacks or inspects the bytes: zip-slip/bomb defence lives in the
 // disposable guest's shim (Task 5).
-func (s *Server) fetchArchiveToBlockFile(ctx context.Context, baseKey, archiveURL, wantSha256 string) (string, error) {
+func (s *Server) fetchAndVerifyArchive(ctx context.Context, archiveURL, wantSha256 string) ([]byte, error) {
 	wantSha256 = strings.ToLower(strings.TrimSpace(wantSha256))
 	if _, err := hex.DecodeString(wantSha256); err != nil || len(wantSha256) != 64 {
-		return "", status.Errorf(codes.InvalidArgument, "noded: zip.archive_sha256 must be 64 hex chars, got %q", wantSha256)
+		return nil, status.Errorf(codes.InvalidArgument, "noded: zip.archive_sha256 must be 64 hex chars, got %q", wantSha256)
 	}
 
 	// Bound the fetch by the configured timeout even if the caller's context is
@@ -400,66 +421,36 @@ func (s *Server) fetchArchiveToBlockFile(ctx context.Context, baseKey, archiveUR
 	}
 	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, archiveURL, nil)
 	if err != nil {
-		return "", status.Errorf(codes.FailedPrecondition, "noded: build zip archive request: %v", err)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: build zip archive request: %v", err)
 	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return "", status.Errorf(codes.FailedPrecondition, "noded: fetch zip archive: %v", err)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: fetch zip archive: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", status.Errorf(codes.FailedPrecondition, "noded: fetch zip archive: unexpected status %d", resp.StatusCode)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: fetch zip archive: unexpected status %d", resp.StatusCode)
 	}
 
-	dir := filepath.Join(s.cfg.SnapshotRoot, "archives")
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", status.Errorf(codes.FailedPrecondition, "noded: mkdir archive dir: %v", err)
-	}
-	blockPath := filepath.Join(dir, baseKey+".img")
-	f, err := os.OpenFile(blockPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return "", status.Errorf(codes.FailedPrecondition, "noded: create archive block file: %v", err)
-	}
-	// Cap the copy so a runaway or malicious URL cannot exhaust the scratch disk;
+	// Cap the read so a runaway or malicious URL cannot exhaust daemon memory;
 	// exceeding the cap fails the build (an over-size archive is not honoured).
 	limit := s.cfg.ArchiveMaxBytes
 	if limit <= 0 {
 		limit = defaultArchiveMaxBytes
 	}
-	h := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, limit+1))
-	closeErr := f.Close()
-	if copyErr != nil {
-		_ = os.Remove(blockPath)
-		return "", status.Errorf(codes.FailedPrecondition, "noded: read zip archive: %v", copyErr)
+	archive, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: read zip archive: %v", err)
 	}
-	if closeErr != nil {
-		_ = os.Remove(blockPath)
-		return "", status.Errorf(codes.FailedPrecondition, "noded: flush zip archive: %v", closeErr)
+	if int64(len(archive)) > limit {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: zip archive exceeds %d-byte cap", limit)
 	}
-	if n > limit {
-		_ = os.Remove(blockPath)
-		return "", status.Errorf(codes.FailedPrecondition, "noded: zip archive exceeds %d-byte cap", limit)
-	}
-	gotSha256 := hex.EncodeToString(h.Sum(nil))
+	sum := sha256.Sum256(archive)
+	gotSha256 := hex.EncodeToString(sum[:])
 	if gotSha256 != wantSha256 {
-		_ = os.Remove(blockPath)
-		return "", status.Errorf(codes.FailedPrecondition, "noded: zip archive sha256 mismatch: got %s want %s", gotSha256, wantSha256)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: zip archive sha256 mismatch: got %s want %s", gotSha256, wantSha256)
 	}
-	// Firecracker's virtio-blk sizes a device as floor(fileSize/512) sectors, so a
-	// block file whose length is not a 512-byte multiple is truncated at the guest,
-	// cutting off the tail of the archive (a zip's end-of-central-directory record
-	// lives at the very end). Pad the file up to the next sector so the guest sees
-	// every archive byte. The sha256 above is over the archive bytes only, and the
-	// guest shim trims the trailing zero padding back off (runtimes/python/shim.py
-	// _archive_bytes locates the real zip end).
-	if pad := (512 - n%512) % 512; pad > 0 {
-		if err := os.Truncate(blockPath, n+pad); err != nil {
-			_ = os.Remove(blockPath)
-			return "", status.Errorf(codes.FailedPrecondition, "noded: pad archive block file to sector: %v", err)
-		}
-	}
-	return blockPath, nil
+	return archive, nil
 }
 
 // ---- Prime -----------------------------------------------------------------

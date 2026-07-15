@@ -61,13 +61,12 @@ func run(logger *slog.Logger) error {
 // noded and takes precedence when present.
 func setDefaultEnv(logger *slog.Logger) {
 	defaults := map[string]string{
-		"PATH":                 "/usr/bin:/bin:/usr/local/bin",
-		"HOME":                 "/home/runtime",
-		"PYTHONUNBUFFERED":     "1",
-		"MPLBACKEND":           "Agg",
-		"EMBER_HANDLER":        "app.handle",
-		"EMBER_ARCHIVE_DEVICE": "/dev/vdb",
-		"EMBER_INVOKE_PATH":    "/invoke",
+		"PATH":              "/usr/bin:/bin:/usr/local/bin",
+		"HOME":              "/home/runtime",
+		"PYTHONUNBUFFERED":  "1",
+		"MPLBACKEND":        "Agg",
+		"EMBER_HANDLER":     "app.handle",
+		"EMBER_INVOKE_PATH": "/invoke",
 	}
 	for k, v := range defaults {
 		if _, set := os.LookupEnv(k); set {

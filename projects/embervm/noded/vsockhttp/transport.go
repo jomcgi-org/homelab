@@ -15,8 +15,10 @@ package vsockhttp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -208,6 +210,60 @@ func (t *Transport) readyAttempt(ctx context.Context, udsPath, readyPath string)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("vsockhttp: guest not ready, status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// hydratePath is the build-only guest endpoint that receives the zip archive
+// bytes. The shim unpacks them to tmpfs, imports the handler, and only then
+// flips /shim/ready to 200, so a Hydrate MUST land between Prime and WaitReady.
+const hydratePath = "/shim/hydrate"
+
+// hydrateAttempt bounds the single hydrate POST. It is far more generous than the
+// readiness/prime probes: the body is the whole archive and the shim unpacks and
+// imports the handler synchronously before replying, which is real work, not a
+// liveness ping. The caller passes a ctx bound by the build's ready budget.
+const hydrateAttempt = 60 * time.Second
+
+// Hydrate POSTs the archive bytes to the guest shim's build-only /shim/hydrate
+// endpoint over the vsock transport, so the shim can unpack + import the handler
+// before it goes ready. It is the zip lane's replacement for attaching the
+// archive as a block device: the bytes cross as a clean HTTP body, never a padded
+// block file, so the resulting snapshot has no archive backing dependency.
+//
+// The request carries an explicit Content-Length (bytes.Reader gives net/http a
+// known length, so the body is fixed-length framed, never chunked; the transport
+// on the guest side rejects chunked framing). A non-2xx response is an error
+// whose message carries the guest's response body (the shim writes the unpack /
+// import traceback there), so a bad archive fails the build legibly.
+//
+// Hydrate is bounded by hydrateAttempt (capped by the caller's ctx): a single
+// attempt, not a retry loop, because Prime has already drained the vsock path and
+// a hydrate is not idempotent to re-drive (a re-hydrate after ready is a 409).
+func (t *Transport) Hydrate(ctx context.Context, udsPath string, archive []byte) error {
+	attemptCtx, cancel := context.WithTimeout(ctx, hydrateAttempt)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, "http://vsock"+hydratePath, bytes.NewReader(archive))
+	if err != nil {
+		return fmt.Errorf("vsockhttp: build hydrate request: %w", err)
+	}
+	// Explicit length so net/http fixed-length frames the body (the guest rejects
+	// chunked framing). bytes.Reader already sets ContentLength, but set the header
+	// too so it is unambiguous on the wire.
+	req.ContentLength = int64(len(archive))
+	req.Header.Set("Content-Type", "application/zip")
+
+	resp, err := t.RoundTrip(attemptCtx, udsPath, req)
+	if err != nil {
+		return fmt.Errorf("vsockhttp: hydrate round-trip: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Bound the error body read so a runaway guest cannot pin memory on the
+		// failure path; the shim writes a compact traceback here.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return fmt.Errorf("vsockhttp: hydrate rejected, status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }

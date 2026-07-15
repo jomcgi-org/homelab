@@ -314,10 +314,11 @@ noded:
   drain:
     timeoutSeconds: 60
 
-  # R1 zip lane (Task 6): a BuildBase zip source is a runtime image plus a zip
-  # archive noded fetches, sha256-verifies, and attaches read-only as /dev/vdb to
-  # the build VM (the runtime shim unpacks it guest-side; noded never inspects the
-  # bytes).
+  # R1 zip lane: a BuildBase zip source is a runtime image plus a zip archive noded
+  # fetches, sha256-verifies into memory, and hydrates into the build VM over vsock
+  # (POST /shim/hydrate) after boot; the runtime shim unpacks it guest-side, and
+  # noded never inspects the bytes. The archive is never a block device: the base
+  # snapshot is memory + rootfs only, so it is self-contained and portable.
   #
   # Read-path decision: noded fetches the archive over the POD network from the
   # in-cluster SeaweedFS S3 endpoint (the same one the monolith chat-blobs pattern

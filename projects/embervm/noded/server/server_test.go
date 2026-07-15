@@ -10,8 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -40,16 +38,10 @@ type fakeDriver struct {
 	snapshots     int
 	live          int
 	failClaim     error
-	// lastClaim records the most recent ClaimSpec so zip-lane tests can assert the
-	// archive drive was attached read-only. archiveExists snapshots whether the
-	// attached block file was present ON DISK at claim time, so a test can prove it
-	// was there during the build and gone after (cleanup).
-	lastClaim     substrate.ClaimSpec
-	archiveExists bool
-	// archiveSize is the on-disk size of the attached archive block file at claim
-	// time, so a test can prove noded pads it to a 512-byte sector (Firecracker
-	// virtio-blk floors the device to whole sectors and would else truncate it).
-	archiveSize int64
+	// lastClaim records the most recent ClaimSpec. The zip lane no longer attaches
+	// an archive drive (it hydrates over vsock), so a test asserts the build guest
+	// claimed with only its rootfs (no extra drive fields exist on ClaimSpec now).
+	lastClaim substrate.ClaimSpec
 }
 
 func (f *fakeDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
@@ -61,32 +53,13 @@ func (f *fakeDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substra
 	f.claims++
 	f.live++
 	f.lastClaim = spec
-	if spec.ExtraDrivePath != "" {
-		fi, err := os.Stat(spec.ExtraDrivePath)
-		f.archiveExists = err == nil
-		if err == nil {
-			f.archiveSize = fi.Size()
-		}
-	}
 	return substrate.Handle{ThreadID: spec.ThreadID, ID: "vm-" + spec.ThreadID, Node: "node-4"}, nil
-}
-
-func (f *fakeDriver) archiveSizeAtClaim() int64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.archiveSize
 }
 
 func (f *fakeDriver) claimSpec() substrate.ClaimSpec {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastClaim
-}
-
-func (f *fakeDriver) archiveWasPresent() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.archiveExists
 }
 
 func (f *fakeDriver) Release(_ context.Context, _ substrate.Handle) error {
@@ -141,10 +114,41 @@ type fakeTransport struct {
 	roundTrips   int
 	waitReadyErr error
 	roundTripErr error
+	// hydrate capture: hydrates counts the calls, hydrateBytes records the last
+	// archive delivered so a zip test can assert the exact bytes were hydrated, and
+	// hydrateErr injects a hydrate failure (a bad archive) to fail the build.
+	hydrates     int
+	hydrateBytes []byte
+	hydrateErr   error
 }
 
 func (f *fakeTransport) WaitReady(_ context.Context, _, _ string) error { return f.waitReadyErr }
 func (f *fakeTransport) Prime(_ context.Context, _ string) error        { return nil }
+
+func (f *fakeTransport) Hydrate(_ context.Context, _ string, archive []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hydrates++
+	if f.hydrateErr != nil {
+		return f.hydrateErr
+	}
+	// Copy: the caller's slice is a bytes.Reader source that outlives this call, but
+	// copy so a later mutation cannot alias the captured bytes.
+	f.hydrateBytes = append([]byte(nil), archive...)
+	return nil
+}
+
+func (f *fakeTransport) hydrateCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hydrates
+}
+
+func (f *fakeTransport) hydratedBytes() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hydrateBytes
+}
 
 func (f *fakeTransport) RoundTrip(_ context.Context, _ string, req *http.Request) (*http.Response, error) {
 	f.mu.Lock()
@@ -485,11 +489,16 @@ func TestBuildBaseUnknownImage(t *testing.T) {
 }
 
 // newZipTestServer wires a Server for the zip lane: a build driver recorder, a
-// fake archive HTTP server serving archiveBytes, and the runtime image
-// provisioned in the config table. Returns the server, the build recorder, and
-// the archive URL.
-func newZipTestServer(t *testing.T, archiveBytes []byte, archiveDelay time.Duration) (*Server, *fakeDriver, string) {
+// fake transport (the hydrate seam), a fake archive HTTP server serving
+// archiveBytes, and the runtime image provisioned in the config table. Returns the
+// server, the build recorder, the transport (for hydrate assertions), and the
+// archive URL. Pass a non-nil tr to inject transport behaviour (e.g. a hydrate
+// failure); nil uses a fresh recording transport.
+func newZipTestServer(t *testing.T, archiveBytes []byte, archiveDelay time.Duration, tr *fakeTransport) (*Server, *fakeDriver, *fakeTransport, string) {
 	t.Helper()
+	if tr == nil {
+		tr = &fakeTransport{}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/archive.zip", func(w http.ResponseWriter, r *http.Request) {
 		if archiveDelay > 0 {
@@ -514,11 +523,11 @@ func newZipTestServer(t *testing.T, archiveBytes []byte, archiveDelay time.Durat
 			Images:              map[string]config.Image{"runtime-python:1": {RootfsPath: "/runtime.ext4"}},
 		},
 		Driver:         &fakeDriver{},
-		Transport:      &fakeTransport{},
+		Transport:      tr,
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	return s, build, ts.URL + "/archive.zip"
+	return s, build, tr, ts.URL + "/archive.zip"
 }
 
 func sha256Hex(b []byte) string {
@@ -527,12 +536,13 @@ func sha256Hex(b []byte) string {
 }
 
 // TestBuildBaseZipHappyPath: a zip source fetches the archive, verifies its
-// sha256, attaches it read-only as the build VM's secondary drive, snapshots the
-// base, and cleans up the block file. The archive file must exist DURING the
-// build (the driver saw it) and be gone AFTER (no leak).
+// sha256, claims a build guest with NO archive drive, HYDRATES the exact archive
+// bytes into the guest over vsock, and snapshots the base. The build claim must
+// carry no extra drive, and the transport must have received the exact archive
+// bytes on /shim/hydrate.
 func TestBuildBaseZipHappyPath(t *testing.T) {
 	archive := []byte("PK\x03\x04 fake zip bytes, opaque to noded")
-	s, build, url := newZipTestServer(t, archive, 0)
+	s, build, tr, url := newZipTestServer(t, archive, 0, nil)
 	ctx := context.Background()
 
 	resp, err := s.BuildBase(ctx, &nodev1.BuildBaseRequest{
@@ -558,27 +568,23 @@ func TestBuildBaseZipHappyPath(t *testing.T) {
 		t.Errorf("snapshots = %d, want 1", build.snapshots)
 	}
 
-	// The build guest was claimed with the archive attached READ-ONLY as /dev/vdb,
-	// and the block file was present on disk at claim time.
+	// The build guest was claimed with ONLY its rootfs: the archive crosses over
+	// vsock now, so the ClaimSpec carries no archive drive (the fields are gone).
 	spec := build.claimSpec()
-	if spec.ExtraDrivePath == "" {
-		t.Fatal("build claim had no ExtraDrivePath: archive drive was not attached")
-	}
-	if !spec.ExtraDriveReadOnly {
-		t.Error("archive drive attached writable, want read-only")
-	}
-	if !build.archiveWasPresent() {
-		t.Error("archive block file was absent during the build")
+	if spec.ThreadID == "" {
+		t.Error("build claim had no ThreadID")
 	}
 
-	// Cleanup: the block file is gone after the build (baked into the snapshot,
-	// never needed at restore).
-	if _, statErr := os.Stat(spec.ExtraDrivePath); !os.IsNotExist(statErr) {
-		t.Errorf("archive block file %q not cleaned up after build (stat err=%v)", spec.ExtraDrivePath, statErr)
+	// The archive was hydrated exactly once, with the exact bytes fetched.
+	if got := tr.hydrateCount(); got != 1 {
+		t.Errorf("hydrate count = %d, want 1", got)
+	}
+	if got := tr.hydratedBytes(); !bytes.Equal(got, archive) {
+		t.Errorf("hydrated bytes = %q, want the fetched archive %q", got, archive)
 	}
 
 	// Idempotent: the same archive on the same runtime is a no-op hit that does not
-	// re-snapshot.
+	// re-snapshot or re-hydrate.
 	resp2, err := s.BuildBase(ctx, &nodev1.BuildBaseRequest{
 		Trace: &nodev1.Trace{Workload: "ziphandler"},
 		Source: &nodev1.BuildBaseRequest_Zip{Zip: &nodev1.ZipSource{
@@ -596,20 +602,18 @@ func TestBuildBaseZipHappyPath(t *testing.T) {
 	if build.snapshots != 1 {
 		t.Errorf("idempotent zip build re-snapshotted: snapshots = %d, want 1", build.snapshots)
 	}
+	if got := tr.hydrateCount(); got != 1 {
+		t.Errorf("idempotent zip build re-hydrated: hydrate count = %d, want 1", got)
+	}
 }
 
-// TestBuildBaseZipPadsToSector: an archive whose length is not a 512-byte
-// multiple is padded UP to the next sector on the block file, so Firecracker's
-// virtio-blk (which floors the device to whole sectors) presents every archive
-// byte to the guest rather than truncating the tail.
-func TestBuildBaseZipPadsToSector(t *testing.T) {
-	// 700 bytes: not a 512 multiple, so an unpadded device would floor to 512 and
-	// cut off the last 188 bytes (a zip's end-of-central-directory record).
-	archive := append([]byte("PK\x03\x04"), bytes.Repeat([]byte("x"), 696)...)
-	if len(archive)%512 == 0 {
-		t.Fatalf("test archive %d bytes is already sector-aligned; pick a non-multiple", len(archive))
-	}
-	s, build, url := newZipTestServer(t, archive, 0)
+// TestBuildBaseZipHydrateFailureFailsBuild: the archive fetch + verify succeed but
+// the guest rejects the hydrate (a bad zip / import error surfaces as a hydrate
+// error). The build must fail FAILED_PRECONDITION with NO snapshot taken.
+func TestBuildBaseZipHydrateFailureFailsBuild(t *testing.T) {
+	archive := []byte("PK\x03\x04 valid on the wire, rejected by the shim")
+	tr := &fakeTransport{hydrateErr: context.DeadlineExceeded}
+	s, build, _, url := newZipTestServer(t, archive, 0, tr)
 
 	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
 		Trace:     &nodev1.Trace{Workload: "ziphandler"},
@@ -621,29 +625,24 @@ func TestBuildBaseZipPadsToSector(t *testing.T) {
 			ArchiveSha256:   sha256Hex(archive),
 		}},
 	})
-	if err != nil {
-		t.Fatalf("BuildBase zip: %v", err)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("hydrate failure code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
 	}
-
-	got := build.archiveSizeAtClaim()
-	want := int64((len(archive) + 511) / 512 * 512)
-	if got != want {
-		t.Errorf("archive block file size at claim = %d, want %d (sector-padded from %d)", got, want, len(archive))
+	// The guest was claimed and hydrate was attempted, but NO snapshot was taken.
+	if tr.hydrateCount() != 1 {
+		t.Errorf("hydrate count = %d, want 1 (hydrate was attempted)", tr.hydrateCount())
 	}
-	if got%512 != 0 {
-		t.Errorf("archive block file size %d is not a 512-byte multiple", got)
-	}
-	if got < int64(len(archive)) {
-		t.Errorf("archive block file size %d truncates the %d-byte archive", got, len(archive))
+	if build.snapshots != 0 {
+		t.Errorf("failed hydrate still snapshotted: snapshots = %d, want 0", build.snapshots)
 	}
 }
 
 // TestBuildBaseZipShaMismatch: a fetched archive whose bytes do not match the
 // declared sha256 fails the build with FAILED_PRECONDITION, does NOT cold-boot a
-// guest, and leaves no block file behind.
+// guest, and never hydrates.
 func TestBuildBaseZipShaMismatch(t *testing.T) {
 	archive := []byte("the actual bytes on the wire")
-	s, build, url := newZipTestServer(t, archive, 0)
+	s, build, tr, url := newZipTestServer(t, archive, 0, nil)
 
 	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
 		Trace: &nodev1.Trace{Workload: "ziphandler"},
@@ -659,15 +658,16 @@ func TestBuildBaseZipShaMismatch(t *testing.T) {
 	if build.claims != 0 {
 		t.Errorf("sha mismatch cold-booted a guest: claims = %d, want 0", build.claims)
 	}
-	// No leaked archive files.
-	assertNoArchiveFiles(t, s)
+	if tr.hydrateCount() != 0 {
+		t.Errorf("sha mismatch hydrated a guest: hydrates = %d, want 0", tr.hydrateCount())
+	}
 }
 
 // TestBuildBaseZipFetchTimeout: an archive server that never responds within the
-// fetch budget fails the build with FAILED_PRECONDITION and leaves no block file.
+// fetch budget fails the build with FAILED_PRECONDITION and never cold-boots.
 func TestBuildBaseZipFetchTimeout(t *testing.T) {
 	archive := []byte("bytes that arrive too late")
-	s, build, url := newZipTestServer(t, archive, 500*time.Millisecond)
+	s, build, _, url := newZipTestServer(t, archive, 500*time.Millisecond, nil)
 	s.cfg.ArchiveFetchTimeout = 50 * time.Millisecond // shorter than the server delay
 
 	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
@@ -684,15 +684,14 @@ func TestBuildBaseZipFetchTimeout(t *testing.T) {
 	if build.claims != 0 {
 		t.Errorf("fetch timeout cold-booted a guest: claims = %d, want 0", build.claims)
 	}
-	assertNoArchiveFiles(t, s)
 }
 
-// TestBuildBaseZipCleansUpOnBuildFailure: the archive fetch + verify succeed but
-// the cold boot fails; the block file must STILL be cleaned up (no leak on the
-// failure path).
-func TestBuildBaseZipCleansUpOnBuildFailure(t *testing.T) {
+// TestBuildBaseZipColdBootFailureNoSnapshot: the archive fetch + verify succeed but
+// the cold boot fails; the build fails FAILED_PRECONDITION and no snapshot is
+// taken (and there is no block file to leak, since nothing is written to disk).
+func TestBuildBaseZipColdBootFailureNoSnapshot(t *testing.T) {
 	archive := []byte("valid archive, but the build will fail")
-	s, build, url := newZipTestServer(t, archive, 0)
+	s, build, _, url := newZipTestServer(t, archive, 0, nil)
 	build.failClaim = context.DeadlineExceeded // cold boot fails
 
 	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
@@ -706,13 +705,15 @@ func TestBuildBaseZipCleansUpOnBuildFailure(t *testing.T) {
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("build failure code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
 	}
-	assertNoArchiveFiles(t, s)
+	if build.snapshots != 0 {
+		t.Errorf("failed cold boot still snapshotted: snapshots = %d, want 0", build.snapshots)
+	}
 }
 
 // TestBuildBaseZipUnknownRuntime rejects a zip build whose runtime image is not
 // provisioned on the node.
 func TestBuildBaseZipUnknownRuntime(t *testing.T) {
-	s, _, url := newZipTestServer(t, []byte("x"), 0)
+	s, _, _, url := newZipTestServer(t, []byte("x"), 0, nil)
 	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
 		Trace: &nodev1.Trace{Workload: "ziphandler"},
 		Source: &nodev1.BuildBaseRequest_Zip{Zip: &nodev1.ZipSource{
@@ -723,23 +724,6 @@ func TestBuildBaseZipUnknownRuntime(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("unknown runtime code = %v, want FailedPrecondition", status.Code(err))
-	}
-}
-
-// assertNoArchiveFiles fails if any zip-lane block file leaked under the snapshot
-// root's archives dir.
-func assertNoArchiveFiles(t *testing.T, s *Server) {
-	t.Helper()
-	dir := filepath.Join(s.cfg.SnapshotRoot, "archives")
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return
-	}
-	if err != nil {
-		t.Fatalf("read archives dir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("archive block files leaked: %v", entries)
 	}
 }
 

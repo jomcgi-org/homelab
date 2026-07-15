@@ -359,17 +359,10 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true, IsReadOnly: d.cfg.RootfsReadOnly}); err != nil {
 			return err
 		}
-		// R1 zip lane: attach the fetched archive as a secondary (non-root)
-		// virtio-blk device so the runtime shim reads the zip from /dev/vdb at
-		// build time. rootfs is the root device (vda via root=); this is the only
-		// other drive, so the guest kernel enumerates it as vdb, matching the
-		// shim's EMBER_ARCHIVE_DEVICE default. Attached read-only when requested:
-		// noded owns opaque bytes and the guest never writes back through it.
-		if spec.ExtraDrivePath != "" {
-			if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "archive", PathOnHost: spec.ExtraDrivePath, IsRootDevice: false, IsReadOnly: spec.ExtraDriveReadOnly}); err != nil {
-				return err
-			}
-		}
+		// The zip lane no longer attaches the archive as a block device: it is
+		// hydrated over vsock (POST /shim/hydrate) after boot, so the build guest
+		// has only the rootfs drive and the snapshot carries no archive backing
+		// file (self-contained + portable). See noded/server buildBaseZip.
 		// The vsock device is the guest's only channel to the controller (task
 		// delivery, idle signal, egress proxy). It must be configured before Start.
 		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.bootVsockPath(threadID)}); err != nil {
