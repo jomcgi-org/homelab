@@ -92,6 +92,58 @@ service NodeService {
   // plane startup reconciliation (existing base snapshots + parked VMs are
   // reported so the control plane reconciles rather than rebuilding).
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+
+  // -- Session verbs (R2) ----------------------------------------------------
+  //
+  // These four verbs are the stateful-session lifecycle vocabulary, ADDITIVE to
+  // the task-class contract above (Assign, Prime, Destroy are byte-for-byte
+  // unchanged). A session is a long-lived logical sandbox whose in-VM state
+  // survives across invocations: SessionAssign delivers a request WITHOUT
+  // destroying the VM (the opposite of Assign's destroy tail); Bank pauses and
+  // snapshots the VM to node disk and destroys it; Relight restores a VM from a
+  // session snapshot; EvictSnapshot reclaims the snapshot's disk. Refs stay
+  // opaque strings exactly as elsewhere: no snapshot file path, no Firecracker
+  // concept crosses this seam. Session VMs count against max_live_vms like any
+  // other live VM. Concurrency (one in-flight invoke per session; caps across
+  // sessions) is owned by the control plane, not the daemon; the daemon's
+  // per-vm guard is only a backstop.
+
+  // SessionAssign delivers exactly one HTTP-semantics request (same GuestRequest
+  // message, same 8 MiB body cap) to a LIVE session vm_id over vsock and returns
+  // the guest response plus usage stats. Unlike Assign, the VM SURVIVES: this is
+  // the deliver-without-destroy verb sessions are built on. FAILED_PRECONDITION
+  // on an unknown vm_id, a task-class vm_id (single-use, not a session), or a
+  // vm_id in the middle of a Bank. DEADLINE_EXCEEDED on a guest timeout leaves
+  // the VM alive but flagged suspect in the response (suspect=true); the control
+  // plane decides whether to destroy it, because a session guest in an unknown
+  // mid-request state must not silently accrete more state.
+  rpc SessionAssign(SessionAssignRequest) returns (SessionAssignResponse);
+
+  // Bank pauses a live session VM, writes a full snapshot (memory image + rootfs
+  // delta, the same self-contained bundle format bases use), destroys the VM,
+  // and returns the opaque snapshot_ref plus its size. It is how an idle session
+  // releases live capacity while retaining state on disk. FAILED_PRECONDITION if
+  // a SessionAssign is in flight on that vm_id (the control plane serializes
+  // anyway; this is the daemon backstop), or if the vm_id is unknown or
+  // task-class. The snapshot_ref is a fact the control plane records and later
+  // passes to Relight or EvictSnapshot.
+  rpc Bank(BankRequest) returns (BankResponse);
+
+  // Relight restores a VM from a session snapshot_ref (the deliver-without-
+  // destroy counterpart of Prime for sessions), waits for guest readiness (the
+  // same vsockhttp WaitReady mechanics as Prime), and returns a fresh vm_id.
+  // FAILED_PRECONDITION if the ref is unknown or unrestorable. On a failed
+  // restore the snapshot is NEVER deleted (a lost session must surface loudly,
+  // not silently relight as a blank VM): the control plane decides whether to
+  // retry or fail the session.
+  rpc Relight(RelightRequest) returns (RelightResponse);
+
+  // EvictSnapshot deletes a session snapshot bundle from node disk to reclaim
+  // capacity. Idempotent: an unknown ref returns OK (the desired end-state, gone,
+  // already holds). Refuses (FAILED_PRECONDITION) while a live VM was relit from
+  // that ref and still runs. This is the ADR embervm/003 eviction verb landed
+  // early, shaped so base eviction later reuses it unchanged.
+  rpc EvictSnapshot(EvictSnapshotRequest) returns (EvictSnapshotResponse);
 }
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
@@ -254,6 +306,77 @@ message DestroyRequest {
 
 message DestroyResponse {}
 
+// ---- Session verbs (R2) ----------------------------------------------------
+
+// SessionAssignRequest is Assign's deliver-without-destroy sibling: same
+// GuestRequest envelope and timeout semantics, but the vm_id names a LIVE
+// session VM the daemon must leave running after the response. session_id is
+// opaque to the daemon (it stores and echoes it in status so control-plane
+// adoption can rebind a live VM to its session after a restart); the daemon
+// derives no behavior from it.
+message SessionAssignRequest {
+  Trace trace = 1;
+  string vm_id = 2;
+  GuestRequest request = 3;
+  // timeout_ms bounds the guest round-trip. On expiry the daemon returns
+  // DEADLINE_EXCEEDED and leaves the VM ALIVE (unlike Assign), flagging it
+  // suspect in the response so the control plane can decide to destroy it.
+  uint32 timeout_ms = 4;
+  // session_id is the control plane's opaque session identity, echoed in
+  // NodeStatus.session_vms so a restarted control plane adopts rather than
+  // orphans. The daemon never interprets it.
+  string session_id = 5;
+}
+
+message SessionAssignResponse {
+  GuestResponse response = 1;
+  UsageStats usage = 2;
+  // suspect is set true when the guest round-trip hit DEADLINE_EXCEEDED (or the
+  // vsock transport otherwise faulted) but the VM was left alive; the control
+  // plane reads it to decide whether to destroy the session VM. False on a
+  // clean response.
+  bool suspect = 3;
+}
+
+// BankRequest pauses, snapshots, and destroys a live session VM. session_id is
+// carried (opaque to the daemon) so the produced snapshot's inventory entry can
+// be tied back to its session for adoption.
+message BankRequest {
+  Trace trace = 1;
+  string vm_id = 2;
+  string session_id = 3;
+}
+
+message BankResponse {
+  // snapshot_ref is the OPAQUE handle to the banked session snapshot bundle on
+  // node disk. The control plane records it and later passes it to Relight or
+  // EvictSnapshot. NOT a file path.
+  string snapshot_ref = 1;
+  uint64 size_bytes = 2;
+}
+
+// RelightRequest restores a VM from a session snapshot. session_id is opaque to
+// the daemon, echoed in NodeStatus.session_vms for adoption once the VM is live.
+message RelightRequest {
+  Trace trace = 1;
+  string snapshot_ref = 2;
+  string session_id = 3;
+}
+
+message RelightResponse {
+  // vm_id names the freshly restored, ready session VM. Opaque; the control
+  // plane holds it and passes it to SessionAssign, Bank, or Destroy.
+  string vm_id = 1;
+}
+
+// EvictSnapshotRequest deletes one session snapshot bundle from node disk.
+message EvictSnapshotRequest {
+  Trace trace = 1;
+  string snapshot_ref = 2;
+}
+
+message EvictSnapshotResponse {}
+
 // ---- Node status -----------------------------------------------------------
 
 message WatchNodeRequest {
@@ -299,6 +422,32 @@ enum BaseBuildState {
   BASE_BUILD_STATE_FAILED = 4;    // last BuildBase failed (see build_error)
 }
 
+// SessionVm is one LIVE session VM the node currently holds: the daemon reports
+// it (with the opaque session_id it was given at SessionAssign/Relight) so a
+// restarted control plane ADOPTS the running session instead of orphaning it,
+// exactly the primed-pool adoption fix (PR #3517) applied to session state.
+// Session VMs are reported here and NOT in WorkloadCapacity.primed_vm_ids (a
+// session VM must never be adopted into the single-use task pool).
+message SessionVm {
+  string vm_id = 1;
+  string session_id = 2;
+  string workload = 3;
+}
+
+// SessionSnapshot is one BANKED session snapshot bundle on node disk. The daemon
+// rescans its sessions snapshot dir on start and reports what it finds so the
+// control plane reconciles banked-session inventory from node truth (a banked
+// session survives a daemon restart; a live one does not). size_bytes and
+// created_at_unix_ms feed disk-watermark eviction and TTL GC at the control
+// plane.
+message SessionSnapshot {
+  string snapshot_ref = 1;
+  string session_id = 2;
+  string workload = 3;
+  uint64 size_bytes = 4;
+  int64 created_at_unix_ms = 5;
+}
+
 // NodeStatus is the whole capacity fact set: per-workload primed slots and base
 // states, node-level memory/cpu headroom, and the draining flag. A draining
 // daemon reports draining=true and the control plane stops new assignments
@@ -318,4 +467,22 @@ message NodeStatus {
   // build_error carries the last BuildBase failure string for any workload in
   // BASE_BUILD_STATE_FAILED, surfaced into the Workload CR condition message.
   string build_error = 8;
+
+  // -- Session facts (R2, additive) ------------------------------------------
+  // These four fields let a restarted control plane adopt session state (live
+  // VMs and banked snapshots) from node truth rather than orphaning it, and let
+  // the eviction/watermark policy see snapshot-disk pressure. All are optional/
+  // repeated and wire-compatible with a daemon that never sets them.
+
+  // session_vms lists every LIVE session VM this node holds. Disjoint from every
+  // WorkloadCapacity.primed_vm_ids (a session VM is never in the task pool).
+  repeated SessionVm session_vms = 9;
+  // session_snapshots is the banked-snapshot inventory scanned from the sessions
+  // snapshot dir on disk. The source of truth for what banked sessions survive.
+  repeated SessionSnapshot session_snapshots = 10;
+  // snapshot_disk_free_bytes / snapshot_disk_used_bytes report the sessions
+  // snapshot dir's filesystem usage so the control plane's LRU eviction can fire
+  // on a low-watermark crossing and the watermark alert can trip.
+  uint64 snapshot_disk_free_bytes = 11;
+  uint64 snapshot_disk_used_bytes = 12;
 }
