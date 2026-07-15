@@ -319,3 +319,56 @@ R3 reachability check: moving hits off the control plane later means publishing 
 | Session VM + banked counts interact badly with task-class pool arithmetic on node-4 | Task 10 values arithmetic; `max_live_vms` saturation denials | Session cap 4 and floor 1 are small; rebalance caps in values like R0 Task 14 |
 | Exec-loop kernel mode destabilizes the shared sandbox guest for the task class | Guest-init dual-mode tests; task-path canary after deploy | Mode is opt-in per request; one-shot path is untouched code; revert is a guest digest pin rollback |
 | Superseded-base retention (refcounting) accumulates bases across frequent deploys | Base count in NodeStatus; disk trend | Bounded by maxLifetimeSeconds by construction; shorten the sandbox-session TTL via values if deploy cadence outpaces it |
+
+---
+
+## Closure (2026-07-15)
+
+R2 is **Shipped**: all eleven tasks landed across six implementation PRs
+(#3544-#3549) plus this closure, every PR CI-green, and the `sandbox-session`
+session-class workload is deployed and `Ready`
+in the `embervm` namespace (`kubectl get workloads -n embervm` shows
+`sandbox-session   session   True   sandbox-session__0816bcfcea90   0 live / 0 banked`:
+the session base built, was adopted by noded on start, and reports the live/banked
+session inventory the projection was designed to surface). The full substrate is in
+production: create-from-primed-pool, per-session tokens, persistent-kernel invokes,
+idle-bank, relight-on-invoke, restart adoption, LRU eviction, and OTel spans.
+
+**Gate evidence.** The plan's seven gates split into what CI mechanically proves on
+every push and what requires a live functional drill in a production pod. The
+mechanism behind each gate is CI-verified; the end-to-end functional numbers (2, 3)
+and the destructive operational drills (4, 5, 7) are the recorded follow-on below,
+because running them means minting real session tokens from inside the monolith
+backend pod and driving prod snapshot disk, which is a prod-exec action held for
+Joe's review per the standing "flag for me post-implementation" directive.
+
+| Gate | Mechanism (CI-verified) | Live status |
+| ---- | ----------------------- | ----------- |
+| 1. State persistence across bank/relight | Guest persistent-kernel dual-mode tests (`firecracker/sandbox/guest-init`, one-shot byte-identical + session-namespace reuse); op-log ETF-blob durability round-trip; `SnapshotSession`/`RestoreSession` Go round-trip (`TestBankRelightRoundTrip`); SessionStore write-through + boot-rebuild | Infra Ready; end-to-end 10/10 drill = follow-on (prod-pod exec) |
+| 2. Relight latency (p95 <= 500ms; live-invoke overhead p95 <= 25ms) | `relight` and `queue_wait` spans emitted (Task 9), derivable from SigNoz; dispatch overhead shares the primed-hit path | 20-cycle p95 measurement = follow-on (needs live invoke load) |
+| 3. Bank behavior (p95 <= 3s; no cross-workload stall) | Per-node concurrent-bank cap = 1 enforced in dispatcher; `bank` span emitted; bank path is the reused driver snapshot mechanics | Live span harvest = follow-on |
+| 4. Adoption drill (control-plane + noded restart, state intact, zero orphans) | Reconcile-from-`NodeStatus` unit coverage (`adopt_one` skips in-flight banking/relighting; rebind + heal-limbo; never-reap-on-disconnect, the #3517 lesson encoded); noded rescans sessions dir on start | Destructive restart drill = follow-on |
+| 5. Version convergence (session rides birth base; 410 after TTL; superseded base evicted) | BaseBuilder TTL-bounded refcount (`turned_over?` strict-boolean fix); snapshot-lost -> `failed` + 410 path; `EvictSnapshot` verb landed | TTL-shortened drill = follow-on |
+| 6. Isolation and tokens (cross-session 403; no shared lineage; snapshot unreadable off-daemon) | Router token-scope tests (session token authenticates only its own id; management token rejected on invoke; `:crypto.hash_equals` constant-time `verify_token`, every return shape matched after the CaseClauseError fix); per-principal snapshot refs in the op-log lineage schema; snapshot files daemon-owned | Cross-token 403 spot-check = follow-on (cheap; bundle with gate 1) |
+| 7. Eviction honesty (watermark -> LRU -> alert -> clean 410 `evicted`) | LRU eviction fail-closed on missing disk facts, watermark-scoped; SigNoz `embervm-snapshot-disk-usage` METRIC_BASED_ALERT from hostmetrics `system.filesystem.usage`; evicted-session invoke returns 410 reason `evicted` | Disk-pressure drill = follow-on (destructive) |
+
+**The live functional gate drill is the one open R2 item, flagged for Joe.** It is a
+single ~30-minute session against the deployed stack (create a session via the
+monolith `sandbox.client`, prove state survives a forced idle-bank/relight, measure
+relight p95 over 20 cycles, restart the control plane with a banked session, and
+push snapshot disk past the watermark). It needs prod-pod exec, so it is held for
+Joe rather than run autonomously. Nothing in the drill is expected to fail: every
+mechanism it exercises is already CI-green, and the infra is Ready. If a gate misses
+its number (relight p95 on the 2 GiB snapshot is the likeliest), the plan's Open
+Risks table already records the tuning fallbacks (budget honesty first, then
+lazy-page restore or a smaller `memMib`).
+
+**Follow-ons recorded, not dropped:**
+- The live functional gate drill above (needs Joe-approved prod-pod exec).
+- **Goosecracker off fc-invoke:** the goosecracker agent remains the **last
+  fc-invoke consumer**. The session verbs suffice for it (it needs egress, repo
+  hydration, and a fatter guest, all additive), so its migration onto the
+  session class is the natural R2.x follow-on and the trigger to retire the
+  fc-invoke substrate. Not this rung's consumer, per the plan's out-of-scope list.
+- The ADR 004 agent-sandbox adapter stays gated on condition 2 (upstream traction);
+  condition 1 (R2 exists) now holds.
