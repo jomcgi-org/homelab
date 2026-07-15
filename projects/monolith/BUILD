@@ -1059,6 +1059,35 @@ py_test(
     ],
 )
 
+# sandbox is gazelle-excluded, so its py_tests are hand-registered.
+py_test(
+    name = "sandbox_client_test",
+    srcs = ["sandbox/client_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+# Sessioned run_python (EmberVM R2): create-reuse-close, the 410 transparent
+# re-create + session_reset flag, and the token-never-logged guard. Uses an
+# in-memory SQLite for the sandbox.session table, so it needs sqlmodel.
+py_test(
+    name = "sandbox_session_test",
+    srcs = ["sandbox/session_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "integration_test",
     size = "medium",

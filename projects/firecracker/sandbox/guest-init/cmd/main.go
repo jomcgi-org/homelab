@@ -74,7 +74,24 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("shim HTTP server listening", "port", vsockproto.GuestHTTPPort)
 
-	srv := shim.NewServer(handler.Handle, shim.WithReady(ready.Load))
+	// WithClock installs POST /shim/clock so the node can resync this guest's
+	// wall clock after a session relight (EmberVM R2 Task 4). Best-effort: a
+	// set failure is a 500 the node logs and moves past, never a relight
+	// failure. The sandbox guest serves both the one-shot task class and
+	// sessioned run_python from the same binary, so the endpoint is always
+	// present here (harmless for one-shot callers, which never POST it).
+	srv := shim.NewServer(
+		handler.Handle,
+		shim.WithReady(ready.Load),
+		shim.WithClock(func(epochMs int64) error {
+			if err := setWallClock(epochMs); err != nil {
+				logger.Warn("guest clock resync failed", "epoch_ms", epochMs, "err", err)
+				return err // nosemgrep: no-bare-error-return
+			}
+			logger.Info("guest clock resynced", "epoch_ms", epochMs)
+			return nil
+		}),
+	)
 
 	// Serve in a goroutine so ctx cancellation (SIGTERM) can close the server
 	// gracefully rather than blocking indefinitely on Accept.
