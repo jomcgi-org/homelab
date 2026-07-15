@@ -623,3 +623,36 @@ Task 9 choices where the plan was silent. Flagged for post-impl review.
   not a new tracing layer). Timer/API-driven bank/create/evict have no caller trace, so
   they are root spans (consistent with the dispatcher's prime/auth spans). The Task 11
   gates (relight p95, bank p95, state-persistence) are derivable from spans alone.
+
+## R2 Phase 3: sandbox consumer (PR-6, embervm 0.1.41 + monolith 0.285.204 + public 0.89.129)
+
+Task 10 choices where the plan was silent (sessioned run_python across guest + chart
++ monolith). Flagged for post-impl review.
+
+### D-R2.6.1 Guest frame protocol: 4-byte big-endian length prefix + JSON body
+- Both directions. `io.ReadFull` reassembles partial reads; a >16 MiB length is rejected
+  (not allocated). Chosen over newline-delimiting so snippet output containing newlines
+  or NULs cannot corrupt framing.
+
+### D-R2.6.2 Per-snippet timeout is PARENT-enforced; only a timeout resets the namespace
+- The Go parent times the response-frame read (not the child), because a mid-exec
+  interrupt could leave the shared namespace half-mutated. On timeout the parent SIGKILLs
+  the child's process group and lazily restarts on the next request (that response carries
+  session_reset). A snippet EXCEPTION (a typo/error) does NOT reset: state survives.
+- session_reset is OR-folded from two sources: the guest sets it whenever it started a
+  fresh child (first request or post-timeout); the monolith client sets it on a 410
+  transparent re-create. Either surfaces as `session_reset: true`.
+
+### D-R2.6.3 One-shot is byte-identical: additive omitempty fields + one guarded branch
+- handler.go adds `Mode`/`SessionReset` as `omitempty` and a single early
+  `if req.Mode == ModeSession` branch; the entire one-shot path below is untouched, so the
+  shared sandbox guest still serves the task class + the deprecated fc-invoke path
+  byte-for-byte when `mode` is absent (guest tests prove both the behavior and the response
+  JSON still omits `session_reset`).
+
+### D-R2.6.4 sandbox-session reuses the sandbox rootfs; client read timeout 45s
+- The session workload's image ref equals sandbox's, so the node resolves the same rootfs
+  via EMBERVM_NODED_IMAGES (no new noded image entry). `SANDBOX_SESSION_READ_TIMEOUT` = 45s
+  (vs 35s one-shot) so a cold-banked relight completes within the read window. Also
+  registered `sandbox_client_test` (previously had NO py_test target, so it was not running
+  in CI) alongside the new `sandbox_session_test`.
