@@ -198,6 +198,75 @@ defmodule Embervm.RouterTest do
     assert resp.body == "FINDINGS"
   end
 
+  # -- guest response headers ------------------------------------------------
+
+  defp header(resp, name) do
+    Enum.find_value(resp.headers, fn {k, v} -> if String.downcase(k) == name, do: v end)
+  end
+
+  test "sync submit replays the guest content-type and strips framing headers" do
+    wl = unique("wl")
+    key = unique("idem")
+    headers = auth("good") ++ [{"idempotency-key", key}]
+
+    task_id = json(req(:post, "/v1/workloads/#{wl}/tasks", headers, "x").body)["task_id"]
+    {:ok, _} = TaskStore.assign(task_id)
+    {:ok, _} = TaskStore.start(task_id)
+
+    {:ok, _} =
+      TaskStore.succeed(task_id, %{
+        status_code: 200,
+        body: "PNGDATA",
+        size_bytes: 7,
+        truncated: false,
+        headers: %{
+          "content-type" => "image/png",
+          "x-custom" => "yes",
+          # framing / hop-by-hop headers the server must own: stripped.
+          "content-length" => "999",
+          "transfer-encoding" => "chunked",
+          "connection" => "keep-alive"
+        }
+      })
+
+    resp = req(:post, "/v1/workloads/#{wl}/tasks?wait=true", headers, "x")
+    assert resp.status == 200
+    assert resp.body == "PNGDATA"
+
+    # The guest content-type wins over the octet-stream default.
+    assert header(resp, "content-type") == "image/png"
+    assert header(resp, "x-custom") == "yes"
+    # x-ember-truncated is still set by the control plane.
+    assert header(resp, "x-ember-truncated") == "false"
+    # Framing headers the guest tried to set were stripped (the server owns them);
+    # content-length reflects the real body, never the guest's bogus "999".
+    assert header(resp, "transfer-encoding") == nil
+    assert header(resp, "content-length") == "7"
+  end
+
+  test "sync submit falls back to octet-stream when the guest set no headers" do
+    wl = unique("wl")
+    key = unique("idem")
+    headers = auth("good") ++ [{"idempotency-key", key}]
+
+    task_id = json(req(:post, "/v1/workloads/#{wl}/tasks", headers, "x").body)["task_id"]
+    {:ok, _} = TaskStore.assign(task_id)
+    {:ok, _} = TaskStore.start(task_id)
+
+    {:ok, _} =
+      TaskStore.succeed(task_id, %{
+        status_code: 200,
+        body: "BYTES",
+        size_bytes: 5,
+        truncated: false
+      })
+
+    resp = req(:post, "/v1/workloads/#{wl}/tasks?wait=true", headers, "x")
+    assert resp.status == 200
+    assert header(resp, "content-type") == "application/octet-stream"
+    assert header(resp, "x-ember-truncated") == "false"
+  end
+
   test "sync submit is 429 when the principal's park cap is exhausted" do
     Application.put_env(:embervm, :sync_park_cap, 0)
     wl = unique("wl")

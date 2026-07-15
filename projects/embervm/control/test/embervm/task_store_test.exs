@@ -273,6 +273,56 @@ defmodule Embervm.TaskStoreTest do
     assert {:ok, nil} = TaskStore.get_result(store, "does-not-exist")
   end
 
+  test "guest response headers round-trip through succeed + get_result", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, _} = TaskStore.assign(store, task_id)
+    {:ok, _} = TaskStore.start(store, task_id)
+
+    {:ok, _} =
+      TaskStore.succeed(store, task_id, %{
+        status_code: 200,
+        body: "PNGDATA",
+        size_bytes: 7,
+        truncated: false,
+        headers: %{"content-type" => "image/png", "x-custom" => "yes"}
+      })
+
+    assert {:ok, %{status_code: 200, body: "PNGDATA", headers: headers}} =
+             TaskStore.get_result(store, task_id)
+
+    assert headers["content-type"] == "image/png"
+    assert headers["x-custom"] == "yes"
+  end
+
+  test "a succeeded result with no headers key reads back with headers defaulted to %{}", %{
+    path: path
+  } do
+    {_op_log, store} = start_pair(path)
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, _} = TaskStore.assign(store, task_id)
+    {:ok, _} = TaskStore.start(store, task_id)
+
+    # A result map shaped like a PRE-CHANGE record: no :headers key at all. The store
+    # must default it, the projection must store NULL, and the read-back must not
+    # crash and must surface %{} (durability / backward compatibility).
+    {:ok, _} =
+      TaskStore.succeed(store, task_id, %{
+        status_code: 204,
+        body: "",
+        size_bytes: 0,
+        truncated: false
+      })
+
+    assert {:ok, %{status_code: 204, headers: %{}}} = TaskStore.get_result(store, task_id)
+  end
+
   test "redrive re-queues a dead-lettered task, resets attempt, and survives restart", %{
     path: path
   } do

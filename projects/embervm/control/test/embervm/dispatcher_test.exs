@@ -149,6 +149,32 @@ defmodule Embervm.DispatcherTest do
     assert Dispatcher.stats(ctx.name).warm_hits >= 1
   end
 
+  test "a guest response's headers survive into the stored succeeded result" do
+    guest_headers = %{"content-type" => "image/png", "x-custom" => "yes"}
+
+    resp = %AssignResponse{
+      response: %GuestResponse{status_code: 200, headers: guest_headers, body: "PNGDATA"},
+      usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1}
+    }
+
+    # Inject an assign_fun that returns the header-carrying response (start_stack's
+    # default returns the headerless success_resp/0).
+    ctx = start_stack(assign_fun: fn _ch, _req -> {:ok, resp} end)
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 1)
+    Dispatcher.deposit(ctx.name, "node-4", "wl-a", "vm-1")
+
+    tid = submit(ctx, "wl-a", "p1")
+
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+
+    assert {:ok, %{status_code: 200, body: "PNGDATA", headers: headers}} =
+             TaskStore.get_result(ctx.store, tid)
+
+    assert headers["content-type"] == "image/png"
+    assert headers["x-custom"] == "yes"
+  end
+
   test "adopts a node-reported primed vm into an empty inventory (control-plane restart recovery)" do
     ctx = start_stack()
     put_catalog(ctx, "wl-a", cap: 10)

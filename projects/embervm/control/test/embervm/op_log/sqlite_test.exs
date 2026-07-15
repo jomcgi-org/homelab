@@ -168,6 +168,74 @@ defmodule Embervm.OpLog.SQLiteTest do
     :ok = GenServer.stop(server2)
   end
 
+  test "a succeeded op's guest headers project into results and load back", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl-h",
+        task_id: "task-h",
+        ts: 100,
+        payload: %{expires_at: nil}
+      })
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        task_id: "task-h",
+        ts: 103,
+        payload: %{
+          status_code: 200,
+          body: "PNG",
+          size_bytes: 3,
+          truncated: false,
+          expires_at: nil,
+          headers: %{"content-type" => "image/png"}
+        }
+      })
+
+    assert {:ok, %{status_code: 200, headers: %{"content-type" => "image/png"}}} =
+             SQLite.load_result(server, "task-h")
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "a succeeded op with no headers key loads back with headers %{} (backward compat)", %{
+    path: path
+  } do
+    server = start_server(path)
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :submitted,
+        tenant: "t1",
+        principal: "p1",
+        workload: "wl-h",
+        task_id: "task-old",
+        ts: 100,
+        payload: %{expires_at: nil}
+      })
+
+    # A :succeeded op shaped like a pre-change record: no :headers key. It stores a
+    # NULL headers column, which must read back as %{} without crashing.
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :succeeded,
+        tenant: "t1",
+        task_id: "task-old",
+        ts: 103,
+        payload: %{status_code: 200, body: "ok", size_bytes: 2, truncated: false, expires_at: nil}
+      })
+
+    assert {:ok, %{status_code: 200, headers: %{}}} = SQLite.load_result(server, "task-old")
+
+    :ok = GenServer.stop(server)
+  end
+
   test "result TTL sweep only deletes results past their injected expiry", %{path: path} do
     server = start_server(path)
 

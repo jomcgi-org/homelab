@@ -257,10 +257,10 @@ defmodule Embervm.Router do
     case TaskStore.get(store(), task_id) do
       {:ok, %{state: :succeeded}} ->
         case TaskStore.get_result(store(), task_id) do
-          {:ok, %{status_code: code, body: body, truncated: truncated}} ->
+          {:ok, %{status_code: code, body: body, truncated: truncated} = result} ->
             conn
             |> put_resp_header("x-ember-truncated", to_string(truncated))
-            |> send_guest_result(code, body)
+            |> send_guest_result(code, body, Map.get(result, :headers, %{}))
 
           {:ok, nil} ->
             send_json(conn, 200, %{task_id: task_id, state: "succeeded"})
@@ -293,10 +293,10 @@ defmodule Embervm.Router do
 
   defp handle_get_result(conn, task_id) do
     case TaskStore.get_result(store(), task_id) do
-      {:ok, %{status_code: code, body: body, truncated: truncated}} ->
+      {:ok, %{status_code: code, body: body, truncated: truncated} = result} ->
         conn
         |> put_resp_header("x-ember-truncated", to_string(truncated))
-        |> send_guest_result(code, body)
+        |> send_guest_result(code, body, Map.get(result, :headers, %{}))
 
       {:ok, nil} ->
         send_json(conn, 404, %{
@@ -569,10 +569,57 @@ defmodule Embervm.Router do
     end
   end
 
-  defp send_guest_result(conn, status_code, body) do
+  # Framing / hop-by-hop headers the server MUST own: a guest may not set these,
+  # they are the connection's business, not the payload's. Compared lowercased.
+  # `x-ember-truncated` is also reserved (set by the caller above, never overwritten).
+  @denied_guest_headers MapSet.new([
+                          "content-length",
+                          "transfer-encoding",
+                          "connection",
+                          "keep-alive",
+                          "upgrade",
+                          "host",
+                          "te",
+                          "trailer",
+                          "proxy-authorization",
+                          "proxy-authenticate",
+                          "x-ember-truncated"
+                        ])
+
+  # Replays the guest's response headers onto the caller's connection under a
+  # defense-in-depth deny-list (functions are author-vetted, but the control plane
+  # still owns framing/hop-by-hop headers). A guest content-type wins; with none set
+  # we fall back to application/octet-stream (today's behavior for old/headerless
+  # results). Keys are lowercased for Plug and to match the deny-list.
+  defp send_guest_result(conn, status_code, body, headers) when is_map(headers) do
+    allowed =
+      Enum.filter(headers, fn {k, _v} ->
+        not MapSet.member?(@denied_guest_headers, String.downcase(to_string(k)))
+      end)
+
+    conn =
+      Enum.reduce(allowed, conn, fn {k, v}, acc ->
+        put_resp_header(acc, String.downcase(to_string(k)), to_string(v))
+      end)
+
+    conn =
+      if has_header?(allowed, "content-type") do
+        conn
+      else
+        put_resp_content_type(conn, "application/octet-stream")
+      end
+
+    send_resp(conn, status_code, body || "")
+  end
+
+  defp send_guest_result(conn, status_code, body, _headers) do
     conn
     |> put_resp_content_type("application/octet-stream")
     |> send_resp(status_code, body || "")
+  end
+
+  defp has_header?(pairs, name) do
+    Enum.any?(pairs, fn {k, _v} -> String.downcase(to_string(k)) == name end)
   end
 
   defp send_json(conn, status, map) do
