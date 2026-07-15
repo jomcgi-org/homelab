@@ -425,9 +425,11 @@ namespace and the monolith serves the per-PR semgrep diff scan and the python
 sandbox demo from EmberVM (`semgrep.dispatch: embervm`,
 `sandbox.dispatch: embervm` in `projects/monolith/deploy/values.yaml`).
 fc-invoke's scan and sandbox paths stay deployed as the one-value rollback.
-(Superseded 2026-07-14 by the durability drill below: both paths were reverted to
-`fc-invoke` after the drill found EmberVM dispatch does not recover from a
-control-plane restart. See "Durability drill run" at the end of this section.)
+(The durability drill below briefly reverted both paths to `fc-invoke` on
+2026-07-14 after finding EmberVM dispatch did not recover from a control-plane
+restart; the root cause was fixed by primed-pool adoption and both paths were
+restored to `embervm` on 2026-07-15. See "Durability drill run" at the end of
+this section.)
 
 Deviations from this plan, all recorded in `DECISIONS.md` at the repo root:
 
@@ -487,10 +489,29 @@ under `fc-invoke` a triggered scan leaves the EmberVM op-log untouched and retur
 findings in ~0.5 s; under `embervm` the request lands on the control-plane (WAL
 grows) but, given the dispatch bug above, times out.
 
-**Prod protection.** Because the dispatch bug makes `embervm` return timeouts on
-every scan and does not self-heal on restart, both EmberVM-dispatched live paths
-were reverted to the proven fc-invoke fallback: `semgrep.dispatch: fc-invoke` and
-`sandbox.dispatch: fc-invoke` (PR chain #3512, #3513, #3515). This supersedes the
-cutover recorded above. Keep prod on fc-invoke until the dispatch-recovery bug is
-fixed in the control plane; the cutover back to EmberVM is then a one-value flip.
-EmberVM is left idle and wedged, which is harmless while nothing routes to it.
+**Prod protection (interim).** Because the dispatch bug made `embervm` return
+timeouts on every scan and did not self-heal on restart, both EmberVM-dispatched
+live paths were reverted to the proven fc-invoke fallback (PR chain #3512, #3513,
+#3515) while the fix landed.
+
+**Root cause and fix (resolved).** The dispatch stall was orphaned primed VMs,
+not a stream-lifecycle bug: the dispatcher's primed-VM inventory
+(`{node,workload} -> vm_ids`) was write-only in-memory state, fed by PoolManager
+deposits and never reconciled against the node. On restart the control plane lost
+it while the noded kept the primed VMs alive (10 VMs against `max_live_vms=8`), so
+the fresh control plane could neither assign to them (it never learned their
+vm_ids) nor prime past them (`live_vms >= max_live_vms`): `pick_node` returned
+`:no_capacity` forever. Fixed by ADOPTION rather than reaping (reaping primed VMs
+on control-plane disconnect would wipe the whole fleet's warm pool on any
+controller blip, since every node's stream ends at once): the node now reports
+each primed VM's id (`WorkloadCapacity.primed_vm_ids`) and the dispatcher
+reconciles its inventory from that report each sweep (additive, dedup-guarded), so
+a restarted control plane adopts the running warm pool instead of orphaning it
+(PR #3517, embervm chart 0.1.25).
+
+**Verified live (2026-07-15).** With the fix deployed, restarting the
+control-plane alone (noded and its warm pool untouched, the exact drill-A
+scenario) recovered dispatch: a scan warm-dispatched in ~0.57s (adopting the
+node's primed pool) instead of the pre-fix 90s timeout, on a control plane
+reporting zero errors. Both live paths were restored to `embervm` (PR #3518);
+fc-invoke stays deployed as the one-value rollback.
