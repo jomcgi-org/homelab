@@ -30,6 +30,7 @@ defmodule Embervm.OpLog do
               principal: nil,
               workload: nil,
               task_id: nil,
+              session_id: nil,
               ts: nil,
               payload: %{}
 
@@ -40,6 +41,10 @@ defmodule Embervm.OpLog do
             principal: String.t() | nil,
             workload: String.t() | nil,
             task_id: String.t() | nil,
+            # Set on session_* ops (nil on task ops); the durable `ops.session_id`
+            # column, added additively. A session op owns its `sessions`
+            # projection row the way a task op owns its `tasks` row.
+            session_id: String.t() | nil,
             ts: integer(),
             payload: map()
           }
@@ -62,7 +67,20 @@ defmodule Embervm.OpLog do
     :primed,
     :vm_destroyed,
     :quota_enforced,
-    :drain
+    :drain,
+    # Session lifecycle (R2). Additive to the closed enum; sessions are durable,
+    # ordered, and auditable exactly like tasks (ADR embervm/001) and project
+    # into the `sessions` table (see Embervm.OpLog.SQLite). session_invoked
+    # carries usage only (no request/response bodies) and upserts the same
+    # (principal, day) usage projection tasks do, the D12.1 pattern.
+    :session_created,
+    :session_invoked,
+    :session_banked,
+    :session_relit,
+    :session_expired,
+    :session_evicted,
+    :session_destroyed,
+    :session_failed
   ]
 
   @spec kinds() :: [atom()]
@@ -82,6 +100,11 @@ defmodule Embervm.OpLog do
   @callback read_from(server(), seq :: non_neg_integer()) ::
               {:ok, [Op.t()]} | {:error, {:compacted, non_neg_integer()}} | {:error, term()}
   @callback load_tasks(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every session row from the durable `sessions` projection (R2), for the
+  # SessionStore's boot/adoption rebuild (Task 5/8): the ETS hot set of sessions
+  # is reconstructed from this exactly as the task index is from load_tasks/1. A
+  # projection read, never the raw ops log.
+  @callback load_sessions(server()) :: {:ok, [map()]} | {:error, term()}
   # Reads one task's stored result from the durable `results` projection, or
   # {:ok, nil} when there is none (never ran, or the TTL sweeper reaped it).
   # This is the result-store read the submit API (Task 8) serves `GET
@@ -125,6 +148,7 @@ defmodule Embervm.OpLog do
                %{
                  results_deleted: non_neg_integer(),
                  tasks_compacted: non_neg_integer(),
+                 sessions_compacted: non_neg_integer(),
                  ops_compacted: non_neg_integer(),
                  compacted_through: non_neg_integer(),
                  done: boolean()

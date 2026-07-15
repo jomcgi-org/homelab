@@ -60,7 +60,14 @@ defmodule Embervm.OpLog.Compactor do
   # so far; the next scheduled sweep retries.
   defp run_sweep(state) do
     now_ms = System.system_time(:millisecond)
-    totals = %{results_deleted: 0, tasks_compacted: 0, ops_compacted: 0, compacted_through: 0}
+    totals = %{
+      results_deleted: 0,
+      tasks_compacted: 0,
+      sessions_compacted: 0,
+      ops_compacted: 0,
+      compacted_through: 0
+    }
+
     sweep_loop(state, now_ms, totals)
   end
 
@@ -70,6 +77,7 @@ defmodule Embervm.OpLog.Compactor do
         totals = %{
           results_deleted: totals.results_deleted + batch.results_deleted,
           tasks_compacted: totals.tasks_compacted + batch.tasks_compacted,
+          sessions_compacted: totals.sessions_compacted + batch.sessions_compacted,
           ops_compacted: totals.ops_compacted + batch.ops_compacted,
           # The marker is monotonic and reported per batch; the last batch's value
           # is the authoritative post-sweep marker.
@@ -99,6 +107,7 @@ defmodule Embervm.OpLog.Compactor do
         inspect(
           results_deleted: totals.results_deleted,
           tasks_compacted: totals.tasks_compacted,
+          sessions_compacted: totals.sessions_compacted,
           ops_compacted: totals.ops_compacted,
           compacted_through: totals.compacted_through,
           db_size_bytes: db_size
