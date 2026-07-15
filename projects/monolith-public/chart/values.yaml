@@ -218,6 +218,16 @@ web:
         secretKeyRef:
           name: monolith-public-writer-db
           key: uri
+    # EmberVM control-plane URL for the public FaaS invocation router
+    # (jomcgi.dev/functions/<name>, R1 Task 13). In-cluster service URL literal
+    # (NOT a secret, NOT a code default); the public tier submits to EmberVM as
+    # its own allow-listed SA. In-cluster egress is permitted by the Cilium
+    # policy. embervm_client raises (-> 502) if this is unset, so it must be here
+    # explicitly: this chart uses the homelab-library deployment helper, which
+    # does NOT derive EMBERVM_URL from semgrep.embervmUrl the way the monolith
+    # chart does.
+    - name: EMBERVM_URL
+      value: "http://embervm-embervm.embervm.svc.cluster.local:8080"
     - name: CHAT_PUBLIC_CHAR_CAP
       value: "8000"
     - name: CHAT_PUBLIC_MAX_TURNS
