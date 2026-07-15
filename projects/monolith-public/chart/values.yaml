@@ -1,6 +1,7 @@
 # Read-only public service (ADR 004 Phase 5). Isolation via
-# templates/cilium-policy.yaml (ADR platform/012), no K8s API access
-# (automountServiceAccountToken false), connects to
+# templates/cilium-policy.yaml (ADR platform/012). The SA token is mounted for
+# the FaaS invocation router to authenticate to EmberVM (identity-only; the SA
+# has no K8s RBAC, see serviceAccount below), and it connects to
 # monolith-pg-ro as public_reader. The image tag is pinned by the Bazel
 # helm_images_values pipeline at build time; do not set a digest here.
 #
@@ -36,8 +37,15 @@ securityContext:
 
 serviceAccount:
   create: true
-  # The public pod needs no Kubernetes API access, so do not mount a token.
-  automount: false
+  # Mount the SA token: the public FaaS invocation router (Task 13) authenticates
+  # to the in-cluster EmberVM control plane with this pod's SA token (EmberVM does
+  # a TokenReview against its allow-list). This is an IDENTITY-ONLY token: the
+  # monolith-public SA has ZERO Kubernetes RBAC (no Role/ClusterRoleBindings), so
+  # the token grants no K8s API power, it only proves "I am monolith-public" to
+  # EmberVM (which the /functions surface already trusts, quota-capped). A
+  # per-component audience-scoped projected token is a hardening follow-up
+  # (DECISIONS.md D-R1.3.3).
+  automount: true
   annotations: {}
   name: ""
 

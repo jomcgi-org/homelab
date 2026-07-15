@@ -412,3 +412,23 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   leak), plus an extra hop; direct is fewer moving parts and matches the private tier.
 - **Approved:** proceeding under the "/loop, move fast, not in active use" latitude;
   flagged here for post-impl review.
+
+### D-R1.3.3 The public pod gets an identity-only SA token (was tokenless) for EmberVM auth
+- **Found live:** after routing + EMBERVM_URL were fixed, the public URL returned 401
+  `{"error":"missing bearer token"}`. The public tier deliberately runs tokenless
+  (`serviceAccount.automount: false`, a hardening choice: a public page needs no K8s
+  API), so `auth_headers()` had no token to send and EmberVM's TokenReview rejected an
+  anonymous submit.
+- **Did:** flipped `serviceAccount.automount: true` so the web pod mounts its SA
+  token. This is the FIRST public path that must authenticate to an in-cluster service
+  (EmberVM), and the token is IDENTITY-ONLY: the `monolith-public` SA has ZERO RBAC
+  (verified: no Role/ClusterRoleBindings), so the token grants no K8s API power. It
+  only proves "I am monolith-public" to EmberVM's allow-list, which is the exact
+  capability the `/functions` surface already exposes (quota-capped). So no new
+  attack surface: a leaked token can only do what the public URL already does.
+- **Caveat / follow-up:** `automount` is SA-scoped, so the frontend/imgproxy pods
+  (same SA, also no RBAC) now also mount the token though they do not use it. A
+  per-component audience-scoped **projected** serviceAccountToken volume on the web
+  pod only would be tighter. **FLAG FOR JOE:** say if you want the scoped-projected
+  hardening now; deferred as a follow-up given the no-RBAC blast radius.
+- **Approved:** proceeding under the "/loop, move fast" latitude; flagged for review.
