@@ -466,3 +466,37 @@ change, nothing calls the new session verbs yet). Flagged for post-impl review.
   actually evicted (no reporters wired yet); the mechanism + property test land now
   so PR-4 only adds the two reporters. This is the ADR 003 orphaned-base cleanup,
   fail-safe by construction (a live session's base cannot be dropped).
+
+## R2 Phase 1: noded session verbs (PR-2, embervm 0.1.37)
+
+Task 4 daemon-side implementation choices where the plan was silent (nothing
+calls the verbs yet; daemon mechanics only). Flagged for post-impl review.
+
+### D-R2.1.1 `suspect` and `DEADLINE_EXCEEDED` are mutually exclusive on the wire
+- gRPC cannot carry both a `DEADLINE_EXCEEDED` status code AND a response body with
+  `suspect=true`. On a guest TIMEOUT, `SessionAssign` returns the `DEADLINE_EXCEEDED`
+  error and leaves the VM alive (the code itself signals suspect-and-alive per the
+  proto contract). The `suspect=true` RESPONSE body is reserved for NON-deadline
+  transport faults (a 502-bodied response, VM left alive). Either way the VM is
+  never destroyed on a transient guest error: the control plane decides. Smallest
+  choice consistent with both the proto `suspect` field and gRPC semantics.
+
+### D-R2.1.2 Session snapshot refs are opaque `sess`-prefixed random hex
+- `newID("sess")`, a distinct namespace from base keys; no file paths cross the
+  seam (R0 proto rule). Bundles live under `SnapshotRoot/sessions/<ref>` (sibling
+  of `bases/`), self-contained (memfile + snapfile, no archive backing) so they are
+  portable, matching the R1 hydration invariant.
+
+### D-R2.1.3 Disk-usage facts are best-effort; rescanned bundles carry mtime + empty identity
+- `unix.Statfs` errors or a missing dir report `(0,0)` (the control plane's
+  fail-closed policy reads that as "no facts"). A bundle found by the restart rescan
+  takes `created_at` from the snapfile mtime (no better disk-only source) and leaves
+  `session_id`/`workload` empty; the control plane rebinds those by adoption from its
+  own projection (the node reports what it HOLDS, not what it MEANS).
+
+### D-R2.1.4 Session VMs share the fcvm driver's LiveCount with primed/task VMs
+- Both `Prime` and `RestoreSession` claim through the SAME fcvm driver, so
+  `driver.LiveCount()` is the single authority for `live_vms`/`max_live_vms`; session
+  VMs are tracked in a SEPARATE `sessionRegistry` (never the task `vmRegistry`) and
+  reported only in `NodeStatus.session_vms`, never in any `primed_vm_ids`. This is
+  the isolation invariant: a session VM can never be adopted into the task pool.

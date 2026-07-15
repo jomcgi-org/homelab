@@ -777,13 +777,14 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not bankable (unknown, task-class, or a call is already in flight)", vmID)
 	}
-	// The Bank destroys the VM, so it never clears the guard: on success the entry is
-	// removed; on failure the VM is left alive but the guard is released so a retry or
-	// a SessionAssign can proceed.
+	// The Bank destroys the VM either way: on success the entry is removed and the
+	// paused VM reaped below; on failure SnapshotSession has already torn the VM
+	// down (a bank is destructive), so drop the now-dead registry entry rather than
+	// leave it misreporting session capacity until the control plane reaps it.
 	snapshotRef := newID("sess")
 	ref, err := s.sessionDriver.SnapshotSession(ctx, e.handle, snapshotRef)
 	if err != nil {
-		e.endInFlight()
+		s.sessionVMs.remove(vmID)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank session vm %q: %v", vmID, err)
 	}
 	// Destroy the VM: the session releases its live capacity and holds only disk.
