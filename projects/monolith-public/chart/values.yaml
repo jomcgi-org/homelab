@@ -521,8 +521,19 @@ imgproxy:
     # Lowered from 85/88/90/92/95: at these levels WebP is visually near
     # indistinguishable for photos while shipping meaningfully fewer bytes; the
     # large display/full presets stay a little higher since they are viewed big.
+    #
+    # format:webp is pinned on every preset so the delivered format does NOT
+    # depend on the request's Accept header. This is deliberate: with runtime
+    # WebP auto-negotiation, imgproxy sets Vary: Accept, and Cloudflare (non-
+    # Enterprise) ignores Vary: Accept and caches a SINGLE variant per URL. A
+    # non-WebP fetch (a link-preview bot, a crawler) could win the 1-year-
+    # immutable cache slot and then serve the larger JPEG to every WebP-capable
+    # browser for a year. Pinning WebP output makes each URL a single canonical
+    # variant so the edge caches it unambiguously. WebP is universally supported
+    # (Safari 14+), so dropping negotiation costs nothing here. See the retired
+    # IMGPROXY_ENABLE_WEBP_DETECTION note below.
     - name: IMGPROXY_PRESETS
-      value: "thumb=resize:fit:300:300/quality:78,gallery=resize:fit:600:600/quality:80,preview=resize:fit:1200:1200/quality:82,display=resize:fit:1920:1080/quality:82,full=quality:90"
+      value: "thumb=resize:fit:300:300/quality:78/format:webp,gallery=resize:fit:600:600/quality:80/format:webp,preview=resize:fit:1200:1200/quality:82/format:webp,display=resize:fit:1920:1080/quality:82/format:webp,full=quality:90/format:webp"
     # Reject any URL whose processing options are not one of the named presets
     # above. Combined with ALLOWED_SOURCES this is the resize allow-list.
     - name: IMGPROXY_ONLY_PRESETS
@@ -538,14 +549,19 @@ imgproxy:
     # by the preset quality:NN, so it did nothing but mislead.)
     - name: IMGPROXY_QUALITY
       value: "82"
-    # WebP auto-negotiation (Accept: image/webp). AVIF detection is deliberately
-    # NOT enabled: at the preset quality levels above, imgproxy's AVIF encode comes
-    # out LARGER than WebP at both gallery (37KB vs 28KB) and display (186KB vs
-    # 128KB) sizes, because AVIF's quality scale is far more aggressive (a "90"
-    # on AVIF is near-lossless). Making AVIF a net win needs per-format quality
-    # (AVIF ~55-63 vs WebP ~80) plus a visual-QA pass, tracked as a follow-up.
-    - name: IMGPROXY_ENABLE_WEBP_DETECTION
-      value: "true"
+    # WebP auto-negotiation is intentionally NOT enabled. It makes the output
+    # depend on Accept: image/webp, which forces a Vary: Accept response header;
+    # Cloudflare (non-Enterprise) ignores Vary: Accept and pins one variant per
+    # URL for the 1-year TTL, so a stray non-WebP fetch could cache-pin the
+    # larger JPEG for every browser. Instead we pin format:webp in every preset
+    # (see IMGPROXY_PRESETS above): output no longer depends on Accept, imgproxy
+    # emits no Vary, and the edge caches one canonical WebP per URL.
+    #
+    # AVIF stays off for a second reason: at these quality levels imgproxy's AVIF
+    # encode came out LARGER than WebP (gallery 37KB vs 28KB, display 186KB vs
+    # 128KB) because AVIF's quality scale is far more aggressive (a "90" is near-
+    # lossless). A net-win AVIF needs per-format quality (AVIF ~55-63 vs WebP ~80)
+    # plus a visual-QA pass; tracked as a follow-up.
     - name: IMGPROXY_STRIP_METADATA
       value: "true"
     - name: IMGPROXY_MAX_SRC_RESOLUTION
