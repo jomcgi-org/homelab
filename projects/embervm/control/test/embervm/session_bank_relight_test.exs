@@ -76,7 +76,7 @@ defmodule Embervm.SessionBankRelightTest do
       channel_fun: fn _node -> {:ok, :ch} end,
       assign_fun: assign_fun,
       destroy_fun: fn _ch, vm -> send(test_pid, {:destroyed, vm}) && {:ok, %{}} end,
-      invalidate_fun: fn _node, _ch -> :ok end
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _ch -> :ok end)
     ]
 
     mgr_opts =
@@ -367,6 +367,42 @@ defmodule Embervm.SessionBankRelightTest do
     assert session.terminal_reason == "snapshot_lost"
     # The lost snapshot was evicted.
     assert_received {:evicted, _ref}
+  end
+
+  test "a server-returned gRPC status on invoke does NOT invalidate the shared node channel" do
+    test_pid = self()
+
+    ctx =
+      start_stack(
+        # A FAILED_PRECONDITION from the daemon rode a HEALTHY channel to get here.
+        assign_fun: fn _ch, _req -> {:error, %GRPC.RPCError{status: 9, message: "boom"}} end,
+        invalidate_fun: fn node, ch -> send(test_pid, {:invalidated, node, ch}) && :ok end
+      )
+
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+
+    assert {:error, {:rpc, 9}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+    # The shared channel must NOT be torn down on a server status (D-R2.7.2): doing
+    # so would disconnect every other session multiplexed on that channel.
+    refute_receive {:invalidated, _, _}, 200
+  end
+
+  test "a transport error on invoke DOES invalidate the shared node channel" do
+    test_pid = self()
+
+    ctx =
+      start_stack(
+        # A raw transport fault (not a %GRPC.RPCError{}) means the channel is bad.
+        assign_fun: fn _ch, _req -> {:error, :closed} end,
+        invalidate_fun: fn node, ch -> send(test_pid, {:invalidated, node, ch}) && :ok end
+      )
+
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+
+    assert {:error, :closed} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+    assert_receive {:invalidated, _, _}, 200
   end
 
   # -- adoption matrix -------------------------------------------------------

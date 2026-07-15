@@ -674,6 +674,36 @@ func (s *Server) liveVMCount() int {
 
 // ---- Session verbs (R2) ----------------------------------------------------
 
+// adoptPrimedSession promotes a primed VM from the task registry into the session
+// registry on a session's FIRST invoke. The session-create path primes/claims the
+// VM through the shared warm pool (Prime always lands it in the task registry), so
+// something has to move it into the session registry before SessionAssign can serve
+// it; doing that lazily on first invoke (rather than via a separate create-time
+// verb) keeps create a single round-trip and mirrors how Relight registers a relit
+// VM. It returns the new session entry with the in-flight guard ALREADY held (so a
+// racing second SessionAssign gets rejected until this one finishes), or (nil,false)
+// when vmID is not a primed task VM (unknown, already assigned/adopted, destroyed),
+// which SessionAssign maps to FAILED_PRECONDITION. The physical VM is already a
+// session-base VM (restored from the session workload's base, running the persistent
+// kernel); only its registry bookkeeping changes.
+func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionEntry, bool) {
+	ve, ok := s.vms.claimForSession(vmID, workload)
+	if !ok {
+		return nil, false
+	}
+	se := &sessionEntry{
+		vmID:        ve.id,
+		sessionID:   sessionID,
+		workload:    workload,
+		snapshotRef: ve.snapshotRef,
+		handle:      ve.handle,
+		inFlight:    true, // held for the SessionAssign that triggered this adoption
+	}
+	s.sessionVMs.add(se)
+	s.signalChange() // the VM moved primed -> session-live; refresh NodeStatus
+	return se, true
+}
+
 // SessionAssign delivers exactly one HTTP task to a LIVE session vm_id over vsock
 // and returns the guest response plus usage WITHOUT destroying the VM (the
 // opposite of Assign's single-use destroy tail: a session survives across
@@ -686,10 +716,18 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 	vmID := req.GetVmId()
 	e, ok := s.sessionVMs.beginInFlight(vmID)
 	if !ok {
-		// Unknown session VM, or an op already in flight on it (a concurrent
-		// SessionAssign or an in-progress Bank). Task-class VMs live in a different
-		// registry and are never found here.
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not assignable (unknown, task-class, mid-bank, or a call is already in flight)", vmID)
+		// Not (yet) in the session registry. A freshly CREATED session's VM was
+		// primed/claimed through the shared warm pool, so it still lives in the task
+		// registry on its FIRST invoke; adopt it into the session registry now
+		// (mirroring how Relight registers a relit VM). A relit session's VM is
+		// already here, so this branch only runs once per session's lifetime. A
+		// genuinely unknown, already-adopted, mid-bank, or in-flight vm_id still
+		// fails FAILED_PRECONDITION.
+		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload())
+		if !ok2 {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not assignable (unknown, task-class, mid-bank, or a call is already in flight)", vmID)
+		}
+		e = adopted
 	}
 	// The VM SURVIVES: clear the in-flight guard on return, never reap.
 	defer e.endInFlight()

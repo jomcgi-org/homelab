@@ -119,6 +119,17 @@ defmodule Embervm.NodeChannel do
   end
 
   @impl true
+  def handle_info(_msg, state) do
+    # The Mint connection process this GenServer dials is LINKED to it, so when
+    # invalidate/terminate disconnects a channel, a normal-reason {:EXIT, pid,
+    # :normal} is delivered here. It is expected and benign: invalidate already
+    # erased and disconnected the channel, and the next get/1 re-dials. Swallow it
+    # (and any other stray info) rather than let it hit the default handle_info and
+    # log a spurious no_handle_info error report on every channel teardown.
+    {:noreply, state}
+  end
+
+  @impl true
   def terminate(_reason, state) do
     # Drop every cached channel so a restart re-dials cleanly and no channel
     # outlives this holder in persistent_term.
