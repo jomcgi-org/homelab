@@ -45,3 +45,22 @@ genrule(
     tools = ["//bazel/erlang:mix_release.sh"],
     visibility = ["//projects/embervm:__subpackages__"],
 )
+
+# Proves the built release BOOTS and serves /healthz on the executor using
+# external erlang exactly like the deployed pod (include_erts:false,
+# RELEASE_DISTRIBUTION=none, RELEASE_TMP, OTP matching the image's Wolfi
+# erlang-27). The last runtime unknown after compile/ExUnit/release-build; also a
+# permanent boot regression guard. Colocated with :release_tar (same package) so
+# no cross-package visibility is needed.
+genrule(
+    name = "release_boot_smoke",
+    srcs = [
+        "@otp_ubuntu2204_amd64//:otp",
+        "@otp_ubuntu2204_amd64//:Install",
+        ":release_tar",
+    ],
+    outs = ["release_boot_smoke.txt"],
+    cmd = "$(location //bazel/erlang:release_boot.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location :release_tar)\" \"$@\"",
+    tags = ["no-remote-cache"],
+    tools = ["//bazel/erlang:release_boot.sh"],
+)

@@ -3,10 +3,12 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 # Prebuilt Erlang/OTP toolchain groundwork for the EmberVM control plane.
 # See repositories.bzl for why a prebuilt (not from-source) OTP is used here.
 
-# The mix_release driver is consumed by the control package's release genrule.
+# The mix_release + release_boot drivers are consumed by the control package's
+# release + boot-smoke genrules (kept there, alongside :release_tar).
 exports_files(
     [
         "mix_release.sh",
+        "release_boot.sh",
         # node.proto Elixir codegen: the driver builds the protoc-gen-elixir
         # escript from the protobuf hex package and runs protoc (see
         # //projects/embervm/proto/embervm/node/v1:node_elixir_src).
