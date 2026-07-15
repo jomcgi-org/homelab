@@ -575,3 +575,21 @@ choices where the plan was silent. Flagged for post-impl review.
   counter (default 30/min); the FIRST banked-invoke consumes a token and relights,
   excess ones 429 without a node hit. Mid-bank parked invokes are not re-wake-charged
   (they arrived before the bank finished; the narrow window is not a burst lever).
+
+### D-R2.4.5 Review fixes + one accepted follow-on (PR-4)
+- **Fixed (critical):** the bank/relight workers acquired the node channel with a bare
+  `channel_fun.(node_id)` in the `with` head; that is a `GenServer.call` which EXITS
+  (not returns) on a NodeChannel restart/dial-timeout, killing the worker before it
+  sent `{:bank_done}`/`{:relight_done}` and hanging every parked caller forever +
+  leaking the per-node bank slot. Wrapped in a `safe_channel/2` that traps the exit
+  into `{:error, {:channel_raised, _}}` so the worker always reports an outcome.
+- **Fixed (medium):** a periodic reconcile that landed mid-bank forced the session to
+  `running` (the node still reports the live VM during a bank), which then made
+  finish_bank's `session_banked` transition illegal and silently dropped. `adopt_one`
+  now skips a session the manager has in-flight in `state.banking`/`state.relighting`
+  (boot reconcile is unaffected: those maps are empty on a fresh process).
+- **Accepted (low, follow-on):** `wake_events` accumulates one key per distinct
+  relighting principal and is never pruned. Bounded by principal cardinality (not
+  request volume), negligible for a homelab; a periodic prune of empty-window keys is
+  a recorded follow-on, not done. **FLAG FOR JOE** only if principal cardinality ever
+  grows unbounded.
