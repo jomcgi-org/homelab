@@ -479,7 +479,7 @@ defmodule Embervm.RouterTest do
     ok = req(:post, "/v1/sessions/s-live/invoke", auth("sess-token-live"), "payload")
     assert ok.status == 200
     assert ok.body == "echoed"
-    assert Enum.any?(ok.resp_headers, fn {k, v} -> k == "content-type" and v =~ "text/plain" end)
+    assert Enum.any?(ok.headers, fn {k, v} -> k == "content-type" and v =~ "text/plain" end)
   end
 
   test "invoke on a terminal session (valid token) is 410 with the reason" do
