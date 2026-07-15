@@ -671,7 +671,7 @@ defmodule Embervm.SessionManager do
 
     spawn(fn ->
       outcome =
-        with {:ok, channel} <- channel_fun.(node_id),
+        with {:ok, channel} <- safe_channel(channel_fun, node_id),
              {:ok, %BankResponse{snapshot_ref: ref, size_bytes: size}} when is_binary(ref) and ref != "" <-
                safe_bank(bank_fun, channel, workload, session_id, vm_id) do
           {:ok, ref, size, generation, parent_base_ref}
@@ -845,6 +845,20 @@ defmodule Embervm.SessionManager do
     kind, reason -> {:error, {:bank_raised, {kind, reason}}}
   end
 
+  # Acquiring a node channel is a GenServer.call that EXITS (not returns) if the
+  # NodeChannel is down or the dial times out. An exit thrown in a bank/relight
+  # worker's `with` head would kill the worker BEFORE it sends {:bank_done}/
+  # {:relight_done}, hanging every parked caller forever and leaking the per-node
+  # bank slot (the node could then never bank again). Trap it into an {:error, _}
+  # value so the worker always reports an outcome the manager can clean up.
+  defp safe_channel(channel_fun, node_id) do
+    channel_fun.(node_id)
+  rescue
+    e -> {:error, {:channel_raised, e}}
+  catch
+    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
   # -- relight-on-invoke (Task 8) --------------------------------------------
 
   # First invoke on a banked session: apply the wake-rate limit, then either park +
@@ -901,7 +915,7 @@ defmodule Embervm.SessionManager do
           {:ok, node_id} ->
             t0 = clock.()
 
-            with {:ok, channel} <- channel_fun.(node_id),
+            with {:ok, channel} <- safe_channel(channel_fun, node_id),
                  {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
                    safe_relight(relight_fun, channel, session) do
               {:ok, node_id, vm_id, clock.() - t0}
@@ -1103,6 +1117,15 @@ defmodule Embervm.SessionManager do
     sid = session.session_id
 
     cond do
+      # This manager has an in-flight bank/relight for the session: it owns the
+      # transition, so a periodic reconcile must NOT touch it. During a bank the node
+      # still reports the live VM, and forcing ETS to running here would make the
+      # pending finish_bank's session_banked transition illegal (and silently lost).
+      # On BOOT these maps are empty (fresh process), so boot adoption still fully
+      # heals every limbo; only the periodic sweep is guarded.
+      Map.has_key?(state.banking, sid) or Map.has_key?(state.relighting, sid) ->
+        state
+
       # The node reports a LIVE VM for this session: rebind it (residency + process),
       # regardless of whether ETS thinks it is running/banking/relighting.
       Map.has_key?(live_vms, sid) ->

@@ -495,9 +495,9 @@ defmodule Embervm.SessionBankRelightTest do
     advance(ctx.clock_pid, 1_000)
     {:ok, session_a} = SessionStore.get(ctx.store, a.session_id)
     # Record an invoke on a so its last_invoke_at is set (warmer than b's nil/0).
+    assert session_a.state == :running
     _ = SessionStore.record_invoke(ctx.store, a.session_id, %{cpu_ms: 1})
     :ok = force_idle_bank(ctx, a.session_id)
-    assert session_a.state == :running or true
 
     # Node reports both snapshots and a free-bytes BELOW the watermark (pressure).
     NodeCapacity.put(ctx.cap_table, "node-4",
