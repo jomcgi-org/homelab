@@ -18,6 +18,9 @@ spec:
       codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/embervm-zips/echo-zip.zip
       # Hex SHA-256 of the archive bytes (noded verifies; also feeds the
       # base-build change-detect signature so a new zip rebuilds the base).
+      # PLACEHOLDER value below (the sha256 of empty input): this is an illustrative
+      # schema sample, not a working CR. For a real, applyable echo function see
+      # crd/samples/workload-echo-fn.yaml and runtimes/python/testdata/echo/.
       sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
       handler: app.handle
       invokePath: /invoke
