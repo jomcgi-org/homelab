@@ -1,0 +1,62 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    # Baked dependency subset (R1 zip lane, ADR embervm/002). This is the
+    # REGISTRATION-TIME CONTRACT: a zip-lane function may import only what is
+    # baked here (documented in README.md). The set is the fc-invoke python
+    # sandbox guest's dependency set INCLUDING Pillow, so numeric/plotting/image
+    # handlers work with no toolchain. Wolfi ships numpy only as version-suffixed
+    # names, so it is not pinned directly; scipy and pandas pull a compatible
+    # numpy in transitively.
+    - python-3.12
+    - py3.12-pandas
+    - py3.12-matplotlib
+    - py3.12-scipy
+    - py3.12-pillow
+    - py3.12-pyyaml
+    - py3.12-python-dateutil
+
+archs:
+  - x86_64
+  - aarch64
+
+accounts:
+  groups:
+    - groupname: runtime
+      gid: 65532
+  users:
+    - username: runtime
+      uid: 65532
+      gid: 65532
+  run-as: 65532
+
+environment:
+  HOME: /home/runtime
+  # Headless matplotlib for image/plot handlers. A raw Firecracker boot ignores
+  # the OCI image config, so the shim/handler must not rely on this being live;
+  # kept here for self-documentation and any non-Firecracker execution path.
+  MPLBACKEND: Agg
+  PYTHONUNBUFFERED: "1"
+  # Zip-lane defaults. The shim reads these at boot; noded/the Workload can
+  # override them per registration (see README.md). Baked so a raw boot with no
+  # env still has the frozen contract defaults.
+  EMBER_HANDLER: app.handle
+  EMBER_ARCHIVE_DEVICE: /dev/vdb
+  EMBER_INVOKE_PATH: /invoke
+
+paths:
+  - path: /home/runtime
+    type: directory
+    uid: 65532
+    gid: 65532
+    permissions: 0o755
+
+entrypoint:
+  # The bootstrap shim is PID 1: it unpacks the attached archive, imports the
+  # handler, and serves the frozen HTTP-over-vsock guest contract on port 1027.
+  command: /usr/bin/python3 /usr/local/bin/ember-runtime-shim
