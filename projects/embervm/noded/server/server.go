@@ -446,6 +446,19 @@ func (s *Server) fetchArchiveToBlockFile(ctx context.Context, baseKey, archiveUR
 		_ = os.Remove(blockPath)
 		return "", status.Errorf(codes.FailedPrecondition, "noded: zip archive sha256 mismatch: got %s want %s", gotSha256, wantSha256)
 	}
+	// Firecracker's virtio-blk sizes a device as floor(fileSize/512) sectors, so a
+	// block file whose length is not a 512-byte multiple is truncated at the guest,
+	// cutting off the tail of the archive (a zip's end-of-central-directory record
+	// lives at the very end). Pad the file up to the next sector so the guest sees
+	// every archive byte. The sha256 above is over the archive bytes only, and the
+	// guest shim trims the trailing zero padding back off (runtimes/python/shim.py
+	// _archive_bytes locates the real zip end).
+	if pad := (512 - n%512) % 512; pad > 0 {
+		if err := os.Truncate(blockPath, n+pad); err != nil {
+			_ = os.Remove(blockPath)
+			return "", status.Errorf(codes.FailedPrecondition, "noded: pad archive block file to sector: %v", err)
+		}
+	}
 	return blockPath, nil
 }
 

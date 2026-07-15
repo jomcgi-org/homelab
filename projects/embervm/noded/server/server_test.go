@@ -46,6 +46,10 @@ type fakeDriver struct {
 	// was there during the build and gone after (cleanup).
 	lastClaim     substrate.ClaimSpec
 	archiveExists bool
+	// archiveSize is the on-disk size of the attached archive block file at claim
+	// time, so a test can prove noded pads it to a 512-byte sector (Firecracker
+	// virtio-blk floors the device to whole sectors and would else truncate it).
+	archiveSize int64
 }
 
 func (f *fakeDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
@@ -58,10 +62,19 @@ func (f *fakeDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substra
 	f.live++
 	f.lastClaim = spec
 	if spec.ExtraDrivePath != "" {
-		_, err := os.Stat(spec.ExtraDrivePath)
+		fi, err := os.Stat(spec.ExtraDrivePath)
 		f.archiveExists = err == nil
+		if err == nil {
+			f.archiveSize = fi.Size()
+		}
 	}
 	return substrate.Handle{ThreadID: spec.ThreadID, ID: "vm-" + spec.ThreadID, Node: "node-4"}, nil
+}
+
+func (f *fakeDriver) archiveSizeAtClaim() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.archiveSize
 }
 
 func (f *fakeDriver) claimSpec() substrate.ClaimSpec {
@@ -582,6 +595,46 @@ func TestBuildBaseZipHappyPath(t *testing.T) {
 	}
 	if build.snapshots != 1 {
 		t.Errorf("idempotent zip build re-snapshotted: snapshots = %d, want 1", build.snapshots)
+	}
+}
+
+// TestBuildBaseZipPadsToSector: an archive whose length is not a 512-byte
+// multiple is padded UP to the next sector on the block file, so Firecracker's
+// virtio-blk (which floors the device to whole sectors) presents every archive
+// byte to the guest rather than truncating the tail.
+func TestBuildBaseZipPadsToSector(t *testing.T) {
+	// 700 bytes: not a 512 multiple, so an unpadded device would floor to 512 and
+	// cut off the last 188 bytes (a zip's end-of-central-directory record).
+	archive := append([]byte("PK\x03\x04"), bytes.Repeat([]byte("x"), 696)...)
+	if len(archive)%512 == 0 {
+		t.Fatalf("test archive %d bytes is already sector-aligned; pick a non-multiple", len(archive))
+	}
+	s, build, url := newZipTestServer(t, archive, 0)
+
+	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace:     &nodev1.Trace{Workload: "ziphandler"},
+		ReadyPath: "/shim/ready",
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Source: &nodev1.BuildBaseRequest_Zip{Zip: &nodev1.ZipSource{
+			RuntimeImageRef: "runtime-python:1",
+			ArchiveUrl:      url,
+			ArchiveSha256:   sha256Hex(archive),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("BuildBase zip: %v", err)
+	}
+
+	got := build.archiveSizeAtClaim()
+	want := int64((len(archive) + 511) / 512 * 512)
+	if got != want {
+		t.Errorf("archive block file size at claim = %d, want %d (sector-padded from %d)", got, want, len(archive))
+	}
+	if got%512 != 0 {
+		t.Errorf("archive block file size %d is not a 512-byte multiple", got)
+	}
+	if got < int64(len(archive)) {
+		t.Errorf("archive block file size %d truncates the %d-byte archive", got, len(archive))
 	}
 }
 
