@@ -51,8 +51,9 @@ defmodule Embervm.SessionManager do
 
   use GenServer
   require Logger
+  require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{NodeCapacity, SessionPlacement, SessionState, SessionStore, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, SessionPlacement, SessionState, SessionStore, SessionTrace, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
     BankRequest,
@@ -219,7 +220,15 @@ defmodule Embervm.SessionManager do
       # The registry sweep (adoption) and the TTL/eviction sweep cadences. Distinct
       # timers; both clock-injected and disable-able for tests (interval 0 = off).
       reconcile_interval_ms: Keyword.get(opts, :reconcile_interval_ms, 0),
-      sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, 0)
+      sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, 0),
+      # status.sessions {live,banked} + sessionsSummary writer (Task 9). Written on
+      # the sweep tick, DEBOUNCED: only patched when a session workload's live/banked
+      # pair differs from the last-written pair (workload -> {live, banked}), the same
+      # change-detection the PoolManager uses for primedFloorSatisfied. Disjoint status
+      # keys (`sessions`/`sessionsSummary`) so it never clobbers the watcher/pool/base
+      # writers' keys (the merge-patch coexistence rule).
+      status_writer: Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3),
+      session_status_written: %{}
     }
 
     # session_opts always carry a manager reference so the per-session idle timer can
@@ -329,19 +338,50 @@ defmodule Embervm.SessionManager do
   # -- create ----------------------------------------------------------------
 
   defp do_create(state, workload, principal) do
-    with {:ok, entry} <- fetch_session_workload(state, workload),
-         :ok <- check_session_cap(state, workload, entry),
-         :ok <- check_workload_cap(state, workload, entry),
-         :ok <- check_quota(state, principal),
-         {:ok, node_id, snapshot_ref} <- pick_node(state, workload),
-         {:ok, vm_id} <- claim_or_prime(state, node_id, workload, snapshot_ref) do
-      register_and_start(state, workload, principal, entry, node_id, vm_id)
-    else
-      {:error, reason} ->
-        audit_denial(state, principal, workload, reason)
-        {:error, {:denied, reason}}
+    # The create span (Task 9): a lifecycle span carrying `ember.pool_hit` (warm
+    # claim vs prime miss), set from within claim_or_prime. Root span (create is
+    # management-auth API-driven, no guest caller trace to nest under).
+    Tracer.with_span "embervm.session.create",
+                     %{
+                       attributes: %{
+                         "ember.workload" => workload,
+                         "ember.principal" => principal
+                       }
+                     } do
+      result =
+        with {:ok, entry} <- fetch_session_workload(state, workload),
+             :ok <- check_session_cap(state, workload, entry),
+             :ok <- check_workload_cap(state, workload, entry),
+             :ok <- check_quota(state, principal),
+             {:ok, node_id, snapshot_ref} <- pick_node(state, workload),
+             {:ok, vm_id} <- claim_or_prime(state, node_id, workload, snapshot_ref) do
+          register_and_start(state, workload, principal, entry, node_id, vm_id)
+        else
+          {:error, reason} ->
+            audit_denial(state, principal, workload, reason)
+            {:error, {:denied, reason}}
+        end
+
+      log_create_result(result, workload, principal)
+      result
     end
   end
+
+  # Structured create log (Task 9): success at info, denial at warn, both keyed
+  # with session_id (when minted)/workload/principal for consistent lifecycle logs.
+  defp log_create_result({:ok, %{session_id: session_id}}, workload, principal) do
+    Logger.info("embervm session created", session_id: session_id, workload: workload, principal: principal)
+  end
+
+  defp log_create_result({:error, {:denied, reason}}, workload, principal) do
+    Logger.warning("embervm session create denied",
+      workload: workload,
+      principal: principal,
+      reason: inspect(reason)
+    )
+  end
+
+  defp log_create_result(_other, _workload, _principal), do: :ok
 
   defp fetch_session_workload(state, workload) do
     case WorkloadCatalog.fetch(state.catalog_table, workload) do
@@ -395,9 +435,13 @@ defmodule Embervm.SessionManager do
   defp claim_or_prime(state, node_id, workload, snapshot_ref) do
     case state.claim_fun.(state.dispatcher, node_id, workload) do
       {:ok, vm_id} ->
+        # A warm claim from the primed pool: pool_hit=true (parity with the
+        # dispatcher's warm-dispatch marking).
+        Tracer.set_attributes(%{"ember.pool_hit" => true})
         {:ok, vm_id}
 
       :miss ->
+        Tracer.set_attributes(%{"ember.pool_hit" => false})
         prime(state, node_id, snapshot_ref)
     end
   end
@@ -670,13 +714,26 @@ defmodule Embervm.SessionManager do
     generation = (session.generation || 0) + 1
 
     spawn(fn ->
+      # A lifecycle span (Task 9). Idle-bank has no caller trace, so it is a root
+      # span (like the dispatcher's embervm.prime); the Task 11 bank-p95 gate reads
+      # it. snapshot_bytes is set on success.
       outcome =
-        with {:ok, channel} <- safe_channel(channel_fun, node_id),
-             {:ok, %BankResponse{snapshot_ref: ref, size_bytes: size}} when is_binary(ref) and ref != "" <-
-               safe_bank(bank_fun, channel, workload, session_id, vm_id) do
-          {:ok, ref, size, generation, parent_base_ref}
-        else
-          other -> {:error, other}
+        Tracer.with_span "embervm.session.bank",
+                         %{
+                           attributes: %{
+                             "ember.session_id" => session_id,
+                             "ember.workload" => workload,
+                             "ember.generation" => generation
+                           }
+                         } do
+          with {:ok, channel} <- safe_channel(channel_fun, node_id),
+               {:ok, %BankResponse{snapshot_ref: ref, size_bytes: size}} when is_binary(ref) and ref != "" <-
+                 safe_bank(bank_fun, channel, workload, session_id, vm_id) do
+            Tracer.set_attributes(%{"ember.snapshot_bytes" => size})
+            {:ok, ref, size, generation, parent_base_ref}
+          else
+            other -> {:error, other}
+          end
         end
 
       send(owner, {:bank_done, session_id, node_id, outcome})
@@ -722,7 +779,13 @@ defmodule Embervm.SessionManager do
             %{snapshot_ref: ref, snapshot_size_bytes: size, generation: generation, node_id: node_id, vm_id: nil}
           )
 
-        Logger.info("embervm session banked", session_id: session_id, node_id: node_id)
+        Logger.info("embervm session banked",
+          session_id: session_id,
+          node_id: node_id,
+          workload: workload_of(state, session_id),
+          principal: principal_of(state, session_id),
+          snapshot_bytes: size
+        )
         state = clear_bank_failures(state, session_id)
         relight_parked_after_bank(state, session_id)
 
@@ -908,28 +971,55 @@ defmodule Embervm.SessionManager do
     relight_fun = state.relight_fun
     clock = state.clock
     session_id = session.session_id
+    # The relight nests under the ROOT span of the invoke that triggered it: the
+    # first parked caller's carried traceparent (concurrent invokes to one banked
+    # session share this one relight). nil when tracing is off.
+    traceparent = first_waiter_traceparent(state, session_id)
 
     spawn(fn ->
-      outcome =
-        case SessionPlacement.node_for_relight(session, capacity_table) do
-          {:ok, node_id} ->
-            t0 = clock.()
+      SessionTrace.restore_parent(traceparent)
 
-            with {:ok, channel} <- safe_channel(channel_fun, node_id),
-                 {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
-                   safe_relight(relight_fun, channel, session) do
-              {:ok, node_id, vm_id, clock.() - t0}
-            else
-              {:error, reason} -> classify_relight_error(reason)
-              other -> classify_relight_error({:relight_failed, other})
-            end
+      Tracer.with_span "embervm.session.relight",
+                       %{
+                         attributes: %{
+                           "ember.session_id" => session_id,
+                           "ember.workload" => session.workload,
+                           "ember.principal" => session.principal,
+                           "ember.generation" => session.generation || 0
+                         }
+                       } do
+        outcome =
+          case SessionPlacement.node_for_relight(session, capacity_table) do
+            {:ok, node_id} ->
+              t0 = clock.()
 
-          {:error, :snapshot_lost} ->
-            {:error, :snapshot_lost}
-        end
+              with {:ok, channel} <- safe_channel(channel_fun, node_id),
+                   {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
+                     safe_relight(relight_fun, channel, session) do
+                relight_ms = clock.() - t0
+                Tracer.set_attributes(%{"ember.relight_ms" => relight_ms})
+                {:ok, node_id, vm_id, relight_ms}
+              else
+                {:error, reason} -> classify_relight_error(reason)
+                other -> classify_relight_error({:relight_failed, other})
+              end
 
-      send(owner, {:relight_done, session_id, outcome})
+            {:error, :snapshot_lost} ->
+              {:error, :snapshot_lost}
+          end
+
+        send(owner, {:relight_done, session_id, outcome})
+      end
     end)
+  end
+
+  # The traceparent carried on the FIRST parked invoke for `session_id` (they share
+  # the relight), or nil when the ledger is empty / tracing is off.
+  defp first_waiter_traceparent(state, session_id) do
+    case Map.get(state.relighting, session_id, []) do
+      [{_from, req} | _] -> Map.get(req, :traceparent)
+      _ -> nil
+    end
   end
 
   defp safe_relight(relight_fun, channel, session) do
@@ -992,7 +1082,12 @@ defmodule Embervm.SessionManager do
 
         case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id) do
           {:ok, pid} ->
-            Logger.info("embervm session relit", session_id: session_id, relight_ms: relight_ms)
+            Logger.info("embervm session relit",
+              session_id: session_id,
+              workload: session.workload,
+              principal: session.principal,
+              relight_ms: relight_ms
+            )
             drain_relight_into_process(state, session_id, pid)
 
           {:error, reason} ->
@@ -1227,6 +1322,60 @@ defmodule Embervm.SessionManager do
     |> sweep_expiry(now)
     |> sweep_banked_ttl(now)
     |> sweep_disk_pressure()
+    |> write_session_status()
+  end
+
+  # -- status.sessions counts (Task 9) ---------------------------------------
+
+  # Write status.sessions {live,banked} + sessionsSummary for every session-class
+  # workload, DEBOUNCED: only patch a workload whose live/banked pair changed since
+  # its last write. Runs on the sweep tick (not on every transition), so the K8s API
+  # is touched at most once per session workload per sweep, never per transition.
+  # Disjoint status keys, so the merge-patch never clobbers the watcher/pool writers.
+  defp write_session_status(state) do
+    session_workloads(state)
+    |> Enum.reduce(state, fn %{workload: workload, namespace: namespace}, acc ->
+      counts = SessionStore.counts(acc.session_store, workload)
+      pair = {counts.live, counts.banked}
+
+      if Map.get(acc.session_status_written, workload) == pair do
+        acc
+      else
+        _ = patch_session_status(acc, namespace, workload, counts)
+        %{acc | session_status_written: Map.put(acc.session_status_written, workload, pair)}
+      end
+    end)
+  end
+
+  # Every cataloged session-class workload with its namespace, for the status write.
+  # A catalog with no session workloads yields [], so this is a no-op on task-only
+  # clusters.
+  defp session_workloads(state) do
+    for name <- WorkloadCatalog.all_names(state.catalog_table),
+        {:ok, %{class: "session", namespace: namespace}} <- [WorkloadCatalog.fetch(state.catalog_table, name)],
+        is_binary(namespace) do
+      %{workload: name, namespace: namespace}
+    end
+  end
+
+  defp patch_session_status(state, namespace, name, counts) do
+    status_map = %{
+      "sessions" => %{"live" => counts.live, "banked" => counts.banked},
+      "sessionsSummary" => "#{counts.live} live / #{counts.banked} banked"
+    }
+
+    case state.status_writer.(namespace, name, status_map) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        # Visibility-only: a status-write failure must never crash the sweep.
+        Logger.warning("embervm session status patch failed for #{namespace}/#{name}: #{inspect(reason)}")
+    end
+  rescue
+    e -> Logger.warning("embervm session status patch raised for #{namespace}/#{name}: #{inspect(e)}")
+  catch
+    _, _ -> :ok
   end
 
   # Max-lifetime expiry (independent of the invoke-time check): any non-terminal
@@ -1258,7 +1407,12 @@ defmodule Embervm.SessionManager do
         %{}
       )
 
-    Logger.info("embervm session expired", session_id: session.session_id)
+    Logger.info("embervm session expired",
+      session_id: session.session_id,
+      workload: session.workload,
+      principal: session.principal
+    )
+
     state
   end
 
@@ -1347,7 +1501,13 @@ defmodule Embervm.SessionManager do
         %{}
       )
 
-    Logger.warning("embervm session evicted", session_id: session.session_id, reason: reason)
+    Logger.warning("embervm session evicted",
+      session_id: session.session_id,
+      workload: session.workload,
+      principal: session.principal,
+      reason: reason
+    )
+
     state
   end
 
@@ -1361,19 +1521,24 @@ defmodule Embervm.SessionManager do
 
   defp evict_snapshot_on_node(state, node_id, snapshot_ref, _reported_id)
        when is_binary(node_id) and is_binary(snapshot_ref) do
-    with {:ok, channel} <- state.channel_fun.(node_id) do
-      req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: snapshot_ref}
+    # A lifecycle span (Task 9): reclaiming a snapshot bundle from node disk. Root
+    # span (eviction is sweep/adoption-driven, no caller trace).
+    Tracer.with_span "embervm.session.evict",
+                     %{attributes: %{"ember.node_id" => node_id}} do
+      with {:ok, channel} <- state.channel_fun.(node_id) do
+        req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: snapshot_ref}
 
-      try do
-        state.evict_fun.(channel, req)
-      rescue
-        _ -> :error
-      catch
-        _, _ -> :error
+        try do
+          state.evict_fun.(channel, req)
+        rescue
+          _ -> :error
+        catch
+          _, _ -> :error
+        end
       end
-    end
 
-    :ok
+      :ok
+    end
   end
 
   defp evict_snapshot_on_node(_state, _node_id, _ref, _reported), do: :ok
@@ -1404,6 +1569,22 @@ defmodule Embervm.SessionManager do
   defp get_session!(state, session_id) do
     {:ok, session} = SessionStore.get(state.session_store, session_id)
     session
+  end
+
+  # Best-effort workload/principal lookups for consistent structured-log keys
+  # (Task 9). nil when the row is gone (a log key, never load-bearing).
+  defp workload_of(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{workload: workload}} -> workload
+      _ -> nil
+    end
+  end
+
+  defp principal_of(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{principal: principal}} -> principal
+      _ -> nil
+    end
   end
 
   defp schedule(_msg, interval) when interval <= 0, do: :ok
@@ -1447,6 +1628,12 @@ defmodule Embervm.SessionManager do
         %{reason: :destroyed},
         %{}
       )
+
+    Logger.info("embervm session destroyed",
+      session_id: session.session_id,
+      workload: session.workload,
+      principal: session.principal
+    )
 
     {reply, state}
   end
