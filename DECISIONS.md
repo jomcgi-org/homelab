@@ -373,3 +373,39 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   `load_result`, survives reopen), a binary request body via `load_request`, and a
   legacy JSON row still decoding to string keys (upgrade compatibility).
 - **Approved:** yes (Joe picked the ETF-blob option; flagged here for post-impl review).
+
+## R1 Phase 2: public tier (Task 13)
+
+### D-R1.3.1 Public FaaS rate-limit is an EmberVM per-principal quota, not a Cloudflare-edge rule
+- **Spec said (Task 13):** "Rate limiting at the Cloudflare edge for `/functions/*`
+  (per ADR 045 risk table)."
+- **Did instead:** the repo's `cloudflare-gateway` is Envoy Gateway + a cloudflared
+  tunnel (ingress routing), NOT the Cloudflare WAF/rate-limit product, so a CF-edge
+  per-IP rule is not expressible in-repo (it is a dashboard/API action). Instead the
+  backstop is an EmberVM per-principal DAILY vCPU-second quota: all public
+  `jomcgi.dev/functions/<name>` traffic submits as the single `monolith-public`
+  ServiceAccount, so one budget (`3600` vCPU-s/day, ~72k og-image invokes) caps the
+  entire public surface, and the function pool cap (4 concurrent VMs) bounds burst.
+  Set in `embervm/deploy/values.yaml` `quota.dailyVcpuSecondsPerPrincipal`.
+- **Why acceptable:** this is a homelab; the quota + pool cap give real backpressure
+  against runaway abuse without a CF WAF plan. A true per-IP/per-second edge rule (or
+  an Envoy `BackendTrafficPolicy` local rate limit scoped to `/functions/*`) is the
+  recorded follow-up if public abuse actually appears.
+- **FLAG FOR JOE:** if you want a hard per-IP edge limit now, it needs a Cloudflare
+  dashboard rule (out of repo) or an Envoy BackendTrafficPolicy PR.
+
+### D-R1.3.2 Public tier calls EmberVM directly (not a proxy to the private tier)
+- monolith-public mounts `register_public` -> `invoke_router_public`, which resolves
+  `get_public_function` (smoke-passed AND `visibility=public`) and calls EmberVM
+  directly, exactly like the private router but with the stricter lookup. This needs:
+  (a) the `monolith-public` SA added to EmberVM's `allowedServiceAccounts`; (b)
+  `EMBERVM_URL` on the public pods (via the chart's `semgrep.embervmUrl` knob); (c) a
+  `public_reader` GRANT on `faas.function` (the row-level `visibility=public` filter
+  in the query is the security boundary, not the grant); (d) faas added to the public
+  image glob with `router.py`/`storage.py`/`workload.py`/`functions/**` pruned so the
+  ingestion/write path stays out of the public binary (`main_public_imports_test`
+  enforces it). Chosen over a public->private proxy because a proxy would still need
+  the visibility filter AND the grant on the public side (a private function must not
+  leak), plus an extra hop; direct is fewer moving parts and matches the private tier.
+- **Approved:** proceeding under the "/loop, move fast, not in active use" latitude;
+  flagged here for post-impl review.

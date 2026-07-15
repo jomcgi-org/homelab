@@ -42,10 +42,11 @@ FUNCTION_NAME = "og-image"
 RUNTIME = "python312"
 HANDLER = "app.handle"
 REQUIREMENTS = "PIL"
-# Registered private in this PR; Task 13 (public tier) flips it to public. A
+# PUBLIC as of Task 13: og-image is served at jomcgi.dev/functions/og-image. A
 # visibility change is intentionally NOT an idempotent no-op (the server's
-# short-circuit compares visibility), so that re-register re-smokes and re-gates.
-VISIBILITY = "private"
+# short-circuit compares visibility), so re-registering a currently-private
+# og-image with this manifest re-smokes and re-gates it as public.
+VISIBILITY = "public"
 
 _APP_PY = Path(__file__).with_name("app.py")
 

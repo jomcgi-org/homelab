@@ -14,6 +14,7 @@ import artifact.module
 import campsites.module
 import chat_public.module
 import dr_jobs.module
+import faas.module
 import grimoire.module
 import grimoire_chat.module
 import hikes.module
@@ -39,4 +40,5 @@ PUBLIC_MODULES: tuple[Module, ...] = (
     artifact.module.MODULE,
     grimoire.module.MODULE,
     grimoire_chat.module.MODULE,
+    faas.module.MODULE,
 )

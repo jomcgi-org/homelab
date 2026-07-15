@@ -33,6 +33,12 @@ auth:
     # monolith already uses to call fc-invoke. Added now so the dual-path code is
     # ready to authenticate the moment the flag flips; no traffic until then.
     - system:serviceaccount:monolith:monolith
+    # The PUBLIC tier (Task 13): monolith-public runs in its own namespace as its
+    # own fullname-prefixed SA, so jomcgi.dev/functions/<name> submits as this
+    # principal. All public FaaS traffic shares this one SA, so the daily quota
+    # below caps the entire public surface (the in-repo backpressure backstop in
+    # lieu of a Cloudflare-edge rate limit; see monolith DECISIONS.md D-R1.3.1).
+    - system:serviceaccount:monolith-public:monolith-public
 
 # Metering, audit, and quotas (Task 12). Quota is left OFF in R0 (opt-in, empty =
 # no enforcement): per-principal daily vCPU-second budgets are set alongside the
@@ -42,6 +48,17 @@ auth:
 # usage at GET /v1/usage?principal=; everyone else is self-scoped.
 usageAdmins:
   - system:serviceaccount:embervm:embervm-embervm
+
+# Public FaaS rate-limit backstop (Task 13, DECISIONS.md D-R1.3.1). All public
+# jomcgi.dev/functions/<name> traffic submits as the single monolith-public SA,
+# so a daily vCPU-second budget on that one principal caps the whole public
+# surface. og-image bills ~0.05 vCPU-s/invoke, so 3600/day is ~72k invokes/day;
+# the function pool cap (4 concurrent VMs) bounds burst. The private monolith SA
+# stays unlimited (omitted from the map). Raise/lower this as real public traffic
+# warrants; a burst-per-second edge rule is the follow-up if abuse appears.
+quota:
+  dailyVcpuSecondsPerPrincipal:
+    "system:serviceaccount:monolith-public:monolith-public": 3600
 
 # OpenTelemetry tracing to SigNoz (Task 13), OTLP/gRPC on 4317 (the same
 # collector fc-invoke exports to). Turns on the exporter via config/runtime.exs.

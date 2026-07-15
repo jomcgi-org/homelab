@@ -41,6 +41,15 @@ imgproxy:
   extraHostnames:
     - private.jomcgi.dev
 
+# EmberVM URL for the public FaaS invocation router (Task 13). The public tier
+# runs no semgrep, but the chart derives the EMBERVM_URL env from
+# `semgrep.embervmUrl` (the single knob), so the /functions/<name> public router
+# reaches the EmberVM control plane at the same in-cluster address the private
+# tier uses. In-cluster egress is allowed by the Cilium policy below, and the
+# public tier submits as its own SA (allow-listed in embervm/deploy/values.yaml).
+semgrep:
+  embervmUrl: "http://embervm-embervm.embervm.svc.cluster.local:8080"
+
 # Phase 5e cutover: serve the public hostname from this isolated service.
 cfIngress:
   public:

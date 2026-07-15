@@ -483,6 +483,17 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # public binary; the read path (public/router_public/library/models/
     # visibility plus the extract/ingest helpers it calls) ships.
     "grimoire/jobs.py",
+    # FaaS: only the public invocation path ships. The ingestion API (router.py)
+    # is the authenticated private-tier author surface (no /api on public); the
+    # write path (storage.py = S3, workload.py = K8s CR CRUD) is private-only; the
+    # guest function code (functions/**, e.g. og_image/app.py) runs inside the
+    # microVM, never in the monolith. register_public imports only
+    # invoke_router_public -> invoke_router -> repository/embervm_client/models,
+    # none of which pull the pruned files (main_public_imports_test enforces it).
+    "faas/router.py",
+    "faas/storage.py",
+    "faas/workload.py",
+    "faas/functions/**/*.py",
 ]
 
 py_library(
@@ -510,6 +521,13 @@ py_library(
             # (main_public_imports_test enforces this).
             "grimoire/**/*.py",
             "grimoire_chat/**/*.py",
+            # FaaS public invocation tier: only the invoke path ships (Task 13).
+            # register_public mounts invoke_router_public, which pulls
+            # invoke_router (shared relay) + repository + embervm_client + models.
+            # The ingestion API (router.py) and the write path (storage.py,
+            # workload.py) plus the guest function code (functions/**) are pruned
+            # below; main_public_imports_test enforces they stay out of the closure.
+            "faas/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -570,6 +588,13 @@ py_venv_binary(
             "campsites/**/*.py",
             "grimoire/**/*.py",
             "grimoire_chat/**/*.py",
+            # FaaS public invocation tier: only the invoke path ships (Task 13).
+            # register_public mounts invoke_router_public, which pulls
+            # invoke_router (shared relay) + repository + embervm_client + models.
+            # The ingestion API (router.py) and the write path (storage.py,
+            # workload.py) plus the guest function code (functions/**) are pruned
+            # below; main_public_imports_test enforces they stay out of the closure.
+            "faas/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -3555,6 +3580,19 @@ py_test(
 py_test(
     name = "faas_invoke_router_test",
     srcs = ["faas/invoke_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "faas_invoke_router_public_test",
+    srcs = ["faas/invoke_router_public_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
