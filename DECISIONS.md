@@ -432,3 +432,37 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
   pod only would be tighter. **FLAG FOR JOE:** say if you want the scoped-projected
   hardening now; deferred as a follow-up given the no-RBAC blast radius.
 - **Approved:** proceeding under the "/loop, move fast" latitude; flagged for review.
+
+## R2 Phase 0: contract layer (PR-1, embervm 0.1.36)
+
+Implementation choices where the R2 plan was silent (contract PR; no behavior
+change, nothing calls the new session verbs yet). Flagged for post-impl review.
+
+### D-R2.0.1 `session_id` is a first-class `Op` struct field, not a payload key
+- The op-log `Op` struct gains a nullable `session_id` alongside `task_id`, mapping
+  1:1 to the new `ops.session_id` column; session ops carry `task_id: nil` and
+  vice versa. Cleaner than burying the id in the ETF payload, and it lets the
+  compaction blocker query pin a live session's ops by column (indexed) exactly
+  like a live task's.
+
+### D-R2.0.2 `session_created` projects state directly to `running`
+- The plan's FSM lists `creating -> running`, but a create is an assignment from an
+  already-primed pristine VM, so the durable projection records `running` on
+  `session_created`. The transient `creating` is a control-plane-process concern
+  (the parked create caller), not a durable state; a future PR can persist it via
+  the op payload's optional `:state` override if needed.
+
+### D-R2.0.3 The `SESSIONS` printer column is backed by a `status.sessionsSummary` string
+- A Kubernetes additionalPrinterColumns entry cannot format an object, so the
+  control plane writes both the structured `status.sessions {live,banked}` (for
+  machine reads) and a `status.sessionsSummary` string (e.g. "3 live / 2 banked")
+  that the `SESSIONS` column renders. Structured object stays authoritative.
+
+### D-R2.0.4 Base eviction is a fed-refcount seam, not a poll; counts fail safe
+- BaseBuilder holds `base_refs` per superseded ref and exposes `report_base_refs/3`
+  (PoolManager will report `:primed` counts, SessionStore `:sessions` counts, both
+  in PR-4). `evictable?` withholds eviction until EVERY owner has reported a known
+  (non-nil) zero: an unknown/nil count NEVER evicts. In this contract PR no base is
+  actually evicted (no reporters wired yet); the mechanism + property test land now
+  so PR-4 only adds the two reporters. This is the ADR 003 orphaned-base cleanup,
+  fail-safe by construction (a live session's base cannot be dropped).
