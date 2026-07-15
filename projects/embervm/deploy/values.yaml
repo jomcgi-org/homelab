@@ -48,3 +48,13 @@ usageAdmins:
 tracing:
   endpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317"
   serviceName: embervm-control
+
+# Node capacity override (cluster-specific; the chart default of 8 is a
+# conservative backstop). node-4 is a ~62Gi box (27% used), and the two platform
+# pools alone (semgrep floor 4 + sandbox floor 4) consume all 8 default slots,
+# leaving zero room for a zip-lane function workload (R1) to prime/miss. Lift the
+# backstop to 16 so functions (og-image and peers, cap 4 each) have headroom; at
+# ~1.5Gi/VM that is ~24Gi worst case, well within budget. This only raises the
+# runaway backstop, not any pool floor.
+noded:
+  maxLiveVMs: 16
