@@ -479,4 +479,105 @@ defmodule Embervm.BaseBuilderTest do
     st = BaseBuilder.status(builder)
     refute Map.has_key?(st.workloads, "b")
   end
+
+  # -- base refcounting + eviction (R2) ---------------------------------------
+
+  # Drives a base turnover (snap1 -> snap2) and then feeds refcounts against the
+  # superseded snap1 via report_base_refs/3, asserting that EvictSnapshot fires
+  # exactly once, and only when BOTH primed and session refcounts are zero.
+  defp turnover_to_snap2(builder, agent) do
+    # gen1 -> snap1.
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 1, image_ref: "imgA"}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap1"}, latest(agent, "w")) end)
+
+    # gen2 with a DIFFERENT image -> a new signature -> snap2, superseding snap1.
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgB"}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap2"}, latest(agent, "w")) end)
+  end
+
+  test "a superseded base is not evicted while sessions reference it, and evicts on drain" do
+    agent = start_recorder()
+    test_pid = self()
+
+    # Each build returns a snapshot ref derived from the image so gen1/gen2 differ.
+    build_fun = fn :fake_channel, req ->
+      ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
+      {:ok, resp(ref)}
+    end
+
+    evict_fun = fn :fake_channel, ref ->
+      send(test_pid, {:evicted, ref})
+      {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        evict_fun: evict_fun
+      )
+
+    turnover_to_snap2(builder, agent)
+
+    # snap1 is now a tracked superseded base with unknown refcounts.
+    st = BaseBuilder.status(builder)
+    assert Map.has_key?(st.workloads["w"].base_refs, "snap1")
+
+    # Report primed:0 alone: sessions still unknown (nil) -> NOT evictable.
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0)
+    refute_receive {:evicted, "snap1"}, 100
+
+    # Report sessions:2 -> still referenced, NOT evicted.
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", sessions: 2)
+    refute_receive {:evicted, "snap1"}, 100
+
+    # Sessions drain to 0 -> now both counts are known-and-zero -> evict fires.
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", sessions: 0)
+    assert_receive {:evicted, "snap1"}, 1_000
+
+    # The ref is marked evicted and dropped from the turnover list.
+    st2 = BaseBuilder.status(builder)
+    assert st2.workloads["w"].base_refs["snap1"].evicted == true
+    refute "snap1" in st2.workloads["w"].superseded_refs
+  end
+
+  test "eviction fires only once even under repeated zero reports" do
+    agent = start_recorder()
+    test_pid = self()
+
+    build_fun = fn :fake_channel, req ->
+      ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
+      {:ok, resp(ref)}
+    end
+
+    evict_fun = fn :fake_channel, ref ->
+      send(test_pid, {:evicted, ref})
+      {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        evict_fun: evict_fun
+      )
+
+    turnover_to_snap2(builder, agent)
+
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, sessions: 0)
+    assert_receive {:evicted, "snap1"}, 1_000
+
+    # A duplicate zero report after eviction does not re-evict (evicted guard).
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, sessions: 0)
+    refute_receive {:evicted, "snap1"}, 100
+  end
+
+  test "reporting refs for an unknown ref is a harmless no-op" do
+    agent = start_recorder()
+    builder = start_builder(status_writer: recording_status_writer(agent))
+
+    # No turnover has happened; snapX is not tracked. Must not crash or evict.
+    assert :ok = BaseBuilder.report_base_refs(builder, "snapX", primed: 0, sessions: 0)
+    assert Process.alive?(builder)
+  end
 end

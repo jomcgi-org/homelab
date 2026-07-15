@@ -197,7 +197,8 @@ defmodule Embervm.WorkloadWatcherTest do
     table = unique_table()
     agent = start_recorder()
     base = start_base_recorder()
-    cr = valid_cr(%{"spec" => %{"class" => "session"}})
+    # `serving` is still reserved for a later rung (session became valid in R2).
+    cr = valid_cr(%{"spec" => %{"class" => "serving"}})
     lister = fn -> {:ok, [cr]} end
     watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
 
@@ -212,6 +213,106 @@ defmodule Embervm.WorkloadWatcherTest do
     assert Agent.get(base, & &1.reconciled) == []
     assert "semgrep" in Agent.get(base, & &1.forgotten)
 
+    assert Process.alive?(watcher)
+  end
+
+  # -- session class (R2) -----------------------------------------------------
+
+  # A valid session CR: an image source plus the required spec.session block.
+  defp session_cr(overrides \\ %{}) do
+    base = %{
+      "metadata" => %{"name" => "sandbox-session", "namespace" => "embervm", "generation" => 1},
+      "spec" => %{
+        "class" => "session",
+        "source" => %{"image" => %{"ref" => "sandbox", "port" => 1027}},
+        "resources" => %{"vcpus" => 1, "memMib" => 2048},
+        "concurrency" => %{"floor" => 1, "cap" => 4},
+        "session" => %{
+          "idleBankSeconds" => 120,
+          "maxLifetimeSeconds" => 21_600,
+          "maxSessions" => 8,
+          "invokeQueueCap" => 4
+        }
+      }
+    }
+
+    deep_merge(base, overrides)
+  end
+
+  test "session class: a valid session CR is cataloged with class and session config" do
+    table = unique_table()
+    agent = start_recorder()
+    lister = fn -> {:ok, [session_cr()]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-session")
+    assert entry.class == "session"
+    assert entry.cap == 4
+    assert entry.floor == 1
+    assert entry.session.idle_bank_seconds == 120
+    assert entry.session.max_lifetime_seconds == 21_600
+    # bankedTtlSeconds omitted -> defaults to maxLifetimeSeconds.
+    assert entry.session.banked_ttl_seconds == 21_600
+    assert entry.session.max_sessions == 8
+    assert entry.session.invoke_queue_cap == 4
+
+    # A valid CR: the watcher writes only observedGeneration (no conditions).
+    assert {_ns, "sandbox-session", status_map} = ready_status(recorded_calls(agent), "sandbox-session")
+    assert status_map["observedGeneration"] == 1
+    refute Map.has_key?(status_map, "conditions")
+  end
+
+  test "session class: session block defaults apply when fields are omitted" do
+    table = unique_table()
+    agent = start_recorder()
+    # An empty session block: every numeric field falls back to its default.
+    # (deep_merge would keep the populated fields, so replace the block outright.)
+    cr = put_in(session_cr(), ["spec", "session"], %{})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-session")
+    assert entry.session.idle_bank_seconds == 300
+    assert entry.session.max_lifetime_seconds == 86_400
+    assert entry.session.banked_ttl_seconds == 86_400
+    assert entry.session.max_sessions == 16
+    assert entry.session.invoke_queue_cap == 4
+  end
+
+  test "session class missing spec.session is Ready=False/SessionSpecMissing, not cataloged" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = session_cr()
+    cr = Map.update!(cr, "spec", &Map.delete(&1, "session"))
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "sandbox-session") == :error
+
+    assert {_ns, "sandbox-session", status_map} = ready_status(recorded_calls(agent), "sandbox-session")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "SessionSpecMissing"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "task class carrying a spec.session block is Ready=False/SessionSpecUnexpected" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = valid_cr(%{"spec" => %{"session" => %{"idleBankSeconds" => 120}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "semgrep") == :error
+
+    assert {_ns, "semgrep", status_map} = ready_status(recorded_calls(agent), "semgrep")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "SessionSpecUnexpected"}] = status_map["conditions"]
     assert Process.alive?(watcher)
   end
 

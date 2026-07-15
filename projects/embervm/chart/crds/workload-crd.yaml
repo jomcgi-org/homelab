@@ -46,6 +46,10 @@ spec:
         - name: Snapshot
           type: string
           jsonPath: .status.snapshotRef
+        - name: Sessions
+          type: string
+          description: Live/banked session counts (session class only).
+          jsonPath: .status.sessionsSummary
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp
@@ -195,13 +199,68 @@ spec:
                   properties:
                     floor:
                       type: integer
-                      description: Primed-pool floor (VMs kept warm per workload).
+                      description: >-
+                        Primed-pool floor (pristine VMs kept warm per workload).
+                        For the session class, the floor is the pristine pool
+                        kept warm for fast session CREATE (create is assignment
+                        from a primed VM); for the task class it is warm task
+                        capacity.
                       minimum: 0
                       default: 0
                     cap:
                       type: integer
-                      description: Hard max in-flight tasks. Must be >= floor.
+                      description: >-
+                        Hard max in-flight. Must be >= floor. For the task class,
+                        max in-flight tasks; for the session class, max LIVE
+                        session VMs (banked sessions hold only disk, not a live
+                        VM, and do not count against the cap).
                       minimum: 1
+                session:
+                  type: object
+                  description: >-
+                    Session-class lifecycle policy (R2). REQUIRED when
+                    spec.class is `session` and forbidden otherwise; the watcher
+                    enforces that cross-field rule with a status condition (the
+                    OpenAPI schema cannot express class-conditional requiredness).
+                    A session is a long-lived logical sandbox banked to a node
+                    snapshot when idle and relit on the next invoke.
+                  properties:
+                    idleBankSeconds:
+                      type: integer
+                      description: >-
+                        Idle time (no in-flight, no queued invoke) after which a
+                        live session is banked to a snapshot and its VM released.
+                      minimum: 10
+                      default: 300
+                    maxLifetimeSeconds:
+                      type: integer
+                      description: >-
+                        Hard lifetime cap. A session rides its birth base version
+                        until this expires (the version-convergence bound); after
+                        it, the next invoke 410s and a fresh session lands on the
+                        current base.
+                      minimum: 60
+                      default: 86400
+                    bankedTtlSeconds:
+                      type: integer
+                      description: >-
+                        GC a banked snapshot untouched this long. Defaults to
+                        maxLifetimeSeconds when unset (the watcher applies that
+                        default; the schema leaves it absent so the watcher can
+                        see it was omitted).
+                      minimum: 60
+                    maxSessions:
+                      type: integer
+                      description: Max sessions (live + banked) for this workload.
+                      minimum: 1
+                      default: 16
+                    invokeQueueCap:
+                      type: integer
+                      description: >-
+                        Max invokes queued behind the one in-flight invoke per
+                        session before new invokes are rejected with 429.
+                      minimum: 1
+                      default: 4
                 invocation:
                   type: object
                   description: Task execution policy. All fields defaulted.
@@ -299,6 +358,24 @@ spec:
                   description: Resolved OCI image digest the base was built from.
                 primedFloorSatisfied:
                   type: boolean
+                sessions:
+                  type: object
+                  description: >-
+                    Session-class counts written by the control plane (session
+                    workloads only). Absent for the task class.
+                  properties:
+                    live:
+                      type: integer
+                      description: Sessions currently holding a live VM.
+                    banked:
+                      type: integer
+                      description: Sessions suspended to a node snapshot.
+                sessionsSummary:
+                  type: string
+                  description: >-
+                    Human-readable "live/banked" rendering of `sessions`, for the
+                    SESSIONS printer column (a printer column cannot format an
+                    object). Written by the control plane alongside `sessions`.
                 conditions:
                   type: array
                   items:
