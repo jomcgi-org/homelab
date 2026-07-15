@@ -509,6 +509,10 @@ defmodule Embervm.SessionManager do
         vm_id: vm_id,
         queue_cap: entry.session.invoke_queue_cap,
         timeout_ms: entry.timeout_ms,
+        # The guest path a bare invoke falls back to (the shim serves only the
+        # workload's invokePath; a "/" default 404s the guest). Both the create and
+        # the relight/adoption restart paths reach here with the catalog entry.
+        invoke_path: Map.get(entry, :invoke_path) || "/invoke",
         # Arm the idle-bank timer (Task 7): a live session with zero in-flight and
         # zero queued invokes for this long calls back to bank/2. Zero disables it.
         idle_bank_ms: entry.session.idle_bank_seconds * 1000,

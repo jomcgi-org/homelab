@@ -115,6 +115,10 @@ defmodule Embervm.Session do
       # round-trip timeout, and (PR-4) the idle-bank delay.
       queue_cap: Keyword.fetch!(opts, :queue_cap),
       timeout_ms: Keyword.get(opts, :timeout_ms, 90_000),
+      # The guest path a bare invoke (no explicit X-Ember-Guest-Path) is forwarded
+      # to. Defaults to the shim's only route, /invoke; the create/restart paths pass
+      # the workload's configured invokePath so a custom path is honored.
+      invoke_path: Keyword.get(opts, :invoke_path, "/invoke"),
       idle_bank_ms: Keyword.get(opts, :idle_bank_ms, nil),
       session_store: Keyword.get(opts, :session_store, Embervm.SessionStore),
       # The SessionManager this process calls back to for a bank (node-global policy
@@ -285,6 +289,7 @@ defmodule Embervm.Session do
     workload = state.workload
     principal = state.principal
     timeout_ms = state.timeout_ms
+    invoke_path = state.invoke_path
     channel_fun = state.channel_fun
     invalidate_fun = state.invalidate_fun
     assign_fun = state.assign_fun
@@ -324,6 +329,7 @@ defmodule Embervm.Session do
             session_id: session_id,
             workload: workload,
             timeout_ms: timeout_ms,
+            invoke_path: invoke_path,
             req: req,
             channel_fun: channel_fun,
             invalidate_fun: invalidate_fun,
@@ -345,7 +351,10 @@ defmodule Embervm.Session do
       {:ok, channel} ->
         guest_req = %GuestRequest{
           method: Map.get(ctx.req, :method, "POST"),
-          path: Map.get(ctx.req, :path, "/"),
+          # Default the guest path to the workload's invokePath (the shim serves
+          # ONLY /invoke; a "/" default 404s the guest, the R1 baked-path trap). An
+          # EXPLICIT X-Ember-Guest-Path (req.path non-nil) still overrides.
+          path: Map.get(ctx.req, :path) || ctx.invoke_path,
           headers: Map.get(ctx.req, :headers, %{}),
           body: Map.get(ctx.req, :body, "")
         }
