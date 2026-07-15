@@ -113,6 +113,32 @@ async def register_function(
             status_code=413,
             detail=f"zip exceeds the {_ZIP_MAX_BYTES} byte (8 MiB) cap",
         )
+    sha256 = hashlib.sha256(zipbytes).hexdigest()
+
+    # Idempotent no-op (plan Task 12, "idempotent by zip sha"): if this exact
+    # archive AND config is already registered and visible (smoked), do nothing.
+    # A CI-invoked re-registration on an unchanged app.py must not re-upload,
+    # re-upsert the CR, or re-run a smoke (which restores a VM). The comparison
+    # includes visibility/handler/runtime so a genuine change (e.g. Task 13
+    # flipping og-image to public) still takes the full path and re-gates.
+    existing = get_function(session, name)
+    if (
+        existing is not None
+        and existing.zip_sha256 == sha256
+        and existing.last_smoke_at is not None
+        and existing.handler == handler
+        and existing.runtime == runtime
+        and existing.visibility == visibility
+    ):
+        return {
+            "name": name,
+            "visibility": visibility,
+            "runtime": runtime,
+            "handler": handler,
+            "zip_sha256": sha256,
+            "ready": True,
+            "unchanged": True,
+        }
 
     # Name conflict is an authorized last-write-wins overwrite (standing decision
     # 6): the authenticated author is replacing their own function. Capture the
@@ -122,7 +148,8 @@ async def register_function(
     # earlier failure the prior row stays visible untouched and we revert only the
     # Workload CR. EmberVM's no-gap turnover keeps the old base serving throughout,
     # so a re-registration never opens a zero-usable-base window (plan Task 10).
-    prior = get_function(session, name)
+    # ``existing`` was fetched above for the idempotency check; reuse it.
+    prior = existing
     prior_cr = (
         {
             "code_uri": prior.code_uri,
@@ -135,7 +162,6 @@ async def register_function(
     )
 
     # --- Orchestrate (the registry row is written LAST, only after a green smoke) ---
-    sha256 = hashlib.sha256(zipbytes).hexdigest()
     storage.put_archive(name, sha256, zipbytes)
     uri = storage.code_uri(name, sha256)
 
