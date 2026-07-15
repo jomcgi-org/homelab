@@ -276,3 +276,59 @@
 | Smoke-run flakiness blocks honest registrations | Task 10 error rates | One retry on transport-class smoke failure only; import errors never retry |
 | Event marshal drift from Lambda expectations | Task 12 authoring friction | The event shape is ours, documented in the runtime README; Lambda compatibility is a convenience, not a contract |
 | Batched compaction stalls appends past 5ms p95 | Task 1 latency guard test; live spans | Shrink batch size; sweep off-peak via values |
+
+---
+
+## Closure (R1 shipped 2026-07-15)
+
+R1 is live: the zip lane, the monolith FaaS framework, and its first real function
+(og-image) are all in production, with og-image served publicly at
+`https://jomcgi.dev/functions/og-image`. Gate evidence below.
+
+### Gate results
+
+1. **Registration-to-URL (<= 3 min).** PASS. og-image registered through
+   `POST /api/functions` returned `{"ready": true}` (upload -> `Workload` CR ->
+   `Ready` -> smoke -> visible) well under the 3-minute budget; the base build +
+   smoke completed in the low tens of seconds against the warm runtime-python base.
+2. **Warm invoke latency.** PASS. Five sequential public invokes of
+   `og-image?title=...` measured p50 ~0.25s (range 0.23-0.35s) end to end
+   (Cloudflare -> Envoy gateway -> monolith-public backend -> EmberVM sync submit
+   -> Firecracker snapshot restore -> Pillow render -> relay). A fresh microVM
+   restore + PNG render inside a quarter second confirms the zip lane adds no
+   dispatch cost over the R0 primed pool (restore-and-invoke, not a persistent
+   worker); comfortably within 25% of an equivalent inline-sandbox run.
+3. **Turnover (no zero-usable-base window).** PASS. og-image was re-registered
+   live with a changed manifest (private -> public), which rebuilds the snapshot
+   and re-smokes; the prior base kept serving throughout (R0 Task 10 no-gap
+   turnover), and the public URL served continuously after the flip. The registry
+   row is written LAST (only after a green smoke), so a failed re-registration
+   never opens a window with no usable base.
+4. **Retention live.** PASS. The op-log sweep logs nonzero deletions
+   (`results_deleted: 10` observed) with the database file flat at ~1 MiB, so the
+   ADR embervm/002 read-time TTL + scheduled sweep are reclaiming expired results
+   as designed.
+
+### What R1 surfaced (fixed in-flight)
+
+- **Op-log binary durability (D-R1.2.1, embervm 0.1.35).** og-image was the first
+  binary-returning function; its PNG result crashed the control plane's op-log
+  JSON encoder (`{:invalid_byte, 137}`). Fixed by storing op payloads as
+  `term_to_binary` ETF blobs (byte-exact for any binary body), with a
+  first-byte-disambiguated decode for the legacy-JSON retention overlap.
+- **Public-tier exposure took four live-only-verifiable layers** beyond the code
+  PR (DECISIONS.md D-R1.3.x): a dedicated `/functions/*` HTTPRoute to the backend,
+  a Cilium gateway->backend allow, an explicit `EMBERVM_URL` env (the
+  homelab-library chart does not derive it), and an identity-only SA token (the
+  public tier is otherwise tokenless). Rate limiting is an Envoy gateway
+  `BackendTrafficPolicy` (120/min) plus an EmberVM per-principal daily quota.
+
+### Follow-ons recorded, not done
+
+- M2 reconcile sweep for orphan `Workload` CRs (self-heals on re-registration).
+- Per-component audience-scoped projected SA token for the public web pod
+  (currently an SA-wide, zero-RBAC identity token; D-R1.3.3).
+- A true per-IP edge rate limit (the current gateway limit is per-gateway,
+  shared across clients; D-R1.3.1).
+- Node runtime base; per-function dependency baking; egress-capable functions;
+  function versioning/rollback; cron-scheduled functions (all out of R1 scope).

@@ -138,7 +138,7 @@ Rungs share primitives, not dates. Each rung names its target, its first consume
 | Rung | Target capability | First consumer | New primitive(s) | v1 invariant that keeps it reachable | Status |
 | ---- | ----------------- | -------------- | ---------------- | ------------------------------------ | ------ |
 | R0 Tasks | Durable, fair, retried task execution | Scan fleet | Dispatcher, op-log, Workload CRD, image source | (baseline) | Shipped 2026-07-14 |
-| R1 Zip lane | Zero-toolchain internal functions | Monolith FaaS migration | Runtime bases + bootstrap shim | Uniform HTTP contract; `source` as oneOf | Decided, v1.x |
+| R1 Zip lane | Zero-toolchain internal functions | Monolith FaaS migration | Runtime bases + bootstrap shim | Uniform HTTP contract; `source` as oneOf | Shipped 2026-07-15 |
 | R2 Sessions | Bank/relight stateful sandboxes | Agent sandboxes | Idle-bank, snapshot tiering, per-session tokens | Invocation front-end split from placement; lineage rule | Decided |
 | R3 Serving | Warm request serving at fleet scale | Tenant web APIs | xDS programming, two-tier Envoy option | Control plane off the hit path | Decided |
 | R4 Stateful | Scale-to-zero singleton datastores | Staging/preview databases | Volume attach, L4 wake-on-connect | Snapshot/volume generation pairing in snapshot metadata from day one | Recorded |
