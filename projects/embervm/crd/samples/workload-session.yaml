@@ -1,0 +1,42 @@
+# Sample session-class Workload (R2, ADR embervm/001). A session is a long-lived
+# logical sandbox whose in-VM state (files, variables, a warm interpreter)
+# persists across invocations: it is banked (suspended to a node snapshot) when
+# idle and relit on the next request. This is the definition surface only; a
+# session INSTANCE is execution state in the op-log, never a Kubernetes object.
+# For the session class, concurrency.cap is max LIVE session VMs and
+# concurrency.floor is the pristine pool kept warm for fast create. Living
+# documentation of the session surface, mirroring workload-echo.yaml. Not a
+# production deploy (those live under projects/embervm/deploy/).
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: sandbox-session
+  namespace: embervm
+spec:
+  class: session
+  source:
+    image:
+      ref: ghcr.io/jomcgi/homelab/projects/embervm/guests/sandbox:latest
+      port: 1027
+      readyPath: /shim/ready
+      invokePath: /invoke
+  resources:
+    vcpus: 1
+    memMib: 2048
+  concurrency:
+    # floor: pristine VMs kept warm for fast session create.
+    floor: 1
+    # cap: max live session VMs (banked sessions hold only disk).
+    cap: 4
+  session:
+    # Bank an idle session (no in-flight, no queued invoke) after 2 minutes.
+    idleBankSeconds: 120
+    # Version-convergence bound: a session rides its birth base until this
+    # expires, then the next invoke 410s onto the current base.
+    maxLifetimeSeconds: 21600
+    # GC a banked snapshot untouched this long (here, the full lifetime).
+    bankedTtlSeconds: 21600
+    # Max sessions (live + banked) for this workload.
+    maxSessions: 8
+    # Max invokes queued behind the one in-flight invoke per session.
+    invokeQueueCap: 4

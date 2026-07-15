@@ -104,7 +104,15 @@ defmodule Embervm.BaseBuilder do
   use GenServer
   require Logger
 
-  alias Embervm.Node.V1.{BuildBaseRequest, BuildBaseResponse, NodeService, ResourceSpec, Trace, ZipSource}
+  alias Embervm.Node.V1.{
+    BuildBaseRequest,
+    BuildBaseResponse,
+    EvictSnapshotRequest,
+    NodeService,
+    ResourceSpec,
+    Trace,
+    ZipSource
+  }
 
   # Backoff for a failed build: exponential from 1s, capped at the spec's 10m.
   @base_backoff_ms 1_000
@@ -169,6 +177,23 @@ defmodule Embervm.BaseBuilder do
   end
 
   @doc """
+  Report current refcounts against a superseded base snapshot ref for a
+  workload, so the BaseBuilder can decide when it is safe to evict (R2 base
+  refcounting, ADR embervm/001 standing decision 5). Callers report the counts
+  they own: the PoolManager reports `:primed` (primed pristine VMs still on the
+  old base), the SessionStore reports `:sessions` (non-terminal sessions still
+  pinned to the old base as their birth lineage). A superseded base is destroyed
+  (via EvictSnapshot) ONLY once BOTH are reported as zero; until then it stays
+  restorable so a live or banked session can always relight from its birth base.
+  Unknown/absent refs are ignored (the ref was never superseded, or already
+  evicted). A synchronous call so a test can assert eviction ordering.
+  """
+  @spec report_base_refs(GenServer.server(), String.t(), keyword()) :: :ok
+  def report_base_refs(server \\ __MODULE__, ref, counts) do
+    GenServer.call(server, {:report_base_refs, ref, counts})
+  end
+
+  @doc """
   A snapshot of every tracked Workload's build state, for tests and operational
   visibility. Includes queue/building state per node so an operator can see WHY
   a base is not built yet.
@@ -194,6 +219,11 @@ defmodule Embervm.BaseBuilder do
     build_fun = Keyword.get(opts, :build_fun, &default_build/2)
     connect_fun = Keyword.get(opts, :connect_fun, &default_connect/1)
     disconnect_fun = Keyword.get(opts, :disconnect_fun, &default_disconnect/1)
+    # R2: the EvictSnapshot seam for destroying a fully-drained superseded base
+    # (the ADR embervm/003 eviction verb, landed early). Defaults to the real
+    # NodeService.Stub.evict_snapshot/2 over a per-call channel; tests inject a
+    # fake to assert eviction fires exactly when both refcounts hit zero.
+    evict_fun = Keyword.get(opts, :evict_fun, &default_evict/2)
     status_writer = Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3)
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     base_backoff = Keyword.get(opts, :base_backoff_ms, @base_backoff_ms)
@@ -225,6 +255,7 @@ defmodule Embervm.BaseBuilder do
       build_fun: build_fun,
       connect_fun: connect_fun,
       disconnect_fun: disconnect_fun,
+      evict_fun: evict_fun,
       runtime_images: runtime_images,
       status_writer: status_writer,
       clock: clock,
@@ -245,6 +276,10 @@ defmodule Embervm.BaseBuilder do
   end
 
   @impl true
+  def handle_call({:report_base_refs, ref, counts}, _from, state) do
+    {:reply, :ok, apply_base_refs(state, ref, counts)}
+  end
+
   def handle_call(:status, _from, state) do
     workloads =
       for {name, w} <- state.workloads, into: %{} do
@@ -256,6 +291,7 @@ defmodule Embervm.BaseBuilder do
            snapshot_digest: w.snapshot_digest,
            built: w.built_signature != nil and w.built_signature == signature(w),
            superseded_refs: w.superseded_refs,
+           base_refs: w.base_refs,
            backoff_ms: w.backoff_ms
          }}
       end
@@ -386,6 +422,15 @@ defmodule Embervm.BaseBuilder do
       snapshot_ref: nil,
       snapshot_digest: nil,
       superseded_refs: [],
+      # R2 refcounting: per-superseded-ref refcount tracking, keyed by snapshot
+      # ref. A superseded base is destroyed (via EvictSnapshot) ONLY when zero
+      # primed VMs AND zero non-terminal sessions reference it. Both counts start
+      # nil (unknown) and are reported by the PoolManager (primed) and the
+      # SessionStore (sessions); eviction fires only once BOTH are known-and-zero,
+      # so a base is never evicted while a session still rides its birth version
+      # (standing decision 5). Multiple superseded bases coexist here, each
+      # TTL-bounded by its referencing sessions' maxLifetimeSeconds.
+      base_refs: %{},
       backoff_ms: nil,
       retry_timer: nil
     }
@@ -616,10 +661,26 @@ defmodule Embervm.BaseBuilder do
   # push any superseded ref onto the turnover list (Task 11 seam), and reset
   # backoff.
   defp apply_result(state, w, built_sig, {:ok, %BuildBaseResponse{} = resp}) do
+    turned_over? = w.snapshot_ref && w.snapshot_ref != resp.snapshot_ref
+
     superseded =
-      if w.snapshot_ref && w.snapshot_ref != resp.snapshot_ref,
-        do: [w.snapshot_ref | w.superseded_refs],
-        else: w.superseded_refs
+      if turned_over?, do: [w.snapshot_ref | w.superseded_refs], else: w.superseded_refs
+
+    # On turnover, start refcounting the freshly-superseded base. Counts begin
+    # unknown (nil); eviction is withheld until the PoolManager and SessionStore
+    # report both as zero (report_base_refs/3). A ref already tracked keeps its
+    # reported counts.
+    base_refs =
+      if turned_over? and not Map.has_key?(w.base_refs, w.snapshot_ref) do
+        Map.put(w.base_refs, w.snapshot_ref, %{
+          node_id: w.node_id,
+          primed: nil,
+          sessions: nil,
+          evicted: false
+        })
+      else
+        w.base_refs
+      end
 
     w = %{
       w
@@ -627,12 +688,116 @@ defmodule Embervm.BaseBuilder do
         snapshot_ref: resp.snapshot_ref,
         snapshot_digest: resp.image_digest,
         superseded_refs: superseded,
+        base_refs: base_refs,
         backoff_ms: nil,
         retry_timer: nil
     }
 
     state = put_in(state.workloads[w.name], w)
     write_base_status(state, w, :built)
+  end
+
+  # -- base refcounting + eviction (R2) ---------------------------------------
+
+  # Update the reported refcounts for one superseded base ref and, if it is now
+  # fully drained (zero primed AND zero sessions, both known), evict it. Finds
+  # the workload that recorded the ref; a ref we do not track (never superseded,
+  # or already evicted) is a no-op. This is the ONLY place a superseded base is
+  # destroyed, and only via the EvictSnapshot verb.
+  defp apply_base_refs(state, ref, counts) do
+    case workload_for_ref(state, ref) do
+      nil ->
+        state
+
+      name ->
+        w = state.workloads[name]
+        entry = Map.get(w.base_refs, ref)
+        updated = merge_refcounts(entry, counts)
+        w = put_in(w.base_refs[ref], updated)
+        state = put_in(state.workloads[name], w)
+        maybe_evict_base(state, name, ref)
+    end
+  end
+
+  defp workload_for_ref(state, ref) do
+    Enum.find_value(state.workloads, fn {name, w} ->
+      if not Map.get(w.base_refs[ref] || %{}, :evicted, true) and Map.has_key?(w.base_refs, ref),
+        do: name,
+        else: nil
+    end)
+  end
+
+  defp merge_refcounts(entry, counts) do
+    entry
+    |> maybe_put_count(:primed, Keyword.get(counts, :primed))
+    |> maybe_put_count(:sessions, Keyword.get(counts, :sessions))
+  end
+
+  defp maybe_put_count(entry, _key, nil), do: entry
+  defp maybe_put_count(entry, key, value) when is_integer(value), do: Map.put(entry, key, value)
+
+  # A superseded base is evictable only when BOTH refcounts are known and zero.
+  # A nil (unreported) count is treated as "still referenced": eviction is
+  # withheld until every owner has spoken, so a base is never destroyed under a
+  # session that has not yet been counted (fail-safe).
+  defp evictable?(%{primed: 0, sessions: 0, evicted: false}), do: true
+  defp evictable?(_), do: false
+
+  defp maybe_evict_base(state, name, ref) do
+    w = state.workloads[name]
+    entry = w.base_refs[ref]
+
+    if evictable?(entry) do
+      # Mark evicted synchronously (so a second report cannot double-evict), drop
+      # the ref from the turnover list, and fire EvictSnapshot in a spawned worker
+      # so the blocking RPC never freezes this GenServer.
+      w = %{
+        w
+        | base_refs: Map.put(w.base_refs, ref, %{entry | evicted: true}),
+          superseded_refs: List.delete(w.superseded_refs, ref)
+      }
+
+      state = put_in(state.workloads[name], w)
+      spawn_evict(state, entry.node_id, ref)
+      state
+    else
+      state
+    end
+  end
+
+  # Spawn a fire-and-forget eviction worker. EvictSnapshot is idempotent (an
+  # unknown ref is OK), so a lost result or a retry is harmless; failures are
+  # logged, not retried here (the next report, or the banked-TTL GC, is the
+  # backstop). Not monitored: a crash cannot un-evict the already-marked ref.
+  defp spawn_evict(state, node_id, ref) do
+    address = state.node_addr[node_id]
+    connect_fun = state.connect_fun
+    disconnect_fun = state.disconnect_fun
+    evict_fun = state.evict_fun
+
+    spawn(fn ->
+      result =
+        case connect_fun.(address) do
+          {:ok, channel} ->
+            try do
+              evict_fun.(channel, ref)
+            catch
+              kind, reason -> {:error, {kind, reason}}
+            after
+              disconnect_fun.(channel)
+            end
+
+          {:error, reason} ->
+            {:error, {:connect, reason}}
+        end
+
+      case result do
+        {:ok, _} -> :ok
+        other -> Logger.warning("embervm base builder: EvictSnapshot #{ref} failed: #{inspect(other)}")
+      end
+    end)
+
+    :ok
   end
 
   # A failed build: keep any existing base (Ready stays True if one is recorded),
@@ -781,6 +946,15 @@ defmodule Embervm.BaseBuilder do
 
   defp default_build(channel, %BuildBaseRequest{} = request) do
     NodeService.Stub.build_base(channel, request)
+  end
+
+  # EvictSnapshot the superseded base ref. Trace carries no workload (a base
+  # eviction is not a per-workload task op); the ref is the whole payload.
+  defp default_evict(channel, ref) do
+    NodeService.Stub.evict_snapshot(channel, %EvictSnapshotRequest{
+      trace: %Trace{},
+      snapshot_ref: ref
+    })
   end
 
   # A gRPC-level failure (e.g. FAILED_PRECONDITION for an image the daemon does

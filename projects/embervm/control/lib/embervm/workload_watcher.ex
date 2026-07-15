@@ -426,8 +426,8 @@ defmodule Embervm.WorkloadWatcher do
       spec = Map.get(cr, "spec") || %{}
 
       case validate(spec) do
-        {:ok, floor, cap} ->
-          entry = catalog_entry(name, namespace, spec, floor, cap)
+        {:ok, class, floor, cap, session_cfg} ->
+          entry = catalog_entry(name, namespace, spec, class, floor, cap, session_cfg)
           WorkloadCatalog.upsert(state.table, name, entry)
 
           # A valid Workload's Ready/BaseBuilt conditions are owned by the
@@ -552,25 +552,72 @@ defmodule Embervm.WorkloadWatcher do
 
   # -- validation ----------------------------------------------------------
 
-  # Returns {:ok, fields} with just the pieces catalog_entry/3 needs, or
+  # Returns {:ok, class, floor, cap, session_cfg} with just the pieces
+  # catalog_entry needs (session_cfg is nil for the task class), or
   # {:error, reason_code, message} for a status condition. The CRD schema
   # (workload-crd.yaml) enforces shape (required fields, enums, min/max) at
-  # admission; what's left for the watcher is the cross-field/semantic rules
-  # the OpenAPI schema cannot express (class allow-list beyond the enum,
-  # oneOf source lane, cap >= floor).
+  # admission; what's left for the watcher is the cross-field/semantic rules the
+  # OpenAPI schema cannot express (class allow-list beyond the enum, the oneOf
+  # source lane, cap >= floor, and the class-conditional session block).
   defp validate(spec) do
-    with :ok <- validate_class(spec),
+    with {:ok, class} <- validate_class(spec),
          :ok <- validate_source(spec),
-         {:ok, floor, cap} <- validate_concurrency(spec) do
-      {:ok, floor, cap}
+         {:ok, floor, cap} <- validate_concurrency(spec),
+         {:ok, session_cfg} <- validate_session(spec, class) do
+      {:ok, class, floor, cap, session_cfg}
     end
   end
 
-  defp validate_class(%{"class" => "task"}), do: :ok
+  defp validate_class(%{"class" => "task"}), do: {:ok, "task"}
+  defp validate_class(%{"class" => "session"}), do: {:ok, "session"}
 
   defp validate_class(spec) do
     {:error, "ClassUnsupported",
-     "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task is valid in v1alpha1"}
+     "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task and session are valid in v1alpha1"}
+  end
+
+  # The session block is REQUIRED for the session class and FORBIDDEN for the
+  # task class (the class-conditional requiredness the OpenAPI schema cannot
+  # express). Each mismatch is a precise Ready=False, never a crash (R0 posture).
+  # Session config numeric fields are re-defaulted here (mirroring the CRD) so
+  # this code has no silent dependency on apiserver defaulting having run.
+  @session_defaults %{
+    idle_bank_seconds: 300,
+    max_lifetime_seconds: 86_400,
+    max_sessions: 16,
+    invoke_queue_cap: 4
+  }
+
+  defp validate_session(spec, "task") do
+    case Map.get(spec, "session") do
+      nil -> {:ok, nil}
+      _ -> {:error, "SessionSpecUnexpected", "spec.session is only valid for class session, not task"}
+    end
+  end
+
+  defp validate_session(spec, "session") do
+    case Map.get(spec, "session") do
+      s when is_map(s) ->
+        {:ok, parse_session(s)}
+
+      _ ->
+        {:error, "SessionSpecMissing", "class session requires a spec.session block"}
+    end
+  end
+
+  # bankedTtlSeconds defaults to maxLifetimeSeconds when omitted (the plan's
+  # rule), which is why it is not defaulted in the CRD schema: the watcher needs
+  # to see the omission to apply that class-coupled default.
+  defp parse_session(s) do
+    max_lifetime = Map.get(s, "maxLifetimeSeconds") || @session_defaults.max_lifetime_seconds
+
+    %{
+      idle_bank_seconds: Map.get(s, "idleBankSeconds") || @session_defaults.idle_bank_seconds,
+      max_lifetime_seconds: max_lifetime,
+      banked_ttl_seconds: Map.get(s, "bankedTtlSeconds") || max_lifetime,
+      max_sessions: Map.get(s, "maxSessions") || @session_defaults.max_sessions,
+      invoke_queue_cap: Map.get(s, "invokeQueueCap") || @session_defaults.invoke_queue_cap
+    }
   end
 
   # The CRD schema enforces the structural oneOf (exactly one of image|zip) at
@@ -639,7 +686,7 @@ defmodule Embervm.WorkloadWatcher do
   # reflects whatever the apiserver already defaulted at admission;
   # re-defaulting here just means this code has no silent dependency on that
   # having happened.
-  defp catalog_entry(name, namespace, spec, floor, cap) do
+  defp catalog_entry(name, namespace, spec, class, floor, cap, session_cfg) do
     resources = Map.get(spec, "resources") || %{}
     invocation = Map.get(spec, "invocation") || %{}
     source = parse_source(spec)
@@ -647,7 +694,11 @@ defmodule Embervm.WorkloadWatcher do
     %{
       name: name,
       namespace: namespace,
-      class: "task",
+      class: class,
+      # Session-class lifecycle config (nil for the task class), carried so the
+      # SessionManager/SessionStore (later PRs) read idle-bank/lifetime/caps from
+      # the catalog exactly as the dispatcher reads task caps.
+      session: session_cfg,
       # Zip-lane source (nil for the image lane), carried so the BaseBuilder can
       # map it to a proto ZipSource. The image lane leaves it nil.
       zip: source.zip,
