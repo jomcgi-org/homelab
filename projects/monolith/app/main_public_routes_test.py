@@ -89,6 +89,18 @@ def test_each_public_domain_has_a_route():
         )
 
 
+def test_public_faas_invocation_mounted():
+    # The public FaaS product surface (Task 13) must be mounted, and only the
+    # invocation router (no /api/functions ingestion on the public tier).
+    paths = _paths()
+    assert any(p.startswith("/functions") for p in paths), (
+        "expected the public /functions/<name> invocation router to be mounted"
+    )
+    assert not any(p.startswith("/api/functions") for p in paths), (
+        "the ingestion API (/api/functions) must NOT be mounted on the public tier"
+    )
+
+
 def test_healthz_present():
     assert "/healthz" in _paths()
 
@@ -133,6 +145,13 @@ ALLOWED_PREFIXES = (
     # kept off the public HTTPRoute (the frontend is the sole public origin). The
     # write router is NOT mounted here (the public tier stays read-only).
     "/internal/artifact",
+    # Public FaaS invocation surface (Task 13): jomcgi.dev/functions/<name> for
+    # visibility=public functions only. This is the ONE public route that is not
+    # under /api (it is the product URL, per ADR agents/045); the ingestion API
+    # (/api/functions) is deliberately NOT mounted on the public tier (register vs
+    # register_public). The router filters visibility=public, so a private
+    # function 404s here (faas/invoke_router_public_test.py asserts it).
+    "/functions",
     "/healthz",
     # Deep health probe (DB reachable + public_reader can query). Reached via the
     # frontend /health same-origin proxy; not a private surface.

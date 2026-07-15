@@ -376,23 +376,26 @@ Task 14b does semgrep + the fc-invoke concurrency rebalance + finding-equality.
 
 ## R1 Phase 2: public tier (Task 13)
 
-### D-R1.3.1 Public FaaS rate-limit is an EmberVM per-principal quota, not a Cloudflare-edge rule
+### D-R1.3.1 Public FaaS rate-limit = Envoy gateway rate-limit + EmberVM quota (defense in depth)
 - **Spec said (Task 13):** "Rate limiting at the Cloudflare edge for `/functions/*`
   (per ADR 045 risk table)."
-- **Did instead:** the repo's `cloudflare-gateway` is Envoy Gateway + a cloudflared
-  tunnel (ingress routing), NOT the Cloudflare WAF/rate-limit product, so a CF-edge
-  per-IP rule is not expressible in-repo (it is a dashboard/API action). Instead the
-  backstop is an EmberVM per-principal DAILY vCPU-second quota: all public
-  `jomcgi.dev/functions/<name>` traffic submits as the single `monolith-public`
-  ServiceAccount, so one budget (`3600` vCPU-s/day, ~72k og-image invokes) caps the
-  entire public surface, and the function pool cap (4 concurrent VMs) bounds burst.
-  Set in `embervm/deploy/values.yaml` `quota.dailyVcpuSecondsPerPrincipal`.
-- **Why acceptable:** this is a homelab; the quota + pool cap give real backpressure
-  against runaway abuse without a CF WAF plan. A true per-IP/per-second edge rule (or
-  an Envoy `BackendTrafficPolicy` local rate limit scoped to `/functions/*`) is the
-  recorded follow-up if public abuse actually appears.
-- **FLAG FOR JOE:** if you want a hard per-IP edge limit now, it needs a Cloudflare
-  dashboard rule (out of repo) or an Envoy BackendTrafficPolicy PR.
+- **Clarification found mid-implementation:** the repo's `cloudflare-gateway` is Envoy
+  Gateway + a cloudflared tunnel, NOT the Cloudflare WAF product, so a CF-*WAF* per-IP
+  rule is a dashboard action (out of repo). BUT the Envoy gateway IS the public
+  origin's edge and DOES support in-repo rate limiting via the `cf-ingress.rate-limit`
+  BackendTrafficPolicy helper (already used for the `-public` frontend route at
+  100/min).
+- **Did:** TWO layers. (1) A dedicated `/functions/` HTTPRoute (mirroring `/img`)
+  carries its own `cf-ingress.rate-limit` BackendTrafficPolicy at 120/min
+  (`cfIngress.public.functionsRateLimit`), an Envoy Local limit at the gateway edge.
+  (2) An EmberVM per-principal DAILY vCPU-second quota (`3600`/day, ~72k og-image
+  invokes) on the single `monolith-public` SA that all public traffic submits as,
+  plus the function pool cap (4 concurrent VMs). The gateway limit is the coarse burst
+  cap; the quota is the daily abuse cap; the pool cap bounds concurrency.
+- **Caveat:** the Envoy Local limit is per-gateway and shared across clients (not
+  per-IP), matching the existing frontend limit; a true per-IP rule would need a CF
+  dashboard rule or a client-selector on the policy. Acceptable for a homelab
+  low-volume OG-image surface. **FLAG FOR JOE:** say if you want per-IP granularity.
 
 ### D-R1.3.2 Public tier calls EmberVM directly (not a proxy to the private tier)
 - monolith-public mounts `register_public` -> `invoke_router_public`, which resolves
