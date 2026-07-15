@@ -185,6 +185,38 @@ defmodule Embervm.DispatcherTest do
     assert Dispatcher.stats(ctx.name).inventory[{"node-4", "wl-a"}] == 1
   end
 
+  test "a miss worker's just-primed vm is not re-adopted while its assign is in flight" do
+    gate = new_gate()
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-miss-1"}} end,
+        assign_fun: fn _ch, _req ->
+          send(parent, :at_assign)
+          wait_open(gate)
+          {:ok, success_resp()}
+        end
+      )
+
+    put_catalog(ctx, "wl-a", cap: 10)
+    # The node reports vm-miss-1 primed (the window between the worker priming it
+    # and the node dropping it on assign); inventory is empty so the task misses
+    # and primes it.
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-miss-1"], live: 0, max: 8)
+
+    _tid = submit(ctx, "wl-a", "p1")
+    assert_receive :at_assign, 2000
+
+    # The worker is blocked at assign; ensure_vm sent {:vm_primed} before it, so
+    # this sweep (enqueued after that message) sees meta.vm_id set and adoption
+    # must SKIP vm-miss-1 rather than re-adopt the in-flight miss VM into inventory.
+    Dispatcher.sweep(ctx.name)
+    refute Map.has_key?(Dispatcher.stats(ctx.name).inventory, {"node-4", "wl-a"})
+
+    open_gate(gate)
+  end
+
   test "miss path primes then assigns, counted as a miss" do
     ctx = start_stack()
     put_catalog(ctx, "wl-a", cap: 10)

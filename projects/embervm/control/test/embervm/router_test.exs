@@ -72,6 +72,18 @@ defmodule Embervm.RouterTest do
     assert resp.body == "ok"
   end
 
+  test "/v1/nodes needs auth and returns a node + dispatch snapshot" do
+    assert req(:get, "/v1/nodes").status == 401
+
+    resp = req(:get, "/v1/nodes", auth("good"))
+    assert resp.status == 200
+    body = json(resp.body)
+    # Read-only operational introspection: both sections present and shaped, even
+    # with no node wired in the test app (nodes empty, dispatch snapshot present).
+    assert is_list(body["nodes"])
+    assert is_map(body["dispatch"])
+  end
+
   # -- submit ----------------------------------------------------------------
 
   test "async submit returns 202 and creates a queued task backed by the op-log" do
