@@ -21,6 +21,48 @@ defmodule Embervm.RouterTest do
     def authenticate(_), do: {:error, :unauthenticated}
   end
 
+  # Fakes for the R2 session routes: the router resolves the session manager/store
+  # from app-env (the :session_manager / :session_store_mod keys), so a request test
+  # can drive the HTTP surface, and especially the SESSION-TOKEN auth boundary,
+  # without a live daemon or the supervised SessionManager.
+  defmodule FakeSessionManager do
+    def create(_srv, "wl-ok", _principal),
+      do: {:ok, %{session_id: "s-live", token: "sess-token-live", expires_at: 9_000_000, base_digest: "sha256:x", state: :running}}
+
+    def create(_srv, "wl-cap", _principal), do: {:error, {:denied, :session_cap}}
+    def create(_srv, "wl-task", _principal), do: {:error, {:denied, :not_session_class}}
+    def create(_srv, _wl, _principal), do: {:error, {:denied, :unknown_workload}}
+
+    def invoke(_srv, "s-live", _req), do: {:ok, %{status_code: 200, headers: %{"content-type" => "text/plain"}, body: "echoed"}}
+    def invoke(_srv, "s-queue", _req), do: {:error, :queue_full}
+    def invoke(_srv, _id, _req), do: {:error, :not_found}
+
+    def destroy(_srv, "s-live"), do: {:ok, :destroyed}
+    def destroy(_srv, _id), do: {:error, :not_found}
+  end
+
+  defmodule FakeSessionStore do
+    # s-live's token is "sess-token-live"; any other token is unauthorized.
+    def verify_token(_srv, "s-live", "sess-token-live"), do: {:ok, %{session_id: "s-live"}}
+    def verify_token(_srv, "s-live", _), do: {:error, :unauthorized}
+    def verify_token(_srv, "s-queue", "sess-token-queue"), do: {:ok, %{session_id: "s-queue"}}
+    def verify_token(_srv, "s-term", "sess-token-term"), do: {:error, :terminal}
+    def verify_token(_srv, _id, _token), do: {:error, :not_found}
+
+    def get(_srv, "s-live"),
+      do: {:ok, %{session_id: "s-live", workload: "wl-ok", principal: "p", state: :running, generation: 0, base_digest: "sha256:x", created_at: 1, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: nil}}
+
+    def get(_srv, "s-term"),
+      do: {:ok, %{session_id: "s-term", workload: "wl-ok", principal: "p", state: :destroyed, generation: 0, base_digest: "sha256:x", created_at: 1, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: "destroyed"}}
+
+    def get(_srv, _id), do: :error
+
+    def list(_srv, "wl-ok", _opts),
+      do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
+
+    def list(_srv, _wl, _opts), do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
+  end
+
   setup do
     Application.put_env(:embervm, :authenticator, FakeAuth)
 
@@ -30,9 +72,16 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :sync_timeout_ms)
       Application.delete_env(:embervm, :quota)
       Application.delete_env(:embervm, :usage_admins)
+      Application.delete_env(:embervm, :session_manager)
+      Application.delete_env(:embervm, :session_store_mod)
     end)
 
     :ok
+  end
+
+  defp with_session_fakes do
+    Application.put_env(:embervm, :session_manager, FakeSessionManager)
+    Application.put_env(:embervm, :session_store_mod, FakeSessionStore)
   end
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
@@ -381,5 +430,109 @@ defmodule Embervm.RouterTest do
     body = json(resp.body)
     assert body["error"] =~ "quota"
     assert body["retryable"] == true
+  end
+
+  # -- session routes (R2) ---------------------------------------------------
+
+  test "POST /v1/workloads/:name/sessions creates a session and returns the token once (management auth)" do
+    with_session_fakes()
+
+    resp = req(:post, "/v1/workloads/wl-ok/sessions", auth("good"))
+    assert resp.status == 201
+    body = json(resp.body)
+    assert body["session_id"] == "s-live"
+    assert body["session_token"] == "sess-token-live"
+    assert body["state"] == "running"
+  end
+
+  test "session create requires management auth (401 without a token)" do
+    with_session_fakes()
+    assert req(:post, "/v1/workloads/wl-ok/sessions").status == 401
+  end
+
+  test "session create denials map to distinguishable statuses" do
+    with_session_fakes()
+
+    cap = req(:post, "/v1/workloads/wl-cap/sessions", auth("good"))
+    assert cap.status == 429
+    assert json(cap.body)["reason"] == "session_cap"
+
+    task = req(:post, "/v1/workloads/wl-task/sessions", auth("good"))
+    assert task.status == 403
+    assert json(task.body)["reason"] == "not_session_class"
+
+    unknown = req(:post, "/v1/workloads/wl-nope/sessions", auth("good"))
+    assert unknown.status == 404
+  end
+
+  test "invoke is gated on the SESSION token: a management token alone is rejected 403" do
+    with_session_fakes()
+
+    # A valid MANAGEMENT token ("good") is NOT this session's token: 403.
+    mgmt = req(:post, "/v1/sessions/s-live/invoke", auth("good"), "payload")
+    assert mgmt.status == 403
+
+    # No token at all: 401.
+    assert req(:post, "/v1/sessions/s-live/invoke", [], "x").status == 401
+
+    # The session's own token: the invoke proxies and returns the guest response.
+    ok = req(:post, "/v1/sessions/s-live/invoke", auth("sess-token-live"), "payload")
+    assert ok.status == 200
+    assert ok.body == "echoed"
+    assert Enum.any?(ok.resp_headers, fn {k, v} -> k == "content-type" and v =~ "text/plain" end)
+  end
+
+  test "invoke on a terminal session (valid token) is 410 with the reason" do
+    with_session_fakes()
+
+    resp = req(:post, "/v1/sessions/s-term/invoke", auth("sess-token-term"), "x")
+    assert resp.status == 410
+    assert json(resp.body)["reason"] == "destroyed"
+  end
+
+  test "invoke queue-full maps to 429" do
+    with_session_fakes()
+
+    # s-queue authorizes with its own token and the manager fake returns :queue_full.
+    resp = req(:post, "/v1/sessions/s-queue/invoke", auth("sess-token-queue"), "x")
+    assert resp.status == 429
+  end
+
+  test "GET /v1/sessions/:id accepts the session token OR a management token" do
+    with_session_fakes()
+
+    # Session token.
+    a = req(:get, "/v1/sessions/s-live", auth("sess-token-live"))
+    assert a.status == 200
+    assert json(a.body)["session_id"] == "s-live"
+
+    # Management token (TokenReview via FakeAuth "good").
+    b = req(:get, "/v1/sessions/s-live", auth("good"))
+    assert b.status == 200
+
+    # A bad token is 403.
+    assert req(:get, "/v1/sessions/s-live", auth("nope")).status == 403
+
+    # No token is 401.
+    assert req(:get, "/v1/sessions/s-live").status == 401
+  end
+
+  test "DELETE /v1/sessions/:id destroys (management auth)" do
+    with_session_fakes()
+
+    assert req(:delete, "/v1/sessions/s-live", auth("good")).status == 200
+    assert req(:delete, "/v1/sessions/s-nope", auth("good")).status == 404
+    # Management auth required.
+    assert req(:delete, "/v1/sessions/s-live").status == 401
+  end
+
+  test "GET /v1/workloads/:name/sessions lists (management auth)" do
+    with_session_fakes()
+
+    resp = req(:get, "/v1/workloads/wl-ok/sessions", auth("good"))
+    assert resp.status == 200
+    body = json(resp.body)
+    assert body["workload"] == "wl-ok"
+    assert body["items"] == []
   end
 end

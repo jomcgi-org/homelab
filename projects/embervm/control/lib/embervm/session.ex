@@ -1,0 +1,326 @@
+defmodule Embervm.Session do
+  @moduledoc """
+  One supervised GenServer per LIVE session (under `Embervm.SessionSupervisor`, a
+  DynamicSupervisor), owning that session's invoke serialization and all daemon
+  calls for its VM. A BANKED session has NO process: its durable row is enough,
+  and PR-4's relight-on-invoke restarts a process from the row on the next hit.
+
+  ## one in-flight invoke, FIFO queue (standing decision 9)
+
+  Invokes to one session serialize FIFO through this process: an agent turn is
+  sequential by nature, so at most one `SessionAssign` is ever in flight for a
+  session. This process owns:
+
+    * a bounded FIFO queue of waiting callers (cap `invoke_queue_cap`, default 4);
+      a pile-up past the cap is rejected `{:error, :queue_full}` (the router 429s),
+      the session-scoped analog of the dispatcher's per-principal queue-depth cap;
+    * the in-flight invoke: exactly one caller's `SessionAssign` runs at a time,
+      in a `spawn_monitor` worker so the (up to `timeout_ms`) guest round-trip
+      never blocks this process from accepting/queuing the next caller or handling
+      a lifecycle message.
+
+  The caller blocks in `invoke/3` on a `GenServer.call` with `:infinity` timeout:
+  the router's own request process IS the parked BEAM process the spec wants, and
+  the reply is sent from the worker-completion handler once its turn runs. The
+  queue-cap check happens synchronously in the call handler BEFORE parking, so an
+  over-cap caller gets its 429 immediately rather than parking then timing out.
+
+  ## the invoke is a SessionAssign (deliver-without-destroy)
+
+  Unlike a task's `Assign` (which destroys the VM), a session invoke is a
+  `SessionAssign`: the guest handles the request and the VM SURVIVES for the next
+  invoke, accreting state. The guest response (status, headers, body) is returned
+  VERBATIM to the parked caller, carrying the guest's own headers (the R1 sync-wait
+  header carry). Usage rides the `session_invoked` op (D12.1), so session compute
+  is quota-visible exactly like task compute.
+
+  ## failure posture
+
+  A `DEADLINE_EXCEEDED` or transport error on `SessionAssign` (or a `suspect` VM
+  the daemon left alive but flagged) marks the session `failed` and destroys the
+  VM: a guest in an unknown mid-request state must not accrete further state
+  silently. The parked caller gets the error; every still-queued caller gets a
+  `{:error, :failed}` (the router 410s them). This process then stops.
+
+  ## the idle timer seam (PR-4)
+
+  The idle-bank timer (Task 7) is armed here but is inert in PR-3: this module
+  leaves the `idle_bank_ms` seam and a `:maybe_bank` message stub so PR-4 wires
+  the bank without reshaping the process. PR-3 never banks.
+  """
+
+  use GenServer, restart: :transient
+  require Logger
+
+  alias Embervm.Node.V1.{GuestRequest, GuestResponse, SessionAssignRequest, SessionAssignResponse, Trace}
+
+  # -- Client API ------------------------------------------------------------
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    case Keyword.get(opts, :name) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
+  end
+
+  @doc """
+  Runs one invoke against the session's live VM, parking the caller FIFO behind
+  any in-flight/queued invoke. `req` is `%{method, path, headers, body}` (the
+  task-envelope allow-list already applied by the router). Returns
+  `{:ok, %{status_code, headers, body, usage}}` with the guest response verbatim,
+  `{:error, :queue_full}` (429) past the queue cap, or `{:error, reason}` on a
+  daemon failure (the session is then `failed`). `:infinity` GenServer timeout:
+  the router's request process is the parked waiter, bounded by the guest
+  `timeout_ms` per invoke, not by a fixed call timeout.
+  """
+  @spec invoke(GenServer.server(), map(), timeout()) :: {:ok, map()} | {:error, term()}
+  def invoke(server, req, _timeout \\ :infinity) do
+    GenServer.call(server, {:invoke, req}, :infinity)
+  end
+
+  @doc "The session id this process serves (for supervision/debug)."
+  @spec session_id(GenServer.server()) :: String.t()
+  def session_id(server), do: GenServer.call(server, :session_id)
+
+  # -- GenServer callbacks ---------------------------------------------------
+
+  @impl true
+  def init(opts) do
+    state = %{
+      session_id: Keyword.fetch!(opts, :session_id),
+      workload: Keyword.fetch!(opts, :workload),
+      principal: Keyword.get(opts, :principal),
+      node_id: Keyword.fetch!(opts, :node_id),
+      vm_id: Keyword.fetch!(opts, :vm_id),
+      # Session config from the catalog entry: the invoke queue cap, the guest
+      # round-trip timeout, and (PR-4) the idle-bank delay.
+      queue_cap: Keyword.fetch!(opts, :queue_cap),
+      timeout_ms: Keyword.get(opts, :timeout_ms, 90_000),
+      idle_bank_ms: Keyword.get(opts, :idle_bank_ms, nil),
+      session_store: Keyword.get(opts, :session_store, Embervm.SessionStore),
+      channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
+      assign_fun: Keyword.get(opts, :assign_fun, &default_session_assign/2),
+      destroy_fun: Keyword.get(opts, :destroy_fun, &default_destroy/2),
+      # FIFO of {from, req} waiting their turn; the head runs when no worker is in
+      # flight. `worker` is the {pid, ref, from} of the in-flight invoke, or nil.
+      queue: :queue.new(),
+      worker: nil
+    }
+
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
+
+  def handle_call({:invoke, req}, from, state) do
+    # Queue-cap is over WAITERS: the in-flight invoke does not count against the
+    # cap (it already left the queue), so `invoke_queue_cap` bounds how many callers
+    # may PILE UP behind the running one. A cap of 4 admits 4 waiters + 1 in flight.
+    if :queue.len(state.queue) >= state.queue_cap do
+      {:reply, {:error, :queue_full}, state}
+    else
+      state = %{state | queue: :queue.in({from, req}, state.queue)}
+      {:noreply, maybe_start_next(state)}
+    end
+  end
+
+  @impl true
+  def handle_info({:invoke_done, pid, outcome}, %{worker: {pid, ref, from}} = state) do
+    Process.demonitor(ref, [:flush])
+    state = %{state | worker: nil}
+
+    case outcome do
+      {:ok, result, usage} ->
+        # Record the invoke durably (usage rides the op, D12.1) BEFORE replying, so
+        # the caller never sees a response the op-log has not accounted. A store
+        # error does not fail the caller's response (the guest already did the work);
+        # it is logged and the response still goes back.
+        _ = record_invoke(state, usage)
+        GenServer.reply(from, {:ok, result})
+        {:noreply, maybe_start_next(state)}
+
+      {:error, reason} ->
+        # A daemon transport/timeout/suspect failure: the session is failed and its
+        # VM destroyed. Reply the error to this caller, drain the rest as :failed,
+        # and stop (a failed session has no process).
+        GenServer.reply(from, {:error, reason})
+        fail_and_stop(state, reason)
+    end
+  end
+
+  # A worker died without reporting (it always sends {:invoke_done, ...}): treat as
+  # a transport failure, same as a reported error.
+  def handle_info({:DOWN, ref, :process, pid, down_reason}, %{worker: {pid, ref, from}} = state) do
+    state = %{state | worker: nil}
+    GenServer.reply(from, {:error, {:worker_down, down_reason}})
+    fail_and_stop(state, {:worker_down, down_reason})
+  end
+
+  # The idle-bank timer (PR-4). Inert in PR-3: no idle_bank_ms is set, so this is
+  # never scheduled; the clause exists so PR-4 wires banking without reshaping.
+  def handle_info(:maybe_bank, state), do: {:noreply, state}
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  # -- invoke dispatch -------------------------------------------------------
+
+  # Start the head of the queue if nothing is in flight; otherwise leave it queued.
+  defp maybe_start_next(%{worker: nil} = state) do
+    case :queue.out(state.queue) do
+      {{:value, {from, req}}, rest} ->
+        {pid, ref} = spawn_invoke_worker(state, req)
+        %{state | queue: rest, worker: {pid, ref, from}}
+
+      {:empty, _} ->
+        state
+    end
+  end
+
+  defp maybe_start_next(state), do: state
+
+  defp spawn_invoke_worker(state, req) do
+    owner = self()
+    node_id = state.node_id
+    vm_id = state.vm_id
+    session_id = state.session_id
+    workload = state.workload
+    timeout_ms = state.timeout_ms
+    channel_fun = state.channel_fun
+    invalidate_fun = state.invalidate_fun
+    assign_fun = state.assign_fun
+
+    spawn_monitor(fn ->
+      outcome =
+        run_invoke(%{
+          node_id: node_id,
+          vm_id: vm_id,
+          session_id: session_id,
+          workload: workload,
+          timeout_ms: timeout_ms,
+          req: req,
+          channel_fun: channel_fun,
+          invalidate_fun: invalidate_fun,
+          assign_fun: assign_fun
+        })
+
+      send(owner, {:invoke_done, self(), outcome})
+    end)
+  end
+
+  # The worker body (off this GenServer): acquire the shared channel, SessionAssign,
+  # and classify the result. A clean guest response (even a 4xx/5xx) is `{:ok, ...}`:
+  # unlike a task, a session invoke's guest error is the guest's answer, not a VM
+  # failure, so it does NOT fail the session (the caller decides). Only a transport
+  # error, a DEADLINE_EXCEEDED, or a daemon-flagged `suspect` VM fails the session.
+  defp run_invoke(ctx) do
+    case ctx.channel_fun.(ctx.node_id) do
+      {:ok, channel} ->
+        guest_req = %GuestRequest{
+          method: Map.get(ctx.req, :method, "POST"),
+          path: Map.get(ctx.req, :path, "/"),
+          headers: Map.get(ctx.req, :headers, %{}),
+          body: Map.get(ctx.req, :body, "")
+        }
+
+        assign_req = %SessionAssignRequest{
+          trace: %Trace{workload: ctx.workload},
+          vm_id: ctx.vm_id,
+          request: guest_req,
+          timeout_ms: ctx.timeout_ms,
+          session_id: ctx.session_id
+        }
+
+        case ctx.assign_fun.(channel, assign_req) do
+          {:ok, %SessionAssignResponse{suspect: true}} ->
+            _ = ctx.invalidate_fun.(ctx.node_id, channel)
+            {:error, :suspect}
+
+          {:ok, %SessionAssignResponse{response: %GuestResponse{} = resp, usage: usage}} ->
+            {:ok,
+             %{
+               status_code: resp.status_code,
+               headers: resp.headers || %{},
+               body: resp.body || ""
+             }, Embervm.Usage.from_proto(usage)}
+
+          {:error, reason} ->
+            _ = ctx.invalidate_fun.(ctx.node_id, channel)
+            {:error, classify_error(reason)}
+        end
+
+      {:error, reason} ->
+        {:error, {:no_channel, reason}}
+    end
+  end
+
+  defp classify_error(%GRPC.RPCError{status: 4}), do: :deadline_exceeded
+  defp classify_error(%GRPC.RPCError{} = e), do: {:rpc, e.status}
+  defp classify_error(reason), do: reason
+
+  # -- session-store side effects --------------------------------------------
+
+  # Record a successful invoke: append session_invoked with usage (no bodies), which
+  # upserts the usage projection in the same transaction (D12.1). Best-effort against
+  # the store; a store hiccup does not fail the already-served caller.
+  defp record_invoke(state, usage) do
+    Embervm.SessionStore.record_invoke(state.session_store, state.session_id, usage)
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
+  end
+
+  # Fail the session (destroy the VM, append session_failed), drain queued callers
+  # as :failed, and stop this process. Called on any daemon-level invoke failure.
+  defp fail_and_stop(state, reason) do
+    _ = destroy_vm(state)
+
+    _ =
+      Embervm.SessionStore.transition(
+        state.session_store,
+        state.session_id,
+        :fail,
+        :session_failed,
+        %{reason: :failed, detail: inspect(reason)},
+        %{}
+      )
+
+    drain_queue_as_failed(state)
+    {:stop, :normal, %{state | queue: :queue.new()}}
+  end
+
+  defp drain_queue_as_failed(state) do
+    for {from, _req} <- :queue.to_list(state.queue) do
+      GenServer.reply(from, {:error, :failed})
+    end
+  end
+
+  defp destroy_vm(state) do
+    case state.channel_fun.(state.node_id) do
+      {:ok, channel} ->
+        try do
+          state.destroy_fun.(channel, state.vm_id)
+        rescue
+          _ -> :error
+        catch
+          _, _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  # -- defaults --------------------------------------------------------------
+
+  defp default_session_assign(channel, %SessionAssignRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.session_assign(channel, req)
+  end
+
+  defp default_destroy(channel, vm_id) do
+    Embervm.Node.V1.NodeService.Stub.destroy(channel, %Embervm.Node.V1.DestroyRequest{vm_id: vm_id})
+  end
+end

@@ -90,6 +90,28 @@ defmodule Embervm.Router do
     handle_redrive(conn, id)
   end
 
+  # -- session routes (R2, front-end only; no placement logic here) ----------
+
+  post "/v1/workloads/:name/sessions" do
+    handle_create_session(conn, name)
+  end
+
+  get "/v1/workloads/:name/sessions" do
+    handle_list_sessions(conn, name)
+  end
+
+  post "/v1/sessions/:id/invoke" do
+    handle_session_invoke(conn, id)
+  end
+
+  get "/v1/sessions/:id" do
+    handle_get_session(conn, id)
+  end
+
+  delete "/v1/sessions/:id" do
+    handle_destroy_session(conn, id)
+  end
+
   match _ do
     send_resp(conn, 404, "")
   end
@@ -98,9 +120,30 @@ defmodule Embervm.Router do
 
   defp fetch_query(conn, _opts), do: fetch_query_params(conn)
 
-  # Auth is scoped to /v1: /healthz stays open for the kubelet probes.
-  defp authenticate(%Plug.Conn{path_info: ["v1" | _]} = conn, _opts), do: do_authenticate(conn)
+  # Auth is scoped to /v1: /healthz stays open for the kubelet probes. The session
+  # routes that take a SESSION token (invoke, and the session-token-or-management
+  # GET) authenticate in their handler, not here, because the bearer token they
+  # carry is a per-session capability, not a ServiceAccount token TokenReview would
+  # recognize. Running management auth on them would 401 every valid session token.
+  # So this plug runs management auth on every /v1 path EXCEPT those, which
+  # `session_token_route?/1` names explicitly (a closed allow-list, not a prefix,
+  # so a new management route is never accidentally opened).
+  defp authenticate(%Plug.Conn{path_info: ["v1" | _]} = conn, _opts) do
+    if session_token_route?(conn), do: conn, else: do_authenticate(conn)
+  end
+
   defp authenticate(conn, _opts), do: conn
+
+  # The routes whose bearer token is a SESSION token (verified in-handler against
+  # Embervm.SessionStore), NOT a management ServiceAccount token: POST
+  # /v1/sessions/:id/invoke (session token ONLY) and GET /v1/sessions/:id
+  # (management OR session token). Matched structurally on path_info so a query
+  # string or trailing content cannot smuggle a management route past the gate.
+  defp session_token_route?(%Plug.Conn{method: "POST", path_info: ["v1", "sessions", _id, "invoke"]}),
+    do: true
+
+  defp session_token_route?(%Plug.Conn{method: "GET", path_info: ["v1", "sessions", _id]}), do: true
+  defp session_token_route?(_conn), do: false
 
   defp do_authenticate(conn) do
     authenticator = Application.get_env(:embervm, :authenticator, Embervm.Auth)
@@ -461,6 +504,254 @@ defmodule Embervm.Router do
         send_json(conn, 500, %{error: "redrive failed", task_id: task_id, retryable: true})
     end
   end
+
+  # -- session handlers (R2) -------------------------------------------------
+
+  # POST /v1/workloads/:name/sessions (management auth). Delegates to the
+  # SessionManager, which owns capacity/quota/placement/claim. 201 with the token
+  # (returned ONCE), 429 for a capacity/quota denial, 403 for a class mismatch or
+  # unknown workload, 500 for an internal failure.
+  defp handle_create_session(conn, workload) do
+    principal = conn.assigns.principal
+
+    case session_manager().create(session_manager_server(), workload, principal) do
+      {:ok, created} ->
+        send_json(conn, 201, %{
+          session_id: created.session_id,
+          session_token: created.token,
+          expires_at: created.expires_at,
+          base_digest: created.base_digest,
+          state: to_string(Map.get(created, :state, :running))
+        })
+
+      {:error, {:denied, reason}} ->
+        create_denial(conn, workload, reason)
+
+      {:error, reason} ->
+        Logger.error("embervm create session failed: #{inspect(reason)}")
+        send_json(conn, 500, %{error: "create session failed", workload: workload, retryable: true})
+    end
+  end
+
+  # Structured, distinguishable create denials: capacity is 429 (retryable, the
+  # caller may retry when a session frees), class/workload errors are 403/404
+  # (non-retryable, the request is wrong). The reason string is machine-readable.
+  defp create_denial(conn, workload, reason) do
+    case reason do
+      r when r in [:session_cap, :workload_cap, :quota, :no_capacity] ->
+        send_json(conn, 429, %{
+          error: "session create denied",
+          reason: to_string(r),
+          workload: workload,
+          retryable: true
+        })
+
+      :unknown_workload ->
+        send_json(conn, 404, %{error: "unknown workload", reason: "unknown_workload", workload: workload, retryable: false})
+
+      :not_session_class ->
+        send_json(conn, 403, %{
+          error: "workload is not class session",
+          reason: "not_session_class",
+          workload: workload,
+          retryable: false
+        })
+
+      other ->
+        send_json(conn, 500, %{error: "session create failed", reason: inspect(other), workload: workload, retryable: true})
+    end
+  end
+
+  # GET /v1/workloads/:name/sessions (management auth): paged listing.
+  defp handle_list_sessions(conn, workload) do
+    limit = conn |> int_param("limit", 50) |> clamp(1, 500)
+    offset = conn |> int_param("offset", 0) |> max(0)
+
+    {:ok, page} = session_store().list(session_store_server(), workload, limit: limit, offset: offset)
+
+    send_json(conn, 200, %{
+      workload: workload,
+      items: Enum.map(page.items, &session_view/1),
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset
+    })
+  end
+
+  # POST /v1/sessions/:id/invoke (SESSION TOKEN auth ONLY). The bearer token must
+  # authenticate THIS session id (a management token is rejected: it is not a
+  # session token, so the hash compare fails). Proxies the guest request under the
+  # task-envelope allow-list + 8 MiB cap via the SessionManager, and returns the
+  # guest response VERBATIM including headers.
+  defp handle_session_invoke(conn, session_id) do
+    with {:ok, token} <- bearer_token(conn),
+         {:ok, _session} <- verify_session_token(session_id, token) do
+      proxy_invoke(conn, session_id)
+    else
+      {:error, :no_token} ->
+        halt_json(conn, 401, %{error: "missing session token", retryable: false})
+
+      {:error, :terminal} ->
+        # A valid token on a terminal session: 410 with the recorded reason.
+        session_gone(conn, session_id)
+
+      {:error, _} ->
+        halt_json(conn, 403, %{error: "invalid session token", session_id: session_id, retryable: false})
+    end
+  end
+
+  defp proxy_invoke(conn, session_id) do
+    case read_capped_body(conn) do
+      {:ok, body, conn} ->
+        req = %{
+          method: "POST",
+          path: guest_path(conn),
+          headers: guest_headers(conn),
+          body: body
+        }
+
+        case session_manager().invoke(session_manager_server(), session_id, req) do
+          {:ok, %{status_code: code, headers: headers, body: resp_body}} ->
+            send_guest_result(conn, code, resp_body, headers)
+
+          {:error, {:gone, reason}} ->
+            send_json(conn, 410, %{error: "session gone", reason: to_string(reason), session_id: session_id, retryable: false})
+
+          {:error, {:not_ready, state}} ->
+            send_json(conn, 409, %{
+              error: "session not ready",
+              state: to_string(state),
+              session_id: session_id,
+              retryable: true
+            })
+
+          {:error, :queue_full} ->
+            send_json(conn, 429, %{
+              error: "session invoke queue is full",
+              session_id: session_id,
+              retryable: true
+            })
+
+          {:error, :not_found} ->
+            send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
+
+          {:error, reason} ->
+            # A daemon transport/timeout failure: the session is now failed. 502 so
+            # the caller knows the invoke did not complete (at-most-once: it is NOT
+            # retried by the platform; the caller creates a fresh session).
+            send_json(conn, 502, %{error: "session invoke failed", reason: inspect(reason), session_id: session_id, retryable: false})
+        end
+
+      {:error, :too_large} ->
+        send_json(conn, 413, %{error: "request body exceeds 8 MiB", retryable: false})
+    end
+  end
+
+  defp guest_path(conn) do
+    case header_value(conn, @path_header) do
+      nil -> "/"
+      path -> path
+    end
+  end
+
+  # GET /v1/sessions/:id (management OR session token). The management-auth plug is
+  # skipped for this route, so authorize here: either a valid management bearer
+  # (TokenReview) OR the session's own token. Returns state, generation, base
+  # digest, timestamps, expires_at.
+  defp handle_get_session(conn, session_id) do
+    case authorize_session_read(conn, session_id) do
+      :ok ->
+        case session_store().get(session_store_server(), session_id) do
+          {:ok, session} -> send_json(conn, 200, session_view(session))
+          :error -> send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
+        end
+
+      {:error, status, body} ->
+        send_json(conn, status, body)
+    end
+  end
+
+  # DELETE /v1/sessions/:id (management auth): destroy.
+  defp handle_destroy_session(conn, session_id) do
+    case session_manager().destroy(session_manager_server(), session_id) do
+      {:ok, _} -> send_json(conn, 200, %{session_id: session_id, state: "destroyed"})
+      {:error, :not_found} -> send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
+      {:error, reason} -> send_json(conn, 500, %{error: "destroy failed", reason: inspect(reason), session_id: session_id, retryable: true})
+    end
+  end
+
+  # Session read is allowed for a valid management token OR the session's own token.
+  # Try the session token first (cheap, in-process hash compare), then fall back to
+  # a management TokenReview so an operator can read any session.
+  defp authorize_session_read(conn, session_id) do
+    case bearer_token(conn) do
+      {:ok, token} ->
+        case verify_session_token(session_id, token) do
+          {:ok, _} ->
+            :ok
+
+          {:error, :terminal} ->
+            # The token is this session's, but the session is terminal: reads of a
+            # terminal session are still allowed (state/reason are exactly what the
+            # caller needs), so authorize.
+            :ok
+
+          {:error, _} ->
+            authorize_management_read(conn, token)
+        end
+
+      {:error, :no_token} ->
+        {:error, 401, %{error: "missing bearer token", session_id: session_id, retryable: false}}
+    end
+  end
+
+  defp authorize_management_read(_conn, token) do
+    authenticator = Application.get_env(:embervm, :authenticator, Embervm.Auth)
+
+    case authenticator.authenticate(token) do
+      {:ok, _principal} -> :ok
+      _ -> {:error, 403, %{error: "not authorized to read session", retryable: false}}
+    end
+  end
+
+  # Verify a session token against Embervm.SessionStore, mapping to the handler's
+  # `{:ok, session} | {:error, :terminal | :unauthorized | :not_found}`.
+  defp verify_session_token(session_id, token) do
+    session_store().verify_token(session_store_server(), session_id, token)
+  end
+
+  defp session_gone(conn, session_id) do
+    reason =
+      case session_store().get(session_store_server(), session_id) do
+        {:ok, %{terminal_reason: r}} when is_binary(r) -> r
+        _ -> "gone"
+      end
+
+    send_json(conn, 410, %{error: "session gone", reason: reason, session_id: session_id, retryable: false})
+  end
+
+  defp session_view(session) do
+    %{
+      session_id: session.session_id,
+      workload: session.workload,
+      principal: session.principal,
+      state: to_string(session.state),
+      generation: session.generation,
+      base_digest: session.base_digest,
+      created_at: session.created_at,
+      last_invoke_at: session.last_invoke_at,
+      expires_at: session.expires_at,
+      updated_at: session.updated_at,
+      terminal_reason: session.terminal_reason
+    }
+  end
+
+  # Resolvable session modules/servers, symmetric with `store/0`: the concrete
+  # module (so a test can pass a fake) and the server name/pid it addresses.
+  defp session_manager, do: Application.get_env(:embervm, :session_manager, Embervm.SessionManager)
+  defp session_manager_server, do: Application.get_env(:embervm, :session_manager_server, Embervm.SessionManager)
+  defp session_store, do: Application.get_env(:embervm, :session_store_mod, Embervm.SessionStore)
+  defp session_store_server, do: Application.get_env(:embervm, :session_store, Embervm.SessionStore)
 
   # -- request helpers -------------------------------------------------------
 

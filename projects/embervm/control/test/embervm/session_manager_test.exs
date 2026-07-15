@@ -1,0 +1,333 @@
+defmodule Embervm.SessionManagerTest do
+  @moduledoc """
+  Task 6 acceptance for Embervm.SessionManager + Embervm.Session: create from the
+  primed pool (happy path + each denial), an invoke round-trip against a fake
+  SessionAssign, the per-session queue cap, token-gated invoke (a management token
+  is not a session token), and destroy from every non-terminal state.
+
+  A FAKE DAEMON is injected via claim_fun / channel_fun / prime_fun and the
+  session_opts' session_assign/destroy funs, exactly the seam idiom the dispatcher
+  test uses. A real (unnamed) op-log + SessionStore give the real FSM and durable
+  projection; unique ETS tables + a per-test DynamicSupervisor/Registry keep tests
+  isolated from the application's supervised session subtree.
+  """
+  use ExUnit.Case, async: true
+
+  alias Embervm.{NodeCapacity, SessionManager, SessionStore, WorkloadCatalog}
+  alias Embervm.OpLog.SQLite
+  alias Embervm.Node.V1.{GuestResponse, SessionAssignResponse, UsageStats}
+
+  # -- harness ---------------------------------------------------------------
+
+  defp start_stack(opts \\ []) do
+    suffix = System.unique_integer([:positive])
+    cap_table = :"scap_#{suffix}"
+    cat_table = :"scat_#{suffix}"
+
+    NodeCapacity.create(cap_table)
+    WorkloadCatalog.create(cat_table)
+
+    path = Path.join(System.tmp_dir!(), "embervm_sessionmgr_test_#{suffix}.db")
+    on_exit(fn -> File.rm_rf!(path) end)
+
+    {:ok, op_log} = SQLite.start_link(name: nil, path: path)
+    {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log)
+
+    registry = :"sreg_#{suffix}"
+    {:ok, _registry_pid} = Registry.start_link(keys: :unique, name: registry)
+    {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    # A test-controlled inbox lets a test observe the fake SessionAssign calls and
+    # decide the response per call. Default: echo the body at 200 with usage.
+    assign_fun = Keyword.get(opts, :assign_fun, &default_assign/2)
+
+    session_opts = [
+      channel_fun: fn _node -> {:ok, :ch} end,
+      assign_fun: assign_fun,
+      destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{}} end),
+      invalidate_fun: fn _node, _ch -> :ok end
+    ]
+
+    mgr_opts =
+      [
+        name: nil,
+        session_store: store,
+        supervisor: sup,
+        registry: registry,
+        capacity_table: cap_table,
+        catalog_table: cat_table,
+        clock: fn -> 5_000_000 end,
+        channel_fun: fn _node -> {:ok, :ch} end,
+        claim_fun: Keyword.get(opts, :claim_fun, fn _d, _n, _w -> {:ok, "vm-primed-#{suffix}"} end),
+        prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
+        session_opts: session_opts
+      ] ++
+        Keyword.take(opts, [:quota_config, :quota_table])
+
+    {:ok, mgr} = SessionManager.start_link(mgr_opts)
+
+    %{
+      mgr: mgr,
+      store: store,
+      op_log: op_log,
+      cap_table: cap_table,
+      cat_table: cat_table,
+      registry: registry,
+      sup: sup
+    }
+  end
+
+  defp default_assign(_ch, req) do
+    {:ok,
+     %SessionAssignResponse{
+       response: %GuestResponse{
+         status_code: 200,
+         headers: %{"x-echo" => "1", "content-type" => "text/plain"},
+         body: req.request.body
+       },
+       usage: %UsageStats{cpu_ms: 10, peak_rss_mib: 32, wall_ms: 20},
+       suspect: false
+     }}
+  end
+
+  defp put_session_workload(ctx, wl, opts \\ []) do
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      workloads: %{
+        wl => %{
+          free_primed_slots: 1,
+          snapshot_ref: "snap-#{wl}",
+          base_state: :BASE_BUILD_STATE_READY,
+          primed_vm_ids: []
+        }
+      },
+      live_vms: Keyword.get(opts, :live, 0),
+      max_live_vms: Keyword.get(opts, :max, 8),
+      draining: false,
+      updated_at: 5_000_000
+    })
+
+    WorkloadCatalog.upsert(ctx.cat_table, wl, %{
+      name: wl,
+      namespace: "embervm",
+      class: Keyword.get(opts, :class, "session"),
+      image_ref: "img@sha256:abc",
+      invoke_path: "/",
+      timeout_ms: 90_000,
+      cap: Keyword.get(opts, :cap, 8),
+      floor: 1,
+      session:
+        Keyword.get(opts, :session, %{
+          idle_bank_seconds: 300,
+          max_lifetime_seconds: 3600,
+          banked_ttl_seconds: 3600,
+          max_sessions: Keyword.get(opts, :max_sessions, 16),
+          invoke_queue_cap: Keyword.get(opts, :queue_cap, 4)
+        })
+    })
+  end
+
+  # -- create ----------------------------------------------------------------
+
+  test "create happy path: claims a primed VM, mints a token, starts a live session" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-a")
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-a", "p1")
+
+    assert String.starts_with?(created.session_id, "s-")
+    assert is_binary(created.token)
+    assert created.expires_at == 5_000_000 + 3600 * 1000
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :running
+    # A live session has a process registered under its id.
+    assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+  end
+
+  test "create denies unknown workload (404-shaped reason)" do
+    ctx = start_stack()
+    assert {:error, {:denied, :unknown_workload}} = SessionManager.create(ctx.mgr, "nope", "p1")
+  end
+
+  test "create denies a task-class workload" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-task", class: "task")
+    assert {:error, {:denied, :not_session_class}} = SessionManager.create(ctx.mgr, "wl-task", "p1")
+  end
+
+  test "create denies at the session cap (live + banked >= maxSessions)" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-cap", max_sessions: 1)
+
+    {:ok, _} = SessionManager.create(ctx.mgr, "wl-cap", "p1")
+    assert {:error, {:denied, :session_cap}} = SessionManager.create(ctx.mgr, "wl-cap", "p1")
+  end
+
+  test "create denies when no node has ready capacity" do
+    ctx = start_stack()
+    # Catalog present but no capacity facts: pick_node returns :no_capacity.
+    WorkloadCatalog.upsert(ctx.cat_table, "wl-nocap", %{
+      name: "wl-nocap",
+      namespace: "embervm",
+      class: "session",
+      image_ref: "img@sha256:abc",
+      invoke_path: "/",
+      timeout_ms: 90_000,
+      cap: 8,
+      floor: 1,
+      session: %{idle_bank_seconds: 300, max_lifetime_seconds: 3600, banked_ttl_seconds: 3600, max_sessions: 16, invoke_queue_cap: 4}
+    })
+
+    assert {:error, {:denied, :no_capacity}} = SessionManager.create(ctx.mgr, "wl-nocap", "p1")
+  end
+
+  test "create primes on a claim miss and fails to :no_capacity when prime fails" do
+    ctx = start_stack(claim_fun: fn _d, _n, _w -> :miss end, prime_fun: fn _ch, _req -> {:error, :boom} end)
+    put_session_workload(ctx, "wl-miss")
+
+    assert {:error, {:denied, :no_capacity}} = SessionManager.create(ctx.mgr, "wl-miss", "p1")
+  end
+
+  test "create quota fail-closed denies a principal over budget" do
+    quota_table = :"squota_#{System.unique_integer([:positive])}"
+    :ets.new(quota_table, [:set, :public, :named_table])
+    # Budget of 0 for p1 = hard stop; used(0) < 0 is false, so denied.
+    quota = %{budgets: %{"p1" => 0.0}, default: nil}
+
+    ctx = start_stack(quota_config: quota, quota_table: quota_table)
+    put_session_workload(ctx, "wl-q")
+
+    assert {:error, {:denied, :quota}} = SessionManager.create(ctx.mgr, "wl-q", "p1")
+    # A principal with no budget is allowed (opt-in quota).
+    assert {:ok, _} = SessionManager.create(ctx.mgr, "wl-q", "p2")
+  end
+
+  # -- invoke ----------------------------------------------------------------
+
+  test "invoke round-trips against the fake daemon, returning the guest response verbatim" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-inv")
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-inv", "p1")
+
+    req = %{method: "POST", path: "/", headers: %{}, body: "hello"}
+    {:ok, resp} = SessionManager.invoke(ctx.mgr, created.session_id, req)
+
+    assert resp.status_code == 200
+    assert resp.body == "hello"
+    assert resp.headers["x-echo"] == "1"
+
+    # The invoke was recorded (last_invoke_at set, usage charged).
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert is_integer(session.last_invoke_at)
+  end
+
+  test "invoke on an unknown session is :not_found" do
+    ctx = start_stack()
+    assert {:error, :not_found} = SessionManager.invoke(ctx.mgr, "s-unknown", %{body: "x"})
+  end
+
+  test "invoke on a terminal session returns {:gone, reason}" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-gone")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-gone", "p1")
+    {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+
+    assert {:error, {:gone, "destroyed"}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+  end
+
+  test "the queue cap rejects pile-ups past invokeQueueCap with :queue_full" do
+    # A blocking assign_fun (never replies until told) lets us fill the queue: one
+    # invoke runs, `queue_cap` more wait, and the next is rejected.
+    test_pid = self()
+
+    blocking_assign = fn _ch, req ->
+      send(test_pid, {:assign_started, self()})
+
+      receive do
+        :go ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: req.request.body},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+             suspect: false
+           }}
+      end
+    end
+
+    ctx = start_stack(assign_fun: blocking_assign)
+    put_session_workload(ctx, "wl-full", queue_cap: 2)
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-full", "p1")
+
+    # Fire the in-flight invoke + 2 queued (fills the cap of 2 waiters).
+    callers =
+      for _ <- 1..3 do
+        spawn(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+        end)
+      end
+
+    # Wait until the first invoke is actually in flight (worker started).
+    assert_receive {:assign_started, _worker}, 1_000
+
+    # Give the queued callers a moment to enqueue behind the in-flight one.
+    Process.sleep(50)
+
+    # The 4th invoke exceeds the cap (1 in-flight + 2 waiting): queue_full.
+    assert {:error, :queue_full} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "y"})
+
+    Enum.each(callers, fn pid -> Process.exit(pid, :kill) end)
+  end
+
+  test "a suspect/transport failure on invoke fails the session and 502s the caller" do
+    fail_assign = fn _ch, _req ->
+      {:ok, %SessionAssignResponse{response: nil, usage: nil, suspect: true}}
+    end
+
+    ctx = start_stack(assign_fun: fail_assign)
+    put_session_workload(ctx, "wl-fail")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-fail", "p1")
+
+    assert {:error, :suspect} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+
+    # The session is now failed (a guest in unknown mid-request state is not reused).
+    Process.sleep(50)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :failed
+    assert session.terminal_reason == "failed"
+  end
+
+  # -- destroy ---------------------------------------------------------------
+
+  test "destroy from running tears down the process and records session_destroyed" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-d")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-d", "p1")
+
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+
+    # The process is gone.
+    Process.sleep(20)
+    assert Registry.lookup(ctx.registry, created.session_id) == []
+  end
+
+  test "destroy of an already-terminal session is a no-op success" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-d2")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-d2", "p1")
+    {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+
+    assert {:ok, :already_terminal} = SessionManager.destroy(ctx.mgr, created.session_id)
+  end
+
+  test "destroy of an unknown session is :not_found" do
+    ctx = start_stack()
+    assert {:error, :not_found} = SessionManager.destroy(ctx.mgr, "s-nope")
+  end
+end
