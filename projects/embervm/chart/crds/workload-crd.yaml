@@ -79,9 +79,62 @@ spec:
                   type: object
                   description: >-
                     Where the guest comes from. A oneOf: exactly one member is
-                    set. Only `image` is implemented in v1alpha1; future lanes
-                    (zip, runtimeShim) plug in as additional members.
+                    set. `image` bakes an OCI image directly; `zip` (R1 zip lane,
+                    ADR embervm/002) layers an adopter's zip archive onto a
+                    pinned runtime base image (no toolchain for the adopter).
                   properties:
+                    zip:
+                      type: object
+                      description: >-
+                        The R1 zip lane: bring only a zip archive with a
+                        `handler` callable. The control plane resolves `runtime`
+                        to the pinned runtime base image, hands noded the archive
+                        URL + sha256, and the runtime shim unpacks and imports
+                        the handler guest-side before the base is snapshotted.
+                      required:
+                        - runtime
+                        - codeUri
+                        - sha256
+                      properties:
+                        runtime:
+                          type: string
+                          description: >-
+                            The runtime base the archive layers onto. Exactly one
+                            value in v1alpha1: python312 (Python 3.12 + the baked
+                            dependency subset).
+                          enum:
+                            - python312
+                        codeUri:
+                          type: string
+                          description: >-
+                            Object-store URL of the zip archive. noded HTTP GETs
+                            it over the pod network (the in-cluster read path);
+                            the control plane owns upload and URL minting.
+                        sha256:
+                          type: string
+                          description: >-
+                            Hex-encoded SHA-256 of the archive bytes. REQUIRED:
+                            noded verifies the fetched bytes against it and fails
+                            the build on a mismatch, and it feeds the base-build
+                            change-detect signature so a re-registered function
+                            (new zip, same name) rebuilds.
+                        handler:
+                          type: string
+                          description: >-
+                            `module.attr` of the python handler callable, passed
+                            to the guest as EMBER_HANDLER.
+                          default: app.handle
+                        invokePath:
+                          type: string
+                          description: >-
+                            Path tasks are POSTed to (matches the runtime image
+                            default). Overridable per submit with the
+                            X-Ember-Guest-Path header.
+                          default: /invoke
+                        readyPath:
+                          type: string
+                          description: Guest readiness path (200 = ready).
+                          default: /shim/ready
                     image:
                       type: object
                       required:
@@ -119,6 +172,8 @@ spec:
                   oneOf:
                     - required:
                         - image
+                    - required:
+                        - zip
                 resources:
                   type: object
                   required:

@@ -199,6 +199,14 @@ workloads:
   semgrep:
     rootfsPath: /disks/nvme-02/embervm-noded/semgrep/rootfs.ext4
     harnessInit: /usr/local/bin/semgrep-guest-init
+  # R1 zip lane (ADR embervm/002): the runtime-python base image the zip lane
+  # layers an adopter's archive onto. Its PID-1 guest-init mounts a tmpfs over
+  # /tmp then execs the python bootstrap shim (see runtimes/python/guest-init).
+  # The key must match the top-level `runtimePython` block below (the deployment
+  # ranges over `workloads` and looks the guest image up by the same key).
+  runtimePython:
+    rootfsPath: /disks/nvme-02/embervm-noded/runtime-python/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-runtime-guest-init
 
 # The python sandbox guest image, Bazel-pinned (helm_chart images="sandbox.guestImage")
 # from the frozen fc-invoke sandbox guest's .info provider, so the guest contract
@@ -216,6 +224,21 @@ sandbox:
 semgrep:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest
+    tag: latest
+
+# The runtime-python base image (R1 zip lane, ADR embervm/002), Bazel-pinned
+# (helm_chart images="runtimePython.guestImage") from its .info provider. Distinct
+# top-level key (never noded.*) so the image pin does not collide, per D14a.6.
+# Three refs derive from here and always match: the rootfs-builder GUEST_IMAGE,
+# the derived EMBERVM_NODED_IMAGES entry, and the control plane's
+# EMBERVM_RUNTIME_IMAGES (python312 -> this ref), which BaseBuilder resolves
+# source.zip.runtime through.
+runtimePython:
+  # The zip-lane runtime name the CRD enum exposes (source.zip.runtime), mapped to
+  # this image for the control plane's EMBERVM_RUNTIME_IMAGES.
+  runtime: python312
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/python
     tag: latest
 
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each

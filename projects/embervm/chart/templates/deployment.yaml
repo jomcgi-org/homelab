@@ -68,6 +68,16 @@ spec:
             - name: EMBERVM_NODE_ADDRESS
               value: {{ printf "%s.%s.svc.cluster.local:%d" (include "embervm.noded.fullname" .) .Release.Namespace (int .Values.noded.grpcPort) | quote }}
             {{- end }}
+            {{- if and .Values.runtimePython .Values.runtimePython.guestImage .Values.runtimePython.guestImage.repository }}
+            # R1 zip lane (ADR embervm/002): the zip-lane runtime name -> pinned
+            # runtime base image ref, as `runtime=ref` pairs. BaseBuilder resolves
+            # source.zip.runtime through this map to a ZipSource.runtime_image_ref.
+            # The ref MUST match the runtime-python entry the noded rootfs-builder
+            # bakes and EMBERVM_NODED_IMAGES keys on (both derive from
+            # runtimePython.guestImage), so BuildBase resolves it on the node.
+            - name: EMBERVM_RUNTIME_IMAGES
+              value: {{ printf "%s=%s:%s" .Values.runtimePython.runtime .Values.runtimePython.guestImage.repository .Values.runtimePython.guestImage.tag | quote }}
+            {{- end }}
             {{- if .Values.auth.allowedServiceAccounts }}
             # TokenReview allow-list: ServiceAccount usernames permitted to
             # submit tasks. Empty means deny-all (fail-closed) in the control

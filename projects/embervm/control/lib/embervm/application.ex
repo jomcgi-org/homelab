@@ -64,7 +64,7 @@ defmodule Embervm.Application do
       # dials the daemon over its own Mint gRPC connection (per build), so it
       # depends on Finch but not on the watcher or node registry. Empty node
       # config (no daemon wired) means it holds descriptors and builds nothing.
-      {Embervm.BaseBuilder, nodes: configured_nodes()},
+      {Embervm.BaseBuilder, nodes: configured_nodes(), runtime_images: configured_runtime_images()},
       # The Workload informer (Task 5): LISTs then WATCHes Workload CRs over the
       # Finch pool above and writes Embervm.WorkloadCatalog, which
       # TaskStore.cfg_for/1 reads. Placed after Finch (its watch streams over
@@ -216,6 +216,33 @@ defmodule Embervm.Application do
     case System.get_env(name) do
       nil -> ""
       value -> String.trim(value)
+    end
+  end
+
+  # Zip-lane runtime -> pinned runtime base image ref, from EMBERVM_RUNTIME_IMAGES
+  # (comma-separated `runtime=ref` pairs the chart renders from the Bazel-pinned
+  # runtimePython.guestImage). The BaseBuilder resolves source.zip.runtime through
+  # this map. Empty (no runtime image pinned) means zip builds are held with a
+  # clear condition rather than crashing.
+  defp configured_runtime_images do
+    case trimmed_env("EMBERVM_RUNTIME_IMAGES") do
+      "" ->
+        %{}
+
+      raw ->
+        raw
+        |> String.split(",", trim: true)
+        |> Enum.reduce(%{}, fn pair, acc ->
+          case String.split(pair, "=", parts: 2) do
+            [runtime, ref] ->
+              r = String.trim(runtime)
+              v = String.trim(ref)
+              if r != "" and v != "", do: Map.put(acc, r, v), else: acc
+
+            _ ->
+              acc
+          end
+        end)
     end
   end
 

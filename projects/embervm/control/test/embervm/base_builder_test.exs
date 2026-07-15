@@ -277,6 +277,118 @@ defmodule Embervm.BaseBuilderTest do
     assert st.workloads["w"].superseded_refs == ["snap1"]
   end
 
+  # -- zip lane (R1, ADR embervm/002) -----------------------------------------
+
+  alias Embervm.Node.V1.ZipSource
+
+  # A zip-lane descriptor: image_ref nil, a zip block, EMBER_HANDLER init_env
+  # (exactly what the watcher's build_desc hands us for a zip CR).
+  defp zip_desc(overrides \\ %{}) do
+    zip = Map.merge(%{runtime: "python312", code_uri: "http://filer/z.zip", sha256: "sha-1", handler: "app.handle"}, Map.get(overrides, :zip, %{}))
+
+    desc(
+      Map.merge(
+        %{image_ref: nil, zip: zip, init_env: %{"EMBER_HANDLER" => zip.handler}},
+        Map.delete(overrides, :zip)
+      )
+    )
+  end
+
+  @runtime_images %{"python312" => "ghcr.io/runtimes/python:pinned"}
+
+  test "a zip source maps to a ZipSource (resolved runtime ref, url, sha256) and builds" do
+    agent = start_recorder()
+    test_pid = self()
+
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:req, req})
+      {:ok, resp("zsnap1", "sha256:zzz")}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        runtime_images: @runtime_images
+      )
+
+    :ok = BaseBuilder.reconcile(builder, zip_desc())
+
+    assert_receive {:req, req}, 1_000
+    # The image lane's top-level image_ref is empty; source is the ZipSource.
+    assert req.image_ref in [nil, ""]
+    assert {:zip, %ZipSource{} = zip} = req.source
+    assert zip.runtime_image_ref == "ghcr.io/runtimes/python:pinned"
+    assert zip.archive_url == "http://filer/z.zip"
+    assert zip.archive_sha256 == "sha-1"
+    # EMBER_HANDLER rides init_env through to the guest.
+    assert req.init_env == %{"EMBER_HANDLER" => "app.handle"}
+
+    assert_eventually(fn -> match?(%{"snapshotRef" => "zsnap1"}, latest(agent, "w")) end)
+  end
+
+  test "a new zip sha256 (same name) rebuilds the base: sha256 is in the change-detect signature" do
+    agent = start_recorder()
+
+    build_fun = fn :fake_channel, req ->
+      {:zip, zip} = req.source
+
+      case zip.archive_sha256 do
+        "sha-1" -> {:ok, resp("zsnap1", "sha256:aaa")}
+        "sha-2" -> {:ok, resp("zsnap2", "sha256:bbb")}
+      end
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        runtime_images: @runtime_images
+      )
+
+    :ok = BaseBuilder.reconcile(builder, zip_desc())
+    assert_eventually(fn -> match?(%{"snapshotRef" => "zsnap1"}, latest(agent, "w")) end)
+
+    # Same workload, new archive bytes (new sha256), everything else identical:
+    # the signature differs only by sha256, which must be enough to rebuild.
+    :ok = BaseBuilder.reconcile(builder, zip_desc(%{generation: 2, zip: %{sha256: "sha-2"}}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => "zsnap2"}, latest(agent, "w")) end)
+
+    st = BaseBuilder.status(builder)
+    assert st.workloads["w"].snapshot_ref == "zsnap2"
+    assert st.workloads["w"].superseded_refs == ["zsnap1"]
+  end
+
+  test "a zip source with an unresolvable runtime reports Ready=False and never builds" do
+    agent = start_recorder()
+    {:ok, count} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      Agent.update(count, &(&1 + 1))
+      {:ok, resp("zsnap1")}
+    end
+
+    # runtime_images empty: python312 does not resolve.
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        runtime_images: %{}
+      )
+
+    :ok = BaseBuilder.reconcile(builder, zip_desc())
+
+    assert_eventually(fn ->
+      case latest(agent, "w") do
+        nil -> false
+        s -> match?(%{"status" => "False", "reason" => "BuildFailed"}, condition(s, "BaseBuilt"))
+      end
+    end)
+
+    Process.sleep(50)
+    assert Agent.get(count, & &1) == 0
+  end
+
   # -- no node configured -----------------------------------------------------
 
   test "with no node configured, no build is attempted and status reports NoNodeAvailable" do

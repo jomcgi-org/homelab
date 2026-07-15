@@ -57,6 +57,10 @@ paths:
     permissions: 0o755
 
 entrypoint:
-  # The bootstrap shim is PID 1: it unpacks the attached archive, imports the
-  # handler, and serves the frozen HTTP-over-vsock guest contract on port 1027.
+  # OCI entrypoint for any NON-Firecracker execution path (docker/crane). On a
+  # raw Firecracker boot the kernel ignores this entirely and boots
+  # init=<HarnessInit>; there the PID 1 is /usr/local/bin/ember-runtime-guest-init
+  # (see guest-init/, layered by ../BUILD), which mounts a tmpfs over /tmp then
+  # execs this same shim. So both paths end at the shim; the guest-init is only
+  # the tmpfs + PID-1 shim the Firecracker boot needs.
   command: /usr/bin/python3 /usr/local/bin/ember-runtime-shim
