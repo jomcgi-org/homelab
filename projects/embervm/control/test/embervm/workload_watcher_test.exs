@@ -245,6 +245,126 @@ defmodule Embervm.WorkloadWatcherTest do
     assert {:ok, _entry} = WorkloadCatalog.fetch(table, "semgrep")
   end
 
+  # -- zip-lane source (R1, ADR embervm/002) --------------------------------
+
+  # A zip-lane CR: source.zip replaces source.image. The base drops the image
+  # member entirely (deep_merge would otherwise leave both, which is invalid).
+  defp zip_cr(zip_overrides \\ %{}) do
+    zip =
+      Map.merge(
+        %{
+          "runtime" => "python312",
+          "codeUri" => "http://filer/embervm-zips/echo.zip",
+          "sha256" => "abc123"
+        },
+        zip_overrides
+      )
+
+    %{
+      "metadata" => %{"name" => "zipfn", "namespace" => "embervm", "generation" => 1},
+      "spec" => %{
+        "class" => "task",
+        "source" => %{"zip" => zip},
+        "resources" => %{"vcpus" => 1, "memMib" => 512},
+        "concurrency" => %{"floor" => 0, "cap" => 4}
+      }
+    }
+  end
+
+  test "zip source: a valid zip CR catalogs with the frozen port + zip block and triggers the builder" do
+    table = unique_table()
+    agent = start_recorder()
+    base = start_base_recorder()
+    lister = fn -> {:ok, [zip_cr()]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "zipfn")
+    # Image lane fields: image_ref is nil, port is the frozen zip contract port,
+    # ready/invoke default from the zip block.
+    assert entry.image_ref == nil
+    assert entry.port == 1027
+    assert entry.ready_path == "/shim/ready"
+    assert entry.invoke_path == "/invoke"
+    assert entry.zip.runtime == "python312"
+    assert entry.zip.code_uri == "http://filer/embervm-zips/echo.zip"
+    assert entry.zip.sha256 == "abc123"
+    assert entry.zip.handler == "app.handle"
+
+    # The build descriptor carries the zip block and EMBER_HANDLER init_env.
+    assert [desc] = Agent.get(base, & &1.reconciled)
+    assert desc.image_ref == nil
+    assert desc.zip.sha256 == "abc123"
+    assert desc.init_env == %{"EMBER_HANDLER" => "app.handle"}
+  end
+
+  test "zip source: a custom handler flows into EMBER_HANDLER init_env" do
+    table = unique_table()
+    agent = start_recorder()
+    base = start_base_recorder()
+    lister = fn -> {:ok, [zip_cr(%{"handler" => "main.entry"})]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "zipfn")
+    assert entry.zip.handler == "main.entry"
+    assert [desc] = Agent.get(base, & &1.reconciled)
+    assert desc.init_env == %{"EMBER_HANDLER" => "main.entry"}
+  end
+
+  test "zip source: missing sha256 is rejected Ready=False/InvalidZipSource, not cataloged, no crash" do
+    table = unique_table()
+    agent = start_recorder()
+    base = start_base_recorder()
+    cr = zip_cr() |> update_in(["spec", "source", "zip"], &Map.delete(&1, "sha256"))
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "zipfn") == :error
+    assert {_ns, "zipfn", status_map} = ready_status(recorded_calls(agent), "zipfn")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "InvalidZipSource"}] = status_map["conditions"]
+    assert Agent.get(base, & &1.reconciled) == []
+    assert Process.alive?(watcher)
+  end
+
+  test "zip source: unknown runtime is rejected Ready=False/InvalidZipSource" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = zip_cr(%{"runtime" => "rust1"})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "zipfn") == :error
+    assert {_ns, "zipfn", status_map} = ready_status(recorded_calls(agent), "zipfn")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "InvalidZipSource"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "both source members set is rejected Ready=False/SourceAmbiguous" do
+    table = unique_table()
+    agent = start_recorder()
+
+    cr =
+      zip_cr()
+      |> put_in(["spec", "source", "image"], %{"ref" => "x", "port" => 8080})
+
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "zipfn") == :error
+    assert {_ns, "zipfn", status_map} = ready_status(recorded_calls(agent), "zipfn")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "SourceAmbiguous"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
   test "list error: a previously-cataloged entry survives (fail-open), watcher stays alive" do
     table = unique_table()
     agent = start_recorder()

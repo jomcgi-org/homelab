@@ -48,8 +48,12 @@ defmodule Embervm.BaseBuilder do
   so the control plane cannot compare digests before a build. Instead it detects
   change on a "base signature" derived from the spec fields that actually shape
   the base: `image_ref`, resources (`vcpus`, `mem_mib`), the guest contract
-  (`guest_port`, `ready_path`), and `init_env`. A rebuild is triggered iff the
-  signature differs from the one the recorded base was built from. Tag drift
+  (`guest_port`, `ready_path`), `init_env`, and (for the zip lane) the zip
+  archive sha256. A rebuild is triggered iff the signature differs from the one
+  the recorded base was built from. Including the zip sha256 is what makes the
+  no-gap turnover property hold for a re-registered function: a new zip under
+  the same name changes the sha256, so the signature differs and the base
+  rebuilds, even though every other field is unchanged. Tag drift
   (same `image_ref` string, new upstream digest) does NOT rebuild: deploys are
   explicit CR updates, not tag drift. The digest the daemon resolves comes back
   in the response and is recorded in `status.snapshotDigest` for auditability.
@@ -100,7 +104,7 @@ defmodule Embervm.BaseBuilder do
   use GenServer
   require Logger
 
-  alias Embervm.Node.V1.{BuildBaseRequest, BuildBaseResponse, NodeService, ResourceSpec, Trace}
+  alias Embervm.Node.V1.{BuildBaseRequest, BuildBaseResponse, NodeService, ResourceSpec, Trace, ZipSource}
 
   # Backoff for a failed build: exponential from 1s, capped at the spec's 10m.
   @base_backoff_ms 1_000
@@ -127,7 +131,13 @@ defmodule Embervm.BaseBuilder do
           required(:name) => String.t(),
           required(:namespace) => String.t(),
           required(:generation) => integer() | nil,
-          required(:image_ref) => String.t(),
+          required(:image_ref) => String.t() | nil,
+          optional(:zip) => %{
+            required(:runtime) => String.t(),
+            required(:code_uri) => String.t(),
+            required(:sha256) => String.t(),
+            required(:handler) => String.t()
+          } | nil,
           required(:guest_port) => integer() | nil,
           required(:ready_path) => String.t(),
           required(:vcpus) => integer() | nil,
@@ -188,6 +198,12 @@ defmodule Embervm.BaseBuilder do
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     base_backoff = Keyword.get(opts, :base_backoff_ms, @base_backoff_ms)
     max_backoff = Keyword.get(opts, :max_backoff_ms, @max_backoff_ms)
+    # runtime -> pinned runtime base image ref (e.g. %{"python312" => "...:tag"}).
+    # The zip lane resolves source.zip.runtime to the ZipSource.runtime_image_ref
+    # through this map; an unknown runtime yields a Ready=False condition, never a
+    # crash. Empty (no runtime image wired, e.g. a CI chart without the pin) means
+    # every zip build is held with a clear "runtime not configured" condition.
+    runtime_images = Keyword.get(opts, :runtime_images, %{})
 
     node_ids = Enum.map(nodes, & &1.id)
 
@@ -209,6 +225,7 @@ defmodule Embervm.BaseBuilder do
       build_fun: build_fun,
       connect_fun: connect_fun,
       disconnect_fun: disconnect_fun,
+      runtime_images: runtime_images,
       status_writer: status_writer,
       clock: clock,
       base_backoff_ms: base_backoff,
@@ -303,6 +320,14 @@ defmodule Embervm.BaseBuilder do
         # No node wired (empty config, e.g. CI): hold the desc and report why.
         write_base_status(state, w, {:pending, :no_node})
 
+      zip_runtime_unresolved?(state, w) ->
+        # A zip workload whose runtime does not resolve to a pinned image ref
+        # (unknown runtime, or no runtime image configured in this release).
+        # Report a precise Ready=False and build nothing, never crash. The
+        # existing base (if any) is untouched, so Ready stays True on an edit
+        # that broke only the runtime resolution.
+        write_base_status(state, w, {:failed, zip_runtime_error(state, w)})
+
       w.built_signature == signature(w) and w.snapshot_ref != nil ->
         # Desired base already built and recorded: idempotent no-op. (The watcher
         # separately writes observedGeneration for a generation-only change.)
@@ -351,6 +376,7 @@ defmodule Embervm.BaseBuilder do
       generation: desc.generation,
       node_id: node_id,
       image_ref: desc.image_ref,
+      zip: Map.get(desc, :zip),
       guest_port: desc.guest_port,
       ready_path: desc.ready_path,
       vcpus: desc.vcpus,
@@ -372,6 +398,7 @@ defmodule Embervm.BaseBuilder do
         generation: desc.generation,
         node_id: node_id,
         image_ref: desc.image_ref,
+        zip: Map.get(desc, :zip),
         guest_port: desc.guest_port,
         ready_path: desc.ready_path,
         vcpus: desc.vcpus,
@@ -385,7 +412,30 @@ defmodule Embervm.BaseBuilder do
   # from. Deliberately excludes concurrency/invocation/retry (they do not change
   # the base VM), so a cap-only edit never rebuilds.
   defp signature(w) do
-    {w.image_ref, w.vcpus, w.mem_mib, w.guest_port, w.ready_path, w.init_env}
+    # The zip archive sha256 (nil for the image lane) is part of the signature so
+    # a new zip under the same workload name rebuilds the base: every other field
+    # can be identical, only the sha256 changes, and the no-gap turnover property
+    # requires that to rebuild. The runtime is included too, so switching runtime
+    # (a different base image) also rebuilds even if the archive is unchanged.
+    zip_sig = if w.zip, do: {w.zip.runtime, w.zip.sha256}, else: nil
+    {w.image_ref, zip_sig, w.vcpus, w.mem_mib, w.guest_port, w.ready_path, w.init_env}
+  end
+
+  # A zip workload whose runtime does not resolve to a pinned image ref: unknown
+  # runtime or no runtime image configured. The image lane always resolves (nil
+  # zip), so this is false for it.
+  defp zip_runtime_unresolved?(state, %{zip: %{runtime: runtime}}) do
+    not is_binary(Map.get(state.runtime_images, runtime))
+  end
+
+  defp zip_runtime_unresolved?(_state, _w), do: false
+
+  defp zip_runtime_error(state, %{zip: %{runtime: runtime}}) do
+    if map_size(state.runtime_images) == 0 do
+      "zip runtime #{inspect(runtime)} cannot be resolved: no runtime image is configured in this release"
+    else
+      "zip runtime #{inspect(runtime)} does not resolve to a pinned runtime image"
+    end
   end
 
   # Is a build for this signature already queued or in flight on the node? Avoids
@@ -465,7 +515,7 @@ defmodule Embervm.BaseBuilder do
     build_fun = state.build_fun
     connect_fun = state.connect_fun
     disconnect_fun = state.disconnect_fun
-    request = build_request(w)
+    request = build_request(w, state.runtime_images)
     sig = signature(w)
 
     {pid, ref} =
@@ -496,7 +546,29 @@ defmodule Embervm.BaseBuilder do
     |> put_in([:workers, pid], %{node_id: node_id, name: w.name, signature: sig})
   end
 
-  defp build_request(w) do
+  # The image lane sets image_ref (proto field 2); the zip lane leaves it empty
+  # and sets source.zip (the ZipSource: the resolved runtime image ref, the
+  # archive url = codeUri, the archive sha256). reconcile_desc has already gated
+  # a zip build on the runtime resolving, so runtime_images has the ref here.
+  defp build_request(%{zip: %{} = zip} = w, runtime_images) do
+    %BuildBaseRequest{
+      trace: %Trace{workload: w.name},
+      workload_revision: to_string(w.generation || 0),
+      guest_port: w.guest_port || 0,
+      ready_path: w.ready_path,
+      resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
+      init_env: w.init_env,
+      source:
+        {:zip,
+         %ZipSource{
+           runtime_image_ref: Map.get(runtime_images, zip.runtime),
+           archive_url: zip.code_uri,
+           archive_sha256: zip.sha256
+         }}
+    }
+  end
+
+  defp build_request(w, _runtime_images) do
     %BuildBaseRequest{
       trace: %Trace{workload: w.name},
       image_ref: w.image_ref,

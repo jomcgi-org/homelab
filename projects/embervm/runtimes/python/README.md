@@ -146,17 +146,29 @@ per registration.
 Runs as uid/gid 65532 (`runtime` account), `runAsNonRoot` convention. Dual-arch
 (x86_64 + aarch64) via the standard apko pipeline.
 
-## Boot integration (deferred to Task 7, REQUIRED before this image serves)
+## Boot integration (Task 7, DONE)
 
-The shim is set as the apko OCI `entrypoint`, but a raw Firecracker boot ignores
-OCI image config entirely and boots `init=<HarnessInit>` (see the noded driver's
-`bootArgs`, and the sibling sandbox note in
-`projects/firecracker/sandbox/guest/apko.yaml`). So this image cannot boot-and-serve
-on its own yet: nothing runs the shim as PID 1, and nothing mounts the tmpfs the
-shim's unpack dir (`/tmp/ember-app`) needs on a read-only rootfs.
+A raw Firecracker boot ignores OCI image config entirely and boots
+`init=<HarnessInit>` (see the noded driver's `bootArgs`), so the apko
+`entrypoint` that runs the shim is never honoured on a Firecracker boot. This
+image therefore ships a real PID 1: `ember-runtime-guest-init`
+(`guest-init/cmd/`, a small Go binary mirroring
+`projects/firecracker/sandbox/guest-init/`), layered at
+`/usr/local/bin/ember-runtime-guest-init` by `../BUILD`.
 
-When Task 7 wires a `runtime-python` workload, it must add a PID-1 harnessInit
-(mirroring `projects/firecracker/sandbox/guest-init/`) that mounts a tmpfs over
-`/tmp`, then execs `python3 /usr/local/bin/ember-runtime-shim`. Until that init
-exists, this image builds and its shim unit-tests pass, but no workload should
-reference it.
+On boot it:
+
+1. mounts a tmpfs over `/tmp` (`size=256m,mode=1777`) so the shim's unpack dir
+   (`/tmp/ember-app`) is writable on the read-only, snapshot-shared rootfs;
+2. sets `PATH` plus the baked frozen-contract env defaults (`EMBER_HANDLER` etc.)
+   that a raw boot would otherwise lack, without clobbering any per-registration
+   override noded injects (the CR's `handler` arrives as `EMBER_HANDLER`);
+3. `exec`s `python3 /usr/local/bin/ember-runtime-shim`, so the shim replaces it
+   as PID 1 and serves the frozen contract.
+
+The chart wires this init as the `runtime-python` workload's `harnessInit`
+(`workloads.runtimePython.harnessInit` in `chart/values.yaml`), which noded maps
+to `init=/usr/local/bin/ember-runtime-guest-init` on cold boot. So `/tmp` is
+writable (the tmpfs) and the shim runs as PID 1 on a real Firecracker boot. The
+OCI `entrypoint` is retained for any non-Firecracker (docker/crane) path, which
+ends at the same shim.

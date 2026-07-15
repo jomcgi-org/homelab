@@ -489,13 +489,22 @@ defmodule Embervm.WorkloadWatcher do
   # init_env is read from source.image.initEnv (the frozen guest contract's
   # baked env); the rest reuse the already-parsed catalog entry.
   defp build_desc(name, namespace, generation, spec, entry) do
-    init_env = get_in(spec, ["source", "image", "initEnv"]) || %{}
+    # init_env is the guest's baked env. The image lane reads source.image.initEnv;
+    # the zip lane passes the handler symbol as EMBER_HANDLER (the runtime shim
+    # reads it to import the adopter's handler). A zip CR has no initEnv block.
+    init_env =
+      case entry.zip do
+        nil -> get_in(spec, ["source", "image", "initEnv"]) || %{}
+        %{handler: handler} -> %{"EMBER_HANDLER" => handler}
+      end
 
     %{
       name: name,
       namespace: namespace,
       generation: generation,
+      # Exactly one of image_ref / zip is set, mirroring the CR's oneOf source.
       image_ref: entry.image_ref,
+      zip: entry.zip,
       guest_port: entry.port,
       ready_path: entry.ready_path,
       vcpus: entry.vcpus,
@@ -564,10 +573,49 @@ defmodule Embervm.WorkloadWatcher do
      "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task is valid in v1alpha1"}
   end
 
+  # The CRD schema enforces the structural oneOf (exactly one of image|zip) at
+  # admission, but a CR observed via LIST/WATCH is trusted only as far as this
+  # code re-checks it: enforce the same mutual exclusion here (both set, or
+  # neither) plus the zip lane's required sha256 and known runtime, so a
+  # malformed CR gets a precise Ready=False rather than a crash downstream.
+  @known_runtimes ["python312"]
+
   defp validate_source(spec) do
-    case get_in(spec, ["source", "image"]) do
-      image when is_map(image) -> :ok
-      _ -> {:error, "SourceUnsupported", "only source.image is implemented in v1alpha1"}
+    image = get_in(spec, ["source", "image"])
+    zip = get_in(spec, ["source", "zip"])
+
+    cond do
+      is_map(image) and is_map(zip) ->
+        {:error, "SourceAmbiguous", "exactly one of source.image or source.zip may be set, not both"}
+
+      is_map(image) ->
+        :ok
+
+      is_map(zip) ->
+        validate_zip(zip)
+
+      true ->
+        {:error, "SourceUnsupported", "exactly one of source.image or source.zip must be set"}
+    end
+  end
+
+  defp validate_zip(zip) do
+    runtime = Map.get(zip, "runtime")
+    sha256 = Map.get(zip, "sha256")
+
+    cond do
+      not (is_binary(sha256) and sha256 != "") ->
+        {:error, "InvalidZipSource", "source.zip.sha256 is required"}
+
+      runtime not in @known_runtimes ->
+        {:error, "InvalidZipSource",
+         "source.zip.runtime #{inspect(runtime)} is unknown; only python312 is valid in v1alpha1"}
+
+      not is_binary(Map.get(zip, "codeUri")) or Map.get(zip, "codeUri") == "" ->
+        {:error, "InvalidZipSource", "source.zip.codeUri is required"}
+
+      true ->
+        :ok
     end
   end
 
@@ -592,18 +640,21 @@ defmodule Embervm.WorkloadWatcher do
   # re-defaulting here just means this code has no silent dependency on that
   # having happened.
   defp catalog_entry(name, namespace, spec, floor, cap) do
-    image = get_in(spec, ["source", "image"])
     resources = Map.get(spec, "resources") || %{}
     invocation = Map.get(spec, "invocation") || %{}
+    source = parse_source(spec)
 
     %{
       name: name,
       namespace: namespace,
       class: "task",
-      image_ref: Map.get(image, "ref"),
-      port: Map.get(image, "port"),
-      ready_path: Map.get(image, "readyPath") || "/shim/ready",
-      invoke_path: Map.get(image, "invokePath") || "/",
+      # Zip-lane source (nil for the image lane), carried so the BaseBuilder can
+      # map it to a proto ZipSource. The image lane leaves it nil.
+      zip: source.zip,
+      image_ref: source.image_ref,
+      port: source.port,
+      ready_path: source.ready_path,
+      invoke_path: source.invoke_path,
       vcpus: Map.get(resources, "vcpus"),
       mem_mib: Map.get(resources, "memMib"),
       floor: floor,
@@ -617,6 +668,47 @@ defmodule Embervm.WorkloadWatcher do
       # ordinary submit. An absent/empty list means no triggers.
       triggers: parse_triggers(Map.get(spec, "triggers"))
     }
+  end
+
+  # The frozen zip-lane guest contract port (the runtime shim's vsock HTTP
+  # listener, node.proto GuestHTTPPort). The zip CR does not carry a port (it is
+  # baked into the runtime image), so the catalog uses this constant.
+  @zip_guest_port 1027
+
+  # Normalize either source lane into a common shape the catalog and build
+  # descriptor consume. The image lane fills image_ref (+ its port/paths); the
+  # zip lane leaves image_ref nil, carries a :zip map, and uses the frozen
+  # contract port plus the zip block's ready/invoke paths. validate_source/1 has
+  # already guaranteed exactly one lane is present and, for zip, that
+  # runtime/sha256/codeUri are valid.
+  defp parse_source(spec) do
+    image = get_in(spec, ["source", "image"])
+    zip = get_in(spec, ["source", "zip"])
+
+    cond do
+      is_map(zip) ->
+        %{
+          zip: %{
+            runtime: Map.get(zip, "runtime"),
+            code_uri: Map.get(zip, "codeUri"),
+            sha256: Map.get(zip, "sha256"),
+            handler: Map.get(zip, "handler") || "app.handle"
+          },
+          image_ref: nil,
+          port: @zip_guest_port,
+          ready_path: Map.get(zip, "readyPath") || "/shim/ready",
+          invoke_path: Map.get(zip, "invokePath") || "/invoke"
+        }
+
+      true ->
+        %{
+          zip: nil,
+          image_ref: Map.get(image, "ref"),
+          port: Map.get(image, "port"),
+          ready_path: Map.get(image, "readyPath") || "/shim/ready",
+          invoke_path: Map.get(image, "invokePath") || "/"
+        }
+    end
   end
 
   # spec.triggers[] -> [%{cron, payload}]. The CRD requires `cron` per item and

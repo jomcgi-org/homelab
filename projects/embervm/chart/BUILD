@@ -21,6 +21,9 @@ helm_chart(
         "rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
         # Task 14b: the frozen fc-invoke semgrep guest. Distinct top-level key.
         "semgrep.guestImage": "//projects/firecracker/semgrep/guest:image.info",
+        # R1 zip lane (ADR embervm/002): the runtime-python base image the zip
+        # lane layers an adopter's archive onto. Distinct top-level key (D14a.6).
+        "runtimePython.guestImage": "//projects/embervm/runtimes/python:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

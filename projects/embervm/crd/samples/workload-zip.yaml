@@ -1,0 +1,32 @@
+# Sample zip-lane Workload (R1, ADR embervm/002). The adopter brings only a zip
+# archive with a `handler(event, context)` callable; the control plane resolves
+# `runtime: python312` to the pinned runtime-python base image, hands noded the
+# archive URL + sha256, and the runtime shim unpacks and imports the handler
+# guest-side before the base is snapshotted. Living documentation of the zip
+# lane surface, mirroring workload-echo.yaml. Not a production deploy.
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: echo-zip
+  namespace: embervm
+spec:
+  class: task
+  source:
+    zip:
+      runtime: python312
+      # In-cluster SeaweedFS S3 read URL the control plane mints; noded GETs it.
+      codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/embervm-zips/echo-zip.zip
+      # Hex SHA-256 of the archive bytes (noded verifies; also feeds the
+      # base-build change-detect signature so a new zip rebuilds the base).
+      sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+      handler: app.handle
+      invokePath: /invoke
+      readyPath: /shim/ready
+  resources:
+    vcpus: 1
+    memMib: 512
+  concurrency:
+    floor: 1
+    cap: 4
+  invocation:
+    timeoutSeconds: 30
