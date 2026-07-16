@@ -83,6 +83,10 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 		GatewayIP:   s.servingNet.GatewayIP().String(),
 		PrefixLen:   s.servingNet.PrefixLen(),
 		IfaceName:   "eth0",
+		// Single-source the guest TCP serving port from the same `port` the health
+		// probe uses (finishServingStart below), so the shim binds exactly what the
+		// daemon probes and publishes: GET http://ip:port{healthPath} (D-R3.11.1).
+		ServingPort: port,
 	}
 	h, err := s.servingDriver.ClaimServing(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic)
 	if err != nil {

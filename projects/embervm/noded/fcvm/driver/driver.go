@@ -267,6 +267,13 @@ func (d *Driver) bootArgsFor(nic *substrate.NICSpec) string {
 		mask := prefixLenToMask(nic.PrefixLen)
 		// Linux kernel ip= directive: client-ip::gw-ip:netmask:hostname:device:autoconf
 		args += fmt.Sprintf(" ip=%s::%s:%s::%s:off", nic.IP, nic.GatewayIP, mask, iface)
+		// Serving cold boot (R3, D-R3.11.1): tell the guest to answer HTTP over
+		// the tap NIC on this TCP port instead of vsock. guest-init reads this
+		// token from /proc/cmdline into EMBER_SERVING_PORT for the python shim.
+		// It is the SAME port the daemon later health-probes and publishes.
+		if nic.ServingPort > 0 {
+			args += fmt.Sprintf(" ember.serving_port=%d", nic.ServingPort)
+		}
 	}
 	return args
 }

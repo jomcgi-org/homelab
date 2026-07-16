@@ -62,6 +62,14 @@ type NICSpec struct {
 	// IfaceName is the in-guest interface name the boot-args ip= directive targets
 	// (eth0 by convention).
 	IfaceName string
+	// ServingPort is the guest TCP port the serving shim binds on the tap NIC
+	// (spec.serving.port). The driver appends it to boot-args as
+	// `ember.serving_port=<port>` so guest-init flips the python shim from vsock
+	// to TCP (D-R3.11.1). It is the SAME port the daemon health-probes and
+	// publishes, single-sourced from the StartServing request. Zero means "no
+	// serving-port directive" (the boot stays on the vsock path); it is only
+	// meaningful on the serving cold-boot path where a NICSpec exists at all.
+	ServingPort uint32
 }
 
 // Handle is an opaque reference to a claimed, live microVM. It is only valid
