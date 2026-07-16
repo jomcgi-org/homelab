@@ -10,7 +10,12 @@ defmodule Embervm.SyncWaitTest do
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
 
-  defp wait_until(fun, tries \\ 200)
+  # 1000 tries x 5ms = a 5s ceiling (was 200 tries, 1s), well under ExUnit's
+  # 60s per-test timeout: the full async suite's scheduler contention can
+  # occasionally push a wait past a 1s budget, so the ceiling absorbs that CI
+  # load rather than flaking. The poll still returns the instant the
+  # condition holds, so this only spends time on a genuine failure.
+  defp wait_until(fun, tries \\ 1000)
   defp wait_until(_fun, 0), do: flunk("condition never became true")
 
   defp wait_until(fun, tries) do
