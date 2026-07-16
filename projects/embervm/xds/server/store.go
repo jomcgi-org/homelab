@@ -79,14 +79,15 @@ func (s *Store) Apply(ctx context.Context, node string, d *snapshot.Desired) err
 		return err
 	}
 	// NOTE: go-control-plane's Snapshot.Consistent() is deliberately NOT called
-	// here. It models a full LDS+RDS+CDS+EDS snapshot and requires the set of
-	// served RouteConfigurations to exactly equal the set referenced by listeners.
-	// This sidecar serves NO listeners (the node Envoy listener + HCM are static
-	// bootstrap, Task 6), so nothing in the snapshot references the RouteConfig and
-	// Consistent() would always fail with a spurious RDS length mismatch. The
-	// route->cluster and cluster->EDS references this sidecar DOES own are validated
-	// in snapshot.Build (snapshot.validate), which is the correct check for a
-	// three-type (CDS/RDS/EDS) surface.
+	// here. It requires the set of served RouteConfigurations to exactly equal the
+	// set referenced by listeners' RDS. The static HTTP listener that references
+	// this sidecar's RouteConfig lives in the node Envoy bootstrap, NOT in the
+	// snapshot, and the R4 LDS listeners we DO serve are tcp_proxy (a direct
+	// cluster reference, no RDS), so nothing in the snapshot references the
+	// RouteConfig and Consistent() would always fail with a spurious RDS mismatch.
+	// The route->cluster, cluster->EDS, and listener->cluster references this
+	// sidecar owns are validated in snapshot.Build (snapshot.validate), which is
+	// the correct check for this CDS/RDS/EDS + tcp-proxy-LDS surface.
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
