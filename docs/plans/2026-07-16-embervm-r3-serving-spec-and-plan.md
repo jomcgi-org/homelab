@@ -347,3 +347,99 @@ Where the new Envoy tier sits, given VM tap IPs are only cheaply reachable on th
 | Tap IP churn across relights breaks guests that cache their own address | Consumer soak; guest logs | Contractual: guests must bind 0.0.0.0 and not persist IPs (documented in the CRD serving block); og-image's shim already complies |
 | The og-image flip regresses a public surface | Gate 9 soak; public-tier checklist | Values-level rollback to the task-class FaaS path, kept registered and warm throughout R3 |
 | Two Envoy tiers double-count or confuse latency attribution in SigNoz | Task 10 dashboard review | Distinct stat prefixes per tier; the gate arithmetic names which histogram is authoritative per gate |
+
+## Closure (2026-07-16)
+
+R3 Serving is **Shipped**. The tier is live in production: og-image is warm-served
+publicly at `jomcgi.dev/functions/hot-image-demo` (task-class cold sibling at
+`/functions/cold-image-demo`), reachable from any node via pod-IP-routable endpoints.
+ADR embervm/001 roadmap row R3 flips to `Shipped 2026-07-16`.
+
+### What the plan did not foresee: the D-R3.11.x networking hardening
+
+The 12-task plan wired the two tiers and assumed traffic would then flow. It did not.
+Getting a serving VM to actually answer a request through the node Envoy took a
+hardening arc recorded in DECISIONS.md (D-R3.11.1 through D-R3.11.5), each defect
+hidden behind the last and surfaceable only by a real Firecracker boot:
+
+- **D-R3.11.1-3**: zip-serving cold-boot provisioning. A serving VM cold-boots with a
+  NIC and cannot resume the base memory snapshot's tmpfs-baked handler, so it needs a
+  build-produced, cold-boot-readable handler artifact on a second read-only drive
+  (sector-padded, exact-length-conveyed), plus `init=` on the cmdline and a mounted
+  `/proc` for the guest-init boot-arg readers.
+- **D-R3.11.4 (DNAT-through-noded)**: the last hop. The serving bridge and tap IPs live
+  inside noded's OWN pod netns, so neither a pod-network nor a hostNetwork Envoy could
+  route to them. noded now exposes each live serving VM as `nodedPodIP:vmPort` via a
+  kernel nftables prerouting DNAT rule. This also delivered **pod-IP-routable serving
+  endpoints early** (reachable from any node's Envoy), which this plan explicitly
+  deferred to post-Cilium (see out-of-scope); a down payment on cross-node serving with
+  no CNI work.
+- **Three robustness fixes** the drills forced: noded-restart control-plane channel
+  self-heal (the cached gRPC channel is torn down on a wrapped transport death, not just
+  a raw one); the shim serves any method/path in serving mode (not only `POST /invoke`),
+  so a browser GET renders; and serving-base turnover (a wake rejects a stale-lineage
+  relight and cold-boots the current base, so a runtime roll actually serves the new
+  code, plus a sweeper GC of superseded banked snapshots).
+- **D-R3.11.5**: the "controller-driven Part B" the plan sketched was never built and is
+  reframed as operator-owned Gateway-API exposure. embervm exposes serving workloads as
+  a backend (the serving Service + an internal vhost authority pushed via xDS); the
+  operator attaches HTTPRoutes. Public vs private is a gateway/Access concern, decoupled
+  from the substrate.
+
+### Gate evidence
+
+1. **Control plane off the hit path (the destructive founding gate) — DRILLED.** With a
+   live+published hot-image-demo VM (`status.serving live:1 published:1`), the
+   control-plane pod was deleted; six requests to `https://jomcgi.dev/functions/hot-image-demo`
+   during the window the pod was `GONE` all returned `200`. The hit path (Cloudflare ->
+   edge Gateway -> serving Service -> node Envoy -> DNAT -> VM) contains no control-plane
+   call; the node Envoy serves from its last-good xDS snapshot when the ADS stream drops.
+2. **Hit overhead — INSTRUMENTED, observationally within envelope.** Envoy hit-path
+   histograms are scraped to SigNoz (Task 10, distinct per-cluster stat prefixes);
+   `x-envoy-upstream-service-time` on live responses sits at the guest render cost
+   (~45ms for the 1200x630 Pillow PNG), with node-Envoy proxy overhead sub-millisecond.
+   A formal load-profiled overhead number is a follow-on (no homelab load rig).
+3. **Wake p95 — OBSERVED within envelope.** Every scale-from-zero wake across the R3
+   drills returned `200` on the first or an early retry (cold-boot within the readiness
+   budget); relight IP-pinning re-derives in R2's measured 121-132ms envelope plus
+   publish+proxy. A formal p95 histogram over N wakes is the recorded follow-on; the
+   risk table's tuning levers (publisher debounce, `minInstances: 1` pre-warm) stand.
+4. **Zero-5xx drain under load — DESIGN-SATISFIED, formal drill deferred.** Drain
+   ordering (`serving_unpublished` strictly precedes `serving_banked`) is enforced and
+   unit-tested (`serving_sweeper_test`); the fixed 5s `drainSeconds` and the
+   in-flight-verified drain follow-on are recorded in the risk table. A live load+bank
+   zero-5xx soak needs a load rig and is the recorded follow-on.
+5. **Scale-to-zero economics — OBSERVED LIVE.** The sweeper banks a workload idle past
+   `idleBankSeconds` to zero live + one banked snapshot (`serving_stats` usage ops
+   account the active window); the next request wakes it. Observed repeatedly this
+   session (bank -> relight round-trips, the activator cold-boot on an empty cluster).
+6. **Publication latency — INSTRUMENTED.** The publication-latency metric and serving
+   spans are emitted (Task 10); the endpoint-published-to-servable path is a node-local
+   xDS update, not an edge write (see gate 8). Formal latency numbers ride the same
+   SigNoz instrumentation.
+7. **Adoption drill — DRILLED (both halves).** Noded-restart: deleting the noded pod
+   left the control plane self-healing with zero orphaned state and the workload
+   recovering via the activator (the noded-restart-wedge fix drill). Control-plane
+   restart: gate 1's drill IS the live half (a live instance keeps serving throughout a
+   control-plane restart); banked instances wake on demand afterward.
+8. **Churn isolation — DRILLED + DESIGN-GUARANTEED.** The edge Gateway
+   (`cloudflare-ingress`) `metadata.generation` is `1`: its spec has never changed from
+   any bank/wake/deploy across all of R3 (only GitOps chart applies touch it). Standing
+   decision 8 holds structurally: the control plane writes no HTTPRoutes/EndpointSlices
+   at runtime; all endpoint churn is node-tier xDS served from memory.
+
+### Out-of-scope carried forward to R4 planning seed
+
+- **A true cluster ember edge tier + full cross-node VM routing.** v1's edge is the
+  existing Envoy Gateway over one serving node. D-R3.11.4's DNAT made serving endpoints
+  pod-IP-routable (the routability prerequisite), so the remaining work is a cluster-
+  scoped ember edge fleet (or node-affine routing hints) consuming a second xDS snapshot;
+  the `serve|<workload>` cluster naming and node-scoped snapshot keys hold the seam. The
+  pending Cilium migration is the likely enabler.
+- **Stale serving base-dir GC.** The sweeper now evicts superseded banked snapshots
+  (D-R3.11.5 / the turnover fix), but the base bundles (memfiles/handler artifacts) still
+  accumulate per runtime roll; their GC rides the ADR embervm/003 snapshot-to-S3
+  distribution arc.
+- **Envoy-side active health checks at the node tier** (standing decision 4) and an
+  **ALS-precise idle signal** (vs the stats-scrape gap, risk table) remain recorded
+  follow-ons.
