@@ -791,3 +791,9 @@ Task 10 choices where the plan was silent (sessioned run_python across guest + c
   max(maxLifetimeSeconds, bankedTtlSeconds)+margin and not the current digest) is a safe
   stopgap because every session born on an older rootfs has hit its TTL and 410'd. Disk grows
   ~2GiB/deploy until then; fine for a not-in-use system.
+
+## D-R3.2.1: serving_stats usage upsert (request-count only, principal-on-op, live-seconds deferred)
+- serving_stats is workload-scoped (per-cluster rq_delta), with no single instance to join, so the op carries principal/tenant on its top-level Op fields (the workload owner, set by the Task 9 appender). project_usage stays a pure per-op function, preserving kill-and-restart rebuild equivalence. serving_instance_id is NULL on serving_stats ops.
+- Request counts charge a new usage.request_count column (guarded ALTER, default 0), not task_count, so serving requests are never conflated with task/session invocation counts (irreversible if merged). The count increment is parameterized; task/session callers keep charging task_count unchanged.
+- Live-seconds accrual (vcpu/gb-seconds over the alive interval) is deferred out of Task 2: the serving_instances projection carries no resource columns, so accrual belongs with the Task 9+ lifecycle/sweeper machinery that has the resource shape. Task 2 usage wiring is request-count only; a code comment marks serving compute as intentionally un-accrued here, not free.
+- FLAG FOR JOE: review the request_count-column choice and the live-seconds deferral post-implementation.

@@ -64,6 +64,7 @@ defmodule Embervm.OpLog.Compactor do
       results_deleted: 0,
       tasks_compacted: 0,
       sessions_compacted: 0,
+      serving_instances_compacted: 0,
       ops_compacted: 0,
       compacted_through: 0
     }
@@ -78,6 +79,8 @@ defmodule Embervm.OpLog.Compactor do
           results_deleted: totals.results_deleted + batch.results_deleted,
           tasks_compacted: totals.tasks_compacted + batch.tasks_compacted,
           sessions_compacted: totals.sessions_compacted + batch.sessions_compacted,
+          serving_instances_compacted:
+            totals.serving_instances_compacted + batch.serving_instances_compacted,
           ops_compacted: totals.ops_compacted + batch.ops_compacted,
           # The marker is monotonic and reported per batch; the last batch's value
           # is the authoritative post-sweep marker.
@@ -108,6 +111,7 @@ defmodule Embervm.OpLog.Compactor do
           results_deleted: totals.results_deleted,
           tasks_compacted: totals.tasks_compacted,
           sessions_compacted: totals.sessions_compacted,
+          serving_instances_compacted: totals.serving_instances_compacted,
           ops_compacted: totals.ops_compacted,
           compacted_through: totals.compacted_through,
           db_size_bytes: db_size

@@ -31,6 +31,7 @@ defmodule Embervm.OpLog do
               workload: nil,
               task_id: nil,
               session_id: nil,
+              serving_instance_id: nil,
               ts: nil,
               payload: %{}
 
@@ -45,6 +46,11 @@ defmodule Embervm.OpLog do
             # column, added additively. A session op owns its `sessions`
             # projection row the way a task op owns its `tasks` row.
             session_id: String.t() | nil,
+            # Set on serving_* ops (nil on task/session ops); the durable
+            # `ops.serving_instance_id` column (R3), added additively the same
+            # way session_id was in R2. A serving op owns its `serving_instances`
+            # projection row the way a session op owns its `sessions` row.
+            serving_instance_id: String.t() | nil,
             ts: integer(),
             payload: map()
           }
@@ -80,7 +86,26 @@ defmodule Embervm.OpLog do
     :session_expired,
     :session_evicted,
     :session_destroyed,
-    :session_failed
+    :session_failed,
+    # Serving lifecycle (R3). Additive to the closed enum, mirroring the R2
+    # session kinds: serving instances are durable, ordered, and auditable
+    # exactly like sessions (ADR embervm/001) and project into the
+    # `serving_instances` table (see Embervm.OpLog.SQLite). serving_published/
+    # serving_unpublished are the endpoint-lifetime audit record (an
+    # enforcement-adjacent fact: it decides who traffic reaches), distinct from
+    # serving_started/serving_banked/serving_destroyed which are VM lifecycle.
+    # serving_stats carries request-count deltas from the idle-signal scrape and
+    # upserts the (principal, day) usage projection's request_count column
+    # (D-R3.2.1, distinct from the D12.1 task_count/vcpu/gb accrual path).
+    :serving_started,
+    :serving_published,
+    :serving_unpublished,
+    :serving_banked,
+    :serving_relit,
+    :serving_evicted,
+    :serving_destroyed,
+    :serving_failed,
+    :serving_stats
   ]
 
   @spec kinds() :: [atom()]
@@ -105,6 +130,11 @@ defmodule Embervm.OpLog do
   # is reconstructed from this exactly as the task index is from load_tasks/1. A
   # projection read, never the raw ops log.
   @callback load_sessions(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every serving instance row from the durable `serving_instances`
+  # projection (R3), for the future ServingStore's boot/adoption rebuild
+  # (Tasks 7/8), exactly mirroring load_sessions/1. A projection read, never
+  # the raw ops log.
+  @callback load_serving_instances(server()) :: {:ok, [map()]} | {:error, term()}
   # Reads one task's stored result from the durable `results` projection, or
   # {:ok, nil} when there is none (never ran, or the TTL sweeper reaped it).
   # This is the result-store read the submit API (Task 8) serves `GET
@@ -149,6 +179,7 @@ defmodule Embervm.OpLog do
                  results_deleted: non_neg_integer(),
                  tasks_compacted: non_neg_integer(),
                  sessions_compacted: non_neg_integer(),
+                 serving_instances_compacted: non_neg_integer(),
                  ops_compacted: non_neg_integer(),
                  compacted_through: non_neg_integer(),
                  done: boolean()
