@@ -187,6 +187,12 @@ defmodule Embervm.BaseBuilder do
   restorable so a live or banked session can always relight from its birth base.
   Unknown/absent refs are ignored (the ref was never superseded, or already
   evicted). A synchronous call so a test can assert eviction ordering.
+
+  R3: a future ServingStore (Task 9) may also report `:serving` (non-terminal
+  serving instances still pinned to the old base as their birth lineage,
+  mirroring `:sessions`); the counts are accepted today but NOT yet required
+  for eviction (see the comment on `merge_refcounts/2`) since nothing reports
+  it until that store exists.
   """
   @spec report_base_refs(GenServer.server(), String.t(), keyword()) :: :ok
   def report_base_refs(server \\ __MODULE__, ref, counts) do
@@ -734,6 +740,18 @@ defmodule Embervm.BaseBuilder do
     entry
     |> maybe_put_count(:primed, Keyword.get(counts, :primed))
     |> maybe_put_count(:sessions, Keyword.get(counts, :sessions))
+    # R3: accepts a :serving count from a future ServingStore (Task 9) the
+    # same way :primed/:sessions are accepted, extending the MECHANISM only.
+    # evictable?/1 below deliberately does NOT require :serving yet: it is
+    # one guard shared by every workload's superseded-base eviction (task and
+    # session included), and nothing reports :serving until Task 9 ships its
+    # ServingStore. Requiring it now, before any caller ever reports it,
+    # would silently wedge base eviction repo-wide (nil never equals 0), not
+    # just for serving workloads. Task 9 must widen evictable?/1 to require
+    # serving: 0 IN THE SAME COMMIT that lands the first :serving report, so
+    # there is never a version where the guard demands a count nothing
+    # reports yet.
+    |> maybe_put_count(:serving, Keyword.get(counts, :serving))
   end
 
   defp maybe_put_count(entry, _key, nil), do: entry

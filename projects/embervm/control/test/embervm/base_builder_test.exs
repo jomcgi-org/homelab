@@ -580,4 +580,47 @@ defmodule Embervm.BaseBuilderTest do
     assert :ok = BaseBuilder.report_base_refs(builder, "snapX", primed: 0, sessions: 0)
     assert Process.alive?(builder)
   end
+
+  # R3: the refcount seam accepts a :serving count (a future ServingStore,
+  # Task 9, would report it), but eviction is NOT yet gated on it: nothing
+  # reports :serving today, so requiring it would silently wedge eviction for
+  # every workload (task and session included), not just serving ones. This
+  # test is the no-regression proof: primed:0, sessions:0 alone still evicts,
+  # with or without a :serving count ever reported.
+  test "a :serving refcount is accepted but not yet required for eviction (D-R3.3.1 precursor)" do
+    agent = start_recorder()
+    test_pid = self()
+
+    build_fun = fn :fake_channel, req ->
+      ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
+      {:ok, resp(ref)}
+    end
+
+    evict_fun = fn :fake_channel, ref ->
+      send(test_pid, {:evicted, ref})
+      {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        evict_fun: evict_fun
+      )
+
+    turnover_to_snap2(builder, agent)
+
+    # A :serving count arrives alongside primed, before sessions: still NOT
+    # evictable (sessions unknown), proving :serving does not shortcut the
+    # existing guard.
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, serving: 3)
+    refute_receive {:evicted, "snap1"}, 100
+
+    # primed:0, sessions:0 alone evicts, exactly as before R3, even though
+    # :serving was reported nonzero and is never reported as 0: the guard is
+    # unchanged, so a stray or nonzero :serving count cannot block eviction
+    # either.
+    :ok = BaseBuilder.report_base_refs(builder, "snap1", sessions: 0)
+    assert_receive {:evicted, "snap1"}, 1_000
+  end
 end

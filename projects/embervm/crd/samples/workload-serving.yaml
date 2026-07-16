@@ -1,0 +1,49 @@
+# Sample serving-class Workload (R3, ADR embervm/001). A serving instance is a
+# long-lived microVM that answers many HTTP requests directly over a tap NIC
+# (not vsock, unlike task and session VMs): the daemon creates the tap, reports
+# the endpoint, and is thenceforth uninvolved. This is the definition surface
+# only; a serving INSTANCE is execution state in the op-log, never a Kubernetes
+# object. For the serving class, concurrency.cap is an alias for
+# spec.serving.maxInstances (they must agree when both are set) and
+# concurrency.floor is unused, spec.serving.minInstances is the floor concept.
+# Living documentation of the serving surface, mirroring workload-session.yaml.
+# Not a production deploy (those live under projects/embervm/deploy/).
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: sandbox-serving
+  namespace: embervm
+spec:
+  class: serving
+  source:
+    image:
+      ref: ghcr.io/jomcgi/homelab/projects/embervm/guests/sandbox:latest
+      port: 1027
+      readyPath: /shim/ready
+      invokePath: /invoke
+  resources:
+    vcpus: 1
+    memMib: 2048
+  concurrency:
+    # cap: max published instances, must equal spec.serving.maxInstances below.
+    cap: 2
+  serving:
+    # The guest HTTP server port, reached over the tap NIC (not vsock).
+    port: 8080
+    # Probed continuously for liveness, distinct from the base build's readyPath.
+    healthPath: /healthz
+    # The serving hostname this workload owns; one hostname, one workload.
+    host: sandbox.serve.jomcgi.dev
+    # Floor of published instances. 0 (the default) means scale-to-zero; kept
+    # at 1 here so the sample never cold-starts on the first request.
+    minInstances: 1
+    # Hard max published instances (must equal concurrency.cap above).
+    maxInstances: 2
+    # Bank an idle instance above minInstances after 5 minutes.
+    idleBankSeconds: 300
+    # Drain window between unpublishing an endpoint and banking/destroying it.
+    drainSeconds: 5
+    # Version-convergence bound: an instance rides its birth base until this
+    # expires, then it is destroyed and recreated on the current base at the
+    # next natural turnover.
+    maxLifetimeSeconds: 86400

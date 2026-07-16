@@ -239,6 +239,30 @@ defmodule Embervm.WorkloadWatcherTest do
     deep_merge(base, overrides)
   end
 
+  defp serving_cr(overrides \\ %{}) do
+    base = %{
+      "metadata" => %{"name" => "sandbox-serving", "namespace" => "embervm", "generation" => 1},
+      "spec" => %{
+        "class" => "serving",
+        "source" => %{"image" => %{"ref" => "sandbox", "port" => 1027}},
+        "resources" => %{"vcpus" => 1, "memMib" => 2048},
+        "concurrency" => %{"cap" => 2},
+        "serving" => %{
+          "port" => 8080,
+          "healthPath" => "/live",
+          "host" => "sandbox.serve.example.com",
+          "minInstances" => 1,
+          "maxInstances" => 2,
+          "idleBankSeconds" => 120,
+          "drainSeconds" => 10,
+          "maxLifetimeSeconds" => 21_600
+        }
+      }
+    }
+
+    deep_merge(base, overrides)
+  end
+
   test "session class: a valid session CR is cataloged with class and session config" do
     table = unique_table()
     agent = start_recorder()
@@ -331,6 +355,207 @@ defmodule Embervm.WorkloadWatcherTest do
     assert [%{"type" => "Ready", "status" => "False", "reason" => "InvalidConcurrency"}] = status_map["conditions"]
 
     assert Process.alive?(watcher)
+  end
+
+  test "serving class: a valid serving CR is cataloged with class and serving config" do
+    table = unique_table()
+    agent = start_recorder()
+    lister = fn -> {:ok, [serving_cr()]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-serving")
+    assert entry.class == "serving"
+    assert entry.cap == 2
+    assert entry.serving.port == 8080
+    assert entry.serving.health_path == "/live"
+    assert entry.serving.host == "sandbox.serve.example.com"
+    assert entry.serving.min_instances == 1
+    assert entry.serving.max_instances == 2
+    assert entry.serving.idle_bank_seconds == 120
+    assert entry.serving.drain_seconds == 10
+    assert entry.serving.max_lifetime_seconds == 21_600
+
+    # A valid CR: the watcher writes only observedGeneration (no conditions).
+    assert {_ns, "sandbox-serving", status_map} = ready_status(recorded_calls(agent), "sandbox-serving")
+    assert status_map["observedGeneration"] == 1
+    refute Map.has_key?(status_map, "conditions")
+  end
+
+  test "serving class: serving block defaults apply when fields are omitted" do
+    table = unique_table()
+    agent = start_recorder()
+    # Only the required fields (port, host); every other field falls back to
+    # its default. (deep_merge would keep the populated fields, so replace
+    # the block outright.)
+    cr = put_in(serving_cr(), ["spec", "serving"], %{"port" => 8080, "host" => "sandbox.serve.example.com"})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-serving")
+    assert entry.serving.health_path == "/healthz"
+    assert entry.serving.min_instances == 0
+    assert entry.serving.max_instances == 2
+    assert entry.serving.idle_bank_seconds == 300
+    assert entry.serving.drain_seconds == 5
+    assert entry.serving.max_lifetime_seconds == 86_400
+  end
+
+  test "serving class missing spec.serving is Ready=False/ServingSpecMissing, not cataloged" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = serving_cr()
+    cr = Map.update!(cr, "spec", &Map.delete(&1, "serving"))
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "sandbox-serving") == :error
+
+    assert {_ns, "sandbox-serving", status_map} = ready_status(recorded_calls(agent), "sandbox-serving")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "ServingSpecMissing"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "task class carrying a spec.serving block is Ready=False/ServingSpecUnexpected" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = valid_cr(%{"spec" => %{"serving" => %{"port" => 8080, "host" => "x.example.com"}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "semgrep") == :error
+
+    assert {_ns, "semgrep", status_map} = ready_status(recorded_calls(agent), "semgrep")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "ServingSpecUnexpected"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "session class carrying a spec.serving block is Ready=False/ServingSpecUnexpected" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = session_cr(%{"spec" => %{"serving" => %{"port" => 8080, "host" => "x.example.com"}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "sandbox-session") == :error
+
+    assert {_ns, "sandbox-session", status_map} = ready_status(recorded_calls(agent), "sandbox-session")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "ServingSpecUnexpected"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "serving class idleBankSeconds below the 30s minimum is rejected (CRD-schema-equivalent bound)" do
+    # The CRD schema itself enforces this minimum at admission; this test
+    # documents the watcher's own re-defaulting never silently accepts a
+    # sub-minimum value that somehow reached LIST/WATCH (e.g. an older CRD
+    # version), by asserting the watcher passes the value straight through
+    # rather than clamping it. If a future edit adds a watcher-side floor
+    # this test's assertion should change to reflect the rejection.
+    table = unique_table()
+    agent = start_recorder()
+    cr = put_in(serving_cr(), ["spec", "serving", "idleBankSeconds"], 5)
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    # v1alpha1 relies on the CRD schema's own `minimum: 30` to reject this at
+    # admission (the apiserver never lets it reach LIST/WATCH); the watcher
+    # itself does not re-validate the bound, mirroring how it does not
+    # re-validate other CRD-enforced minimums (e.g. concurrency.cap >= 1).
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-serving")
+    assert entry.serving.idle_bank_seconds == 5
+  end
+
+  test "serving class: concurrency.cap and serving.maxInstances disagreeing is Ready=False/ConcurrencyServingMismatch" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = serving_cr(%{"spec" => %{"concurrency" => %{"cap" => 5}, "serving" => %{"maxInstances" => 2}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "sandbox-serving") == :error
+
+    assert {_ns, "sandbox-serving", status_map} = ready_status(recorded_calls(agent), "sandbox-serving")
+
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "ConcurrencyServingMismatch"}] =
+             status_map["conditions"]
+
+    assert Process.alive?(watcher)
+  end
+
+  test "serving class: concurrency.cap and serving.maxInstances agreeing is valid" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = serving_cr(%{"spec" => %{"concurrency" => %{"cap" => 3}, "serving" => %{"maxInstances" => 3}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-serving")
+    assert entry.cap == 3
+    assert entry.serving.max_instances == 3
+  end
+
+  test "serving class: two workloads declaring the same host, the second is Ready=False/ServingHostConflict" do
+    table = unique_table()
+    agent = start_recorder()
+
+    first = serving_cr()
+    second = serving_cr(%{"metadata" => %{"name" => "sandbox-serving-2"}})
+    lister = fn -> {:ok, [first, second]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    # The first-listed workload wins the host and catalogs cleanly.
+    assert {:ok, _} = WorkloadCatalog.fetch(table, "sandbox-serving")
+
+    # The second is rejected: same host, already owned.
+    assert WorkloadCatalog.fetch(table, "sandbox-serving-2") == :error
+
+    assert {_ns, "sandbox-serving-2", status_map} = ready_status(recorded_calls(agent), "sandbox-serving-2")
+
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "ServingHostConflict"}] =
+             status_map["conditions"]
+
+    assert Process.alive?(watcher)
+  end
+
+  test "serving class: a resolved host conflict re-validates cleanly on the next reconcile" do
+    table = unique_table()
+    agent = start_recorder()
+
+    first = serving_cr()
+    second = serving_cr(%{"metadata" => %{"name" => "sandbox-serving-2"}})
+    lister_conflict = fn -> {:ok, [first, second]} end
+    watcher = start_watcher(lister_conflict, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+    assert WorkloadCatalog.fetch(table, "sandbox-serving-2") == :error
+
+    # The first workload is deleted (no longer returned by LIST); the second
+    # now owns the host uncontested and must catalog cleanly on the next
+    # reconcile, proving the collision check is live-catalog-derived, not
+    # some sticky watcher-local rejection.
+    second_only = fn -> {:ok, [second]} end
+    watcher2 = start_watcher(second_only, recording_status_writer(agent), table)
+    :ok = WorkloadWatcher.reconcile_now(watcher2)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-serving-2")
+    assert entry.serving.host == "sandbox.serve.example.com"
   end
 
   test "a malformed CR does not crash the watcher, and other valid CRs in the same list still catalog" do
