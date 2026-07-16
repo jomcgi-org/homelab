@@ -102,6 +102,74 @@ defmodule Embervm.RouterTest do
     def miss(_srv, _wl, _req, _principal), do: {:error, {:unknown_workload}}
   end
 
+  # Fakes for the R4 stateful GET route: the router resolves the stateful store from
+  # :stateful_store_mod and the catalog from :workload_catalog_mod/:workload_catalog_table,
+  # so a request test can drive GET /v1/stateful/:name without the live StatefulStore
+  # or WorkloadWatcher. wl-live has a live serving instance; wl-banked has only a banked
+  # instance (pair populated); wl-unknown is not a stateful workload (404).
+  defmodule FakeStatefulStore do
+    def list(_srv, "wl-live") do
+      [
+        %{
+          instance_id: "sf-live",
+          workload: "wl-live",
+          state: :serving,
+          healthy: true,
+          node_id: "node-4",
+          ip: "10.99.0.7",
+          port: 6000,
+          generation: 3,
+          snapshot_ref: nil,
+          snapshot_generation: nil,
+          created_at: 1,
+          last_active_at: 5,
+          updated_at: 6,
+          terminal_reason: nil
+        }
+      ]
+    end
+
+    def list(_srv, "wl-banked") do
+      [
+        %{
+          instance_id: "sf-banked",
+          workload: "wl-banked",
+          state: :banked,
+          healthy: false,
+          node_id: "node-4",
+          ip: nil,
+          port: nil,
+          generation: 2,
+          snapshot_ref: "stateful/wl-banked/s",
+          snapshot_generation: 2,
+          created_at: 1,
+          last_active_at: nil,
+          updated_at: 4,
+          terminal_reason: nil
+        }
+      ]
+    end
+
+    def list(_srv, _wl), do: []
+
+    def get_volume(_srv, "wl-live"), do: %{workload: "wl-live", generation: 3, allocated_bytes: 111}
+    def get_volume(_srv, "wl-banked"), do: %{workload: "wl-banked", generation: 2, allocated_bytes: 222}
+    def get_volume(_srv, _wl), do: nil
+
+    def pair_valid?(_srv, "wl-banked"), do: true
+    def pair_valid?(_srv, _wl), do: false
+
+    def published_endpoint(_srv, "wl-live"), do: %{ip: "10.99.0.7", port: 6000}
+    def published_endpoint(_srv, _wl), do: nil
+  end
+
+  defmodule FakeCatalog do
+    def fetch(_table, "wl-live"), do: {:ok, %{class: "stateful", stateful: %{listen_port: 9100}}}
+    def fetch(_table, "wl-banked"), do: {:ok, %{class: "stateful", stateful: %{listen_port: 9101}}}
+    def fetch(_table, "wl-serving"), do: {:ok, %{class: "serving", serving: %{host: "h"}}}
+    def fetch(_table, _name), do: :error
+  end
+
   setup do
     Application.put_env(:embervm, :authenticator, FakeAuth)
 
@@ -115,9 +183,16 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :session_store_mod)
       Application.delete_env(:embervm, :serving_manager_mod)
       Application.delete_env(:embervm, :test_guest_port)
+      Application.delete_env(:embervm, :stateful_store_mod)
+      Application.delete_env(:embervm, :workload_catalog_mod)
     end)
 
     :ok
+  end
+
+  defp with_stateful_fakes do
+    Application.put_env(:embervm, :stateful_store_mod, FakeStatefulStore)
+    Application.put_env(:embervm, :workload_catalog_mod, FakeCatalog)
   end
 
   defp with_serving_fake do
@@ -636,5 +711,64 @@ defmodule Embervm.RouterTest do
     with_serving_fake()
     # No x-ember-workload header: the catch-all 404s rather than treating it as a miss.
     assert req(:get, "/totally-unknown-path").status == 404
+  end
+
+  # -- GET /v1/stateful/:name (R4) -------------------------------------------
+
+  test "GET /v1/stateful/:name returns 200 with the live instance + published endpoint" do
+    with_stateful_fakes()
+
+    resp = req(:get, "/v1/stateful/wl-live", auth("good"))
+    assert resp.status == 200
+    body = json(resp.body)
+
+    assert body["workload"] == "wl-live"
+    assert body["state"] == "serving"
+    assert body["generation"] == 3
+    # No banked bundle: bundle_generation is null.
+    assert body["bundle_generation"] == nil
+    # A live serving instance's volume matches (fake pair_valid? false here since only
+    # wl-banked is paired), volume_bytes surfaced from the volume row.
+    assert body["volume_bytes"] == 111
+    assert body["published_endpoint"] == %{"ip" => "10.99.0.7", "port" => 6000}
+
+    inst = body["instance"]
+    assert inst["instance_id"] == "sf-live"
+    assert inst["state"] == "serving"
+    assert inst["healthy"] == true
+    assert inst["ip"] == "10.99.0.7"
+    assert inst["port"] == 6000
+  end
+
+  test "GET /v1/stateful/:name returns 200 for a banked-only workload with the pair populated" do
+    with_stateful_fakes()
+
+    resp = req(:get, "/v1/stateful/wl-banked", auth("good"))
+    assert resp.status == 200
+    body = json(resp.body)
+
+    assert body["workload"] == "wl-banked"
+    assert body["state"] == "banked"
+    # The banked bundle's stamped generation is the pair key.
+    assert body["bundle_generation"] == 2
+    assert body["pair_valid"] == true
+    assert body["volume_bytes"] == 222
+    # A banked instance holds no live endpoint.
+    assert body["published_endpoint"] == nil
+    assert body["instance"]["state"] == "banked"
+  end
+
+  test "GET /v1/stateful/:name is 404 for an unknown or non-stateful workload" do
+    with_stateful_fakes()
+
+    # Not in the catalog.
+    assert req(:get, "/v1/stateful/wl-unknown", auth("good")).status == 404
+    # A serving-class (not stateful) workload is a 404 on the stateful surface.
+    assert req(:get, "/v1/stateful/wl-serving", auth("good")).status == 404
+  end
+
+  test "GET /v1/stateful/:name needs management auth" do
+    with_stateful_fakes()
+    assert req(:get, "/v1/stateful/wl-live").status == 401
   end
 end
