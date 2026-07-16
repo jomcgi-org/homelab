@@ -1,0 +1,21 @@
+{{- if .Values.servingEnvoy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "embervm.serving.fullname" . }}
+  labels:
+    {{- include "embervm.servingEnvoy.labels" . | nindent 4 }}
+spec:
+  # The stable per-node serving address the edge Envoy Gateway routes to. v1 runs
+  # one serving node, so a ClusterIP fanning to the single DaemonSet pod suffices.
+  # Multi-node serving (a ClusterIP would fan to a random node's Envoy, which only
+  # knows its own node's VM taps) needs node-affinity routing at the edge; deferred
+  # with the multi-node serving work, same seam.
+  type: ClusterIP
+  selector:
+    {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.servingEnvoy.listenerPort }}
+      targetPort: http
+{{- end }}

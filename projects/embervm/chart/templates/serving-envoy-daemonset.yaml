@@ -1,0 +1,107 @@
+{{- if .Values.servingEnvoy.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "embervm.servingEnvoy.fullname" . }}
+  labels:
+    {{- include "embervm.servingEnvoy.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "embervm.servingEnvoy.labels" . | nindent 8 }}
+      annotations:
+        # Roll the DaemonSet pods when the bootstrap changes: the bootstrap is
+        # static (listener + ADS wiring), so a change must restart Envoy to take
+        # effect (dynamic config arrives over ADS, but the bootstrap does not).
+        checksum/bootstrap: {{ include (print $.Template.BasePath "/serving-envoy-configmap.yaml") . | sha256sum }}
+    spec:
+      # POD networking (NOT hostNetwork): the serving-VM tap IPs are node-local
+      # routable from pods via the PR-2 bridge, so an Envoy in the pod network can
+      # dial them directly. hostNetwork is the recorded fallback ONLY if the drill
+      # shows the CNI blocks pod->bridge traffic; it is NOT preemptively set.
+      {{- with .Values.servingEnvoy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.servingEnvoy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.servingEnvoy.priorityClassName }}
+      priorityClassName: {{ .Values.servingEnvoy.priorityClassName }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: envoy
+          image: "{{ .Values.servingEnvoy.image.repository }}:{{ .Values.servingEnvoy.image.tag }}"
+          imagePullPolicy: {{ .Values.servingEnvoy.image.pullPolicy }}
+          # node id = the k8s node name (downward API). --service-node overrides the
+          # bootstrap node.id so the xds sidecar keys this node's snapshot by name.
+          command:
+            - /usr/local/bin/envoy
+          args:
+            - --config-path
+            - /etc/envoy/envoy-bootstrap.yaml
+            - --service-node
+            - $(NODE_NAME)
+            - --service-cluster
+            - {{ include "embervm.servingEnvoy.fullname" . }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: http
+              containerPort: {{ .Values.servingEnvoy.listenerPort }}
+            # Stats port for the later Task 9 scrape. Envoy exposes Prometheus stats
+            # on the admin endpoint (loopback), so a stats-only sidecar or an admin
+            # bind is wired in Task 9; the port is declared here so the scrape target
+            # is stable. Named for discovery; no containerPort duplication with admin
+            # (admin is loopback-only and not a pod port).
+            - name: stats
+              containerPort: {{ .Values.servingEnvoy.statsPort }}
+          readinessProbe:
+            # Envoy's admin /ready reports listener + worker readiness. Admin is
+            # loopback-only, so the probe runs inside the pod against 127.0.0.1.
+            httpGet:
+              path: /ready
+              port: {{ .Values.servingEnvoy.adminPort }}
+              host: 127.0.0.1
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.servingEnvoy.adminPort }}
+              host: 127.0.0.1
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.servingEnvoy.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /etc/envoy
+              readOnly: true
+            # Envoy writes runtime scratch (e.g. the default runtime layer) under a
+            # writable dir; the rootfs is read-only, so /tmp is an emptyDir.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: {{ include "embervm.servingEnvoy.fullname" . }}-bootstrap
+        - name: tmp
+          emptyDir: {}
+{{- end }}
