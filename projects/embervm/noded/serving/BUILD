@@ -6,6 +6,7 @@ go_library(
         "alloc.go",
         "net.go",
         "probe.go",
+        "probe_tcp.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/serving",
     visibility = ["//visibility:public"],
