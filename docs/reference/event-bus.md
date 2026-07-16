@@ -6,9 +6,9 @@ conventions, and the producer/consumer contract. It is derived from three ADRs �
 read those for the _why_; read this for the _how_ when wiring a new producer or
 consumer.
 
-- [ADR 016 — NATS as the Canonical Event Stream](decisions/agents/016-nats-canonical-event-stream.md) — subject topology, ownership, what stays out of NATS
-- [ADR 017 — Domain Event Schema and Tombstone Semantics](decisions/agents/017-domain-event-schema.md) — envelope fields, tombstones, versioning, schema evolution
-- [ADR 015 — Temporal as the Orchestration Substrate](decisions/agents/015-temporal-orchestration-substrate.md) — how workflow dispatchers consume events
+- [ADR 016 — NATS as the Canonical Event Stream](../decisions/agents/016-nats-canonical-event-stream.md) — subject topology, ownership, what stays out of NATS
+- [ADR 017 — Domain Event Schema and Tombstone Semantics](../decisions/agents/017-domain-event-schema.md) — envelope fields, tombstones, versioning, schema evolution
+- [ADR 015 — Temporal as the Orchestration Substrate](../decisions/agents/015-temporal-orchestration-substrate.md) — how workflow dispatchers consume events
 
 ## Purpose & scope
 
@@ -162,7 +162,7 @@ implicit deletion:
 
 The cost is disk: tombstones aren't free. Logical deletion is immediate; **physical
 purge happens at the next Iceberg compaction** (monthly base-layer rewrite per
-[platform/004](decisions/platform/004-iceberg-lakehouse-hot-swap.md)). Urgent
+[platform/004](../decisions/platform/004-iceberg-lakehouse-hot-swap.md)). Urgent
 right-to-be-forgotten deletes can trigger ad-hoc compaction on demand. A tombstone
 event must not itself contain the data being forgotten — reference the `entity_id`
 plus a redacted reason; the original `created`/`updated` events are what get purged.
@@ -210,7 +210,7 @@ shift). Consumers check `schema_version` and dispatch to the matching decoder.
 translate a NATS event into a `start_workflow` call with a deterministic workflow
 ID. The producer stays decoupled from Temporal: it publishes an event, the
 dispatcher reacts. Workflow outputs publish _back_ to NATS, closing the loop for
-downstream consumers. See [ADR 015](decisions/agents/015-temporal-orchestration-substrate.md)
+downstream consumers. See [ADR 015](../decisions/agents/015-temporal-orchestration-substrate.md)
 for the dispatch/identity model and the cron-sweep that backstops missed events.
 
 ## Security
@@ -234,7 +234,7 @@ for the dispatch/identity model and the cron-sweep that backstops missed events.
 
 ## See also
 
-- [ADR 015 — Temporal as the Orchestration Substrate](decisions/agents/015-temporal-orchestration-substrate.md)
-- [ADR 016 — NATS as the Canonical Event Stream](decisions/agents/016-nats-canonical-event-stream.md)
-- [ADR 017 — Domain Event Schema and Tombstone Semantics](decisions/agents/017-domain-event-schema.md)
-- [platform/004 — Iceberg Lakehouse + Hot-Swap Quack Serving](decisions/platform/004-iceberg-lakehouse-hot-swap.md)
+- [ADR 015 — Temporal as the Orchestration Substrate](../decisions/agents/015-temporal-orchestration-substrate.md)
+- [ADR 016 — NATS as the Canonical Event Stream](../decisions/agents/016-nats-canonical-event-stream.md)
+- [ADR 017 — Domain Event Schema and Tombstone Semantics](../decisions/agents/017-domain-event-schema.md)
+- [platform/004 — Iceberg Lakehouse + Hot-Swap Quack Serving](../decisions/platform/004-iceberg-lakehouse-hot-swap.md)

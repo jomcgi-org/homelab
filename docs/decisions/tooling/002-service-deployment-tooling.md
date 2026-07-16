@@ -347,7 +347,7 @@ The status quo continues: each service added by hand, conventions erode over tim
 | [`tools/oci/py3_image.bzl`](../../../tools/oci/py3_image.bzl)         | Python image macro — template generates invocations of this             |
 | [`tools/oci/go_image.bzl`](../../../tools/oci/go_image.bzl)           | Go image macro — template generates invocations of this                 |
 | [`docs/contributing.md`](../../contributing.md)                       | Existing contribution guide (Phase 2 extends this)                      |
-| [`docs/services.md`](../../services.md)                               | Existing service architecture doc (Phase 2 adds "Adding a New Service") |
+| [`docs/reference/services.md`](../../reference/services.md)                               | Existing service architecture doc (Phase 2 adds "Adding a New Service") |
 | [`operators/best-practices.md`](../../../operators/best-practices.md) | Operator-specific patterns (inform Go operator variant of template)     |
 | [`charts/mcp-servers/`](../../../charts/mcp-servers/)                 | MCP meta-chart — reference for MCP server onboarding path               |
 | [ADR 001: OCI Tool Distribution](./001-oci-tool-distribution.md)      | Establishes `copier` as an available tool in the developer environment  |
