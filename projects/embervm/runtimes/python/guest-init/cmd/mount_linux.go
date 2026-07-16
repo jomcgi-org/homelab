@@ -23,3 +23,19 @@ func mountTmpfsTmp(logger *slog.Logger) {
 	}
 	logger.Info("mounted tmpfs on /tmp")
 }
+
+// mountProc mounts a procfs on /proc. A raw Firecracker boot hands PID 1 no
+// mounted /proc (there is no initramfs or init system to do it), so without
+// this /proc/cmdline is absent and the serving-port / handler-disk boot-arg
+// translation (setServingPortEnv / setHandlerDiskEnv) silently no-ops, leaving
+// a serving cold boot stuck on the vsock path with no handler. Task/session and
+// build boots never read the cmdline (they use vsock defaults + a /shim/hydrate
+// POST), which is why this was latent until serving needed it. Best-effort: an
+// already-mounted or failed /proc is logged, not fatal.
+func mountProc(logger *slog.Logger) {
+	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
+		logger.Warn("proc mount on /proc failed", "err", err)
+		return
+	}
+	logger.Info("mounted proc on /proc")
+}

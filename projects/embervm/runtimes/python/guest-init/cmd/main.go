@@ -76,6 +76,11 @@ func run(logger *slog.Logger) error {
 	// backs every microVM restored from the one warm-base snapshot.
 	mountTmpfsTmp(logger)
 
+	// Mount /proc so the serving cold-boot boot-arg readers below can read
+	// /proc/cmdline; a raw FC boot leaves /proc unmounted. Must precede
+	// setServingPortEnv / setHandlerDiskEnv, which no-op without it.
+	mountProc(logger)
+
 	// A raw Firecracker boot hands PID 1 no environment (the kernel ignores the
 	// OCI image config), so the frozen-contract defaults the apko image bakes
 	// (EMBER_HANDLER etc.) are not present. Set PATH plus the zip-lane defaults
