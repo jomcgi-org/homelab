@@ -148,6 +148,28 @@ type ServingHandlerArtifact struct {
 	SizeBytes int64
 }
 
+// StatefulBundleInfo is one discovered banked stateful bundle on disk (R4),
+// returned by the driver's startup rescan (ScanStatefulBundles) so the server
+// re-seeds its stateful-bundle inventory after a restart, mirroring how
+// ServingHandlerArtifact serves the serving-images rescan. workload is not
+// carried: the bundle dir name is the opaque snapshot_ref, not the workload, so
+// the server recovers a binding from its own prior state if any, else reports
+// it with an empty workload for the control plane to rebind by adoption.
+type StatefulBundleInfo struct {
+	// SnapshotRef is the opaque bundle identity (the bundle dir name).
+	SnapshotRef string
+	// Generation is the volume generation this bundle was banked at (read from
+	// the gen sidecar), the pair key a relight compares against the volume's
+	// CURRENT generation. Zero when the sidecar is missing or malformed, which
+	// is a deliberately unusable value (no real volume generation is ever 0
+	// after its first FRESH attach), so an unreadable stamp never falsely matches.
+	Generation uint64
+	// SizeBytes is the bundle's on-disk size (snapfile + memfile).
+	SizeBytes int64
+	// CreatedAtUnixMs is the bundle's on-disk modification time, for reporting.
+	CreatedAtUnixMs int64
+}
+
 // Substrate is the core the driver satisfies: acquire an isolated env, run work
 // in it, return/destroy it. Exec is unused by the FC-direct driver (work arrives
 // over vsock HTTP), but the interface keeps the driver honest about the seam.
