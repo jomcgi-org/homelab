@@ -948,6 +948,98 @@ func TestBuildBaseZipUnknownRuntime(t *testing.T) {
 	}
 }
 
+// TestBuildBaseZipServingWritesHandlerArtifact: a serving-class zip BuildBase MUST
+// additionally write the cold-boot handler artifact and report serving_image_ref
+// (D-R3.11.2), while STILL snapshotting the base (strictly additive; amendment 2, A3
+// deferred). A non-serving build must NOT write the artifact and reports no serving
+// image ref, proving the task lane is byte-unchanged.
+func TestBuildBaseZipServingWritesHandlerArtifact(t *testing.T) {
+	archive := []byte("PK\x03\x04 serving handler zip bytes")
+	ctx := context.Background()
+
+	newServer := func() (*Server, *fakeDriver, *fakeServingDriver, string) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/archive.zip", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(archive) })
+		ts := httptest.NewServer(mux)
+		t.Cleanup(ts.Close)
+		build := &fakeDriver{}
+		fsd := newFakeServingDriver(t.TempDir())
+		s := New(Options{
+			Config: config.Config{
+				Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+				BootReadyTimeout:    time.Second,
+				ArchiveFetchTimeout: 30 * time.Second,
+				ArchiveMaxBytes:     512 << 20,
+				Images:              map[string]config.Image{"runtime-python:1": {RootfsPath: "/runtime.ext4"}},
+			},
+			Driver:         &fakeDriver{},
+			ServingDriver:  fsd,
+			Transport:      &fakeTransport{},
+			NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
+			Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+		return s, build, fsd, ts.URL + "/archive.zip"
+	}
+
+	zipReq := func(url string, serving bool) *nodev1.BuildBaseRequest {
+		return &nodev1.BuildBaseRequest{
+			Trace:     &nodev1.Trace{Workload: "serving-og-image"},
+			ReadyPath: "/shim/ready",
+			Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+			Serving:   serving,
+			Source: &nodev1.BuildBaseRequest_Zip{Zip: &nodev1.ZipSource{
+				RuntimeImageRef: "runtime-python:1",
+				ArchiveUrl:      url,
+				ArchiveSha256:   sha256Hex(archive),
+			}},
+		}
+	}
+
+	t.Run("serving base writes artifact and reports serving_image_ref", func(t *testing.T) {
+		s, build, fsd, url := newServer()
+		resp, err := s.BuildBase(ctx, zipReq(url, true))
+		if err != nil {
+			t.Fatalf("BuildBase serving zip: %v", err)
+		}
+		// The base snapshot is STILL produced (additive; task lane unaffected).
+		if build.snapshots != 1 {
+			t.Errorf("snapshots = %d, want 1 (snapshot always produced)", build.snapshots)
+		}
+		// The handler artifact was written for the base key, with the exact archive bytes.
+		baseKey := resp.GetSnapshotRef()
+		if _, ok := fsd.ServingHandlerArtifactPath(baseKey); !ok {
+			t.Errorf("no handler artifact written for serving base %q", baseKey)
+		}
+		// The response and NodeStatus both report serving_image_ref == the base key.
+		if resp.GetServingImageRef() != baseKey {
+			t.Errorf("serving_image_ref = %q, want the base key %q", resp.GetServingImageRef(), baseKey)
+		}
+		var wc *nodev1.WorkloadCapacity
+		for _, c := range s.nodeStatus().GetWorkloads() {
+			if c.GetWorkload() == "serving-og-image" {
+				wc = c
+			}
+		}
+		if wc == nil || wc.GetServingImageRef() != baseKey {
+			t.Errorf("NodeStatus serving_image_ref = %+v, want %q", wc, baseKey)
+		}
+	})
+
+	t.Run("non-serving base writes no artifact", func(t *testing.T) {
+		s, _, fsd, url := newServer()
+		resp, err := s.BuildBase(ctx, zipReq(url, false))
+		if err != nil {
+			t.Fatalf("BuildBase task zip: %v", err)
+		}
+		if _, ok := fsd.ServingHandlerArtifactPath(resp.GetSnapshotRef()); ok {
+			t.Error("a non-serving base must not write a handler artifact")
+		}
+		if resp.GetServingImageRef() != "" {
+			t.Errorf("serving_image_ref = %q, want empty for a task-class base", resp.GetServingImageRef())
+		}
+	})
+}
+
 func TestParseMemHeadroomMib(t *testing.T) {
 	cases := []struct {
 		maxRaw, curRaw string

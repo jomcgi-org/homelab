@@ -502,6 +502,10 @@ defmodule Embervm.WorkloadWatcher do
       name: name,
       namespace: namespace,
       generation: generation,
+      # class lets the BaseBuilder mark a serving base's BuildBase so noded also
+      # produces the cold-boot handler artifact (D-R3.11.2). Task/session bases carry
+      # class but never set the serving flag.
+      class: entry.class,
       # Exactly one of image_ref / zip is set, mirroring the CR's oneOf source.
       image_ref: entry.image_ref,
       zip: entry.zip,

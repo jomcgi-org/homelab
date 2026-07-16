@@ -72,7 +72,11 @@ defmodule Embervm.ServingPlacement do
 
       fact ->
         wc = Map.get(fact.workloads, workload)
-        {:ok, fact.configured_id, Map.get(wc, :snapshot_ref)}
+        # The cold-boot ref is the node's serving_image_ref (the handler artifact a
+        # serving cold boot attaches), NOT snapshot_ref (the base memory snapshot the
+        # task lane restores). Passing snapshot_ref here was the "not provisioned"
+        # bug: noded looked a base-snapshot key up in the runtime-rootfs image table.
+        {:ok, fact.configured_id, Map.get(wc, :serving_image_ref)}
     end
   end
 
@@ -129,7 +133,11 @@ defmodule Embervm.ServingPlacement do
         _ -> false
       end
 
-    ref = Map.get(wc, :snapshot_ref)
+    # A serving cold boot needs the SERVING IMAGE (the handler artifact), not the base
+    # memory snapshot: gate eligibility on serving_image_ref, so a node that built the
+    # base snapshot but not (yet) the serving handler artifact is not picked for a cold
+    # serving start (D-R3.11.2). The base_state READY still guards the underlying build.
+    ref = Map.get(wc, :serving_image_ref)
     ready and is_binary(ref) and ref != ""
   end
 

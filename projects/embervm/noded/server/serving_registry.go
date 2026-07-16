@@ -47,7 +47,11 @@ type servingDriver interface {
 	// fresh-serving counterpart of the task Prime's restore, except it is a COLD boot
 	// (a resumed snapshot cannot gain a NIC, D-R3.4.2). rootfsPath/vcpus/memMib come
 	// from the serving workload's image identity, resolved by the server.
-	ClaimServing(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec) (substrate.Handle, error)
+	// handlerDiskPath/handlerZipBytes, when set, attach the per-workload zip handler
+	// artifact as a second read-only drive and tell the guest to import it before
+	// serving (D-R3.11.2, the zip lane). Empty/zero for an image-lane serving cold
+	// boot (whose handler is baked into the rootfs), so that path is unchanged.
+	ClaimServing(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error)
 	// SnapshotServing pauses a live serving VM and writes a self-contained serving
 	// bundle under serving/<ref> plus the pinned-IP sidecar; does not resume (the
 	// caller Releases). Mirrors SnapshotSession.
@@ -62,6 +66,90 @@ type servingDriver interface {
 	RemoveServingBundle(snapshotRef string) error
 	// ServingDir is the directory holding banked serving bundles, rescanned on start.
 	ServingDir() string
+	// WriteServingHandlerArtifact persists the verified zip bytes for a serving base
+	// as a cold-boot-readable handler artifact under the base bundle (bases/<baseKey>/
+	// handler.zip) plus a runtime-ref sidecar (bases/<baseKey>/runtime.ref) and returns
+	// its host path and exact byte length (D-R3.11.2). runtimeImageRef names the runtime
+	// image whose rootfs is drive 1, recorded so a startup rescan resolves it without the
+	// control plane. The driver owns the base-bundle disk layout, so noded goes through it
+	// rather than composing the path itself. Idempotent: a repeat write overwrites in place.
+	// The exact length is returned so noded reports it and the guest reads only the
+	// payload, not the block device's sector padding.
+	WriteServingHandlerArtifact(baseKey, runtimeImageRef string, zip []byte) (path string, sizeBytes int64, err error)
+	// ServingHandlerArtifactPath returns the host path of a base's handler artifact
+	// and whether it exists on disk. Used by the startup rescan to re-discover serving
+	// images and by startServingFresh to resolve the drive to attach.
+	ServingHandlerArtifactPath(baseKey string) (path string, ok bool)
+	// ScanServingHandlerArtifacts globs the base bundles for handler artifacts on
+	// startup and returns each base key that has one, so the daemon re-seeds its
+	// serving-images inventory after a restart (mirroring the banked-snapshot rescan).
+	ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifact
+}
+
+// ---- serving-images inventory (cold-boot handler artifacts) ----------------
+
+// servingImageEntry is one built cold-boot handler artifact for a serving base:
+// the handler-disk path a serving cold boot attaches as /dev/vdb, the runtime image
+// ref whose rootfs is drive 1, and the exact zip length conveyed to the guest so it
+// reads past no sector padding (D-R3.11.2). Keyed by the base key (== the serving
+// image ref the control plane places on).
+type servingImageEntry struct {
+	baseKey         string
+	workload        string
+	handlerPath     string
+	runtimeImageRef string
+	sizeBytes       int64
+}
+
+// servingImageRegistry is the daemon's inventory of built serving images (cold-boot
+// handler artifacts), keyed by base key. Populated by BuildBase for a serving base and
+// re-seeded from disk on startup, it is what startServingFresh resolves a serving image
+// ref against (NOT the static runtime-rootfs image table), and what NodeStatus reports
+// as WorkloadCapacity.serving_image_ref so serving placement can cold-boot it. Kept
+// DISTINCT from baseRegistry (the vsock-only base memory snapshot) so the two refs never
+// overload one field.
+type servingImageRegistry struct {
+	mu     sync.Mutex
+	images map[string]*servingImageEntry
+}
+
+func newServingImageRegistry() *servingImageRegistry {
+	return &servingImageRegistry{images: make(map[string]*servingImageEntry)}
+}
+
+// add records a built serving image (from a BuildBase or a startup rescan). Idempotent.
+func (r *servingImageRegistry) add(e servingImageEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.images[e.baseKey] = &servingImageEntry{
+		baseKey:         e.baseKey,
+		workload:        e.workload,
+		handlerPath:     e.handlerPath,
+		runtimeImageRef: e.runtimeImageRef,
+		sizeBytes:       e.sizeBytes,
+	}
+}
+
+// get returns a copy of the serving image entry for a base key.
+func (r *servingImageRegistry) get(baseKey string) (servingImageEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.images[baseKey]
+	if !ok {
+		return servingImageEntry{}, false
+	}
+	return *e, true
+}
+
+// snapshot returns a copy of every built serving image, for NodeStatus projection.
+func (r *servingImageRegistry) snapshot() []servingImageEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]servingImageEntry, 0, len(r.images))
+	for _, e := range r.images {
+		out = append(out, *e)
+	}
+	return out
 }
 
 // servingEntry is one LIVE serving microVM the daemon supervises. Like a session VM

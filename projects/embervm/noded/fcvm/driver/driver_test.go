@@ -347,22 +347,22 @@ func TestBootArgsForServingNIC(t *testing.T) {
 		HarnessInit:    "/init",
 	}, &fakeLauncher{}, nil)
 
-	// Nil NIC: task/session boot args, no ip= directive.
-	got := d.bootArgsFor(nil)
+	// Empty spec (nil NIC, no handler disk): task/session boot args, no ip= directive.
+	got := d.bootArgsFor(coldBootSpec{})
 	want := "console=ttyS0 init=/init"
 	if got != want {
-		t.Fatalf("bootArgsFor(nil) = %q, want %q", got, want)
+		t.Fatalf("bootArgsFor(empty) = %q, want %q", got, want)
 	}
 
 	// Serving NIC with no ServingPort (0): appends the ip= directive with a dotted
 	// netmask and NO ember.serving_port= token (the zero-guard: a serving VM whose
 	// port is unset stays on the vsock path).
-	nicArgs := d.bootArgsFor(&substrate.NICSpec{
+	nicArgs := d.bootArgsFor(coldBootSpec{nic: &substrate.NICSpec{
 		IP:        "172.31.0.2",
 		GatewayIP: "172.31.0.1",
 		PrefixLen: 24,
 		IfaceName: "eth0",
-	})
+	}})
 	wantSuffix := " ip=172.31.0.2::172.31.0.1:255.255.255.0::eth0:off"
 	if nicArgs != want+wantSuffix {
 		t.Fatalf("bootArgsFor(nic) = %q, want %q", nicArgs, want+wantSuffix)
@@ -374,16 +374,49 @@ func TestBootArgsForServingNIC(t *testing.T) {
 	// Serving NIC WITH a ServingPort (R3, D-R3.11.1): appends the
 	// ember.serving_port= token after ip=, so guest-init flips the shim to TCP on
 	// exactly that port (the same port the daemon health-probes and publishes).
-	servingArgs := d.bootArgsFor(&substrate.NICSpec{
+	servingArgs := d.bootArgsFor(coldBootSpec{nic: &substrate.NICSpec{
 		IP:          "172.31.0.2",
 		GatewayIP:   "172.31.0.1",
 		PrefixLen:   24,
 		IfaceName:   "eth0",
 		ServingPort: 8080,
-	})
+	}})
 	wantServing := want + wantSuffix + " ember.serving_port=8080"
 	if servingArgs != wantServing {
 		t.Fatalf("bootArgsFor(nic, ServingPort=8080) = %q, want %q", servingArgs, wantServing)
+	}
+
+	// Serving cold boot WITH a handler disk (R3, D-R3.11.2): appends
+	// ember.handler_disk=<dev> and the EXACT ember.handler_zip_bytes=<N> so the
+	// guest reads only the zip payload and not the block device's sector padding.
+	handlerArgs := d.bootArgsFor(coldBootSpec{
+		nic: &substrate.NICSpec{
+			IP:          "172.31.0.2",
+			GatewayIP:   "172.31.0.1",
+			PrefixLen:   24,
+			IfaceName:   "eth0",
+			ServingPort: 8080,
+		},
+		handlerDiskPath: "/disks/bases/wl__abc/handler.zip",
+		handlerZipBytes: 4096,
+	})
+	wantHandler := wantServing + " ember.handler_disk=/dev/vdb ember.handler_zip_bytes=4096"
+	if handlerArgs != wantHandler {
+		t.Fatalf("bootArgsFor(handler disk) = %q, want %q", handlerArgs, wantHandler)
+	}
+
+	// A handler disk with no NIC (defensive: never happens in practice, a serving
+	// boot always has a NIC) still emits the handler tokens and no ip= directive,
+	// so the two branches are independent.
+	handlerOnly := d.bootArgsFor(coldBootSpec{
+		handlerDiskPath: "/disks/bases/wl__abc/handler.zip",
+		handlerZipBytes: 10,
+	})
+	if strings.Contains(handlerOnly, "ip=") {
+		t.Fatalf("bootArgsFor(handler, no nic) = %q, want no ip= directive", handlerOnly)
+	}
+	if !strings.Contains(handlerOnly, "ember.handler_disk=/dev/vdb ember.handler_zip_bytes=10") {
+		t.Fatalf("bootArgsFor(handler, no nic) = %q, want handler tokens", handlerOnly)
 	}
 }
 
@@ -412,7 +445,7 @@ func TestClaimServingBootsWithNIC(t *testing.T) {
 		IP:          "172.31.0.2",
 		GatewayIP:   "172.31.0.1",
 		PrefixLen:   24,
-	})
+	}, "", 0)
 	if err != nil {
 		t.Fatalf("ClaimServing: %v", err)
 	}
@@ -426,8 +459,50 @@ func TestClaimServingBootsWithNIC(t *testing.T) {
 
 func TestClaimServingRequiresTap(t *testing.T) {
 	d := testDriver(t)
-	if _, err := d.ClaimServing(context.Background(), "/rootfs", "", 1, 128, substrate.NICSpec{}); err == nil {
+	if _, err := d.ClaimServing(context.Background(), "/rootfs", "", 1, 128, substrate.NICSpec{}, "", 0); err == nil {
 		t.Fatal("ClaimServing without a host tap device should error")
+	}
+}
+
+// TestClaimServingWithHandlerDiskBoots proves the D-R3.11.2 serving cold boot with a
+// second (handler) drive attaches it without error and lands a live VM. The fake FC
+// API accepts every PUT /drives, so a successful boot proves the second-drive step ran.
+func TestClaimServingWithHandlerDiskBoots(t *testing.T) {
+	d := testDriver(t)
+	h, err := d.ClaimServing(context.Background(), "/rootfs/serve", "/init", 1, 256,
+		substrate.NICSpec{HostDevName: "emtap0003", IP: "172.31.0.3", GatewayIP: "172.31.0.1", PrefixLen: 24, ServingPort: 8080},
+		"/disks/bases/wl__abc/handler.zip", 4096)
+	if err != nil {
+		t.Fatalf("ClaimServing with handler disk: %v", err)
+	}
+	if h.ID == "" || d.LiveCount() != 1 {
+		t.Fatalf("serving VM with handler disk not live: %+v live=%d", h, d.LiveCount())
+	}
+}
+
+// TestWriteAndScanServingHandlerArtifact round-trips the host-side handler artifact
+// write and the startup rescan: the write persists handler.zip + a runtime.ref
+// sidecar, and the rescan re-discovers the base key, path, runtime ref, and exact size.
+func TestWriteAndScanServingHandlerArtifact(t *testing.T) {
+	d := testDriver(t)
+	zip := []byte("PK\x03\x04 fake zip bytes")
+	path, n, err := d.WriteServingHandlerArtifact("wl__abc", "python312@sha256:deadbeef", zip)
+	if err != nil {
+		t.Fatalf("WriteServingHandlerArtifact: %v", err)
+	}
+	if n != int64(len(zip)) {
+		t.Fatalf("written bytes = %d want %d", n, len(zip))
+	}
+	if _, ok := d.ServingHandlerArtifactPath("wl__abc"); !ok {
+		t.Fatal("ServingHandlerArtifactPath should find the just-written artifact")
+	}
+	got := d.ScanServingHandlerArtifacts()
+	if len(got) != 1 {
+		t.Fatalf("rescan found %d artifacts want 1", len(got))
+	}
+	a := got[0]
+	if a.BaseKey != "wl__abc" || a.Path != path || a.RuntimeImageRef != "python312@sha256:deadbeef" || a.SizeBytes != int64(len(zip)) {
+		t.Fatalf("rescanned artifact mismatch: %+v", a)
 	}
 }
 
@@ -437,7 +512,7 @@ func TestClaimServingRequiresTap(t *testing.T) {
 func TestServingSnapshotRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	d := testDriver(t)
-	h, err := d.ClaimServing(ctx, "/rootfs/serve", "/init", 1, 256, substrate.NICSpec{HostDevName: "emtap0002", IP: "172.31.0.2", GatewayIP: "172.31.0.1", PrefixLen: 24})
+	h, err := d.ClaimServing(ctx, "/rootfs/serve", "/init", 1, 256, substrate.NICSpec{HostDevName: "emtap0002", IP: "172.31.0.2", GatewayIP: "172.31.0.1", PrefixLen: 24}, "", 0)
 	if err != nil {
 		t.Fatalf("ClaimServing: %v", err)
 	}

@@ -331,6 +331,26 @@ defmodule Embervm.BaseBuilderTest do
     assert_eventually(fn -> match?(%{"snapshotRef" => "zsnap1"}, latest(agent, "w")) end)
   end
 
+  test "a serving-class zip base sets serving: true so noded writes the handler artifact (D-R3.11.2)" do
+    test_pid = self()
+
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:req, req})
+      {:ok, resp("zsnap1", "sha256:zzz")}
+    end
+
+    builder = start_builder(build_fun: build_fun, runtime_images: @runtime_images)
+
+    # A serving-class zip workload marks the BuildBase serving; a task-class one does not.
+    :ok = BaseBuilder.reconcile(builder, zip_desc(%{name: "srv", class: "serving"}))
+    assert_receive {:req, serving_req}, 1_000
+    assert serving_req.serving == true
+
+    :ok = BaseBuilder.reconcile(builder, zip_desc(%{name: "tsk", class: "task"}))
+    assert_receive {:req, task_req}, 1_000
+    assert task_req.serving == false
+  end
+
   test "a new zip sha256 (same name) rebuilds the base: sha256 is in the change-detect signature" do
     agent = start_recorder()
 

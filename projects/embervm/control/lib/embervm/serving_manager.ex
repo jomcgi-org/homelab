@@ -414,7 +414,10 @@ defmodule Embervm.ServingManager do
   defp cold_request(entry, workload, base_ref) do
     %StartServingRequest{
       trace: %Trace{workload: workload},
-      source: {:fresh, %FreshSource{snapshot_ref: base_ref || ""}},
+      # base_ref is the node's serving_image_ref (the cold-boot handler artifact),
+      # NOT the base snapshot key: a fresh serving start cold-boots the handler
+      # artifact, it does not resume the base memory snapshot (D-R3.4.2/D-R3.11.2).
+      source: {:fresh, %FreshSource{serving_image_ref: base_ref || ""}},
       port: serving_cfg(entry).port,
       health_path: serving_cfg(entry).health_path
     }

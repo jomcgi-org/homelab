@@ -105,7 +105,7 @@ func (fakeServer) EvictSnapshot(_ context.Context, _ *nodev1.EvictSnapshotReques
 // relight) so the client can prove both oneof branches cross the wire, and
 // echoes the requested port back.
 func (fakeServer) StartServing(_ context.Context, req *nodev1.StartServingRequest) (*nodev1.StartServingResponse, error) {
-	ref := req.GetFresh().GetSnapshotRef()
+	ref := req.GetFresh().GetServingImageRef()
 	if ref == "" {
 		ref = req.GetRelight().GetSnapshotRef()
 	}

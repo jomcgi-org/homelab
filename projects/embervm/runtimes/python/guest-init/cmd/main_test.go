@@ -73,6 +73,45 @@ func TestSetServingPortEnv(t *testing.T) {
 	})
 }
 
+// TestSetHandlerDiskEnv drives the D-R3.11.2 seam: a /proc/cmdline carrying
+// ember.handler_disk= + ember.handler_zip_bytes= exports EMBER_HANDLER_ZIP and
+// EMBER_HANDLER_ZIP_BYTES for the shim; a cmdline without the disk token leaves both
+// unset so task/session/relight boots are unaffected.
+func TestSetHandlerDiskEnv(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	t.Run("tokens present export both envs", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cmdline")
+		if err := os.WriteFile(path, []byte("init=/init ember.serving_port=8080 ember.handler_disk=/dev/vdb ember.handler_zip_bytes=4096\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Unsetenv(handlerZipEnv)
+		os.Unsetenv(handlerZipBytesEnv)
+		withCmdlinePath(t, path)
+		setHandlerDiskEnv(logger)
+		if got := os.Getenv(handlerZipEnv); got != "/dev/vdb" {
+			t.Fatalf("%s = %q, want /dev/vdb", handlerZipEnv, got)
+		}
+		if got := os.Getenv(handlerZipBytesEnv); got != "4096" {
+			t.Fatalf("%s = %q, want 4096", handlerZipBytesEnv, got)
+		}
+	})
+
+	t.Run("disk token absent leaves envs unset", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cmdline")
+		if err := os.WriteFile(path, []byte("init=/init ember.serving_port=8080\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Unsetenv(handlerZipEnv)
+		os.Unsetenv(handlerZipBytesEnv)
+		withCmdlinePath(t, path)
+		setHandlerDiskEnv(logger)
+		if _, set := os.LookupEnv(handlerZipEnv); set {
+			t.Fatalf("%s set, want unset (non-zip-serving boot)", handlerZipEnv)
+		}
+	})
+}
+
 // withCmdlinePath points procCmdlinePath at a fixture for one subtest and restores
 // it after (the package global is the only injectable seam).
 func withCmdlinePath(t *testing.T, path string) {

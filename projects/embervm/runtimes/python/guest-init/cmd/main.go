@@ -1,5 +1,5 @@
 // Command ember-runtime-guest-init is the PID 1 of the R1 zip-lane
-// runtime-python microVM (ADR embervm/002). A raw Firecracker boot ignores the
+// runtime-python microVM (ADR embervm/001). A raw Firecracker boot ignores the
 // OCI image config entirely and boots init=<HarnessInit> (see the noded
 // driver's bootArgs), so the apko entrypoint that runs the python bootstrap
 // shim is never honoured on a Firecracker boot. This init is that missing PID
@@ -40,6 +40,27 @@ const servingPortCmdlineKey = "ember.serving_port"
 // servingPortEnv is the env var the python shim reads (SERVING_PORT_ENV in shim.py).
 const servingPortEnv = "EMBER_SERVING_PORT"
 
+// handlerDiskCmdlineKey / handlerZipBytesCmdlineKey are the boot-arg tokens noded's
+// driver.bootArgsFor appends ONLY for a zip-lane SERVING cold boot with a handler
+// artifact drive (D-R3.11.2): `ember.handler_disk=<dev>` names the block device the
+// handler zip is on (drive 2, /dev/vdb), and `ember.handler_zip_bytes=<N>` is the
+// EXACT zip length. The shim reads EMBER_HANDLER_ZIP / EMBER_HANDLER_ZIP_BYTES (set
+// from these below) to import the handler off the device BEFORE serving, reading only
+// N bytes so it ignores the block device's sector padding (the EOCD-padding defence).
+// A task/session boot, a serving relight, or an image-lane serving boot carries no
+// such token, so these env vars stay unset and the shim's behavior is unchanged.
+const (
+	handlerDiskCmdlineKey     = "ember.handler_disk"
+	handlerZipBytesCmdlineKey = "ember.handler_zip_bytes"
+)
+
+// handlerZipEnv / handlerZipBytesEnv are the env vars the python shim reads
+// (HANDLER_ZIP_ENV / HANDLER_ZIP_BYTES_ENV in shim.py).
+const (
+	handlerZipEnv      = "EMBER_HANDLER_ZIP"
+	handlerZipBytesEnv = "EMBER_HANDLER_ZIP_BYTES"
+)
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -68,10 +89,45 @@ func run(logger *slog.Logger) error {
 	// task/session boot) leaves the env unset and the shim on its vsock path.
 	setServingPortEnv(logger)
 
+	// Zip-lane serving cold boot (R3, D-R3.11.2): translate the
+	// `ember.handler_disk=` / `ember.handler_zip_bytes=` kernel boot-args into
+	// EMBER_HANDLER_ZIP / EMBER_HANDLER_ZIP_BYTES so the shim imports the handler
+	// off the second drive before serving. Absent (task/session boots, relights,
+	// image-lane serving) leaves the env unset and the shim's behavior unchanged.
+	setHandlerDiskEnv(logger)
+
 	// exec (not fork+exec): the python shim replaces this process as PID 1, so
 	// there is no supervisor layer to add latency or to reap. execShim only
 	// returns on failure.
 	return execShim(logger)
+}
+
+// setHandlerDiskEnv reads /proc/cmdline for the `ember.handler_disk=<dev>` and
+// `ember.handler_zip_bytes=<N>` tokens and, when the disk token is present, exports
+// EMBER_HANDLER_ZIP (the block device) and EMBER_HANDLER_ZIP_BYTES (the exact zip
+// length) for the shim. A missing /proc/cmdline or an absent disk token is a no-op,
+// so task/session/relight boots are unaffected. Values pass through verbatim; the
+// shim validates them and, on a malformed byte count, fails the serving boot loudly
+// (a serving guest that could not import its handler must not report ready).
+func setHandlerDiskEnv(logger *slog.Logger) {
+	raw, err := os.ReadFile(procCmdlinePath)
+	if err != nil {
+		return
+	}
+	dev := valueFromCmdline(string(raw), handlerDiskCmdlineKey)
+	if dev == "" {
+		return
+	}
+	if err := os.Setenv(handlerZipEnv, dev); err != nil {
+		logger.Warn("could not set handler zip device env", "err", err)
+		return
+	}
+	if n := valueFromCmdline(string(raw), handlerZipBytesCmdlineKey); n != "" {
+		if err := os.Setenv(handlerZipBytesEnv, n); err != nil {
+			logger.Warn("could not set handler zip bytes env", "err", err)
+		}
+	}
+	logger.Info("zip-lane serving cold boot: handler disk", "device", dev)
 }
 
 // setServingPortEnv reads /proc/cmdline for the `ember.serving_port=<port>` token
@@ -101,10 +157,18 @@ func setServingPortEnv(logger *slog.Logger) {
 // "" when the token is absent or has an empty value. The last occurrence wins,
 // matching how the kernel treats duplicated cmdline keys.
 func servingPortFromCmdline(cmdline string) string {
+	return valueFromCmdline(cmdline, servingPortCmdlineKey)
+}
+
+// valueFromCmdline extracts the value of a `key=value` token from a kernel command
+// line (space-separated `key` / `key=value` tokens). Returns "" when the token is
+// absent or has an empty value. The last occurrence wins, matching how the kernel
+// treats duplicated cmdline keys.
+func valueFromCmdline(cmdline, key string) string {
 	value := ""
 	for _, tok := range strings.Fields(cmdline) {
-		key, val, ok := strings.Cut(tok, "=")
-		if ok && key == servingPortCmdlineKey && val != "" {
+		k, val, ok := strings.Cut(tok, "=")
+		if ok && k == key && val != "" {
 			value = val
 		}
 	}

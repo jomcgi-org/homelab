@@ -161,12 +161,13 @@ type Server struct {
 	// over the pod network. Overridable in tests (a fake archive server).
 	httpClient *http.Client
 
-	vms         *vmRegistry
-	bases       *baseRegistry
-	sessionVMs  *sessionRegistry
-	sessionSnap *sessionSnapshotRegistry
-	servingVMs  *servingRegistry
-	servingSnap *servingSnapshotRegistry
+	vms          *vmRegistry
+	bases        *baseRegistry
+	sessionVMs   *sessionRegistry
+	sessionSnap  *sessionSnapshotRegistry
+	servingVMs   *servingRegistry
+	servingSnap  *servingSnapshotRegistry
+	servingImage *servingImageRegistry
 
 	// servingNet owns the host serving network (bridge, taps, nftables, IP
 	// allocation). nil disables the serving verbs (task/session-only tests and any
@@ -230,6 +231,7 @@ func New(opts Options) *Server {
 		sessionSnap:    newSessionSnapshotRegistry(),
 		servingVMs:     newServingRegistry(),
 		servingSnap:    newServingSnapshotRegistry(),
+		servingImage:   newServingImageRegistry(),
 		servingNet:     opts.ServingNet,
 		servingDriver:  opts.ServingDriver,
 		subs:           make(map[chan struct{}]struct{}),
@@ -238,6 +240,23 @@ func New(opts Options) *Server {
 	probeThreshold := opts.ServingUnhealthyThreshold
 	s.newProber = func() *serving.Prober { return serving.NewProber(probeInterval, probeThreshold) }
 	s.memHeadroom = readMemHeadroomMib
+	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
+	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
+	// rescan). Only when serving is configured; task/session-only builds skip it.
+	if opts.ServingDriver != nil {
+		for _, a := range opts.ServingDriver.ScanServingHandlerArtifacts() {
+			s.servingImage.add(servingImageEntry{
+				baseKey: a.BaseKey,
+				// The disk rescan has no control-plane binding, so recover the workload
+				// from the base-key prefix (same as ReconcileBasesFromDisk) so NodeStatus
+				// keys serving_image_ref by workload immediately, not only after a rebuild.
+				workload:        workloadFromBaseKey(a.BaseKey),
+				handlerPath:     a.Path,
+				runtimeImageRef: a.RuntimeImageRef,
+				sizeBytes:       a.SizeBytes,
+			})
+		}
+	}
 	// The fetch timeout is the per-attempt bound; a per-request context (below)
 	// enforces the same budget so a slow filer cannot pin a build.
 	s.httpClient = &http.Client{Timeout: opts.Config.ArchiveFetchTimeout}
@@ -389,13 +408,44 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: build base %q: %v", baseKey, err)
 	}
 	s.bases.readyBuild(baseKey, workload, imageDigest, readyPath, sizeBytes)
+
+	// Serving base (R3, D-R3.11.2): additionally persist a cold-boot-readable handler
+	// artifact from the SAME verified archive bytes noded already holds, so a serving
+	// cold boot (which cannot resume the vsock-only memory snapshot to get the handler)
+	// can attach it as a read-only drive and import the handler off disk. This is
+	// strictly ADDITIVE: the base memory snapshot above is still produced (the task
+	// lane needs it if the workload is also task-class), and a non-serving build never
+	// enters this branch. Only the zip lane carries an archive; an image-lane serving
+	// base has no handler zip and is left for a later rung.
+	servingImageRef := ""
+	if req.GetServing() && archive != nil && s.servingDriver != nil {
+		path, artifactBytes, werr := s.servingDriver.WriteServingHandlerArtifact(baseKey, imageDigest, archive)
+		if werr != nil {
+			// A handler-artifact write failure fails the build: a serving base that
+			// reports READY without a usable cold-boot artifact would place and then
+			// FAILED_PRECONDITION at StartServing, which is worse than failing here.
+			s.bases.failBuild(baseKey, werr.Error())
+			s.signalChange()
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: write serving handler artifact for %q: %v", baseKey, werr)
+		}
+		s.servingImage.add(servingImageEntry{
+			baseKey:         baseKey,
+			workload:        workload,
+			handlerPath:     path,
+			runtimeImageRef: imageDigest, // the zip lane's imageDigest IS the runtime ref
+			sizeBytes:       artifactBytes,
+		})
+		servingImageRef = baseKey
+	}
+
 	s.signalChange()
 	return &nodev1.BuildBaseResponse{
-		SnapshotRef:   baseKey,
-		ImageDigest:   imageDigest,
-		BaseSizeBytes: uint64(sizeBytes),
-		Arch:          s.cfg.Arch,
-		AlreadyBuilt:  false,
+		SnapshotRef:     baseKey,
+		ImageDigest:     imageDigest,
+		BaseSizeBytes:   uint64(sizeBytes),
+		Arch:            s.cfg.Arch,
+		AlreadyBuilt:    false,
+		ServingImageRef: servingImageRef,
 	}, nil
 }
 
@@ -1214,6 +1264,14 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 		c := get(b.workload)
 		c.SnapshotRef = b.snapshotRef
 		c.BaseState = b.state
+	}
+	// Serving images (cold-boot handler artifacts) are reported in a DISTINCT field
+	// from the base memory snapshot (D-R3.11.2): serving placement cold-boots this ref,
+	// never snapshot_ref. A workload may have both (a base snapshot for the task lane
+	// AND a serving image for the serving lane); they are independent facts.
+	for _, si := range s.servingImage.snapshot() {
+		c := get(si.workload)
+		c.ServingImageRef = si.baseKey
 	}
 	for wl, ids := range primed {
 		c := get(wl)

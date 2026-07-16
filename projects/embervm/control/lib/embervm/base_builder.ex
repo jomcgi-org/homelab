@@ -139,6 +139,7 @@ defmodule Embervm.BaseBuilder do
           required(:name) => String.t(),
           required(:namespace) => String.t(),
           required(:generation) => integer() | nil,
+          optional(:class) => String.t() | nil,
           required(:image_ref) => String.t() | nil,
           optional(:zip) => %{
             required(:runtime) => String.t(),
@@ -417,6 +418,9 @@ defmodule Embervm.BaseBuilder do
       namespace: desc.namespace,
       generation: desc.generation,
       node_id: node_id,
+      # class drives whether BuildBase marks the base serving (so noded builds the
+      # cold-boot handler artifact, D-R3.11.2). Carried across spec edits below.
+      class: Map.get(desc, :class),
       image_ref: desc.image_ref,
       zip: Map.get(desc, :zip),
       guest_port: desc.guest_port,
@@ -448,6 +452,7 @@ defmodule Embervm.BaseBuilder do
       | namespace: desc.namespace,
         generation: desc.generation,
         node_id: node_id,
+        class: Map.get(desc, :class),
         image_ref: desc.image_ref,
         zip: Map.get(desc, :zip),
         guest_port: desc.guest_port,
@@ -609,6 +614,13 @@ defmodule Embervm.BaseBuilder do
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
       init_env: w.init_env,
+      # serving marks a serving-class zip base so noded ALSO writes the cold-boot
+      # handler artifact (D-R3.11.2): a serving VM cold-boots with a NIC and cannot
+      # resume the vsock-only base memory snapshot to get the handler, so it imports
+      # it off the artifact drive. Task/session zip bases leave this false and their
+      # build path is byte-unchanged. Only the zip lane carries a handler to
+      # materialize; the image lane omits the flag entirely.
+      serving: Map.get(w, :class) == "serving",
       source:
         {:zip,
          %ZipSource{
