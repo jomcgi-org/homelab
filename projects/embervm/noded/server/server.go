@@ -1206,7 +1206,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		NodeId:                s.cfg.Node,
 		Workloads:             caps,
 		MemHeadroomMib:        s.memHeadroom(),
-		CpuHeadroomMillicores: 0, // TODO(task11): report cgroup cpu headroom
+		CpuHeadroomMillicores: 0,
 		LiveVms:               uint32(live),
 		MaxLiveVms:            uint32(maxLive),
 		Draining:              s.isDraining(),
