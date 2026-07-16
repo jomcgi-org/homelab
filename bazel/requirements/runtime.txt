@@ -1797,9 +1797,9 @@ markupsafe==3.0.3 \
     # via
     #   jinja2
     #   mako
-mcp==1.26.0 \
-    --hash=sha256:904a21c33c25aa98ddbeb47273033c435e595bbacfdb177f4bd87f6dceebe1ca \
-    --hash=sha256:db6e2ef491eecc1a0d93711a76f28dec2e05999f93afd48795da1c1137142c66
+mcp==1.27.2 \
+    --hash=sha256:8e02db104096d1c25b28e64bde29a5c32b31bc241710213e12fd4d84985bdfef \
+    --hash=sha256:d6ff5160c6ca65d93013626efb3fc249de683c30b2d8570755ceddd490344de5
     # via
     #   --override bazel/requirements/overrides.txt
     #   fastmcp
