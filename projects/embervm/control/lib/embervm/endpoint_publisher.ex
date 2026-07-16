@@ -77,7 +77,7 @@ defmodule Embervm.EndpointPublisher do
   # must be required even though it is called fully-qualified via the alias.
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{NodeCapacity, ServingStore, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, ServingStore, StatefulStore, WorkloadCatalog}
 
   # Debounce window: coalesce a burst of fact changes into one PUT.
   @default_debounce_ms 50
@@ -95,6 +95,17 @@ defmodule Embervm.EndpointPublisher do
   # The header injected on every serving route so the woken VM / activator resolves
   # which workload a request targets (standing decision 3).
   @workload_header "x-ember-workload"
+
+  # The cluster name for a STATEFUL workload's single L4 endpoint (R4). The
+  # `state|` prefix namespaces stateful clusters from serving (`serve|`) ones so a
+  # workload named the same in both classes never collides on a cluster name; it is
+  # an opaque Envoy cluster name, never parsed.
+  @stateful_cluster_prefix "state|"
+  # The listener name prefix for a stateful workload's L4 TCP listener. The name is
+  # `state-<listen_port>` (the bind port disambiguates, and the listen ports are
+  # unique across stateful workloads by the WorkloadWatcher's validation), so two
+  # stateful workloads never collide on a listener name either.
+  @stateful_listener_prefix "state-"
 
   # -- Client API ------------------------------------------------------------
 
@@ -139,14 +150,35 @@ defmodule Embervm.EndpointPublisher do
   def desired_for_node(ctx, version) do
     workloads = serving_catalog_workloads(ctx.catalog_table)
 
-    clusters = Enum.map(workloads, &cluster_for(ctx, &1))
+    serving_clusters = Enum.map(workloads, &cluster_for(ctx, &1))
     routes = workloads |> Enum.map(&route_for(ctx, &1)) |> Enum.reject(&is_nil/1)
 
-    %{
+    # Stateful (L4) workloads (R4): for each stateful-class workload, a listener +
+    # a cluster whose single endpoint is the live instance OR the activator TCP
+    # fallback. A workload with NEITHER a live instance NOR a configured activator
+    # emits nothing (see stateful_render/1), so a cold, un-wakeable stateful
+    # workload contributes no empty-endpoints cluster the sidecar's validate rejects.
+    {stateful_clusters, listeners} = stateful_render(ctx)
+
+    base = %{
       version: version,
-      clusters: clusters,
+      # Serving clusters first, then stateful ones: the serving-only slice
+      # (stateful_clusters == []) is byte-identical to the pre-R4 document.
+      clusters: serving_clusters ++ stateful_clusters,
       routes: routes
     }
+
+    # Only add the `listeners` key when there is at least one L4 listener to emit.
+    # A serving-only node (no stateful workloads, or none wakeable) therefore emits
+    # the EXACT map it emitted before R4, no `listeners` key at all. (Jason ignores
+    # Go's omitempty, so emitting `listeners: []` would change the wire bytes; the
+    # Go struct's omitempty means the absent key round-trips to a nil slice, which
+    # is what the serving-only path needs.)
+    if listeners == [] do
+      base
+    else
+      Map.put(base, :listeners, listeners)
+    end
   end
 
   # -- GenServer callbacks ---------------------------------------------------
@@ -155,6 +187,10 @@ defmodule Embervm.EndpointPublisher do
   def init(opts) do
     state = %{
       store: Keyword.get(opts, :store, ServingStore),
+      # The stateful (L4) hot-set store, read purely for stateful workloads'
+      # published_endpoint/1 (the single live endpoint or nil). Injected in tests;
+      # production supervises the singleton Embervm.StatefulStore.
+      stateful_store: Keyword.get(opts, :stateful_store, StatefulStore),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       # The PUT seam: (node_id, desired_map) -> :ok | {:error, reason}. Production
@@ -165,6 +201,13 @@ defmodule Embervm.EndpointPublisher do
       # nil renders an empty cluster (Envoy 503s until an instance publishes), which
       # is correct before the activator (Task 8) is wired.
       activator_endpoint: Keyword.get(opts, :activator_endpoint, nil),
+      # The STATEFUL activator's L4 (raw TCP) endpoint, dialed by the node Envoy's
+      # stateful listener when a workload has no live instance (the wake-on-connect
+      # fallback). %{ip, port} or nil. nil means a cold stateful workload emits NO
+      # listener/cluster at all (it cannot be woken yet), so the sidecar never sees
+      # an empty-endpoints cluster; the real fallback appears when a later task wires
+      # the activator. Distinct from activator_endpoint (the L7 serving fallback).
+      activator_tcp_endpoint: Keyword.get(opts, :activator_tcp_endpoint, nil),
       connect_timeout_ms: Keyword.get(opts, :connect_timeout_ms, 1_000),
       debounce_ms: Keyword.get(opts, :debounce_ms, @default_debounce_ms),
       repush_ms: Keyword.get(opts, :repush_ms, @default_repush_ms),
@@ -336,8 +379,10 @@ defmodule Embervm.EndpointPublisher do
   defp render_ctx(state) do
     %{
       store: state.store,
+      stateful_store: state.stateful_store,
       catalog_table: state.catalog_table,
       activator_endpoint: state.activator_endpoint,
+      activator_tcp_endpoint: state.activator_tcp_endpoint,
       connect_timeout_ms: state.connect_timeout_ms
     }
   end
@@ -452,6 +497,88 @@ defmodule Embervm.EndpointPublisher do
       _ -> nil
     end
   end
+
+  # -- stateful (L4) projection (R4) -----------------------------------------
+
+  # Render the L4 listeners + clusters for every stateful-class catalog workload.
+  # Returns {clusters, listeners}. For each stateful workload the endpoint is the
+  # single live instance (StatefulStore.published_endpoint/1) OR the activator TCP
+  # fallback; a workload with NEITHER (cold AND no activator configured) emits
+  # nothing at all, so the sidecar never receives an empty-endpoints cluster (its
+  # validate() rejects a cluster whose endpoints are all invalid, and a listener
+  # must reference a defined cluster). Both lists are catalog-ordered (the workloads
+  # are sorted), so the render is deterministic across rebuilds.
+  defp stateful_render(ctx) do
+    stateful_catalog_entries(ctx.catalog_table)
+    |> Enum.reduce({[], []}, fn {workload, cfg}, {clusters, listeners} ->
+      case stateful_endpoint(ctx, workload) do
+        nil ->
+          # Cold workload with no activator wired: it cannot be woken yet, so emit no
+          # listener/cluster. Logged so an operator can see WHY a declared stateful
+          # workload is absent from the fan-out (it appears once the activator lands).
+          Logger.debug(
+            "embervm endpoint publisher: stateful workload #{workload} has no live instance " <>
+              "and no activator TCP endpoint configured; emitting no listener/cluster (cannot wake yet)"
+          )
+
+          {clusters, listeners}
+
+        endpoint ->
+          cluster = %{
+            name: @stateful_cluster_prefix <> workload,
+            endpoints: [%{ip: endpoint.ip, port: endpoint.port}],
+            connect_timeout_ms: ctx.connect_timeout_ms
+          }
+
+          listen_port = cfg.listen_port
+
+          listener = %{
+            name: @stateful_listener_prefix <> Integer.to_string(listen_port),
+            port: listen_port,
+            cluster: @stateful_cluster_prefix <> workload
+          }
+
+          {clusters ++ [cluster], listeners ++ [listener]}
+      end
+    end)
+  end
+
+  # Every stateful-class workload in the catalog paired with its stateful config
+  # (for the listen_port), catalog-ordered by name so the render is deterministic.
+  # A stateful entry with no listenPort is skipped (it cannot form a listener); the
+  # WorkloadWatcher rejects such a spec, so this is defence-in-depth, not a live path.
+  defp stateful_catalog_entries(catalog_table) do
+    WorkloadCatalog.all_names(catalog_table)
+    |> Enum.sort()
+    |> Enum.flat_map(fn name ->
+      case WorkloadCatalog.fetch(catalog_table, name) do
+        {:ok, %{class: "stateful", stateful: %{listen_port: lp} = cfg}} when is_integer(lp) ->
+          [{name, cfg}]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  # The endpoint the stateful workload's L4 cluster should carry: the single live
+  # instance if one is serving-and-healthy, else the activator TCP fallback, else
+  # nil (cold and no activator => the workload is skipped entirely upstream).
+  defp stateful_endpoint(ctx, workload) do
+    case StatefulStore.published_endpoint(ctx.stateful_store, workload) do
+      %{ip: ip, port: port} when is_binary(ip) and ip != "" and is_integer(port) ->
+        %{ip: ip, port: port}
+
+      _ ->
+        activator_tcp_endpoint(ctx)
+    end
+  end
+
+  defp activator_tcp_endpoint(%{activator_tcp_endpoint: %{ip: ip, port: port}})
+       when is_binary(ip) and ip != "" and is_integer(port),
+       do: %{ip: ip, port: port}
+
+  defp activator_tcp_endpoint(_ctx), do: nil
 
   # -- version ---------------------------------------------------------------
 

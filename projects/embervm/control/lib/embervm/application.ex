@@ -150,6 +150,14 @@ defmodule Embervm.Application do
       # it pushes nothing (a clean no-op). The activator endpoint (Task 8) and the
       # xds http port are wired from the chart.
       {Embervm.ServingStore, []},
+      # Stateful lifecycle (R4). The StatefulStore (ETS hot set over the durable
+      # `stateful_instances` + `volumes` projections, rebuilt on boot) is the L4
+      # singleton-sandbox counterpart of the ServingStore. Placed BEFORE the
+      # EndpointPublisher, which reads its `published_endpoint/1` for every stateful
+      # workload's L4 cluster, so under :rest_for_one a StatefulStore restart bounces
+      # the publisher (which re-derives the fan-out from the rebuilt projection). Like
+      # ServingStore it depends only on the op-log (started far earlier).
+      {Embervm.StatefulStore, []},
       {Embervm.EndpointPublisher, endpoint_publisher_opts()},
       # The activator (R3, Task 8): the serving miss brain. It is the fallback
       # endpoint of an empty serve|<workload> cluster (a request the node Envoy
@@ -383,7 +391,10 @@ defmodule Embervm.Application do
   # (see EndpointPublisher.default_put), matching the chart's sidecar wiring, so it
   # is not passed here.
   defp endpoint_publisher_opts do
-    [activator_endpoint: activator_endpoint()] ++ repush_opt()
+    [
+      activator_endpoint: activator_endpoint(),
+      activator_tcp_endpoint: activator_tcp_endpoint()
+    ] ++ repush_opt()
   end
 
   # The activator endpoint the node Envoy routes to when a serving workload has no
@@ -392,6 +403,25 @@ defmodule Embervm.Application do
   defp activator_endpoint do
     ip = trimmed_env("EMBERVM_SERVING_ACTIVATOR_IP")
     port = trimmed_env("EMBERVM_SERVING_ACTIVATOR_PORT")
+
+    if ip != "" and port != "" do
+      %{ip: ip, port: String.to_integer(port)}
+    else
+      nil
+    end
+  end
+
+  # The STATEFUL activator's L4 (raw TCP) endpoint the node Envoy's stateful
+  # listener falls back to when a stateful workload has no live instance (the
+  # wake-on-connect fallback), from EMBERVM_STATEFUL_ACTIVATOR_IP +
+  # EMBERVM_STATEFUL_ACTIVATOR_TCP_PORT (a later task wires the chart values). Unset
+  # (either empty) -> nil, which makes a cold stateful workload emit NO listener/
+  # cluster at all (it cannot be woken yet), so the sidecar never sees an
+  # empty-endpoints cluster. Distinct from activator_endpoint (the L7 serving
+  # fallback over HTTP).
+  defp activator_tcp_endpoint do
+    ip = trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_IP")
+    port = trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_TCP_PORT")
 
     if ip != "" and port != "" do
       %{ip: ip, port: String.to_integer(port)}
