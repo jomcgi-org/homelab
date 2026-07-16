@@ -31,6 +31,25 @@ Two tiers run side by side in the same process:
   chat/Discord agent, goosecracker agent orchestration, task management)
   reachable only from inside the cluster's ingress.
 
+The tier boundary is enforced at three layers (a separate binary artifact
+with no private code, the restricted `public_reader` database role, and a
+read replica); see
+[ADR security/004](../../docs/decisions/security/004-public-read-only-service-isolation.md).
+The hazard model for this boundary is [STPA.md](STPA.md).
+
+## Trust and safety
+
+Discord engagement runs behind a per-(guild, user) trust ledger. Three
+detection lanes of increasing cost feed one score: regex heuristics on every
+message (jailbreak and exfiltration patterns, mention bursts, resource
+exhaustion), an LLM intent classifier on bot-addressed or flagged messages,
+and a shadow random forest that retrains out of band. Scores start at 100;
+below 40 the user is soft-locked (no replies, no agent runs, no message
+storage) and recovers at 20 points per day. A pardon resets the score and
+flips the user's recent labels, so a wrong lockout becomes corrective
+training data. Design and rejected alternatives:
+[ADR chat/003](../../docs/decisions/chat/003-trust-safety-safeguards.md).
+
 ## Key subdirectories
 
 | Path                                                                                       | What it is                                                                                 |

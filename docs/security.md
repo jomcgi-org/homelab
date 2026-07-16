@@ -19,12 +19,11 @@ This cluster implements five layers of security:
                            │
                            ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│                    Layer 2: Service Mesh (Linkerd)                   │
+│                 Layer 2: Network Layer (Cilium eBPF CNI)             │
 ├──────────────────────────────────────────────────────────────────────┤
-│  - Automatic mTLS for all inter-service communication                │
-│  - Traffic encryption within the cluster                             │
-│  - Service-to-service authentication                                 │
-│  - Network observability and tracing                                 │
+│  - Transparent WireGuard encryption for pod-to-pod traffic           │
+│  - L3/L4 network policy in the CNI datapath, no sidecars             │
+│  - Hubble flow and HTTP metrics                                      │
 └──────────────────────────┬───────────────────────────────────────────┘
                            │
                            ▼

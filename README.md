@@ -4,13 +4,15 @@ Personal monorepo. Dev tooling and deployment for my projects.
 
 ## Systems
 
-- [**Knowledge pipeline**](projects/monolith/knowledge/) — On-cluster LLM decomposes markdown into structured facts, embeds them, stores in pgvector. Searchable via MCP tools and a SvelteKit frontend.
+- [**EmberVM**](projects/embervm/): Firecracker microVM orchestrator. An Elixir control plane and a forked Go node daemon run task, session, and serving workload classes with fail-closed quotas and one quota-capped public serving route. The milestone log, including post-ship defect records, is [DECISIONS.md](DECISIONS.md).
+- [**Firecracker substrate**](projects/firecracker/): a fresh microVM per request, vsock-only network boundary, no secrets in the guest. Measured on this hardware: ~25 ms from request to a warm semgrep scan starting, ~144 ms from trigger to a cold agent's first LLM call. Development is frozen: EmberVM's node daemon began as a fork of this substrate and all new work lands there. It still runs the goose agent in production until that migrates to EmberVM's session class.
+- [**Knowledge pipeline**](projects/monolith/knowledge/): an on-cluster LLM decomposes markdown into structured facts, embeds them, and stores them in pgvector. Searchable via MCP tools and a SvelteKit frontend.
 - [**Agent platform**](docs/agents.md): AI agents in sandboxed microVMs with RBAC-scoped tool access, orchestrated from the monolith. See the [orchestrator ADR](docs/decisions/agents/007-agent-orchestrator.md).
-- [**Discord bot**](projects/monolith/chat/) — LLM-powered chat with vision, web search, and knowledge graph context.
-- [**OCI Model Cache**](projects/operators/oci-model-cache/) — Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
-- [**Sextant**](projects/sextant/) — Code generator that turns YAML state-machine specs into type-safe Go for operators: invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
-- [**Build system**](bazel/) — Custom Bazel rules for Helm, Semgrep SAST, and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
-- [**Buck2 rules**](buck2/) — Reusable Buck2 rules for container images (apko/OCI) and Helm charts: the Buck2 counterparts to the Bazel rules, consumable by other Buck2 projects as an external cell.
+- [**Discord bot**](projects/monolith/chat/): LLM-powered chat with vision, web search, knowledge graph context, and a per-user trust ledger ([ADR chat/003](docs/decisions/chat/003-trust-safety-safeguards.md)).
+- [**OCI Model Cache**](projects/operators/oci-model-cache/): Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
+- [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
+- [**Build system**](bazel/): custom Bazel rules for Helm, Semgrep SAST, and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
+- [**Buck2 rules**](buck2/): reusable Buck2 rules for container images (apko/OCI) and Helm charts, the Buck2 counterparts to the Bazel rules, consumable by other Buck2 projects as an external cell.
 
 ## Applications
 
@@ -29,34 +31,36 @@ Public apps served by the monolith at [jomcgi.dev/app](https://jomcgi.dev/app):
 
 ## Infrastructure patterns
 
-See [docs/security.md](docs/security.md) for the defense-in-depth model and [docs/observability.md](docs/observability.md) for automatic instrumentation.
+See [docs/security.md](docs/security.md) for the defense-in-depth model, [projects/firecracker/STPA.md](projects/firecracker/STPA.md) and [projects/monolith/STPA.md](projects/monolith/STPA.md) for hazard analyses, and [docs/observability.md](docs/observability.md) for automatic instrumentation.
 
-| Area          | Approach                                                                                  |
-| ------------- | ----------------------------------------------------------------------------------------- |
-| Ingress       | Cloudflare Tunnel only — nothing exposed directly                                         |
-| Service mesh  | Linkerd — automatic mTLS and distributed tracing, no code changes                         |
-| Observability | SigNoz — unified metrics, logs, traces. Kyverno auto-injects OTEL env vars                |
-| Policy        | Kyverno — enforces non-root (uid 65532), read-only filesystems                            |
-| Secrets       | 1Password Operator — OnePasswordItem CRDs, nothing in Git                                 |
-| Storage       | Longhorn for persistent volumes, SeaweedFS for S3-compatible object storage               |
-| Messaging     | NATS JetStream — pub/sub backbone for AIS data, trip points, agent jobs                   |
-| GPU           | NVIDIA GPU Operator: Qwen3.6-35B-A3B MoE via vLLM; voyage-4-nano embeddings via llama.cpp |
-| Images        | apko + rules_apko — no Dockerfiles, dual-arch (x86_64 + aarch64), non-root                |
-| CI            | BuildBuddy Workflows — remote build execution, `bazel test //...`, image push             |
-| GitOps        | ArgoCD — colocated `deploy/` dirs, `kubectl` is read-only                                 |
+| Area           | Approach                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| Ingress        | Cloudflare Tunnel only; nothing exposed directly                                           |
+| Untrusted code | Firecracker microVMs (fc-invoke + EmberVM), STPA hazard models colocated with each system  |
+| Networking     | Cilium eBPF CNI: WireGuard pod-to-pod encryption, network policy, Hubble metrics, no sidecars |
+| Observability  | SigNoz: unified metrics, logs, traces. Kyverno auto-injects OTEL env vars                  |
+| Policy         | Kyverno enforces non-root (uid 65532), read-only filesystems                               |
+| Secrets        | 1Password Operator, OnePasswordItem CRDs, nothing in Git                                   |
+| Storage        | Longhorn for persistent volumes, SeaweedFS for S3-compatible object storage                |
+| Messaging      | NATS JetStream: pub/sub backbone for AIS data, trip points, agent jobs                     |
+| GPU            | NVIDIA GPU Operator: Qwen3.6-35B-A3B MoE via vLLM; voyage-4-nano embeddings via llama.cpp  |
+| Images         | apko + rules_apko: no Dockerfiles, dual-arch (x86_64 + aarch64), non-root                  |
+| CI             | BuildBuddy Workflows: remote build execution, `bazel test //...`, image push               |
+| GitOps         | ArgoCD with colocated `deploy/` dirs; `kubectl` is read-only                               |
 
 ## Repo layout
 
 ```
 projects/             # All services, operators, websites, colocated with deploy configs (major dirs shown)
-├── platform/         #   Cluster-critical infrastructure (ArgoCD, Linkerd, SigNoz, etc.)
+├── platform/         #   Cluster-critical infrastructure (ArgoCD, Cilium, SigNoz, etc.)
 ├── monolith/         #   Knowledge graph, Discord bot, task management, public apps, frontend
 ├── monolith-public/  #   Read-only public replica of the monolith
 ├── mcp/              #   Context Forge gateway + MCP servers
 ├── inference/        #   On-cluster vLLM (Qwen3.6) + llama.cpp embeddings
 ├── operators/        #   Custom Kubernetes operators
 ├── sextant/          #   State-machine code generator for operators
-├── embervm/          #   BEAM orchestrator for Firecracker workload execution
+├── embervm/          #   Firecracker microVM orchestrator (Elixir control plane + Go node daemon)
+├── firecracker/      #   fc-invoke microVM substrate (frozen; embervm forked its node daemon from it)
 └── home-cluster/     #   Auto-generated ArgoCD root kustomization
 bazel/                # Build infrastructure (rules, tools, images, semgrep)
 buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a cell)

@@ -8,7 +8,7 @@ Every service gets automatic observability through three layers:
 
 1. **OTEL Environment Variables** (Kyverno) - Endpoint configuration for all workloads
 2. **OpenTelemetry Operator** - Language-specific auto-instrumentation (Go, Python, Node.js)
-3. **Linkerd Service Mesh** - Infrastructure-level distributed tracing and mTLS
+3. **Cilium Hubble** - Network-level flow and HTTP metrics from the eBPF datapath, no sidecars
 
 ## Pod Creation Flow
 
@@ -24,15 +24,15 @@ The following diagram shows how observability is automatically added to every po
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    Layer 1: Kyverno Policies                        │
 ├─────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────┐  ┌───────────────────────────────┐    │
-│  │  OTEL Injection Policy   │  │  Linkerd Injection Policy     │    │
-│  ├──────────────────────────┤  ├───────────────────────────────┤    │
-│  │ Adds env vars:           │  │ Adds namespace annotation:    │    │
-│  │ - OTEL_EXPORTER_         │  │   linkerd.io/inject=enabled   │    │
-│  │   OTLP_ENDPOINT          │  │                               │    │
-│  │ - OTEL_EXPORTER_         │  │ (applies to namespace,        │    │
-│  │   OTLP_PROTOCOL=grpc     │  │  affects all pods in it)      │    │
-│  └──────────────────────────┘  └───────────────────────────────┘    │
+│  ┌──────────────────────────┐                                       │
+│  │  OTEL Injection Policy   │                                       │
+│  ├──────────────────────────┤                                       │
+│  │ Adds env vars:           │                                       │
+│  │ - OTEL_EXPORTER_         │                                       │
+│  │   OTLP_ENDPOINT          │                                       │
+│  │ - OTEL_EXPORTER_         │                                       │
+│  │   OTLP_PROTOCOL=grpc     │                                       │
+│  └──────────────────────────┘                                       │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
                                  ▼
@@ -51,27 +51,17 @@ The following diagram shows how observability is automatically added to every po
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                   Layer 3: Linkerd Proxy Injection                  │
-├─────────────────────────────────────────────────────────────────────┤
-│  Linkerd webhook sees namespace annotation and injects:             │
-│  - linkerd-proxy sidecar container                                  │
-│  - init container for iptables rules                                │
-│  - Additional annotations and labels                                │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
 │                         Running Pod                                 │
 ├─────────────────────────────────────────────────────────────────────┤
-│  ┌────────────────────┐          ┌──────────────────────────────┐   │
-│  │  Application       │          │  linkerd-proxy sidecar       │   │
-│  │  Container         │◄────────►│  (intercepts all traffic)    │   │
-│  ├────────────────────┤          ├──────────────────────────────┤   │
-│  │ OTEL env vars set  │          │ Sends traces to SigNoz       │   │
-│  │ OTel SDK injected  │          │ via control plane            │   │
-│  │ (if namespace opted│          │                              │   │
-│  │  into Operator)    │          │                              │   │
-│  └────────────────────┘          └──────────────────────────────┘   │
+│  ┌────────────────────┐                                             │
+│  │  Application       │   Pod network traffic flows through the     │
+│  │  Container         │   Cilium eBPF datapath: Hubble records      │
+│  ├────────────────────┤   flows and HTTP metrics with no sidecar    │
+│  │ OTEL env vars set  │   in the pod.                               │
+│  │ OTel SDK injected  │                                             │
+│  │ (if namespace opted│                                             │
+│  │  into Operator)    │                                             │
+│  └────────────────────┘                                             │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
                                  ▼
@@ -99,23 +89,23 @@ The following diagram shows how observability is automatically added to every po
 
 - **Opt-in per namespace** via `Instrumentation` CRDs
 - The OpenTelemetry Operator watches for these CRDs and injects language-specific init containers
-- **Go:** eBPF-based — no code changes needed, instruments at the kernel level
+- **Go:** eBPF-based, no code changes needed, instruments at the kernel level
 - **Python:** Injects `autoinstrumentation-python` init container that patches the runtime
 - **Node.js:** Injects `autoinstrumentation-nodejs` init container with require hooks
-- Kyverno sets the OTEL endpoint; the Operator provides the SDK — they complement each other
+- Kyverno sets the OTEL endpoint; the Operator provides the SDK. They complement each other
 - **Configuration:** `projects/platform/opentelemetry-operator/` with namespace list in values
 
-### 3. Linkerd Service Mesh (Infrastructure-Level)
+### 3. Cilium Hubble (Network-Level)
 
-- **All namespaces** automatically get `linkerd.io/inject=enabled`
-- Linkerd webhook injects sidecars into all pods
-- Captures ALL HTTP/HTTPS traffic (no SDK needed!)
-- Automatic distributed tracing for everything
-- **Policy:** `projects/platform/kyverno/templates/linkerd-injection-policy.yaml`
+- The Cilium eBPF datapath sees all pod traffic; no proxy sidecars, no injection
+- Hubble exports flow and HTTP metrics (e.g. `hubble_httpv2_requests_total`),
+  which SigNoz scrapes and the error-rate alerts read
+- WireGuard encrypts pod-to-pod traffic transparently at the same layer
+- **Configuration:** `projects/platform/cilium/values.yaml`
 
 ## Observable by Default Philosophy
 
-- New deployments → Get OTEL env vars (Kyverno) + Linkerd sidecar
+- New deployments → Get OTEL env vars (Kyverno); network metrics come from the CNI
 - Namespaces opted into OTel Operator → Also get language-level SDK injection
 - Existing deployments → Get annotations/vars via background policies
 - **Opt-out if needed** (see below)
@@ -130,27 +120,15 @@ metadata:
     otel.instrumentation: "disabled"
 ```
 
-### Opt-out of Linkerd injection
-
-```yaml
-# Namespace level
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: my-namespace
-  labels:
-    linkerd.io/inject: "disabled"
-```
-
 ## Configuration
 
 - OTEL: `projects/platform/kyverno/values.yaml` (otelInjection section)
-- Linkerd: `projects/platform/kyverno/values.yaml` (linkerdInjection section)
+- Hubble/Cilium: `projects/platform/cilium/values.yaml`
 
 ## Excluded Namespaces (Kyverno policies)
 
 - System: kube-system, kube-public, kube-node-lease
-- Infrastructure: linkerd, cert-manager, kyverno, argocd, longhorn-system, signoz, opentelemetry-operator
+- Infrastructure: cert-manager, kyverno, argocd, longhorn-system, signoz, opentelemetry-operator
 
 ## Service Requirements
 
