@@ -30,10 +30,18 @@ spec:
         prometheus.io/port: {{ .Values.servingEnvoy.statsPort | quote }}
         prometheus.io/path: "/stats/prometheus"
     spec:
-      # POD networking (NOT hostNetwork): the serving-VM tap IPs are node-local
-      # routable from pods via the PR-2 bridge, so an Envoy in the pod network can
-      # dial them directly. hostNetwork is the recorded fallback ONLY if the drill
-      # shows the CNI blocks pod->bridge traffic; it is NOT preemptively set.
+      # HOST networking: the serving-VM tap IPs live on the node-local serving bridge
+      # (embervm-serv0, 172.31.0.0/24) that noded creates on the host. A pod-network
+      # Envoy cannot reach that bridge (the R3 live gate drill confirmed it: the VM was
+      # live+published and noded's host-side health probe reached it, but the Envoy's
+      # upstream connections to 172.31.0.x failed with connect errors), so the Envoy
+      # must share the node's netns to dial the VMs directly. This was the recorded
+      # fallback in the original pod-network design; the drill promoted it to the
+      # default. dnsPolicy ClusterFirstWithHostNet keeps cluster DNS working (a
+      # hostNetwork pod otherwise inherits the node resolv.conf) so the Envoy can still
+      # resolve and reach the xDS sidecar over the cluster network.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       {{- with .Values.servingEnvoy.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
