@@ -415,12 +415,12 @@ def make_request_handler(
             req_headers = {k: v for k, v in self.headers.items()}
             event = event_from_request(self.command, path, query, req_headers, raw_body)
             context = InvocationContext(invoke_path)
-            try:
+            # Deliberate HTTP error boundary: the except catches ANY handler
+            # exception, logs the full traceback to stderr (the shipped guest log),
+            # and returns it as a 502 (reported, not swallowed).
+            try:  # nosemgrep: no-broad-except-swallow
                 result = state.handler(event, context)
                 status, headers, body = response_from_return(result)
-            # nosemgrep: no-broad-except-swallow -- deliberate HTTP error boundary:
-            # any handler exception is caught, logged with a full traceback, and
-            # returned to the caller as a 502 (not swallowed).
             except Exception:  # noqa: BLE001 (any handler error is a 502)
                 tb = traceback.format_exc()
                 sys.stderr.write(tb)
@@ -441,11 +441,11 @@ def make_request_handler(
             if not archive:
                 self._send(400, {}, b"hydrate: empty archive body")
                 return
-            try:
+            # Deliberate build-error boundary: the except catches ANY hydrate
+            # failure (bad zip / zip-slip / import error), logs it, and reports a
+            # 422; ready stays False (reported, not swallowed).
+            try:  # nosemgrep: no-broad-except-swallow
                 hydrate(state, archive)
-            # nosemgrep: no-broad-except-swallow -- deliberate build-error boundary:
-            # any hydrate failure (bad zip / zip-slip / import error) is caught,
-            # logged, and reported as a 422; ready stays False (not swallowed).
             except Exception:  # noqa: BLE001 (bad zip / zip-slip / import error)
                 tb = traceback.format_exc()
                 sys.stderr.write("ember-shim: hydrate failed\n")
