@@ -248,12 +248,26 @@ func (k *kernel) ensureChild() (bool, error) {
 // VM serial console (ttyS0); noded pipes the Firecracker process output to its own
 // stdout, so these land in `kubectl logs deploy/embervm-embervm-noded`. Keep the
 // prefix stable and greppable: "guest-kernel".
-func klog(event string, kv ...any) {
-	fmt.Fprintf(os.Stderr, "guest-kernel event=%s", event)
-	for i := 0; i+1 < len(kv); i += 2 {
-		fmt.Fprintf(os.Stderr, " %v=%v", kv[i], kv[i+1])
+// klogSink is where guest-kernel structured logs go. guest-init's os.Stderr is NOT
+// wired to the VM serial console (only the kernel ring buffer is), so a stderr log
+// never reaches `kubectl logs deploy/embervm-embervm-noded` -- confirmed inert when
+// #3553 first shipped these logs. /dev/console IS the serial console (the guest
+// boots console=ttyS0, and noded pipes the Firecracker process output to its own
+// stdout), and guest-init runs as root in production so it can open it. Fall back to
+// stderr (tests, or if /dev/console is unavailable) so klog is always safe to call.
+var klogSink io.Writer = func() io.Writer {
+	if f, err := os.OpenFile("/dev/console", os.O_WRONLY, 0); err == nil {
+		return f
 	}
-	fmt.Fprintln(os.Stderr)
+	return os.Stderr
+}()
+
+func klog(event string, kv ...any) {
+	fmt.Fprintf(klogSink, "guest-kernel event=%s", event)
+	for i := 0; i+1 < len(kv); i += 2 {
+		fmt.Fprintf(klogSink, " %v=%v", kv[i], kv[i+1])
+	}
+	fmt.Fprintln(klogSink)
 }
 
 // exchange writes one request frame and reads one response frame, enforcing
