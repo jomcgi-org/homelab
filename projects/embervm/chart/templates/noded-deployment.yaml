@@ -117,6 +117,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # noded's own routable pod IP. Serving VMs are published as pod_ip:vmPort
+            # and reached through a per-VM prerouting DNAT rule noded installs (to the
+            # node-local tap), so a pod-network Envoy on any node can dial them
+            # (D-R3.11.4). Unset falls back to reporting node-internal tap IPs.
+            - name: EMBERVM_NODED_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: EMBERVM_NODED_MAX_LIVE_VMS
               value: {{ .Values.noded.maxLiveVMs | quote }}
             # Per-invoke FC bundle snapshots and the fixed vsock dir the snapshot

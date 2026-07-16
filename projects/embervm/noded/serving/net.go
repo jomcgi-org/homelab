@@ -24,7 +24,9 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // nftTable is the DEDICATED nftables table the daemon owns for the serving forward
@@ -39,6 +41,15 @@ const nftTable = "embervm_serving"
 // traffic is unconstrained in v1; that is part of the recorded egress-hardening
 // follow-on (standing decision 6, brokered egress).
 const nftChain = "forward"
+
+// nftDNATChain is the nat-hook chain inside nftTable that exposes each live serving
+// VM as noded's routable pod IP + a per-VM port (D-R3.11.4). It is a prerouting DNAT
+// chain: a packet to podIP:vmPort is rewritten dest -> tapIP:guestPort in the kernel,
+// routed onto the serving bridge in noded's own netns, and conntrack reverses replies,
+// so noded userspace never sits on the request hit path. The chain and its rules exist
+// ONLY when a pod IP is configured; empty PodIP is the local/test fallback (report the
+// tap IP, install no DNAT).
+const nftDNATChain = "serving_dnat"
 
 // Runner executes a host command and returns its combined output. The real
 // implementation execs; tests inject a fake that records argv and returns canned
@@ -91,22 +102,40 @@ func tapTeardownArgs(tap string) []string {
 	return []string{"ip", "link", "del", tap}
 }
 
-// nftRuleset returns the `nft -f -` ruleset text that installs the serving FORWARD
-// posture on the bridge as a self-contained, idempotent script: it flushes and
-// recreates ONLY the dedicated embervm_serving table, so applying it is safe to repeat
-// and never touches other tables. The forward chain accepts established/related return
-// traffic and drops NEW traffic whose input interface is the bridge (VM-originated
-// forwarding, i.e. external egress), leaving inbound request forwarding (dest = a VM)
-// to the kernel's normal forward path. This filters the forward hook ONLY: v1 does not
-// constrain VM-to-host-local traffic on the input hook (that is the recorded egress
-// follow-on, standing decision 6). It is a pure function of the bridge name so the
-// exact ruleset is asserted as data in a table test.
-func nftRuleset(bridge string) string {
-	// `flush table` before `table` makes the script idempotent: a re-apply replaces
+// dnatEntry is one live serving VM's DNAT projection: the tap IP + guest port the VM
+// actually listens on, and the deterministic per-VM port on noded's pod IP that maps to
+// it (vmPort = portBase + hostOffset(tapIP)). vmPort is precomputed and stored so the
+// ruleset generator stays a pure function of the entries and the entries sort
+// deterministically (by vmPort, which is monotonic in the tap IP within a subnet).
+type dnatEntry struct {
+	tapIP     string
+	guestPort uint32
+	vmPort    uint32
+}
+
+// nftRuleset returns the `nft -f -` ruleset text that installs the serving posture on
+// the bridge as a self-contained, idempotent script: it flushes and recreates ONLY the
+// dedicated embervm_serving table, so applying it is safe to repeat and never touches
+// other tables. The FORWARD chain accepts established/related return traffic and drops
+// NEW traffic whose input interface is the bridge (VM-originated forwarding, i.e.
+// external egress), leaving inbound request forwarding (dest = a VM) to the kernel's
+// normal forward path. This filters the forward hook ONLY: v1 does not constrain
+// VM-to-host-local traffic on the input hook (that is the recorded egress follow-on,
+// standing decision 6).
+//
+// When podIP is non-empty (the deployed DNAT-through-noded posture, D-R3.11.4) it ALSO
+// installs: an MSS clamp on the bridge-egress (VM-return) path so the guest-side MSS
+// cannot exceed the CNI overlay MTU; and a prerouting `serving_dnat` nat chain with one
+// rule per live VM rewriting podIP:vmPort -> tapIP:guestPort. `dnat ip to` (not bare
+// `dnat to`) is required syntax in an inet table. When podIP is empty (local/test) the
+// ruleset is exactly the v1 forward posture: no clamp, no nat chain, no DNAT. It is a
+// pure function of (bridge, podIP, entries) so the exact ruleset is asserted as data.
+func nftRuleset(bridge, podIP string, entries []dnatEntry) string {
+	// `flush table` before defining makes the script idempotent: a re-apply replaces
 	// the table's contents wholesale. `add table` is a no-op if it exists, so the
-	// flush-then-define pair converges regardless of prior state. delete+add of the
-	// table would also work but errors if the table is absent on first apply; the
-	// `add table` then `flush table` ordering below is the idempotent form.
+	// flush-then-define pair converges regardless of prior state. The flush also means
+	// established conntrack flows are unaffected by a rebuild (translations live in
+	// conntrack, not the ruleset), so re-applying on every VM add/remove is safe.
 	var b strings.Builder
 	fmt.Fprintf(&b, "add table inet %s\n", nftTable)
 	fmt.Fprintf(&b, "flush table inet %s\n", nftTable)
@@ -117,7 +146,55 @@ func nftRuleset(bridge string) string {
 	// i.e. sourced by a serving VM) is dropped: v1 denies external egress at the forward
 	// hook. VM-to-host-local traffic on the input hook is not filtered in v1.
 	fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" ct state new drop\n", nftTable, nftChain, bridge)
+	if podIP != "" {
+		// MSS clamp on the VM-return (bridge-egress) path: cap the SYN maxseg to the
+		// route MTU so a guest with a 1500-MTU eth0 cannot advertise an MSS the CNI
+		// overlay return path (smaller MTU) would have to fragment or black-hole.
+		fmt.Fprintf(&b, "add rule inet %s %s oifname \"%s\" tcp flags syn tcp option maxseg size set rt mtu\n", nftTable, nftChain, bridge)
+		// Prerouting DNAT chain: podIP:vmPort -> tapIP:guestPort for each live VM. The
+		// forward chain's `iifname bridge new drop` never matches these (their iif is
+		// eth0, not the bridge), and their reply is ct-established, so no filter rule is
+		// needed; inbound NEW falls through to the forward policy accept.
+		fmt.Fprintf(&b, "add chain inet %s %s { type nat hook prerouting priority dstnat; policy accept; }\n", nftTable, nftDNATChain)
+		for _, e := range entries {
+			fmt.Fprintf(&b, "add rule inet %s %s ip daddr %s tcp dport %d dnat ip to %s:%d\n",
+				nftTable, nftDNATChain, podIP, e.vmPort, e.tapIP, e.guestPort)
+		}
+	}
 	return b.String()
+}
+
+// hostOffset returns ip's offset within network (its host part as a big-endian int),
+// or -1 if ip is not an IPv4 address inside network. For 172.31.0.0/24 the .2 address
+// has offset 2, .254 has offset 254; this is exactly the IP allocator's per-VM
+// uniqueness reused as a port key, so no separate port allocator is needed.
+func hostOffset(network *net.IPNet, ip net.IP) int {
+	v4 := ip.To4()
+	if v4 == nil || network == nil || len(network.Mask) != 4 || !network.Contains(ip) {
+		return -1
+	}
+	off := 0
+	for i := 0; i < 4; i++ {
+		off = off<<8 | int(v4[i]&^network.Mask[i])
+	}
+	return off
+}
+
+// PortForIP derives the deterministic per-VM DNAT port for a tap IP: base +
+// hostOffset(ip). It errors when ip is outside network or the derived port is out of
+// the 1..65535 range, so a misconfiguration surfaces at StartServing rather than
+// installing a bogus rule. Pure and recomputable anywhere (a relight pinning the same
+// IP re-derives the same port).
+func PortForIP(base int, network *net.IPNet, ip net.IP) (uint32, error) {
+	off := hostOffset(network, ip)
+	if off < 0 {
+		return 0, fmt.Errorf("serving: ip %v not within serving network %v", ip, network)
+	}
+	port := base + off
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("serving: derived port %d for ip %v out of range 1..65535", port, ip)
+	}
+	return uint32(port), nil
 }
 
 // nftTeardownArgs returns the argv to remove the dedicated serving table entirely
@@ -140,13 +217,29 @@ type Manager struct {
 	gatewayIP net.IP
 	prefixLen int
 	alloc     *ipAllocator
+
+	// podIP is noded's routable pod IP; serving endpoints are projected as podIP:vmPort
+	// and reached through the serving_dnat chain. Empty disables DNAT (report the tap IP).
+	podIP string
+	// portBase is the base of the deterministic per-VM DNAT port space (vmPort =
+	// portBase + hostOffset(tapIP)).
+	portBase int
+	// dnat is the live per-VM DNAT map keyed by tap IP string; the whole serving ruleset
+	// is regenerated from it (pure function) and applied atomically on every add/remove.
+	// dnatMu guards the map AND serializes the nft apply so two concurrent Start/Stop
+	// calls cannot interleave ruleset writes.
+	dnatMu sync.Mutex
+	dnat   map[string]dnatEntry
 }
 
 // NewManager builds a serving network Manager for a bridge name and a CIDR. The
 // gateway (bridge) IP is the first usable address (.1) of the CIDR; VM IPs are
-// allocated from .2 upward. A malformed CIDR is an error so a misconfiguration
-// fails loudly at startup rather than at the first StartServing.
-func NewManager(runner Runner, bridge, cidr string) (*Manager, error) {
+// allocated from .2 upward. podIP is noded's routable pod IP for the DNAT projection
+// (empty disables DNAT and reports tap IPs); portBase is the DNAT port-space base. A
+// malformed CIDR, or (when podIP is set) a portBase whose top offset would overflow
+// 65535, is an error so a misconfiguration fails loudly at startup rather than at the
+// first StartServing.
+func NewManager(runner Runner, bridge, cidr, podIP string, portBase int) (*Manager, error) {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
@@ -155,6 +248,16 @@ func NewManager(runner Runner, bridge, cidr string) (*Manager, error) {
 		return nil, err
 	}
 	prefixLen, _ := ipnet.Mask.Size()
+	if podIP != "" {
+		ones, bits := ipnet.Mask.Size()
+		subnetSize := 1 << (bits - ones)
+		if portBase < 1 {
+			return nil, fmt.Errorf("serving: port base %d must be >= 1", portBase)
+		}
+		if maxPort := portBase + subnetSize - 2; maxPort > 65535 {
+			return nil, fmt.Errorf("serving: port base %d + subnet %s top offset overflows 65535 (max derived port %d)", portBase, cidr, maxPort)
+		}
+	}
 	return &Manager{
 		runner:    runner,
 		bridge:    bridge,
@@ -162,6 +265,9 @@ func NewManager(runner Runner, bridge, cidr string) (*Manager, error) {
 		gatewayIP: gatewayIP,
 		prefixLen: prefixLen,
 		alloc:     newIPAllocator(ipnet, gatewayIP),
+		podIP:     podIP,
+		portBase:  portBase,
+		dnat:      make(map[string]dnatEntry),
 	}, nil
 }
 
@@ -188,13 +294,85 @@ func (m *Manager) EnsureNetwork(ctx context.Context) error {
 			return err
 		}
 	}
-	return m.applyNftables(ctx)
+	// Enable IPv4 forwarding: the routed eth0 -> serving-bridge DNAT path needs it, and
+	// nothing on this node forwarded before serving (busybox sysctl applet, baked into
+	// the noded image). Harmless when DNAT is disabled.
+	if _, err := m.runner.Run(ctx, "sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		return err
+	}
+	// Apply the ruleset from the CURRENT (boot: empty) DNAT map. Post-boot, EnsureDNAT/
+	// RemoveDNAT regenerate the same table including the forward posture.
+	m.dnatMu.Lock()
+	defer m.dnatMu.Unlock()
+	return m.applyRulesetLocked(ctx)
 }
 
-// applyNftables installs the serving forward ruleset via `nft -f <file>` (see
-// applyRuleset for why a temp file rather than a stdin pipe).
-func (m *Manager) applyNftables(ctx context.Context) error {
-	return applyRuleset(ctx, m.runner, nftRuleset(m.bridge))
+// applyRulesetLocked regenerates the whole serving ruleset from the current DNAT map
+// and applies it via `nft -f <file>` (see applyRuleset for why a temp file rather than
+// a stdin pipe). Caller holds dnatMu.
+func (m *Manager) applyRulesetLocked(ctx context.Context) error {
+	return applyRuleset(ctx, m.runner, nftRuleset(m.bridge, m.podIP, m.dnatEntriesLocked()))
+}
+
+// dnatEntriesLocked returns the DNAT map as a slice sorted by vmPort (== tap-IP order),
+// for deterministic ruleset generation. Caller holds dnatMu.
+func (m *Manager) dnatEntriesLocked() []dnatEntry {
+	out := make([]dnatEntry, 0, len(m.dnat))
+	for _, e := range m.dnat {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].vmPort < out[j].vmPort })
+	return out
+}
+
+// EnsureDNAT installs (or refreshes) the prerouting DNAT rule that exposes a live
+// serving VM's tap as podIP:vmPort, regenerating and atomically re-applying the whole
+// serving table. It is a no-op when DNAT is disabled (empty PodIP). A derivation error
+// (ip outside the subnet, port overflow) is returned so the caller reaps rather than
+// publishing an unreachable endpoint.
+func (m *Manager) EnsureDNAT(ctx context.Context, ip net.IP, guestPort uint32) error {
+	if m.podIP == "" {
+		return nil
+	}
+	vmPort, err := PortForIP(m.portBase, m.cidr, ip)
+	if err != nil {
+		return err
+	}
+	m.dnatMu.Lock()
+	defer m.dnatMu.Unlock()
+	m.dnat[ip.String()] = dnatEntry{tapIP: ip.String(), guestPort: guestPort, vmPort: vmPort}
+	return m.applyRulesetLocked(ctx)
+}
+
+// RemoveDNAT drops a VM's DNAT rule and re-applies the table. It is folded into
+// ReleaseTap so every teardown path (fresh-fail rollback, bank, destroy, reap) cleans
+// the rule with no call-site edits. Best-effort: a re-apply error is swallowed (the tap
+// is going away regardless, and EnsureNetwork rebuilds a clean table on restart).
+func (m *Manager) RemoveDNAT(ctx context.Context, ip net.IP) {
+	if m.podIP == "" {
+		return
+	}
+	m.dnatMu.Lock()
+	defer m.dnatMu.Unlock()
+	delete(m.dnat, ip.String())
+	_ = m.applyRulesetLocked(ctx)
+}
+
+// Endpoint projects a VM's (tap IP, guest port) into the endpoint the daemon REPORTS:
+// (podIP, vmPort) when DNAT is enabled, else the tap IP + guest port unchanged (local/
+// test fallback). It is strictly a projection: the registry keeps storing the tap IP
+// (the probe target and bank pin), so the pod IP never leaks into readiness or the
+// snapshot pin. A derivation failure for an allocated IP should never happen; if it
+// does, fall back to the tap endpoint rather than publish a bogus port.
+func (m *Manager) Endpoint(ip net.IP, guestPort uint32) (string, uint32) {
+	if m.podIP == "" {
+		return ip.String(), guestPort
+	}
+	vmPort, err := PortForIP(m.portBase, m.cidr, ip)
+	if err != nil {
+		return ip.String(), guestPort
+	}
+	return m.podIP, vmPort
 }
 
 // AllocateTap allocates the next free IP, creates and attaches a tap named for that
@@ -244,6 +422,9 @@ func (m *Manager) AllocateTapForIP(ctx context.Context, ip net.IP) (tap string, 
 // is idempotent at the ip layer (deleting an absent tap is tolerated) so a teardown
 // after a partial start still frees the IP.
 func (m *Manager) ReleaseTap(ctx context.Context, ip net.IP) {
+	// Drop the VM's DNAT rule first so the kernel stops advertising the endpoint before
+	// the tap disappears (no-op when DNAT is disabled).
+	m.RemoveDNAT(ctx, ip)
 	tap := TapNameForIP(ip)
 	if _, err := m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...); err != nil {
 		// A missing tap is fine (already gone); other errors are logged by the caller

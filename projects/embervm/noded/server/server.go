@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1174,11 +1175,17 @@ func (s *Server) servingVMsStatus() []*nodev1.ServingVm {
 	live := s.servingVMs.snapshot()
 	out := make([]*nodev1.ServingVm, 0, len(live))
 	for _, e := range live {
+		// Report the projected routable endpoint (pod IP + DNAT port), not the stored
+		// node-internal tap IP; the registry keeps the tap IP for the probe and pin.
+		ip, port := e.ip, e.port
+		if s.servingNet != nil {
+			ip, port = s.servingNet.Endpoint(net.ParseIP(e.ip), e.port)
+		}
 		out = append(out, &nodev1.ServingVm{
 			VmId:            e.vmID,
 			Workload:        e.workload,
-			Ip:              e.ip,
-			Port:            e.port,
+			Ip:              ip,
+			Port:            port,
 			Healthy:         e.healthy,
 			LastProbeUnixMs: e.lastProbeUnixMs,
 		})
