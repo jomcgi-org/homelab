@@ -17,6 +17,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -61,6 +62,19 @@ const (
 	handlerZipBytesEnv = "EMBER_HANDLER_ZIP_BYTES"
 )
 
+// volumeDevCmdlineKey / volumeMountCmdlineKey are the boot-arg tokens noded's
+// driver.bootArgsFor appends ONLY for a STATEFUL cold boot (R4):
+// `ember.volume_dev=<dev>` names the writable volume block device
+// (statefulVolumeDevice in the driver, /dev/vdc), and `ember.volume_mount=<path>`
+// is the guest mount path from the CR's volumeMountPath, threaded verbatim (its
+// content is opaque to noded and to this init). A task/session/serving boot
+// carries neither token, so the volume-mount step below is a complete no-op for
+// them.
+const (
+	volumeDevCmdlineKey   = "ember.volume_dev"
+	volumeMountCmdlineKey = "ember.volume_mount"
+)
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -101,10 +115,50 @@ func run(logger *slog.Logger) error {
 	// image-lane serving) leaves the env unset and the shim's behavior unchanged.
 	setHandlerDiskEnv(logger)
 
+	// Stateful volume (R4): mount the workload's writable volume BEFORE handing
+	// off to the shim, so the guest process only ever sees an already-mounted
+	// filesystem at its declared path. This is done unconditionally here (not
+	// deferred to the shim) because the host NEVER mounts the volume: guest-init
+	// is the one place in the whole system that formats-if-blank and mounts it,
+	// and a volume that fails to mount must fail the boot loudly rather than let
+	// a stateful guest (e.g. Postgres) start against a missing data directory.
+	if err := mountStatefulVolume(logger); err != nil {
+		return fmt.Errorf("mount stateful volume: %w", err)
+	}
+
 	// exec (not fork+exec): the python shim replaces this process as PID 1, so
 	// there is no supervisor layer to add latency or to reap. execShim only
 	// returns on failure.
 	return execShim(logger)
+}
+
+// mountStatefulVolume reads /proc/cmdline for the `ember.volume_dev=` /
+// `ember.volume_mount=` tokens and, when both are present, formats the device
+// with ext4 if it has no existing filesystem signature (blkid reports blank),
+// creates the mount path, and mounts it. Absent tokens (every task/session/
+// serving boot) make this a complete no-op, so those boot classes are
+// unaffected. Returns an error (which the caller treats as fatal) on any
+// mkfs/mount failure: a stateful guest that cannot reach its volume must not
+// report ready, so failing the boot here is the correct fail-closed behavior
+// rather than exec'ing into a shim that would silently run against an empty or
+// unmounted directory.
+func mountStatefulVolume(logger *slog.Logger) error {
+	raw, err := os.ReadFile(procCmdlinePath)
+	if err != nil {
+		// No kernel cmdline available (host build / no procfs): nothing to do,
+		// matching setServingPortEnv/setHandlerDiskEnv's no-op posture.
+		return nil
+	}
+	dev := valueFromCmdline(string(raw), volumeDevCmdlineKey)
+	if dev == "" {
+		return nil
+	}
+	mountPath := valueFromCmdline(string(raw), volumeMountCmdlineKey)
+	if mountPath == "" {
+		return fmt.Errorf("ember.volume_dev=%s present but ember.volume_mount is unset", dev)
+	}
+	logger.Info("stateful volume: mounting", "device", dev, "mount", mountPath)
+	return mountVolumeDevice(logger, dev, mountPath)
 }
 
 // setHandlerDiskEnv reads /proc/cmdline for the `ember.handler_disk=<dev>` and
