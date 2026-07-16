@@ -18,7 +18,11 @@ defmodule Embervm.ServingSweeperTest do
 
   Every clock/timer is injected; no test sleeps.
   """
-  use ExUnit.Case, async: true
+  # async: false: several tests poll for a state transition driven by a spawned
+  # bank worker (fire_drain -> {:bank_drained} -> StopServing worker -> {:bank_done}
+  # -> abort/republish), which is contention-sensitive under a large async suite.
+  # Serial execution removes the contention and keeps the wait deterministic.
+  use ExUnit.Case, async: false
 
   alias Embervm.{NodeCapacity, ServingStore, ServingSweeper, WorkloadCatalog}
   alias Embervm.OpLog.SQLite

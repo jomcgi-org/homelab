@@ -14,7 +14,11 @@ defmodule Embervm.BaseBuilderTest do
   Each test uses an unnamed (`name: nil`) builder so tests run async with no
   shared state and never touch the application's own supervised BaseBuilder.
   """
-  use ExUnit.Case, async: true
+  # async: false: these poll for real base-build state transitions (a spawned
+  # build worker reaching a failed/ready condition), which starve under async
+  # scheduler contention as the suite grows and flake the wait. Serial keeps the
+  # timing deterministic regardless of suite size.
+  use ExUnit.Case, async: false
 
   alias Embervm.BaseBuilder
   alias Embervm.Node.V1.BuildBaseResponse
