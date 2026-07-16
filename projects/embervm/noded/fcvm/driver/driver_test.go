@@ -493,6 +493,15 @@ func TestWriteAndScanServingHandlerArtifact(t *testing.T) {
 	if n != int64(len(zip)) {
 		t.Fatalf("written bytes = %d want %d", n, len(zip))
 	}
+	// The on-disk file MUST be padded up to a whole 512-byte sector: Firecracker
+	// floors a sub-sector drive and drops the remainder, which would truncate the
+	// zip's EOCD-bearing tail and short-read the guest. The returned length stays
+	// exact (asserted above) so the guest reads only the real payload.
+	if fi, serr := os.Stat(path); serr != nil {
+		t.Fatalf("stat artifact: %v", serr)
+	} else if fi.Size()%512 != 0 || fi.Size() < int64(len(zip)) {
+		t.Fatalf("artifact file size %d must be a whole 512-byte sector and >= zip len %d", fi.Size(), len(zip))
+	}
 	if _, ok := d.ServingHandlerArtifactPath("wl__abc"); !ok {
 		t.Fatal("ServingHandlerArtifactPath should find the just-written artifact")
 	}
