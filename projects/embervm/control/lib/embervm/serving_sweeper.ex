@@ -82,6 +82,10 @@ defmodule Embervm.ServingSweeper do
   use GenServer
   require Logger
 
+  # Tracer.with_span/set_attributes are OpenTelemetry.Tracer MACROS, so the module
+  # must be required even though it is called fully-qualified via the alias.
+  require OpenTelemetry.Tracer, as: Tracer
+
   alias Embervm.{NodeCapacity, ServingState, ServingStore, WorkloadCatalog}
   alias Embervm.OpLog.Op
 
@@ -174,6 +178,15 @@ defmodule Embervm.ServingSweeper do
       # uses Process.send_after; a test injects a function that records the delay and
       # lets the test send {:bank_drained, id} by hand.
       timer_fun: Keyword.get(opts, :timer_fun, &default_timer/2),
+      # status.serving {live,banked,published} writer (Task 10). Defaults to the K8s
+      # merge-patch on the workload status subresource (the session writer's seam);
+      # tests inject a recorder. Disjoint status keys from status.sessions and the
+      # watcher, so the merge-patch never clobbers another writer.
+      status_writer: Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3),
+      # workload -> last-written {live,banked,published} triple, so the sweep patches
+      # only a workload whose counts changed (debounce: at most one API call per
+      # serving workload per sweep, never per transition).
+      serving_status_written: %{},
       sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, 0)
     }
 
@@ -225,11 +238,80 @@ defmodule Embervm.ServingSweeper do
   defp do_sweep(state) do
     now = state.clock.()
 
-    state
-    |> scrape_and_record(now)
-    |> arm_idle_banks(now)
-    |> sweep_lifetime(now)
-    |> sweep_banked_ttl(now)
+    # The `stats_sweep` lifecycle span (Task 10): a ROOT span per sweep tick (timer-
+    # driven, no caller trace to nest under, like the session create/bank spans). It
+    # bounds the stats scrape + idle-bank arming + lifetime/TTL GC so a slow or
+    # error-prone tick is visible; it does NOT touch the hit path.
+    Tracer.with_span "embervm.serving.stats_sweep", %{attributes: %{"ember.tenant" => state.tenant}} do
+      state
+      |> scrape_and_record(now)
+      |> arm_idle_banks(now)
+      |> sweep_lifetime(now)
+      |> sweep_banked_ttl(now)
+      |> write_serving_status()
+    end
+  end
+
+  # -- status.serving counts (Task 10) ---------------------------------------
+
+  # Write status.serving {live,banked,published} + servingSummary for every serving-
+  # class workload, DEBOUNCED: only patch a workload whose counts triple changed
+  # since its last write. Runs on the sweep tick (not per transition), so the K8s
+  # API is touched at most once per serving workload per sweep. Disjoint status keys
+  # (serving/servingSummary), so the merge-patch never clobbers the status.sessions
+  # or watcher writers.
+  defp write_serving_status(state) do
+    serving_workloads_with_ns(state)
+    |> Enum.reduce(state, fn %{workload: workload, namespace: namespace}, acc ->
+      counts = serving_counts(acc, workload)
+      triple = {counts.live, counts.banked, counts.published}
+
+      if Map.get(acc.serving_status_written, workload) == triple do
+        acc
+      else
+        _ = patch_serving_status(acc, namespace, workload, counts)
+        %{acc | serving_status_written: Map.put(acc.serving_status_written, workload, triple)}
+      end
+    end)
+  end
+
+  # live+banked from the maintained per-workload counter; published is the healthy-
+  # published set (the fan-out fact), which is not in the counter. Both are O(few)
+  # reads on the sweep tick.
+  defp serving_counts(state, workload) do
+    base = ServingStore.counts(state.store, workload)
+    published = length(ServingStore.published_endpoints(state.store, workload))
+    %{live: base.live, banked: base.banked, published: published}
+  end
+
+  # Every cataloged serving-class workload with its namespace, for the status write.
+  # A catalog with no serving workloads yields [], a no-op on session/task clusters.
+  defp serving_workloads_with_ns(state) do
+    for name <- WorkloadCatalog.all_names(state.catalog_table),
+        {:ok, %{class: "serving", namespace: namespace}} <- [WorkloadCatalog.fetch(state.catalog_table, name)],
+        is_binary(namespace) do
+      %{workload: name, namespace: namespace}
+    end
+  end
+
+  defp patch_serving_status(state, namespace, name, counts) do
+    status_map = %{
+      "serving" => %{"live" => counts.live, "banked" => counts.banked, "published" => counts.published},
+      "servingSummary" => "#{counts.live}/#{counts.banked}/#{counts.published}"
+    }
+
+    case state.status_writer.(namespace, name, status_map) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        # Visibility-only: a status-write failure must never crash the sweep.
+        Logger.warning("embervm serving status patch failed for #{namespace}/#{name}: #{inspect(reason)}")
+    end
+  rescue
+    e -> Logger.warning("embervm serving status patch raised for #{namespace}/#{name}: #{inspect(e)}")
+  catch
+    _, _ -> :ok
   end
 
   # -- stats scrape + activity -----------------------------------------------
@@ -412,6 +494,18 @@ defmodule Embervm.ServingSweeper do
   # the drain_reason stamp tells ServingHealth not to republish it), then arm the
   # drainSeconds timer. The StopServing(BANK) itself waits for the timer.
   defp begin_bank_drain(state, instance, cfg, _now) do
+    # The `drain` lifecycle span (Task 10): the unpublish + re-push that pulls the
+    # endpoint from the fan-out and arms the drainSeconds timer. A ROOT span (idle-
+    # bank is timer-driven, no caller trace). ember.drain_ms is the CONFIGURED drain
+    # window (the deadline the {:bank_drained} timer will honor), not a measured
+    # duration: this call only arms the timer, it does not block for the drain.
+    Tracer.with_span "embervm.serving.drain",
+                     %{attributes: %{"ember.workload" => instance.workload, "ember.instance_id" => instance.instance_id}} do
+      begin_bank_drain_body(state, instance, cfg)
+    end
+  end
+
+  defp begin_bank_drain_body(state, instance, cfg) do
     case ServingStore.unpublish(state.store, instance.instance_id, :bank) do
       {:ok, _} ->
         # Re-derive + re-push so the endpoint leaves the fan-out now (and the activator
@@ -420,6 +514,7 @@ defmodule Embervm.ServingSweeper do
 
         drain_ms = max(cfg.drain_seconds, 0) * 1000
         state.timer_fun.({:bank_drained, instance.instance_id}, drain_ms)
+        Tracer.set_attributes(%{"ember.drain_ms" => drain_ms})
 
         Logger.info("embervm serving: draining for bank",
           instance_id: instance.instance_id,
@@ -499,23 +594,39 @@ defmodule Embervm.ServingSweeper do
     channel_fun = state.channel_fun
     stop_fun = state.stop_serving_fun
     instance_id = instance.instance_id
+    workload = instance.workload
     generation = (instance.generation || 0) + 1
 
     spawn(fn ->
+      # The `bank` lifecycle span (Task 10): a ROOT span in the spawned worker (the
+      # StopServing(BANK) has no caller trace, mirroring session.bank). ember.
+      # snapshot_bytes is set on success; the span bounds the seconds-long GiB
+      # snapshot write so a slow bank is visible.
       outcome =
-        try do
-          with {:ok, channel} <- safe_channel(channel_fun, node_id),
-               {:ok, %StopServingResponse{snapshot_ref: ref, size_bytes: size}}
-               when is_binary(ref) and ref != "" <-
-                 stop_fun.(channel, bank_request(vm_id)) do
-            {:ok, ref, size, generation}
-          else
-            other -> {:error, other}
+        Tracer.with_span "embervm.serving.bank",
+                         %{
+                           attributes: %{
+                             "ember.workload" => workload,
+                             "ember.instance_id" => instance_id,
+                             "ember.node_id" => node_id,
+                             "ember.generation" => generation
+                           }
+                         } do
+          try do
+            with {:ok, channel} <- safe_channel(channel_fun, node_id),
+                 {:ok, %StopServingResponse{snapshot_ref: ref, size_bytes: size}}
+                 when is_binary(ref) and ref != "" <-
+                   stop_fun.(channel, bank_request(vm_id)) do
+              Tracer.set_attributes(%{"ember.snapshot_bytes" => size})
+              {:ok, ref, size, generation}
+            else
+              other -> {:error, other}
+            end
+          rescue
+            e -> {:error, {:bank_raised, e}}
+          catch
+            kind, reason -> {:error, {:bank_raised, {kind, reason}}}
           end
-        rescue
-          e -> {:error, {:bank_raised, e}}
-        catch
-          kind, reason -> {:error, {:bank_raised, {kind, reason}}}
         end
 
       send(owner, {:bank_done, instance_id, node_id, outcome})

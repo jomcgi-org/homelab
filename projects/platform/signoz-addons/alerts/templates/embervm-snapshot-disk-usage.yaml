@@ -8,11 +8,14 @@ metadata:
     signoz.io/alert-name: "EmberVM Session Snapshot Disk Usage"
     signoz.io/severity: "warning"
     signoz.io/notification-channels: "incidentio"
-# Watermark alert for the EmberVM session snapshot disk (R2 Task 9; ADR embervm/002
-# rule 4: disk cost is watched by a watermark, never discovered). Session banks write
-# a full ~memMib snapshot per session to the noded NVMe scratch under
+# Watermark alert for the EmberVM snapshot disk (R2 Task 9; ADR embervm/002 rule 4:
+# disk cost is watched by a watermark, never discovered). Session banks write a full
+# ~memMib snapshot per session to the noded NVMe scratch under
 # <nvmeRoot>/embervm-noded/snapshots; the whole scratch is bounded by
-# maxSessions x memMib. noded exports no Prometheus/OTel metric, and the scratch is a
+# maxSessions x memMib. R3 SERVING banks write their per-instance serving snapshots
+# to the SAME noded NVMe scratch (same mountpoint), so this one watermark now bounds
+# BOTH session and serving banks (shared scratch): the serving side does not get a
+# second disk alert, it shares this one (R3 Task 10 Fork 3). noded exports no Prometheus/OTel metric, and the scratch is a
 # hostPath (not a PVC, so the op-log PVC alert's kubeletstats k8s.volume metric does
 # not see it). Instead this reuses the k8s-infra hostmetrics receiver's already-scraped
 # system.filesystem.usage gauge (state=used/free/reserved, per node + mountpoint),
@@ -39,7 +42,7 @@ data:
       },
       "annotations": {
         "summary": "EmberVM session snapshot disk usage exceeded 80% on node {{ "{{" }} $labels.k8s_node_name {{ "}}" }}",
-        "description": "The EmberVM noded NVMe scratch (/disks/nvme-02, holding session snapshot bundles under embervm-noded/snapshots) has exceeded 80% usage. Session banks write a full ~memMib snapshot each, so the footprint is bounded by maxSessions x memMib. Levers, all values-configurable per session workload in the embervm chart: lower session.maxSessions (fewer concurrent live+banked sessions), lower session.bankedTtlSeconds (GC idle banked snapshots sooner), or set the snapshot-disk low watermark (EMBERVM_SESSION_DISK_LOW_WATERMARK_BYTES) to arm LRU disk-pressure eviction. See ADR embervm/002."
+        "description": "The EmberVM noded NVMe scratch (/disks/nvme-02, holding session AND serving snapshot bundles under embervm-noded/snapshots) has exceeded 80% usage. Both session banks and R3 serving-instance banks write a full ~memMib snapshot each to this shared scratch, so the footprint is bounded by (maxSessions + serving live+banked instances) x memMib. Levers, all values-configurable in the embervm chart: lower session.maxSessions / serving.maxInstances (fewer concurrent live+banked snapshots), lower session.bankedTtlSeconds / serving.bankedTtlSeconds (GC idle banked snapshots sooner), or set the snapshot-disk low watermark (EMBERVM_SESSION_DISK_LOW_WATERMARK_BYTES) to arm LRU disk-pressure eviction. See ADR embervm/002."
       },
       "condition": {
         "compositeQuery": {

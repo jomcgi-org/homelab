@@ -113,6 +113,18 @@ defmodule Embervm.ServingSweeperTest do
         sweep_interval_ms: 0
       ]
 
+    # The status.serving writer seam (Task 10): records every {namespace, name,
+    # status_map} the sweep patches, so a test asserts the debounce (one write per
+    # changed workload per sweep, none when unchanged).
+    {:ok, status_calls} = Agent.start_link(fn -> [] end)
+
+    status_writer = fn namespace, name, status_map ->
+      Agent.update(status_calls, &[{namespace, name, status_map} | &1])
+      :ok
+    end
+
+    sweeper_opts = Keyword.put(sweeper_opts, :status_writer, status_writer)
+
     {:ok, sweeper} = ServingSweeper.start_link(sweeper_opts)
 
     %{
@@ -126,7 +138,8 @@ defmodule Embervm.ServingSweeperTest do
       scrape_agent: scrape_agent,
       stop_calls: stop_calls,
       bank_fail: bank_fail,
-      timers: timers
+      timers: timers,
+      status_calls: status_calls
     }
   end
 
@@ -147,8 +160,14 @@ defmodule Embervm.ServingSweeperTest do
       banked_ttl_seconds: 3_600
     }
 
-    WorkloadCatalog.upsert(ctx.cat_table, name, %{class: "serving", serving: Map.merge(base, cfg)})
+    WorkloadCatalog.upsert(ctx.cat_table, name, %{
+      class: "serving",
+      namespace: "embervm",
+      serving: Map.merge(base, cfg)
+    })
   end
+
+  defp status_writes(ctx), do: Agent.get(ctx.status_calls, &Enum.reverse(&1))
 
   defp serving_node(ctx, node_id) do
     NodeCapacity.put(ctx.cap_table, node_id, %{
@@ -600,5 +619,71 @@ defmodule Embervm.ServingSweeperTest do
       seq = ops |> Enum.find(&(&1.kind == atom)) |> Map.get(:seq)
       {kind, seq}
     end
+  end
+
+  # -- status.serving {live,banked,published} writer (Task 10) ----------------
+
+  test "the sweep writes status.serving {live,banked,published} + servingSummary" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+    # One published instance => live=1 (published is a live state), banked=0,
+    # published=1 (the healthy-published set).
+    published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+
+    # A no-op scrape (no prior reading) so the sweep runs without banking anything.
+    set_scrape(ctx, {:ok, %{"serve|wl-a" => 0}})
+    ServingSweeper.sweep(ctx.sweeper)
+
+    assert [{"embervm", "wl-a", status_map}] = status_writes(ctx)
+    assert status_map["serving"] == %{"live" => 1, "banked" => 0, "published" => 1}
+    assert status_map["servingSummary"] == "1/0/1"
+  end
+
+  test "the status write is DEBOUNCED: no re-write when the counts are unchanged" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+    published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+    set_scrape(ctx, {:ok, %{"serve|wl-a" => 0}})
+
+    # First sweep writes; two further sweeps with identical counts write nothing more.
+    ServingSweeper.sweep(ctx.sweeper)
+    ServingSweeper.sweep(ctx.sweeper)
+    ServingSweeper.sweep(ctx.sweeper)
+
+    assert length(status_writes(ctx)) == 1
+  end
+
+  test "a counts CHANGE re-writes status.serving" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+    published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+    set_scrape(ctx, {:ok, %{"serve|wl-a" => 0}})
+
+    ServingSweeper.sweep(ctx.sweeper)
+
+    # Add a second published instance: published goes 1 -> 2, so the next sweep writes.
+    published_instance(ctx, "srv-2", "wl-a", "vm-2", "10.99.0.6")
+    ServingSweeper.sweep(ctx.sweeper)
+
+    writes = status_writes(ctx)
+    assert length(writes) == 2
+    assert List.last(writes) |> elem(2) |> Map.get("serving") == %{"live" => 2, "banked" => 0, "published" => 2}
+  end
+
+  test "a status-writer error never crashes the sweep (visibility-only)" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+    published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+    set_scrape(ctx, {:ok, %{"serve|wl-a" => 0}})
+
+    # Point the writer at a raising function for THIS sweeper via a fresh stack:
+    # simplest is to assert the sweep still returns :ok even though the writer raises.
+    :sys.replace_state(ctx.sweeper, fn s -> %{s | status_writer: fn _ns, _n, _m -> raise "boom" end} end)
+
+    assert :ok = ServingSweeper.sweep(ctx.sweeper)
   end
 end
