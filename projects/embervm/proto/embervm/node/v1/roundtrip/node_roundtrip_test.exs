@@ -20,14 +20,18 @@ defmodule Embervm.NodeRoundtripTest do
     BuildBaseRequest,
     DestroyRequest,
     EvictSnapshotRequest,
+    FreshSource,
     GetNodeStatusRequest,
     GuestRequest,
     NodeService,
     NodeStatus,
     PrimeRequest,
     RelightRequest,
+    RelightSource,
     ResourceSpec,
     SessionAssignRequest,
+    StartServingRequest,
+    StopServingRequest,
     Trace,
     WatchNodeRequest
   }
@@ -119,6 +123,74 @@ defmodule Embervm.NodeRoundtripTest do
              NodeService.Stub.evict_snapshot(ch, %EvictSnapshotRequest{
                snapshot_ref: "sessions/s-abc"
              })
+  end
+
+  test "serving verbs round-trip across the wire (R3 additive contract)", %{channel: ch} do
+    # StartServing, fresh source: the fake derives vm_id from the fresh ref and
+    # echoes the requested port, proving the oneof fresh branch crossed the wire.
+    {:ok, fresh} =
+      NodeService.Stub.start_serving(ch, %StartServingRequest{
+        source: {:fresh, %FreshSource{snapshot_ref: "base-snap"}},
+        port: 8080,
+        health_path: "/healthz",
+        resources: %ResourceSpec{vcpus: 1, mem_mib: 256}
+      })
+
+    assert fresh.vm_id == "vm:base-snap"
+    assert fresh.ip == "10.99.0.1"
+    assert fresh.port == 8080
+
+    # StartServing, relight source: proves the oneof relight branch crosses the
+    # wire distinctly from fresh.
+    {:ok, relit} =
+      NodeService.Stub.start_serving(ch, %StartServingRequest{
+        source: {:relight, %RelightSource{snapshot_ref: "serving/s-abc"}},
+        port: 9090,
+        health_path: "/healthz"
+      })
+
+    assert relit.vm_id == "vm:serving/s-abc"
+    assert relit.port == 9090
+
+    # StopServing, BANK mode: derives snapshot_ref from vm_id.
+    {:ok, banked} =
+      NodeService.Stub.stop_serving(ch, %StopServingRequest{
+        vm_id: "vm:base-snap",
+        mode: :STOP_SERVING_MODE_BANK
+      })
+
+    assert banked.snapshot_ref == "serving/vm:base-snap"
+    assert banked.size_bytes == 3072
+
+    # StopServing, DESTROY mode: no snapshot produced.
+    {:ok, destroyed} =
+      NodeService.Stub.stop_serving(ch, %StopServingRequest{
+        vm_id: "vm:serving/s-abc",
+        mode: :STOP_SERVING_MODE_DESTROY
+      })
+
+    assert destroyed.snapshot_ref == ""
+    assert destroyed.size_bytes == 0
+  end
+
+  test "NodeStatus reports serving facts (R3 additive fields)", %{channel: ch} do
+    {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
+
+    assert [vm] = ns.serving_vms
+    assert vm.vm_id == "vm-srv1"
+    assert vm.workload == "sandbox-serving"
+    assert vm.ip == "10.99.0.2"
+    assert vm.port == 8080
+    assert vm.healthy == true
+    assert vm.last_probe_unix_ms == 1_700_000_001_000
+
+    assert [snap] = ns.serving_snapshots
+    assert snap.snapshot_ref == "serving/s-srv2"
+    assert snap.workload == "sandbox-serving"
+    assert snap.size_bytes == 8192
+    assert snap.created_at_unix_ms == 1_700_000_002_000
+
+    assert ns.serving_subnet_cidr == "10.99.0.0/24"
   end
 
   test "NodeStatus reports session facts (R2 additive fields)", %{channel: ch} do

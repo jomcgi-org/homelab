@@ -101,6 +101,33 @@ func (fakeServer) EvictSnapshot(_ context.Context, _ *nodev1.EvictSnapshotReques
 	return &nodev1.EvictSnapshotResponse{}, nil
 }
 
+// StartServing derives vm_id and ip from whichever source ref was set (fresh or
+// relight) so the client can prove both oneof branches cross the wire, and
+// echoes the requested port back.
+func (fakeServer) StartServing(_ context.Context, req *nodev1.StartServingRequest) (*nodev1.StartServingResponse, error) {
+	ref := req.GetFresh().GetSnapshotRef()
+	if ref == "" {
+		ref = req.GetRelight().GetSnapshotRef()
+	}
+	return &nodev1.StartServingResponse{
+		VmId: "vm:" + ref,
+		Ip:   "10.99.0.1",
+		Port: req.GetPort(),
+	}, nil
+}
+
+// StopServing returns a snapshot_ref/size_bytes for BANK, and zero values for
+// DESTROY, so the client can assert both mode branches.
+func (fakeServer) StopServing(_ context.Context, req *nodev1.StopServingRequest) (*nodev1.StopServingResponse, error) {
+	if req.GetMode() == nodev1.StopServingMode_STOP_SERVING_MODE_BANK {
+		return &nodev1.StopServingResponse{
+			SnapshotRef: "serving/" + req.GetVmId(),
+			SizeBytes:   3072,
+		}, nil
+	}
+	return &nodev1.StopServingResponse{}, nil
+}
+
 func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequest) (*nodev1.NodeStatus, error) {
 	return &nodev1.NodeStatus{
 		NodeId:     req.GetNodeId(),
@@ -122,6 +149,27 @@ func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequ
 		},
 		SnapshotDiskFreeBytes: 9_000_000_000,
 		SnapshotDiskUsedBytes: 1_000_000_000,
+		// Serving facts (R3): deterministic, so the client can assert the new
+		// repeated/scalar status fields round-trip.
+		ServingVms: []*nodev1.ServingVm{
+			{
+				VmId:            "vm-srv1",
+				Workload:        "sandbox-serving",
+				Ip:              "10.99.0.2",
+				Port:            8080,
+				Healthy:         true,
+				LastProbeUnixMs: 1_700_000_001_000,
+			},
+		},
+		ServingSnapshots: []*nodev1.ServingSnapshot{
+			{
+				SnapshotRef:     "serving/s-srv2",
+				Workload:        "sandbox-serving",
+				SizeBytes:       8192,
+				CreatedAtUnixMs: 1_700_000_002_000,
+			},
+		},
+		ServingSubnetCidr: "10.99.0.0/24",
 	}, nil
 }
 
