@@ -171,6 +171,16 @@ servingEnvoy:
   listenerPort: 10000
   adminPort: 9901
   statsPort: 9902
+  # The R4 stateful TCP listenerPort range, exposed as container ports on the node
+  # Envoy DaemonSet and as TCP ports on the serving Service (named state-<port>).
+  # This is CAPACITY: static GitOps config declaring which ports exist. The CRD
+  # watcher validates each stateful workload's spec.stateful.listenPort falls
+  # inside [start, end] and is unique; the control plane then publishes one dynamic
+  # LDS tcp_proxy listener per stateful workload on its assigned port. Reachable
+  # cluster-internally only (ClusterIP), never at the edge (standing decision 10).
+  statefulTcpPortRange:
+    start: 5400
+    end: 5409
   # node-4 pinning: serving runs where Firecracker serving VMs run. A dedicated
   # serving label (not the noded homelab.io/firecracker label) so the two tiers can
   # diverge later; v1 both land on node-4.

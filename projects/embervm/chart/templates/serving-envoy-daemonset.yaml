@@ -88,6 +88,15 @@ spec:
             # (admin is loopback-only and not a pod port).
             - name: stats
               containerPort: {{ .Values.servingEnvoy.statsPort }}
+            # The R4 stateful TCP port range: one container port per port in the
+            # values-declared range, so a dynamic LDS tcp_proxy listener the control
+            # plane publishes on any of them is reachable through the pod. Named
+            # state-<port> for discovery; the serving Service exposes the same range.
+            {{- $r := .Values.servingEnvoy.statefulTcpPortRange }}
+            {{- range $p := untilStep (int $r.start) (int (add (int $r.end) 1)) 1 }}
+            - name: state-{{ $p }}
+              containerPort: {{ $p }}
+            {{- end }}
           readinessProbe:
             # Probe the data listener, not the admin /ready. Admin binds loopback
             # (127.0.0.1) for security, but a kubelet httpGet probe dials from the
