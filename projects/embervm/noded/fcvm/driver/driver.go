@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -110,6 +111,7 @@ type fcAPI interface {
 	PutBootSource(ctx context.Context, b fcclient.BootSource) error
 	PutDrive(ctx context.Context, d fcclient.Drive) error
 	PutVsock(ctx context.Context, v fcclient.Vsock) error
+	PutNetworkInterface(ctx context.Context, n fcclient.NetworkInterface) error
 	Start(ctx context.Context) error
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
@@ -239,11 +241,44 @@ func (d *Driver) removeStaleVsockUDS(threadID string) {
 // init=<path> so the guest boots straight into fc-agent-init (raw FC boot does
 // not honour the OCI image entrypoint).
 func (d *Driver) bootArgs() string {
+	return d.bootArgsFor(nil)
+}
+
+// nicIfaceID is the Firecracker network-interface id for a serving VM's single tap.
+const nicIfaceID = "eth0"
+
+// bootArgsFor is bootArgs plus, for a serving-class cold boot (nic != nil), the
+// kernel `ip=` directive that statically configures the guest's interface at boot:
+// ip=<vmip>::<gwip>:<mask>::<iface>:off (autoconf off; the daemon owns the address).
+// Task/session boots pass nil and get exactly the previous boot args (byte-unchanged).
+// The IP is baked at THIS cold boot; a later snapshot resume keeps it (a resume does
+// not re-run kernel init), which is why the serving IP is pinned across bank/relight
+// (D-R3.4.1).
+func (d *Driver) bootArgsFor(nic *substrate.NICSpec) string {
 	args := d.cfg.KernelBootArgs
 	if d.cfg.HarnessInit != "" {
 		args += " init=" + d.cfg.HarnessInit
 	}
+	if nic != nil {
+		iface := nic.IfaceName
+		if iface == "" {
+			iface = nicIfaceID
+		}
+		mask := prefixLenToMask(nic.PrefixLen)
+		// Linux kernel ip= directive: client-ip::gw-ip:netmask:hostname:device:autoconf
+		args += fmt.Sprintf(" ip=%s::%s:%s::%s:off", nic.IP, nic.GatewayIP, mask, iface)
+	}
 	return args
+}
+
+// prefixLenToMask renders an IPv4 prefix length as a dotted-decimal netmask for the
+// kernel ip= boot directive (which wants a netmask, not a prefix length).
+func prefixLenToMask(prefixLen int) string {
+	if prefixLen < 0 || prefixLen > 32 {
+		prefixLen = 24
+	}
+	mask := net.CIDRMask(prefixLen, 32)
+	return fmt.Sprintf("%d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3])
 }
 
 // baseDir is the bundle directory for a warm base, keyed by an opaque base key
@@ -274,6 +309,34 @@ func (d *Driver) sessionSnapfile(ref string) string {
 
 func (d *Driver) sessionMemfile(ref string) string {
 	return filepath.Join(d.sessionDir(ref), "memfile")
+}
+
+// ServingDir is the parent directory holding all banked SERVING snapshot bundles,
+// under the serving/ prefix of the snapshot root (a sibling of bases/ and sessions/).
+// The daemon rescans exactly this dir on start to report its banked-serving
+// inventory. Callers own its 0700 permission and daemon-ownership.
+func (d *Driver) ServingDir() string { return filepath.Join(d.cfg.SnapshotRoot, "serving") }
+
+// servingDir is the bundle directory for one banked serving snapshot, keyed by an
+// opaque serving snapshot_ref. It sits under serving/ so it is never confused with a
+// base, a session, or a per-thread bundle.
+func (d *Driver) servingDir(ref string) string { return filepath.Join(d.ServingDir(), ref) }
+
+func (d *Driver) servingSnapfile(ref string) string {
+	return filepath.Join(d.servingDir(ref), "snapfile")
+}
+
+func (d *Driver) servingMemfile(ref string) string {
+	return filepath.Join(d.servingDir(ref), "memfile")
+}
+
+// servingMetafile is the sidecar recording the pinned tap IP a serving snapshot was
+// banked with (D-R3.4.1). A relight reads it to re-acquire the SAME host IP, because
+// the guest's eth0 keeps the IP baked at fresh boot and a snapshot resume never
+// re-runs kernel init. It sits inside the bundle dir so eviction removes it with the
+// bundle and a startup rescan recovers the pin.
+func (d *Driver) servingMetafile(ref string) string {
+	return filepath.Join(d.servingDir(ref), "ip")
 }
 
 // loadInto launches a fresh Firecracker process for threadID and restores it
@@ -333,6 +396,32 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		return d.loadInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
 	}
 
+	return d.coldBoot(ctx, threadID, coldBootSpec{
+		rootfsPath: d.cfg.RootfsPath,
+		vcpus:      d.cfg.VCPUs,
+		memMib:     d.cfg.MemMib,
+		nic:        spec.NIC,
+	})
+}
+
+// coldBootSpec parameterises a cold boot. The task cold-boot path (Claim) fills it
+// from driver config; the serving cold-boot path (ClaimServing) fills it per call
+// (per-workload rootfs/sizing) and sets a NIC. Keeping the boot sequence in one helper
+// means the task and serving cold boots are byte-identical except for the fields here,
+// so the serving addition cannot drift the task boot.
+type coldBootSpec struct {
+	rootfsPath string
+	vcpus      int
+	memMib     int
+	nic        *substrate.NICSpec
+}
+
+// coldBoot launches a fresh Firecracker process, provisions a per-thread rootfs (or
+// falls back to the given static rootfs), configures the machine + boot source +
+// rootfs drive (+ tap NIC when nic != nil) + vsock, and Starts it. The NIC branch is
+// the ONLY serving-specific step and is skipped entirely when nic is nil, so the
+// task/session cold boot is byte-unchanged.
+func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec) (substrate.Handle, error) {
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -352,7 +441,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	// Each thread gets its own writable rootfs (from the base image) so threads
 	// never share or corrupt one disk. With no provisioner, fall back to the
 	// shared/static rootfs (e.g. a kata rootfs smoke test).
-	rootfsPath := d.cfg.RootfsPath
+	rootfsPath := cb.rootfsPath
 	if d.provisioner != nil {
 		// provision_rootfs is the cold-start cost ADR 026 targets (the full-copy
 		// CopyProvisioner today; a CoW provisioner later). Its own span makes the
@@ -370,14 +459,28 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	// so they are not in this span).
 	_, bspan := tracer.Start(ctx, "firecracker_boot")
 	bootErr := func() error {
-		if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{VCPUCount: d.cfg.VCPUs, MemSizeMib: d.cfg.MemMib}); err != nil {
+		if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{VCPUCount: cb.vcpus, MemSizeMib: cb.memMib}); err != nil {
 			return err
 		}
-		if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgs()}); err != nil {
+		if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgsFor(cb.nic)}); err != nil {
 			return err
 		}
 		if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true, IsReadOnly: d.cfg.RootfsReadOnly}); err != nil {
 			return err
+		}
+		// Serving class (R3): attach the tap NIC pre-Start. Task/session claims leave
+		// nic nil and never reach this, so their boot path is byte-unchanged
+		// (vsock-only, no NIC). Firecracker cannot hot-attach a NIC to a resumed
+		// snapshot, so a NIC is only configured on this COLD-boot path; the serving
+		// relight path restores a snapshot that already captured its NIC.
+		if cb.nic != nil {
+			if err := client.PutNetworkInterface(ctx, fcclient.NetworkInterface{
+				IfaceID:     nicIfaceID,
+				HostDevName: cb.nic.HostDevName,
+				GuestMAC:    cb.nic.GuestMAC,
+			}); err != nil {
+				return err
+			}
 		}
 		// The zip lane no longer attaches the archive as a block device: it is
 		// hydrated over vsock (POST /shim/hydrate) after boot, so the build guest
@@ -398,6 +501,41 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
 	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock})
 	return h, nil
+}
+
+// ClaimServing cold-boots a serving-class microVM from a per-workload rootfs WITH a
+// tap NIC configured pre-Start and its static IP baked via boot-args (D-R3.4.2: a
+// serving VM must be cold-booted because a resumed snapshot cannot gain a NIC). The
+// VM lands in THIS driver's live map, so it counts against LiveCount exactly like a
+// task or session VM, and its later bank (SnapshotServing) / destroy (Release) run
+// against the same driver. rootfsPath/vcpus/memMib come from the serving workload's
+// image identity (resolved by the server from its image table), NOT driver config, so
+// one shared driver serves every serving workload.
+func (d *Driver) ClaimServing(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec) (substrate.Handle, error) {
+	if nic.HostDevName == "" {
+		return substrate.Handle{}, fmt.Errorf("driver: ClaimServing requires a host tap device")
+	}
+	// harnessInit currently rides driver-global cfg.HarnessInit (the serving rootfs
+	// boots the same shim init as every other guest); the parameter is carried so a
+	// per-image init override can be threaded later without a signature change.
+	_ = harnessInit
+	vcpus = orDefault(vcpus, d.cfg.VCPUs)
+	memMib = orDefault(memMib, d.cfg.MemMib)
+	nicCopy := nic
+	return d.coldBoot(ctx, newID("serv"), coldBootSpec{
+		rootfsPath: rootfsPath,
+		vcpus:      vcpus,
+		memMib:     memMib,
+		nic:        &nicCopy,
+	})
+}
+
+// orDefault returns v when positive, else def.
+func orDefault(v, def int) int {
+	if v > 0 {
+		return v
+	}
+	return def
 }
 
 // Snapshot pauses the microVM, writes a full snapshot bundle, and resumes it so
@@ -617,6 +755,118 @@ func (d *Driver) RemoveSessionBundle(snapshotRef string) error {
 	}
 	if err := os.RemoveAll(d.sessionDir(snapshotRef)); err != nil {
 		return fmt.Errorf("driver: remove session bundle: %w", err)
+	}
+	return nil
+}
+
+// ---- serving snapshot mechanics (R3) ---------------------------------------
+//
+// These mirror the R2 session bank/relight/evict mechanics exactly, under the
+// serving/ prefix instead of sessions/, with ONE addition: the pinned tap IP is
+// written to an "ip" sidecar in the bundle at bank and returned by rescan, because a
+// serving guest's eth0 IP is baked at fresh boot and a resume cannot change it, so a
+// relight must re-acquire the same host IP (D-R3.4.1). The digest-versioned bundle
+// layout (D-R2.7: snapshots embed host paths, so each bundle is self-contained) is
+// unchanged. A serving snapshot carries a NIC because the fresh cold boot created one
+// before the bank; restoring it resumes a VM that already has its eth0.
+
+// SnapshotServing pauses a live serving VM and writes a self-contained serving bundle
+// (memfile + snapfile) under serving/<ref>, plus the pinned-IP sidecar. It does NOT
+// resume: the caller Releases the VM immediately after (StopServing BANK destroys). It
+// mirrors SnapshotSession; the only addition is persisting pinnedIP so a relight can
+// re-acquire it. On any failure after the handle is confirmed the VM is torn down (a
+// bank is destructive), so a failed bank never leaves a live/paused handle behind.
+func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapshotRef, pinnedIP string) (substrate.SnapshotRef, error) {
+	if snapshotRef == "" {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: SnapshotServing requires a snapshot_ref")
+	}
+	inst := d.get(h.ID)
+	if inst == nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot-serving of unknown handle %q", h.ID)
+	}
+	banked := false
+	defer func() {
+		if !banked {
+			_ = d.Release(ctx, h)
+		}
+	}()
+	if err := os.MkdirAll(d.servingDir(snapshotRef), 0o700); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir serving bundle: %w", err)
+	}
+	snapPath := d.servingSnapfile(snapshotRef)
+	memPath := d.servingMemfile(snapshotRef)
+	snapTmp := snapPath + ".tmp"
+	memTmp := memPath + ".tmp"
+
+	if err := inst.client.Pause(ctx); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause serving: %w", err)
+	}
+	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create serving snapshot: %w", err)
+	}
+	// Publish memfile before snapfile (a restore reads the snapfile to locate the
+	// memfile), then the IP sidecar. A rescan treats a bundle without a snapfile as
+	// half-written and skips it, so the snapfile is published LAST.
+	if err := os.Rename(memTmp, memPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish serving memfile: %w", err)
+	}
+	if pinnedIP != "" {
+		if err := os.WriteFile(d.servingMetafile(snapshotRef), []byte(pinnedIP), 0o600); err != nil {
+			return substrate.SnapshotRef{}, fmt.Errorf("driver: write serving pinned-ip: %w", err)
+		}
+	}
+	if err := os.Rename(snapTmp, snapPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish serving snapfile: %w", err)
+	}
+	banked = true
+	return substrate.SnapshotRef{
+		ID:        snapshotRef,
+		Node:      d.cfg.Node,
+		Arch:      d.cfg.Arch,
+		SizeBytes: bundleSize(snapPath, memPath),
+	}, nil
+}
+
+// RestoreServing launches a fresh Firecracker process and loads a banked SERVING
+// bundle (serving/<snapshotRef>), resuming it so the guest continues exactly where it
+// was banked, WITH the NIC it captured at bank time. It mirrors RestoreSession. The
+// caller has already re-created the host tap and re-acquired the pinned IP (D-R3.4.1)
+// so the resumed guest's baked eth0 IP still routes. A missing bundle is an error the
+// caller maps to FAILED_PRECONDITION (the snapshot is never deleted on a failed
+// restore).
+func (d *Driver) RestoreServing(ctx context.Context, snapshotRef string) (substrate.Handle, error) {
+	if snapshotRef == "" {
+		return substrate.Handle{}, fmt.Errorf("driver: RestoreServing requires a snapshot_ref")
+	}
+	snapPath := d.servingSnapfile(snapshotRef)
+	if _, err := os.Stat(snapPath); err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: serving bundle missing for %q: %w", snapshotRef, err)
+	}
+	threadID := newID("serv")
+	return d.loadInto(ctx, threadID, snapPath, d.servingMemfile(snapshotRef), "restore.sock")
+}
+
+// ServingPinnedIP reads the pinned tap IP a serving snapshot was banked with, for a
+// relight to re-acquire (D-R3.4.1) and for a startup rescan to recover. An absent
+// sidecar returns "" (a snapshot banked before the IP pin, or a fresh node): the
+// caller then allocates a new IP, accepting the rare cold-node reallocation.
+func (d *Driver) ServingPinnedIP(snapshotRef string) string {
+	b, err := os.ReadFile(d.servingMetafile(snapshotRef))
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// RemoveServingBundle deletes a banked serving snapshot's on-disk bundle
+// (serving/<snapshotRef>), including the IP sidecar. It is the serving EvictSnapshot
+// mechanic. Idempotent: a missing bundle is not an error.
+func (d *Driver) RemoveServingBundle(snapshotRef string) error {
+	if snapshotRef == "" {
+		return fmt.Errorf("driver: RemoveServingBundle requires a snapshot_ref")
+	}
+	if err := os.RemoveAll(d.servingDir(snapshotRef)); err != nil {
+		return fmt.Errorf("driver: remove serving bundle: %w", err)
 	}
 	return nil
 }

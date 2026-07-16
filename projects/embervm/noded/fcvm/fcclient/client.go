@@ -70,6 +70,20 @@ type Vsock struct {
 	UDSPath  string `json:"uds_path"`
 }
 
+// NetworkInterface is the body of PUT /network-interfaces/{iface_id}. It is used
+// ONLY by serving-class VMs (R3): the daemon creates a host tap device and attaches
+// it to the guest as eth0 so the guest answers HTTP directly over an L3 NIC. Task and
+// session VMs are vsock-only and NEVER configure a network interface, so this call is
+// absent from their boot path. It is a PRE-BOOT config call (like drives and vsock):
+// Firecracker cannot hot-attach a NIC to a snapshot-restored/resumed VM, so a serving
+// VM gets its NIC at cold boot and a serving snapshot resume keeps the NIC that was
+// captured in the snapshot.
+type NetworkInterface struct {
+	IfaceID     string `json:"iface_id"`
+	HostDevName string `json:"host_dev_name"`
+	GuestMAC    string `json:"guest_mac,omitempty"`
+}
+
 // MemBackend selects how a memory snapshot is restored. Backend "File" mmaps the
 // image and faults pages lazily (sub-second restore without UFFD); "Uffd" uses a
 // userfaultfd handler (Phase 6).
@@ -111,6 +125,12 @@ func (c *Client) PutDrive(ctx context.Context, d Drive) error {
 // PutVsock attaches a vsock device for the wrapper channel.
 func (c *Client) PutVsock(ctx context.Context, v Vsock) error {
 	return c.do(ctx, http.MethodPut, "/vsock", v)
+}
+
+// PutNetworkInterface attaches a host tap device to the guest as a network
+// interface. Serving-class VMs only; a pre-boot call (see NetworkInterface).
+func (c *Client) PutNetworkInterface(ctx context.Context, n NetworkInterface) error {
+	return c.do(ctx, http.MethodPut, "/network-interfaces/"+n.IfaceID, n)
 }
 
 // Start boots the configured microVM (action InstanceStart).

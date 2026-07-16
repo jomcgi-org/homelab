@@ -27,6 +27,15 @@ contents:
   packages:
     - ca-certificates-bundle
     - busybox
+    # iproute2 (ip) and nftables (nft) drive serving-class VM networking (R3): the
+    # daemon execs them to create the per-node bridge, one tap per serving VM, IP
+    # assignment, and the ingress-only nftables posture on the bridge. Task/session
+    # VMs are vsock-only and never touch these; they are dormant until the first
+    # StartServing. The daemon already runs privileged (uid 0) for Firecracker's
+    # /dev/kvm and mount-namespace re-exec, so the CAP_NET_ADMIN these need is
+    # already granted, no new capability. See projects/embervm/noded/serving.
+    - iproute2
+    - nftables
 
 archs:
   - x86_64

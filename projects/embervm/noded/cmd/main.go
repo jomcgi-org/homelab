@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/embervm/noded/server"
+	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockhttp"
 )
 
@@ -84,6 +86,16 @@ func run(logger *slog.Logger) error {
 		})
 	}
 
+	// The serving network Manager owns the host bridge, taps, nftables, and IP
+	// allocation for serving-class VMs (R3). A malformed serving CIDR fails startup
+	// loudly. The same restore driver serves the serving driver mechanics: it gains a
+	// cold-boot-with-NIC ClaimServing plus SnapshotServing/RestoreServing under the
+	// serving/ prefix, and its live map counts serving VMs against the node cap.
+	servingNet, err := serving.NewManager(serving.ExecRunner{}, cfg.ServingBridge, cfg.ServingSubnetCIDR)
+	if err != nil {
+		return err
+	}
+
 	srv := server.New(server.Options{
 		Config: cfg,
 		Driver: restoreDriver,
@@ -91,10 +103,16 @@ func run(logger *slog.Logger) error {
 		// RestoreSession / RemoveSessionBundle reuse its base-bundle snapshot/restore
 		// mechanics under a sessions/ prefix, and its live map already counts session
 		// VMs against the node cap.
-		SessionDriver:  restoreDriver,
-		Transport:      transport,
-		NewBuildDriver: newBuild,
-		Logger:         logger,
+		SessionDriver: restoreDriver,
+		// The same restore driver also serves the R3 serving verbs (ClaimServing cold
+		// boot + SnapshotServing/RestoreServing under serving/).
+		ServingNet:                servingNet,
+		ServingDriver:             restoreDriver,
+		Transport:                 transport,
+		NewBuildDriver:            newBuild,
+		Logger:                    logger,
+		ServingProbeInterval:      cfg.ServingProbeInterval,
+		ServingUnhealthyThreshold: cfg.ServingUnhealthyThreshold,
 	})
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.
@@ -103,6 +121,14 @@ func run(logger *slog.Logger) error {
 	// control plane adopts surviving banked sessions (live session VMs died with the
 	// prior daemon; their last banked snapshot, if any, stays restorable).
 	srv.ReconcileSessionsFromDisk()
+	// Report node-local BANKED serving snapshots (with their pinned IPs) the same way,
+	// so a relight after restart re-acquires the same tap IP (D-R3.4.1).
+	srv.ReconcileServingFromDisk()
+	// Create the serving bridge and install the ingress-only nftables posture before
+	// serving any StartServing. Idempotent across restarts (existing bridge tolerated).
+	if err := servingNet.EnsureNetwork(ctx); err != nil {
+		return fmt.Errorf("serving network setup: %w", err)
+	}
 
 	var serverOpts []grpc.ServerOption
 	if cfg.BearerToken != "" {

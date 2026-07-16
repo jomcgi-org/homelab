@@ -336,3 +336,117 @@ func TestDriverExecNotHostProvided(t *testing.T) {
 		t.Fatal("Exec should report it is handled by the in-VM harness")
 	}
 }
+
+// TestBootArgsForServingNIC asserts the serving cold-boot kernel ip= directive is
+// appended for a NIC, and that a nil NIC (task/session) leaves the boot args
+// byte-unchanged (the additive-boot invariant).
+func TestBootArgsForServingNIC(t *testing.T) {
+	d := New(Config{
+		KernelBootArgs: "console=ttyS0",
+		HarnessInit:    "/init",
+	}, &fakeLauncher{}, nil)
+
+	// Nil NIC: task/session boot args, no ip= directive.
+	got := d.bootArgsFor(nil)
+	want := "console=ttyS0 init=/init"
+	if got != want {
+		t.Fatalf("bootArgsFor(nil) = %q, want %q", got, want)
+	}
+
+	// Serving NIC: appends the ip= directive with a dotted netmask.
+	nicArgs := d.bootArgsFor(&substrate.NICSpec{
+		IP:        "172.31.0.2",
+		GatewayIP: "172.31.0.1",
+		PrefixLen: 24,
+		IfaceName: "eth0",
+	})
+	wantSuffix := " ip=172.31.0.2::172.31.0.1:255.255.255.0::eth0:off"
+	if nicArgs != want+wantSuffix {
+		t.Fatalf("bootArgsFor(nic) = %q, want %q", nicArgs, want+wantSuffix)
+	}
+}
+
+func TestPrefixLenToMask(t *testing.T) {
+	for _, tc := range []struct {
+		prefix int
+		want   string
+	}{
+		{24, "255.255.255.0"},
+		{16, "255.255.0.0"},
+		{29, "255.255.255.248"},
+	} {
+		if got := prefixLenToMask(tc.prefix); got != tc.want {
+			t.Errorf("prefixLenToMask(%d) = %q want %q", tc.prefix, got, tc.want)
+		}
+	}
+}
+
+// TestClaimServingBootsWithNIC cold-boots a serving VM and asserts it lands in the
+// live map (counted against LiveCount like any VM). The fake FC server's catch-all
+// accepts PUT /network-interfaces, so a successful boot proves the NIC step ran.
+func TestClaimServingBootsWithNIC(t *testing.T) {
+	d := testDriver(t)
+	h, err := d.ClaimServing(context.Background(), "/rootfs/serve", "/init", 2, 512, substrate.NICSpec{
+		HostDevName: "emtap0002",
+		IP:          "172.31.0.2",
+		GatewayIP:   "172.31.0.1",
+		PrefixLen:   24,
+	})
+	if err != nil {
+		t.Fatalf("ClaimServing: %v", err)
+	}
+	if h.ID == "" || h.Node != "node-4" {
+		t.Fatalf("unexpected serving handle: %+v", h)
+	}
+	if d.LiveCount() != 1 {
+		t.Fatalf("serving VM not counted in LiveCount: %d", d.LiveCount())
+	}
+}
+
+func TestClaimServingRequiresTap(t *testing.T) {
+	d := testDriver(t)
+	if _, err := d.ClaimServing(context.Background(), "/rootfs", "", 1, 128, substrate.NICSpec{}); err == nil {
+		t.Fatal("ClaimServing without a host tap device should error")
+	}
+}
+
+// TestServingSnapshotRoundTrip banks a serving VM (writing the pinned-IP sidecar),
+// reads the pin back, restores from the bundle, and evicts it, mirroring the session
+// round-trip test but asserting the D-R3.4.1 IP pin is persisted and recovered.
+func TestServingSnapshotRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+	h, err := d.ClaimServing(ctx, "/rootfs/serve", "/init", 1, 256, substrate.NICSpec{HostDevName: "emtap0002", IP: "172.31.0.2", GatewayIP: "172.31.0.1", PrefixLen: 24})
+	if err != nil {
+		t.Fatalf("ClaimServing: %v", err)
+	}
+	ref, err := d.SnapshotServing(ctx, h, "servref-1", "172.31.0.2")
+	if err != nil {
+		t.Fatalf("SnapshotServing: %v", err)
+	}
+	if ref.ID != "servref-1" {
+		t.Fatalf("ref = %+v", ref)
+	}
+	// The pinned IP was persisted and is recoverable (rescan / relight re-acquire).
+	if got := d.ServingPinnedIP("servref-1"); got != "172.31.0.2" {
+		t.Fatalf("ServingPinnedIP = %q want 172.31.0.2", got)
+	}
+	// Restore resumes from the bundle.
+	rh, err := d.RestoreServing(ctx, "servref-1")
+	if err != nil {
+		t.Fatalf("RestoreServing: %v", err)
+	}
+	if rh.ID == "" {
+		t.Fatal("RestoreServing returned an empty handle")
+	}
+	// Evict removes the bundle; a subsequent restore fails and the pin is gone.
+	if err := d.RemoveServingBundle("servref-1"); err != nil {
+		t.Fatalf("RemoveServingBundle: %v", err)
+	}
+	if d.ServingPinnedIP("servref-1") != "" {
+		t.Error("pinned IP should be gone after evict")
+	}
+	if _, err := d.RestoreServing(ctx, "servref-1"); err == nil {
+		t.Fatal("restore of an evicted serving bundle should error")
+	}
+}

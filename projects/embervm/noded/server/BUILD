@@ -5,11 +5,14 @@ go_library(
     srcs = [
         "registry.go",
         "server.go",
+        "serving.go",
+        "serving_registry.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/server",
     visibility = ["//projects/embervm/noded:__subpackages__"],
     deps = [
         "//projects/embervm/noded/config",
+        "//projects/embervm/noded/serving",
         "//projects/embervm/noded/substrate",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
         "@org_golang_google_grpc//:grpc",
@@ -21,7 +24,10 @@ go_library(
 
 go_test(
     name = "server_test",
-    srcs = ["server_test.go"],
+    srcs = [
+        "server_test.go",
+        "serving_test.go",
+    ],
     embed = [":server"],
     deps = [
         "//projects/embervm/noded/config",
