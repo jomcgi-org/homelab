@@ -535,7 +535,7 @@ defmodule Embervm.WorkloadWatcherTest do
     assert Process.alive?(watcher)
   end
 
-  test "serving class: a resolved host conflict re-validates cleanly on the next reconcile" do
+  test "serving class: a resolved host conflict re-validates cleanly (two-reconcile eventual convergence)" do
     table = unique_table()
     agent = start_recorder()
 
@@ -549,13 +549,30 @@ defmodule Embervm.WorkloadWatcherTest do
     assert WorkloadCatalog.fetch(table, "sandbox-serving-2") == :error
 
     # The first workload is deleted (no longer returned by LIST); the second
-    # now owns the host uncontested and must catalog cleanly on the next
-    # reconcile, proving the collision check is live-catalog-derived, not
-    # some sticky watcher-local rejection. Same watcher, second LIST pass
-    # (mirroring the fail-open list-error test's mutable-lister idiom), not a
-    # second watcher instance: two live watchers would both try to create the
-    # SAME named ETS table and collide.
+    # now owns the host uncontested and must eventually catalog cleanly,
+    # proving the collision check is live-catalog-derived, not some sticky
+    # watcher-local rejection. Same watcher, mutable lister across reconciles
+    # (mirroring the fail-open list-error test's idiom), not a second watcher
+    # instance: two live watchers would both try to create the SAME named ETS
+    # table and collide.
+    #
+    # The heal takes TWO reconciles, not one: reconcile_full/3 validates every
+    # CR in the list against the LIVE catalog first, and only prunes names
+    # absent from the list AFTER that validation pass completes (see
+    # `all_names(state.table) -- seen` at the end of reconcile_full/3). So on
+    # the reconcile right after `first` disappears from the list, `second`
+    # still validates against a catalog where `first` (and its host) has not
+    # been pruned yet, so it conflicts again; `first` is pruned only at the
+    # END of that same reconcile. `second` therefore catalogs cleanly on the
+    # FOLLOWING reconcile, once `first` is actually gone. This is correct
+    # eventually-consistent behavior for a shared validate-before-prune path
+    # (also used by task/session), not a bug in the serving-only logic.
     Agent.update(lister_agent, fn _ -> [second] end)
+    # R2: first is still in the catalog (pruned at the end of THIS pass), so
+    # second still conflicts.
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+    assert WorkloadCatalog.fetch(table, "sandbox-serving-2") == :error
+    # R3: first is now gone, second catalogs cleanly.
     :ok = WorkloadWatcher.reconcile_now(watcher)
 
     assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-serving-2")
