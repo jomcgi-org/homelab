@@ -740,17 +740,11 @@ defmodule Embervm.BaseBuilder do
     entry
     |> maybe_put_count(:primed, Keyword.get(counts, :primed))
     |> maybe_put_count(:sessions, Keyword.get(counts, :sessions))
-    # R3: accepts a :serving count from a future ServingStore (Task 9) the
-    # same way :primed/:sessions are accepted, extending the MECHANISM only.
-    # evictable?/1 below deliberately does NOT require :serving yet: it is
-    # one guard shared by every workload's superseded-base eviction (task and
-    # session included), and nothing reports :serving until Task 9 ships its
-    # ServingStore. Requiring it now, before any caller ever reports it,
-    # would silently wedge base eviction repo-wide (nil never equals 0), not
-    # just for serving workloads. Task 9 must widen evictable?/1 to require
-    # serving: 0 IN THE SAME COMMIT that lands the first :serving report, so
-    # there is never a version where the guard demands a count nothing
-    # reports yet.
+    # R3 (D-R3.3.1): accepts a :serving count from a future ServingStore
+    # (Task 9) the same way :primed/:sessions are accepted, extending the
+    # MECHANISM only. evictable?/1 below deliberately does NOT require it yet;
+    # see that function's comment for why both directions of getting this
+    # sequencing wrong are unacceptable.
     |> maybe_put_count(:serving, Keyword.get(counts, :serving))
   end
 
@@ -761,6 +755,20 @@ defmodule Embervm.BaseBuilder do
   # A nil (unreported) count is treated as "still referenced": eviction is
   # withheld until every owner has spoken, so a base is never destroyed under a
   # session that has not yet been counted (fail-safe).
+  #
+  # R3 (D-R3.3.1): deliberately still keyed on primed/sessions only, NOT
+  # serving, even though merge_refcounts/2 above now accepts a :serving count.
+  # Task 9 (the ServingStore) MUST widen this to
+  # %{primed: 0, sessions: 0, serving: 0, evicted: false} AND land the first
+  # :serving report_base_refs/3 reporter IN THE SAME COMMIT. Either half done
+  # alone is wrong in a different direction: widening the guard here without a
+  # reporter existing yet would make it require serving: 0 forever (nil never
+  # equals 0), silently wedging base eviction for EVERY workload class, not
+  # just serving; landing a reporter without widening the guard would let a
+  # live serving instance's birth base evict out from under it (the guard
+  # would already be satisfied by primed:0/sessions:0 alone, ignoring the
+  # live serving instance entirely). Both failure modes are unacceptable, so
+  # the widen and the first report must ship together.
   defp evictable?(%{primed: 0, sessions: 0, evicted: false}), do: true
   defp evictable?(_), do: false
 
