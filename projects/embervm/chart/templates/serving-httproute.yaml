@@ -1,49 +1,53 @@
-{{- if and .Values.servingEnvoy.enabled .Values.servingEnvoy.drillRoute.enabled }}
+{{- if .Values.servingEnvoy.enabled }}
 {{- /*
-Static edge route for the R3 serving bring-up drill. A PATH on the existing
-private host (https://private.jomcgi.dev/og-image-serving), NOT a new subdomain:
-the private Envoy Gateway is HTTP-only and TLS terminates at Cloudflare's edge
-with the universal *.jomcgi.dev wildcard, so a new subdomain would need a new
-Cloudflare Tunnel ingress rule + DNS entry, while a path on the already-routed
-private host needs no DNS/cert/tunnel change. This mirrors the signoz/argocd
-path-route precedent on the same gateway. GitOps-managed, never runtime-written.
+Operator-owned ingress routes for serving workloads (Gateway API).
 
-The edge forwards Host = the gateway hostname (private.jomcgi.dev), but the node
-Envoy's published virtual host matches on the workload's serving.host, so the
-URLRewrite filter below rewrites the Host to serving.host before the request
-reaches the node Envoy (D-R3.11.2 routing fix).
+embervm exposes each serving workload as a BACKEND (the serving Service + an internal
+vhost authority the node Envoy matches, pushed via xDS by the control plane). This
+template renders the operator's HTTPRoutes from servingEnvoy.routes: each entry binds a
+gateway + hostname + path and rewrites the external Host to the workload's internal
+vhost authority (rewriteHost) before the request reaches the serving Service, so the
+node Envoy's xDS-published virtual host matches. Public vs private is purely which
+gateway/hostname an entry binds (and whether Cloudflare Access fronts that hostname);
+the serving substrate knows none of it. A path on an already-routed host needs no
+DNS/cert/tunnel change, which is why the og-image routes are paths, not subdomains
+(mirroring the signoz/argocd path-route precedent on the same gateway).
+
+URLRewrite.hostname is the canonical Gateway-API Host rewrite (a RequestHeaderModifier
+on Host is rejected by some implementations).
 */}}
+{{- range .Values.servingEnvoy.routes }}
+{{- if .enabled }}
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: {{ include "embervm.serving.fullname" . }}-drill
+  name: {{ include "embervm.serving.fullname" $ }}-{{ .name }}
   labels:
-    {{- include "embervm.servingEnvoy.labels" . | nindent 4 }}
-    ingress-tier: {{ .Values.servingEnvoy.drillRoute.tier }}
+    {{- include "embervm.servingEnvoy.labels" $ | nindent 4 }}
+    ingress-tier: {{ .tier }}
 spec:
   parentRefs:
-    - name: {{ .Values.servingEnvoy.drillRoute.gateway.name }}
-      namespace: {{ .Values.servingEnvoy.drillRoute.gateway.namespace }}
+    - name: {{ .gateway.name }}
+      namespace: {{ .gateway.namespace }}
   hostnames:
-    - {{ .Values.servingEnvoy.drillRoute.hostname | quote }}
+    - {{ .hostname | quote }}
   rules:
     - matches:
         - path:
             type: PathPrefix
-            value: {{ .Values.servingEnvoy.drillRoute.pathPrefix | quote }}
+            value: {{ .pathPrefix | quote }}
       filters:
-        # Rewrite the Host to the serving workload's own host (D-R3.11.2 routing
-        # fix). The edge forwards Host = the gateway hostname (private.jomcgi.dev,
-        # because the drill is a PATH on the private host, not a subdomain), but the
-        # node Envoy's published virtual host matches on the workload's serving.host
-        # (og-image-serving.private.jomcgi.dev, EndpointPublisher route_for). Without
-        # this rewrite the node Envoy has no vhost for private.jomcgi.dev and 404s.
-        # URLRewrite.hostname is the canonical Gateway-API Host rewrite (a
-        # RequestHeaderModifier on Host is rejected by some implementations).
+        # Rewrite the external Host to the workload's INTERNAL vhost authority so the
+        # node Envoy's xDS-published virtual host matches. The edge forwards Host = the
+        # gateway hostname (a path on that host, not a subdomain), which the node Envoy
+        # has no vhost for; without this rewrite it 404s.
         - type: URLRewrite
           urlRewrite:
-            hostname: {{ .Values.servingOgImage.serving.host | quote }}
+            hostname: {{ .rewriteHost | quote }}
       backendRefs:
-        - name: {{ include "embervm.serving.fullname" . }}
-          port: {{ .Values.servingEnvoy.listenerPort }}
+        - name: {{ include "embervm.serving.fullname" $ }}
+          port: {{ $.Values.servingEnvoy.listenerPort }}
+{{- end }}
+{{- end }}
 {{- end }}

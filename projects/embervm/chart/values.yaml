@@ -186,24 +186,42 @@ servingEnvoy:
       memory: 96Mi
     limits:
       memory: 192Mi
-  # The static edge route for the R3 bring-up drill (a path on the private host,
-  # not a new subdomain: no DNS/cert/tunnel change needed). matchHost is the Host
-  # header the serving Envoy's route matches (the private gateway hostname).
+  # Operator-owned ingress routes for serving workloads.
   #
-  # Canonical drill route as of R3 Part A (D-R3.11.1): repointed from the
-  # never-realized serving-hello placeholder to /og-image-serving, which routes to
-  # the real serving-og-image workload (the first serving-class zip consumer). The
-  # hand-pushed drill xDS snapshot maps matchHost (private.jomcgi.dev) to that
-  # workload's cluster. Private drill only: NO public og-image traffic (Part B).
-  drillRoute:
-    enabled: true
-    tier: trusted
-    hostname: private.jomcgi.dev
-    pathPrefix: /og-image-serving
-    matchHost: private.jomcgi.dev
-    gateway:
-      name: cloudflare-ingress
-      namespace: envoy-gateway-system
+  # SEPARATION OF CONCERNS: embervm exposes each serving workload as a Gateway-API
+  # BACKEND only: the serving Service, plus an internal vhost authority the node Envoy
+  # matches (pushed via xDS by the control plane). embervm's substrate knows NOTHING
+  # about this cluster's ingress topology. The OPERATOR owns EXPOSURE by listing
+  # HTTPRoutes here: each entry binds a gateway + hostname + path and rewrites the
+  # external Host to the workload's internal vhost authority (rewriteHost) before the
+  # request reaches the serving Service. Public vs private is purely which gateway and
+  # hostname an entry binds (and whether Cloudflare Access fronts that hostname);
+  # nothing about it is baked into the serving substrate. Add, remove, or repoint
+  # routes freely without touching embervm code.
+  #
+  # Here: og-image is served both on the private host (trusted, Cloudflare-Access
+  # gated) and publicly on the apex (jomcgi.dev/og-image-serving, no Access). A path
+  # on an already-routed host needs no DNS/cert/tunnel change. Both rewrite to the same
+  # internal vhost authority, so both reach the same warm workload.
+  routes:
+    - name: og-image-private
+      enabled: true
+      tier: trusted
+      hostname: private.jomcgi.dev
+      pathPrefix: /og-image-serving
+      rewriteHost: serving-og-image.serving.internal
+      gateway:
+        name: cloudflare-ingress
+        namespace: envoy-gateway-system
+    - name: og-image-public
+      enabled: true
+      tier: public
+      hostname: jomcgi.dev
+      pathPrefix: /og-image-serving
+      rewriteHost: serving-og-image.serving.internal
+      gateway:
+        name: cloudflare-ingress
+        namespace: envoy-gateway-system
 
 # uid 65532 non-root convention. The control plane needs no privilege (only the
 # node daemon is privileged for KVM).
@@ -338,10 +356,12 @@ servingOgImage:
   serving:
     port: 8080
     healthPath: /shim/healthz
-    # Private drill host this workload owns (the drill snapshot maps the edge
-    # match-host to this workload's cluster). Not a public host: Part A takes no
-    # production traffic.
-    host: og-image-serving.private.jomcgi.dev
+    # INTERNAL vhost authority the node Envoy matches on (pushed via xDS), NOT a real
+    # DNS name: it is never resolved, only compared against the :authority header. The
+    # operator's HTTPRoutes (servingEnvoy.routes) rewrite the external Host to this
+    # value, so the workload spec carries none of the cluster's ingress DNS. Keep in
+    # sync with each route's rewriteHost.
+    host: serving-og-image.serving.internal
     minInstances: 0
     maxInstances: 2
     idleBankSeconds: 600
