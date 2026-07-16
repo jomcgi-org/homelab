@@ -92,6 +92,13 @@ data:
                       config_source:
                         resource_api_version: V3
                         ads: {}
+                        # Without a timeout the listener warms forever (never binds)
+                        # until the first RDS push, so the pod fails its port probe
+                        # before the control plane is even live. A short timeout lets
+                        # the listener bind with an empty route table (404 until the
+                        # publisher pushes routes), so the node Envoy is ready as soon
+                        # as its process starts, decoupled from the control plane.
+                        initial_fetch_timeout: 5s
                       route_config_name: embervm-serving
                     http_filters:
                       - name: envoy.filters.http.router
