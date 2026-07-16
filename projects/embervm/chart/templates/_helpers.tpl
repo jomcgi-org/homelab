@@ -51,3 +51,19 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "embervm.noded.serviceAccountName" -}}
 {{- include "embervm.noded.fullname" . -}}
 {{- end -}}
+
+{{/*
+Per-guest-digest rootfs path: <dir>/rootfs-<tag>.ext4, so each pinned guest-image
+version bakes its OWN read-only rootfs file instead of overwriting one fixed path.
+The Firecracker memfile embeds this host path (restore re-attaches it, never
+re-issuing PutDrive), so a chart roll that rebuilt the fixed file in place used to
+swap the bytes under every banked session snapshot -> EXT4 corruption on restore.
+Digest-naming makes the artifact immutable per version; old files persist until an
+(external) reaper drains them. Input: (dict "wl" $wl "top" $top). MUST be used by
+BOTH the rootfs-builder BASE_ROOTFS_PATH and the EMBERVM_NODED_IMAGES rootfsPath so
+the built file and the path noded attaches are byte-identical.
+*/}}
+{{- define "embervm.noded.rootfsPath" -}}
+{{- $suffix := .top.guestImage.tag | toString | replace ":" "-" | replace "@" "-" | replace "/" "-" -}}
+{{- printf "%s-%s.ext4" (trimSuffix ".ext4" .wl.rootfsPath) $suffix -}}
+{{- end -}}

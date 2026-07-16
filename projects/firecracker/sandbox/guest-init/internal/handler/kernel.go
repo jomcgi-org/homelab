@@ -67,9 +67,15 @@ const (
 var sessionKernel = &kernel{}
 
 type kernel struct {
-	mu    sync.Mutex
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
+	mu  sync.Mutex
+	cmd *exec.Cmd
+	// generation counts how many python children this kernel has started over its
+	// lifetime. It is the observability lever for the snapshot/restore question:
+	// if a relit VM logs a HIGHER generation than the bank captured, the guest-init
+	// spawned a fresh child on resume (state came from tmpfs/disk, not the child's
+	// memory); if it logs the SAME generation, the snapshotted child was reused.
+	generation int
+	stdin      io.WriteCloser
 	// r wraps the child stdout; buffered so a frame that arrives in several
 	// vsock/pipe reads is reassembled correctly (partial-read robustness).
 	r *bufio.Reader
@@ -132,6 +138,11 @@ func (k *kernel) run(code string, timeout time.Duration) (ExecResult, error) {
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("handler: start session child: %w", err)
 	}
+	// The session_reset signal the caller sees, correlated with the child generation
+	// that served THIS snippet. On a relit VM the first invoke logs this: started=true
+	// + a bumped generation means the snapshotted child was NOT reused (the R2
+	// state-fidelity question); started=false means it was.
+	klog("session_invoke", "generation", k.generation, "started", started, "code_len", len(code))
 
 	start := time.Now()
 	resp, runErr := k.exchange(code, timeout)
@@ -173,7 +184,16 @@ func (k *kernel) run(code string, timeout time.Duration) (ExecResult, error) {
 // caller as SessionReset: a new child has an empty namespace). Caller holds mu.
 func (k *kernel) ensureChild() (bool, error) {
 	if k.cmd != nil && k.cmd.Process != nil {
+		klog("session_child_reuse", "generation", k.generation, "pid", k.cmd.Process.Pid)
 		return false, nil
+	}
+
+	// About to start a NEW child: record WHY the prior one was not reusable, so a
+	// post-restore fresh spawn is attributable (cmd_nil = kernel state was reset;
+	// process_nil = the child handle lost its OS process across resume).
+	reason := "process_nil"
+	if k.cmd == nil {
+		reason = "cmd_nil"
 	}
 
 	if err := os.MkdirAll(sessionWorkdir, 0o755); err != nil {
@@ -219,7 +239,21 @@ func (k *kernel) ensureChild() (bool, error) {
 	k.cmd = cmd
 	k.stdin = stdin
 	k.r = bufio.NewReaderSize(stdout, 64<<10)
+	k.generation++
+	klog("session_child_start", "generation", k.generation, "pid", cmd.Process.Pid, "reason", reason)
 	return true, nil
+}
+
+// klog writes one structured line to stderr, which the guest kernel wires to the
+// VM serial console (ttyS0); noded pipes the Firecracker process output to its own
+// stdout, so these land in `kubectl logs deploy/embervm-embervm-noded`. Keep the
+// prefix stable and greppable: "guest-kernel".
+func klog(event string, kv ...any) {
+	fmt.Fprintf(os.Stderr, "guest-kernel event=%s", event)
+	for i := 0; i+1 < len(kv); i += 2 {
+		fmt.Fprintf(os.Stderr, " %v=%v", kv[i], kv[i+1])
+	}
+	fmt.Fprintln(os.Stderr)
 }
 
 // exchange writes one request frame and reads one response frame, enforcing

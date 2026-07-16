@@ -22,15 +22,20 @@ data:
     : "${BASE_ROOTFS_PATH:?BASE_ROOTFS_PATH required}"
     size="${ROOTFS_SIZE:-2G}"
     base_dir="$(dirname "$BASE_ROOTFS_PATH")"
-    marker="$base_dir/.guest-ref"
     mkdir -p "$base_dir"
-    # Idempotent: skip the multi-GB rebuild when the base already matches the
-    # deployed guest image (pod restarts with an unchanged image are common).
-    if [ -f "$BASE_ROOTFS_PATH" ] && [ -f "$marker" ] && [ "$(cat "$marker")" = "$GUEST_IMAGE" ]; then
-      echo "base rootfs already current for $GUEST_IMAGE"
+    # BASE_ROOTFS_PATH is now DIGEST-VERSIONED (rootfs-<guest-tag>.ext4), so each
+    # guest image version has its OWN immutable file. Skip if this version's file
+    # already exists (a pod restart on an unchanged image, or a co-scheduled builder
+    # for a workload that shares this guest image). CRUCIAL: never overwrite or delete
+    # any other rootfs-*.ext4 here -- a banked session snapshot embeds the host path
+    # of the rootfs it was born on, so clobbering it corrupts that session's restore
+    # (the EXT4 checksum bug). Old versions are reaped out-of-band once no base or
+    # session references them; this builder only ever ADDS the current version.
+    if [ -f "$BASE_ROOTFS_PATH" ]; then
+      echo "base rootfs already present for this guest version: $BASE_ROOTFS_PATH"
       exit 0
     fi
-    echo "building base rootfs from $GUEST_IMAGE"
+    echo "building base rootfs from $GUEST_IMAGE -> $BASE_ROOTFS_PATH"
     rm -rf /work/root "$BASE_ROOTFS_PATH.tmp"
     mkdir -p /work/root
     # Pull the guest filesystem for THIS node's architecture (the builder image
@@ -43,6 +48,5 @@ data:
     crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
     mkfs.ext4 -q -F -L embervmbase -d /work/root "$BASE_ROOTFS_PATH.tmp" "$size"
     mv -f "$BASE_ROOTFS_PATH.tmp" "$BASE_ROOTFS_PATH"
-    echo "$GUEST_IMAGE" > "$marker"
     echo "base rootfs built at $BASE_ROOTFS_PATH ($size)"
 {{- end }}
