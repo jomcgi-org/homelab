@@ -44,6 +44,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
@@ -164,6 +165,19 @@ type Server struct {
 	bases       *baseRegistry
 	sessionVMs  *sessionRegistry
 	sessionSnap *sessionSnapshotRegistry
+	servingVMs  *servingRegistry
+	servingSnap *servingSnapshotRegistry
+
+	// servingNet owns the host serving network (bridge, taps, nftables, IP
+	// allocation). nil disables the serving verbs (task/session-only tests and any
+	// build without serving networking configured): StartServing/StopServing then
+	// return Unimplemented and NodeStatus.serving_subnet_cidr is empty.
+	servingNet servingNetwork
+	// servingDriver serves the serving-class driver mechanics (cold boot with NIC,
+	// bank/relight under serving/). nil (alongside a nil servingNet) disables serving.
+	servingDriver servingDriver
+	// newProber builds the per-VM health prober from config. Overridable in tests.
+	newProber func() *serving.Prober
 
 	drainingMu sync.RWMutex
 	draining   bool
@@ -180,10 +194,21 @@ type Options struct {
 	// in tests that only exercise the task-class path; the session handlers then
 	// return Unimplemented. In production the same *driver.Driver satisfies both
 	// Driver and SessionDriver.
-	SessionDriver  sessionDriver
+	SessionDriver sessionDriver
+	// ServingNet and ServingDriver serve the R3 serving verbs. Both nil (the default)
+	// leaves StartServing/StopServing returning Unimplemented, so a Server built
+	// without serving support still compiles and task/session behavior is untouched.
+	// In production the same *driver.Driver satisfies ServingDriver and a
+	// *serving.Manager satisfies ServingNet.
+	ServingNet     servingNetwork
+	ServingDriver  servingDriver
 	Transport      transport
 	NewBuildDriver func(BuildDriverSpec) BuildDriver
 	Logger         *slog.Logger
+	// ServingProbeInterval / ServingUnhealthyThreshold configure the per-VM health
+	// probe loop (defaults applied when zero).
+	ServingProbeInterval      time.Duration
+	ServingUnhealthyThreshold int
 }
 
 // New builds a Server. Driver and Transport must not be nil.
@@ -203,8 +228,15 @@ func New(opts Options) *Server {
 		bases:          newBaseRegistry(),
 		sessionVMs:     newSessionRegistry(),
 		sessionSnap:    newSessionSnapshotRegistry(),
+		servingVMs:     newServingRegistry(),
+		servingSnap:    newServingSnapshotRegistry(),
+		servingNet:     opts.ServingNet,
+		servingDriver:  opts.ServingDriver,
 		subs:           make(map[chan struct{}]struct{}),
 	}
+	probeInterval := opts.ServingProbeInterval
+	probeThreshold := opts.ServingUnhealthyThreshold
+	s.newProber = func() *serving.Prober { return serving.NewProber(probeInterval, probeThreshold) }
 	s.memHeadroom = readMemHeadroomMib
 	// The fetch timeout is the per-attempt bound; a per-request context (below)
 	// enforces the same budget so a slow filer cannot pin a build.
@@ -659,6 +691,14 @@ func (s *Server) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1
 	if e := s.sessionVMs.remove(req.GetVmId()); e != nil {
 		s.reap(e.handle, func() {})
 		s.signalChange()
+		return &nodev1.DestroyResponse{}, nil
+	}
+	// A serving VM destroyed out of band lives in the distinct serving registry; its
+	// probe loop is stopped and its tap released alongside the reap.
+	if e := s.servingVMs.remove(req.GetVmId()); e != nil {
+		e.probe.Stop()
+		s.reapServing(e.handle, e.ip)
+		s.signalChange()
 	}
 	return &nodev1.DestroyResponse{}, nil
 }
@@ -943,12 +983,19 @@ func (s *Server) resyncGuestClock(ctx context.Context, uds, vmID string) {
 // running (evicting a bundle out from under a live relit VM would lose the state
 // needed to re-bank it).
 func (s *Server) EvictSnapshot(_ context.Context, req *nodev1.EvictSnapshotRequest) (*nodev1.EvictSnapshotResponse, error) {
-	if s.sessionDriver == nil {
-		return nil, status.Error(codes.Unimplemented, "noded: session eviction not configured")
-	}
 	ref := req.GetSnapshotRef()
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
+	}
+	// A serving snapshot ref is evicted exactly like a session ref, just stored under
+	// the serving/ prefix (per the PR-1 proto contract: serving reuses EvictSnapshot).
+	// Dispatch on which inventory holds the ref BEFORE the session-driver guard so a
+	// serving ref evicts even in a build wired only for serving.
+	if _, ok := s.servingSnap.get(ref); ok {
+		return s.evictServingSnapshot(ref)
+	}
+	if s.sessionDriver == nil {
+		return nil, status.Error(codes.Unimplemented, "noded: session eviction not configured")
 	}
 	// In-use guard: refuse while a live session VM was relit from this ref.
 	for _, e := range s.sessionVMs.snapshotWithRefs() {
@@ -960,6 +1007,26 @@ func (s *Server) EvictSnapshot(_ context.Context, req *nodev1.EvictSnapshotReque
 		return nil, status.Errorf(codes.Internal, "noded: evict session snapshot %q: %v", ref, err)
 	}
 	s.sessionSnap.remove(ref)
+	s.signalChange()
+	return &nodev1.EvictSnapshotResponse{}, nil
+}
+
+// evictServingSnapshot deletes a banked serving snapshot bundle from disk. Like the
+// session path it is idempotent and refuses FAILED_PRECONDITION while a LIVE serving
+// VM is running (a live serving VM has no source-ref to guard against, so this only
+// guards the ref itself against a race with an in-flight relight of the same ref: a
+// relit serving VM is tracked by vm_id, and its source ref stays banked, so evicting a
+// ref that a live VM was relit from is prevented by the servingSnap presence, not a
+// per-VM source ref; a running serving VM that came from this ref keeps the ref banked
+// until StopServing, matching the session semantics).
+func (s *Server) evictServingSnapshot(ref string) (*nodev1.EvictSnapshotResponse, error) {
+	if s.servingDriver == nil {
+		return nil, status.Error(codes.Unimplemented, "noded: serving eviction not configured")
+	}
+	if err := s.servingDriver.RemoveServingBundle(ref); err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: evict serving snapshot %q: %v", ref, err)
+	}
+	s.servingSnap.remove(ref)
 	s.signalChange()
 	return &nodev1.EvictSnapshotResponse{}, nil
 }
@@ -1018,9 +1085,12 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	if maxLive < 0 {
 		maxLive = 0
 	}
-	// Session VMs count against the node live-VM total alongside task-pool VMs.
+	// Session and serving VMs both count against the node live-VM total alongside
+	// task-pool VMs (all three classes Claim through the same driver, but this sum
+	// names the invariant at the call site).
 	sessionVMs := s.sessionVMsStatus()
-	live := taskLive + len(sessionVMs)
+	servingVMs := s.servingVMsStatus()
+	live := taskLive + len(sessionVMs) + len(servingVMs)
 	snaps := s.sessionSnapshotsStatus()
 	freeBytes, usedBytes := s.snapshotDiskUsage()
 	return &nodev1.NodeStatus{
@@ -1036,7 +1106,55 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		SessionSnapshots:      snaps,
 		SnapshotDiskFreeBytes: freeBytes,
 		SnapshotDiskUsedBytes: usedBytes,
+		ServingVms:            servingVMs,
+		ServingSnapshots:      s.servingSnapshotsStatus(),
+		ServingSubnetCidr:     s.servingSubnetCIDR(),
 	}
+}
+
+// servingVMsStatus projects the live serving-VM registry into the NodeStatus message
+// shape, including each VM's current health-probe verdict. Reported ONLY here, never
+// in WorkloadCapacity.primed_vm_ids or session_vms (a serving VM is disjoint from both
+// the task pool and the session pool).
+func (s *Server) servingVMsStatus() []*nodev1.ServingVm {
+	live := s.servingVMs.snapshot()
+	out := make([]*nodev1.ServingVm, 0, len(live))
+	for _, e := range live {
+		out = append(out, &nodev1.ServingVm{
+			VmId:            e.vmID,
+			Workload:        e.workload,
+			Ip:              e.ip,
+			Port:            e.port,
+			Healthy:         e.healthy,
+			LastProbeUnixMs: e.lastProbeUnixMs,
+		})
+	}
+	return out
+}
+
+// servingSnapshotsStatus projects the banked-serving-snapshot inventory into
+// NodeStatus.
+func (s *Server) servingSnapshotsStatus() []*nodev1.ServingSnapshot {
+	snaps := s.servingSnap.snapshot()
+	out := make([]*nodev1.ServingSnapshot, 0, len(snaps))
+	for _, e := range snaps {
+		out = append(out, &nodev1.ServingSnapshot{
+			SnapshotRef:     e.snapshotRef,
+			Workload:        e.workload,
+			SizeBytes:       uint64(e.sizeBytes),
+			CreatedAtUnixMs: e.createdAtUnixMs,
+		})
+	}
+	return out
+}
+
+// servingSubnetCIDR reports the serving subnet CIDR for NodeStatus, or "" when no
+// serving network is configured (task/session-only builds and tests).
+func (s *Server) servingSubnetCIDR() string {
+	if s.servingNet == nil {
+		return ""
+	}
+	return s.servingNet.CIDR()
 }
 
 // sessionVMsStatus projects the live session-VM registry into the NodeStatus
@@ -1322,6 +1440,68 @@ func (s *Server) ReconcileSessionsFromDisk() {
 	}
 	if n > 0 {
 		s.logger.Info("noded: reconciled existing session snapshots", "count", n)
+		s.signalChange()
+	}
+}
+
+// ReconcileServingFromDisk scans the serving/ snapshot dir for banked serving bundles
+// left by a prior daemon incarnation and seeds the in-memory banked-serving inventory,
+// so a restarted daemon reports what banked serving snapshots survive and the control
+// plane adopts them (a live serving VM died with the prior daemon; its last banked
+// snapshot, if any, stays restorable). It recovers each bundle's PINNED IP (D-R3.4.1)
+// from the ip sidecar so a relight after restart still re-acquires the same address. A
+// bundle dir name is the opaque snapshot_ref; workload is unknown for a disk-only entry
+// (the control plane rebinds by adoption). A missing dir or unreadable entries are
+// ignored (fresh node). The dir is (re)created 0700 so a banked bundle is never
+// world-readable.
+func (s *Server) ReconcileServingFromDisk() {
+	if s.servingDriver == nil {
+		return
+	}
+	root := s.servingDriver.ServingDir()
+	if root == "" {
+		return
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		s.logger.Warn("noded: create serving dir", "root", root, "err", err)
+	} else if err := os.Chmod(root, 0o700); err != nil {
+		s.logger.Warn("noded: chmod serving dir 0700", "root", root, "err", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			s.logger.Warn("noded: scan serving bundles", "root", root, "err", err)
+		}
+		return
+	}
+	n := 0
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		ref := ent.Name()
+		snapfile := filepath.Join(root, ref, "snapfile")
+		fi, err := os.Stat(snapfile)
+		if err != nil {
+			// A dir without a snapfile is half-written or evicting; skip.
+			continue
+		}
+		size := fi.Size()
+		createdMs := fi.ModTime().UnixMilli()
+		memfile := filepath.Join(root, ref, "memfile")
+		if mfi, err := os.Stat(memfile); err == nil {
+			size += mfi.Size()
+		}
+		s.servingSnap.add(servingSnapshotEntry{
+			snapshotRef:     ref,
+			ip:              s.servingDriver.ServingPinnedIP(ref),
+			sizeBytes:       size,
+			createdAtUnixMs: createdMs,
+		})
+		n++
+	}
+	if n > 0 {
+		s.logger.Info("noded: reconciled existing serving snapshots", "count", n)
 		s.signalChange()
 	}
 }

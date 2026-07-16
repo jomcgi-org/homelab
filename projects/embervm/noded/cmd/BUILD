@@ -12,6 +12,7 @@ go_library(
         "//projects/embervm/noded/config",
         "//projects/embervm/noded/fcvm/driver",
         "//projects/embervm/noded/server",
+        "//projects/embervm/noded/serving",
         "//projects/embervm/noded/vsockhttp",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
         "@org_golang_google_grpc//:grpc",

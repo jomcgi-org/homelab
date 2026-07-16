@@ -36,6 +36,32 @@ type ClaimSpec struct {
 	// Arch pins CPU architecture; Firecracker snapshots are non-portable and a
 	// mismatched restore fails closed.
 	Arch string
+	// NIC, when non-nil, requests a tap network interface on the microVM (serving
+	// class, R3). It is set ONLY by the serving cold-boot path; task and session
+	// claims leave it nil and their boot path is byte-unchanged (vsock-only, no NIC).
+	// Firecracker cannot hot-attach a NIC to a resumed snapshot, so a NIC is only
+	// meaningful on a COLD boot (BaseSnapshotRef unset); the serving relight path
+	// restores a snapshot that already captured its NIC and never sets this.
+	NIC *NICSpec
+}
+
+// NICSpec describes the tap network interface a serving-class microVM cold-boots
+// with. The daemon owns the host tap and its IP; the guest receives the static IP
+// via kernel boot-args (ip=<vmip>::<gwip>:<mask>::<iface>:off), configured pre-Start.
+type NICSpec struct {
+	// HostDevName is the host tap device the daemon already created and attached to
+	// the serving bridge.
+	HostDevName string
+	// GuestMAC is the deterministic MAC for the guest eth0 (optional; empty lets FC
+	// assign one).
+	GuestMAC string
+	// IP, GatewayIP, and PrefixLen configure the guest's static address via boot-args.
+	IP        string
+	GatewayIP string
+	PrefixLen int
+	// IfaceName is the in-guest interface name the boot-args ip= directive targets
+	// (eth0 by convention).
+	IfaceName string
 }
 
 // Handle is an opaque reference to a claimed, live microVM. It is only valid

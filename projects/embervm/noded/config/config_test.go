@@ -54,6 +54,42 @@ func TestLoadDefaults(t *testing.T) {
 	if len(c.Images) != 0 {
 		t.Errorf("Images = %v, want empty", c.Images)
 	}
+	if c.ServingBridge != "embervm-serv0" {
+		t.Errorf("ServingBridge = %q, want embervm-serv0", c.ServingBridge)
+	}
+	// Default serving CIDR is in the 172.16/12 space, NOT the 10.0.0.0/8 pod range.
+	if c.ServingSubnetCIDR != "172.31.0.0/24" {
+		t.Errorf("ServingSubnetCIDR = %q, want 172.31.0.0/24", c.ServingSubnetCIDR)
+	}
+	if c.ServingProbeInterval != 5*time.Second {
+		t.Errorf("ServingProbeInterval = %v, want 5s", c.ServingProbeInterval)
+	}
+	if c.ServingUnhealthyThreshold != 3 {
+		t.Errorf("ServingUnhealthyThreshold = %d, want 3", c.ServingUnhealthyThreshold)
+	}
+}
+
+func TestLoadServingOverrides(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_SERVING_BRIDGE", "br-test")
+	t.Setenv("EMBERVM_NODED_SERVING_SUBNET_CIDR", "172.20.5.0/24")
+	t.Setenv("EMBERVM_NODED_SERVING_PROBE_INTERVAL", "10s")
+	t.Setenv("EMBERVM_NODED_SERVING_UNHEALTHY_THRESHOLD", "5")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ServingBridge != "br-test" {
+		t.Errorf("ServingBridge = %q", c.ServingBridge)
+	}
+	if c.ServingSubnetCIDR != "172.20.5.0/24" {
+		t.Errorf("ServingSubnetCIDR = %q", c.ServingSubnetCIDR)
+	}
+	if c.ServingProbeInterval != 10*time.Second {
+		t.Errorf("ServingProbeInterval = %v", c.ServingProbeInterval)
+	}
+	if c.ServingUnhealthyThreshold != 5 {
+		t.Errorf("ServingUnhealthyThreshold = %d", c.ServingUnhealthyThreshold)
+	}
 }
 
 func TestLoadImagesInline(t *testing.T) {

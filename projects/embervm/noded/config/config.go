@@ -111,6 +111,23 @@ type Config struct {
 	// Empty is valid: BuildBase for an unknown image fails FAILED_PRECONDITION,
 	// which is correct until the control plane provisions images (Task 11+).
 	Images map[string]Image
+
+	// ServingBridge is the host bridge device serving-class VM taps attach to. One
+	// per node; the daemon creates it on start. Default "embervm-serv0".
+	ServingBridge string
+	// ServingSubnetCIDR is the RFC1918 subnet the daemon allocates serving VM tap
+	// IPs from (the bridge takes .1, VMs get .2+). Node-local routable from pods on
+	// this node (Task 6). Default 172.31.0.0/24 (172.16/12 space to avoid colliding
+	// with the 10.0.0.0/8 pod-CIDR range); the real non-colliding range is verified
+	// against the cluster pod CIDR before the live drill. Reported as
+	// NodeStatus.serving_subnet_cidr. A malformed CIDR fails Load loudly.
+	ServingSubnetCIDR string
+	// ServingProbeInterval is how often the daemon health-probes each live serving
+	// VM over its tap. Default 5s (the Task 1 contract default).
+	ServingProbeInterval time.Duration
+	// ServingUnhealthyThreshold is the number of consecutive probe failures that
+	// flips a serving VM healthy->false; one success flips it back. Default 3.
+	ServingUnhealthyThreshold int
 }
 
 // Load resolves configuration from the environment, applying defaults for all
@@ -136,6 +153,11 @@ func Load() (Config, error) {
 		EgressSidecarAddr:   getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
 		ArchiveFetchTimeout: 60 * time.Second,
 		ArchiveMaxBytes:     512 << 20,
+
+		ServingBridge:             getenvDefault("EMBERVM_NODED_SERVING_BRIDGE", "embervm-serv0"),
+		ServingSubnetCIDR:         getenvDefault("EMBERVM_NODED_SERVING_SUBNET_CIDR", "172.31.0.0/24"),
+		ServingProbeInterval:      5 * time.Second,
+		ServingUnhealthyThreshold: atoiDefault("EMBERVM_NODED_SERVING_UNHEALTHY_THRESHOLD", 3),
 	}
 
 	if c.Node == "" {
@@ -155,6 +177,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := parseDuration("EMBERVM_NODED_ARCHIVE_FETCH_TIMEOUT", &c.ArchiveFetchTimeout); err != nil {
+		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_SERVING_PROBE_INTERVAL", &c.ServingProbeInterval); err != nil {
 		return Config{}, err
 	}
 	if v := os.Getenv("EMBERVM_NODED_ARCHIVE_MAX_BYTES"); v != "" {
