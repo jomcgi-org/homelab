@@ -771,3 +771,23 @@ Task 10 choices where the plan was silent (sessioned run_python across guest + c
   session_reset decision, to the serial console noded captures) to DIAGNOSE the separate,
   within-version `session_reset=true`-but-state-survived anomaly (gate 9). Not a fix yet:
   the logging is the tooling to root-cause it on the next drill.
+
+### D-R2.7.5 klog now writes to /dev/console (was inert on stderr); rootfs reaper DEFERRED to offsite ADR 003, not built node-local
+- The child-lifecycle klog shipped in #3553 wrote to guest-init os.Stderr, which does NOT
+  reach the VM serial console (only the kernel ring buffer does), so it never showed in
+  `kubectl logs ...noded` -- confirmed inert. Fixed: open /dev/console (the console=ttyS0
+  serial device noded pipes to its stdout; guest-init is root in prod so it can), fall back
+  to stderr for tests. Now the generation/pid/session_reset logs are actually observable.
+- **Rootfs reaper (the "TTL flush") deliberately NOT built node-local now.** The rootfs file
+  is SHARED across workloads (sandbox + sandbox-session resolve to ONE guest digest -> ONE
+  rootfs-<tag>.ext4), so a safe reaper must prove NO base AND NO session of ANY workload
+  references a digest before deleting it -- get it wrong and you delete a rootfs a live
+  session needs, re-introducing the exact D-R2.7.4 corruption (the highest-severity class in
+  this subsystem). That cross-workload refcount is free in the offsite immutable-store model
+  (object store refcounts by content hash), so a node-local reaper is both risky and
+  throwaway. RECOMMENDATION for Joe: fold the reaper into the offsite session-snapshot
+  distribution work (ADR 003 ExportBase/RestoreBase generalized to sessions); if node-local
+  disk pressure bites before then, an AGE-based sweep (delete rootfs-*.ext4 older than
+  max(maxLifetimeSeconds, bankedTtlSeconds)+margin and not the current digest) is a safe
+  stopgap because every session born on an older rootfs has hit its TTL and 410'd. Disk grows
+  ~2GiB/deploy until then; fine for a not-in-use system.
