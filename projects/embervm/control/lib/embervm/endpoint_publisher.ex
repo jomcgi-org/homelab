@@ -150,11 +150,12 @@ defmodule Embervm.EndpointPublisher do
 
   @doc """
   The PURE desired-state document for one node at `version`, rendered from `ctx`,
-  a render context bundling the fact sources: `%{store, catalog_table,
-  activator_endpoint, connect_timeout_ms}` (built by `render_ctx/1` from the
-  publisher's state). Reads ONLY the ServingStore facts + the WorkloadCatalog it
-  names, never the durable op-log. Exposed for the pure-function tests (facts in,
-  snapshot map out) and used by the flush path.
+  a render context bundling the fact sources: `%{store, stateful_store,
+  catalog_table, activator_endpoint, activator_tcp_endpoint, connect_timeout_ms}`
+  (built by `render_ctx/1` from the publisher's state). Reads ONLY the
+  ServingStore + StatefulStore facts + the WorkloadCatalog it names, never the
+  durable op-log. Exposed for the pure-function tests (facts in, snapshot map out)
+  and used by the flush path.
   """
   @spec desired_for_node(map(), String.t()) :: map()
   def desired_for_node(ctx, version) do
@@ -180,10 +181,10 @@ defmodule Embervm.EndpointPublisher do
 
     # Only add the `listeners` key when there is at least one L4 listener to emit.
     # A serving-only node (no stateful workloads, or none wakeable) therefore emits
-    # the EXACT map it emitted before R4, no `listeners` key at all. (Jason ignores
-    # Go's omitempty, so emitting `listeners: []` would change the wire bytes; the
-    # Go struct's omitempty means the absent key round-trips to a nil slice, which
-    # is what the serving-only path needs.)
+    # the EXACT map it emitted before R4, no `listeners` key at all. (The JSON
+    # encoder does not honour Go's struct-tag omitempty, so emitting `listeners: []`
+    # WOULD change the wire bytes; the Go struct's omitempty means the absent key
+    # decodes to a nil slice, which is what the serving-only path needs.)
     if listeners == [] do
       base
     else
