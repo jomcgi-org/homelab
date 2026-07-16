@@ -42,6 +42,24 @@ defmodule Embervm.OpLog.SQLite do
   # session prunes past retention and releases its ops for compaction.
   @session_terminal_states ["expired", "evicted", "destroyed", "failed"]
   @session_live_states ["creating", "running", "banking", "banked", "relighting"]
+
+  # Serving instance lifecycle states (R3), mirroring the session retention
+  # discipline exactly. A non-terminal (live) serving instance pins its ops
+  # against prefix compaction and is never pruned by the retention sweep,
+  # exactly as a live session does; a terminal instance prunes past retention
+  # and releases its ops for compaction. "published"/"draining" sit inside the
+  # live set (the instance is still a VM the control plane owns, whether or
+  # not its endpoint is currently in the fan-out); only banked-but-not-yet-
+  # relit is the exception, which mirrors "banked" being live for sessions too.
+  @serving_terminal_states ["evicted", "destroyed", "failed"]
+  @serving_live_states [
+    "starting",
+    "published",
+    "draining",
+    "banking",
+    "banked",
+    "relighting"
+  ]
   # Seven days in milliseconds: default age (from last update) at which a
   # terminal task is eligible for compaction. This is the TERMINAL-TASK retention
   # window and is DISTINCT from the ops-journal horizon below.
@@ -67,6 +85,7 @@ defmodule Embervm.OpLog.SQLite do
       workload TEXT,
       task_id TEXT,
       session_id TEXT,
+      serving_instance_id TEXT,
       kind TEXT NOT NULL,
       payload_json TEXT NOT NULL DEFAULT '{}'
     )
@@ -108,6 +127,9 @@ defmodule Embervm.OpLog.SQLite do
     # upsert, the ONLY projection that adds rather than overwrites, see project/2),
     # read paged by GET /v1/usage and by Embervm.Metering's boot rebuild. day is
     # div(op.ts, 86_400_000) in the SAME wall-clock ms the op carries.
+    # request_count (R3, D-R3.2.1) is a SEPARATE counter from task_count, charged
+    # only by serving_stats (see project_usage_serving/2): serving requests are
+    # never conflated with task/session invocation counts.
     """
     CREATE TABLE IF NOT EXISTS usage (
       principal TEXT NOT NULL,
@@ -116,6 +138,7 @@ defmodule Embervm.OpLog.SQLite do
       vcpu_seconds REAL NOT NULL DEFAULT 0,
       gb_seconds REAL NOT NULL DEFAULT 0,
       task_count INTEGER NOT NULL DEFAULT 0,
+      request_count INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (principal, day)
     )
@@ -146,6 +169,38 @@ defmodule Embervm.OpLog.SQLite do
       created_at INTEGER NOT NULL,
       last_invoke_at INTEGER,
       expires_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      terminal_reason TEXT
+    )
+    """,
+    # Serving instance projection (R3): the durable lifecycle + endpoint row per
+    # serving instance, write-through projected from the serving_* ops (see
+    # project/2), mirroring the sessions table above. ip/port are the tap
+    # endpoint fact the daemon reported at StartServing (R3 node contract);
+    # they are cleared on bank/destroy since a relight gets a fresh allocation
+    # (ADR embervm/001: the endpoint is re-reported and republished every
+    # wake). base_snapshot_ref/base_digest/generation/snapshot_ref are the
+    # birth-base lineage, exactly the session pattern. A non-terminal instance
+    # pins its ops against compaction and is never pruned by retention,
+    # exactly like a live session.
+    """
+    CREATE TABLE IF NOT EXISTS serving_instances (
+      instance_id TEXT PRIMARY KEY,
+      tenant TEXT NOT NULL,
+      principal TEXT,
+      workload TEXT,
+      state TEXT NOT NULL,
+      node_id TEXT,
+      vm_id TEXT,
+      ip TEXT,
+      port INTEGER,
+      base_snapshot_ref TEXT,
+      base_digest TEXT,
+      generation INTEGER NOT NULL DEFAULT 0,
+      snapshot_ref TEXT,
+      snapshot_size_bytes INTEGER,
+      created_at INTEGER NOT NULL,
+      last_active_at INTEGER,
       updated_at INTEGER NOT NULL,
       terminal_reason TEXT
     )
@@ -199,6 +254,11 @@ defmodule Embervm.OpLog.SQLite do
   @impl Embervm.OpLog
   def load_sessions(server \\ __MODULE__) do
     GenServer.call(server, :load_sessions)
+  end
+
+  @impl Embervm.OpLog
+  def load_serving_instances(server \\ __MODULE__) do
+    GenServer.call(server, :load_serving_instances)
   end
 
   @impl Embervm.OpLog
@@ -294,6 +354,10 @@ defmodule Embervm.OpLog.SQLite do
     {:reply, do_load_sessions(state.conn), state}
   end
 
+  def handle_call(:load_serving_instances, _from, state) do
+    {:reply, do_load_serving_instances(state.conn), state}
+  end
+
   def handle_call({:load_result, task_id}, _from, state) do
     {:reply, do_load_result(state.conn, task_id), state}
   end
@@ -349,8 +413,8 @@ defmodule Embervm.OpLog.SQLite do
 
   defp insert_op(conn, %Op{} = op) do
     sql = """
-    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, kind, payload_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, serving_instance_id, kind, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -362,6 +426,7 @@ defmodule Embervm.OpLog.SQLite do
              op.workload,
              op.task_id,
              op.session_id,
+             op.serving_instance_id,
              Atom.to_string(op.kind),
              # An ETF {:blob, _}, not JSON, so a binary body persists byte-exact
              # (see encode_payload/1).
@@ -599,6 +664,174 @@ defmodule Embervm.OpLog.SQLite do
   defp project(conn, %Op{kind: :session_failed} = op, _seq),
     do: terminate_session(conn, op, "failed")
 
+  # -- serving instance projection (R3) --------------------------------------
+  #
+  # Write-through onto the `serving_instances` table, mirroring the session
+  # projection above exactly. serving_started inserts the lineage-bearing row;
+  # published/unpublished/bank/relight update the relevant columns; the
+  # terminal kinds set a terminal state + reason. serving_stats is
+  # audit-plus-usage only (no state change), the serving counterpart of
+  # session_invoked.
+
+  defp project(conn, %Op{kind: :serving_started} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO serving_instances
+      (instance_id, tenant, principal, workload, state, node_id, vm_id, ip, port,
+       base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
+       created_at, last_active_at, updated_at, terminal_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, NULL, ?, NULL)
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.serving_instance_id,
+             op.tenant,
+             op.principal,
+             op.workload,
+             # A freshly started instance is not yet published (the daemon has
+             # returned {vm_id, ip, port} but the control plane has not yet
+             # installed it in the fan-out); "starting" until the paired
+             # serving_published op lands.
+             Map.get(payload, :state, "starting"),
+             Map.get(payload, :node_id),
+             Map.get(payload, :vm_id),
+             Map.get(payload, :ip),
+             Map.get(payload, :port),
+             Map.get(payload, :base_snapshot_ref),
+             Map.get(payload, :base_digest),
+             op.ts,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # serving_published: the endpoint is live in the fan-out. reason is one of
+  # started|relit|healthy (see op-kind doc); state moves to "published".
+  defp project(conn, %Op{kind: :serving_published} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    UPDATE serving_instances
+    SET state='published', ip=?, port=?, updated_at=?
+    WHERE instance_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(payload, :ip),
+             Map.get(payload, :port),
+             op.ts,
+             op.serving_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # serving_unpublished: the endpoint is removed from the fan-out (reason one
+  # of drain|unhealthy|banked|destroyed|failed). The VM is not necessarily
+  # gone yet (a drain precedes a bank), so this only moves state to
+  # "draining"; the terminal kinds below set the real terminal state.
+  defp project(conn, %Op{kind: :serving_unpublished} = op, _seq) do
+    sql = "UPDATE serving_instances SET state='draining', updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.serving_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # serving_banked: the VM is snapshotted and destroyed. Records the new
+  # snapshot ref + size, bumps generation, and clears the endpoint fact (a
+  # relight gets a fresh ip allocation, never the stale one).
+  defp project(conn, %Op{kind: :serving_banked} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    UPDATE serving_instances
+    SET state='banked', snapshot_ref=?, snapshot_size_bytes=?, generation=?,
+        ip=NULL, port=NULL, updated_at=?
+    WHERE instance_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(payload, :snapshot_ref),
+             Map.get(payload, :size_bytes),
+             Map.get(payload, :generation, 0),
+             op.ts,
+             op.serving_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # serving_relit: restored to a live VM from its banked snapshot; back to
+  # "starting" (not yet republished, exactly the serving_started posture)
+  # until the paired serving_published op lands with the fresh endpoint.
+  defp project(conn, %Op{kind: :serving_relit} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    UPDATE serving_instances
+    SET state='starting', node_id=?, vm_id=?, updated_at=?
+    WHERE instance_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(payload, :node_id),
+             Map.get(payload, :vm_id),
+             op.ts,
+             op.serving_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  defp project(conn, %Op{kind: :serving_evicted} = op, _seq),
+    do: terminate_serving(conn, op, "evicted")
+
+  defp project(conn, %Op{kind: :serving_destroyed} = op, _seq),
+    do: terminate_serving(conn, op, "destroyed")
+
+  defp project(conn, %Op{kind: :serving_failed} = op, _seq),
+    do: terminate_serving(conn, op, "failed")
+
+  # serving_stats: request-count usage ONLY, no serving_instances row to touch.
+  # Carries {workload, rq_delta, window_ms} from the Task 9 idle-signal scrape,
+  # which is PER-CLUSTER (one Envoy cluster fans out to many instance
+  # endpoints of a workload), so there is no single instance_id to update or
+  # to join through for (principal, day): serving_instance_id is NULL on this
+  # kind by construction. principal/tenant instead ride the op's own top-level
+  # fields (the workload owner, populated by the Task 9 appender), exactly
+  # like every other op kind, so project_usage stays a pure function of the op
+  # and kill-and-restart rebuild equivalence holds (see D-R3.2.1 in
+  # DECISIONS.md). This charges usage.request_count only: live-seconds
+  # (vcpu/gb-seconds over the alive interval) are DEFERRED to the Task 9+
+  # lifecycle/sweeper machinery that has the resource shape (serving_instances
+  # carries no vcpu/memMib columns to accrue against here). Serving compute is
+  # intentionally un-accrued at this seam, not free.
+  defp project(conn, %Op{kind: :serving_stats} = op, _seq) do
+    project_usage_serving(conn, op)
+  end
+
   # Audit-only kinds: no task/result projection.
   defp project(_conn, %Op{kind: kind}, _seq)
        when kind in [:denied, :base_built, :primed, :vm_destroyed, :quota_enforced, :drain] do
@@ -613,6 +846,21 @@ defmodule Embervm.OpLog.SQLite do
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <- Sqlite3.bind(stmt, [state, reason, op.ts, op.session_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # A terminal serving-instance transition: set the terminal state + a
+  # machine-readable reason (defaulting to the state itself when the payload
+  # omits one), mirroring terminate_session/3 exactly.
+  defp terminate_serving(conn, %Op{} = op, state) do
+    reason = to_string(Map.get(op.payload, :reason, state))
+    sql = "UPDATE serving_instances SET state=?, terminal_reason=?, updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [state, reason, op.ts, op.serving_instance_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -671,6 +919,47 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  # Accumulating request-count usage upsert for serving_stats (R3, D-R3.2.1),
+  # run INSIDE the same transaction as the serving_stats op. DISTINCT from
+  # project_usage/2 above: it charges the NEW usage.request_count column, NOT
+  # task_count, so serving requests are never conflated with task/session
+  # invocation counts (an irreversible merge once mixed). vcpu_seconds/
+  # gb_seconds are left untouched (serving live-seconds accrual is deferred to
+  # the Task 9+ lifecycle machinery, see the serving_stats project/2 comment).
+  # principal/tenant come from the op's own top-level fields (populated by the
+  # Task 9 appender from the workload owner), never a join: serving_stats is
+  # per-cluster (per-workload), not per-instance, so there is no single
+  # serving_instances row to join through. A no-op when principal is nil (an
+  # op predating the appender wiring, or a malformed scrape), mirroring
+  # project_usage/2's no-op-on-absent-usage guard.
+  defp project_usage_serving(_conn, %Op{principal: nil}), do: :ok
+
+  defp project_usage_serving(conn, %Op{payload: payload} = op) do
+    rq_delta = Map.get(payload, :rq_delta, 0)
+
+    sql = """
+    INSERT INTO usage (principal, day, tenant, vcpu_seconds, gb_seconds, task_count, request_count, updated_at)
+    VALUES (?, ?, ?, 0, 0, 0, ?, ?)
+    ON CONFLICT(principal, day) DO UPDATE SET
+      request_count = request_count + excluded.request_count,
+      updated_at = excluded.updated_at
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.principal,
+             div(op.ts, @day_ms),
+             op.tenant,
+             rq_delta,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
   defp to_float(n) when is_number(n), do: n * 1.0
   defp to_float(_), do: 0.0
 
@@ -708,7 +997,7 @@ defmodule Embervm.OpLog.SQLite do
       {:error, {:compacted, marker}}
     else
       sql = """
-      SELECT seq, ts, tenant, principal, workload, task_id, session_id, kind, payload_json
+      SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, kind, payload_json
       FROM ops WHERE seq > ? ORDER BY seq ASC
       """
 
@@ -723,7 +1012,8 @@ defmodule Embervm.OpLog.SQLite do
 
   defp collect_ops(conn, stmt, acc) do
     case Sqlite3.step(conn, stmt) do
-      {:row, [seq, ts, tenant, principal, workload, task_id, session_id, kind, payload_json]} ->
+      {:row,
+       [seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, kind, payload_json]} ->
         op = %Op{
           seq: seq,
           ts: ts,
@@ -732,6 +1022,7 @@ defmodule Embervm.OpLog.SQLite do
           workload: workload,
           task_id: task_id,
           session_id: session_id,
+          serving_instance_id: serving_instance_id,
           kind: String.to_existing_atom(kind),
           payload: decode_payload(payload_json)
         }
@@ -814,6 +1105,72 @@ defmodule Embervm.OpLog.SQLite do
         }
 
         collect_sessions(conn, stmt, [session | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
+  defp do_load_serving_instances(conn) do
+    sql = """
+    SELECT instance_id, tenant, principal, workload, state, node_id, vm_id, ip, port,
+           base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
+           created_at, last_active_at, updated_at, terminal_reason
+    FROM serving_instances
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      instances = collect_serving_instances(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, instances}
+    end
+  end
+
+  defp collect_serving_instances(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row,
+       [
+         instance_id,
+         tenant,
+         principal,
+         workload,
+         state,
+         node_id,
+         vm_id,
+         ip,
+         port,
+         base_snapshot_ref,
+         base_digest,
+         generation,
+         snapshot_ref,
+         snapshot_size_bytes,
+         created_at,
+         last_active_at,
+         updated_at,
+         terminal_reason
+       ]} ->
+        instance = %{
+          instance_id: instance_id,
+          tenant: tenant,
+          principal: principal,
+          workload: workload,
+          state: state,
+          node_id: node_id,
+          vm_id: vm_id,
+          ip: ip,
+          port: port,
+          base_snapshot_ref: base_snapshot_ref,
+          base_digest: base_digest,
+          generation: generation,
+          snapshot_ref: snapshot_ref,
+          snapshot_size_bytes: snapshot_size_bytes,
+          created_at: created_at,
+          last_active_at: last_active_at,
+          updated_at: updated_at,
+          terminal_reason: terminal_reason
+        }
+
+        collect_serving_instances(conn, stmt, [instance | acc])
 
       :done ->
         Enum.reverse(acc)
@@ -909,7 +1266,7 @@ defmodule Embervm.OpLog.SQLite do
     limit_sql = if limit == :infinity, do: -1, else: limit
 
     sql = """
-    SELECT principal, day, tenant, vcpu_seconds, gb_seconds, task_count, updated_at
+    SELECT principal, day, tenant, vcpu_seconds, gb_seconds, task_count, request_count, updated_at
     FROM usage WHERE #{where}
     ORDER BY principal ASC, day ASC
     LIMIT ? OFFSET ?
@@ -941,7 +1298,7 @@ defmodule Embervm.OpLog.SQLite do
 
   defp collect_usage(conn, stmt, acc) do
     case Sqlite3.step(conn, stmt) do
-      {:row, [principal, day, tenant, vcpu_seconds, gb_seconds, task_count, updated_at]} ->
+      {:row, [principal, day, tenant, vcpu_seconds, gb_seconds, task_count, request_count, updated_at]} ->
         row = %{
           principal: principal,
           day: day,
@@ -949,6 +1306,7 @@ defmodule Embervm.OpLog.SQLite do
           vcpu_seconds: vcpu_seconds,
           gb_seconds: gb_seconds,
           task_count: task_count,
+          request_count: request_count,
           updated_at: updated_at
         }
 
@@ -998,16 +1356,19 @@ defmodule Embervm.OpLog.SQLite do
     with {:ok, results_deleted} <- delete_expired_results(conn, now_ms, batch),
          {:ok, tasks_compacted} <- delete_terminal_tasks(conn, now_ms, state.retention_ms, batch),
          {:ok, sessions_compacted} <- delete_terminal_sessions(conn, now_ms, state.retention_ms, batch),
+         {:ok, serving_instances_compacted} <-
+           delete_terminal_serving_instances(conn, now_ms, state.retention_ms, batch),
          {:ok, ops_compacted, marker} <- compact_ops(conn, now_ms, state.journal_horizon_ms, batch) do
       done =
         results_deleted < batch and tasks_compacted < batch and sessions_compacted < batch and
-          ops_compacted < batch
+          serving_instances_compacted < batch and ops_compacted < batch
 
       {:ok,
        %{
          results_deleted: results_deleted,
          tasks_compacted: tasks_compacted,
          sessions_compacted: sessions_compacted,
+         serving_instances_compacted: serving_instances_compacted,
          ops_compacted: ops_compacted,
          compacted_through: marker,
          done: done
@@ -1032,6 +1393,29 @@ defmodule Embervm.OpLog.SQLite do
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <- Sqlite3.bind(stmt, @session_terminal_states ++ [cutoff, batch]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt),
+         {:ok, changed} <- Sqlite3.changes(conn) do
+      {:ok, changed}
+    end
+  end
+
+  # Prune terminal serving-instance projection rows past the 7-day retention,
+  # mirroring delete_terminal_sessions/4 exactly. A non-terminal serving
+  # instance is never pruned (its state is not in @serving_terminal_states),
+  # and its ops remain pinned against compaction by blocker_seq.
+  defp delete_terminal_serving_instances(conn, now_ms, retention_ms, batch) do
+    cutoff = now_ms - retention_ms
+    placeholders = @serving_terminal_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+
+    sql = """
+    DELETE FROM serving_instances WHERE rowid IN (
+      SELECT rowid FROM serving_instances WHERE state IN (#{placeholders}) AND updated_at < ? LIMIT ?
+    )
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, @serving_terminal_states ++ [cutoff, batch]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt),
          {:ok, changed} <- Sqlite3.changes(conn) do
@@ -1104,24 +1488,36 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   # The smallest seq that must NOT be compacted: the first op that is either newer
-  # than the horizon (ts >= cutoff), owned by a live (non-terminal) task, OR owned
-  # by a live (non-terminal) session. The session clause is the R2 never-compact-a-
-  # live-session rule: a non-terminal session pins its ops exactly as a live task
-  # does, so its lineage/lifecycle history stays replayable until it terminates.
-  # NULL means no op is blocked, so the whole log is eligible.
+  # than the horizon (ts >= cutoff), owned by a live (non-terminal) task, owned
+  # by a live (non-terminal) session, OR owned by a live (non-terminal) serving
+  # instance. The session clause is the R2 never-compact-a-live-session rule; the
+  # serving clause is its R3 mirror: a non-terminal serving instance pins its ops
+  # exactly as a live task or session does, so its lineage/lifecycle history
+  # stays replayable until it terminates. A serving_stats op carries no
+  # serving_instance_id (it is workload-scoped, see D-R3.2.1), so it is pinned
+  # only by the ts >= cutoff clause like any other audit-only op, never by this
+  # clause. NULL means no op is blocked, so the whole log is eligible.
   defp blocker_seq(conn, cutoff) do
     live_placeholders = @live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
     session_live_placeholders = @session_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+    serving_live_placeholders = @serving_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
 
     sql = """
     SELECT MIN(seq) FROM ops
     WHERE ts >= ?
        OR task_id IN (SELECT task_id FROM tasks WHERE state IN (#{live_placeholders}))
        OR session_id IN (SELECT session_id FROM sessions WHERE state IN (#{session_live_placeholders}))
+       OR serving_instance_id IN (
+            SELECT instance_id FROM serving_instances WHERE state IN (#{serving_live_placeholders})
+          )
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [cutoff] ++ @live_states ++ @session_live_states) do
+         :ok <-
+           Sqlite3.bind(
+             stmt,
+             [cutoff] ++ @live_states ++ @session_live_states ++ @serving_live_states
+           ) do
       result =
         case Sqlite3.step(conn, stmt) do
           {:row, [seq]} -> {:ok, seq}
@@ -1245,7 +1641,9 @@ defmodule Embervm.OpLog.SQLite do
   # end with the same shape; old result rows keep headers NULL, read back as %{}.
   defp apply_migrations(conn) do
     with :ok <- migrate_results_headers(conn),
-         :ok <- migrate_ops_session_id(conn) do
+         :ok <- migrate_ops_session_id(conn),
+         :ok <- migrate_ops_serving_instance_id(conn),
+         :ok <- migrate_usage_request_count(conn) do
       :ok
     end
   end
@@ -1271,6 +1669,43 @@ defmodule Embervm.OpLog.SQLite do
     with {:ok, cols} <- table_columns(conn, "ops"),
          :ok <- add_column_if_missing(conn, cols, "session_id", "ALTER TABLE ops ADD COLUMN session_id TEXT") do
       Sqlite3.execute(conn, "CREATE INDEX IF NOT EXISTS ops_session_id_idx ON ops(session_id)")
+    end
+  end
+
+  # R3: the additive nullable `ops.serving_instance_id` column plus its index,
+  # mirroring migrate_ops_session_id/1 exactly. A fresh DB already built the
+  # column from the CREATE TABLE (and skips the ALTER), so this only fires on a
+  # DB created before R3; the guard is the same D-R1.2.1/R2 ALTER-after-DDL
+  # precedent. `serving_instances` itself is a whole new table, so
+  # `CREATE TABLE IF NOT EXISTS` in @ddl handles both cases; no ALTER is needed
+  # for it.
+  defp migrate_ops_serving_instance_id(conn) do
+    with {:ok, cols} <- table_columns(conn, "ops"),
+         :ok <-
+           add_column_if_missing(
+             conn,
+             cols,
+             "serving_instance_id",
+             "ALTER TABLE ops ADD COLUMN serving_instance_id TEXT"
+           ) do
+      Sqlite3.execute(conn, "CREATE INDEX IF NOT EXISTS ops_serving_instance_id_idx ON ops(serving_instance_id)")
+    end
+  end
+
+  # R3 (D-R3.2.1): the additive `usage.request_count` column, guarded the same
+  # way migrate_results_headers/1 guards `results.headers`. A fresh DB already
+  # built the column (DEFAULT 0) from the CREATE TABLE and skips the ALTER; an
+  # upgraded DB gets it added with existing rows defaulting to 0 (SQLite's
+  # ALTER TABLE ADD COLUMN honours the column default for existing rows), so a
+  # pre-R3 principal's historical usage rows read back with request_count=0,
+  # correctly reflecting that no serving usage existed for them.
+  defp migrate_usage_request_count(conn) do
+    with {:ok, cols} <- table_columns(conn, "usage") do
+      if "request_count" in cols do
+        :ok
+      else
+        Sqlite3.execute(conn, "ALTER TABLE usage ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0")
+      end
     end
   end
 
