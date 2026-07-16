@@ -208,7 +208,13 @@ defmodule Embervm.SessionBankRelightTest do
     end
   end
 
-  defp wait_until(fun, tries \\ 200) do
+  # 1000 tries x 5ms = a 5s ceiling (was 200 tries, 1s), well under ExUnit's
+  # 60s per-test timeout: the full async suite's scheduler contention can
+  # occasionally push this test's Agent-round-trip session restart past a 1s
+  # budget, so the ceiling absorbs that CI load rather than flaking. The poll
+  # still returns the instant the condition holds, so this only spends time
+  # on a genuine failure.
+  defp wait_until(fun, tries \\ 1000) do
     cond do
       fun.() ->
         :ok
