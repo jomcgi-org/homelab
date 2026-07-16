@@ -258,8 +258,15 @@ const nicIfaceID = "eth0"
 // why the serving IP is pinned across bank/relight (D-R3.4.1).
 func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	args := d.cfg.KernelBootArgs
-	if d.cfg.HarnessInit != "" {
-		args += " init=" + d.cfg.HarnessInit
+	// Prefer the per-boot harness init (the serving cold-boot resolves it from the
+	// runtime image it boots) over the driver-global, which is empty on the daemon
+	// driver. Without init= the kernel finds no init and drops to /bin/sh.
+	harnessInit := cb.harnessInit
+	if harnessInit == "" {
+		harnessInit = d.cfg.HarnessInit
+	}
+	if harnessInit != "" {
+		args += " init=" + harnessInit
 	}
 	if nic := cb.nic; nic != nil {
 		iface := nic.IfaceName
@@ -575,6 +582,14 @@ type coldBootSpec struct {
 	vcpus      int
 	memMib     int
 	nic        *substrate.NICSpec
+	// harnessInit, when non-empty, is the guest-init path emitted as init=<path> on
+	// the kernel command line for THIS cold boot, overriding the driver-global
+	// cfg.HarnessInit. The serving cold-boot (ClaimServing) resolves it per call from
+	// the runtime image whose rootfs it boots (img.HarnessInit), because the daemon's
+	// driver-global HarnessInit is empty: without it the kernel finds no init and
+	// falls back to /bin/sh, so the shim never runs and the guest is reaped. Empty for
+	// task/session boots, which keep the driver-global (byte-unchanged).
+	harnessInit string
 	// handlerDiskPath, when non-empty, is a per-workload handler artifact (the
 	// verified zip bytes noded wrote host-side at BuildBase) attached as a SECOND
 	// read-only drive on a serving cold boot (D-R3.11.2). The guest reads the zip
@@ -705,10 +720,11 @@ func (d *Driver) ClaimServing(ctx context.Context, rootfsPath, harnessInit strin
 	if nic.HostDevName == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: ClaimServing requires a host tap device")
 	}
-	// harnessInit currently rides driver-global cfg.HarnessInit (the serving rootfs
-	// boots the same shim init as every other guest); the parameter is carried so a
-	// per-image init override can be threaded later without a signature change.
-	_ = harnessInit
+	// The daemon driver's global HarnessInit is empty; the serving rootfs boots the
+	// same guest-init as every other guest, but that path lives in the runtime image
+	// config (img.HarnessInit), resolved by startServingFresh and passed here. Thread
+	// it into the boot so the kernel runs the guest-init (which reads the serving-port
+	// and handler-disk boot-args) instead of falling back to /bin/sh.
 	vcpus = orDefault(vcpus, d.cfg.VCPUs)
 	memMib = orDefault(memMib, d.cfg.MemMib)
 	nicCopy := nic
@@ -717,6 +733,7 @@ func (d *Driver) ClaimServing(ctx context.Context, rootfsPath, harnessInit strin
 		vcpus:           vcpus,
 		memMib:          memMib,
 		nic:             &nicCopy,
+		harnessInit:     harnessInit,
 		handlerDiskPath: handlerDiskPath,
 		handlerZipBytes: handlerZipBytes,
 	})
