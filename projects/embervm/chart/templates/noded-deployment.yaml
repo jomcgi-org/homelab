@@ -64,7 +64,7 @@ spec:
             - name: GUEST_IMAGE
               value: "{{ $top.guestImage.repository }}:{{ $top.guestImage.tag }}"
             - name: BASE_ROOTFS_PATH
-              value: {{ $wl.rootfsPath | quote }}
+              value: {{ include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) | quote }}
             - name: ROOTFS_SIZE
               value: {{ $.Values.rootfsBuilder.rootfsSize | quote }}
             {{- if $.Values.imagePullSecret.enabled }}
@@ -155,7 +155,7 @@ spec:
               {{- $top := index $.Values $name }}
               {{- if and $top $top.guestImage $top.guestImage.repository }}
               {{- $ref := printf "%s:%s" $top.guestImage.repository $top.guestImage.tag }}
-              {{- $_ := set $imgs $ref (dict "rootfsPath" $wl.rootfsPath "harnessInit" $wl.harnessInit) }}
+              {{- $_ := set $imgs $ref (dict "rootfsPath" (include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top)) "harnessInit" $wl.harnessInit) }}
               {{- end }}
               {{- end }}
               value: {{ $imgs | toJson | quote }}

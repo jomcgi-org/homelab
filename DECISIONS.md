@@ -735,3 +735,39 @@ Task 10 choices where the plan was silent (sessioned run_python across guest + c
   workload's invokePath. Two integration seams (registry adoption D-R2.7.2, guest path
   D-R2.7.3) were both invisible to every unit test because each side was faked; only the
   live drill drove a real control-plane -> gRPC -> shim -> guest invoke. Flagged for Joe.
+
+### D-R2.7.4 Session restore corrupted the guest FS (rootfs rebuilt in place); fixed by digest-versioning the rootfs file. Reaper is the flagged follow-on.
+- The re-run drill (8/9) exposed EXT4 corruption on restored guests
+  (`__ext4_find_entry ... checksumming directory block`, `comm python3`). ROOT CAUSE
+  (mapped): base MEMORY snapshots are per-digest (`snapshots/bases/<baseKey>/`), but the
+  read-only rootfs (vda) they reference is a SINGLE fixed file per workload
+  (`workloads.<name>.rootfsPath`). The FC memfile embeds the rootfs HOST PATH, not its
+  bytes, and restore (`driver.loadInto`) issues only LoadSnapshot, never re-PutDrive. The
+  rootfs-builder `mv -f`s that fixed file IN PLACE on any guest-digest change, so a chart
+  roll swaps the bytes under every banked session snapshot born on the old rootfs -> the
+  restored guest's page-cache ext4 metadata no longer matches on-disk blocks -> corruption.
+  Confirmed cross-version: it hit sessions banked pre-roll, relit post-roll. This is the
+  split-brain [[feedback]]: the control plane refcounts the birth base (base_builder.ex) but
+  the physical rootfs file is overwritten blind to that refcount.
+- FIX (tactical, CHART-ONLY, no Go change): digest-version the rootfs file. New helper
+  `embervm.noded.rootfsPath` renders `<dir>/rootfs-<guest-tag>.ext4`, used by BOTH the
+  rootfs-builder `BASE_ROOTFS_PATH` and the `EMBERVM_NODED_IMAGES[ref].rootfsPath` (one
+  source, so the built file and the path noded attaches are byte-identical -- the riskiest
+  coupling). The builder skips-if-the-digest-file-exists and NEVER overwrites/deletes other
+  `rootfs-*.ext4`. Because each guest version is now an immutable file and the memfile embeds
+  a stable per-digest path, restore re-attaches the correct (still-present) rootfs with NO
+  driver change. Rejected the full Go plan (record birth rootfs in baseEntry + re-PutDrive on
+  restore): unnecessary once the embedded path is immutable-by-construction. This is the
+  node-local form of the offsite versioned-store design (ADR 003), same invariant on nvme.
+- **FOLLOW-ON, flagged for Joe (the "TTL for flushing" half):** old `rootfs-*.ext4` files now
+  accumulate (~2GB each per deploy) until reaped. The reaper needs the refcount wiring:
+  when `base_builder.ex maybe_evict_base` fires EvictSnapshot for a superseded base (primed=0
+  AND sessions=0), also delete that digest's rootfs file (extend `RemoveBaseBundle`, which
+  exists but is unwired, to cover the rootfs path). Deferred: disk growth is slow and this is
+  not in active use. The strategic version is offsite S3/OCI export (ADR 003), where
+  immutability + TTL are free. Also deferred: a defensive `base_superseded` 410 if a birth
+  rootfs is ever missing on restore (belt-and-suspenders once the reaper can race a relight).
+- Also in this PR: guest-kernel child-lifecycle logging (generation counter + pid + the
+  session_reset decision, to the serial console noded captures) to DIAGNOSE the separate,
+  within-version `session_reset=true`-but-state-survived anomaly (gate 9). Not a fix yet:
+  the logging is the tooling to root-cause it on the next drill.
