@@ -14,7 +14,7 @@ defmodule Embervm.EndpointPublisherTest do
   """
   use ExUnit.Case, async: true
 
-  alias Embervm.{EndpointPublisher, NodeCapacity, ServingStore, WorkloadCatalog}
+  alias Embervm.{EndpointPublisher, NodeCapacity, ServingStore, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
 
   # -- harness ---------------------------------------------------------------
@@ -32,6 +32,10 @@ defmodule Embervm.EndpointPublisherTest do
 
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
     {:ok, store} = ServingStore.start_link(name: nil, op_log: op_log, clock: fn -> 1_000 end)
+    # A monotonic clock for the stateful store so its op appends never collide on ts.
+    {:ok, sf_counter} = Agent.start_link(fn -> 2_000 end)
+    sf_clock = fn -> Agent.get_and_update(sf_counter, fn n -> {n, n + 1} end) end
+    {:ok, stateful_store} = StatefulStore.start_link(name: nil, op_log: op_log, clock: sf_clock)
 
     {:ok, puts} = Agent.start_link(fn -> [] end)
 
@@ -44,7 +48,7 @@ defmodule Embervm.EndpointPublisherTest do
     # A :seed callback runs against the store + tables BEFORE the publisher starts,
     # so an `active: true` boot flush sees the seeded facts deterministically (the
     # boot handle_continue races table population done after start_link otherwise).
-    pre_ctx = %{store: store, cap_table: cap_table, cat_table: cat_table}
+    pre_ctx = %{store: store, stateful_store: stateful_store, cap_table: cap_table, cat_table: cat_table}
 
     case Keyword.get(opts, :seed) do
       nil -> :ok
@@ -55,6 +59,7 @@ defmodule Embervm.EndpointPublisherTest do
       [
         name: nil,
         store: store,
+        stateful_store: stateful_store,
         catalog_table: cat_table,
         capacity_table: cap_table,
         put_fun: put_fun,
@@ -63,7 +68,10 @@ defmodule Embervm.EndpointPublisherTest do
         epoch: Keyword.get(opts, :epoch, 100),
         debounce_ms: Keyword.get(opts, :debounce_ms, 20),
         repush_ms: Keyword.get(opts, :repush_ms, 0),
-        activator_endpoint: Keyword.get(opts, :activator_endpoint, %{ip: "10.1.1.1", port: 7000})
+        activator_endpoint: Keyword.get(opts, :activator_endpoint, %{ip: "10.1.1.1", port: 7000}),
+        # nil by default so a stateful test opts into the L4 activator explicitly (the
+        # "cold + no activator => emit nothing" case is the default).
+        activator_tcp_endpoint: Keyword.get(opts, :activator_tcp_endpoint, nil)
       ]
 
     {:ok, pub} = EndpointPublisher.start_link(pub_opts)
@@ -71,10 +79,33 @@ defmodule Embervm.EndpointPublisherTest do
     %{
       pub: pub,
       store: store,
+      stateful_store: stateful_store,
       cap_table: cap_table,
       cat_table: cat_table,
       puts: puts
     }
+  end
+
+  defp stateful_workload(ctx, name, listen_port) do
+    WorkloadCatalog.upsert(ctx.cat_table, name, %{
+      class: "stateful",
+      stateful: %{listen_port: listen_port, port: 6000, volume_size_gib: 1}
+    })
+  end
+
+  defp start_stateful_serving(ctx, instance_id, workload, ip, port) do
+    {:ok, _} =
+      StatefulStore.start(ctx.stateful_store, %{
+        instance_id: instance_id,
+        tenant: "homelab",
+        principal: "p1",
+        workload: workload,
+        node_id: "node-4",
+        vm_id: "vm-" <> instance_id,
+        generation: 0
+      })
+
+    {:ok, _} = StatefulStore.publish(ctx.stateful_store, instance_id, ip, port, :started)
   end
 
   defp serving_workload(ctx, name, host) do
@@ -334,5 +365,78 @@ defmodule Embervm.EndpointPublisherTest do
     assert v2 > v1
     # Both fixed-width so the ordering is lexical == numeric.
     assert String.length(v1) == 40 and String.length(v2) == 40
+  end
+
+  # -- stateful (L4) projection (R4) ------------------------------------------
+
+  test "a stateful workload with a live instance emits one listener + a cluster to the live endpoint" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-s", 9100)
+    serving_node(ctx, "node-4")
+    start_stateful_serving(ctx, "sf-1", "wl-s", "10.99.0.7", 6000)
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    assert [{"node-4", desired}] = last_puts(ctx)
+
+    # Exactly one listener, named state-<listen_port>, targeting the stateful cluster.
+    assert desired.listeners == [%{name: "state-9100", port: 9100, cluster: "state|wl-s"}]
+
+    # The stateful cluster carries the single live endpoint.
+    cluster = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
+    assert cluster.endpoints == [%{ip: "10.99.0.7", port: 6000}]
+  end
+
+  test "a stateful workload with no live instance uses the activator TCP endpoint when configured" do
+    ctx = start_stack(activator_tcp_endpoint: %{ip: "10.2.2.2", port: 7100})
+    stateful_workload(ctx, "wl-s", 9100)
+    serving_node(ctx, "node-4")
+    # No live instance started: the cluster falls back to the activator TCP endpoint.
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    assert [{"node-4", desired}] = last_puts(ctx)
+    assert desired.listeners == [%{name: "state-9100", port: 9100, cluster: "state|wl-s"}]
+
+    cluster = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
+    assert cluster.endpoints == [%{ip: "10.2.2.2", port: 7100}]
+  end
+
+  test "a cold stateful workload with NO activator emits no listener and no cluster" do
+    # activator_tcp_endpoint defaults to nil: a cold, un-wakeable workload.
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-s", 9100)
+    serving_node(ctx, "node-4")
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    assert [{"node-4", desired}] = last_puts(ctx)
+    # No stateful cluster (the sidecar's validate rejects an empty-endpoints cluster).
+    refute Enum.any?(desired.clusters, &(&1.name == "state|wl-s"))
+    # And no listeners key at all (nothing to emit).
+    refute Map.has_key?(desired, :listeners)
+  end
+
+  test "a node with zero stateful workloads emits a byte-identical serving-only payload (no listeners key)" do
+    # Baseline: a serving-only stack, no stateful catalog entries.
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a", "wl-a.example")
+    serving_node(ctx, "node-4")
+    start_published(ctx, "srv-1", "wl-a", "10.99.0.5", 8080)
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+    assert [{"node-4", desired}] = last_puts(ctx)
+
+    # The serving clusters + routes are exactly what the pre-R4 publisher emitted,
+    # and there is NO listeners key (the map does not carry it at all).
+    refute Map.has_key?(desired, :listeners)
+    assert [%{name: "serve|wl-a", endpoints: [%{ip: "10.99.0.5", port: 8080}]}] =
+             Enum.filter(desired.clusters, &String.starts_with?(&1.name, "serve|"))
+
+    assert [%{host: "wl-a.example", cluster: "serve|wl-a"}] =
+             Enum.map(desired.routes, &Map.take(&1, [:host, :cluster]))
+
+    # The whole clusters list is serving-only (no stray stateful cluster leaked in).
+    assert Enum.all?(desired.clusters, &String.starts_with?(&1.name, "serve|"))
   end
 end

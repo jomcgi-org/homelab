@@ -1,9 +1,11 @@
 defmodule Embervm.EndpointPublisher do
   @moduledoc """
   The ONLY writer to the xDS sidecar's snapshot API. Holds the desired Envoy
-  routing state as a PURE FUNCTION of `Embervm.ServingStore` facts + the
-  `Embervm.WorkloadCatalog`, and PUTs it (per serving node) to the loopback
-  snapshot API the sidecar serves as CDS/RDS/EDS to the node Envoys (Task 6/7).
+  routing state as a PURE FUNCTION of `Embervm.ServingStore` + `Embervm.StatefulStore`
+  facts + the `Embervm.WorkloadCatalog`, and PUTs it (per serving node) to the
+  loopback snapshot API the sidecar serves as CDS/RDS/EDS/LDS to the node Envoys
+  (Task 6/7). Serving is the L7 (host/path) fan-out; stateful (R4) adds the L4
+  (raw TCP) singleton-sandbox listeners + clusters, both rendered from ETS facts.
 
   ## the sole-writer boundary (reviewer-enforced)
 
@@ -25,12 +27,20 @@ defmodule Embervm.EndpointPublisher do
       wakes the workload on the next request);
     * a route per workload: host from the catalog's `serving.host`, prefix `/`,
       injecting `x-ember-workload: <workload>` so the woken VM (and the activator)
-      can resolve which workload a request targets.
+      can resolve which workload a request targets;
+    * for each STATEFUL-class workload (R4): an L4 listener (`state-<listen_port>`)
+      plus a cluster named `state|<workload>` whose single endpoint is the live
+      instance (`StatefulStore.published_endpoint/1`) OR the stateful activator's
+      TCP endpoint. A cold stateful workload with NO activator configured emits
+      NOTHING (no listener, no cluster), so the sidecar never receives an
+      empty-endpoints cluster its validate rejects; the `listeners` key is omitted
+      entirely when there are no L4 listeners, so a serving-only node's payload is
+      byte-identical to the pre-R4 wire.
 
-  Because the render reads only ServingStore + the catalog (never the durable
-  op-log), a projection rebuild followed by a publish is byte-identical to the
-  pre-restart snapshot: this is the property test the plan requires and the reason
-  the version's ONLY moving part is the counter, not any fact.
+  Because the render reads only ServingStore + StatefulStore + the catalog (never
+  the durable op-log), a projection rebuild followed by a publish is byte-identical
+  to the pre-restart snapshot: this is the property test the plan requires and the
+  reason the version's ONLY moving part is the counter, not any fact.
 
   ## version = fixed-width monotonic string (D-R3.5.1)
 
