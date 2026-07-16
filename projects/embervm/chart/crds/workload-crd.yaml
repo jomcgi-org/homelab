@@ -353,6 +353,16 @@ spec:
                         next natural turnover.
                       minimum: 60
                       default: 86400
+                    bankedTtlSeconds:
+                      type: integer
+                      description: >-
+                        How long a banked serving snapshot may sit idle (untouched
+                        by a relight) before it is garbage-collected off node disk
+                        (Task 9 banked-TTL sweep), the serving analogue of the
+                        session bankedTtlSeconds. Defaults to maxLifetimeSeconds
+                        when unset (the watcher applies that), so a banked snapshot
+                        never outlives what a live instance would.
+                      minimum: 0
                 invocation:
                   type: object
                   description: Task execution policy. All fields defaulted.

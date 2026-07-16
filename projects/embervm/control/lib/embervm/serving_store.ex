@@ -152,6 +152,21 @@ defmodule Embervm.ServingStore do
     GenServer.call(store, {:set_health, instance_id, healthy?})
   end
 
+  @doc """
+  Stamps an instance's `last_active_at` from the idle-signal sweep (Task 9), WITHOUT
+  an FSM transition or an op-log append: activity is a lossy, high-frequency node
+  fact (a request-count delta), not durable lifecycle state, exactly like
+  `set_health/3`. A no-op for an unknown instance. Returns the updated instance or
+  `:error`. Idle detection reads this back against `idleBankSeconds`; because it is
+  ETS-only, a control-plane restart resets the idle clock to "just active" (the
+  fresh sweep has no prior scrape to delta against anyway), which is the fail-open
+  direction (never bank on a cold idle baseline).
+  """
+  @spec touch_active(GenServer.server(), String.t(), integer()) :: {:ok, map()} | :error
+  def touch_active(store \\ __MODULE__, instance_id, ts) do
+    GenServer.call(store, {:touch_active, instance_id, ts})
+  end
+
   @doc "The instance's hot-set row, or `:error` if unknown."
   @spec get(GenServer.server(), String.t()) :: {:ok, map()} | :error
   def get(store \\ __MODULE__, instance_id) do
@@ -301,6 +316,12 @@ defmodule Embervm.ServingStore do
       # publish re-emits its recorded endpoint identically; the node probe corrects
       # a truly-unhealthy one on its next report.
       healthy: fsm_state == :published,
+      # Not durable (a rebuilt draining instance is either health-ejected, which the
+      # node probe re-asserts, or lost mid-bank, which adoption heals from node
+      # inventory): default nil, which ServingHealth treats as republishable, the
+      # safe direction. A bank-drain interrupted by a restart is re-driven by the
+      # sweep, not resumed from this field.
+      drain_reason: nil,
       base_snapshot_ref: row.base_snapshot_ref,
       base_digest: row.base_digest,
       generation: row.generation || 0,
@@ -341,13 +362,23 @@ defmodule Embervm.ServingStore do
 
   def handle_call({:publish, instance_id, ip, port, reason}, _from, state) do
     payload = %{ip: ip, port: port, reason: to_string(reason)}
-    updates = %{ip: ip, port: port, healthy: true}
+    # Publishing clears any prior drain_reason: a (re)published instance is in the
+    # fan-out, not draining, so the drain-for-bank vs drain-for-health distinction
+    # no longer applies until it is unpublished again.
+    updates = %{ip: ip, port: port, healthy: true, drain_reason: nil}
     do_transition(state, instance_id, :publish, :serving_published, payload, updates)
   end
 
   def handle_call({:unpublish, instance_id, reason}, _from, state) do
     payload = %{reason: to_string(reason)}
-    do_transition(state, instance_id, :unpublish, :serving_unpublished, payload, %{healthy: false})
+    # Stamp the ETS row with WHY it drained (a transient, ETS-only fact, never an
+    # op-log column): `:bank` when the idle-bank sweep is deliberately draining a
+    # still-alive-and-healthy VM before StopServing(BANK); `:unhealthy` (or any
+    # other reason) when it is health ejection or a lifecycle drain. ServingHealth's
+    # republish-on-recovery branch republishes ONLY `:unhealthy` drains, so a health
+    # sweep during a bank-drain never re-adds the endpoint the bank is removing.
+    updates = %{healthy: false, drain_reason: drain_reason_of(reason)}
+    do_transition(state, instance_id, :unpublish, :serving_unpublished, payload, updates)
   end
 
   def handle_call({:mark, instance_id, event}, _from, state) do
@@ -358,6 +389,18 @@ defmodule Embervm.ServingStore do
     case fetch(state, instance_id) do
       {:ok, instance} ->
         updated = %{instance | healthy: healthy?, updated_at: state.clock.()}
+        :ets.insert(state.instances, {instance_id, updated})
+        {:reply, {:ok, updated}, state}
+
+      {:error, _} ->
+        {:reply, :error, state}
+    end
+  end
+
+  def handle_call({:touch_active, instance_id, ts}, _from, state) do
+    case fetch(state, instance_id) do
+      {:ok, instance} ->
+        updated = %{instance | last_active_at: ts, updated_at: ts}
         :ets.insert(state.instances, {instance_id, updated})
         {:reply, {:ok, updated}, state}
 
@@ -518,6 +561,8 @@ defmodule Embervm.ServingStore do
           port: Map.get(attrs, :port),
           # Not yet in the fan-out: healthy is meaningful only once published.
           healthy: false,
+          # Transient (ETS-only) drain distinction, set on unpublish; nil until then.
+          drain_reason: nil,
           base_snapshot_ref: Map.get(attrs, :base_snapshot_ref),
           base_digest: Map.get(attrs, :base_digest),
           generation: 0,
@@ -657,6 +702,16 @@ defmodule Embervm.ServingStore do
   # probe, and carries a routable {ip, port}. This is the single predicate the
   # publisher's cluster-vs-activator decision hinges on, kept here so the store is
   # the one owner of "what is in the fan-out".
+  # Map the unpublish audit reason to the transient drain_reason ServingHealth
+  # keys its republish decision on: only `:bank` marks a drain the idle-bank sweep
+  # owns (a still-live VM being drained before StopServing(BANK)); every other
+  # reason (`:unhealthy`, `:drain`, ...) is a health/lifecycle drain that a health
+  # recovery MAY republish. Keeping this an explicit map (not passthrough) means a
+  # future reason is treated as republishable-on-recovery by default, which is the
+  # safe direction (a stuck endpoint is re-added, never silently banked).
+  defp drain_reason_of(:bank), do: :bank
+  defp drain_reason_of(_other), do: :unhealthy
+
   defp publishable?(instance, workload) do
     instance.workload == workload and instance.state == :published and instance.healthy and
       is_binary(instance.ip) and instance.ip != "" and is_integer(instance.port)

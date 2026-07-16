@@ -140,6 +140,53 @@ defmodule Embervm.ServingHealthTest do
     assert ServingStore.published_endpoints(ctx.store, "wl-a") == [%{ip: "10.99.0.5", port: 8080}]
   end
 
+  test "a bank-drain is NOT republished by a health sweep even when the VM probes healthy" do
+    # The drain-for-bank health race (the Task 9 carry-forward): the idle-bank sweep
+    # unpublishes a still-ALIVE, still-HEALTHY VM (reason :bank) and waits drainSeconds
+    # before StopServing(BANK). A health sweep in that window sees draining + healthy
+    # and must NOT republish it (that would race the bank). The drain_reason :bank on
+    # the ETS row gates the republish.
+    ctx = start_stack()
+    pub = start_counting_publisher()
+    start_published(ctx, "srv-1", "vm-1")
+
+    # The idle-bank sweep's first step: unpublish reason :bank (draining, drain_reason
+    # :bank, but ip/port STILL SET because the VM is alive during the drain window).
+    {:ok, drained} = ServingStore.unpublish(ctx.store, "srv-1", :bank)
+    assert drained.state == :draining
+    assert drained.drain_reason == :bank
+    assert drained.ip == "10.99.0.5"
+
+    # The VM is still up and probing HEALTHY (the bank has not run yet).
+    put_serving_vm(ctx, "node-4", "vm-1", true)
+
+    # A health sweep must flip NOTHING: the bank owns this instance.
+    assert ServingHealth.reconcile(store: ctx.store, capacity_table: ctx.cap_table, publisher: pub) == 0
+
+    {:ok, instance} = ServingStore.get(ctx.store, "srv-1")
+    assert instance.state == :draining, "the bank-drain must not be republished"
+    assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
+    assert Embervm.ServingHealthTest.CountingPublisher.count(pub) == 0
+  end
+
+  test "a health-drain (reason :unhealthy) IS still republished on recovery (regression guard)" do
+    # The complement of the bank-drain test: an instance drained for HEALTH must still
+    # republish on recovery, so the drain_reason gate did not break health ejection.
+    ctx = start_stack()
+    pub = start_counting_publisher()
+    start_published(ctx, "srv-1", "vm-1")
+
+    put_serving_vm(ctx, "node-4", "vm-1", false)
+    assert ServingHealth.reconcile(store: ctx.store, capacity_table: ctx.cap_table, publisher: pub) == 1
+    {:ok, ejected} = ServingStore.get(ctx.store, "srv-1")
+    assert ejected.drain_reason == :unhealthy
+
+    put_serving_vm(ctx, "node-4", "vm-1", true)
+    assert ServingHealth.reconcile(store: ctx.store, capacity_table: ctx.cap_table, publisher: pub) == 1
+    {:ok, instance} = ServingStore.get(ctx.store, "srv-1")
+    assert instance.state == :published
+  end
+
   test "an empty capacity table ejects nothing (fail-safe: no facts, no eject)" do
     ctx = start_stack()
     pub = start_counting_publisher()

@@ -740,11 +740,15 @@ defmodule Embervm.BaseBuilder do
     entry
     |> maybe_put_count(:primed, Keyword.get(counts, :primed))
     |> maybe_put_count(:sessions, Keyword.get(counts, :sessions))
-    # R3 (D-R3.3.1): accepts a :serving count from a future ServingStore
-    # (Task 9) the same way :primed/:sessions are accepted, extending the
-    # MECHANISM only. evictable?/1 below deliberately does NOT require it yet;
-    # see that function's comment for why both directions of getting this
-    # sequencing wrong are unacceptable.
+    # R3 (D-R3.3.1, RESOLVED in Task 9): this :serving key is DELIBERATELY INERT.
+    # The investigation in Task 9 established that serving does NOT participate in
+    # base-refcounting at all: a serving instance cold-boots from a rootfs IMAGE
+    # (D-R3.4.2), never restores a BuildBase base snapshot, and once banked rides its
+    # own per-instance serving snapshot, so base eviction can never remove anything a
+    # live serving instance needs. Nothing reports a :serving count, and evictable?/1
+    # below is correctly NOT widened to require one. This key is kept (not removed) so
+    # PR-1's accepted counts contract is not churned; it stays a no-op unless a future
+    # rung ever gives serving a shared evictable base lineage. See D-R3.3.1.
     |> maybe_put_count(:serving, Keyword.get(counts, :serving))
   end
 
@@ -756,19 +760,16 @@ defmodule Embervm.BaseBuilder do
   # withheld until every owner has spoken, so a base is never destroyed under a
   # session that has not yet been counted (fail-safe).
   #
-  # R3 (D-R3.3.1): deliberately still keyed on primed/sessions only, NOT
-  # serving, even though merge_refcounts/2 above now accepts a :serving count.
-  # Task 9 (the ServingStore) MUST widen this to
-  # %{primed: 0, sessions: 0, serving: 0, evicted: false} AND land the first
-  # :serving report_base_refs/3 reporter IN THE SAME COMMIT. Either half done
-  # alone is wrong in a different direction: widening the guard here without a
-  # reporter existing yet would make it require serving: 0 forever (nil never
-  # equals 0), silently wedging base eviction for EVERY workload class, not
-  # just serving; landing a reporter without widening the guard would let a
-  # live serving instance's birth base evict out from under it (the guard
-  # would already be satisfied by primed:0/sessions:0 alone, ignoring the
-  # live serving instance entirely). Both failure modes are unacceptable, so
-  # the widen and the first report must ship together.
+  # R3 (D-R3.3.1, RESOLVED in Task 9): correctly keyed on primed/sessions only, NOT
+  # serving. Serving does NOT participate in base-refcounting: a serving instance
+  # cold-boots from a rootfs IMAGE (D-R3.4.2), never restores a BuildBase base
+  # snapshot, and rides its own per-instance serving snapshot once banked, so base
+  # eviction can never remove anything it needs. There is nothing to report and no
+  # serving: 0 term to add: widening this to require serving: 0 with no reporter would
+  # make it require serving: 0 forever (nil never equals 0), silently wedging base
+  # eviction for EVERY workload class. Not-widening is both the correct model and the
+  # only safe move. The :serving key in merge_refcounts/2 above stays deliberately
+  # inert. See D-R3.3.1.
   defp evictable?(%{primed: 0, sessions: 0, evicted: false}), do: true
   defp evictable?(_), do: false
 

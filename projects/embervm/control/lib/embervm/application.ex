@@ -163,6 +163,14 @@ defmodule Embervm.Application do
       # control-plane restart republishes exactly the same endpoints without touching
       # any VM. With no serving node wired, a miss denies :no_capacity.
       {Embervm.ServingManager, serving_manager_opts()},
+      # The serving lifecycle-economics sweeper (R3, Task 9): the idle-to-bank /
+      # scale-to-zero / max-lifetime / banked-TTL loop, plus the forced-roll verb the
+      # Router's DELETE /v1/serving/:name/instances calls. It scrapes each node Envoy's
+      # per-cluster request counters (the idle signal) and drives drain-before-bank.
+      # Placed AFTER ServingStore/EndpointPublisher (it mutates the store + re-pushes)
+      # and BEFORE the Router (whose forced-roll handler calls it). With no serving node
+      # wired (no stats_base) every tick fails open and banks nothing.
+      {Embervm.ServingSweeper, serving_sweeper_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -435,6 +443,34 @@ defmodule Embervm.Application do
     case trimmed_env(name) do
       "" -> nil
       raw -> String.to_integer(raw)
+    end
+  end
+
+  # ServingSweeper (Task 9) config: the sweep cadence, the node Envoy stats base URL,
+  # and the per-node concurrent-bank cap. The stats_base is the serving Service's
+  # stats port (EMBERVM_SERVING_STATS_BASE, e.g. http://embervm-serving:9902); unset
+  # -> nil, which disables the scrape so every tick fails open (banks nothing). The
+  # cadence defaults to 30s (standing decision 9's low-cadence idle scrape).
+  defp serving_sweeper_opts do
+    [
+      sweep_interval_ms: serving_sweep_interval_ms(),
+      stats_base: sweeper_stats_base(),
+      bank_concurrency: int_env_or_nil("EMBERVM_SERVING_BANK_CONCURRENCY")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp serving_sweep_interval_ms do
+    case trimmed_env("EMBERVM_SERVING_SWEEP_INTERVAL_MS") do
+      "" -> 30_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  defp sweeper_stats_base do
+    case trimmed_env("EMBERVM_SERVING_STATS_BASE") do
+      "" -> nil
+      raw -> raw
     end
   end
 

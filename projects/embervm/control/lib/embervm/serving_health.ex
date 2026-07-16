@@ -101,29 +101,23 @@ defmodule Embervm.ServingHealth do
           instance.state == :published and not healthy? ->
             eject(store, instance)
 
-          # !!! TASK 9 IMPLEMENTER, READ THIS BEFORE LANDING DRAIN-BEFORE-BANK !!!
+          # Republish a recovered instance (draining + node-reports-healthy ->
+          # published) ONLY when it was drained for HEALTH, not for a bank.
           #
-          # This republish (draining + node-reports-healthy -> published) is safe
-          # TODAY only because NOTHING moves an instance to `draining` while its VM
-          # is alive and healthy: in R3 PR-4 the sole path into `draining` is health
-          # ejection itself (an UNHEALTHY probe), so a draining instance the node now
-          # reports HEALTHY can only be one that recovered, and republishing it is
-          # correct.
-          #
-          # Task 9's drain-before-bank BREAKS that assumption. The idle-bank sequence
-          # is: unpublish (published -> draining, reason `drain`), wait `drainSeconds`,
-          # then StopServing(BANK). During that drain window the instance is `draining`
-          # with its {ip, port} STILL SET and its VM STILL UP and probing HEALTHY. This
-          # health sweep would then REPUBLISH the very instance the bank is
-          # deliberately draining, RACING the bank (re-adding an endpoint about to be
-          # snapshotted-and-destroyed -> requests routed to a VM that vanishes).
-          #
-          # Task 9 MUST distinguish drain-for-HEALTH from drain-for-BANK before landing
-          # drain-before-bank, e.g. a `drain_reason` on the ETS row that this branch
-          # checks (republish only when drain_reason == :unhealthy), or a distinct
-          # transient `bank_draining` state this branch excludes. Do NOT land the
-          # idle-bank drain without gating this republish, or banks will flap.
-          instance.state == :draining and healthy? and republishable?(instance) ->
+          # The history: in PR-4 the sole path into `draining` was health ejection, so
+          # a draining-but-now-healthy instance could only be a recovered one, and
+          # republishing was unconditionally correct. Task 9's drain-before-bank broke
+          # that: the idle-bank sweep unpublishes a still-alive, still-healthy VM
+          # (published -> draining, reason `bank`) and waits `drainSeconds` before
+          # StopServing(BANK). During that window a health sweep sees `draining` +
+          # HEALTHY and, without this guard, would republish the very instance the bank
+          # is removing, racing it (an endpoint re-added just before its VM is
+          # snapshotted-and-destroyed). The `drain_reason` on the ETS row distinguishes
+          # the two: ServingStore.unpublish stamps `:bank` for a bank-drain and
+          # `:unhealthy` for health/lifecycle drains, and this branch republishes only
+          # the latter. A bank-drain is left strictly to the sweep to finish.
+          instance.state == :draining and healthy? and not bank_draining?(instance) and
+              republishable?(instance) ->
             republish(store, instance)
 
           true ->
@@ -183,4 +177,11 @@ defmodule Embervm.ServingHealth do
   defp republishable?(instance) do
     is_binary(instance.ip) and instance.ip != "" and is_integer(instance.port)
   end
+
+  # True when this draining instance is being drained for a BANK (the idle-bank
+  # sweep owns it), so the health sweep must NOT republish it even if the VM still
+  # probes healthy. Set by ServingStore.unpublish(reason: :bank). Any other
+  # drain_reason (`:unhealthy`, nil after a rebuild) is a health/lifecycle drain the
+  # health sweep may republish on recovery.
+  defp bank_draining?(instance), do: Map.get(instance, :drain_reason) == :bank
 end

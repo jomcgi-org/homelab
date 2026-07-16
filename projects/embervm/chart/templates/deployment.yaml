@@ -138,6 +138,15 @@ spec:
                   fieldPath: status.podIP
             - name: EMBERVM_SERVING_ACTIVATOR_PORT
               value: {{ .Values.service.port | quote }}
+            {{- if .Values.servingEnvoy.enabled }}
+            # The node Envoy stats base URL (R3, Task 9): the ServingSweeper GETs
+            # {this}/stats?format=json to read per-cluster upstream_rq_total (the idle
+            # signal). The serving Service exposes the path-restricted stats port
+            # (only /stats and /ready reach the loopback admin). Unset -> the sweeper
+            # fails open and banks nothing, so this is gated on servingEnvoy being up.
+            - name: EMBERVM_SERVING_STATS_BASE
+              value: "http://{{ include "embervm.serving.fullname" . }}:{{ .Values.servingEnvoy.statsPort }}"
+            {{- end }}
             {{- end }}
           readinessProbe:
             httpGet:

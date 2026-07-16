@@ -47,6 +47,25 @@ data:
       # LDS is NOT used: the listener below is static. RDS/CDS/EDS are dynamic.
     static_resources:
       clusters:
+        # The loopback admin, as an UPSTREAM cluster for the stats proxy listener
+        # below. Envoy's admin is one indivisible listener serving /stats AND
+        # /quitquitquit / /config_dump, so it MUST stay bound to 127.0.0.1 only
+        # (never the pod network). The stats listener below proxies ONLY /stats to
+        # this cluster, so per-cluster upstream_rq_total is scrapable from the pod
+        # network (the Task 9 idle-signal sweep) without exposing the kill switch.
+        - name: admin_loopback
+          type: STATIC
+          connect_timeout: 0.25s
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: admin_loopback
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: {{ .Values.servingEnvoy.adminPort }}
         # The ADS control cluster: the xds sidecar, reached via the embervm control-
         # plane Service's xDS gRPC port. HTTP/2 (gRPC) with keepalive so a dropped
         # control-plane pod is detected and the stream re-establishes on recovery.
@@ -100,6 +119,55 @@ data:
                         # as its process starts, decoupled from the control plane.
                         initial_fetch_timeout: 5s
                       route_config_name: embervm-serving
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+        # The STATS listener (R3, Task 9): a pod-network-reachable read-only window
+        # onto Envoy's per-cluster counters (cluster.serve|<workload>.upstream_rq_total),
+        # which the control-plane idle-signal sweep scrapes to detect idleness. It
+        # proxies ONLY GET /stats (and /ready) to the loopback admin cluster; EVERY
+        # other path (crucially /quitquitquit and /config_dump) gets a direct 403, so
+        # the admin's kill switch and config dump are never reachable off-box even
+        # though stats are. This is why admin itself stays loopback-bound above.
+        - name: stats_listener
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: {{ .Values.servingEnvoy.statsPort }}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: serving_stats
+                    codec_type: AUTO
+                    route_config:
+                      name: stats_local
+                      virtual_hosts:
+                        - name: stats
+                          domains: ["*"]
+                          routes:
+                            # Only /stats and /ready reach the loopback admin. The
+                            # prefix match on /stats covers /stats?format=json (the
+                            # sweep's query). /ready is a pod-reachable readiness that
+                            # never exposes anything sensitive.
+                            - match:
+                                path: /ready
+                              route:
+                                cluster: admin_loopback
+                            - match:
+                                prefix: /stats
+                              route:
+                                cluster: admin_loopback
+                            # Everything else (/quitquitquit, /config_dump, /) is
+                            # refused here and never forwarded to the admin.
+                            - match:
+                                prefix: /
+                              direct_response:
+                                status: 403
+                                body:
+                                  inline_string: "forbidden: only /stats is exposed\n"
                     http_filters:
                       - name: envoy.filters.http.router
                         typed_config:

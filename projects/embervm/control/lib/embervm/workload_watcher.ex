@@ -639,7 +639,12 @@ defmodule Embervm.WorkloadWatcher do
     max_instances: 2,
     idle_bank_seconds: 300,
     drain_seconds: 5,
-    max_lifetime_seconds: 86_400
+    max_lifetime_seconds: 86_400,
+    # A banked serving snapshot untouched this long is GC'd (Task 9 banked-TTL
+    # sweep), mirroring the session bankedTtlSeconds. Defaults to max_lifetime so
+    # a workload that never sets it holds banked snapshots no longer than a live
+    # instance would live, and the GC is a no-op relative to lifetime expiry.
+    banked_ttl_seconds: 86_400
   }
 
   defp validate_serving(_state, _name, spec, class, _cap) when class in ["task", "session"] do
@@ -725,7 +730,12 @@ defmodule Embervm.WorkloadWatcher do
       max_instances: Map.get(s, "maxInstances") || @serving_defaults.max_instances,
       idle_bank_seconds: Map.get(s, "idleBankSeconds") || @serving_defaults.idle_bank_seconds,
       drain_seconds: Map.get(s, "drainSeconds") || @serving_defaults.drain_seconds,
-      max_lifetime_seconds: Map.get(s, "maxLifetimeSeconds") || @serving_defaults.max_lifetime_seconds
+      max_lifetime_seconds: Map.get(s, "maxLifetimeSeconds") || @serving_defaults.max_lifetime_seconds,
+      # Defaults to maxLifetimeSeconds (see @serving_defaults) so an unset banked
+      # TTL never outlives what a live instance would.
+      banked_ttl_seconds:
+        Map.get(s, "bankedTtlSeconds") || Map.get(s, "maxLifetimeSeconds") ||
+          @serving_defaults.banked_ttl_seconds
     }
   end
 

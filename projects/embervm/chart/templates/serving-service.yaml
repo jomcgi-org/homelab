@@ -18,4 +18,11 @@ spec:
     - name: http
       port: {{ .Values.servingEnvoy.listenerPort }}
       targetPort: http
+    # The stats port (R3, Task 9): the control-plane idle-signal sweep GETs
+    # /stats?format=json here to read per-cluster upstream_rq_total. Only /stats
+    # and /ready are served (the stats_listener route-restricts to the loopback
+    # admin); every other path 403s, so this is a read-only counters window.
+    - name: stats
+      port: {{ .Values.servingEnvoy.statsPort }}
+      targetPort: stats
 {{- end }}
