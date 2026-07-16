@@ -13,6 +13,8 @@ go_library(
         "main.go",
         "mount_linux.go",
         "mount_other.go",
+        "volume_linux.go",
+        "volume_other.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/python/guest-init/cmd",
     visibility = ["//visibility:private"],
