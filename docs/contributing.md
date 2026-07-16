@@ -9,7 +9,7 @@ This is a GitOps monorepo where related code and deployment configuration live t
 | Directory                | Purpose                                                                  |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `projects/`              | All services, operators, websites — colocated with deploy configs        |
-| `projects/platform/`     | Cluster-critical infrastructure (ArgoCD, Linkerd, SigNoz, etc.)          |
+| `projects/platform/`     | Cluster-critical infrastructure (ArgoCD, Cilium, SigNoz, etc.)          |
 | `projects/home-cluster/` | Auto-generated root kustomization that discovers all deploy/ directories |
 | `bazel/`                 | Build infrastructure (Helm rules, tools, images, semgrep, wrangler)      |
 | `docs/`                  | Design docs, ADRs, and plans                                             |
@@ -74,7 +74,7 @@ projects/
 │   │   ├── application.yaml
 │   │   ├── kustomization.yaml
 │   │   └── values.yaml
-│   ├── linkerd/
+│   ├── cilium/
 │   ├── kyverno/
 │   └── kustomization.yaml  ← references all platform services
 │
@@ -149,6 +149,18 @@ format
 4. **Check observability** - metrics, logs, traces
 5. **Create PR** - BuildBuddy CI runs format check + `bazel test //...`
 6. **Merge** - ArgoCD automatically syncs changes to production cluster
+
+## Merge Discipline
+
+All changes land by rebase merge; squash and merge commits are disabled.
+Required checks are strict: a branch must be up to date with main before it
+can merge, so every open PR re-runs CI against post-merge main. That re-run
+is what makes chart version collisions between concurrent PRs detectable
+(see [ADR platform/011](decisions/platform/011-idempotent-chart-publish-missed-bump-detection.md)).
+Any PR whose code must deploy bumps its chart version in the same PR; a
+missed bump fails the main-branch image push loudly with the fix command.
+Renovate opens weekly PRs for upstream chart drift; upgrades are judged
+against changelogs before merge, never auto-merged.
 
 ## Testing Philosophy
 

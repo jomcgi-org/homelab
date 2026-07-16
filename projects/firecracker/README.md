@@ -8,6 +8,13 @@ The pitch: every request gets a fresh micro-VM with a read-only rootfs, a vsock-
 network boundary, and no real secrets inside the guest. Snapshot restore makes this
 cheap enough for synchronous calls: see [Performance](#performance) for the numbers.
 
+**Status: frozen.** [EmberVM](../embervm/)'s node daemon began as a fork of
+this substrate, and all new work lands there. Semgrep scan traffic has already
+cut over to EmberVM (DECISIONS.md Task 16). The goose agent is the last
+fc-invoke consumer; when it migrates onto EmberVM's session class this
+substrate is retired. The daemon still runs in production and the latency
+numbers below were measured on it.
+
 ## Performance
 
 Two headline paths, measured on node-4. Both keep Kubernetes out of the per-request
@@ -94,6 +101,12 @@ Key properties, in one place:
 - **GitOps like everything else.** Guest images are apko-built, dual-arch, and
   Bazel-pinned into the substrate chart; ArgoCD deploys the chart; the rootfs-builder
   initContainer bakes the images into ext4 on node-4's NVMe at pod startup.
+
+## Hazard analysis
+
+The STPA safety model for this substrate (secret exposure, cluster pivot,
+cross-invocation contamination, false-clean scan results) is in
+[STPA.md](STPA.md), with evidence lines cited into the code.
 
 ## Design history (ADRs)
 
