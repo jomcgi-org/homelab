@@ -253,10 +253,13 @@ defmodule Embervm.OpLog.StatefulProjectionTest do
     vol = volume_by_workload(server)["scratch-postgres"]
     assert vol.generation == 3
 
-    # The cold-boot reason is reconstructable from the op-log alone.
+    # The cold-boot reason is reconstructable from the op-log alone. A payload
+    # read back through read_from is decoded with STRING keys (the durable
+    # payload_json round-trip), unlike the atom-keyed map the projection saw at
+    # append time, so assert on the string key.
     {:ok, ops} = SQLite.read_from(server, 0)
     cold = Enum.find(ops, &(&1.kind == :stateful_cold_booted))
-    assert cold.payload.reason == "generation_mismatch"
+    assert cold.payload["reason"] == "generation_mismatch"
     assert cold.stateful_instance_id == "st-3-wake"
 
     :ok = GenServer.stop(server)
