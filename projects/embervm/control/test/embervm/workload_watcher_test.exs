@@ -197,8 +197,9 @@ defmodule Embervm.WorkloadWatcherTest do
     table = unique_table()
     agent = start_recorder()
     base = start_base_recorder()
-    # `serving` is still reserved for a later rung (session became valid in R2).
-    cr = valid_cr(%{"spec" => %{"class" => "serving"}})
+    # `stateful` is still reserved for a later rung (task/session/serving are
+    # all valid as of R3).
+    cr = valid_cr(%{"spec" => %{"class" => "stateful"}})
     lister = fn -> {:ok, [cr]} end
     watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
 
@@ -540,8 +541,9 @@ defmodule Embervm.WorkloadWatcherTest do
 
     first = serving_cr()
     second = serving_cr(%{"metadata" => %{"name" => "sandbox-serving-2"}})
-    lister_conflict = fn -> {:ok, [first, second]} end
-    watcher = start_watcher(lister_conflict, recording_status_writer(agent), table)
+    {:ok, lister_agent} = Agent.start_link(fn -> [first, second] end)
+    lister = fn -> {:ok, Agent.get(lister_agent, & &1)} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
 
     :ok = WorkloadWatcher.reconcile_now(watcher)
     assert WorkloadCatalog.fetch(table, "sandbox-serving-2") == :error
@@ -549,10 +551,12 @@ defmodule Embervm.WorkloadWatcherTest do
     # The first workload is deleted (no longer returned by LIST); the second
     # now owns the host uncontested and must catalog cleanly on the next
     # reconcile, proving the collision check is live-catalog-derived, not
-    # some sticky watcher-local rejection.
-    second_only = fn -> {:ok, [second]} end
-    watcher2 = start_watcher(second_only, recording_status_writer(agent), table)
-    :ok = WorkloadWatcher.reconcile_now(watcher2)
+    # some sticky watcher-local rejection. Same watcher, second LIST pass
+    # (mirroring the fail-open list-error test's mutable-lister idiom), not a
+    # second watcher instance: two live watchers would both try to create the
+    # SAME named ETS table and collide.
+    Agent.update(lister_agent, fn _ -> [second] end)
+    :ok = WorkloadWatcher.reconcile_now(watcher)
 
     assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-serving-2")
     assert entry.serving.host == "sandbox.serve.example.com"
