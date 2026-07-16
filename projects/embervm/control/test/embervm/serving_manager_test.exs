@@ -375,4 +375,78 @@ defmodule Embervm.ServingManagerTest do
     {:ok, still} = ServingStore.get(ctx.store, "srv-disc")
     assert still.state == :starting
   end
+
+  # -- stale-lineage relight reject (D-R3.11.3 follow-up) --------------------
+
+  # Seed a banked instance born from `base_snapshot_ref`, whose snapshot the node
+  # reports as `snapshot_ref` (so node_for_relight resolves it).
+  defp seed_banked(ctx, id, base_snapshot_ref, snapshot_ref) do
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: id,
+        tenant: "homelab",
+        principal: "serving:wl-a",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-#{id}",
+        ip: "10.99.0.9",
+        port: 8080,
+        base_snapshot_ref: base_snapshot_ref
+      })
+
+    {:ok, _} = ServingStore.publish(ctx.store, id, "10.99.0.9", 8080, :started)
+    {:ok, _} = ServingStore.unpublish(ctx.store, id, :bank)
+    {:ok, _} = ServingStore.mark(ctx.store, id, :bank)
+
+    {:ok, _} =
+      ServingStore.transition(ctx.store, id, :bank_ready, :serving_banked,
+        %{snapshot_ref: snapshot_ref, size_bytes: 10, generation: 1},
+        %{snapshot_ref: snapshot_ref, snapshot_size_bytes: 10, generation: 1, vm_id: nil}
+      )
+
+    id
+  end
+
+  defp recording_start_fun do
+    {:ok, srcs} = Agent.start_link(fn -> [] end)
+
+    fun = fn _ch, req ->
+      Agent.update(srcs, &[elem(req.source, 0) | &1])
+      {:ok, %StartServingResponse{vm_id: "vm-woke", ip: "10.99.0.5", port: 8080}}
+    end
+
+    {fun, srcs}
+  end
+
+  test "a STALE-lineage banked instance is NOT relit: the wake cold-boots the current base" do
+    {fun, srcs} = recording_start_fun()
+    ctx = start_stack(start_serving_fun: fun)
+    serving_workload(ctx, "wl-a")
+    # Node reports the CURRENT serving_image_ref "base-a" (see serving_node) AND the
+    # stale snapshot; the banked instance was born from a SUPERSEDED base "base-OLD".
+    serving_node(ctx, "node-4",
+      serving_snapshots: [%{snapshot_ref: "serving/s-old", workload: "wl-a", size_bytes: 10, created_at_unix_ms: 1}]
+    )
+
+    seed_banked(ctx, "srv-old", "base-OLD", "serving/s-old")
+
+    assert {:ok, %{ip: "10.99.0.5", port: 8080}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    # The wake was a COLD boot (:fresh), not a relight of the stale snapshot.
+    assert Agent.get(srcs, & &1) == [:fresh]
+  end
+
+  test "a CURRENT-lineage banked instance IS relit (the reject is lineage-specific)" do
+    {fun, srcs} = recording_start_fun()
+    ctx = start_stack(start_serving_fun: fun)
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4",
+      serving_snapshots: [%{snapshot_ref: "serving/s-cur", workload: "wl-a", size_bytes: 10, created_at_unix_ms: 1}]
+    )
+
+    # base_snapshot_ref matches the node's current serving_image_ref "base-a".
+    seed_banked(ctx, "srv-cur", "base-a", "serving/s-cur")
+
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert Agent.get(srcs, & &1) == [:relight]
+  end
 end

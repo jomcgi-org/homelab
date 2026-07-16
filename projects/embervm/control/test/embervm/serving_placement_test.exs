@@ -97,4 +97,21 @@ defmodule Embervm.ServingPlacementTest do
     instance = %{node_id: "node-dead", snapshot_ref: "serving/s-1"}
     assert ServingPlacement.node_for_relight(instance, t) == {:error, :snapshot_lost}
   end
+
+  # -- current_serving_image_ref (turnover key) ------------------------------
+
+  describe "current_serving_image_ref/3" do
+    test "returns the node's current serving_image_ref for the workload", %{t: t} do
+      put_serving_node(t, "node-4", workloads: ready_workload("base:new"))
+      assert ServingPlacement.current_serving_image_ref(t, "node-4", "wl-a") == "base:new"
+    end
+
+    test "is nil for an absent node, an unknown workload, or a node reporting no ref", %{t: t} do
+      put_serving_node(t, "node-4", workloads: ready_workload("base:new"))
+      assert ServingPlacement.current_serving_image_ref(t, "node-dead", "wl-a") == nil
+      assert ServingPlacement.current_serving_image_ref(t, "node-4", "wl-unknown") == nil
+      put_serving_node(t, "node-5", workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY}})
+      assert ServingPlacement.current_serving_image_ref(t, "node-5", "wl-a") == nil
+    end
+  end
 end
