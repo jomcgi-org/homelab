@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"time"
@@ -140,6 +141,19 @@ type Config struct {
 	// ServingUnhealthyThreshold is the number of consecutive probe failures that
 	// flips a serving VM healthy->false; one success flips it back. Default 3.
 	ServingUnhealthyThreshold int
+
+	// VolumeRoot is the directory holding per-workload stateful volume files
+	// (R4), a sibling of SnapshotRoot's bases/sessions/serving/stateful bundle
+	// dirs but deliberately a SEPARATE root: a volume is durable data that
+	// outlives every VM instance and must never be swept by any bundle-GC
+	// policy scoped to SnapshotRoot. Default SnapshotRoot's parent + "/volumes"
+	// when unset and SnapshotRoot is set, else empty (stateful verbs disabled).
+	VolumeRoot string
+	// StatefulProbeInterval / StatefulUnhealthyThreshold configure the
+	// TCP-connect health-probe loop for stateful VMs (R4), mirroring the
+	// serving HTTP-probe knobs. Default 5s / 3.
+	StatefulProbeInterval      time.Duration
+	StatefulUnhealthyThreshold int
 }
 
 // Load resolves configuration from the environment, applying defaults for all
@@ -172,6 +186,10 @@ func Load() (Config, error) {
 		ServingSubnetCIDR:         getenvDefault("EMBERVM_NODED_SERVING_SUBNET_CIDR", "172.31.0.0/24"),
 		ServingProbeInterval:      5 * time.Second,
 		ServingUnhealthyThreshold: atoiDefault("EMBERVM_NODED_SERVING_UNHEALTHY_THRESHOLD", 3),
+
+		VolumeRoot:                 os.Getenv("EMBERVM_NODED_VOLUME_ROOT"),
+		StatefulProbeInterval:      5 * time.Second,
+		StatefulUnhealthyThreshold: atoiDefault("EMBERVM_NODED_STATEFUL_UNHEALTHY_THRESHOLD", 3),
 	}
 
 	if c.Node == "" {
@@ -179,6 +197,13 @@ func Load() (Config, error) {
 	}
 	if c.Arch == "" {
 		c.Arch = runtime.GOARCH
+	}
+	if c.VolumeRoot == "" && c.SnapshotRoot != "" {
+		// Default alongside the snapshot root but as a SIBLING directory, not
+		// nested under it: volumes are durable data outliving every VM instance
+		// and must stay outside any bundle-GC policy scoped to SnapshotRoot's
+		// bases/sessions/serving/stateful subtree.
+		c.VolumeRoot = filepath.Join(filepath.Dir(c.SnapshotRoot), filepath.Base(c.SnapshotRoot)+"-volumes")
 	}
 
 	if err := parseDuration("EMBERVM_NODED_BOOT_READY_TIMEOUT", &c.BootReadyTimeout); err != nil {
@@ -194,6 +219,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := parseDuration("EMBERVM_NODED_SERVING_PROBE_INTERVAL", &c.ServingProbeInterval); err != nil {
+		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_STATEFUL_PROBE_INTERVAL", &c.StatefulProbeInterval); err != nil {
 		return Config{}, err
 	}
 	if v := os.Getenv("EMBERVM_NODED_ARCHIVE_MAX_BYTES"); v != "" {
