@@ -123,6 +123,14 @@ defmodule Embervm.Router do
     handle_get_serving(conn, name)
   end
 
+  # DELETE /v1/serving/:name/instances (management auth): the forced roll. Drains and
+  # DESTROYS every live instance of the workload (and evicts its banked snapshots) so
+  # the next miss cold-creates on the CURRENT base. Returns the counts destroyed +
+  # evicted. Behind the same /v1 management auth as the GET.
+  delete "/v1/serving/:name/instances" do
+    handle_force_roll(conn, name)
+  end
+
   # The activator fallback (R3, Task 8): the catch-all is the front-end the node
   # Envoy routes a MISS to (the fallback endpoint of an empty serve|<workload>
   # cluster). It is identified by the `x-ember-workload` request header the serving
@@ -845,8 +853,22 @@ defmodule Embervm.Router do
     |> Enum.max(fn -> 0 end)
   end
 
+  # DELETE /v1/serving/:name/instances handler: forced roll (management auth). Drives
+  # ServingSweeper.force_roll (drain + destroy every live instance, evict banked
+  # snapshots) so the next miss cold-starts on the current base. Returns the counts;
+  # a workload with no instances rolls zero (200), never a 404.
+  defp handle_force_roll(conn, workload) do
+    %{destroyed: destroyed, evicted: evicted} =
+      serving_sweeper().force_roll(serving_sweeper_server(), workload)
+
+    send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+  end
+
   defp serving_store, do: Application.get_env(:embervm, :serving_store_mod, Embervm.ServingStore)
   defp serving_store_server, do: Application.get_env(:embervm, :serving_store, Embervm.ServingStore)
+
+  defp serving_sweeper, do: Application.get_env(:embervm, :serving_sweeper_mod, Embervm.ServingSweeper)
+  defp serving_sweeper_server, do: Application.get_env(:embervm, :serving_sweeper, Embervm.ServingSweeper)
 
   # The activator miss handler (front-end only, no management auth): read the
   # ORIGINAL request (method/path/headers/body verbatim, under the 8 MiB envelope

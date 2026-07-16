@@ -377,6 +377,8 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.serving.idle_bank_seconds == 120
     assert entry.serving.drain_seconds == 10
     assert entry.serving.max_lifetime_seconds == 21_600
+    # bankedTtlSeconds omitted -> defaults to maxLifetimeSeconds (Task 9).
+    assert entry.serving.banked_ttl_seconds == 21_600
 
     # A valid CR: the watcher writes only observedGeneration (no conditions).
     assert {_ns, "sandbox-serving", status_map} = ready_status(recorded_calls(agent), "sandbox-serving")
@@ -403,6 +405,8 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.serving.idle_bank_seconds == 300
     assert entry.serving.drain_seconds == 5
     assert entry.serving.max_lifetime_seconds == 86_400
+    # bankedTtlSeconds omitted with no maxLifetimeSeconds -> the default (86_400).
+    assert entry.serving.banked_ttl_seconds == 86_400
   end
 
   test "serving class missing spec.serving is Ready=False/ServingSpecMissing, not cataloged" do
