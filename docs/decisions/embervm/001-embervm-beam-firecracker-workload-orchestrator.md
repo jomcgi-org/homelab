@@ -140,7 +140,7 @@ Rungs share primitives, not dates. Each rung names its target, its first consume
 | R0 Tasks | Durable, fair, retried task execution | Scan fleet | Dispatcher, op-log, Workload CRD, image source | (baseline) | Shipped 2026-07-14 |
 | R1 Zip lane | Zero-toolchain internal functions | Monolith FaaS migration | Runtime bases + bootstrap shim | Uniform HTTP contract; `source` as oneOf | Shipped 2026-07-15 |
 | R2 Sessions | Bank/relight stateful sandboxes | Agent sandboxes | Idle-bank, snapshot tiering, per-session tokens | Invocation front-end split from placement; lineage rule | Shipped 2026-07-15 |
-| R3 Serving | Warm request serving at fleet scale | Tenant web APIs | xDS programming, two-tier Envoy option | Control plane off the hit path | Decided |
+| R3 Serving | Warm request serving at fleet scale | Tenant web APIs | xDS programming, two-tier Envoy option | Control plane off the hit path | Shipped 2026-07-16 |
 | R4 Stateful | Scale-to-zero singleton datastores | Staging/preview databases | Volume attach, L4 wake-on-connect | Snapshot/volume generation pairing in snapshot metadata from day one | Recorded |
 | R5 Composite | Multi-VM groups with private networks | Ephemeral k8s environments, DB clusters | Group lifecycle, per-group subnets | Group-shaped room in the CRD schema | Recorded |
 | R6 Facade | Virtual control planes, hard multi-tenancy | (own ADRs) | etcd-shim over the op-log | Per-tenant op-log partitioning | Future ADR |

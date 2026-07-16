@@ -104,6 +104,9 @@ Baseline per `docs/security.md`. A base snapshot embeds function code (imported 
 4. **Snapshot format versioning** across noded/Firecracker upgrades, and the migration/rebuild path when the format changes.
 5. **Eviction sequencing** for a base mid-drain: how aggressively to destroy primed VMs to reclaim a slot vs waiting for natural turnover.
 
+> **R3 Serving is now a live consumer of this loop's future verbs (2026-07-16).**
+> R3 shipped (ADR embervm/001 roadmap; [plan Closure](../../plans/2026-07-16-embervm-r3-serving-spec-and-plan.md#closure-2026-07-16)). A serving workload's snapshot residency constrains where it can wake (`node_for_relight` resolves only to the node still reporting the snapshot), so serving is the first tier whose scheduling is bounded by "which node holds the base" exactly as this ADR's Problem describes. Two concrete pulls on the distribution/eviction verbs already exist: (1) **cross-node serving** needs a base to be placeable on a node that did not build it (routable serving endpoints now exist via DECISIONS.md D-R3.11.4, so the remaining gap is base residency, not reachability); (2) **stale serving base-dir GC** (memfiles/handler artifacts accumulating per runtime roll) is the eviction half of this loop applied to serving bases: R3's turnover fix (D-R3.11.5) evicts superseded banked *snapshots* but defers the *base* GC here.
+
 ---
 
 ## References
