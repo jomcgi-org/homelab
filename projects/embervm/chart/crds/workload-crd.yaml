@@ -54,6 +54,10 @@ spec:
           type: string
           description: Live/banked/published instance counts (serving class only).
           jsonPath: .status.servingSummary
+        - name: Stateful
+          type: string
+          description: Instance state and generation/bundle pairing (stateful class only).
+          jsonPath: .status.statefulSummary
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp
@@ -69,15 +73,19 @@ spec:
                 - class
                 - source
                 - resources
-                - concurrency
               properties:
                 class:
                   type: string
                   description: >-
-                    Isolation/lifecycle class. task, session, and serving are
-                    valid as of R3; stateful is reserved for a later rung and
-                    rejected by the watcher via a status condition, not by the
-                    API server, so a forward CR does not hard-fail admission.
+                    Isolation/lifecycle class. task, session, serving, and
+                    stateful are valid as of R4. The stateful class is a
+                    scale-to-zero singleton datastore (one long-lived microVM
+                    owning one writable volume, reachable over opaque L4 TCP).
+                    concurrency is required by the watcher for task/session/serving
+                    but forbidden for stateful (singleton by construction), which
+                    is why it is no longer a schema-level required field; the
+                    watcher enforces the per-class requiredness via a status
+                    condition (the same pattern as the session/serving blocks).
                   enum:
                     - task
                     - session
@@ -363,6 +371,98 @@ spec:
                         when unset (the watcher applies that), so a banked snapshot
                         never outlives what a live instance would.
                       minimum: 0
+                stateful:
+                  type: object
+                  description: >-
+                    Stateful-class volume and L4 policy (R4). REQUIRED when
+                    spec.class is `stateful` and forbidden otherwise; the watcher
+                    enforces that cross-field rule with a status condition. A
+                    stateful workload is a scale-to-zero SINGLETON: one long-lived
+                    microVM owning one writable volume (a raw file on node NVMe),
+                    reachable over opaque L4 TCP, that banks to disk when idle and
+                    wakes on the next inbound connection (ADR embervm/001: data on
+                    the volume, warmth in the snapshot). There is no maxInstances
+                    knob (singleton by construction) and spec.concurrency is
+                    forbidden on this class.
+                  required:
+                    - port
+                    - listenPort
+                    - volumeSizeGiB
+                  properties:
+                    port:
+                      type: integer
+                      description: >-
+                        The port the guest TCP server listens on inside the VM
+                        (e.g. 5432 for Postgres). Health is a TCP connect to this
+                        port (opaque L4, no health path).
+                      minimum: 1
+                      maximum: 65535
+                    listenPort:
+                      type: integer
+                      description: >-
+                        The node Envoy TCP listener port this workload is exposed
+                        on cluster-internally. Must fall inside the chart's
+                        values-declared stateful range (default 5400-5409) and be
+                        unique across stateful workloads; the watcher rejects an
+                        out-of-range or duplicate port with a status condition. The
+                        listener port is the workload identity on the wire
+                        (decision 5): TCP has no header to route on.
+                      minimum: 1
+                      maximum: 65535
+                    volumeSizeGiB:
+                      type: integer
+                      description: >-
+                        Sparse size cap of the workload's raw volume file, in GiB.
+                        IMMUTABLE in v1: the watcher rejects an edit with a status
+                        condition (volume resize is a recorded follow-on; the file
+                        is not resized).
+                      minimum: 1
+                    volumeMountPath:
+                      type: string
+                      description: >-
+                        Guest path the volume is mounted at (guest-init runs mkfs
+                        on a blank device then mounts here before the image init).
+                        The host never mounts the volume (decision 9).
+                      default: /data
+                    idleBankSeconds:
+                      type: integer
+                      description: >-
+                        Idle time (zero active connections and zero new-connection
+                        delta across the window, per the Task 9 TCP idle scrape)
+                        after which the instance is banked and its VM released. A
+                        live connection is never severed regardless of this timer
+                        (decision 7).
+                      minimum: 30
+                      default: 300
+                    maxLifetimeSeconds:
+                      type: integer
+                      description: >-
+                        Hard lifetime cap. A stateful instance rides its birth
+                        image until this expires; after it, convergence is destroy-
+                        and-cold-boot against the volume (a roll costs a WAL
+                        recovery, not data). The Task 9 forced roll is the operator
+                        lever.
+                      minimum: 60
+                      default: 86400
+                    bankedTtlSeconds:
+                      type: integer
+                      description: >-
+                        How long a banked stateful bundle may sit idle before it is
+                        garbage-collected off node disk (Task 9 banked-TTL sweep).
+                        The VOLUME is never GC'd (data outlives the bundle); only
+                        the memory-snapshot warmth is reclaimed.
+                      minimum: 0
+                      default: 604800
+                    wakeTimeoutSeconds:
+                      type: integer
+                      description: >-
+                        Deadline for a wake (relight or cold boot) to reach TCP
+                        readiness. Cold boots include WAL recovery and mkfs+initdb
+                        on first boot, so this is generous by design; a wake that
+                        exceeds it marks the instance failed and the next
+                        connection retries (subject to the wake-rate limit).
+                      minimum: 1
+                      default: 60
                 invocation:
                   type: object
                   description: Task execution policy. All fields defaulted.
@@ -503,6 +603,42 @@ spec:
                     `serving`, for the SERVING printer column (a printer column
                     cannot format an object). Written by the control plane
                     alongside `serving`.
+                stateful:
+                  type: object
+                  description: >-
+                    Stateful-class status written by the control plane (stateful
+                    workloads only). Absent for other classes. Reports the
+                    singleton instance's lifecycle state, the volume and banked-
+                    bundle generations (whose equality is the pair-validity test),
+                    and the volume's allocated bytes for the watermark.
+                  properties:
+                    state:
+                      type: string
+                      description: >-
+                        Instance lifecycle state (starting | serving | banking |
+                        banked | relighting | cold_booting | evicted | destroyed |
+                        failed), or absent when no instance exists yet.
+                    generation:
+                      type: integer
+                      description: The live/last volume generation the instance holds.
+                    bundleGeneration:
+                      type: integer
+                      description: >-
+                        The generation stamped into the banked bundle. When it
+                        equals `generation` the banked warmth is valid; a mismatch
+                        means the next wake cold-boots from the volume.
+                    volumeBytes:
+                      type: integer
+                      description: >-
+                        The volume file's allocated (on-disk) bytes, the watermark
+                        source against the declared volumeSizeGiB cap.
+                statefulSummary:
+                  type: string
+                  description: >-
+                    Human-readable "state gen=<n>/bundle=<n>" rendering of
+                    `stateful`, for the STATEFUL printer column (a printer column
+                    cannot format an object). Written by the control plane
+                    alongside `stateful`.
                 conditions:
                   type: array
                   items:
