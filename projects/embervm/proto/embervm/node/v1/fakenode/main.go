@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 	"google.golang.org/grpc"
@@ -128,6 +129,58 @@ func (fakeServer) StopServing(_ context.Context, req *nodev1.StopServingRequest)
 	return &nodev1.StopServingResponse{}, nil
 }
 
+// StartStateful derives its response from mode so the client can assert every
+// stateful boot path crosses the wire. RELIGHT scripts the pairing outcome off
+// the relight_snapshot_ref content ("mismatch" -> generation_mismatch cold-boot
+// fallback, "noledger" -> ledger_unreadable, otherwise a warm relight), which is
+// how the round-trip test exercises each pairing branch against a stateless fake.
+// FRESH/COLD cold-boot from boot_image_ref and report a bumped generation.
+func (fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulRequest) (*nodev1.StartStatefulResponse, error) {
+	if req.GetMode() == nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT {
+		ref := req.GetRelightSnapshotRef()
+		switch {
+		case strings.Contains(ref, "mismatch"):
+			return &nodev1.StartStatefulResponse{
+				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
+				Generation: 8, WasRelight: false, ColdBootReason: "generation_mismatch",
+			}, nil
+		case strings.Contains(ref, "noledger"):
+			return &nodev1.StartStatefulResponse{
+				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
+				Generation: 8, WasRelight: false, ColdBootReason: "ledger_unreadable",
+			}, nil
+		default:
+			return &nodev1.StartStatefulResponse{
+				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
+				Generation: 7, WasRelight: true, ColdBootReason: "",
+			}, nil
+		}
+	}
+	// FRESH or COLD: cold boot from the boot image ref, generation bumped.
+	return &nodev1.StartStatefulResponse{
+		VmId: "vm:" + req.GetBootImageRef(), Ip: "10.99.0.3", Port: req.GetPort(),
+		Generation: 1, WasRelight: false, ColdBootReason: "",
+	}, nil
+}
+
+// StopStateful returns a bundle ref, stamped generation, and size for BANK, and
+// zero values for DESTROY, so the client can assert both mode branches.
+func (fakeServer) StopStateful(_ context.Context, req *nodev1.StopStatefulRequest) (*nodev1.StopStatefulResponse, error) {
+	if req.GetMode() == nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK {
+		return &nodev1.StopStatefulResponse{
+			SnapshotRef: "stateful/" + req.GetVmId(),
+			Generation:  7,
+			SizeBytes:   16384,
+		}, nil
+	}
+	return &nodev1.StopStatefulResponse{}, nil
+}
+
+// DeleteVolume is idempotent and returns an empty response for any workload.
+func (fakeServer) DeleteVolume(_ context.Context, _ *nodev1.DeleteVolumeRequest) (*nodev1.DeleteVolumeResponse, error) {
+	return &nodev1.DeleteVolumeResponse{}, nil
+}
+
 func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequest) (*nodev1.NodeStatus, error) {
 	return &nodev1.NodeStatus{
 		NodeId:     req.GetNodeId(),
@@ -170,6 +223,38 @@ func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequ
 			},
 		},
 		ServingSubnetCidr: "10.99.0.0/24",
+		// Stateful facts (R4): deterministic, so the client can assert the new
+		// repeated stateful status fields (VMs with generations, the one banked
+		// bundle, and the durable volume) round-trip.
+		StatefulVms: []*nodev1.StatefulVm{
+			{
+				VmId:            "vm-st1",
+				Workload:        "scratch-postgres",
+				Ip:              "10.99.0.3",
+				Port:            5432,
+				Healthy:         true,
+				Generation:      5,
+				LastProbeUnixMs: 1_700_000_003_000,
+			},
+		},
+		StatefulBundles: []*nodev1.StatefulBundle{
+			{
+				SnapshotRef:     "stateful/scratch-postgres",
+				Workload:        "scratch-postgres",
+				Generation:      5,
+				SizeBytes:       16384,
+				CreatedAtUnixMs: 1_700_000_004_000,
+			},
+		},
+		Volumes: []*nodev1.Volume{
+			{
+				Workload:       "scratch-postgres",
+				Generation:     5,
+				SizeBytes:      10_737_418_240,
+				AllocatedBytes: 536_870_912,
+				Attached:       true,
+			},
+		},
 	}, nil
 }
 

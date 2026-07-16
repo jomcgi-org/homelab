@@ -18,6 +18,7 @@ defmodule Embervm.NodeRoundtripTest do
     AssignRequest,
     BankRequest,
     BuildBaseRequest,
+    DeleteVolumeRequest,
     DestroyRequest,
     EvictSnapshotRequest,
     FreshSource,
@@ -31,7 +32,9 @@ defmodule Embervm.NodeRoundtripTest do
     ResourceSpec,
     SessionAssignRequest,
     StartServingRequest,
+    StartStatefulRequest,
     StopServingRequest,
+    StopStatefulRequest,
     Trace,
     WatchNodeRequest
   }
@@ -171,6 +174,124 @@ defmodule Embervm.NodeRoundtripTest do
 
     assert destroyed.snapshot_ref == ""
     assert destroyed.size_bytes == 0
+  end
+
+  test "stateful verbs round-trip across the wire (R4 additive contract)", %{channel: ch} do
+    # StartStateful FRESH: cold-boot the boot image ref, generation bumped to 1,
+    # no relight, no cold-boot reason. Proves the mode enum, boot_image_ref, and
+    # the volume/mmds fields cross the wire.
+    {:ok, fresh} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        trace: %Trace{workload: "scratch-postgres"},
+        mode: :START_STATEFUL_MODE_FRESH,
+        boot_image_ref: "pg-base",
+        port: 5432,
+        volume_size_bytes: 10 * 1024 * 1024 * 1024,
+        volume_mount: "/data",
+        create_if_missing: true,
+        resources: %ResourceSpec{vcpus: 1, mem_mib: 512},
+        mmds_env: %{"POSTGRES_PASSWORD" => "seeded"}
+      })
+
+    assert fresh.vm_id == "vm:pg-base"
+    assert fresh.ip == "10.99.0.3"
+    assert fresh.port == 5432
+    assert fresh.generation == 1
+    assert fresh.was_relight == false
+    assert fresh.cold_boot_reason == ""
+
+    # StartStateful RELIGHT, matched pair: resumes warm (was_relight true), no
+    # cold-boot reason. The fake scripts a warm relight for any ordinary ref.
+    {:ok, warm} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_RELIGHT,
+        relight_snapshot_ref: "stateful/scratch-postgres",
+        boot_image_ref: "pg-base",
+        port: 5432
+      })
+
+    assert warm.vm_id == "vm:stateful/scratch-postgres"
+    assert warm.generation == 7
+    assert warm.was_relight == true
+    assert warm.cold_boot_reason == ""
+
+    # StartStateful RELIGHT, generation mismatch: the fake scripts a cold-boot
+    # fallback off the ref content, proving cold_boot_reason crosses the wire.
+    {:ok, mismatch} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_RELIGHT,
+        relight_snapshot_ref: "stateful/mismatch",
+        boot_image_ref: "pg-base",
+        port: 5432
+      })
+
+    assert mismatch.was_relight == false
+    assert mismatch.cold_boot_reason == "generation_mismatch"
+
+    # StartStateful RELIGHT, unreadable ledger: the other cold-boot fallback branch.
+    {:ok, noledger} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_RELIGHT,
+        relight_snapshot_ref: "stateful/noledger",
+        boot_image_ref: "pg-base",
+        port: 5432
+      })
+
+    assert noledger.was_relight == false
+    assert noledger.cold_boot_reason == "ledger_unreadable"
+
+    # StopStateful BANK: derives the bundle ref from vm_id and stamps the generation.
+    {:ok, banked} =
+      NodeService.Stub.stop_stateful(ch, %StopStatefulRequest{
+        vm_id: "vm-st1",
+        mode: :STOP_STATEFUL_MODE_BANK
+      })
+
+    assert banked.snapshot_ref == "stateful/vm-st1"
+    assert banked.generation == 7
+    assert banked.size_bytes == 16384
+
+    # StopStateful DESTROY: no snapshot produced.
+    {:ok, destroyed} =
+      NodeService.Stub.stop_stateful(ch, %StopStatefulRequest{
+        vm_id: "vm-st1",
+        mode: :STOP_STATEFUL_MODE_DESTROY
+      })
+
+    assert destroyed.snapshot_ref == ""
+    assert destroyed.generation == 0
+    assert destroyed.size_bytes == 0
+
+    # DeleteVolume: idempotent, returns an empty response.
+    assert {:ok, _} =
+             NodeService.Stub.delete_volume(ch, %DeleteVolumeRequest{workload: "scratch-postgres"})
+  end
+
+  test "NodeStatus reports stateful facts (R4 additive fields)", %{channel: ch} do
+    {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
+
+    assert [vm] = ns.stateful_vms
+    assert vm.vm_id == "vm-st1"
+    assert vm.workload == "scratch-postgres"
+    assert vm.ip == "10.99.0.3"
+    assert vm.port == 5432
+    assert vm.healthy == true
+    assert vm.generation == 5
+    assert vm.last_probe_unix_ms == 1_700_000_003_000
+
+    assert [bundle] = ns.stateful_bundles
+    assert bundle.snapshot_ref == "stateful/scratch-postgres"
+    assert bundle.workload == "scratch-postgres"
+    assert bundle.generation == 5
+    assert bundle.size_bytes == 16384
+    assert bundle.created_at_unix_ms == 1_700_000_004_000
+
+    assert [vol] = ns.volumes
+    assert vol.workload == "scratch-postgres"
+    assert vol.generation == 5
+    assert vol.size_bytes == 10_737_418_240
+    assert vol.allocated_bytes == 536_870_912
+    assert vol.attached == true
   end
 
   test "NodeStatus reports serving facts (R3 additive fields)", %{channel: ch} do

@@ -196,6 +196,82 @@ service NodeService {
   // any edge or proxy: the daemon does not know such a thing exists, and
   // ordering a drain before the bank call is entirely the control plane's job.
   rpc StopServing(StopServingRequest) returns (StopServingResponse);
+
+  // -- Stateful verbs (R4) ----------------------------------------------------
+  //
+  // These three verbs are the stateful-class lifecycle vocabulary, ADDITIVE to
+  // the task, session, and serving contracts above (every existing RPC and
+  // message is byte-for-byte unchanged). A stateful VM is a long-lived, SINGLETON
+  // microVM that owns exactly one WRITABLE block device (the workload's volume, a
+  // raw file on node NVMe) and answers OPAQUE L4 TCP on a tap NIC, unlike serving
+  // VMs which answer HTTP. It is the ADR embervm/001 state split made real: the
+  // volume owns the durable data, the memory snapshot only pre-pays cache warmth.
+  //
+  // The generation pairing is the load-bearing invariant. The daemon owns a
+  // per-workload on-disk generation ledger; EVERY writable attach (fresh, cold,
+  // relight) bumps it BEFORE the VM boots. A bank stamps the then-current
+  // generation into the bundle. StartStateful(RELIGHT) resumes the bundle ONLY
+  // when its stamped generation equals the volume's current generation; on any
+  // mismatch or an unreadable ledger the bundle is EVICTED and the daemon falls
+  // back to a cold boot from the volume (slower, never incorrect), reporting the
+  // reason. Warmth fails open (cold boot); data fails closed (a missing volume is
+  // FAILED_PRECONDITION, never silently recreated). The generation is metadata
+  // only: nothing here ever rewrites volume bytes outside the guest.
+  //
+  // Singleton by construction: the daemon refuses a second WRITABLE attach of the
+  // same volume with FAILED_PRECONDITION. There is no maxInstances knob; exactly
+  // one live VM per stateful workload, enforced where the data physically lives.
+  //
+  // The host NEVER mounts the volume. noded creates, sizes, attaches, and deletes
+  // the raw file; guest-init detects a blank device, runs mkfs, and mounts it at
+  // the declared path. A compromised daemon can destroy the bytes but gains no
+  // parsing surface over guest data (the ADR embervm/001 stateful isolation row).
+  //
+  // Health probing: the daemon probes TCP CONNECT (not HTTP GET, unlike serving)
+  // to each live stateful VM's {ip, port} on the existing probe cadence and
+  // thresholds, and reports healthy in NodeStatus.stateful_vms. As with serving,
+  // the daemon never acts on the verdict; the control plane owns everything
+  // downstream. Stateful VMs count against max_live_vms and are EXCLUDED from
+  // every WorkloadCapacity.primed_vm_ids (never in the task pool), exactly like
+  // session and serving VMs. Nothing Envoy-specific crosses this seam.
+
+  // StartStateful brings up the stateful VM with the workload's volume attached
+  // writable, attaching a tap NIC exactly as StartServing does, and health-gates
+  // by TCP CONNECT to {ip, port}. mode selects the boot path:
+  //   FRESH   cold-boot the image rootfs; create the volume sparse at
+  //           volume_size_bytes if absent (FAILED_PRECONDITION if absent and
+  //           create_if_missing is false).
+  //   RELIGHT resume the banked bundle (relight_snapshot_ref) iff its stamped
+  //           generation equals the volume's current generation; on mismatch or
+  //           an unreadable ledger, EVICT the bundle and fall back to a cold boot
+  //           from the volume, setting cold_boot_reason.
+  //   COLD    explicit cold boot from the existing volume (no bundle resume).
+  // Every mode bumps the generation BEFORE boot, so any attach the snapshot did
+  // not witness breaks the pair. A readiness timeout DESTROYS the VM and returns
+  // the error (no half-alive endpoint). Refuses FAILED_PRECONDITION on a second
+  // writable attach of a volume already attached (singleton enforcement).
+  rpc StartStateful(StartStatefulRequest) returns (StartStatefulResponse);
+
+  // StopStateful tears down a live stateful VM. mode = BANK PAUSES the VM (VCPUs
+  // stopped, the volume crash-consistent at the pause point), writes a full
+  // snapshot to the bundle dir under a stateful/ prefix STAMPED with the volume's
+  // current generation, destroys the VM, EVICTS any prior bundle for the workload
+  // (one banked bundle per workload), and returns {snapshot_ref, generation,
+  // size_bytes}. mode = DESTROY kills the VM with no snapshot; the next cold boot
+  // runs the database's own WAL recovery (the volume-owns-durability contract),
+  // so v1 attempts no guest-cooperative shutdown. BANK refuses FAILED_PRECONDITION
+  // if a stop of the same vm_id is already in flight. The volume file is never
+  // copied, hashed, or touched at bank time: the generation ledger is the entire
+  // pairing mechanism.
+  rpc StopStateful(StopStatefulRequest) returns (StopStatefulResponse);
+
+  // DeleteVolume removes a workload's volume file and its generation ledger. It
+  // is the ONLY destructive data verb, and it exists so deletion is an explicit,
+  // audited act (a CR deletion never reaches it; data outlives definitions).
+  // FAILED_PRECONDITION while the volume is attached to a live VM. Idempotent on
+  // an already-absent volume (the desired end-state, gone, already holds).
+  // Stateful bundles reuse EvictSnapshot (R2) unchanged; bundle refs are opaque.
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
 }
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
@@ -532,6 +608,101 @@ message StopServingResponse {
   uint64 size_bytes = 2;
 }
 
+// ---- Stateful verbs (R4) ---------------------------------------------------
+
+enum StartStatefulMode {
+  START_STATEFUL_MODE_UNSPECIFIED = 0;
+  START_STATEFUL_MODE_FRESH = 1;    // cold-boot the image rootfs, create volume if absent
+  START_STATEFUL_MODE_RELIGHT = 2;  // resume the bundle iff the generation pair matches
+  START_STATEFUL_MODE_COLD = 3;     // explicit cold boot from the existing volume
+}
+
+message StartStatefulRequest {
+  Trace trace = 1;
+  StartStatefulMode mode = 2;
+  // boot_image_ref is the cold-boot source the daemon resolves to a bootable
+  // rootfs, used for FRESH, COLD, and the RELIGHT fallback. Same role as serving
+  // FreshSource.serving_image_ref: a NIC cold boot CANNOT resume the vsock-only
+  // base memory snapshot (D-R3.4.2), so this is DELIBERATELY NOT snapshot_ref.
+  // The daemon resolves it against its serving/stateful images inventory.
+  string boot_image_ref = 3;
+  // relight_snapshot_ref is the banked stateful bundle to resume, set for
+  // RELIGHT (empty otherwise). On a generation mismatch or unreadable ledger the
+  // daemon evicts it and cold-boots from boot_image_ref instead.
+  string relight_snapshot_ref = 4;
+  // Guest listen port; health is TCP CONNECT to {ip, port} (no ready_path: the
+  // stateful contract is opaque L4, decision 4).
+  uint32 port = 5;
+  // Volume contract. volume_size_bytes is the sparse cap the daemon creates the
+  // raw file at on FRESH (immutable per workload after creation). volume_mount is
+  // the guest mount path (from the CR's volumeMountPath) the daemon threads into
+  // the guest-init boot-args; the DEVICE path is daemon-internal and never
+  // crosses this seam. create_if_missing gates FRESH's volume creation.
+  uint64 volume_size_bytes = 6;
+  string volume_mount = 7;
+  bool create_if_missing = 8;
+  // Resource shape of the stateful VM (vcpus, mem), carried exactly as serving.
+  ResourceSpec resources = 9;
+  // mmds_env are first-boot environment values delivered to the guest via the
+  // MMDS seam (the secrets seam for first-boot DB credentials), exactly as
+  // existing verbs deliver init env. The daemon never persists or interprets them.
+  map<string, string> mmds_env = 10;
+}
+
+message StartStatefulResponse {
+  // vm_id names the live stateful VM. Opaque; the control plane holds it and
+  // passes it to StopStateful.
+  string vm_id = 1;
+  // ip/port are the ROUTABLE endpoint (noded pod IP + per-VM DNAT port, the
+  // D-R3.11.4 lane), matching serving; the tap IP stays node-internal.
+  string ip = 2;
+  uint32 port = 3;
+  // generation is the volume's current generation AFTER this attach's bump. The
+  // control plane records it as the live instance's generation and compares it
+  // to a bundle's stamped generation to decide pair validity.
+  uint64 generation = 4;
+  // was_relight is true when the call resumed a banked bundle (RELIGHT with a
+  // matched pair); false for every cold boot including a RELIGHT that fell back.
+  bool was_relight = 5;
+  // cold_boot_reason is set ONLY when a RELIGHT fell back to a cold boot, naming
+  // why the warmth was discarded: "generation_mismatch", "no_bundle",
+  // "ledger_unreadable". Empty for a successful relight or an explicit FRESH/COLD
+  // boot (an explicit cold boot is not a discarded relight, so it carries no
+  // reason). The control plane records it verbatim into the op-log.
+  string cold_boot_reason = 6;
+}
+
+enum StopStatefulMode {
+  STOP_STATEFUL_MODE_UNSPECIFIED = 0;
+  STOP_STATEFUL_MODE_BANK = 1;
+  STOP_STATEFUL_MODE_DESTROY = 2;
+}
+
+message StopStatefulRequest {
+  Trace trace = 1;
+  string vm_id = 2;
+  StopStatefulMode mode = 3;
+}
+
+message StopStatefulResponse {
+  // snapshot_ref, generation, and size_bytes are set only when mode was BANK;
+  // all are the zero value for DESTROY. generation is the volume generation
+  // stamped into the bundle, the pair key a later RELIGHT checks.
+  string snapshot_ref = 1;
+  uint64 generation = 2;
+  uint64 size_bytes = 3;
+}
+
+// DeleteVolumeRequest removes one workload's volume file and generation ledger.
+// The volume is per-workload (one raw file), so workload identifies it; no ref
+// or path crosses the seam.
+message DeleteVolumeRequest {
+  Trace trace = 1;
+  string workload = 2;
+}
+
+message DeleteVolumeResponse {}
+
 // ---- Node status -----------------------------------------------------------
 
 message WatchNodeRequest {
@@ -643,6 +814,51 @@ message ServingSnapshot {
   int64 created_at_unix_ms = 4;
 }
 
+// StatefulVm is one LIVE stateful VM the node currently holds, reported so a
+// restarted control plane adopts rather than orphans it and so the control plane
+// consumes the daemon's TCP-connect health verdict. generation is the volume
+// generation this VM was booted with (the pair key). Excluded from every
+// WorkloadCapacity.primed_vm_ids and from session_vms/serving_vms.
+message StatefulVm {
+  string vm_id = 1;
+  string workload = 2;
+  // ip/port are the ROUTABLE endpoint (noded pod IP + per-VM DNAT port), matching
+  // serving; the tap IP stays node-internal.
+  string ip = 3;
+  uint32 port = 4;
+  bool healthy = 5;
+  // generation is the volume generation the live VM holds (bumped at its attach).
+  uint64 generation = 6;
+  int64 last_probe_unix_ms = 7;
+}
+
+// StatefulBundle is the ONE banked stateful bundle for a workload on node disk,
+// stored under the stateful/ prefix of the bundle dir and STAMPED with the
+// volume generation it was paused at. The daemon rescans on start and reports it
+// so the control plane reconciles banked warmth and recomputes pair validity
+// (bundle generation vs the volume's current generation) from node truth.
+message StatefulBundle {
+  string snapshot_ref = 1;
+  string workload = 2;
+  uint64 generation = 3;
+  uint64 size_bytes = 4;
+  int64 created_at_unix_ms = 5;
+}
+
+// Volume is one workload's raw volume file on node NVMe, the durable data that
+// outlives every instance. generation is the ledger's current value (bumped on
+// every writable attach); allocated_bytes is the file's actual block usage (the
+// watermark source), size_bytes the declared sparse cap. attached is true while a
+// live VM holds the writable device. The host never reads the file's contents;
+// these are metadata facts only.
+message Volume {
+  string workload = 1;
+  uint64 generation = 2;
+  uint64 size_bytes = 3;
+  uint64 allocated_bytes = 4;
+  bool attached = 5;
+}
+
 // NodeStatus is the whole capacity fact set: per-workload primed slots and base
 // states, node-level memory/cpu headroom, and the draining flag. A draining
 // daemon reports draining=true and the control plane stops new assignments
@@ -698,4 +914,23 @@ message NodeStatus {
   // from, reported so the control plane can reason about address space without
   // ever performing allocation itself (allocation stays daemon-internal).
   string serving_subnet_cidr = 15;
+
+  // -- Stateful facts (R4, additive) ------------------------------------------
+  // These three fields report the stateful-class substrate: live singleton VMs
+  // (with their volume generation and TCP-connect health verdict), the one banked
+  // bundle per workload (stamped with its paired generation), and the durable
+  // volumes (with generations and block usage). All are optional/repeated and
+  // wire-compatible with a daemon that never sets them. The control plane derives
+  // pair validity (bundle generation vs volume generation) purely from these.
+
+  // stateful_vms lists every LIVE stateful VM this node holds. Disjoint from every
+  // WorkloadCapacity.primed_vm_ids, session_vms, and serving_vms.
+  repeated StatefulVm stateful_vms = 16;
+  // stateful_bundles is the banked-stateful-bundle inventory scanned from the
+  // stateful/ prefix of the bundle dir (at most one per workload).
+  repeated StatefulBundle stateful_bundles = 17;
+  // volumes is the raw-volume-file inventory (one per stateful workload) scanned
+  // from the volumes dir, the durable data the control plane never reads but must
+  // account for (generation for pairing, allocated_bytes for the watermark).
+  repeated Volume volumes = 18;
 }
