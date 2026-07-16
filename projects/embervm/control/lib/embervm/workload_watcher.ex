@@ -691,6 +691,11 @@ defmodule Embervm.WorkloadWatcher do
   # so this is correct from both the single-CR watch-event path and the
   # full-LIST reconcile path, and self-heals if the collision is resolved
   # later (the losing CR's next reconcile re-validates and can now succeed).
+  # The apiserver's LIST order is not guaranteed stable across reconciles, so
+  # WHICH of two same-host CRs wins the first-listed tiebreak may differ
+  # between passes; this is harmless, since both orderings reject exactly one
+  # of the two CRs and there is never an ambiguous routing target either way,
+  # it is an operator config error regardless of which CR loses.
   defp validate_serving_host_unique(state, name, s) do
     host = Map.get(s, "host")
 
