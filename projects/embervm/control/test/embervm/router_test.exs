@@ -63,6 +63,45 @@ defmodule Embervm.RouterTest do
     def list(_srv, _wl, _opts), do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
   end
 
+  # A tiny upstream "guest" Plug the activator proxies to: echoes the request path
+  # and body, sets a custom content-type (to prove header carry) and a hop-by-hop
+  # header (to prove it is stripped), streaming the body in two chunks (to prove the
+  # response is not buffered whole).
+  defmodule GuestPlug do
+    import Plug.Conn
+
+    def init(opts), do: opts
+
+    def call(conn, _opts) do
+      {:ok, body, conn} = read_body(conn)
+
+      conn
+      |> put_resp_content_type("text/plain")
+      |> put_resp_header("x-guest-echo", conn.request_path)
+      # A hop-by-hop header the proxy MUST strip.
+      |> put_resp_header("connection", "keep-alive")
+      |> send_chunked(200)
+      |> then(fn c ->
+        {:ok, c} = chunk(c, "hello:")
+        {:ok, c} = chunk(c, body)
+        c
+      end)
+    end
+  end
+
+  # The router resolves the serving manager from :serving_manager_mod; this fake
+  # returns a live endpoint pointing at the GuestPlug server a test starts, so the
+  # activator route + Embervm.ServingProxy stream against a REAL upstream.
+  defmodule FakeServingManager do
+    def miss(_srv, "wl-live", _req, _principal) do
+      {:ok, %{ip: "127.0.0.1", port: Application.get_env(:embervm, :test_guest_port)}}
+    end
+
+    def miss(_srv, "wl-429", _req, _principal), do: {:error, {:wake_rate, "rate"}}
+    def miss(_srv, "wl-503", _req, _principal), do: {:error, {:wake_failed, :readiness_timeout}}
+    def miss(_srv, _wl, _req, _principal), do: {:error, {:unknown_workload}}
+  end
+
   setup do
     Application.put_env(:embervm, :authenticator, FakeAuth)
 
@@ -74,9 +113,24 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :usage_admins)
       Application.delete_env(:embervm, :session_manager)
       Application.delete_env(:embervm, :session_store_mod)
+      Application.delete_env(:embervm, :serving_manager_mod)
+      Application.delete_env(:embervm, :test_guest_port)
     end)
 
     :ok
+  end
+
+  defp with_serving_fake do
+    Application.put_env(:embervm, :serving_manager_mod, FakeServingManager)
+  end
+
+  # Start the upstream guest server on a fixed high port (safe: router_test is
+  # async: false, so no parallel test binds it) and record it for the fake.
+  @guest_port 8099
+  defp start_guest do
+    start_supervised!({Bandit, plug: GuestPlug, scheme: :http, port: @guest_port})
+    Application.put_env(:embervm, :test_guest_port, @guest_port)
+    @guest_port
   end
 
   defp with_session_fakes do
@@ -534,5 +588,38 @@ defmodule Embervm.RouterTest do
     body = json(resp.body)
     assert body["workload"] == "wl-ok"
     assert body["items"] == []
+  end
+
+  # -- activator (R3, Task 8) ------------------------------------------------
+
+  test "the activator route proxies a miss to the woken guest and streams the response" do
+    with_serving_fake()
+    start_guest()
+
+    # A request Envoy routed to the activator: NO bearer token (end-user traffic),
+    # the x-ember-workload header injected by the serving route, an arbitrary path.
+    resp = req(:post, "/og-image?ref=abc", [{"x-ember-workload", "wl-live"}], "world")
+
+    assert resp.status == 200
+    # The guest streamed "hello:" <> body; header carry preserved the guest's
+    # content-type and the echo header, and stripped the hop-by-hop connection header.
+    assert resp.body == "hello:world"
+    assert {"content-type", "text/plain" <> _} = List.keyfind(resp.headers, "content-type", 0)
+    assert {"x-guest-echo", "/og-image"} = List.keyfind(resp.headers, "x-guest-echo", 0)
+    refute List.keyfind(resp.headers, "connection", 0) == {"connection", "keep-alive"}
+  end
+
+  test "the activator route maps wake denials to statuses" do
+    with_serving_fake()
+
+    assert req(:get, "/x", [{"x-ember-workload", "wl-429"}]).status == 429
+    assert req(:get, "/x", [{"x-ember-workload", "wl-503"}]).status == 503
+    assert req(:get, "/x", [{"x-ember-workload", "wl-unknown"}]).status == 404
+  end
+
+  test "an unmatched path WITHOUT the activator header is a plain 404, not a miss" do
+    with_serving_fake()
+    # No x-ember-workload header: the catch-all 404s rather than treating it as a miss.
+    assert req(:get, "/totally-unknown-path").status == 404
   end
 end

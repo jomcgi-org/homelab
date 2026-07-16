@@ -126,6 +126,18 @@ spec:
             # port, so both derive from values.xds.httpPort.
             - name: EMBERVM_XDS_HTTP_PORT
               value: {{ .Values.xds.httpPort | quote }}
+            # Activator endpoint (R3, Task 8): the publisher renders THIS pod's
+            # ip:port as the fallback endpoint of an empty serve|<workload> cluster,
+            # so the node Envoy routes a miss to the activator route on this
+            # control-plane pod over pod networking. podIP (downward API) + the HTTP
+            # port is exactly where Embervm.ServingManager's route lives; it is
+            # routable from the serving node's Envoy on the pod network.
+            - name: EMBERVM_SERVING_ACTIVATOR_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: EMBERVM_SERVING_ACTIVATOR_PORT
+              value: {{ .Values.service.port | quote }}
             {{- end }}
           readinessProbe:
             httpGet:
