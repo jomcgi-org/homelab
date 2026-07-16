@@ -67,19 +67,19 @@ spec:
             - name: stats
               containerPort: {{ .Values.servingEnvoy.statsPort }}
           readinessProbe:
-            # Envoy's admin /ready reports listener + worker readiness. Admin is
-            # loopback-only, so the probe runs inside the pod against 127.0.0.1.
-            httpGet:
-              path: /ready
-              port: {{ .Values.servingEnvoy.adminPort }}
-              host: 127.0.0.1
+            # Probe the data listener, not the admin /ready. Admin binds loopback
+            # (127.0.0.1) for security, but a kubelet httpGet probe dials from the
+            # kubelet's namespace, so host 127.0.0.1 hits the node's loopback, not
+            # the pod's, and never reaches Envoy's admin. A tcpSocket probe on the
+            # main listener (0.0.0.0) is reachable at the pod IP and confirms Envoy
+            # is up and accepting connections, with no admin exposure or curl dep.
+            tcpSocket:
+              port: {{ .Values.servingEnvoy.listenerPort }}
             initialDelaySeconds: 2
             periodSeconds: 5
           livenessProbe:
-            httpGet:
-              path: /ready
-              port: {{ .Values.servingEnvoy.adminPort }}
-              host: 127.0.0.1
+            tcpSocket:
+              port: {{ .Values.servingEnvoy.listenerPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
