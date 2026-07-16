@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -279,16 +280,20 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	// Serving handler disk (R3, D-R3.11.2): signal the guest to import the handler
 	// off the second read-only drive before serving. ember.handler_disk=<dev> names
 	// the block device; ember.handler_zip_bytes=<N> is the EXACT zip length so the
-	// guest reads ONLY the payload. This length is LOAD-BEARING: a block device is
-	// sector-padded (Firecracker rounds a drive file up to a 512-byte boundary), so
-	// reading the raw device yields the zip followed by trailing zero padding, and
-	// Python's zipfile scans BACKWARD from the end for the End-Of-Central-Directory
-	// signature. Trailing padding past the real EOCD breaks that scan (BadZipFile).
-	// This is exactly the sector-pad/EOCD-trim bug class the R1 zip lane hit and
-	// retired when it moved archive delivery to vsock hydration; here the artifact
-	// is legitimately a block device again (a serving cold boot has no vsock archive
-	// channel), so we defuse it by conveying the exact length instead of making the
-	// guest guess where the zip ends. Only emitted when a handler disk is attached;
+	// guest reads ONLY the payload. This length is LOAD-BEARING for two reasons.
+	// (1) noded pads the artifact file UP to a whole 512-byte sector on write
+	// (WriteServingHandlerArtifact), because Firecracker FLOORS a drive to whole
+	// sectors and drops the remainder ("the remainder will not be visible to the
+	// guest"); without the pad a 3056-byte zip becomes a 2560-byte device and the
+	// EOCD-bearing tail is truncated, short-reading the guest. (2) With the pad, the
+	// raw device is the zip followed by ≤511 trailing zero bytes, and Python's zipfile
+	// scans BACKWARD from the end for the End-Of-Central-Directory signature, so
+	// trailing padding past the real EOCD can break that scan (BadZipFile). Conveying
+	// the exact length lets the guest read ONLY the payload instead of guessing where
+	// the zip ends. This is the sector-pad/EOCD-trim bug class the R1 zip lane hit and
+	// retired when it moved archive delivery to vsock hydration; here the artifact is
+	// legitimately a block device again (a serving cold boot has no vsock archive
+	// channel), so we defuse it with pad-on-write plus exact-length-on-read. Only emitted when a handler disk is attached;
 	// task/session boots never carry these tokens.
 	if cb.handlerDiskPath != "" {
 		args += fmt.Sprintf(" ember.handler_disk=%s ember.handler_zip_bytes=%d", handlerDiskDevice, cb.handlerZipBytes)
@@ -300,6 +305,11 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 // SECOND drive (the rootfs is the root device /dev/vda; the handler drive, added
 // next, is /dev/vdb). guest-init exports this to the shim as EMBER_HANDLER_ZIP.
 const handlerDiskDevice = "/dev/vdb"
+
+// sectorSizeBytes is Firecracker's block-device sector size. A drive backing file
+// must be a whole multiple of it or FC floors the exposed device to the nearest
+// lower sector and drops the remainder, so the handler artifact is padded up to it.
+const sectorSizeBytes = 512
 
 // prefixLenToMask renders an IPv4 prefix length as a dotted-decimal netmask for the
 // kernel ip= boot directive (which wants a netmask, not a prefix length).
@@ -335,6 +345,14 @@ func (d *Driver) baseHandlerRuntimeRef(key string) string {
 	return filepath.Join(d.baseDir(key), "runtime.ref")
 }
 
+// baseHandlerLen records the EXACT (pre-sector-pad) zip length so a startup rescan
+// conveys the same exact byte count the build path did, rather than the padded
+// on-disk file size: the guest must read only the real payload, and the artifact
+// file is padded up to a whole sector on write (see WriteServingHandlerArtifact).
+func (d *Driver) baseHandlerLen(key string) string {
+	return filepath.Join(d.baseDir(key), "handler.len")
+}
+
 // WriteServingHandlerArtifact writes the verified zip bytes for a serving base to
 // bases/<key>/handler.zip plus a runtime.ref sidecar (the runtime image whose rootfs is
 // the cold-boot drive 1), and returns the zip's host path and exact byte length
@@ -349,11 +367,29 @@ func (d *Driver) WriteServingHandlerArtifact(baseKey, runtimeImageRef string, zi
 		return "", 0, fmt.Errorf("driver: mkdir base bundle for handler artifact: %w", err)
 	}
 	path := d.baseHandlerZip(baseKey)
-	if err := os.WriteFile(path, zip, 0o640); err != nil {
+	// Pad the on-disk file UP to a whole 512-byte sector before writing. Firecracker
+	// exposes a block device sized to the FLOOR of the backing file in sectors and
+	// drops the remainder ("Disk size N is not a multiple of sector size 512; the
+	// remainder will not be visible to the guest"), so an unpadded 3056-byte zip
+	// becomes a 2560-byte device: the trailing bytes carrying the zip's EOCD vanish
+	// and the guest short-reads. Padding with zeros to the next sector makes FC expose
+	// the ENTIRE zip; the guest still reads only the exact length (returned below), so
+	// the ≤511 trailing zero bytes are never handed to zipfile.
+	padded := zip
+	if rem := len(zip) % sectorSizeBytes; rem != 0 {
+		padded = make([]byte, len(zip)+(sectorSizeBytes-rem))
+		copy(padded, zip)
+	}
+	if err := os.WriteFile(path, padded, 0o640); err != nil {
 		return "", 0, fmt.Errorf("driver: write handler artifact: %w", err)
 	}
 	if err := os.WriteFile(d.baseHandlerRuntimeRef(baseKey), []byte(runtimeImageRef), 0o640); err != nil {
 		return "", 0, fmt.Errorf("driver: write handler runtime ref sidecar: %w", err)
+	}
+	// Persist the EXACT zip length so a post-restart rescan conveys the same byte
+	// count the guest reads, not the padded on-disk file size.
+	if err := os.WriteFile(d.baseHandlerLen(baseKey), []byte(strconv.FormatInt(int64(len(zip)), 10)), 0o640); err != nil {
+		return "", 0, fmt.Errorf("driver: write handler length sidecar: %w", err)
 	}
 	return path, int64(len(zip)), nil
 }
@@ -396,11 +432,21 @@ func (d *Driver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifac
 		if rerr != nil {
 			continue // artifact without a runtime sidecar: skip, BuildBase rebuilds it
 		}
+		// Exact zip length from the sidecar (the on-disk file is sector-padded, so
+		// its size is >= the real zip; the guest must read only the payload). Fall
+		// back to the padded file size for a legacy artifact with no length sidecar;
+		// the pad is <= one sector, within zipfile's backward EOCD scan tolerance.
+		sizeBytes := fi.Size()
+		if lenBytes, lerr := os.ReadFile(d.baseHandlerLen(baseKey)); lerr == nil {
+			if n, perr := strconv.ParseInt(strings.TrimSpace(string(lenBytes)), 10, 64); perr == nil && n > 0 {
+				sizeBytes = n
+			}
+		}
 		out = append(out, substrate.ServingHandlerArtifact{
 			BaseKey:         baseKey,
 			Path:            zipPath,
 			RuntimeImageRef: strings.TrimSpace(string(runtimeRef)),
-			SizeBytes:       fi.Size(),
+			SizeBytes:       sizeBytes,
 		})
 	}
 	return out
