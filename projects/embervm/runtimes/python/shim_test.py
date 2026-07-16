@@ -500,6 +500,60 @@ def test_invoke_binary_body_round_trip(tmp_path, monkeypatch, isolated_imports):
         server.server_close()
 
 
+# ---------------------------------------------------------------------------
+# R3 serving mode (D-R3.11.1): EMBER_SERVING_PORT selects an AF_INET TCP bind
+# over the tap NIC instead of vsock, reusing the identical request handler. The
+# vsock path (env unset) stays byte-identical for task/session guests.
+# ---------------------------------------------------------------------------
+
+
+def test_serving_port_unset_is_none(monkeypatch):
+    monkeypatch.delenv(shim.SERVING_PORT_ENV, raising=False)
+    assert shim._serving_port() is None
+
+
+def test_serving_port_parses_positive(monkeypatch):
+    monkeypatch.setenv(shim.SERVING_PORT_ENV, "8080")
+    assert shim._serving_port() == 8080
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "0", "-1", "notaport"])
+def test_serving_port_malformed_degrades_to_vsock(monkeypatch, bad):
+    # A missing, non-numeric, or non-positive value means "no serving mode": the
+    # boot falls back to vsock rather than crashing PID 1 (the daemon's tap probe
+    # then fails loudly instead of the guest dying at boot).
+    monkeypatch.setenv(shim.SERVING_PORT_ENV, bad)
+    assert shim._serving_port() is None
+
+
+def test_build_server_vsock_when_not_serving(monkeypatch):
+    # No serving port -> the production vsock server (VsockHTTPServer). AF_VSOCK
+    # cannot bind on the CI/mac runner, so stub the bind/activate to prove the
+    # SELECTION without a live vsock bind: the class chosen is what matters.
+    monkeypatch.delenv(shim.SERVING_PORT_ENV, raising=False)
+    monkeypatch.setattr(shim.VsockHTTPServer, "server_bind", lambda self: None)
+    monkeypatch.setattr(shim.VsockHTTPServer, "server_activate", lambda self: None)
+    server = shim.build_server(_new_state(), "/invoke", None)
+    assert server.__class__ is shim.VsockHTTPServer
+
+
+def test_build_server_binds_tcp_in_serving_mode():
+    # Serving mode binds a real AF_INET socket (port 0 = ephemeral) with the SAME
+    # handler, so /shim/healthz answers 200 over plain TCP (what noded's tap probe
+    # hits: GET http://ip:port/shim/healthz).
+    server = shim.build_server(_new_state(), "/invoke", 0)
+    assert not isinstance(server, shim.VsockHTTPServer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("GET", shim.HEALTHZ_PATH)
+        assert conn.getresponse().status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_invoke_handler_exception_is_502(tmp_path, monkeypatch, isolated_imports):
     monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
     state = _new_state()

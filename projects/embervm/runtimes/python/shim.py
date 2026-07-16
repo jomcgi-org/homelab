@@ -86,6 +86,18 @@ VMADDR_CID_ANY = getattr(socket, "VMADDR_CID_ANY", 0xFFFFFFFF)
 # without changing the contract on both sides.
 GUEST_HTTP_PORT = 1027
 
+# R3 serving mode (D-R3.11.1). Task/session guests answer over vsock (above);
+# a SERVING guest answers over its tap NIC (plain TCP), because the R3 serving
+# lane health-probes and proxies at the guest's real L3 endpoint
+# (noded/server/serving.go: GET http://ip:port{healthPath}). When
+# EMBER_SERVING_PORT is set and > 0 the shim binds AF_INET on 0.0.0.0:<port>
+# using the SAME request handler as the vsock path and does NOT bind vsock (a
+# serving VM has no vsock HTTP consumer). When it is unset the boot is the
+# unchanged vsock path, so task/session guests are byte-identical. guest-init
+# translates the `ember.serving_port=` kernel boot-arg (set by noded's
+# bootArgsFor only on a serving cold boot) into this env var.
+SERVING_PORT_ENV = "EMBER_SERVING_PORT"
+
 # Env-configured knobs, all read at boot with sane defaults (documented in
 # README.md). EMBER_INVOKE_PATH defaults to /invoke, matching noded's
 # server.defaultInvokePath, NOT "/" (a request that carries no path falls back
@@ -481,21 +493,68 @@ def exec_bootstrap(bootstrap_path: str) -> None:
     os.execv(bootstrap_path, [bootstrap_path])
 
 
+def _serving_port() -> int | None:
+    """Return the TCP serving port when in R3 serving mode, else None.
+
+    A set, positive ``EMBER_SERVING_PORT`` selects serving (tap NIC / TCP) mode;
+    unset, empty, non-numeric, or non-positive means the unchanged vsock path.
+    Parsing is defensive so a malformed value degrades to the vsock path (the
+    daemon's tap health probe would then fail loudly) rather than crashing PID 1.
+    """
+    raw = os.environ.get(SERVING_PORT_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        port = int(raw)
+    except ValueError:
+        sys.stderr.write(
+            f"ember-shim: ignoring non-numeric {SERVING_PORT_ENV}={raw!r}\n"
+        )
+        return None
+    return port if port > 0 else None
+
+
+def build_server(
+    state: "ShimState", invoke_path: str, serving_port: int | None
+) -> ThreadingHTTPServer:
+    """Build the boot server: AF_INET TCP in serving mode, else vsock.
+
+    Both modes reuse the identical ``make_request_handler`` dispatch, so
+    /shim/healthz, /shim/ready, and the invoke path behave the same over either
+    transport. Serving mode binds a plain TCP socket on 0.0.0.0:<serving_port>
+    (reached over the guest's tap NIC) and never binds vsock; the vsock path is
+    byte-unchanged when serving_port is None.
+    """
+    request_handler_cls = make_request_handler(state, invoke_path)
+    if serving_port is not None:
+        return ThreadingHTTPServer(("0.0.0.0", serving_port), request_handler_cls)  # noqa: S104
+    port = int(os.environ.get("EMBER_HTTP_PORT", str(GUEST_HTTP_PORT)))
+    return VsockHTTPServer((VMADDR_CID_ANY, port), request_handler_cls)
+
+
 def main() -> int:
     handler_symbol = os.environ.get("EMBER_HANDLER", DEFAULT_HANDLER)
     invoke_path = os.environ.get("EMBER_INVOKE_PATH", DEFAULT_INVOKE_PATH)
-    port = int(os.environ.get("EMBER_HTTP_PORT", str(GUEST_HTTP_PORT)))
+    serving_port = _serving_port()
 
     # Boot un-hydrated: serve immediately (so Prime's healthz probe answers) but
     # report not-ready until a POST /shim/hydrate unpacks + imports the handler.
+    # A serving guest cold-boots from a base whose handler was already imported
+    # and baked at BuildBase (the zip is build-time-only, ADR embervm/002), so
+    # its restored handler is present without a runtime hydrate.
     state = ShimState(invoke_path=invoke_path, handler_symbol=handler_symbol)
 
-    request_handler_cls = make_request_handler(state, invoke_path)
-    server = VsockHTTPServer((VMADDR_CID_ANY, port), request_handler_cls)
-    sys.stderr.write(
-        f"ember-shim: serving on vsock port {port} invokePath={invoke_path} "
-        f"handler={handler_symbol} (awaiting hydrate)\n"
-    )
+    server = build_server(state, invoke_path, serving_port)
+    if serving_port is not None:
+        sys.stderr.write(
+            f"ember-shim: serving on TCP 0.0.0.0:{serving_port} invokePath={invoke_path} "
+            f"handler={handler_symbol}\n"
+        )
+    else:
+        sys.stderr.write(
+            f"ember-shim: serving on vsock port {server.server_port} invokePath={invoke_path} "
+            f"handler={handler_symbol} (awaiting hydrate)\n"
+        )
     sys.stderr.flush()
     serve(server)
     return 0

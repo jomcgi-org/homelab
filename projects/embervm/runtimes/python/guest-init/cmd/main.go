@@ -19,11 +19,26 @@ package main
 import (
 	"log/slog"
 	"os"
+	"strings"
 )
 
 // shimCmd is the python bootstrap shim invocation, matching the apko entrypoint
 // in runtimes/python/apko.yaml (kept in sync with it).
 var shimCmd = []string{"/usr/bin/python3", "/usr/local/bin/ember-runtime-shim"}
+
+// procCmdlinePath is the kernel command line the serving-port signal rides in on.
+// A var (not a const) so the test can point it at a fixture file.
+var procCmdlinePath = "/proc/cmdline"
+
+// servingPortCmdlineKey is the kernel boot-arg token noded's driver.bootArgsFor
+// appends ONLY for a serving-class cold boot (`ember.serving_port=<port>`). The
+// python shim reads EMBER_SERVING_PORT (set from this token below) to bind TCP on
+// the tap NIC instead of vsock (D-R3.11.1). A task/session boot carries no such
+// token, so EMBER_SERVING_PORT stays unset and the shim's vsock path is unchanged.
+const servingPortCmdlineKey = "ember.serving_port"
+
+// servingPortEnv is the env var the python shim reads (SERVING_PORT_ENV in shim.py).
+const servingPortEnv = "EMBER_SERVING_PORT"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -48,10 +63,52 @@ func run(logger *slog.Logger) error {
 	// only the static defaults live here.
 	setDefaultEnv(logger)
 
+	// Serving cold boot (R3): translate the `ember.serving_port=` kernel boot-arg
+	// into EMBER_SERVING_PORT so the shim binds TCP on the tap NIC. Absent (every
+	// task/session boot) leaves the env unset and the shim on its vsock path.
+	setServingPortEnv(logger)
+
 	// exec (not fork+exec): the python shim replaces this process as PID 1, so
 	// there is no supervisor layer to add latency or to reap. execShim only
 	// returns on failure.
 	return execShim(logger)
+}
+
+// setServingPortEnv reads /proc/cmdline for the `ember.serving_port=<port>` token
+// and, when present, exports it as EMBER_SERVING_PORT for the shim. A missing
+// /proc/cmdline (e.g. a non-Linux host build) or an absent token is a no-op, so
+// the vsock task/session boot is unaffected. The value is passed through verbatim;
+// the shim validates it (a malformed value degrades to the vsock path there).
+func setServingPortEnv(logger *slog.Logger) {
+	raw, err := os.ReadFile(procCmdlinePath)
+	if err != nil {
+		// No kernel cmdline available (host build / no procfs): nothing to do.
+		return
+	}
+	port := servingPortFromCmdline(string(raw))
+	if port == "" {
+		return
+	}
+	if err := os.Setenv(servingPortEnv, port); err != nil {
+		logger.Warn("could not set serving port env", "err", err)
+		return
+	}
+	logger.Info("serving cold boot: TCP mode", "port", port)
+}
+
+// servingPortFromCmdline extracts the value of the `ember.serving_port=` token
+// from a kernel command line (space-separated `key` / `key=value` tokens). Returns
+// "" when the token is absent or has an empty value. The last occurrence wins,
+// matching how the kernel treats duplicated cmdline keys.
+func servingPortFromCmdline(cmdline string) string {
+	value := ""
+	for _, tok := range strings.Fields(cmdline) {
+		key, val, ok := strings.Cut(tok, "=")
+		if ok && key == servingPortCmdlineKey && val != "" {
+			value = val
+		}
+	}
+	return value
 }
 
 // setDefaultEnv sets PATH and the baked frozen-contract defaults, so a raw boot

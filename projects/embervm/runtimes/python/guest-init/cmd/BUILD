@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 # ember-runtime-guest-init: PID 1 of the R1 zip-lane runtime-python microVM
 # (ADR embervm/002). Mounts a tmpfs over /tmp then execs the python bootstrap
@@ -31,4 +31,10 @@ go_binary(
     name = "cmd",
     embed = [":cmd_lib"],
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "cmd_test",
+    srcs = ["main_test.go"],
+    embed = [":cmd_lib"],
 )

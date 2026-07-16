@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -353,7 +354,9 @@ func TestBootArgsForServingNIC(t *testing.T) {
 		t.Fatalf("bootArgsFor(nil) = %q, want %q", got, want)
 	}
 
-	// Serving NIC: appends the ip= directive with a dotted netmask.
+	// Serving NIC with no ServingPort (0): appends the ip= directive with a dotted
+	// netmask and NO ember.serving_port= token (the zero-guard: a serving VM whose
+	// port is unset stays on the vsock path).
 	nicArgs := d.bootArgsFor(&substrate.NICSpec{
 		IP:        "172.31.0.2",
 		GatewayIP: "172.31.0.1",
@@ -363,6 +366,24 @@ func TestBootArgsForServingNIC(t *testing.T) {
 	wantSuffix := " ip=172.31.0.2::172.31.0.1:255.255.255.0::eth0:off"
 	if nicArgs != want+wantSuffix {
 		t.Fatalf("bootArgsFor(nic) = %q, want %q", nicArgs, want+wantSuffix)
+	}
+	if strings.Contains(nicArgs, "ember.serving_port") {
+		t.Fatalf("bootArgsFor(nic, ServingPort=0) = %q, want no ember.serving_port token", nicArgs)
+	}
+
+	// Serving NIC WITH a ServingPort (R3, D-R3.11.1): appends the
+	// ember.serving_port= token after ip=, so guest-init flips the shim to TCP on
+	// exactly that port (the same port the daemon health-probes and publishes).
+	servingArgs := d.bootArgsFor(&substrate.NICSpec{
+		IP:          "172.31.0.2",
+		GatewayIP:   "172.31.0.1",
+		PrefixLen:   24,
+		IfaceName:   "eth0",
+		ServingPort: 8080,
+	})
+	wantServing := want + wantSuffix + " ember.serving_port=8080"
+	if servingArgs != wantServing {
+		t.Fatalf("bootArgsFor(nic, ServingPort=8080) = %q, want %q", servingArgs, wantServing)
 	}
 }
 

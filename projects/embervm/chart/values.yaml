@@ -189,11 +189,17 @@ servingEnvoy:
   # The static edge route for the R3 bring-up drill (a path on the private host,
   # not a new subdomain: no DNS/cert/tunnel change needed). matchHost is the Host
   # header the serving Envoy's route matches (the private gateway hostname).
+  #
+  # Canonical drill route as of R3 Part A (D-R3.11.1): repointed from the
+  # never-realized serving-hello placeholder to /og-image-serving, which routes to
+  # the real serving-og-image workload (the first serving-class zip consumer). The
+  # hand-pushed drill xDS snapshot maps matchHost (private.jomcgi.dev) to that
+  # workload's cluster. Private drill only: NO public og-image traffic (Part B).
   drillRoute:
     enabled: true
     tier: trusted
     hostname: private.jomcgi.dev
-    pathPrefix: /serving-hello
+    pathPrefix: /og-image-serving
     matchHost: private.jomcgi.dev
     gateway:
       name: cloudflare-ingress
@@ -297,6 +303,58 @@ semgrepWorkload:
   floor: 4
   cap: 16
   timeoutSeconds: 90
+
+# The serving-og-image workload (EmberVM R3 Part A, D-R3.11.1): the og-image
+# renderer re-registered as a SERVING-class workload so it runs warm over its tap
+# NIC, side-by-side with (and NOT replacing) the task-class FaaS og-image path,
+# which stays the instant rollback. This is the drill/bring-up consumer of the R3
+# serving lane; the REAL public og-image traffic flip is Part B (controller-driven,
+# after gate drills), not this.
+#
+# Source = the SAME zip identity the FaaS task-class og-image registration produces
+# (deterministic archive of projects/monolith/faas/functions/og_image/app.py):
+# runtime python312, handler app.handle, sha256 below. The zip is layered onto the
+# runtime-python base (runtimePython above) at BuildBase; the handler-imported
+# state is baked into the base snapshot (ADR embervm/002), so a serving cold boot
+# needs no runtime hydrate. codeUri is the in-cluster SeaweedFS read URL the FaaS
+# storage.code_uri mints: <s3ReadBase>/<bucket>/og-image/<sha256>.zip.
+servingOgImage:
+  enabled: true
+  name: serving-og-image
+  # Zip source identity (matches the FaaS registration; keep in lockstep with
+  # projects/monolith/faas/functions/og_image/app.py). If app.py changes, the
+  # sha256 + codeUri change and this must be re-derived (register.archive_sha256).
+  runtime: python312
+  handler: app.handle
+  sha256: 2c5f9342895e286d251b801343eee5859460ce80f6a0e4384b8ba5a692ef2c16
+  codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/faas/og-image/2c5f9342895e286d251b801343eee5859460ce80f6a0e4384b8ba5a692ef2c16.zip
+  # Guest paths: the shim's readyPath (base build), invokePath (proxied requests
+  # carry the caller's path+query, og-image reads queryStringParameters).
+  readyPath: /shim/ready
+  invokePath: /invoke
+  # Serving elasticity policy (spec.serving). port is the guest TCP port the shim
+  # binds on the tap NIC (EMBER_SERVING_PORT); healthPath is /shim/healthz, the
+  # always-200 liveness the daemon probes over TCP (GET http://ip:port/shim/healthz).
+  serving:
+    port: 8080
+    healthPath: /shim/healthz
+    # Private drill host this workload owns (the drill snapshot maps the edge
+    # match-host to this workload's cluster). Not a public host: Part A takes no
+    # production traffic.
+    host: og-image-serving.private.jomcgi.dev
+    minInstances: 0
+    maxInstances: 2
+    idleBankSeconds: 600
+    drainSeconds: 5
+    maxLifetimeSeconds: 86400
+  # Sized for the WARM serving footprint, not the fresh-per-request task footprint
+  # (task-class og-image is 512Mi). Pillow stays resident and the TCP server runs
+  # continuously across many renders, so memMib is 768 for headroom (256Mi x max 2
+  # instances) against sustained-serving accumulation. vcpus 1 (Pillow render of a
+  # 1200x630 PNG is light). The fc-base sizing coupling sizes memMib to the warm
+  # peak (D-R3.11.1).
+  vcpus: 1
+  memMib: 768
 
 # Guest-image rootfs provisioning (Task 14), laid out FLAT at top level (NOT
 # under `noded`) because helm_images_values (Bazel image pinning) emits one YAML
