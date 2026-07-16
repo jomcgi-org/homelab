@@ -30,18 +30,21 @@ spec:
         prometheus.io/port: {{ .Values.servingEnvoy.statsPort | quote }}
         prometheus.io/path: "/stats/prometheus"
     spec:
-      # HOST networking: the serving-VM tap IPs live on the node-local serving bridge
-      # (embervm-serv0, 172.31.0.0/24) that noded creates on the host. A pod-network
-      # Envoy cannot reach that bridge (the R3 live gate drill confirmed it: the VM was
-      # live+published and noded's host-side health probe reached it, but the Envoy's
-      # upstream connections to 172.31.0.x failed with connect errors), so the Envoy
-      # must share the node's netns to dial the VMs directly. This was the recorded
-      # fallback in the original pod-network design; the drill promoted it to the
-      # default. dnsPolicy ClusterFirstWithHostNet keeps cluster DNS working (a
-      # hostNetwork pod otherwise inherits the node resolv.conf) so the Envoy can still
-      # resolve and reach the xDS sidecar over the cluster network.
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      # POD networking (DNAT-through-noded, D-R3.11.4): serving-VM tap IPs live on the
+      # node-local serving bridge (embervm-serv0, 172.31.0.0/24) inside noded's OWN pod
+      # netns, so neither a pod-network nor a hostNetwork Envoy can route to the taps
+      # directly (the bridge is in neither the pod nor the host netns). Instead noded
+      # exposes each live serving VM as noded_pod_ip:vmPort via a per-VM prerouting DNAT
+      # rule to the tap, and the control plane publishes THAT endpoint over xDS. Pod IPs
+      # are cluster-routable, so this Envoy dials noded's pod IP over the normal pod
+      # network and the kernel forwards to the VM. Two debugging edges: (1) after a noded
+      # pod recreate the pod IP changes and there is a brief stale-endpoint window until
+      # the control-plane reconcile sweep drops the old endpoints and the activator
+      # fallback covers wakes; (2) an in-pod `curl noded_pod_ip:vmPort` from INSIDE noded
+      # is NOT DNAT'd (the rule is prerouting-only, no output hook), so verify from a
+      # DIFFERENT pod (e.g. the Envoy pod), not from noded itself. If a default-deny
+      # NetworkPolicy/Cilium policy ever lands on noded, the serving DNAT port range
+      # (EMBERVM_NODED_SERVING_PORT_BASE + 2..254) must be allowed.
       {{- with .Values.servingEnvoy.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -70,14 +73,6 @@ spec:
             - $(NODE_NAME)
             - --service-cluster
             - {{ include "embervm.servingEnvoy.fullname" . }}
-            # Allocate a free hot-restart base id at startup instead of the default 0.
-            # This pod is hostNetwork (to reach the node-local serving bridge), so it
-            # shares node-4's abstract socket namespace with every other Envoy on the
-            # node (e.g. the CNI / gateway data plane); two processes at base_id=0
-            # collide on the domain socket ("unable to bind domain socket with
-            # base_id=0, errno=98"), crash-looping this Envoy. Dynamic base id avoids
-            # the collision without hardcoding a per-node id.
-            - --use-dynamic-base-id
           env:
             - name: NODE_NAME
               valueFrom:

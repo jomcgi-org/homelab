@@ -160,6 +160,15 @@ func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, wor
 		s.reapServing(h, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving guest not ready over tap: %v", err)
 	}
+	// The guest is ready on its tap; expose it as a routable endpoint via noded's pod IP
+	// + a per-VM prerouting DNAT rule (D-R3.11.4). Readiness stayed on the tap IP, so a
+	// broken DNAT does not fail readiness; installing it here (before publish) means a
+	// DNAT failure reaps rather than publishing an unreachable endpoint. Reap's
+	// ReleaseTap folds in RemoveDNAT, cleaning any partial rule.
+	if err := s.servingNet.EnsureDNAT(ctx, ip, port); err != nil {
+		s.reapServing(h, ip)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: install serving DNAT for %s: %v", ip, err)
+	}
 	probe := serving.StartProbe(s.newProber(), ip, port, healthPath)
 	s.servingVMs.add(&servingEntry{
 		vmID:        h.ID,
@@ -172,7 +181,9 @@ func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, wor
 		snapshotRef: sourceRef,
 	})
 	s.signalChange()
-	return &nodev1.StartServingResponse{VmId: h.ID, Ip: ip.String(), Port: port}, nil
+	// Report the projected endpoint (pod IP + DNAT port), NOT the node-internal tap IP.
+	endpointIP, endpointPort := s.servingNet.Endpoint(ip, port)
+	return &nodev1.StartServingResponse{VmId: h.ID, Ip: endpointIP, Port: endpointPort}, nil
 }
 
 // waitServingReady polls GET http://ip:port{healthPath} over the tap until it returns

@@ -24,8 +24,17 @@ type servingNetwork interface {
 	// AllocateTapForIP re-acquires a SPECIFIC IP and creates its tap; used by relight
 	// to pin the IP the banked snapshot recorded (D-R3.4.1).
 	AllocateTapForIP(ctx context.Context, ip net.IP) (tap string, err error)
-	// ReleaseTap deletes a VM's tap and frees its IP (teardown).
+	// ReleaseTap deletes a VM's tap and frees its IP (teardown); it also drops the VM's
+	// DNAT rule (RemoveDNAT is folded in), so every teardown path cleans up.
 	ReleaseTap(ctx context.Context, ip net.IP)
+	// EnsureDNAT installs the prerouting DNAT rule exposing a ready serving VM's tap as
+	// noded's routable pod IP + a per-VM port (D-R3.11.4), called after readiness. A
+	// no-op when DNAT is disabled (empty pod IP).
+	EnsureDNAT(ctx context.Context, ip net.IP, guestPort uint32) error
+	// Endpoint projects a VM's (tap IP, guest port) into the endpoint the daemon
+	// REPORTS: (pod IP, DNAT port) when DNAT is enabled, else the tap IP unchanged. It
+	// is a projection only; the registry keeps storing the tap IP (probe target, pin).
+	Endpoint(ip net.IP, guestPort uint32) (string, uint32)
 	// GatewayIP is the bridge IP a guest uses as its default route.
 	GatewayIP() net.IP
 	// PrefixLen is the serving CIDR prefix length, for the guest static IP mask.

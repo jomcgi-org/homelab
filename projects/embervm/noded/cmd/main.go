@@ -91,9 +91,16 @@ func run(logger *slog.Logger) error {
 	// loudly. The same restore driver serves the serving driver mechanics: it gains a
 	// cold-boot-with-NIC ClaimServing plus SnapshotServing/RestoreServing under the
 	// serving/ prefix, and its live map counts serving VMs against the node cap.
-	servingNet, err := serving.NewManager(serving.ExecRunner{}, cfg.ServingBridge, cfg.ServingSubnetCIDR)
+	servingNet, err := serving.NewManager(serving.ExecRunner{}, cfg.ServingBridge, cfg.ServingSubnetCIDR, cfg.PodIP, cfg.ServingPortBase)
 	if err != nil {
 		return err
+	}
+	if cfg.PodIP == "" {
+		// Fail-loud-not-silent (mirrors the empty-bearer-token posture): without a pod IP
+		// the daemon reports node-internal tap IPs and installs no DNAT, so serving
+		// endpoints are unreachable from off-node Envoys. Fine for tests/local; a warning
+		// in prod flags a missing Downward-API env.
+		logger.Warn("serving: EMBERVM_NODED_POD_IP unset; serving endpoints report node-internal tap IPs and DNAT is disabled")
 	}
 
 	srv := server.New(server.Options{

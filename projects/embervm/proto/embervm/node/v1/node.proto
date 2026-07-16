@@ -500,12 +500,16 @@ message StartServingResponse {
   // vm_id names the live serving VM. Opaque; the control plane holds it and
   // passes it to StopServing.
   string vm_id = 1;
-  // ip is the tap IP the daemon assigned from its serving subnet. Opaque to
-  // the control plane beyond routing to it; the daemon owns tap naming and
-  // subnet management entirely.
+  // ip is the ROUTABLE endpoint address for this serving VM: noded's own pod IP
+  // (D-R3.11.4), not the tap IP. The tap IP stays node-internal; noded exposes
+  // each live serving VM as pod_ip:port via a per-VM prerouting DNAT rule, so a
+  // pod-network Envoy on any node can dial it. Opaque to the control plane beyond
+  // routing to it. Falls back to the node-internal tap IP when noded has no pod IP
+  // configured (local/test).
   string ip = 2;
-  // port echoes StartServingRequest.port: the guest port callers reach the
-  // VM's HTTP server on at ip:port.
+  // port is the per-VM DNAT port on ip (pod_ip:port -> tap_ip:guest_port in the
+  // kernel), NOT the guest's own listen port. Derived deterministically from the
+  // tap IP; opaque to the control plane, which only routes to ip:port.
   uint32 port = 3;
 }
 
@@ -618,6 +622,9 @@ message SessionSnapshot {
 message ServingVm {
   string vm_id = 1;
   string workload = 2;
+  // ip/port are the ROUTABLE endpoint (noded pod IP + per-VM DNAT port,
+  // D-R3.11.4), matching StartServingResponse; the tap IP stays node-internal.
+  // Falls back to the tap IP when noded has no pod IP configured (local/test).
   string ip = 3;
   uint32 port = 4;
   bool healthy = 5;

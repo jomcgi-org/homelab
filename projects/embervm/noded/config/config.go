@@ -112,6 +112,18 @@ type Config struct {
 	// which is correct until the control plane provisions images (Task 11+).
 	Images map[string]Image
 
+	// PodIP is noded's own routable pod IP (injected via the Downward API as
+	// EMBERVM_NODED_POD_IP / status.podIP). Serving endpoints are projected as
+	// PodIP:vmPort and reached through a per-VM prerouting DNAT rule to the tap
+	// (D-R3.11.4), so a pod-network Envoy on ANY node can dial them. Empty disables
+	// DNAT and falls back to reporting the node-internal tap IP (tests/local); the
+	// daemon logs a startup warning in that case.
+	PodIP string
+	// ServingPortBase is the base of the deterministic per-VM DNAT port space:
+	// vmPort = ServingPortBase + hostOffset(tapIP). A /24 yields ports base+2..base+254,
+	// clear of noded's own 8080/9090. Default 30000. NewManager rejects a base that
+	// would push the top offset past 65535. Env EMBERVM_NODED_SERVING_PORT_BASE.
+	ServingPortBase int
 	// ServingBridge is the host bridge device serving-class VM taps attach to. One
 	// per node; the daemon creates it on start. Default "embervm-serv0".
 	ServingBridge string
@@ -154,6 +166,8 @@ func Load() (Config, error) {
 		ArchiveFetchTimeout: 60 * time.Second,
 		ArchiveMaxBytes:     512 << 20,
 
+		PodIP:                     os.Getenv("EMBERVM_NODED_POD_IP"),
+		ServingPortBase:           atoiDefault("EMBERVM_NODED_SERVING_PORT_BASE", 30000),
 		ServingBridge:             getenvDefault("EMBERVM_NODED_SERVING_BRIDGE", "embervm-serv0"),
 		ServingSubnetCIDR:         getenvDefault("EMBERVM_NODED_SERVING_SUBNET_CIDR", "172.31.0.0/24"),
 		ServingProbeInterval:      5 * time.Second,

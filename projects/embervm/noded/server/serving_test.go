@@ -36,6 +36,16 @@ type fakeServingNet struct {
 	released       []string // ips passed to ReleaseTap
 	live           map[string]int
 	failAllocForIP map[string]error
+	// ensureDNATCalls records the tap IPs EnsureDNAT was asked to expose; failEnsureDNAT
+	// (when true) makes EnsureDNAT fail so a test can drive the reap path.
+	ensureDNATCalls []string
+	failEnsureDNAT  bool
+	// podIP/podPort, when podIP is set, make Endpoint project (podIP, podPort) instead
+	// of the tap IP, so a test asserts the server publishes the projected endpoint while
+	// the probe/pin still used the tap IP. Empty podIP keeps the tap-IP fallback (so the
+	// existing tests that assert resp.ip == 127.0.0.1 are unchanged).
+	podIP   string
+	podPort uint32
 }
 
 func newFakeServingNet() *fakeServingNet {
@@ -73,9 +83,34 @@ func (f *fakeServingNet) ReleaseTap(_ context.Context, ip net.IP) {
 	}
 }
 
+func (f *fakeServingNet) EnsureDNAT(_ context.Context, ip net.IP, _ uint32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureDNATCalls = append(f.ensureDNATCalls, ip.String())
+	if f.failEnsureDNAT {
+		return status.Error(codes.Internal, "fake serving net: EnsureDNAT failed")
+	}
+	return nil
+}
+
+func (f *fakeServingNet) Endpoint(ip net.IP, guestPort uint32) (string, uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.podIP == "" {
+		return ip.String(), guestPort
+	}
+	return f.podIP, f.podPort
+}
+
 func (f *fakeServingNet) GatewayIP() net.IP { return net.ParseIP("172.31.0.1") }
 func (f *fakeServingNet) PrefixLen() int    { return 24 }
 func (f *fakeServingNet) CIDR() string      { return "172.31.0.0/24" }
+
+func (f *fakeServingNet) dnatCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.ensureDNATCalls...)
+}
 
 func (f *fakeServingNet) releaseCount() int {
 	f.mu.Lock()
@@ -356,6 +391,70 @@ func TestStartServingFresh(t *testing.T) {
 		t.Errorf("live_vms = %d want 1", ns.GetLiveVms())
 	}
 	_ = fsn
+}
+
+// TestStartServingProjectsPodEndpoint proves the D-R3.11.4 projection: with a pod IP
+// configured, the response and NodeStatus carry (podIP, DNAT port), EnsureDNAT is
+// installed against the TAP IP, and the driver's readiness/pin still used the tap IP
+// (the pod IP never leaks into the probe target or the snapshot pin).
+func TestStartServingProjectsPodEndpoint(t *testing.T) {
+	_, port := healthServer(t, servingHealthPath)
+	s, fsn, fsd := newServingTestServer(t)
+	// Enable the projection: publish 10.42.5.7:34567 for whatever tap IP was allocated.
+	fsn.podIP = "10.42.5.7"
+	fsn.podPort = 34567
+
+	resp := startFresh(t, s, port)
+	// The response is the projected endpoint, NOT the node-internal tap IP.
+	if resp.GetIp() != "10.42.5.7" || resp.GetPort() != 34567 {
+		t.Errorf("response endpoint = %s:%d want the projected 10.42.5.7:34567", resp.GetIp(), resp.GetPort())
+	}
+	// EnsureDNAT was installed against the TAP IP the health-gate/probe used (127.0.0.1),
+	// not the pod IP.
+	if calls := fsn.dnatCalls(); len(calls) != 1 || calls[0] != "127.0.0.1" {
+		t.Errorf("EnsureDNAT calls = %v want exactly [127.0.0.1] (the tap IP)", calls)
+	}
+	// The cold boot's NIC used the tap IP; the pod IP never reached the guest/pin path.
+	if fsd.lastClaimNIC.IP != "127.0.0.1" {
+		t.Errorf("NIC IP = %q; the pod IP must not leak into the guest NIC", fsd.lastClaimNIC.IP)
+	}
+	// NodeStatus projects the same endpoint.
+	ns := s.nodeStatus()
+	if len(ns.GetServingVms()) != 1 {
+		t.Fatalf("serving_vms = %d want 1", len(ns.GetServingVms()))
+	}
+	if got := ns.GetServingVms()[0]; got.GetIp() != "10.42.5.7" || got.GetPort() != 34567 {
+		t.Errorf("NodeStatus serving endpoint = %s:%d want 10.42.5.7:34567", got.GetIp(), got.GetPort())
+	}
+}
+
+// TestStartServingDNATFailureReaps proves a DNAT install failure AFTER readiness reaps
+// the VM and releases the tap (no half-published endpoint), returning FailedPrecondition.
+func TestStartServingDNATFailureReaps(t *testing.T) {
+	_, port := healthServer(t, servingHealthPath)
+	s, fsn, fsd := newServingTestServer(t)
+	fsn.podIP = "10.42.5.7"
+	fsn.podPort = 34567
+	fsn.failEnsureDNAT = true
+
+	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
+		Port:       port,
+		HealthPath: servingHealthPath,
+		Trace:      &nodev1.Trace{Workload: "wl-serve"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("DNAT failure: got %v want FailedPrecondition", err)
+	}
+	if fsn.releaseCount() != 1 {
+		t.Errorf("tap not released on DNAT failure: releases = %d", fsn.releaseCount())
+	}
+	if fsd.liveCount() != 0 {
+		t.Errorf("VM not reaped on DNAT failure: live = %d", fsd.liveCount())
+	}
+	if len(s.nodeStatus().GetServingVms()) != 0 {
+		t.Error("a DNAT-failed start must leave no serving VM reported")
+	}
 }
 
 func TestStartServingFreshUnknownImage(t *testing.T) {
