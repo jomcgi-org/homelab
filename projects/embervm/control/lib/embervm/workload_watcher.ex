@@ -425,9 +425,9 @@ defmodule Embervm.WorkloadWatcher do
       generation = get_in(cr, ["metadata", "generation"])
       spec = Map.get(cr, "spec") || %{}
 
-      case validate(spec) do
-        {:ok, class, floor, cap, session_cfg} ->
-          entry = catalog_entry(name, namespace, spec, class, floor, cap, session_cfg)
+      case validate(state, name, spec) do
+        {:ok, class, floor, cap, session_cfg, serving_cfg} ->
+          entry = catalog_entry(name, namespace, spec, class, floor, cap, session_cfg, serving_cfg)
           WorkloadCatalog.upsert(state.table, name, entry)
 
           # A valid Workload's Ready/BaseBuilt conditions are owned by the
@@ -552,28 +552,32 @@ defmodule Embervm.WorkloadWatcher do
 
   # -- validation ----------------------------------------------------------
 
-  # Returns {:ok, class, floor, cap, session_cfg} with just the pieces
-  # catalog_entry needs (session_cfg is nil for the task class), or
-  # {:error, reason_code, message} for a status condition. The CRD schema
-  # (workload-crd.yaml) enforces shape (required fields, enums, min/max) at
-  # admission; what's left for the watcher is the cross-field/semantic rules the
-  # OpenAPI schema cannot express (class allow-list beyond the enum, the oneOf
-  # source lane, cap >= floor, and the class-conditional session block).
-  defp validate(spec) do
+  # Returns {:ok, class, floor, cap, session_cfg, serving_cfg} with just the
+  # pieces catalog_entry needs (session_cfg/serving_cfg are nil except for
+  # their own class), or {:error, reason_code, message} for a status
+  # condition. The CRD schema (workload-crd.yaml) enforces shape (required
+  # fields, enums, min/max) at admission; what's left for the watcher is the
+  # cross-field/semantic rules the OpenAPI schema cannot express (class
+  # allow-list beyond the enum, the oneOf source lane, cap >= floor, the
+  # class-conditional session/serving blocks, the serving cap/maxInstances
+  # alias guard, and cross-CR duplicate-host rejection).
+  defp validate(state, name, spec) do
     with {:ok, class} <- validate_class(spec),
          :ok <- validate_source(spec),
          {:ok, floor, cap} <- validate_concurrency(spec),
-         {:ok, session_cfg} <- validate_session(spec, class) do
-      {:ok, class, floor, cap, session_cfg}
+         {:ok, session_cfg} <- validate_session(spec, class),
+         {:ok, serving_cfg} <- validate_serving(state, name, spec, class, cap) do
+      {:ok, class, floor, cap, session_cfg, serving_cfg}
     end
   end
 
   defp validate_class(%{"class" => "task"}), do: {:ok, "task"}
   defp validate_class(%{"class" => "session"}), do: {:ok, "session"}
+  defp validate_class(%{"class" => "serving"}), do: {:ok, "serving"}
 
   defp validate_class(spec) do
     {:error, "ClassUnsupported",
-     "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task and session are valid in v1alpha1"}
+     "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task, session, and serving are valid in v1alpha1"}
   end
 
   # The session block is REQUIRED for the session class and FORBIDDEN for the
@@ -588,10 +592,10 @@ defmodule Embervm.WorkloadWatcher do
     invoke_queue_cap: 4
   }
 
-  defp validate_session(spec, "task") do
+  defp validate_session(spec, class) when class in ["task", "serving"] do
     case Map.get(spec, "session") do
       nil -> {:ok, nil}
-      _ -> {:error, "SessionSpecUnexpected", "spec.session is only valid for class session, not task"}
+      _ -> {:error, "SessionSpecUnexpected", "spec.session is only valid for class session, not #{class}"}
     end
   end
 
@@ -617,6 +621,106 @@ defmodule Embervm.WorkloadWatcher do
       banked_ttl_seconds: Map.get(s, "bankedTtlSeconds") || max_lifetime,
       max_sessions: Map.get(s, "maxSessions") || @session_defaults.max_sessions,
       invoke_queue_cap: Map.get(s, "invokeQueueCap") || @session_defaults.invoke_queue_cap
+    }
+  end
+
+  # The serving block is REQUIRED for the serving class and FORBIDDEN for task
+  # and session (the class-conditional requiredness the OpenAPI schema cannot
+  # express), mirroring validate_session/2 exactly. Two additional serving-only
+  # rules beyond presence: the concurrency.cap/maxInstances alias guard (they
+  # must agree when both are set), and cross-CR duplicate-host rejection (one
+  # hostname, one workload, v1) checked against the LIVE catalog so it sees
+  # every other already-cataloged serving workload regardless of LIST order.
+  # Serving config numeric fields are re-defaulted here (mirroring the CRD),
+  # the same "no silent dependency on apiserver defaulting" rule as sessions.
+  @serving_defaults %{
+    health_path: "/healthz",
+    min_instances: 0,
+    max_instances: 2,
+    idle_bank_seconds: 300,
+    drain_seconds: 5,
+    max_lifetime_seconds: 86_400
+  }
+
+  defp validate_serving(_state, _name, spec, class, _cap) when class in ["task", "session"] do
+    case Map.get(spec, "serving") do
+      nil -> {:ok, nil}
+      _ -> {:error, "ServingSpecUnexpected", "spec.serving is only valid for class serving, not #{class}"}
+    end
+  end
+
+  defp validate_serving(state, name, spec, "serving", cap) do
+    case Map.get(spec, "serving") do
+      s when is_map(s) ->
+        with :ok <- validate_serving_cap_alias(s, cap),
+             :ok <- validate_serving_host_unique(state, name, s) do
+          {:ok, parse_serving(s)}
+        end
+
+      _ ->
+        {:error, "ServingSpecMissing", "class serving requires a spec.serving block"}
+    end
+  end
+
+  # concurrency.cap is REQUIRED by the CRD schema (spec.concurrency.cap), so it
+  # is always an integer here; maxInstances is optional (CRD-defaulted to 2).
+  # When the CR sets maxInstances explicitly it MUST agree with cap, or the
+  # two knobs silently disagree about the hard max (a config a human reading
+  # only one of the two fields would misjudge). Omitting maxInstances (letting
+  # it default) never conflicts, since cap alone is authoritative then.
+  defp validate_serving_cap_alias(s, cap) do
+    case Map.get(s, "maxInstances") do
+      nil ->
+        :ok
+
+      max_instances when max_instances == cap ->
+        :ok
+
+      max_instances ->
+        {:error, "ConcurrencyServingMismatch",
+         "spec.serving.maxInstances (#{inspect(max_instances)}) must equal spec.concurrency.cap (#{inspect(cap)}) when both are set"}
+    end
+  end
+
+  # Scans the live catalog for any OTHER serving workload already holding this
+  # host (self excluded, so a CR re-validating against its own prior entry on
+  # every LIST/watch cycle never collides with itself). One hostname, one
+  # workload in v1: a second serving Workload declaring an already-owned host
+  # is condition-rejected rather than admitted, so there is never an ambiguous
+  # routing target. Checked against WorkloadCatalog (not watcher-local state)
+  # so this is correct from both the single-CR watch-event path and the
+  # full-LIST reconcile path, and self-heals if the collision is resolved
+  # later (the losing CR's next reconcile re-validates and can now succeed).
+  defp validate_serving_host_unique(state, name, s) do
+    host = Map.get(s, "host")
+
+    conflict =
+      state.table
+      |> WorkloadCatalog.all_names()
+      |> Enum.reject(&(&1 == name))
+      |> Enum.find(fn other_name ->
+        case WorkloadCatalog.fetch(state.table, other_name) do
+          {:ok, %{class: "serving", serving: %{host: ^host}}} -> true
+          _ -> false
+        end
+      end)
+
+    case conflict do
+      nil -> :ok
+      other -> {:error, "ServingHostConflict", "spec.serving.host #{inspect(host)} is already owned by workload #{inspect(other)}"}
+    end
+  end
+
+  defp parse_serving(s) do
+    %{
+      port: Map.get(s, "port"),
+      health_path: Map.get(s, "healthPath") || @serving_defaults.health_path,
+      host: Map.get(s, "host"),
+      min_instances: Map.get(s, "minInstances") || @serving_defaults.min_instances,
+      max_instances: Map.get(s, "maxInstances") || @serving_defaults.max_instances,
+      idle_bank_seconds: Map.get(s, "idleBankSeconds") || @serving_defaults.idle_bank_seconds,
+      drain_seconds: Map.get(s, "drainSeconds") || @serving_defaults.drain_seconds,
+      max_lifetime_seconds: Map.get(s, "maxLifetimeSeconds") || @serving_defaults.max_lifetime_seconds
     }
   end
 
@@ -686,7 +790,7 @@ defmodule Embervm.WorkloadWatcher do
   # reflects whatever the apiserver already defaulted at admission;
   # re-defaulting here just means this code has no silent dependency on that
   # having happened.
-  defp catalog_entry(name, namespace, spec, class, floor, cap, session_cfg) do
+  defp catalog_entry(name, namespace, spec, class, floor, cap, session_cfg, serving_cfg) do
     resources = Map.get(spec, "resources") || %{}
     invocation = Map.get(spec, "invocation") || %{}
     source = parse_source(spec)
@@ -699,6 +803,13 @@ defmodule Embervm.WorkloadWatcher do
       # SessionManager/SessionStore (later PRs) read idle-bank/lifetime/caps from
       # the catalog exactly as the dispatcher reads task caps.
       session: session_cfg,
+      # Serving-class endpoint + elasticity config (nil except for the serving
+      # class), carried so the future EndpointPublisher/Activator (Tasks 7/8)
+      # read host/port/healthPath and the instance-count knobs from the
+      # catalog exactly as SessionStore reads session config. Distinct from
+      # `port`/`ready_path` below, which are the base-build guest contract
+      # (vsock, used at BuildBase/Prime time), not the serving tap endpoint.
+      serving: serving_cfg,
       # Zip-lane source (nil for the image lane), carried so the BaseBuilder can
       # map it to a proto ZipSource. The image lane leaves it nil.
       zip: source.zip,
