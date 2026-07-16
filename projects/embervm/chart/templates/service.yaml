@@ -12,3 +12,11 @@ spec:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
+    {{- if .Values.xds.enabled }}
+    # ADS gRPC port for the per-node serving Envoys (R3, PR-3): they dial this
+    # Service address to stream CDS/RDS/EDS from the xds sidecar. The snapshot API
+    # is loopback-only and is deliberately NOT exposed here.
+    - name: xds-grpc
+      port: {{ .Values.xds.grpcPort }}
+      targetPort: xds-grpc
+    {{- end }}

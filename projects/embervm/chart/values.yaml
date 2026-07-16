@@ -122,6 +122,33 @@ tracing:
 service:
   port: 8080
 
+# xDS sidecar (R3, PR-3): a go-control-plane ADS server that runs as a SECOND
+# container in the control-plane pod. The control plane (PR-4) PUTs a desired-state
+# snapshot to it over localhost; it serves CDS/RDS/EDS to the per-node serving
+# Envoys (Task 6) over the ADS gRPC port, which the embervm Service exposes so the
+# node Envoys can dial it. The snapshot API is bound to 127.0.0.1 ONLY and is never
+# exposed on the pod network or the Service.
+xds:
+  enabled: true
+  image:
+    # Pinned at build time by helm_chart(images={"xds.image": ".../xds/image:image.info"}).
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/xds/image
+    tag: latest
+    pullPolicy: IfNotPresent
+  # ADS gRPC port (pod network, exposed on the embervm Service; node Envoys dial
+  # this) and the loopback-only snapshot API port the control plane PUTs to.
+  grpcPort: 18000
+  httpPort: 18001
+  # Sized small per repo convention: CPU request-only (no limit), memory req==limit.
+  # The sidecar holds only the current snapshot (a handful of clusters/routes) in
+  # memory, so its footprint is tiny.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
 # uid 65532 non-root convention. The control plane needs no privilege (only the
 # node daemon is privileged for KVM).
 podSecurityContext:

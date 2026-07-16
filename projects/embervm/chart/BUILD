@@ -8,6 +8,11 @@ helm_chart(
     images = {
         "image": "//projects/embervm/image:image.info",
         "noded.image": "//projects/embervm/noded/image:image.info",
+        # R3 PR-3: the xDS sidecar image (go-control-plane ADS server), a second
+        # container in the control-plane pod. Distinct top-level key "xds" (not
+        # nested under a shared prefix), per the helm_images_values duplicate-key
+        # caveat noted below.
+        "xds.image": "//projects/embervm/xds/image:image.info",
         # Task 14: the frozen fc-invoke sandbox guest image (baked into a base
         # rootfs by the noded rootfs-builder) and the rootfs-builder tool image,
         # digest-pinned from their .info providers so the guest contract is
