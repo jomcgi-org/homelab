@@ -372,3 +372,51 @@ lazy-page restore or a smaller `memMib`).
   fc-invoke substrate. Not this rung's consumer, per the plan's out-of-scope list.
 - The ADR 004 agent-sandbox adapter stays gated on condition 2 (upstream traction);
   condition 1 (R2 exists) now holds.
+
+## Live gate verification (2026-07-16): 9/9 PASS
+
+The live functional drill above was run (Joe-approved, revocable bound `monolith`
+SA token, port-forward to `embervm-embervm:8080`). It caught three real integration
+seams the CI-green mechanisms all missed (each side was tested against a fake of the
+other; nothing drove a real control-plane -> gRPC -> shim -> guest invoke). All three
+were fixed and the drill is now **9/9 green** on chart 0.1.44:
+
+| Gate | Result |
+| ---- | ------ |
+| 1. State persistence across bank/relight | PASS: `x=42` + a `/tmp/session` file both survive a forced idle-bank -> relight, via genuine SAME-process child reuse (pid identical before/after, proven by an in-band `os.getpid()` probe). |
+| 2. Relight latency | PASS: 121-132 ms park-to-response on the sandbox-session snapshot (target p95 <= 500 ms; single-cycle, the 20-cycle p95 remains a follow-on). |
+| 6. Isolation and tokens | PASS: session B's token gets 403 on session A's invoke AND read. |
+| `session_reset` fidelity | PASS: `true` on a fresh child (first invoke), absent/false on a reused child (post-relight). |
+
+**Three post-ship fixes the drill forced (all merged + deployed):**
+1. **PR #3551 (0.1.42) session-registry adoption:** create primed/claimed the session
+   VM through the shared warm pool, so noded's `Prime` left it in the TASK registry;
+   `SessionAssign` only accepted the SESSION registry (populated only by `Relight`), so
+   the first invoke 502'd and failed the session. Fixed by adopting a primed VM (of the
+   matching workload) into the session registry on first invoke.
+2. **PR #3552 (0.1.43) guest-path fallback:** the session invoke baked guest path `/`,
+   but the shim serves only `/invoke`, so every invoke 404'd at the guest. Fixed to fall
+   back to the workload's `invokePath` when no explicit `X-Ember-Guest-Path`.
+3. **PR #3553 (0.1.44) digest-versioned rootfs:** restored guests hit EXT4 corruption
+   because the read-only rootfs was one fixed file rebuilt in place on a chart roll,
+   while base memory snapshots are per-digest -- so a roll swapped the bytes under
+   banked sessions. Fixed by digest-naming the rootfs file (immutable per guest version);
+   the FC memfile embeds the now-stable per-digest path, so restore re-attaches the
+   correct rootfs. See DECISIONS.md D-R2.7.1..4.
+
+**The `session_reset` "9th gate failure" was a drill-assertion bug, not a code bug:**
+Go's `SessionReset bool` is `omitempty`, so a correctly-`false` flag is OMITTED from the
+JSON; the drill asserted `is False`, and `None is False` is `False` in Python. The flag
+is correct; the assertion now treats falsy (None/false) as pass.
+
+**Remaining follow-ons (flagged, not blocking R2):**
+- **Rootfs reaper** (the "TTL for flushing"): old `rootfs-<digest>.ext4` files accumulate
+  (~2 GiB/deploy) until wired into `base_builder.ex` base-eviction (extend the unwired
+  `RemoveBaseBundle` to the rootfs path once a base's refs drain). Strategic version is
+  offsite S3/OCI export (ADR 003). D-R2.7.4.
+- **Guest child-lifecycle logging sink:** the `klog` shipped in #3553 writes to guest-init
+  stderr, which does NOT reach the serial console (only the kernel ring-buffer does), so it
+  is currently inert; point it at `/dev/console` to make the passive tooling real. The
+  in-band `os.getpid()` probe is the working technique in the meantime.
+- 20-cycle relight p95, adoption restart drill, and disk-pressure eviction drill remain
+  the heavier operational gates (CI-mechanism-covered; live runs deferred).
