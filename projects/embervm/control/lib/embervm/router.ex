@@ -131,6 +131,12 @@ defmodule Embervm.Router do
     handle_force_roll(conn, name)
   end
 
+  # -- stateful routes (R4, management introspection) ------------------------
+
+  get "/v1/stateful/:name" do
+    handle_get_stateful(conn, name)
+  end
+
   # The activator fallback (R3, Task 8): the catch-all is the front-end the node
   # Envoy routes a MISS to (the fallback endpoint of an empty serve|<workload>
   # cluster). It is identified by the `x-ember-workload` request header the serving
@@ -866,6 +872,88 @@ defmodule Embervm.Router do
 
   defp serving_store, do: Application.get_env(:embervm, :serving_store_mod, Embervm.ServingStore)
   defp serving_store_server, do: Application.get_env(:embervm, :serving_store, Embervm.ServingStore)
+
+  # -- stateful handler (R4) -------------------------------------------------
+
+  # GET /v1/stateful/:name (management auth): the singleton stateful workload's
+  # current state, its published L4 endpoint (or nil), the banked bundle's stamped
+  # generation, whether the bundle pairs with the current volume, and the volume's
+  # allocated bytes. Read-only operational introspection behind the same /v1
+  # management auth as every other non-session route. A 404 is returned when `name`
+  # is not a STATEFUL-class workload in the catalog (an unknown or wrong-class
+  # workload is a genuine not-found here, unlike the serving GET which returns an
+  # empty list for a defined-but-cold workload; a stateful GET's whole shape is
+  # workload-class-specific, so it only answers for a real stateful workload).
+  defp handle_get_stateful(conn, workload) do
+    if stateful_workload?(workload) do
+      instances = stateful_store().list(stateful_store_server(), workload)
+      # The instance the top-level fields describe: the live one if present (there
+      # is at most one by the singleton invariant), else the banked one, else the
+      # newest row (list/2 is newest-created first). This picks the row an operator
+      # cares about, not a stale terminal one, when both exist.
+      primary = primary_stateful_instance(instances)
+      banked = Enum.find(instances, &(&1.state == :banked))
+      volume = stateful_store().get_volume(stateful_store_server(), workload)
+
+      send_json(conn, 200, %{
+        workload: workload,
+        instance: primary && stateful_instance_view(primary),
+        state: primary && to_string(primary.state),
+        generation: primary && primary.generation,
+        # The banked bundle's stamped generation (the pair key), nil if nothing is banked.
+        bundle_generation: banked && banked.snapshot_generation,
+        pair_valid: stateful_store().pair_valid?(stateful_store_server(), workload),
+        # The volume's actual block usage (the watermark), nil if there is no volume row.
+        volume_bytes: volume && volume.allocated_bytes,
+        published_endpoint: stateful_store().published_endpoint(stateful_store_server(), workload)
+      })
+    else
+      send_json(conn, 404, %{error: "unknown stateful workload", workload: workload, retryable: false})
+    end
+  end
+
+  # The instance the GET's top-level fields describe: the live one (at most one by
+  # the singleton invariant), else the banked one, else the newest row, else nil.
+  defp primary_stateful_instance(instances) do
+    live_states = [:starting, :serving, :banking, :relighting, :cold_booting]
+
+    Enum.find(instances, &(&1.state in live_states)) ||
+      Enum.find(instances, &(&1.state == :banked)) ||
+      List.first(instances)
+  end
+
+  defp stateful_instance_view(instance) do
+    %{
+      instance_id: instance.instance_id,
+      workload: instance.workload,
+      state: to_string(instance.state),
+      healthy: instance.healthy,
+      node_id: instance.node_id,
+      ip: instance.ip,
+      port: instance.port,
+      generation: instance.generation,
+      created_at: instance.created_at,
+      last_active_at: instance.last_active_at,
+      updated_at: instance.updated_at,
+      terminal_reason: instance.terminal_reason
+    }
+  end
+
+  # Whether `workload` is a STATEFUL-class workload in the catalog. Resolves the
+  # catalog module + table from app-env so a request test can inject a fake without
+  # the live WorkloadWatcher; production reads the supervised catalog table.
+  defp stateful_workload?(workload) do
+    mod = Application.get_env(:embervm, :workload_catalog_mod, Embervm.WorkloadCatalog)
+    table = Application.get_env(:embervm, :workload_catalog_table, Embervm.WorkloadCatalog.table())
+
+    case mod.fetch(table, workload) do
+      {:ok, %{class: "stateful"}} -> true
+      _ -> false
+    end
+  end
+
+  defp stateful_store, do: Application.get_env(:embervm, :stateful_store_mod, Embervm.StatefulStore)
+  defp stateful_store_server, do: Application.get_env(:embervm, :stateful_store, Embervm.StatefulStore)
 
   defp serving_sweeper, do: Application.get_env(:embervm, :serving_sweeper_mod, Embervm.ServingSweeper)
   defp serving_sweeper_server, do: Application.get_env(:embervm, :serving_sweeper, Embervm.ServingSweeper)
