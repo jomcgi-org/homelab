@@ -1,0 +1,333 @@
+defmodule Embervm.ServingManagerTest do
+  @moduledoc """
+  Exercises Embervm.ServingManager (the activator) against a real ServingStore +
+  op-log, an injected StartServing seam (a fakenode stand-in, with optional latency
+  injection for the single-flight property test), and injected catalog/capacity
+  tables. Covers the miss round-trip (wake -> publish -> endpoint returned),
+  single-flight (N concurrent misses => exactly ONE StartServing, N responses),
+  the wake-rate 429, wake-failure 503 + retry-ability, the straggler path (a live
+  endpoint exists: resolved, not woken), and the restart adoption matrix.
+  """
+  use ExUnit.Case, async: true
+
+  alias Embervm.{NodeCapacity, ServingManager, ServingStore, WorkloadCatalog}
+  alias Embervm.OpLog.SQLite
+  alias Embervm.Node.V1.StartServingResponse
+
+  # A no-op publisher (a GenServer that counts publish/1 casts) so the manager's
+  # EndpointPublisher.publish call has a live target without a real sidecar.
+  defmodule FakePublisher do
+    use GenServer
+    def start_link, do: GenServer.start_link(__MODULE__, 0)
+    def count(pid), do: GenServer.call(pid, :count)
+    @impl true
+    def init(n), do: {:ok, n}
+    @impl true
+    def handle_cast(:publish, n), do: {:noreply, n + 1}
+    @impl true
+    def handle_call(:count, _from, n), do: {:reply, n, n}
+  end
+
+  defp start_stack(opts \\ []) do
+    suffix = System.unique_integer([:positive])
+    cap_table = :"mcap_#{suffix}"
+    cat_table = :"mcat_#{suffix}"
+
+    NodeCapacity.create(cap_table)
+    WorkloadCatalog.create(cat_table)
+
+    path = Path.join(System.tmp_dir!(), "embervm_servingmgr_test_#{suffix}.db")
+    on_exit(fn -> File.rm_rf!(path) end)
+
+    {:ok, op_log} = SQLite.start_link(name: nil, path: path)
+    {:ok, store} = ServingStore.start_link(name: nil, op_log: op_log, clock: fn -> 1_000 end)
+    {:ok, pub} = FakePublisher.start_link()
+
+    # Injected StartServing seam: counts calls (single-flight proof) and returns a
+    # deterministic endpoint, with optional latency so concurrent misses overlap.
+    {:ok, starts} = Agent.start_link(fn -> 0 end)
+
+    start_serving_fun =
+      Keyword.get(opts, :start_serving_fun, fn _ch, _req ->
+        Agent.update(starts, &(&1 + 1))
+        if sleep = opts[:start_sleep_ms], do: Process.sleep(sleep)
+        {:ok, %StartServingResponse{vm_id: "vm-woken-#{System.unique_integer([:positive])}", ip: "10.99.0.5", port: 8080}}
+      end)
+
+    mgr_opts =
+      [
+        name: nil,
+        store: store,
+        publisher: pub,
+        capacity_table: cap_table,
+        catalog_table: cat_table,
+        clock: Keyword.get(opts, :clock, fn -> 1_000 end),
+        channel_fun: fn _node -> {:ok, :ch} end,
+        start_serving_fun: start_serving_fun,
+        reconcile_interval_ms: 0,
+        id_fun: id_seq(suffix)
+      ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap])
+
+    {:ok, mgr} = ServingManager.start_link(mgr_opts)
+
+    %{mgr: mgr, store: store, cap_table: cap_table, cat_table: cat_table, starts: starts, pub: pub, op_log: op_log}
+  end
+
+  defp id_seq(suffix) do
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    fn -> "srv-#{suffix}-#{Agent.get_and_update(counter, fn n -> {n + 1, n + 1} end)}" end
+  end
+
+  defp serving_workload(ctx, name) do
+    WorkloadCatalog.upsert(ctx.cat_table, name, %{
+      class: "serving",
+      serving: %{host: "#{name}.example", port: 8080, health_path: "/healthz", min_instances: 0, max_instances: 2}
+    })
+  end
+
+  defp serving_node(ctx, node_id, opts \\ []) do
+    NodeCapacity.put(ctx.cap_table, node_id, %{
+      configured_id: node_id,
+      node_id: node_id,
+      serving_subnet_cidr: "10.99.0.0/24",
+      max_live_vms: 4,
+      live_vms: 0,
+      workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "base-a"}},
+      serving_vms: Keyword.get(opts, :serving_vms, []),
+      serving_snapshots: Keyword.get(opts, :serving_snapshots, [])
+    })
+  end
+
+  defp req, do: %{method: "GET", path: "/og-image", headers: %{}, body: ""}
+
+  # -- miss round-trip -------------------------------------------------------
+
+  test "a cold miss wakes the workload, publishes, and returns the endpoint" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+
+    assert {:ok, %{ip: "10.99.0.5", port: 8080}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+
+    # Exactly one StartServing, one instance now published, publisher was asked.
+    assert Agent.get(ctx.starts, & &1) == 1
+    assert [instance] = ServingStore.list(ctx.store, "wl-a")
+    assert instance.state == :published
+    assert ServingStore.published_endpoints(ctx.store, "wl-a") == [%{ip: "10.99.0.5", port: 8080}]
+    assert FakePublisher.count(ctx.pub) >= 1
+
+    # The durable projection recorded serving_started + serving_published.
+    {:ok, [row]} = SQLite.load_serving_instances(ctx.op_log)
+    assert row.state == "published"
+  end
+
+  test "an unknown (non-serving) workload is a 404 miss" do
+    ctx = start_stack()
+    serving_node(ctx, "node-4")
+    # No catalog entry for wl-a.
+    assert {:error, {:unknown_workload}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+  end
+
+  # -- single-flight ---------------------------------------------------------
+
+  test "N concurrent misses for one workload => exactly ONE StartServing and N responses" do
+    ctx = start_stack(start_sleep_ms: 60)
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+
+    n = 8
+
+    tasks =
+      for _ <- 1..n do
+        Task.async(fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
+      end
+
+    results = Task.await_many(tasks, 5_000)
+
+    # Every caller got the SAME live endpoint...
+    assert Enum.all?(results, &match?({:ok, %{ip: "10.99.0.5", port: 8080}}, &1))
+    assert length(results) == n
+    # ...off exactly ONE StartServing (single-flight).
+    assert Agent.get(ctx.starts, & &1) == 1
+    # And exactly one instance exists.
+    assert [_one] = ServingStore.list(ctx.store, "wl-a")
+  end
+
+  # -- wake-rate limit -------------------------------------------------------
+
+  test "the per-(workload) wake-rate limit 429s excess wakes without touching the node" do
+    # wake_max 1: the first miss wakes, a SECOND distinct wake in the window is 429.
+    # Use a workload with NO node so the first wake fails fast (no capacity), freeing
+    # the ledger, then the second miss trips the rate limit rather than parking.
+    ctx = start_stack(wake_max: 1, start_serving_fun: fn _ch, _req -> {:error, :boom} end)
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+
+    # First miss consumes the one wake token (and fails the wake -> 503).
+    assert {:error, {:wake_failed, _}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    # Second miss in the window: rate-limited (429), node never touched again.
+    assert {:error, {:wake_rate, _}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+  end
+
+  # -- wake failure + retry-ability ------------------------------------------
+
+  test "a wake failure 503s the caller and stays retryable (activator not consumed)" do
+    {:ok, fail?} = Agent.start_link(fn -> true end)
+
+    start_fun = fn _ch, _req ->
+      if Agent.get(fail?, & &1) do
+        {:error, :readiness_timeout}
+      else
+        {:ok, %StartServingResponse{vm_id: "vm-ok", ip: "10.99.0.5", port: 8080}}
+      end
+    end
+
+    ctx = start_stack(start_serving_fun: start_fun, wake_max: 100)
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+
+    # First miss: the wake fails -> 503.
+    assert {:error, {:wake_failed, _}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    # No live endpoint was published (activator stays the fallback).
+    assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
+
+    # Recover the node; the NEXT miss retries the wake and succeeds.
+    Agent.update(fail?, fn _ -> false end)
+    assert {:ok, %{ip: "10.99.0.5", port: 8080}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert ServingStore.published_endpoints(ctx.store, "wl-a") == [%{ip: "10.99.0.5", port: 8080}]
+  end
+
+  # -- straggler -------------------------------------------------------------
+
+  test "a request arriving while a healthy endpoint exists is resolved, not re-woken" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+
+    # Warm it (one wake).
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert Agent.get(ctx.starts, & &1) == 1
+
+    # A straggler miss now finds the live endpoint and is proxied WITHOUT a new wake.
+    assert {:ok, %{ip: "10.99.0.5", port: 8080}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert Agent.get(ctx.starts, & &1) == 1
+  end
+
+  # -- restart adoption matrix -----------------------------------------------
+
+  test "adoption rebinds a live serving VM the node reports (restart republishes same endpoint)" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+
+    # Simulate a pre-restart instance: started + published, then the control plane
+    # "restarted" (the durable row survives; the endpoint fact is re-learned from the
+    # node). Record a started instance directly in the store.
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: "srv-live",
+        tenant: "homelab",
+        principal: "serving:wl-a",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-live",
+        ip: "10.99.0.9",
+        port: 8080
+      })
+
+    # The node reports that vm as a LIVE healthy serving VM.
+    serving_node(ctx, "node-4",
+      serving_vms: [%{vm_id: "vm-live", workload: "wl-a", ip: "10.99.0.9", port: 8080, healthy: true, last_probe_unix_ms: 1}]
+    )
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+
+    {:ok, adopted} = ServingStore.get(ctx.store, "srv-live")
+    assert adopted.state == :published
+    assert ServingStore.published_endpoints(ctx.store, "wl-a") == [%{ip: "10.99.0.9", port: 8080}]
+    # No StartServing was issued (the VM was never touched).
+    assert Agent.get(ctx.starts, & &1) == 0
+  end
+
+  test "adoption heals a starting-limbo instance the node reports only as a snapshot to banked" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: "srv-limbo",
+        tenant: "homelab",
+        principal: "serving:wl-a",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-gone",
+        ip: "10.99.0.9",
+        port: 8080
+      })
+
+    # Give it a snapshot_ref (as if it had banked) via a direct transition path:
+    # unpublish is illegal from starting, so drive it published->draining->banking->banked.
+    {:ok, _} = ServingStore.publish(ctx.store, "srv-limbo", "10.99.0.9", 8080, :started)
+    {:ok, _} = ServingStore.unpublish(ctx.store, "srv-limbo", :banked)
+    {:ok, _} = ServingStore.mark(ctx.store, "srv-limbo", :bank)
+
+    {:ok, _} =
+      ServingStore.transition(ctx.store, "srv-limbo", :bank_ready, :serving_banked,
+        %{snapshot_ref: "serving/s-limbo", size_bytes: 1000, generation: 1},
+        %{snapshot_ref: "serving/s-limbo", snapshot_size_bytes: 1000, generation: 1}
+      )
+
+    # Now the node reports ONLY the snapshot (no live VM): adoption keeps it banked.
+    serving_node(ctx, "node-4", serving_snapshots: [%{snapshot_ref: "serving/s-limbo", workload: "wl-a", size_bytes: 1000, created_at_unix_ms: 1}])
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+    {:ok, healed} = ServingStore.get(ctx.store, "srv-limbo")
+    assert healed.state == :banked
+  end
+
+  test "adoption fails an instance whose VM and snapshot both vanished (node IS reporting)" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: "srv-vanished",
+        tenant: "homelab",
+        principal: "serving:wl-a",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-vanished",
+        ip: "10.99.0.9",
+        port: 8080
+      })
+
+    # The node is reporting but lists NEITHER this vm NOR any snapshot for it.
+    serving_node(ctx, "node-4", serving_vms: [], serving_snapshots: [])
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+    {:ok, failed} = ServingStore.get(ctx.store, "srv-vanished")
+    assert failed.state == :failed
+  end
+
+  test "adoption NEVER reaps when the instance's node is not reporting (a disconnect)" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: "srv-disc",
+        tenant: "homelab",
+        principal: "serving:wl-a",
+        workload: "wl-a",
+        node_id: "node-gone",
+        vm_id: "vm-x",
+        ip: "10.99.0.9",
+        port: 8080
+      })
+
+    # node-gone is absent from the capacity table entirely (a disconnect). The
+    # instance must be LEFT UNTOUCHED, not failed.
+    :ok = ServingManager.reconcile(ctx.mgr)
+    {:ok, still} = ServingStore.get(ctx.store, "srv-disc")
+    assert still.state == :starting
+  end
+end

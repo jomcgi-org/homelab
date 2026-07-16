@@ -261,11 +261,15 @@ defmodule Embervm.EndpointPublisher do
             version: version
           )
 
-          # Roll the counter back so the retry re-uses this version (the sidecar
-          # never accepted it, so re-using it is still strictly greater than the
-          # last ACCEPTED version there). Endpoints keep serving on Envoy's
-          # last-ACKed config until the retry lands.
-          rollback_version(acc, node_id)
+          # ALWAYS-INCREMENT: the counter is NOT rolled back on a failed PUT, so the
+          # next flush strictly ADVANCES the version. Rolling back would re-send the
+          # same version, which the sidecar 409s if the "failed" PUT was actually
+          # ACCEPTED but its HTTP ACK was lost (accept-then-lost-ACK) -- a wedge that
+          # only the periodic re-push could unstick. A gap in the version sequence is
+          # harmless: monotonicity needs only strictly-greater, and the next flush's
+          # higher version is accepted whether or not this PUT landed. Endpoints keep
+          # serving on Envoy's last-ACKed config until the retry lands.
+          acc
       end
     end)
   end
@@ -390,13 +394,6 @@ defmodule Embervm.EndpointPublisher do
     counter = Map.get(state.counters, node_id, 0) + 1
     state = %{state | counters: Map.put(state.counters, node_id, counter)}
     {format_version(state.epoch, counter), state}
-  end
-
-  # Undo the counter bump for a failed PUT so the retry re-uses the same (still
-  # strictly-greater-than-last-accepted) version.
-  defp rollback_version(state, node_id) do
-    counter = max(Map.get(state.counters, node_id, 1) - 1, 0)
-    %{state | counters: Map.put(state.counters, node_id, counter)}
   end
 
   @doc """

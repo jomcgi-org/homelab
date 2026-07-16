@@ -151,6 +151,18 @@ defmodule Embervm.Application do
       # xds http port are wired from the chart.
       {Embervm.ServingStore, []},
       {Embervm.EndpointPublisher, endpoint_publisher_opts()},
+      # The activator (R3, Task 8): the serving miss brain. It is the fallback
+      # endpoint of an empty serve|<workload> cluster (a request the node Envoy
+      # routes to the control plane IS a miss), single-flights the wake
+      # (StartServing relight or cold create), publishes the fresh endpoint via the
+      # EndpointPublisher, and resolves the parked caller so the router proxies the
+      # one miss request to the VM. Placed AFTER ServingStore + EndpointPublisher (it
+      # mutates the store and asks the publisher to re-push) and BEFORE the Router
+      # (whose activator route calls it). Its adoption reconcile runs on boot +
+      # timer, reconciling live serving VMs / banked snapshots from node facts so a
+      # control-plane restart republishes exactly the same endpoints without touching
+      # any VM. With no serving node wired, a miss denies :no_capacity.
+      {Embervm.ServingManager, serving_manager_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -387,6 +399,42 @@ defmodule Embervm.Application do
     case trimmed_env("EMBERVM_SERVING_REPUSH_MS") do
       "" -> []
       raw -> [repush_ms: String.to_integer(raw)]
+    end
+  end
+
+  # ServingManager (activator) config: the wake-rate limit + parked cap (chart
+  # values) and the adoption reconcile cadence. Defaults keep the reconcile timer ON
+  # in production; the module defaults the caps (30/min wake, 64 parked).
+  defp serving_manager_opts do
+    [reconcile_interval_ms: serving_reconcile_interval_ms()] ++ serving_wake_opts()
+  end
+
+  # Serving adoption reconcile cadence (EMBERVM_SERVING_RECONCILE_INTERVAL_MS);
+  # default 10s, matching the session reconcile tempo so a restart's endpoint
+  # re-derivation lands fast.
+  defp serving_reconcile_interval_ms do
+    case trimmed_env("EMBERVM_SERVING_RECONCILE_INTERVAL_MS") do
+      "" -> 10_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  # Serving wake-rate + parked cap (EMBERVM_SERVING_WAKE_MAX / _WINDOW_MS /
+  # _PARK_CAP); unset uses the ServingManager module defaults. A wake_max of 0
+  # disables the wake-rate limit.
+  defp serving_wake_opts do
+    [
+      wake_max: int_env_or_nil("EMBERVM_SERVING_WAKE_MAX"),
+      wake_window_ms: int_env_or_nil("EMBERVM_SERVING_WAKE_WINDOW_MS"),
+      park_cap: int_env_or_nil("EMBERVM_SERVING_PARK_CAP")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp int_env_or_nil(name) do
+    case trimmed_env(name) do
+      "" -> nil
+      raw -> String.to_integer(raw)
     end
   end
 

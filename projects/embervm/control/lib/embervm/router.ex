@@ -50,6 +50,10 @@ defmodule Embervm.Router do
   @max_body 8_388_608
   @guest_header_prefix "x-ember-guest-"
   @path_header "x-ember-guest-path"
+  # The header the serving route injects so the activator resolves the missed
+  # workload without parsing hosts (standing decision 3). Its presence on an
+  # otherwise-unmatched request is what marks the request as a serving miss.
+  @workload_header "x-ember-workload"
   # Default task-record lifetime; Task 5 will source this from the workload's
   # invocation.resultTtlSeconds once the catalog exists.
   @default_task_ttl_ms 86_400_000
@@ -119,8 +123,22 @@ defmodule Embervm.Router do
     handle_get_serving(conn, name)
   end
 
+  # The activator fallback (R3, Task 8): the catch-all is the front-end the node
+  # Envoy routes a MISS to (the fallback endpoint of an empty serve|<workload>
+  # cluster). It is identified by the `x-ember-workload` request header the serving
+  # route injects; a request carrying that header IS a miss signal for that
+  # workload (standing decision 1). Any OTHER unmatched path is a genuine 404. This
+  # is deliberately the last route so it never shadows /healthz, /v1/*, or the
+  # management surface: only a request that matched nothing above AND carries the
+  # activator header reaches the miss path.
   match _ do
-    send_resp(conn, 404, "")
+    case header_value(conn, @workload_header) do
+      workload when is_binary(workload) and workload != "" ->
+        handle_activator_miss(conn, workload)
+
+      _ ->
+        send_resp(conn, 404, "")
+    end
   end
 
   # -- plugs -----------------------------------------------------------------
@@ -829,6 +847,91 @@ defmodule Embervm.Router do
 
   defp serving_store, do: Application.get_env(:embervm, :serving_store_mod, Embervm.ServingStore)
   defp serving_store_server, do: Application.get_env(:embervm, :serving_store, Embervm.ServingStore)
+
+  # The activator miss handler (front-end only, no management auth): read the
+  # ORIGINAL request (method/path/headers/body verbatim, under the 8 MiB envelope
+  # cap), ask the ServingManager to wake the workload (single-flight), and on
+  # `{:ok, endpoint}` PROXY this request to the woken VM's ip:port streaming the
+  # response back. This is the ONE control-plane touch of a serving request; every
+  # subsequent request for a now-live workload reaches the VM node-Envoy-direct.
+  # The wake-rate/parked caps are keyed by the workload (activator traffic is
+  # anonymous end-user traffic with no bearer principal), passed as the manager's
+  # principal so the audit ops attribute to the workload.
+  defp handle_activator_miss(conn, workload) do
+    case read_capped_body(conn) do
+      {:ok, body, conn} ->
+        req = %{
+          method: conn.method,
+          path: activator_path(conn),
+          headers: activator_headers(conn),
+          body: body
+        }
+
+        case serving_manager().miss(serving_manager_server(), workload, req, activator_principal(workload)) do
+          {:ok, endpoint} ->
+            proxy_to_serving_vm(conn, endpoint, req)
+
+          {:error, {:wake_rate, _}} ->
+            send_json(conn, 429, %{error: "serving wake-rate limit exceeded", reason: "wake_rate", workload: workload, retryable: true})
+
+          {:error, {:park_full, _}} ->
+            send_json(conn, 503, %{error: "serving parked-request cap exceeded", reason: "park_full", workload: workload, retryable: true})
+
+          {:error, {:wake_failed, reason}} ->
+            send_json(conn, 503, %{error: "serving wake failed", reason: inspect(reason), workload: workload, retryable: true})
+
+          {:error, {:unknown_workload}} ->
+            send_json(conn, 404, %{error: "unknown serving workload", workload: workload, retryable: false})
+
+          {:error, reason} ->
+            send_json(conn, 503, %{error: "serving miss failed", reason: inspect(reason), workload: workload, retryable: true})
+        end
+
+      {:error, :too_large} ->
+        send_json(conn, 413, %{error: "request body exceeds 8 MiB", retryable: false})
+    end
+  end
+
+  # Stream the request to the serving VM and the response back. A pre-first-byte
+  # proxy error (VM unreachable) becomes a 502; once streaming has begun the
+  # ServingProxy owns the (already-committed) connection.
+  defp proxy_to_serving_vm(conn, endpoint, req) do
+    case Embervm.ServingProxy.proxy(conn, endpoint, req) do
+      {:ok, sent_conn} ->
+        sent_conn
+
+      {:error, reason} ->
+        send_json(conn, 502, %{error: "serving proxy failed", reason: inspect(reason), retryable: true})
+    end
+  end
+
+  # The guest path the activator proxies to: the ORIGINAL request path (the node
+  # Envoy routed the whole request verbatim, so the guest sees its own path), with
+  # the query string preserved.
+  defp activator_path(conn) do
+    case conn.query_string do
+      "" -> conn.request_path
+      nil -> conn.request_path
+      qs -> conn.request_path <> "?" <> qs
+    end
+  end
+
+  # Every ORIGINAL request header is forwarded to the guest EXCEPT the activator's
+  # own routing header (x-ember-workload is control-plane framing, not the guest's).
+  # The ServingProxy strips framing/hop-by-hop on top of this.
+  defp activator_headers(conn) do
+    conn.req_headers
+    |> Enum.reject(fn {k, _v} -> String.downcase(k) == @workload_header end)
+    |> Map.new(fn {k, v} -> {String.downcase(k), v} end)
+  end
+
+  # Activator traffic is anonymous end-user traffic (no bearer principal), so the
+  # wake-rate limit + audit ops are keyed by the workload itself: a serving
+  # workload can be woken at most wake_max times per window regardless of caller.
+  defp activator_principal(workload), do: "serving:#{workload}"
+
+  defp serving_manager, do: Application.get_env(:embervm, :serving_manager_mod, Embervm.ServingManager)
+  defp serving_manager_server, do: Application.get_env(:embervm, :serving_manager, Embervm.ServingManager)
 
   defp session_view(session) do
     %{

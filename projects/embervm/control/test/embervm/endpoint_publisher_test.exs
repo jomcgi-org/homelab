@@ -300,7 +300,7 @@ defmodule Embervm.EndpointPublisherTest do
 
   # -- PUT failure never blocks, retries --------------------------------------
 
-  test "a PUT failure does not crash and re-uses the version on the next flush" do
+  test "a PUT failure does not crash and STRICTLY ADVANCES the version on the next flush" do
     {:ok, fail?} = Agent.start_link(fn -> true end)
     {:ok, seen} = Agent.start_link(fn -> [] end)
 
@@ -322,13 +322,17 @@ defmodule Embervm.EndpointPublisherTest do
     :ok = EndpointPublisher.flush(ctx.pub)
     assert Process.alive?(ctx.pub)
 
-    # Recover the sidecar; the retry re-uses the SAME version (the failed one was
-    # never accepted), still strictly greater than the sidecar's last-accepted.
+    # Recover the sidecar; the retry STRICTLY ADVANCES the version. Always-increment
+    # (never roll back a failed PUT's counter): if the "failed" PUT was actually
+    # accepted but its ACK was lost, re-sending the same version would 409; a higher
+    # version is accepted regardless of whether the prior PUT landed.
     Agent.update(fail?, fn _ -> false end)
     :ok = EndpointPublisher.flush(ctx.pub)
 
     versions = Agent.get(seen, & &1) |> Enum.map(fn {_n, v} -> v end)
     assert [v1, v2] = versions
-    assert v1 == v2
+    assert v2 > v1
+    # Both fixed-width so the ordering is lexical == numeric.
+    assert String.length(v1) == 40 and String.length(v2) == 40
   end
 end
