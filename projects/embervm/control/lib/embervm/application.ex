@@ -135,6 +135,22 @@ defmodule Embervm.Application do
       {Registry, keys: :unique, name: Embervm.SessionRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Embervm.SessionSupervisor},
       {Embervm.SessionManager, session_manager_opts()},
+      # Serving lifecycle (R3). The ServingStore (ETS hot set over the durable
+      # `serving_instances` projection, rebuilt on boot) comes first; the
+      # EndpointPublisher (the SOLE writer to the xDS sidecar, deriving the fan-out
+      # from ServingStore facts + the WorkloadCatalog) next. Placed AFTER the
+      # WorkloadWatcher (the publisher reads serving-class catalog entries for
+      # routes) and NodeRegistry (the publisher derives target serving nodes from
+      # NodeCapacity's serving_subnet_cidr facts), and BEFORE the Router (its
+      # GET /v1/serving handler reads the store). Under :rest_for_one a ServingStore
+      # restart bounces the publisher and Router, which rebuild from the durable
+      # projection and re-derive the fan-out. The publisher does one synchronous
+      # boot publish before readiness, so a control-plane restart republishes the
+      # rebuilt endpoints before any request can arrive; with no serving node wired
+      # it pushes nothing (a clean no-op). The activator endpoint (Task 8) and the
+      # xds http port are wired from the chart.
+      {Embervm.ServingStore, []},
+      {Embervm.EndpointPublisher, endpoint_publisher_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -336,6 +352,42 @@ defmodule Embervm.Application do
 
     [wake_max: max, wake_window_ms: window]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  # EndpointPublisher config: the debounce/re-push cadences and the activator
+  # fallback endpoint. The activator endpoint (the control plane's own
+  # request-serving listener the node Envoy falls back to for a cold workload) is
+  # wired in Task 8; until then it is nil, which renders an empty cluster for a
+  # workload with no live instance (Envoy 503s until one publishes). The xds http
+  # port the publisher PUTs to is read from EMBERVM_XDS_HTTP_PORT at request time
+  # (see EndpointPublisher.default_put), matching the chart's sidecar wiring, so it
+  # is not passed here.
+  defp endpoint_publisher_opts do
+    [activator_endpoint: activator_endpoint()] ++ repush_opt()
+  end
+
+  # The activator endpoint the node Envoy routes to when a serving workload has no
+  # healthy published instance, from EMBERVM_SERVING_ACTIVATOR_IP + _PORT (Task 8
+  # wires the chart values). Unset -> nil (empty-cluster fallback).
+  defp activator_endpoint do
+    ip = trimmed_env("EMBERVM_SERVING_ACTIVATOR_IP")
+    port = trimmed_env("EMBERVM_SERVING_ACTIVATOR_PORT")
+
+    if ip != "" and port != "" do
+      %{ip: ip, port: String.to_integer(port)}
+    else
+      nil
+    end
+  end
+
+  # The publisher's level-triggered re-push cadence (EMBERVM_SERVING_REPUSH_MS),
+  # the safety net that makes a sidecar-container restart self-healing; default
+  # 45s (module default). A 0 disables the periodic re-push (change-driven only).
+  defp repush_opt do
+    case trimmed_env("EMBERVM_SERVING_REPUSH_MS") do
+      "" -> []
+      raw -> [repush_ms: String.to_integer(raw)]
+    end
   end
 
   defp queue_depth_cap do

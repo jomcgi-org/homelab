@@ -113,6 +113,12 @@ defmodule Embervm.Router do
     handle_destroy_session(conn, id)
   end
 
+  # -- serving routes (R3, management introspection) -------------------------
+
+  get "/v1/serving/:name" do
+    handle_get_serving(conn, name)
+  end
+
   match _ do
     send_resp(conn, 404, "")
   end
@@ -772,6 +778,57 @@ defmodule Embervm.Router do
 
     send_json(conn, 410, %{error: "session gone", reason: reason, session_id: session_id, retryable: false})
   end
+
+  # -- serving handler (R3) --------------------------------------------------
+
+  # GET /v1/serving/:name (management auth): the serving workload's instances,
+  # their states, the published endpoints currently in the fan-out, and the
+  # publisher's generation (the per-node xDS version counter). Read-only
+  # operational introspection, behind the same /v1 management auth as every other
+  # non-session route. A workload with no instances returns an empty list (200),
+  # not a 404: the workload may be validly defined-but-cold.
+  defp handle_get_serving(conn, workload) do
+    instances = serving_store().list(serving_store_server(), workload)
+    published = Enum.filter(instances, &(&1.state == :published and &1.healthy))
+
+    send_json(conn, 200, %{
+      workload: workload,
+      instances: Enum.map(instances, &serving_instance_view/1),
+      published_endpoints: Enum.map(published, &%{ip: &1.ip, port: &1.port}),
+      generation: serving_generation(workload)
+    })
+  end
+
+  defp serving_instance_view(instance) do
+    %{
+      instance_id: instance.instance_id,
+      workload: instance.workload,
+      state: to_string(instance.state),
+      healthy: instance.healthy,
+      node_id: instance.node_id,
+      ip: instance.ip,
+      port: instance.port,
+      generation: instance.generation,
+      created_at: instance.created_at,
+      last_active_at: instance.last_active_at,
+      updated_at: instance.updated_at,
+      terminal_reason: instance.terminal_reason
+    }
+  end
+
+  # The publisher's current per-node xDS version for this workload's fan-out is
+  # not workload-scoped (the version is per NODE, one snapshot carries all
+  # workloads), so "generation" here is the max ETS-row generation among the
+  # workload's instances: a monotonic-ish marker an operator can watch advance
+  # across bank/relight cycles. A best-effort read; absent instances read 0.
+  defp serving_generation(workload) do
+    serving_store().list(serving_store_server(), workload)
+    |> Enum.map(&(&1.generation || 0))
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp serving_store, do: Application.get_env(:embervm, :serving_store_mod, Embervm.ServingStore)
+  defp serving_store_server, do: Application.get_env(:embervm, :serving_store, Embervm.ServingStore)
 
   defp session_view(session) do
     %{
