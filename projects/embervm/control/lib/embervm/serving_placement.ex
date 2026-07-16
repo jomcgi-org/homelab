@@ -101,6 +101,31 @@ defmodule Embervm.ServingPlacement do
     end
   end
 
+  @doc """
+  The serving_image_ref a `node_id` currently reports for `workload` (the cold-boot
+  handler artifact of the node's CURRENT-runtime serving base), or `nil` when the
+  node is absent from the capacity table or reports no ref for the workload yet.
+
+  This is the turnover key (D-R3.11.3 follow-up): a banked serving snapshot's
+  `base_snapshot_ref` records the ref it was BORN from, so comparing it to this
+  current ref tells whether a relight would resume a stale rootfs/handler (old code
+  after a runtime roll). A `nil`/empty current ref means the new base is not built
+  yet, so callers fail OPEN (keep the snapshot relightable for warmth).
+  """
+  @spec current_serving_image_ref(atom(), term(), String.t()) :: String.t() | nil
+  def current_serving_image_ref(capacity_table \\ NodeCapacity.table(), node_id, workload) do
+    case NodeCapacity.fetch(capacity_table, node_id) do
+      {:ok, fact} ->
+        fact
+        |> Map.get(:workloads, %{})
+        |> Map.get(workload, %{})
+        |> Map.get(:serving_image_ref)
+
+      :error ->
+        nil
+    end
+  end
+
   # -- internals -------------------------------------------------------------
 
   # Serving-capable: the node reports a serving subnet (the same predicate the

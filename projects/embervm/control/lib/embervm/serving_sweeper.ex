@@ -248,6 +248,7 @@ defmodule Embervm.ServingSweeper do
       |> arm_idle_banks(now)
       |> sweep_lifetime(now)
       |> sweep_banked_ttl(now)
+      |> sweep_stale_lineage(now)
       |> write_serving_status()
     end
   end
@@ -780,6 +781,40 @@ defmodule Embervm.ServingSweeper do
           acc
       end
     end)
+  end
+
+  # -- stale-base lineage GC (D-R3.11.3 follow-up) ---------------------------
+
+  # Evict banked snapshots born from a SUPERSEDED base: after a runtime roll the node
+  # reports a new serving_image_ref, so a snapshot whose base_snapshot_ref no longer
+  # matches would relight OLD code. pick_bankable_instance already refuses to relight
+  # these; this pass reclaims them so they do not squat node disk indefinitely (the
+  # accumulation the R3 serving drill surfaced). Only a NON-EMPTY current ref that
+  # DIFFERS marks staleness: an absent ref means the new base is not built yet, so the
+  # snapshot is kept (fail-open, matching the relight lineage check). Live instances
+  # are untouched (only :banked rows), and the node's evict guard already refuses to
+  # remove a snapshot a live VM was relit from.
+  defp sweep_stale_lineage(state, _now) do
+    ServingStore.all(state.store)
+    |> Enum.filter(&(&1.state == :banked))
+    |> Enum.reduce(state, fn instance, acc ->
+      if stale_lineage?(acc.capacity_table, instance) do
+        evict_banked(acc, instance, :stale_base)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp stale_lineage?(capacity_table, instance) do
+    case Embervm.ServingPlacement.current_serving_image_ref(
+           capacity_table,
+           instance.node_id,
+           instance.workload
+         ) do
+      ref when is_binary(ref) and ref != "" -> ref != instance.base_snapshot_ref
+      _ -> false
+    end
   end
 
   # -- forced roll -----------------------------------------------------------

@@ -389,18 +389,41 @@ defmodule Embervm.ServingManager do
     end
   end
 
-  # A banked instance for the workload whose snapshot a node still reports: the
-  # freshest wins. Returns {:ok, instance, node_id} or :none.
+  # A banked instance for the workload whose snapshot a node still reports AND whose
+  # base lineage is still current: the freshest wins. Returns {:ok, instance, node_id}
+  # or :none. The lineage check (D-R3.11.3 follow-up) rejects a snapshot born from a
+  # SUPERSEDED base: after a runtime roll the node reports a new serving_image_ref, and
+  # relighting an old-lineage snapshot would resume the old rootfs/handler (old code).
+  # A skipped stale instance is swept/evicted separately; here we just refuse to relight
+  # it, so the wake falls through to a cold boot on the current base.
   defp pick_bankable_instance(state, workload) do
     ServingStore.list(state.store, workload)
     |> Enum.filter(&(&1.state == :banked))
     |> Enum.sort_by(& &1.updated_at, :desc)
     |> Enum.find_value(:none, fn instance ->
       case ServingPlacement.node_for_relight(instance, state.capacity_table) do
-        {:ok, node_id} -> {:ok, instance, node_id}
-        {:error, :snapshot_lost} -> false
+        {:ok, node_id} ->
+          if lineage_current?(state.capacity_table, node_id, instance) do
+            {:ok, instance, node_id}
+          else
+            false
+          end
+
+        {:error, :snapshot_lost} ->
+          false
       end
     end)
+  end
+
+  # Whether a banked instance's base lineage still matches the node's CURRENT
+  # serving_image_ref for the workload. Fail-OPEN when the node reports no current ref
+  # yet (nil/empty): the new base is not built, so the existing snapshot stays
+  # relightable for warmth rather than forcing a cold boot with no base to boot from.
+  defp lineage_current?(capacity_table, node_id, instance) do
+    case ServingPlacement.current_serving_image_ref(capacity_table, node_id, instance.workload) do
+      ref when is_binary(ref) and ref != "" -> ref == instance.base_snapshot_ref
+      _ -> true
+    end
   end
 
   defp relight_request(entry, instance) do

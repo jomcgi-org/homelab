@@ -447,6 +447,91 @@ defmodule Embervm.ServingSweeperTest do
     assert instance.terminal_reason == "idle_ttl"
   end
 
+  # -- stale-base lineage GC (D-R3.11.3 follow-up) ---------------------------
+
+  # A node that reports a CURRENT serving_image_ref for the workload (a runtime roll
+  # rebuilt the base to a new key).
+  defp serving_node_with_image(ctx, node_id, workload, serving_image_ref) do
+    NodeCapacity.put(ctx.cap_table, node_id, %{
+      configured_id: node_id,
+      node_id: node_id,
+      serving_subnet_cidr: "10.99.0.0/24",
+      max_live_vms: 8,
+      live_vms: 0,
+      workloads: %{
+        workload => %{base_state: :BASE_BUILD_STATE_READY, serving_image_ref: serving_image_ref}
+      },
+      serving_vms: [],
+      serving_snapshots: []
+    })
+  end
+
+  # A banked instance born from base_snapshot_ref (its lineage) with snapshot_ref.
+  defp banked_instance(ctx, id, workload, base_snapshot_ref, snapshot_ref) do
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: id,
+        tenant: "homelab",
+        principal: "system:serving:#{workload}",
+        workload: workload,
+        node_id: "node-4",
+        vm_id: "vm-#{id}",
+        ip: "10.99.0.5",
+        port: 8080,
+        base_snapshot_ref: base_snapshot_ref
+      })
+
+    {:ok, _} = ServingStore.publish(ctx.store, id, "10.99.0.5", 8080, :started)
+    {:ok, _} = ServingStore.unpublish(ctx.store, id, :bank)
+    {:ok, _} = ServingStore.mark(ctx.store, id, :bank)
+
+    {:ok, _} =
+      ServingStore.transition(ctx.store, id, :bank_ready, :serving_banked,
+        %{snapshot_ref: snapshot_ref, size_bytes: 10, generation: 1},
+        %{snapshot_ref: snapshot_ref, snapshot_size_bytes: 10, generation: 1, vm_id: nil}
+      )
+
+    id
+  end
+
+  test "stale-lineage GC evicts a banked snapshot whose base is superseded, keeps the current one" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a", %{banked_ttl_seconds: 1_000_000})
+    # The node now reports the CURRENT base "base:new" (a runtime roll rebuilt it).
+    serving_node_with_image(ctx, "node-4", "wl-a", "base:new")
+
+    banked_instance(ctx, "srv-old", "wl-a", "base:old", "snap-old")
+    banked_instance(ctx, "srv-new", "wl-a", "base:new", "snap-new")
+
+    set_scrape(ctx, {:ok, %{}})
+    ServingSweeper.sweep(ctx.sweeper)
+
+    # The stale-lineage snapshot is evicted with reason stale_base.
+    {:ok, stale} = ServingStore.get(ctx.store, "srv-old")
+    assert stale.state == :evicted
+    assert stale.terminal_reason == "stale_base"
+
+    # The current-lineage snapshot survives (not evicted, still relightable).
+    {:ok, current} = ServingStore.get(ctx.store, "srv-new")
+    assert current.state == :banked
+  end
+
+  test "stale-lineage GC fails open when the node reports no current serving_image_ref yet" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a", %{banked_ttl_seconds: 1_000_000})
+    # The node reports NO serving_image_ref for the workload (new base not built yet).
+    serving_node(ctx, "node-4")
+
+    banked_instance(ctx, "srv-1", "wl-a", "base:old", "snap-1")
+
+    set_scrape(ctx, {:ok, %{}})
+    ServingSweeper.sweep(ctx.sweeper)
+
+    # Kept, not evicted: with no current ref to compare against, warmth wins.
+    {:ok, instance} = ServingStore.get(ctx.store, "srv-1")
+    assert instance.state == :banked
+  end
+
   # -- forced roll -----------------------------------------------------------
 
   test "forced roll drains + destroys live instances and evicts banked ones" do
