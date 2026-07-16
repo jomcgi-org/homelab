@@ -119,9 +119,9 @@ Breaking changes: add `!` after type/scope — `feat!: redesign auth token forma
 - **Security changes**: Read `docs/security.md` FIRST
 - **Public tier changes** (jomcgi.dev pages, monolith-public, `public_reader` data): Read `docs/runbooks/public-tier-checklist.md` FIRST
 - **ArgoCD OutOfSync / stuck rollout / "is my change live?"**: Read `docs/runbooks/argocd-outofsync.md`
-- **New services**: Read `docs/contributing.md` + `docs/services.md`
+- **New services**: Read `docs/contributing.md` + `docs/reference/services.md`
 - **Observability work**: Read `docs/observability.md`
-- **Alerting work**: Read `docs/observability-alerting.md`
+- **Alerting work**: Read `docs/reference/observability-alerting.md`
 - **Operator changes**: Read `projects/operators/best-practices.md`
 - **Design proposals**: Check `docs/decisions/` for ADRs (numbered per category)
 
