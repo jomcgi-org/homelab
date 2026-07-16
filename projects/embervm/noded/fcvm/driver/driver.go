@@ -305,6 +305,15 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	if cb.handlerDiskPath != "" {
 		args += fmt.Sprintf(" ember.handler_disk=%s ember.handler_zip_bytes=%d", handlerDiskDevice, cb.handlerZipBytes)
 	}
+	// Stateful volume (R4): signal guest-init to mkfs-if-blank and mount the
+	// writable volume drive at the workload's declared mount path. ember.volume_dev
+	// names the fixed device convention (statefulVolumeDevice); ember.volume_mount
+	// is the guest path from the CR's volumeMountPath, threaded verbatim (its
+	// content is opaque to the daemon). Only emitted when a volume is attached;
+	// every other boot class carries neither token.
+	if cb.volumeDiskPath != "" {
+		args += fmt.Sprintf(" ember.volume_dev=%s ember.volume_mount=%s", statefulVolumeDevice, cb.volumeMount)
+	}
 	return args
 }
 
@@ -312,6 +321,17 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 // SECOND drive (the rootfs is the root device /dev/vda; the handler drive, added
 // next, is /dev/vdb). guest-init exports this to the shim as EMBER_HANDLER_ZIP.
 const handlerDiskDevice = "/dev/vdb"
+
+// statefulVolumeDevice is the guest block-device path Firecracker assigns to a
+// stateful VM's writable volume drive (R4). A stateful boot_image_ref always
+// carries a handler artifact (mirroring the serving cold-boot lane: rootfs is
+// drive 1 / /dev/vda, the read-only handler is drive 2 / /dev/vdb), and the
+// writable volume is attached LAST as drive 3, landing on /dev/vdc. guest-init
+// reads ember.volume_dev from /proc/cmdline and mounts exactly this device; the
+// host never mounts it. Fixed rather than derived because ClaimStateful always
+// attaches all three drives together (unlike serving, which may cold-boot with
+// no handler for the image lane), so the position never varies.
+const statefulVolumeDevice = "/dev/vdc"
 
 // sectorSizeBytes is Firecracker's block-device sector size. A drive backing file
 // must be a whole multiple of it or FC floors the exposed device to the nearest
@@ -601,6 +621,16 @@ type coldBootSpec struct {
 	// sector padding (see bootArgsFor for the EOCD-padding rationale).
 	handlerDiskPath string
 	handlerZipBytes int64
+	// volumeDiskPath, when non-empty, is a stateful workload's writable volume
+	// file (R4) attached as a THIRD drive (after rootfs and, when present, the
+	// handler artifact) with IsReadOnly=false: the guest's durable data, the one
+	// device the host never mounts or parses. volumeMount is threaded into
+	// boot-args as ember.volume_mount so guest-init knows where to mount it (the
+	// device path itself, /dev/vdc, is a fixed convention guest-init also knows;
+	// see statefulVolumeDevice). Empty for every task/session/serving boot, which
+	// keeps their drive set byte-unchanged.
+	volumeDiskPath string
+	volumeMount    string
 }
 
 // coldBoot launches a fresh Firecracker process, provisions a per-thread rootfs (or
@@ -665,6 +695,17 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		// the R1 zip lane retired (a serving cold boot does not snapshot the base).
 		if cb.handlerDiskPath != "" {
 			if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "handler", PathOnHost: cb.handlerDiskPath, IsRootDevice: false, IsReadOnly: true}); err != nil {
+				return err
+			}
+		}
+		// Stateful volume (R4): attach the workload's writable volume file as the
+		// THIRD drive (after rootfs and the handler artifact), landing on
+		// statefulVolumeDevice (/dev/vdc). IsReadOnly=false: this is the ONE
+		// writable device a stateful guest gets, and the host never mounts or
+		// parses its filesystem (guest-init owns mkfs-if-blank + mount). Empty for
+		// every task/session/serving boot, so their drive set is unaffected.
+		if cb.volumeDiskPath != "" {
+			if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "volume", PathOnHost: cb.volumeDiskPath, IsRootDevice: false, IsReadOnly: false}); err != nil {
 				return err
 			}
 		}
@@ -745,6 +786,38 @@ func orDefault(v, def int) int {
 		return v
 	}
 	return def
+}
+
+// ClaimStateful cold-boots a stateful-class microVM (R4) from a per-workload
+// rootfs WITH a tap NIC (exactly as ClaimServing) PLUS the workload's writable
+// volume attached as a third drive. It mirrors ClaimServing's shape precisely
+// (same NIC requirement, same harness-init threading, same coldBoot reuse) with
+// the one addition of volumeDiskPath/volumeMount, kept as explicit parameters
+// (not folded into a struct) so the call site names every field the way
+// ClaimServing's call sites do. The caller (server.StartStateful) is
+// responsible for bumping the volume's generation BEFORE calling this: the
+// driver has no notion of the generation ledger, only the raw file path.
+func (d *Driver) ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string) (substrate.Handle, error) {
+	if nic.HostDevName == "" {
+		return substrate.Handle{}, fmt.Errorf("driver: ClaimStateful requires a host tap device")
+	}
+	if volumeDiskPath == "" {
+		return substrate.Handle{}, fmt.Errorf("driver: ClaimStateful requires a volume disk path")
+	}
+	vcpus = orDefault(vcpus, d.cfg.VCPUs)
+	memMib = orDefault(memMib, d.cfg.MemMib)
+	nicCopy := nic
+	return d.coldBoot(ctx, newID("state"), coldBootSpec{
+		rootfsPath:      rootfsPath,
+		vcpus:           vcpus,
+		memMib:          memMib,
+		nic:             &nicCopy,
+		harnessInit:     harnessInit,
+		handlerDiskPath: handlerDiskPath,
+		handlerZipBytes: handlerZipBytes,
+		volumeDiskPath:  volumeDiskPath,
+		volumeMount:     volumeMount,
+	})
 }
 
 // Snapshot pauses the microVM, writes a full snapshot bundle, and resumes it so
@@ -1078,6 +1151,195 @@ func (d *Driver) RemoveServingBundle(snapshotRef string) error {
 		return fmt.Errorf("driver: remove serving bundle: %w", err)
 	}
 	return nil
+}
+
+// ---- stateful snapshot mechanics (R4) ---------------------------------------
+//
+// These mirror the R3 serving bank/relight/evict mechanics exactly, under the
+// stateful/ prefix instead of serving/, with ONE addition: a "gen" sidecar
+// stamps the volume's generation AT BANK TIME (not a pinned IP; a stateful
+// bundle's NIC still travels with the snapshot the same way a serving one
+// does, but IP re-pinning is not part of the R4 v1 contract since a stateful
+// VM's endpoint is control-plane-addressed, not guest-baked-critical the way a
+// serving relight's eth0 IP is). The volume file itself is NEVER copied,
+// hashed, or touched by any of these: the generation ledger (owned by the
+// volume package, not here) is the entire pairing mechanism, and the memory
+// snapshot only pre-pays cache warmth (ADR embervm/001's state split).
+
+// StatefulDir is the parent directory holding all banked STATEFUL snapshot
+// bundles, under the stateful/ prefix of the snapshot root (a sibling of
+// bases/, sessions/, and serving/). The daemon rescans exactly this dir on
+// start via ScanStatefulBundles. Callers own its 0700 permission and
+// daemon-ownership.
+func (d *Driver) StatefulDir() string { return filepath.Join(d.cfg.SnapshotRoot, "stateful") }
+
+// statefulDir is the bundle directory for one banked stateful snapshot, keyed
+// by an opaque snapshot_ref.
+func (d *Driver) statefulDir(ref string) string { return filepath.Join(d.StatefulDir(), ref) }
+
+func (d *Driver) statefulSnapfile(ref string) string {
+	return filepath.Join(d.statefulDir(ref), "snapfile")
+}
+
+func (d *Driver) statefulMemfile(ref string) string {
+	return filepath.Join(d.statefulDir(ref), "memfile")
+}
+
+// statefulGenfile is the sidecar recording the volume generation a stateful
+// bundle was banked at (the pair key StartStateful(RELIGHT) checks against the
+// volume's CURRENT generation). It must survive a daemon restart exactly like
+// the serving pinned-IP sidecar, so ScanStatefulBundles reads it back.
+func (d *Driver) statefulGenfile(ref string) string {
+	return filepath.Join(d.statefulDir(ref), "gen")
+}
+
+// SnapshotStateful pauses a live stateful VM and writes a self-contained
+// stateful bundle (memfile + snapfile) under stateful/<ref>, plus the
+// generation sidecar. It does NOT resume: the caller Releases the VM
+// immediately after (StopStateful BANK destroys). It mirrors SnapshotServing
+// exactly except the sidecar is a generation, not a pinned IP, and it stamps
+// NOTHING about the volume itself: the volume file is not opened, copied, or
+// hashed here. On any failure after the handle is confirmed the VM is torn
+// down (a bank is destructive), so a failed bank never leaves a live/paused
+// handle behind.
+func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (substrate.SnapshotRef, error) {
+	if snapshotRef == "" {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: SnapshotStateful requires a snapshot_ref")
+	}
+	inst := d.get(h.ID)
+	if inst == nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot-stateful of unknown handle %q", h.ID)
+	}
+	banked := false
+	defer func() {
+		if !banked {
+			_ = d.Release(ctx, h)
+		}
+	}()
+	if err := os.MkdirAll(d.statefulDir(snapshotRef), 0o700); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir stateful bundle: %w", err)
+	}
+	snapPath := d.statefulSnapfile(snapshotRef)
+	memPath := d.statefulMemfile(snapshotRef)
+	snapTmp := snapPath + ".tmp"
+	memTmp := memPath + ".tmp"
+
+	if err := inst.client.Pause(ctx); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause stateful: %w", err)
+	}
+	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create stateful snapshot: %w", err)
+	}
+	// Publish memfile before snapfile (a restore reads the snapfile to locate the
+	// memfile), then the generation sidecar, then the snapfile LAST so a rescan
+	// that finds a snapfile always finds a complete bundle (mirrors serving's
+	// publish-last-so-a-half-written-bundle-is-skipped discipline).
+	if err := os.Rename(memTmp, memPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish stateful memfile: %w", err)
+	}
+	if err := os.WriteFile(d.statefulGenfile(snapshotRef), []byte(strconv.FormatUint(generation, 10)), 0o600); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: write stateful generation sidecar: %w", err)
+	}
+	if err := os.Rename(snapTmp, snapPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish stateful snapfile: %w", err)
+	}
+	banked = true
+	return substrate.SnapshotRef{
+		ID:        snapshotRef,
+		Node:      d.cfg.Node,
+		Arch:      d.cfg.Arch,
+		SizeBytes: bundleSize(snapPath, memPath),
+	}, nil
+}
+
+// RestoreStateful launches a fresh Firecracker process and loads a banked
+// STATEFUL bundle (stateful/<snapshotRef>), resuming it so the guest continues
+// exactly where it was banked, WITH the NIC it captured at bank time. It
+// mirrors RestoreServing. volumeDiskPath is accepted so the call site's intent
+// is explicit (a stateful relight always re-attaches the SAME backing volume
+// file, never a copy), but the memory snapshot restore path itself does not
+// touch drives: the caller's earlier ClaimStateful-vs-restore choice is what
+// actually attaches a drive. In v1 a relight resumes the memory snapshot; the
+// volume was never detached from the VM's device model in the snapshot (it was
+// captured with the VM), so no separate re-attach step exists here. The
+// parameter is kept for interface symmetry with ClaimStateful and so a future
+// revision that needs to re-validate the path (e.g. assert it has not moved)
+// has an obvious place to do it.
+func (d *Driver) RestoreStateful(ctx context.Context, snapshotRef, _ string) (substrate.Handle, error) {
+	if snapshotRef == "" {
+		return substrate.Handle{}, fmt.Errorf("driver: RestoreStateful requires a snapshot_ref")
+	}
+	snapPath := d.statefulSnapfile(snapshotRef)
+	if _, err := os.Stat(snapPath); err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: stateful bundle missing for %q: %w", snapshotRef, err)
+	}
+	threadID := newID("state")
+	return d.loadInto(ctx, threadID, snapPath, d.statefulMemfile(snapshotRef), "restore.sock")
+}
+
+// RemoveStatefulBundle deletes a banked stateful snapshot's on-disk bundle
+// (stateful/<snapshotRef>), including the generation sidecar. It is the
+// stateful EvictSnapshot-equivalent mechanic, called both when a fresh bank
+// evicts the prior bundle for a workload (at most one banked bundle per
+// workload, D-R4) and when a generation-mismatch relight discards a stale
+// bundle. Idempotent: a missing bundle is not an error. It NEVER touches the
+// volume file (a separate dir under VolumeRoot, not under this bundle dir).
+func (d *Driver) RemoveStatefulBundle(snapshotRef string) error {
+	if snapshotRef == "" {
+		return fmt.Errorf("driver: RemoveStatefulBundle requires a snapshot_ref")
+	}
+	if err := os.RemoveAll(d.statefulDir(snapshotRef)); err != nil {
+		return fmt.Errorf("driver: remove stateful bundle: %w", err)
+	}
+	return nil
+}
+
+// ScanStatefulBundles globs stateful/*/snapfile on startup and returns each
+// discovered bundle with its stamped generation (from the gen sidecar), so a
+// restarted daemon reports what banked stateful warmth survives and the
+// control plane can recompute pair validity (bundle generation vs the volume's
+// CURRENT generation, read separately via the volume package) purely from node
+// truth. A bundle dir without a snapfile is half-written or mid-evict and is
+// skipped; a snapfile whose gen sidecar is missing or malformed is reported
+// with generation 0 AND is effectively unusable for a relight (any real volume
+// will have advanced past 0), which is the safe direction: an unreadable
+// generation must never be treated as a false match.
+func (d *Driver) ScanStatefulBundles() []substrate.StatefulBundleInfo {
+	root := d.StatefulDir()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil // no stateful dir yet (fresh node): nothing to rescan
+	}
+	out := make([]substrate.StatefulBundleInfo, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		ref := e.Name()
+		snapPath := d.statefulSnapfile(ref)
+		fi, err := os.Stat(snapPath)
+		if err != nil {
+			continue // half-written or evicting: skip
+		}
+		size := fi.Size()
+		createdMs := fi.ModTime().UnixMilli()
+		if mfi, err := os.Stat(d.statefulMemfile(ref)); err == nil {
+			size += mfi.Size()
+		}
+		var gen uint64
+		if raw, err := os.ReadFile(d.statefulGenfile(ref)); err == nil {
+			if n, perr := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64); perr == nil {
+				gen = n
+			}
+		}
+		out = append(out, substrate.StatefulBundleInfo{
+			SnapshotRef:     ref,
+			Generation:      gen,
+			SizeBytes:       size,
+			CreatedAtUnixMs: createdMs,
+		})
+	}
+	return out
 }
 
 // Exec is provided by the in-VM harness over the wrapper channel (Phase 2); the
