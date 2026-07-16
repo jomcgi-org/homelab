@@ -197,9 +197,9 @@ defmodule Embervm.WorkloadWatcherTest do
     table = unique_table()
     agent = start_recorder()
     base = start_base_recorder()
-    # `stateful` is still reserved for a later rung (task/session/serving are
-    # all valid as of R3).
-    cr = valid_cr(%{"spec" => %{"class" => "stateful"}})
+    # `cluster` is reserved for a later rung (task/session/serving/stateful are
+    # all valid as of R4).
+    cr = valid_cr(%{"spec" => %{"class" => "cluster"}})
     lister = fn -> {:ok, [cr]} end
     watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
 
@@ -581,6 +581,207 @@ defmodule Embervm.WorkloadWatcherTest do
 
     assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-serving-2")
     assert entry.serving.host == "sandbox.serve.example.com"
+  end
+
+  # -- stateful class (R4) ----------------------------------------------------
+
+  # A valid stateful CR: an image source plus the required spec.stateful block,
+  # and NO concurrency block (singleton by construction).
+  defp stateful_cr(overrides \\ %{}) do
+    base = %{
+      "metadata" => %{"name" => "scratch-postgres", "namespace" => "embervm", "generation" => 1},
+      "spec" => %{
+        "class" => "stateful",
+        "source" => %{"image" => %{"ref" => "scratch-postgres", "port" => 1027}},
+        "resources" => %{"vcpus" => 1, "memMib" => 512},
+        "stateful" => %{
+          "port" => 5432,
+          # listenPort must fall inside the default range 5400..5409 (the guest
+          # port 5432 is distinct and unconstrained).
+          "listenPort" => 5401,
+          "volumeSizeGiB" => 10,
+          "volumeMountPath" => "/data",
+          "idleBankSeconds" => 600,
+          "maxLifetimeSeconds" => 604_800,
+          "bankedTtlSeconds" => 2_592_000,
+          "wakeTimeoutSeconds" => 60
+        }
+      }
+    }
+
+    deep_merge(base, overrides)
+  end
+
+  test "stateful class: a valid stateful CR is cataloged with class and stateful config, singleton floor/cap" do
+    table = unique_table()
+    agent = start_recorder()
+    lister = fn -> {:ok, [stateful_cr()]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "scratch-postgres")
+    assert entry.class == "stateful"
+    # Singleton by construction: no concurrency block, internal floor/cap 0/1.
+    assert entry.floor == 0
+    assert entry.cap == 1
+    assert entry.stateful.port == 5432
+    assert entry.stateful.listen_port == 5401
+    assert entry.stateful.volume_size_gib == 10
+    assert entry.stateful.volume_mount_path == "/data"
+    assert entry.stateful.idle_bank_seconds == 600
+    assert entry.stateful.max_lifetime_seconds == 604_800
+    assert entry.stateful.banked_ttl_seconds == 2_592_000
+    assert entry.stateful.wake_timeout_seconds == 60
+
+    assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
+    assert status_map["observedGeneration"] == 1
+    refute Map.has_key?(status_map, "conditions")
+  end
+
+  test "stateful class: stateful block defaults apply when optional fields are omitted" do
+    table = unique_table()
+    agent = start_recorder()
+    # Only the required fields; every optional field falls back to its default.
+    cr =
+      put_in(stateful_cr(), ["spec", "stateful"], %{
+        "port" => 5432,
+        "listenPort" => 5400,
+        "volumeSizeGiB" => 5
+      })
+
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "scratch-postgres")
+    assert entry.stateful.volume_mount_path == "/data"
+    assert entry.stateful.idle_bank_seconds == 300
+    assert entry.stateful.max_lifetime_seconds == 86_400
+    assert entry.stateful.banked_ttl_seconds == 604_800
+    assert entry.stateful.wake_timeout_seconds == 60
+  end
+
+  test "stateful class missing spec.stateful is Ready=False/StatefulSpecMissing, not cataloged" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = stateful_cr()
+    cr = Map.update!(cr, "spec", &Map.delete(&1, "stateful"))
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "scratch-postgres") == :error
+
+    assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "StatefulSpecMissing"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "stateful class carrying a spec.concurrency block is Ready=False/ConcurrencyUnexpected" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = stateful_cr(%{"spec" => %{"concurrency" => %{"cap" => 2}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "scratch-postgres") == :error
+
+    assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "ConcurrencyUnexpected"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "stateful class carrying a spec.serving block is Ready=False/ServingSpecUnexpected" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = stateful_cr(%{"spec" => %{"serving" => %{"port" => 8080, "host" => "x.example.com"}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "scratch-postgres") == :error
+
+    assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "ServingSpecUnexpected"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "stateful class: a listenPort outside the configured range is Ready=False/StatefulListenPortOutOfRange" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = put_in(stateful_cr(), ["spec", "stateful", "listenPort"], 9999)
+    lister = fn -> {:ok, [cr]} end
+    # Inject a narrow range so the test is independent of the default.
+    watcher = start_watcher(lister, recording_status_writer(agent), table, stateful_listen_range: 5400..5409)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "scratch-postgres") == :error
+
+    assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
+
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "StatefulListenPortOutOfRange"}] =
+             status_map["conditions"]
+
+    assert Process.alive?(watcher)
+  end
+
+  test "stateful class: two workloads on the same listenPort, the second is Ready=False/StatefulListenPortConflict" do
+    table = unique_table()
+    agent = start_recorder()
+
+    first = stateful_cr()
+    second = stateful_cr(%{"metadata" => %{"name" => "scratch-postgres-2"}})
+    lister = fn -> {:ok, [first, second]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    # The first-listed workload wins the listenPort and catalogs cleanly.
+    assert {:ok, _} = WorkloadCatalog.fetch(table, "scratch-postgres")
+    assert WorkloadCatalog.fetch(table, "scratch-postgres-2") == :error
+
+    assert {_ns, "scratch-postgres-2", status_map} = ready_status(recorded_calls(agent), "scratch-postgres-2")
+
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "StatefulListenPortConflict"}] =
+             status_map["conditions"]
+
+    assert Process.alive?(watcher)
+  end
+
+  test "stateful class: editing volumeSizeGiB is Ready=False/StatefulVolumeSizeImmutable" do
+    table = unique_table()
+    agent = start_recorder()
+
+    # First reconcile catalogs the workload at 10 GiB.
+    {:ok, lister_agent} = Agent.start_link(fn -> [stateful_cr()] end)
+    lister = fn -> {:ok, Agent.get(lister_agent, & &1)} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "scratch-postgres")
+    assert entry.stateful.volume_size_gib == 10
+
+    # A later edit to 20 GiB is rejected against the cataloged entry; the entry
+    # is dropped (an invalid CR is never served) and the immutability condition
+    # is written.
+    Agent.update(lister_agent, fn _ -> [put_in(stateful_cr(), ["spec", "stateful", "volumeSizeGiB"], 20)] end)
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "scratch-postgres") == :error
+
+    assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
+
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "StatefulVolumeSizeImmutable"}] =
+             status_map["conditions"]
+
+    assert Process.alive?(watcher)
   end
 
   test "a malformed CR does not crash the watcher, and other valid CRs in the same list still catalog" do

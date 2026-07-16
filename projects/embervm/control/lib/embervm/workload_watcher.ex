@@ -62,6 +62,11 @@ defmodule Embervm.WorkloadWatcher do
   @default_table :embervm_workloads
   @base_backoff_ms 1_000
   @max_backoff_ms 30_000
+  # The default stateful TCP listenPort range, matching the chart's values
+  # default (projects/embervm/chart, Task 6). Overridable via the
+  # :stateful_listen_range app env or a start_link opt so the chart value flows
+  # in and tests can inject a narrow range.
+  @default_stateful_listen_range 5400..5409
   # A healthy watch lives for the apiserver's full `timeoutSeconds` (~5 min);
   # a watch that ends far sooner is a signal of trouble, not a normal cycle. So
   # only a watch that stayed open at least this long earns an IMMEDIATE
@@ -123,11 +128,18 @@ defmodule Embervm.WorkloadWatcher do
     max_backoff = Keyword.get(opts, :max_backoff_ms, @max_backoff_ms)
     min_watch = Keyword.get(opts, :min_watch_ms, @min_watch_ms)
     watch_startup = Keyword.get(opts, :watch_startup, true)
+    # The values-declared stateful TCP listenPort range (Task 6 wires the chart
+    # value in via config; the default matches the chart default 5400-5409). The
+    # watcher validates every stateful workload's listenPort against it.
+    stateful_listen_range =
+      Keyword.get(opts, :stateful_listen_range) ||
+        Application.get_env(:embervm, :stateful_listen_range, @default_stateful_listen_range)
 
     WorkloadCatalog.create(table)
 
     state = %{
       table: table,
+      stateful_listen_range: stateful_listen_range,
       lister: lister,
       watcher_fun: watcher_fun,
       status_writer: status_writer,
@@ -426,8 +438,10 @@ defmodule Embervm.WorkloadWatcher do
       spec = Map.get(cr, "spec") || %{}
 
       case validate(state, name, spec) do
-        {:ok, class, floor, cap, session_cfg, serving_cfg} ->
-          entry = catalog_entry(name, namespace, spec, class, floor, cap, session_cfg, serving_cfg)
+        {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg} ->
+          entry =
+            catalog_entry(name, namespace, spec, class, floor, cap, session_cfg, serving_cfg, stateful_cfg)
+
           WorkloadCatalog.upsert(state.table, name, entry)
 
           # A valid Workload's Ready/BaseBuilt conditions are owned by the
@@ -568,20 +582,22 @@ defmodule Embervm.WorkloadWatcher do
   defp validate(state, name, spec) do
     with {:ok, class} <- validate_class(spec),
          :ok <- validate_source(spec),
-         {:ok, floor, cap} <- validate_concurrency(spec),
+         {:ok, floor, cap} <- validate_concurrency(spec, class),
          {:ok, session_cfg} <- validate_session(spec, class),
-         {:ok, serving_cfg} <- validate_serving(state, name, spec, class, cap) do
-      {:ok, class, floor, cap, session_cfg, serving_cfg}
+         {:ok, serving_cfg} <- validate_serving(state, name, spec, class, cap),
+         {:ok, stateful_cfg} <- validate_stateful(state, name, spec, class) do
+      {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg}
     end
   end
 
   defp validate_class(%{"class" => "task"}), do: {:ok, "task"}
   defp validate_class(%{"class" => "session"}), do: {:ok, "session"}
   defp validate_class(%{"class" => "serving"}), do: {:ok, "serving"}
+  defp validate_class(%{"class" => "stateful"}), do: {:ok, "stateful"}
 
   defp validate_class(spec) do
     {:error, "ClassUnsupported",
-     "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task, session, and serving are valid in v1alpha1"}
+     "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task, session, serving, and stateful are valid in v1alpha1"}
   end
 
   # The session block is REQUIRED for the session class and FORBIDDEN for the
@@ -596,7 +612,7 @@ defmodule Embervm.WorkloadWatcher do
     invoke_queue_cap: 4
   }
 
-  defp validate_session(spec, class) when class in ["task", "serving"] do
+  defp validate_session(spec, class) when class in ["task", "serving", "stateful"] do
     case Map.get(spec, "session") do
       nil -> {:ok, nil}
       _ -> {:error, "SessionSpecUnexpected", "spec.session is only valid for class session, not #{class}"}
@@ -651,7 +667,7 @@ defmodule Embervm.WorkloadWatcher do
     banked_ttl_seconds: 86_400
   }
 
-  defp validate_serving(_state, _name, spec, class, _cap) when class in ["task", "session"] do
+  defp validate_serving(_state, _name, spec, class, _cap) when class in ["task", "session", "stateful"] do
     case Map.get(spec, "serving") do
       nil -> {:ok, nil}
       _ -> {:error, "ServingSpecUnexpected", "spec.serving is only valid for class serving, not #{class}"}
@@ -743,6 +759,129 @@ defmodule Embervm.WorkloadWatcher do
     }
   end
 
+  # The stateful block is REQUIRED for the stateful class and FORBIDDEN for every
+  # other class (the class-conditional requiredness the OpenAPI schema cannot
+  # express), mirroring validate_serving/5. Three stateful-only cross-field rules
+  # beyond presence: listenPort must fall inside the chart's values-declared TCP
+  # range (state.stateful_listen_range), listenPort must be unique across live
+  # stateful workloads (one port, one workload, decision 5, checked against the
+  # LIVE catalog like the serving host-uniqueness rule), and volumeSizeGiB is
+  # immutable in v1 (an edit against an already-cataloged size is rejected).
+  @stateful_defaults %{
+    volume_mount_path: "/data",
+    idle_bank_seconds: 300,
+    max_lifetime_seconds: 86_400,
+    banked_ttl_seconds: 604_800,
+    wake_timeout_seconds: 60
+  }
+  # The minimum idleBankSeconds (decision: a too-eager bank thrashes wake/bank);
+  # the CRD schema also enforces this, re-checked here for the LIST/WATCH path.
+  @stateful_min_idle_bank_seconds 30
+
+  defp validate_stateful(_state, _name, spec, class) when class in ["task", "session", "serving"] do
+    case Map.get(spec, "stateful") do
+      nil -> {:ok, nil}
+      _ -> {:error, "StatefulSpecUnexpected", "spec.stateful is only valid for class stateful, not #{class}"}
+    end
+  end
+
+  defp validate_stateful(state, name, spec, "stateful") do
+    case Map.get(spec, "stateful") do
+      s when is_map(s) ->
+        with :ok <- validate_stateful_listen_port(state, name, s),
+             :ok <- validate_stateful_idle_bank(s),
+             :ok <- validate_stateful_volume_immutable(state, name, s) do
+          {:ok, parse_stateful(s)}
+        end
+
+      _ ->
+        {:error, "StatefulSpecMissing", "class stateful requires a spec.stateful block"}
+    end
+  end
+
+  # listenPort must be inside the values-declared range AND unique across every
+  # other live stateful workload. Out-of-range names the configured range in the
+  # condition (operator-actionable); a duplicate names the conflicting workload.
+  defp validate_stateful_listen_port(state, name, s) do
+    listen_port = Map.get(s, "listenPort")
+    range = state.stateful_listen_range
+
+    cond do
+      not is_integer(listen_port) ->
+        {:error, "InvalidStatefulSpec", "spec.stateful.listenPort is required and must be an integer"}
+
+      listen_port not in range ->
+        {:error, "StatefulListenPortOutOfRange",
+         "spec.stateful.listenPort #{listen_port} is outside the configured stateful range #{Enum.min(range)}-#{Enum.max(range)}"}
+
+      true ->
+        case stateful_listen_port_conflict(state, name, listen_port) do
+          nil -> :ok
+          other ->
+            {:error, "StatefulListenPortConflict",
+             "spec.stateful.listenPort #{listen_port} is already owned by workload #{inspect(other)}"}
+        end
+    end
+  end
+
+  defp stateful_listen_port_conflict(state, name, listen_port) do
+    state.table
+    |> WorkloadCatalog.all_names()
+    |> Enum.reject(&(&1 == name))
+    |> Enum.find(fn other_name ->
+      case WorkloadCatalog.fetch(state.table, other_name) do
+        {:ok, %{class: "stateful", stateful: %{listen_port: ^listen_port}}} -> true
+        _ -> false
+      end
+    end)
+  end
+
+  defp validate_stateful_idle_bank(s) do
+    case Map.get(s, "idleBankSeconds") do
+      nil ->
+        :ok
+
+      idle when is_integer(idle) and idle >= @stateful_min_idle_bank_seconds ->
+        :ok
+
+      idle ->
+        {:error, "InvalidStatefulSpec",
+         "spec.stateful.idleBankSeconds #{inspect(idle)} must be >= #{@stateful_min_idle_bank_seconds}"}
+    end
+  end
+
+  # volumeSizeGiB is immutable in v1 (resize is a recorded follow-on): an edit
+  # against an already-cataloged size is rejected so a resize attempt surfaces
+  # loudly rather than silently doing nothing (the volume file is not resized).
+  # Compared against the LIVE catalog entry (self, by name), so the first
+  # cataloging of a workload always passes and only a later size change trips.
+  defp validate_stateful_volume_immutable(state, name, s) do
+    new_size = Map.get(s, "volumeSizeGiB")
+
+    case WorkloadCatalog.fetch(state.table, name) do
+      {:ok, %{class: "stateful", stateful: %{volume_size_gib: existing}}}
+      when is_integer(existing) and existing != new_size ->
+        {:error, "StatefulVolumeSizeImmutable",
+         "spec.stateful.volumeSizeGiB is immutable (was #{existing}, got #{inspect(new_size)}); volume resize is not supported in v1"}
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp parse_stateful(s) do
+    %{
+      port: Map.get(s, "port"),
+      listen_port: Map.get(s, "listenPort"),
+      volume_size_gib: Map.get(s, "volumeSizeGiB"),
+      volume_mount_path: Map.get(s, "volumeMountPath") || @stateful_defaults.volume_mount_path,
+      idle_bank_seconds: Map.get(s, "idleBankSeconds") || @stateful_defaults.idle_bank_seconds,
+      max_lifetime_seconds: Map.get(s, "maxLifetimeSeconds") || @stateful_defaults.max_lifetime_seconds,
+      banked_ttl_seconds: Map.get(s, "bankedTtlSeconds") || @stateful_defaults.banked_ttl_seconds,
+      wake_timeout_seconds: Map.get(s, "wakeTimeoutSeconds") || @stateful_defaults.wake_timeout_seconds
+    }
+  end
+
   # The CRD schema enforces the structural oneOf (exactly one of image|zip) at
   # admission, but a CR observed via LIST/WATCH is trusted only as far as this
   # code re-checks it: enforce the same mutual exclusion here (both set, or
@@ -789,7 +928,18 @@ defmodule Embervm.WorkloadWatcher do
     end
   end
 
-  defp validate_concurrency(spec) do
+  # The stateful class is a SINGLETON by construction (decision 3): exactly one
+  # live VM, no maxInstances knob. spec.concurrency is condition-rejected, and the
+  # class's internal floor/cap are fixed at scale-to-zero singleton (0, 1) so the
+  # catalog entry keeps a uniform shape without a concurrency block.
+  defp validate_concurrency(spec, "stateful") do
+    case Map.get(spec, "concurrency") do
+      nil -> {:ok, 0, 1}
+      _ -> {:error, "ConcurrencyUnexpected", "spec.concurrency is not valid for class stateful (singleton by construction)"}
+    end
+  end
+
+  defp validate_concurrency(spec, _class) do
     cap = get_in(spec, ["concurrency", "cap"])
     floor = get_in(spec, ["concurrency", "floor"]) || 0
 
@@ -809,7 +959,7 @@ defmodule Embervm.WorkloadWatcher do
   # reflects whatever the apiserver already defaulted at admission;
   # re-defaulting here just means this code has no silent dependency on that
   # having happened.
-  defp catalog_entry(name, namespace, spec, class, floor, cap, session_cfg, serving_cfg) do
+  defp catalog_entry(name, namespace, spec, class, floor, cap, session_cfg, serving_cfg, stateful_cfg) do
     resources = Map.get(spec, "resources") || %{}
     invocation = Map.get(spec, "invocation") || %{}
     source = parse_source(spec)
@@ -818,6 +968,11 @@ defmodule Embervm.WorkloadWatcher do
       name: name,
       namespace: namespace,
       class: class,
+      # Stateful-class volume + L4 config (nil except for the stateful class),
+      # carried so the StatefulStore/TcpActivator (Tasks 7/8) read listenPort,
+      # port, volume sizing, and the idle/lifetime/ttl knobs from the catalog
+      # exactly as SessionStore/EndpointPublisher read their class config.
+      stateful: stateful_cfg,
       # Session-class lifecycle config (nil for the task class), carried so the
       # SessionManager/SessionStore (later PRs) read idle-bank/lifetime/caps from
       # the catalog exactly as the dispatcher reads task caps.
