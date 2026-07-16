@@ -199,26 +199,37 @@ servingEnvoy:
   # nothing about it is baked into the serving substrate. Add, remove, or repoint
   # routes freely without touching embervm code.
   #
-  # Here: og-image is served both on the private host (trusted, Cloudflare-Access
-  # gated) and publicly on the apex (jomcgi.dev/og-image-serving, no Access). A path
-  # on an already-routed host needs no DNS/cert/tunnel change. Both rewrite to the same
-  # internal vhost authority, so both reach the same warm workload.
+  # Here: the hot (warm-serving) image demo is served both on the private host
+  # (trusted, Cloudflare-Access gated) and publicly on the apex
+  # (jomcgi.dev/functions/hot-image-demo, no Access, rate-limited). Its cold sibling
+  # (jomcgi.dev/functions/cold-image-demo) is the task-class FaaS path served by
+  # monolith-public: same renderer, cold-start vs warm serving. A path on an
+  # already-routed host needs no DNS/cert/tunnel change. Both entries rewrite to the
+  # same internal vhost authority, so both reach the same warm workload.
+  # rateLimit (optional per entry): an Envoy Gateway BackendTrafficPolicy (type Local,
+  # per-gateway-pod token bucket, no Redis) targeting the rendered HTTPRoute, capping
+  # request rate to protect the warm serving tier (each request can wake a microVM).
+  # Mirrors monolith-public's limit on the cold /functions/ path. Omit to leave a route
+  # unlimited (the private, Access-gated route needs none).
   routes:
-    - name: og-image-private
+    - name: hot-image-demo-private
       enabled: true
       tier: trusted
       hostname: private.jomcgi.dev
-      pathPrefix: /og-image-serving
-      rewriteHost: serving-og-image.serving.internal
+      pathPrefix: /functions/hot-image-demo
+      rewriteHost: hot-image-demo.serving.internal
       gateway:
         name: cloudflare-ingress
         namespace: envoy-gateway-system
-    - name: og-image-public
+    - name: hot-image-demo-public
       enabled: true
       tier: public
       hostname: jomcgi.dev
-      pathPrefix: /og-image-serving
-      rewriteHost: serving-og-image.serving.internal
+      pathPrefix: /functions/hot-image-demo
+      rewriteHost: hot-image-demo.serving.internal
+      rateLimit:
+        requests: 120
+        unit: Minute
       gateway:
         name: cloudflare-ingress
         namespace: envoy-gateway-system
@@ -322,30 +333,32 @@ semgrepWorkload:
   cap: 16
   timeoutSeconds: 90
 
-# The serving-og-image workload (EmberVM R3 Part A, D-R3.11.1): the og-image
-# renderer re-registered as a SERVING-class workload so it runs warm over its tap
-# NIC, side-by-side with (and NOT replacing) the task-class FaaS og-image path,
-# which stays the instant rollback. This is the drill/bring-up consumer of the R3
-# serving lane; the REAL public og-image traffic flip is Part B (controller-driven,
-# after gate drills), not this.
+# The hot-image-demo workload (EmberVM R3, D-R3.11.5): the shared image renderer run
+# WARM as a SERVING-class workload over its tap NIC, publicly at
+# jomcgi.dev/functions/hot-image-demo. Its cold sibling is the task-class FaaS demo
+# `cold-image-demo` (jomcgi.dev/functions/cold-image-demo, boots a microVM per
+# request), which stays the instant rollback. Same renderer, two serving models:
+# cold-start vs warm.
 #
-# Source = the SAME zip identity the FaaS task-class og-image registration produces
+# Source = the SAME zip identity the cold-image-demo FaaS registration produces
 # (deterministic archive of projects/monolith/faas/functions/og_image/app.py):
 # runtime python312, handler app.handle, sha256 below. The zip is layered onto the
 # runtime-python base (runtimePython above) at BuildBase; the handler-imported
 # state is baked into the base snapshot (ADR embervm/002), so a serving cold boot
 # needs no runtime hydrate. codeUri is the in-cluster SeaweedFS read URL the FaaS
-# storage.code_uri mints: <s3ReadBase>/<bucket>/og-image/<sha256>.zip.
-servingOgImage:
+# storage.code_uri mints: <s3ReadBase>/<bucket>/cold-image-demo/<sha256>.zip.
+hotImageDemo:
   enabled: true
-  name: serving-og-image
-  # Zip source identity (matches the FaaS registration; keep in lockstep with
-  # projects/monolith/faas/functions/og_image/app.py). If app.py changes, the
-  # sha256 + codeUri change and this must be re-derived (register.archive_sha256).
+  name: hot-image-demo
+  # Zip source identity: the SAME renderer (projects/monolith/faas/functions/og_image/
+  # app.py) the cold FaaS demo registers as `cold-image-demo`. This warm workload shares
+  # that function's uploaded zip (same sha), so codeUri points at the cold-image-demo
+  # storage path. If app.py changes, the sha256 + codeUri change and this must be
+  # re-derived (register.archive_sha256) AND cold-image-demo re-registered.
   runtime: python312
   handler: app.handle
   sha256: 2c5f9342895e286d251b801343eee5859460ce80f6a0e4384b8ba5a692ef2c16
-  codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/faas/og-image/2c5f9342895e286d251b801343eee5859460ce80f6a0e4384b8ba5a692ef2c16.zip
+  codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/faas/cold-image-demo/2c5f9342895e286d251b801343eee5859460ce80f6a0e4384b8ba5a692ef2c16.zip
   # Guest paths: the shim's readyPath (base build), invokePath (proxied requests
   # carry the caller's path+query, og-image reads queryStringParameters).
   readyPath: /shim/ready
@@ -361,7 +374,7 @@ servingOgImage:
     # operator's HTTPRoutes (servingEnvoy.routes) rewrite the external Host to this
     # value, so the workload spec carries none of the cluster's ingress DNS. Keep in
     # sync with each route's rewriteHost.
-    host: serving-og-image.serving.internal
+    host: hot-image-demo.serving.internal
     minInstances: 0
     maxInstances: 2
     idleBankSeconds: 600

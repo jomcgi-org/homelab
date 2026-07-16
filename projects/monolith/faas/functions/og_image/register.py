@@ -38,14 +38,22 @@ from pathlib import Path
 # IMPORTABLE name PIL (not the pip name "pillow"): the ingestion API checks
 # declared requirements against the runtime base's baked IMPORT names
 # (faas/runtime.py BAKED_PACKAGES), where Pillow appears as "PIL".
-FUNCTION_NAME = "og-image"
+#
+# NAMING: this og_image/ directory is the shared image renderer (app.py). It is
+# registered as the COLD-serving demo `cold-image-demo` (task-class FaaS: boots a
+# microVM per request), served at jomcgi.dev/functions/cold-image-demo. The SAME
+# renderer is also run WARM as the embervm serving workload `hot-image-demo` (see
+# projects/embervm/chart, /functions/hot-image-demo). Two public endpoints, one
+# renderer, demonstrating cold-start vs warm serving. (Renamed from `og-image`,
+# which had no live consumers; the site's og:image tag is intentionally omitted.)
+FUNCTION_NAME = "cold-image-demo"
 RUNTIME = "python312"
 HANDLER = "app.handle"
 REQUIREMENTS = "PIL"
-# PUBLIC as of Task 13: og-image is served at jomcgi.dev/functions/og-image. A
-# visibility change is intentionally NOT an idempotent no-op (the server's
-# short-circuit compares visibility), so re-registering a currently-private
-# og-image with this manifest re-smokes and re-gates it as public.
+# PUBLIC: served at jomcgi.dev/functions/cold-image-demo. A visibility change is
+# intentionally NOT an idempotent no-op (the server's short-circuit compares
+# visibility), so re-registering a currently-private function with this manifest
+# re-smokes and re-gates it as public.
 VISIBILITY = "public"
 
 _APP_PY = Path(__file__).with_name("app.py")
@@ -94,7 +102,7 @@ def register(base_url: str) -> tuple[bool, str]:
 
     archive = build_archive()
     sha = hashlib.sha256(archive).hexdigest()
-    files = {"zip": ("og-image.zip", archive, "application/zip")}
+    files = {"zip": (f"{FUNCTION_NAME}.zip", archive, "application/zip")}
     data = {
         "name": FUNCTION_NAME,
         "visibility": VISIBILITY,

@@ -48,6 +48,31 @@ spec:
       backendRefs:
         - name: {{ include "embervm.serving.fullname" $ }}
           port: {{ $.Values.servingEnvoy.listenerPort }}
+{{- if .rateLimit }}
+---
+# Envoy Gateway local (per-gateway-pod token bucket, no Redis) rate limit on this
+# route, protecting the warm serving tier: each request can wake a microVM, so a
+# flood of distinct queries could exhaust serving capacity. Mirrors monolith-public's
+# limit on the cold /functions/ path.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "embervm.serving.fullname" $ }}-{{ .name }}-rate-limit
+  labels:
+    {{- include "embervm.servingEnvoy.labels" $ | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "embervm.serving.fullname" $ }}-{{ .name }}
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit:
+            requests: {{ .rateLimit.requests | default 120 }}
+            unit: {{ .rateLimit.unit | default "Minute" }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
