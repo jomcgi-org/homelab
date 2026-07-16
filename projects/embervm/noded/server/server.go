@@ -1011,17 +1011,21 @@ func (s *Server) EvictSnapshot(_ context.Context, req *nodev1.EvictSnapshotReque
 	return &nodev1.EvictSnapshotResponse{}, nil
 }
 
-// evictServingSnapshot deletes a banked serving snapshot bundle from disk. Like the
-// session path it is idempotent and refuses FAILED_PRECONDITION while a LIVE serving
-// VM is running (a live serving VM has no source-ref to guard against, so this only
-// guards the ref itself against a race with an in-flight relight of the same ref: a
-// relit serving VM is tracked by vm_id, and its source ref stays banked, so evicting a
-// ref that a live VM was relit from is prevented by the servingSnap presence, not a
-// per-VM source ref; a running serving VM that came from this ref keeps the ref banked
-// until StopServing, matching the session semantics).
+// evictServingSnapshot deletes a banked serving snapshot bundle from disk. It mirrors
+// the session eviction path exactly: idempotent, and refusing FAILED_PRECONDITION when
+// a LIVE serving VM was relit from this ref (evicting the bundle out from under a live
+// relit VM would lose the relit-from state needed to re-bank it if the VM dies or the
+// node restarts before the next StopServing(BANK)). The guard is ENFORCED by scanning
+// the live serving registry for any VM whose source snapshotRef == ref.
 func (s *Server) evictServingSnapshot(ref string) (*nodev1.EvictSnapshotResponse, error) {
 	if s.servingDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: serving eviction not configured")
+	}
+	// In-use guard: refuse while a live serving VM was relit from this ref.
+	for _, e := range s.servingVMs.snapshotWithRefs() {
+		if e.snapshotRef == ref {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: serving snapshot %q is in use by live vm %q", ref, e.vmID)
+		}
 	}
 	if err := s.servingDriver.RemoveServingBundle(ref); err != nil {
 		return nil, status.Errorf(codes.Internal, "noded: evict serving snapshot %q: %v", ref, err)

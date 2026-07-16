@@ -391,6 +391,66 @@ func TestServingBankRelightRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEvictServingSnapshotInUseGuard mirrors the session in-use guard: evicting a
+// serving ref a LIVE relit VM depends on is refused FailedPrecondition; evicting a
+// banked-but-not-live ref succeeds and removes the bundle. It proves the guard is
+// ENFORCED (the pre-fix code deleted unconditionally).
+func TestEvictServingSnapshotInUseGuard(t *testing.T) {
+	_, port := healthServer(t, servingHealthPath)
+	s, _, fsd := newServingTestServer(t)
+
+	// Bank a fresh VM, then relight it so a LIVE VM depends on the ref.
+	started := startFresh(t, s, port)
+	bankResp, err := s.StopServing(context.Background(), &nodev1.StopServingRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopServingMode_STOP_SERVING_MODE_BANK,
+		Trace: &nodev1.Trace{Workload: "wl-serve"},
+	})
+	if err != nil {
+		t.Fatalf("bank: %v", err)
+	}
+	ref := bankResp.GetSnapshotRef()
+	if _, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Source:     &nodev1.StartServingRequest_Relight{Relight: &nodev1.RelightSource{SnapshotRef: ref}},
+		Port:       port,
+		HealthPath: servingHealthPath,
+		Trace:      &nodev1.Trace{Workload: "wl-serve"},
+	}); err != nil {
+		t.Fatalf("relight: %v", err)
+	}
+
+	// Evict while a live VM was relit from ref: refused.
+	_, err = s.EvictSnapshot(context.Background(), &nodev1.EvictSnapshotRequest{SnapshotRef: ref})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("evict of in-use serving ref: got %v want FailedPrecondition", err)
+	}
+	// The bundle is still on disk (the fake still holds it).
+	if _, ok := fsd.banked[ref]; !ok {
+		t.Error("refused evict must not have removed the bundle")
+	}
+
+	// Bank the live VM again (frees the dependency: the OLD ref now has no live VM).
+	// Find the live vm_id to bank it.
+	liveVMs := s.nodeStatus().GetServingVms()
+	if len(liveVMs) != 1 {
+		t.Fatalf("expected 1 live serving VM, got %d", len(liveVMs))
+	}
+	if _, err := s.StopServing(context.Background(), &nodev1.StopServingRequest{
+		VmId: liveVMs[0].GetVmId(), Mode: nodev1.StopServingMode_STOP_SERVING_MODE_DESTROY,
+	}); err != nil {
+		t.Fatalf("destroy live relit VM: %v", err)
+	}
+	// Now no live VM depends on ref: evict succeeds and removes the bundle.
+	if _, err := s.EvictSnapshot(context.Background(), &nodev1.EvictSnapshotRequest{SnapshotRef: ref}); err != nil {
+		t.Fatalf("evict of non-live serving ref should succeed, got %v", err)
+	}
+	if _, ok := fsd.banked[ref]; ok {
+		t.Error("evict of a non-live ref should have removed the bundle")
+	}
+	if len(s.nodeStatus().GetServingSnapshots()) != 0 {
+		t.Error("evicted serving snapshot should be gone from inventory")
+	}
+}
+
 func TestStopServingBankConcurrentRefused(t *testing.T) {
 	_, port := healthServer(t, servingHealthPath)
 	s, _, _ := newServingTestServer(t)
