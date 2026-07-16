@@ -3,11 +3,15 @@
 //
 // The sidecar holds NO durable state and makes NO decisions: the control plane
 // PUTs a full desired-state document (never a delta) and this package renders it
-// into CDS/RDS/EDS resources that are swapped atomically into the snapshot cache.
-// Listeners are NOT rendered here: the node Envoy listener + HTTP connection
-// manager are static bootstrap (Task 6), so the dynamic surface is exactly three
-// resource types. Keeping the translation pure (stdlib + go-control-plane only)
-// makes it unit-testable on a workstation without an Envoy or a running server.
+// into CDS/RDS/EDS resources (and, since R4, LDS TCP-proxy listeners) that are
+// swapped atomically into the snapshot cache. The node Envoy's HTTP listener +
+// connection manager stay STATIC in the bootstrap (byte-identical to R3); the
+// only listeners rendered here are the R4 stateful TCP-proxy listeners the
+// control plane publishes per workload, served dynamically over LDS on the same
+// ADS stream (DECISIONS.md D-R4.PR-3.1). A document with no `listeners` renders
+// exactly the R3 three-type snapshot (proven by a regression test). Keeping the
+// translation pure (stdlib + go-control-plane only) makes it unit-testable on a
+// workstation without an Envoy or a running server.
 package snapshot
 
 import (
@@ -18,10 +22,13 @@ import (
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	tcpproxyv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	cachetypes "github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	cachev3 "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -49,6 +56,12 @@ type Desired struct {
 
 	Clusters []Cluster `json:"clusters"`
 	Routes   []Route   `json:"routes"`
+
+	// Listeners are the R4 stateful TCP-proxy listeners, one per stateful
+	// workload, served over LDS. Absent/empty on a document that carries only the
+	// R3 serving surface, in which case no Listener resource is rendered and the
+	// snapshot is the byte-identical R3 three-type shape.
+	Listeners []Listener `json:"listeners,omitempty"`
 }
 
 // Cluster is one upstream: a name, its serving-VM endpoints, and a connect
@@ -77,6 +90,18 @@ type Route struct {
 	RequestHeaders map[string]string `json:"request_headers"`
 }
 
+// Listener is one R4 stateful TCP-proxy listener: a name, the pod port it binds
+// on the node Envoy, and the cluster it proxies raw TCP bytes to. Opaque L4 (no
+// routing, no protocol awareness): the listener port IS the workload identity
+// (decision 5), and the cluster (state|<workload>) resolves to the live VM or,
+// when empty, the control-plane TCP activator (the fallback endpoint the
+// publisher installs). One listener per stateful workload.
+type Listener struct {
+	Name    string `json:"name"`
+	Port    int    `json:"port"`
+	Cluster string `json:"cluster"`
+}
+
 // Build validates the desired-state document and renders it into a
 // go-control-plane snapshot carrying CDS + EDS + RDS resources under the
 // caller-supplied version. A malformed document returns an error (the HTTP layer
@@ -96,11 +121,24 @@ func Build(d *Desired) (*cachev3.Snapshot, error) {
 
 	routeConfig := buildRouteConfig(d.Routes)
 
+	// LDS TCP-proxy listeners (R4). Empty for a document with no `listeners`, in
+	// which case the ListenerType slice is empty and Envoy keeps its static
+	// bootstrap listeners untouched (the byte-identical R3 path).
+	listeners := make([]cachetypes.Resource, 0, len(d.Listeners))
+	for i := range d.Listeners {
+		l, err := buildListener(&d.Listeners[i])
+		if err != nil {
+			return nil, fmt.Errorf("listener[%d] %q: %w", i, d.Listeners[i].Name, err)
+		}
+		listeners = append(listeners, l)
+	}
+
 	// One RouteConfiguration resource, named for the bootstrap RDS reference.
 	return cachev3.NewSnapshot(d.Version, map[resourcev3.Type][]cachetypes.Resource{
 		resourcev3.ClusterType:  clusters,
 		resourcev3.EndpointType: endpoints,
 		resourcev3.RouteType:    {routeConfig},
+		resourcev3.ListenerType: listeners,
 	})
 }
 
@@ -145,6 +183,31 @@ func (d *Desired) validate() error {
 		}
 		if _, ok := seen[r.Cluster]; !ok {
 			return fmt.Errorf("route[%d]: references undefined cluster %q", i, r.Cluster)
+		}
+	}
+
+	// Listeners: a name, a bind port in range, and a cluster reference that
+	// resolves to a defined cluster (which may carry zero endpoints, the
+	// activator-fallback case). Listener names must be unique so two listeners
+	// never collide on the LDS resource name.
+	lseen := make(map[string]struct{}, len(d.Listeners))
+	for i := range d.Listeners {
+		l := &d.Listeners[i]
+		if l.Name == "" {
+			return fmt.Errorf("listener[%d]: name is required", i)
+		}
+		if _, dup := lseen[l.Name]; dup {
+			return fmt.Errorf("listener[%d]: duplicate listener name %q", i, l.Name)
+		}
+		lseen[l.Name] = struct{}{}
+		if l.Port < 1 || l.Port > 65535 {
+			return fmt.Errorf("listener[%d]: port %d out of range", i, l.Port)
+		}
+		if l.Cluster == "" {
+			return fmt.Errorf("listener[%d]: cluster is required", i)
+		}
+		if _, ok := seen[l.Cluster]; !ok {
+			return fmt.Errorf("listener[%d]: references undefined cluster %q", i, l.Cluster)
 		}
 	}
 
@@ -265,4 +328,56 @@ func buildRouteConfig(routes []Route) *routev3.RouteConfiguration {
 		// push time so a route to a missing cluster is rejected as a 400.
 		ValidateClusters: wrapperspb.Bool(false),
 	}
+}
+
+// tcpProxyFilterName is the Envoy network filter name for the TCP proxy, the
+// only filter in a stateful listener's chain (opaque L4: no protocol filters).
+const tcpProxyFilterName = "envoy.filters.network.tcp_proxy"
+
+// buildListener renders one LDS TCP-proxy Listener bound on 0.0.0.0:port, whose
+// single network filter proxies raw bytes to the named cluster. The config is
+// deliberately minimal (decision 4, opaque L4): a per-listener stat prefix (the
+// source of the downstream_cx_active / downstream_cx_total counters the Task 9
+// idle-signal scrape and the Task 10 metrics read) and the idle timeout disabled
+// (long-lived DB connections are legitimate). Returns an error only if the typed
+// filter config cannot be marshaled (never for a valid input).
+func buildListener(l *Listener) (*listenerv3.Listener, error) {
+	tcpProxy := &tcpproxyv3.TcpProxy{
+		// The stat prefix names this listener's stats bucket; the control plane's
+		// TCP idle scrape keys on it, so it must be stable and per-listener.
+		StatPrefix:       l.Name,
+		ClusterSpecifier: &tcpproxyv3.TcpProxy_Cluster{Cluster: l.Cluster},
+		// 0 disables the idle timeout: a stateful workload's connections (e.g. a
+		// pooled Postgres session) may sit idle indefinitely and must not be
+		// severed by the proxy (decision 7: never sever a live connection).
+		IdleTimeout: durationpb.New(0),
+	}
+	tcpAny, err := anypb.New(tcpProxy)
+	if err != nil {
+		return nil, err
+	}
+	return &listenerv3.Listener{
+		Name: l.Name,
+		Address: &corev3.Address{
+			Address: &corev3.Address_SocketAddress{
+				SocketAddress: &corev3.SocketAddress{
+					Protocol: corev3.SocketAddress_TCP,
+					Address:  "0.0.0.0",
+					PortSpecifier: &corev3.SocketAddress_PortValue{
+						PortValue: uint32(l.Port),
+					},
+				},
+			},
+		},
+		FilterChains: []*listenerv3.FilterChain{
+			{
+				Filters: []*listenerv3.Filter{
+					{
+						Name:       tcpProxyFilterName,
+						ConfigType: &listenerv3.Filter_TypedConfig{TypedConfig: tcpAny},
+					},
+				},
+			},
+		},
+	}, nil
 }

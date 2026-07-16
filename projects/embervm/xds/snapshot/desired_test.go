@@ -6,7 +6,9 @@ import (
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	tcpproxyv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 )
 
@@ -140,6 +142,92 @@ func TestBuild_emptyDesiredServesEmptyResources(t *testing.T) {
 	// the bootstrap RDS reference resolves rather than warming with a NACK.
 	if n := len(snap.GetResources(resourcev3.RouteType)); n != 1 {
 		t.Errorf("route configs = %d, want 1 (empty)", n)
+	}
+	// R4 regression: a document with no `listeners` renders ZERO Listener
+	// resources, so Envoy keeps its static bootstrap listeners and the R3 path is
+	// byte-identical. The ListenerType surface only ever carries stateful listeners.
+	if n := len(snap.GetResources(resourcev3.ListenerType)); n != 0 {
+		t.Errorf("listeners = %d, want 0 for a document with no listeners", n)
+	}
+}
+
+func TestBuild_translatesStatefulTcpListeners(t *testing.T) {
+	d := &Desired{
+		Version: "1",
+		Clusters: []Cluster{
+			// The cluster the listener proxies to. In production its sole endpoint
+			// is the live VM or the TCP activator; here one endpoint suffices.
+			{Name: "state|scratch-postgres", Endpoints: []Endpoint{{IP: "10.42.0.9", Port: 15432}}},
+		},
+		Listeners: []Listener{
+			{Name: "state-5400", Port: 5400, Cluster: "state|scratch-postgres"},
+		},
+	}
+
+	snap, err := Build(d)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	listeners := snap.GetResources(resourcev3.ListenerType)
+	if len(listeners) != 1 {
+		t.Fatalf("want 1 listener, got %d", len(listeners))
+	}
+	l, ok := listeners["state-5400"].(*listenerv3.Listener)
+	if !ok {
+		t.Fatalf("listener state-5400 missing or wrong type: %T", listeners["state-5400"])
+	}
+
+	// Bound on 0.0.0.0:5400 over TCP.
+	sa := l.GetAddress().GetSocketAddress()
+	if sa.GetAddress() != "0.0.0.0" || sa.GetPortValue() != 5400 || sa.GetProtocol() != corev3.SocketAddress_TCP {
+		t.Errorf("listener address = %s:%d/%v, want 0.0.0.0:5400/TCP", sa.GetAddress(), sa.GetPortValue(), sa.GetProtocol())
+	}
+
+	// One filter chain, one tcp_proxy filter routing to the cluster.
+	chains := l.GetFilterChains()
+	if len(chains) != 1 || len(chains[0].GetFilters()) != 1 {
+		t.Fatalf("want one filter chain with one filter, got %d chains", len(chains))
+	}
+	f := chains[0].GetFilters()[0]
+	if f.GetName() != tcpProxyFilterName {
+		t.Errorf("filter name = %q, want %q", f.GetName(), tcpProxyFilterName)
+	}
+	var tp tcpproxyv3.TcpProxy
+	if err := f.GetTypedConfig().UnmarshalTo(&tp); err != nil {
+		t.Fatalf("unmarshal tcp_proxy config: %v", err)
+	}
+	if tp.GetCluster() != "state|scratch-postgres" {
+		t.Errorf("tcp_proxy cluster = %q, want state|scratch-postgres", tp.GetCluster())
+	}
+	if tp.GetStatPrefix() != "state-5400" {
+		t.Errorf("tcp_proxy stat_prefix = %q, want state-5400", tp.GetStatPrefix())
+	}
+	// Idle timeout disabled (0): long-lived DB connections are never severed.
+	if tp.GetIdleTimeout().AsDuration() != 0 {
+		t.Errorf("tcp_proxy idle_timeout = %v, want 0 (disabled)", tp.GetIdleTimeout().AsDuration())
+	}
+}
+
+func TestBuild_rejectsMalformedListeners(t *testing.T) {
+	defined := []Cluster{{Name: "state|wl", Endpoints: []Endpoint{{IP: "10.0.0.1", Port: 5432}}}}
+	cases := []struct {
+		name string
+		d    *Desired
+	}{
+		{"listener missing name", &Desired{Version: "1", Clusters: defined, Listeners: []Listener{{Port: 5400, Cluster: "state|wl"}}}},
+		{"duplicate listener name", &Desired{Version: "1", Clusters: defined, Listeners: []Listener{{Name: "l", Port: 5400, Cluster: "state|wl"}, {Name: "l", Port: 5401, Cluster: "state|wl"}}}},
+		{"listener port zero", &Desired{Version: "1", Clusters: defined, Listeners: []Listener{{Name: "l", Port: 0, Cluster: "state|wl"}}}},
+		{"listener port too high", &Desired{Version: "1", Clusters: defined, Listeners: []Listener{{Name: "l", Port: 70000, Cluster: "state|wl"}}}},
+		{"listener missing cluster", &Desired{Version: "1", Clusters: defined, Listeners: []Listener{{Name: "l", Port: 5400}}}},
+		{"listener to undefined cluster", &Desired{Version: "1", Listeners: []Listener{{Name: "l", Port: 5400, Cluster: "nope"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Build(tc.d); err == nil {
+				t.Fatalf("want error for %s, got nil", tc.name)
+			}
+		})
 	}
 }
 
