@@ -70,6 +70,14 @@ spec:
             - $(NODE_NAME)
             - --service-cluster
             - {{ include "embervm.servingEnvoy.fullname" . }}
+            # Allocate a free hot-restart base id at startup instead of the default 0.
+            # This pod is hostNetwork (to reach the node-local serving bridge), so it
+            # shares node-4's abstract socket namespace with every other Envoy on the
+            # node (e.g. the CNI / gateway data plane); two processes at base_id=0
+            # collide on the domain socket ("unable to bind domain socket with
+            # base_id=0, errno=98"), crash-looping this Envoy. Dynamic base id avoids
+            # the collision without hardcoding a per-node id.
+            - --use-dynamic-base-id
           env:
             - name: NODE_NAME
               valueFrom:
