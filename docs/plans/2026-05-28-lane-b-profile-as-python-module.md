@@ -97,9 +97,8 @@ PROFILE_VERSION = "2"
 PROFILE_UPDATED = "2026-05-28"
 
 IDENTITY = """\
-Senior Platform Engineer @ Semgrep (Vancouver, BC). Career thesis:
-remove complexity for other engineers; business value as a byproduct.
-Former marine underwriter at Chubb. Public CV: https://jomcgi.dev.
+(redacted: role and work history live in the private values file, not in
+this repo). Public CV: https://jomcgi.dev.
 """
 
 RELEVANCE_KEEP: list[dict[str, str]] = [
@@ -193,13 +192,11 @@ RELEVANCE_SKIP: list[dict[str, str]] = [
 ]
 
 # Carve-outs from RELEVANCE_SKIP:
-# - BenchSci (3yr prior employer) is allowed in depth.
-# - Atoms about Joe's own platform work at Sky/AXA/Hometree/Ensono are KEEP
-#   (CV-relevant); generic market commentary about those firms is SKIP.
+# - Employer-specific carve-outs are private configuration; the list of
+#   named employers stays out of this repo.
 RELEVANCE_EMPLOYER_CARVE_OUTS = (
-    "BenchSci is allowed in depth (3yr prior employer); the "
-    "Sky/AXA/Hometree/Ensono atoms about Joe's own platform work there are "
-    "KEEP (CV-relevant); generic market commentary about those firms is SKIP."
+    "(redacted: per-employer keep/skip rules live in the private values "
+    "file, not in this repo)"
 )
 
 VISIBILITY_CRITERIA = """\
