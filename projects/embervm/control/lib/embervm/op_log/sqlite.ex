@@ -60,6 +60,24 @@ defmodule Embervm.OpLog.SQLite do
     "banked",
     "relighting"
   ]
+
+  # Stateful instance lifecycle states (R4), mirroring the serving retention
+  # discipline exactly. A non-terminal (live) stateful instance pins its ops
+  # against prefix compaction and is never pruned by the retention sweep; a
+  # terminal instance prunes past retention. "cold_booting" is the fall-back boot
+  # path (a relight whose pair broke), live like "starting". The `volumes` table
+  # is NOT swept here at all: a volume row lives until volume_deleted, outliving
+  # every instance by design (data on the volume, warmth in the snapshot), so it
+  # has no terminal-state retention clause.
+  @stateful_terminal_states ["evicted", "destroyed", "failed"]
+  @stateful_live_states [
+    "starting",
+    "serving",
+    "banking",
+    "banked",
+    "relighting",
+    "cold_booting"
+  ]
   # Seven days in milliseconds: default age (from last update) at which a
   # terminal task is eligible for compaction. This is the TERMINAL-TASK retention
   # window and is DISTINCT from the ops-journal horizon below.
@@ -86,6 +104,7 @@ defmodule Embervm.OpLog.SQLite do
       task_id TEXT,
       session_id TEXT,
       serving_instance_id TEXT,
+      stateful_instance_id TEXT,
       kind TEXT NOT NULL,
       payload_json TEXT NOT NULL DEFAULT '{}'
     )
@@ -205,6 +224,54 @@ defmodule Embervm.OpLog.SQLite do
       terminal_reason TEXT
     )
     """,
+    # Stateful instance projection (R4): the durable lifecycle + endpoint + pairing
+    # row per stateful instance, write-through projected from the stateful_* ops
+    # (see project/2), mirroring serving_instances above. ip/port are the L4
+    # endpoint the daemon reported at StartStateful; cleared on bank/destroy (a
+    # relight re-reports and republishes). generation is the volume generation the
+    # live instance holds; snapshot_generation is the generation STAMPED into the
+    # banked bundle (the pair key): pair validity is snapshot_generation ==
+    # volumes.generation, recomputed on every sweep. A non-terminal instance pins
+    # its ops against compaction and is never pruned by retention.
+    """
+    CREATE TABLE IF NOT EXISTS stateful_instances (
+      instance_id TEXT PRIMARY KEY,
+      tenant TEXT NOT NULL,
+      principal TEXT,
+      workload TEXT,
+      state TEXT NOT NULL,
+      node_id TEXT,
+      vm_id TEXT,
+      ip TEXT,
+      port INTEGER,
+      generation INTEGER NOT NULL DEFAULT 0,
+      snapshot_ref TEXT,
+      snapshot_generation INTEGER,
+      snapshot_size_bytes INTEGER,
+      created_at INTEGER NOT NULL,
+      last_active_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      terminal_reason TEXT
+    )
+    """,
+    # Volume projection (R4): the durable per-workload volume facts, keyed by
+    # workload (one raw file per stateful workload). generation is the on-disk
+    # ledger's current value (bumped on every writable attach); size_bytes is the
+    # declared sparse cap; allocated_bytes is the file's actual block usage (the
+    # watermark source). A volume row is created by volume_created and lives until
+    # volume_deleted, OUTLIVING every instance by design (ADR embervm/001: data on
+    # the volume, warmth in the snapshot). Retention never prunes a live volume row.
+    """
+    CREATE TABLE IF NOT EXISTS volumes (
+      workload TEXT PRIMARY KEY,
+      node_id TEXT,
+      generation INTEGER NOT NULL DEFAULT 0,
+      size_bytes INTEGER,
+      allocated_bytes INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+    """,
     # Durable single-row scalars for the op-log. Today it holds only the
     # ops-journal prefix marker (`compacted_through_seq`): the newest op seq that
     # has been prefix-compacted away, part of the durable OpLog contract so a
@@ -259,6 +326,16 @@ defmodule Embervm.OpLog.SQLite do
   @impl Embervm.OpLog
   def load_serving_instances(server \\ __MODULE__) do
     GenServer.call(server, :load_serving_instances)
+  end
+
+  @impl Embervm.OpLog
+  def load_stateful_instances(server \\ __MODULE__) do
+    GenServer.call(server, :load_stateful_instances)
+  end
+
+  @impl Embervm.OpLog
+  def load_volumes(server \\ __MODULE__) do
+    GenServer.call(server, :load_volumes)
   end
 
   @impl Embervm.OpLog
@@ -358,6 +435,14 @@ defmodule Embervm.OpLog.SQLite do
     {:reply, do_load_serving_instances(state.conn), state}
   end
 
+  def handle_call(:load_stateful_instances, _from, state) do
+    {:reply, do_load_stateful_instances(state.conn), state}
+  end
+
+  def handle_call(:load_volumes, _from, state) do
+    {:reply, do_load_volumes(state.conn), state}
+  end
+
   def handle_call({:load_result, task_id}, _from, state) do
     {:reply, do_load_result(state.conn, task_id), state}
   end
@@ -413,8 +498,8 @@ defmodule Embervm.OpLog.SQLite do
 
   defp insert_op(conn, %Op{} = op) do
     sql = """
-    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, serving_instance_id, kind, payload_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, kind, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -427,6 +512,7 @@ defmodule Embervm.OpLog.SQLite do
              op.task_id,
              op.session_id,
              op.serving_instance_id,
+             op.stateful_instance_id,
              Atom.to_string(op.kind),
              # An ETF {:blob, _}, not JSON, so a binary body persists byte-exact
              # (see encode_payload/1).
@@ -832,6 +918,194 @@ defmodule Embervm.OpLog.SQLite do
     project_usage_serving(conn, op)
   end
 
+  # -- Stateful projections (R4) --------------------------------------------
+  # The durable model: ONE `stateful_instances` row per boot-lifecycle (created
+  # by stateful_started or stateful_cold_booted, retired by a terminal kind),
+  # over ONE `volumes` row per workload that OUTLIVES every instance (the data,
+  # created by volume_created, gone only on volume_deleted). Every attach (start,
+  # relight, cold boot) bumps the generation, recorded on both the instance and
+  # the volume so pair validity (a banked bundle's snapshot_generation ==
+  # volumes.generation) is a complete staleness test. Mirrors the serving
+  # projection shape; the divergences (a persistent volumes row, snapshot_generation
+  # as the pair key, cold_booted as a distinct insert) are the R4 contract.
+
+  # volume_created: the durable volume file now exists (or its facts refreshed).
+  # Upsert so a create-after-delete or a generation refresh re-establishes the row.
+  defp project(conn, %Op{kind: :volume_created} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO volumes (workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(workload) DO UPDATE SET
+      node_id = excluded.node_id,
+      generation = excluded.generation,
+      size_bytes = excluded.size_bytes,
+      allocated_bytes = excluded.allocated_bytes,
+      updated_at = excluded.updated_at
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.workload,
+             Map.get(payload, :node_id),
+             Map.get(payload, :generation, 0),
+             Map.get(payload, :size_bytes),
+             Map.get(payload, :allocated_bytes),
+             op.ts,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # volume_deleted: the durable data is gone (the only destructive data path).
+  defp project(conn, %Op{kind: :volume_deleted} = op, _seq) do
+    sql = "DELETE FROM volumes WHERE workload=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.workload]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # stateful_started: a fresh instance boots (FRESH first boot, or an explicit
+  # COLD boot creating a new lifecycle). Inserts the instance and bumps the
+  # volume generation to the attach's post-bump value.
+  defp project(conn, %Op{kind: :stateful_started} = op, _seq) do
+    with :ok <- insert_stateful_instance(conn, op, "starting") do
+      bump_volume_generation(conn, op)
+    end
+  end
+
+  # stateful_cold_booted: a WAKE that discarded warmth and cold-booted, a NEW
+  # instance replacing the retired banked one (the eviction of that bundle rides
+  # a paired stateful_evicted op). reason (generation_mismatch|no_bundle|
+  # ledger_unreadable|explicit) lives in the payload, so the discarded-warmth
+  # event is fully reconstructable from the op alone.
+  defp project(conn, %Op{kind: :stateful_cold_booted} = op, _seq) do
+    with :ok <- insert_stateful_instance(conn, op, "starting") do
+      bump_volume_generation(conn, op)
+    end
+  end
+
+  # stateful_published: the L4 endpoint is live in the fan-out; the instance is
+  # serving.
+  defp project(conn, %Op{kind: :stateful_published} = op, _seq) do
+    payload = op.payload
+    sql = "UPDATE stateful_instances SET state='serving', ip=?, port=?, updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(payload, :ip),
+             Map.get(payload, :port),
+             op.ts,
+             op.stateful_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # stateful_unpublished: the endpoint left the fan-out (the activator is
+  # installed in the same LDS/EDS update). Audit-only: the instance's VM is not
+  # necessarily gone (a bank or health-eject follows and sets the real state), so
+  # this only stamps updated_at and leaves the state, keeping boot rebuild's
+  # "there is a live VM, republish it" verdict correct.
+  defp project(conn, %Op{kind: :stateful_unpublished} = op, _seq) do
+    sql = "UPDATE stateful_instances SET updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.stateful_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # stateful_banked: the VM is paused, snapshotted, and destroyed. Records the
+  # bundle ref, the STAMPED generation (the pair key), and size; clears the
+  # endpoint (a wake re-reports it).
+  defp project(conn, %Op{kind: :stateful_banked} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    UPDATE stateful_instances
+    SET state='banked', snapshot_ref=?, snapshot_generation=?, snapshot_size_bytes=?,
+        ip=NULL, port=NULL, updated_at=?
+    WHERE instance_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(payload, :snapshot_ref),
+             Map.get(payload, :generation),
+             Map.get(payload, :size_bytes),
+             op.ts,
+             op.stateful_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # stateful_relit: a WARM wake resumed the banked bundle. Back to "starting"
+  # (not yet republished) with the fresh vm_id and the post-bump generation;
+  # clears the bundle fields because relight bumped the generation, spending the
+  # bundle (its stamped generation is now stale by construction, decision 2).
+  defp project(conn, %Op{kind: :stateful_relit} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    UPDATE stateful_instances
+    SET state='starting', node_id=?, vm_id=?, generation=?,
+        snapshot_ref=NULL, snapshot_generation=NULL, updated_at=?
+    WHERE instance_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(payload, :node_id),
+             Map.get(payload, :vm_id),
+             Map.get(payload, :generation, 0),
+             op.ts,
+             op.stateful_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      bump_volume_generation(conn, op)
+    end
+  end
+
+  defp project(conn, %Op{kind: :stateful_evicted} = op, _seq),
+    do: terminate_stateful(conn, op, "evicted")
+
+  defp project(conn, %Op{kind: :stateful_destroyed} = op, _seq),
+    do: terminate_stateful(conn, op, "destroyed")
+
+  defp project(conn, %Op{kind: :stateful_failed} = op, _seq),
+    do: terminate_stateful(conn, op, "failed")
+
+  # stateful_stats: connection-count usage ONLY, no stateful_instances row to
+  # touch. Carries {workload, cx_delta, window_ms} from the Task 9 idle-signal
+  # TCP scrape (opaque L4 counts connections, not requests), charged into the
+  # same usage.request_count column serving requests use (the L4 unit of work),
+  # so stateful_instance_id is NULL on this kind by construction and the
+  # (principal, day) accrual stays a pure function of the op.
+  defp project(conn, %Op{kind: :stateful_stats} = op, _seq) do
+    project_usage_stateful(conn, op)
+  end
+
   # Audit-only kinds: no task/result projection.
   defp project(_conn, %Op{kind: kind}, _seq)
        when kind in [:denied, :base_built, :primed, :vm_destroyed, :quota_enforced, :drain] do
@@ -861,6 +1135,74 @@ defmodule Embervm.OpLog.SQLite do
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <- Sqlite3.bind(stmt, [state, reason, op.ts, op.serving_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # Insert a fresh stateful_instances row (stateful_started / stateful_cold_booted).
+  # generation is the volume generation this attach booted with (the pair key
+  # baseline); the bundle fields are NULL until a later stateful_banked stamps them.
+  defp insert_stateful_instance(conn, %Op{} = op, state) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO stateful_instances
+      (instance_id, tenant, principal, workload, state, node_id, vm_id, ip, port,
+       generation, snapshot_ref, snapshot_generation, snapshot_size_bytes,
+       created_at, last_active_at, updated_at, terminal_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, ?, NULL, ?, NULL)
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.stateful_instance_id,
+             op.tenant,
+             op.principal,
+             op.workload,
+             Map.get(payload, :state, state),
+             Map.get(payload, :node_id),
+             Map.get(payload, :vm_id),
+             Map.get(payload, :generation, 0),
+             op.ts,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # Bump the volume row's generation to the attach's post-bump value (every
+  # start/relight/cold-boot bumps the on-disk ledger, decision 2). No-op when the
+  # payload carries no generation. Keeps volumes.generation the authoritative
+  # "current" side of the pair check (bundle.snapshot_generation == this).
+  defp bump_volume_generation(conn, %Op{} = op) do
+    case Map.get(op.payload, :generation) do
+      nil ->
+        :ok
+
+      generation ->
+        sql = "UPDATE volumes SET generation=?, updated_at=? WHERE workload=?"
+
+        with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+             :ok <- Sqlite3.bind(stmt, [generation, op.ts, op.workload]),
+             :done <- Sqlite3.step(conn, stmt),
+             :ok <- Sqlite3.release(conn, stmt) do
+          :ok
+        end
+    end
+  end
+
+  # A terminal stateful-instance transition, mirroring terminate_serving/3.
+  defp terminate_stateful(conn, %Op{} = op, state) do
+    reason = to_string(Map.get(op.payload, :reason, state))
+    sql = "UPDATE stateful_instances SET state=?, terminal_reason=?, updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [state, reason, op.ts, op.stateful_instance_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -960,6 +1302,37 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  # stateful_stats usage: charge the connection delta into usage.request_count
+  # (the L4 unit of work), mirroring project_usage_serving/2. Skips a principal-less
+  # op exactly as the serving path does.
+  defp project_usage_stateful(_conn, %Op{principal: nil}), do: :ok
+
+  defp project_usage_stateful(conn, %Op{payload: payload} = op) do
+    cx_delta = Map.get(payload, :cx_delta, 0)
+
+    sql = """
+    INSERT INTO usage (principal, day, tenant, vcpu_seconds, gb_seconds, task_count, request_count, updated_at)
+    VALUES (?, ?, ?, 0, 0, 0, ?, ?)
+    ON CONFLICT(principal, day) DO UPDATE SET
+      request_count = request_count + excluded.request_count,
+      updated_at = excluded.updated_at
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.principal,
+             div(op.ts, @day_ms),
+             op.tenant,
+             cx_delta,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
   defp to_float(n) when is_number(n), do: n * 1.0
   defp to_float(_), do: 0.0
 
@@ -997,7 +1370,7 @@ defmodule Embervm.OpLog.SQLite do
       {:error, {:compacted, marker}}
     else
       sql = """
-      SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, kind, payload_json
+      SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, kind, payload_json
       FROM ops WHERE seq > ? ORDER BY seq ASC
       """
 
@@ -1013,7 +1386,19 @@ defmodule Embervm.OpLog.SQLite do
   defp collect_ops(conn, stmt, acc) do
     case Sqlite3.step(conn, stmt) do
       {:row,
-       [seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, kind, payload_json]} ->
+       [
+         seq,
+         ts,
+         tenant,
+         principal,
+         workload,
+         task_id,
+         session_id,
+         serving_instance_id,
+         stateful_instance_id,
+         kind,
+         payload_json
+       ]} ->
         op = %Op{
           seq: seq,
           ts: ts,
@@ -1023,6 +1408,7 @@ defmodule Embervm.OpLog.SQLite do
           task_id: task_id,
           session_id: session_id,
           serving_instance_id: serving_instance_id,
+          stateful_instance_id: stateful_instance_id,
           kind: String.to_existing_atom(kind),
           payload: decode_payload(payload_json)
         }
@@ -1171,6 +1557,104 @@ defmodule Embervm.OpLog.SQLite do
         }
 
         collect_serving_instances(conn, stmt, [instance | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
+  defp do_load_stateful_instances(conn) do
+    sql = """
+    SELECT instance_id, tenant, principal, workload, state, node_id, vm_id, ip, port,
+           generation, snapshot_ref, snapshot_generation, snapshot_size_bytes,
+           created_at, last_active_at, updated_at, terminal_reason
+    FROM stateful_instances
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      instances = collect_stateful_instances(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, instances}
+    end
+  end
+
+  defp collect_stateful_instances(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row,
+       [
+         instance_id,
+         tenant,
+         principal,
+         workload,
+         state,
+         node_id,
+         vm_id,
+         ip,
+         port,
+         generation,
+         snapshot_ref,
+         snapshot_generation,
+         snapshot_size_bytes,
+         created_at,
+         last_active_at,
+         updated_at,
+         terminal_reason
+       ]} ->
+        instance = %{
+          instance_id: instance_id,
+          tenant: tenant,
+          principal: principal,
+          workload: workload,
+          state: state,
+          node_id: node_id,
+          vm_id: vm_id,
+          ip: ip,
+          port: port,
+          generation: generation,
+          snapshot_ref: snapshot_ref,
+          snapshot_generation: snapshot_generation,
+          snapshot_size_bytes: snapshot_size_bytes,
+          created_at: created_at,
+          last_active_at: last_active_at,
+          updated_at: updated_at,
+          terminal_reason: terminal_reason
+        }
+
+        collect_stateful_instances(conn, stmt, [instance | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
+  defp do_load_volumes(conn) do
+    sql = """
+    SELECT workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at
+    FROM volumes
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      volumes = collect_volumes(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, volumes}
+    end
+  end
+
+  defp collect_volumes(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row,
+       [workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at]} ->
+        volume = %{
+          workload: workload,
+          node_id: node_id,
+          generation: generation,
+          size_bytes: size_bytes,
+          allocated_bytes: allocated_bytes,
+          created_at: created_at,
+          updated_at: updated_at
+        }
+
+        collect_volumes(conn, stmt, [volume | acc])
 
       :done ->
         Enum.reverse(acc)
@@ -1358,10 +1842,13 @@ defmodule Embervm.OpLog.SQLite do
          {:ok, sessions_compacted} <- delete_terminal_sessions(conn, now_ms, state.retention_ms, batch),
          {:ok, serving_instances_compacted} <-
            delete_terminal_serving_instances(conn, now_ms, state.retention_ms, batch),
+         {:ok, stateful_instances_compacted} <-
+           delete_terminal_stateful_instances(conn, now_ms, state.retention_ms, batch),
          {:ok, ops_compacted, marker} <- compact_ops(conn, now_ms, state.journal_horizon_ms, batch) do
       done =
         results_deleted < batch and tasks_compacted < batch and sessions_compacted < batch and
-          serving_instances_compacted < batch and ops_compacted < batch
+          serving_instances_compacted < batch and stateful_instances_compacted < batch and
+          ops_compacted < batch
 
       {:ok,
        %{
@@ -1369,6 +1856,7 @@ defmodule Embervm.OpLog.SQLite do
          tasks_compacted: tasks_compacted,
          sessions_compacted: sessions_compacted,
          serving_instances_compacted: serving_instances_compacted,
+         stateful_instances_compacted: stateful_instances_compacted,
          ops_compacted: ops_compacted,
          compacted_through: marker,
          done: done
@@ -1416,6 +1904,29 @@ defmodule Embervm.OpLog.SQLite do
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <- Sqlite3.bind(stmt, @serving_terminal_states ++ [cutoff, batch]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt),
+         {:ok, changed} <- Sqlite3.changes(conn) do
+      {:ok, changed}
+    end
+  end
+
+  # Prune terminal stateful-instance projection rows past retention, mirroring
+  # delete_terminal_serving_instances/4. A non-terminal instance is never pruned,
+  # and its ops stay pinned by blocker_seq. The `volumes` table is deliberately
+  # NOT swept: a volume row lives until volume_deleted (data outlives instances).
+  defp delete_terminal_stateful_instances(conn, now_ms, retention_ms, batch) do
+    cutoff = now_ms - retention_ms
+    placeholders = @stateful_terminal_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+
+    sql = """
+    DELETE FROM stateful_instances WHERE rowid IN (
+      SELECT rowid FROM stateful_instances WHERE state IN (#{placeholders}) AND updated_at < ? LIMIT ?
+    )
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, @stateful_terminal_states ++ [cutoff, batch]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt),
          {:ok, changed} <- Sqlite3.changes(conn) do
@@ -1501,6 +2012,7 @@ defmodule Embervm.OpLog.SQLite do
     live_placeholders = @live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
     session_live_placeholders = @session_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
     serving_live_placeholders = @serving_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+    stateful_live_placeholders = @stateful_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
 
     sql = """
     SELECT MIN(seq) FROM ops
@@ -1510,13 +2022,17 @@ defmodule Embervm.OpLog.SQLite do
        OR serving_instance_id IN (
             SELECT instance_id FROM serving_instances WHERE state IN (#{serving_live_placeholders})
           )
+       OR stateful_instance_id IN (
+            SELECT instance_id FROM stateful_instances WHERE state IN (#{stateful_live_placeholders})
+          )
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <-
            Sqlite3.bind(
              stmt,
-             [cutoff] ++ @live_states ++ @session_live_states ++ @serving_live_states
+             [cutoff] ++
+               @live_states ++ @session_live_states ++ @serving_live_states ++ @stateful_live_states
            ) do
       result =
         case Sqlite3.step(conn, stmt) do
@@ -1643,7 +2159,8 @@ defmodule Embervm.OpLog.SQLite do
     with :ok <- migrate_results_headers(conn),
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
-         :ok <- migrate_usage_request_count(conn) do
+         :ok <- migrate_usage_request_count(conn),
+         :ok <- migrate_ops_stateful_instance_id(conn) do
       :ok
     end
   end
@@ -1706,6 +2223,29 @@ defmodule Embervm.OpLog.SQLite do
       else
         Sqlite3.execute(conn, "ALTER TABLE usage ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0")
       end
+    end
+  end
+
+  # R4: the additive nullable `ops.stateful_instance_id` column plus its index,
+  # mirroring migrate_ops_serving_instance_id/1 exactly. A fresh DB already built
+  # the column from the CREATE TABLE (and skips the ALTER), so this only fires on
+  # a DB created before R4; the guard is the same D-R1.2.1/R2/R3 ALTER-after-DDL
+  # precedent. `stateful_instances` and `volumes` are whole new tables, so
+  # `CREATE TABLE IF NOT EXISTS` in @ddl handles both cases; no ALTER is needed
+  # for them.
+  defp migrate_ops_stateful_instance_id(conn) do
+    with {:ok, cols} <- table_columns(conn, "ops"),
+         :ok <-
+           add_column_if_missing(
+             conn,
+             cols,
+             "stateful_instance_id",
+             "ALTER TABLE ops ADD COLUMN stateful_instance_id TEXT"
+           ) do
+      Sqlite3.execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ops_stateful_instance_id_idx ON ops(stateful_instance_id)"
+      )
     end
   end
 

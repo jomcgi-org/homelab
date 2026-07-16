@@ -32,6 +32,7 @@ defmodule Embervm.OpLog do
               task_id: nil,
               session_id: nil,
               serving_instance_id: nil,
+              stateful_instance_id: nil,
               ts: nil,
               payload: %{}
 
@@ -51,6 +52,12 @@ defmodule Embervm.OpLog do
             # way session_id was in R2. A serving op owns its `serving_instances`
             # projection row the way a session op owns its `sessions` row.
             serving_instance_id: String.t() | nil,
+            # Set on stateful_* ops (nil on every other op); the durable
+            # `ops.stateful_instance_id` column (R4), added additively the same
+            # way serving_instance_id was in R3. A stateful op owns its
+            # `stateful_instances` projection row. volume_* ops leave it nil (they
+            # own a `volumes` row keyed by workload, not an instance).
+            stateful_instance_id: String.t() | nil,
             ts: integer(),
             payload: map()
           }
@@ -105,7 +112,31 @@ defmodule Embervm.OpLog do
     :serving_evicted,
     :serving_destroyed,
     :serving_failed,
-    :serving_stats
+    :serving_stats,
+    # Stateful lifecycle (R4). Additive to the closed enum, mirroring the R3
+    # serving kinds: stateful instances and their volumes are durable, ordered,
+    # and auditable exactly like serving instances (ADR embervm/001) and project
+    # into the `stateful_instances` and `volumes` tables (see Embervm.OpLog.SQLite).
+    # volume_created/volume_deleted are the durable-data audit record keyed by
+    # workload (the volume outlives every instance by design). stateful_published/
+    # stateful_unpublished are the L4-endpoint-lifetime audit (who a connection
+    # reaches), distinct from the VM-lifecycle kinds. stateful_cold_booted carries
+    # a reason (generation_mismatch|no_bundle|ledger_unreadable|explicit) so every
+    # discarded-warmth event is reconstructable from the log alone; stateful_relit
+    # carries the matched generation. stateful_stats carries per-listener
+    # connection deltas from the idle-signal scrape (D-R3.2.1 shape at L4).
+    :volume_created,
+    :volume_deleted,
+    :stateful_started,
+    :stateful_published,
+    :stateful_unpublished,
+    :stateful_banked,
+    :stateful_relit,
+    :stateful_cold_booted,
+    :stateful_evicted,
+    :stateful_destroyed,
+    :stateful_failed,
+    :stateful_stats
   ]
 
   @spec kinds() :: [atom()]
@@ -135,6 +166,16 @@ defmodule Embervm.OpLog do
   # (Tasks 7/8), exactly mirroring load_sessions/1. A projection read, never
   # the raw ops log.
   @callback load_serving_instances(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every stateful instance row from the durable `stateful_instances`
+  # projection (R4), for the StatefulStore's boot/adoption rebuild (Tasks 7/8),
+  # exactly mirroring load_serving_instances/1. A projection read, never the raw
+  # ops log.
+  @callback load_stateful_instances(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every volume row from the durable `volumes` projection (R4): the
+  # per-workload durable-data facts (generation, sizes) the StatefulStore rebuilds
+  # its pair-validity view from on boot. A volume row lives until volume_deleted,
+  # outliving every instance by design. A projection read, never the raw ops log.
+  @callback load_volumes(server()) :: {:ok, [map()]} | {:error, term()}
   # Reads one task's stored result from the durable `results` projection, or
   # {:ok, nil} when there is none (never ran, or the TTL sweeper reaped it).
   # This is the result-store read the submit API (Task 8) serves `GET
@@ -180,6 +221,7 @@ defmodule Embervm.OpLog do
                  tasks_compacted: non_neg_integer(),
                  sessions_compacted: non_neg_integer(),
                  serving_instances_compacted: non_neg_integer(),
+                 stateful_instances_compacted: non_neg_integer(),
                  ops_compacted: non_neg_integer(),
                  compacted_through: non_neg_integer(),
                  done: boolean()
