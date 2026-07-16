@@ -354,6 +354,23 @@ func TestBootArgsForServingNIC(t *testing.T) {
 		t.Fatalf("bootArgsFor(empty) = %q, want %q", got, want)
 	}
 
+	// A per-boot harnessInit overrides the driver-global init= (the serving cold-boot
+	// resolves the guest-init path from the runtime image it boots).
+	if override := d.bootArgsFor(coldBootSpec{harnessInit: "/usr/bin/ember-guest-init"}); override != "console=ttyS0 init=/usr/bin/ember-guest-init" {
+		t.Fatalf("bootArgsFor(harnessInit override) = %q, want per-boot init=", override)
+	}
+
+	// Regression guard for the serving cold-boot bug: with the driver-global HarnessInit
+	// EMPTY (as on the daemon driver), a per-boot harnessInit MUST still emit init= or
+	// the kernel drops to /bin/sh and the shim never runs.
+	dNoGlobal := New(Config{KernelBootArgs: "console=ttyS0"}, &fakeLauncher{}, nil)
+	if none := dNoGlobal.bootArgsFor(coldBootSpec{}); none != "console=ttyS0" {
+		t.Fatalf("bootArgsFor(no global, no per-boot) = %q, want no init=", none)
+	}
+	if serving := dNoGlobal.bootArgsFor(coldBootSpec{harnessInit: "/init"}); serving != "console=ttyS0 init=/init" {
+		t.Fatalf("bootArgsFor(no global, per-boot init) = %q, want init=/init", serving)
+	}
+
 	// Serving NIC with no ServingPort (0): appends the ip= directive with a dotted
 	// netmask and NO ember.serving_port= token (the zero-guard: a serving VM whose
 	// port is unset stays on the vsock path).
