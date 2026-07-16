@@ -94,4 +94,41 @@ defmodule Embervm.NodeChannelTest do
 
     assert {:error, :unknown_node} = NodeChannel.get(pid, "not-configured-#{System.unique_integer([:positive])}")
   end
+
+  describe "transport_dead?/1" do
+    test "a transport death WRAPPED as an RPCError (status 2, connection closed) is dead" do
+      # The exact shape the Mint gRPC adapter synthesises when a replaced noded pod's
+      # connection breaks: an UNKNOWN(2) RPCError whose message is a transport failure.
+      # Misclassifying this as a healthy-channel status is what wedged the node.
+      err = %GRPC.RPCError{
+        status: 2,
+        message: "error occurred while receiving data: {:error, \"the connection is closed\"}"
+      }
+
+      assert NodeChannel.transport_dead?(err)
+    end
+
+    test "a real server-returned gRPC status rode a HEALTHY channel (not dead)" do
+      # FAILED_PRECONDITION / RESOURCE_EXHAUSTED etc. are server verdicts: the channel
+      # is fine and must NOT be torn down (D-R2.7.2).
+      refute NodeChannel.transport_dead?(%GRPC.RPCError{status: 9, message: "snapshot lost"})
+      refute NodeChannel.transport_dead?(%GRPC.RPCError{status: 8, message: "cap reached"})
+      # An UNKNOWN(2) that is NOT a connection-closed message is also left as a status.
+      refute NodeChannel.transport_dead?(%GRPC.RPCError{status: 2, message: "boom"})
+    end
+
+    test "raw transport errors are dead" do
+      assert NodeChannel.transport_dead?(:closed)
+      assert NodeChannel.transport_dead?({:error, :closed})
+      # Mint's transport error is matched structurally (by __struct__), so the map form
+      # exercises the same clause without a compile-time dependency on the Mint struct.
+      assert NodeChannel.transport_dead?(%{__struct__: Mint.TransportError, reason: :closed})
+    end
+
+    test "unrelated reasons are not dead" do
+      refute NodeChannel.transport_dead?(:timeout)
+      refute NodeChannel.transport_dead?({:error, :whatever})
+      refute NodeChannel.transport_dead?(:some_atom)
+    end
+  end
 end

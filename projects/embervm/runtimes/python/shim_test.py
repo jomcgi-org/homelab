@@ -677,3 +677,122 @@ def test_cold_boot_hydrate_missing_byte_count_raises(tmp_path, monkeypatch):
     monkeypatch.delenv(shim.HANDLER_ZIP_BYTES_ENV, raising=False)
     with pytest.raises(ValueError):
         shim._cold_boot_hydrate(state)
+
+
+# ---------------------------------------------------------------------------
+# Serving mode: the guest is a web server, so the handler owns its routes and
+# any method/path (browser GET included) reaches it, while /shim/* stays reserved.
+# ---------------------------------------------------------------------------
+
+
+def _run_serving_server(state, invoke_path="/invoke"):
+    """Start a TCP server whose handler is in SERVING mode (serving=True)."""
+    cls = shim.make_request_handler(state, invoke_path, serving=True)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), cls)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+# A handler that echoes the request method + path so a test can prove the real
+# request context (not a fixed /invoke) reached it.
+_ECHO_METHOD_PATH = (
+    b"def handle(event, context):\n"
+    b"    return {'statusCode': 200, 'body': event['httpMethod'] + ' ' + event['path']}\n"
+)
+
+
+def _serving_state_ready(tmp_path, monkeypatch, handler_src=_ECHO_METHOD_PATH):
+    monkeypatch.setattr(shim, "UNPACK_DIR", str(tmp_path / "ember-app"))
+    state = _new_state()
+    shim.hydrate(state, _zip_bytes({"app.py": handler_src}))
+    assert state.is_ready()
+    return state
+
+
+def test_serving_get_any_path_invokes_handler(tmp_path, monkeypatch, isolated_imports):
+    # The core Fix-B behaviour: in serving mode a browser-style GET to an app path
+    # (NOT /invoke) reaches the handler, carrying the real method + path.
+    state = _serving_state_ready(tmp_path, monkeypatch)
+    server, _t = _run_serving_server(state)
+    try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("GET", "/og-image?title=hi")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.read() == b"GET /og-image"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_serving_post_any_path_invokes_handler(tmp_path, monkeypatch, isolated_imports):
+    state = _serving_state_ready(tmp_path, monkeypatch)
+    server, _t = _run_serving_server(state)
+    try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", "/whatever", body=b"x")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.read() == b"POST /whatever"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_serving_reserves_shim_namespace(tmp_path, monkeypatch, isolated_imports):
+    # /shim/healthz stays the shim's (200), and an unknown /shim/* is a 404, never
+    # routed to the handler even in serving mode.
+    state = _serving_state_ready(tmp_path, monkeypatch)
+    server, _t = _run_serving_server(state)
+    try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("GET", shim.HEALTHZ_PATH)
+        assert conn.getresponse().status == 200
+
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("GET", "/shim/bogus")
+        assert conn.getresponse().status == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_non_serving_get_is_404_unchanged(tmp_path, monkeypatch, isolated_imports):
+    # Task/session (non-serving) mode is byte-unchanged: a GET to an app path (or to
+    # /invoke) is 404; only POST /invoke invokes the handler.
+    state = _serving_state_ready(tmp_path, monkeypatch)
+    server, _t = _run_server(state)  # non-serving
+    try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("GET", "/invoke")
+        assert conn.getresponse().status == 404
+
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("POST", "/invoke", body=b"x")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.read() == b"POST /invoke"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_serving_head_has_no_body_but_content_length(
+    tmp_path, monkeypatch, isolated_imports
+):
+    # HEAD invokes the handler (to compute headers incl. Content-Length) but returns
+    # no body, per RFC 7231.
+    state = _serving_state_ready(tmp_path, monkeypatch)
+    server, _t = _run_serving_server(state)
+    try:
+        conn = HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("HEAD", "/og-image")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        # Content-Length reflects the (suppressed) body "HEAD /og-image".
+        assert resp.getheader("Content-Length") == str(len(b"HEAD /og-image"))
+        assert resp.read() == b""
+    finally:
+        server.shutdown()
+        server.server_close()

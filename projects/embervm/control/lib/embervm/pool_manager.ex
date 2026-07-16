@@ -112,6 +112,7 @@ defmodule Embervm.PoolManager do
       dispatcher: Keyword.get(opts, :dispatcher, Embervm.Dispatcher),
       clock: Keyword.get(opts, :clock, &default_mono/0),
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
       deposit_fun: Keyword.get(opts, :deposit_fun, &Embervm.Dispatcher.deposit/4),
       status_writer: Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3),
@@ -281,6 +282,7 @@ defmodule Embervm.PoolManager do
   defp start_prime_worker(state, node_id, wl, snapshot_ref) do
     owner = self()
     channel_fun = state.channel_fun
+    invalidate_fun = state.invalidate_fun
     prime_fun = state.prime_fun
 
     {pid, ref} =
@@ -290,11 +292,19 @@ defmodule Embervm.PoolManager do
             {:ok, channel} ->
               req = %PrimeRequest{trace: %Trace{workload: wl}, snapshot_ref: snapshot_ref || ""}
 
-              try do
-                prime_fun.(channel, req)
-              catch
-                kind, reason -> {:error, {kind, reason}}
-              end
+              res =
+                try do
+                  prime_fun.(channel, req)
+                catch
+                  kind, reason -> {:error, {kind, reason}}
+                end
+
+              # A transport death (a replaced noded pod's broken connection, wrapped
+              # by the Mint adapter as an RPCError) must tear the cached channel down
+              # so the NEXT refill tick re-dials; otherwise every Prime reuses the dead
+              # channel and the node wedges (Embervm.NodeChannel.transport_dead?/1).
+              maybe_invalidate_prime(res, invalidate_fun, node_id, channel)
+              res
 
             {:error, reason} ->
               {:error, {:connect, reason}}
@@ -466,4 +476,14 @@ defmodule Embervm.PoolManager do
   defp default_prime(channel, %PrimeRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.prime(channel, req)
   end
+
+  # Tear the shared channel down when a Prime failed because the channel's transport
+  # is dead, so the next refill tick re-dials to the (Service-DNS) node address. A
+  # server status leaves the channel up; only transport_dead?/1 shapes invalidate.
+  defp maybe_invalidate_prime({:error, reason}, invalidate_fun, node_id, channel) do
+    if Embervm.NodeChannel.transport_dead?(reason), do: invalidate_fun.(node_id, channel)
+    :ok
+  end
+
+  defp maybe_invalidate_prime(_result, _invalidate_fun, _node_id, _channel), do: :ok
 end

@@ -63,6 +63,7 @@ defmodule Embervm.ServingManagerTest do
         catalog_table: cat_table,
         clock: Keyword.get(opts, :clock, fn -> 1_000 end),
         channel_fun: fn _node -> {:ok, :ch} end,
+        invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_serving_fun: start_serving_fun,
         reconcile_interval_ms: 0,
         id_fun: id_seq(suffix)
@@ -201,6 +202,44 @@ defmodule Embervm.ServingManagerTest do
     Agent.update(fail?, fn _ -> false end)
     assert {:ok, %{ip: "10.99.0.5", port: 8080}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
     assert ServingStore.published_endpoints(ctx.store, "wl-a") == [%{ip: "10.99.0.5", port: 8080}]
+  end
+
+  test "a transport-dead wake invalidates the channel so the next miss re-dials" do
+    # Regression for the noded-pod-restart wedge: a StartServing failing because the
+    # channel's transport is dead (wrapped as an RPCError) must tear the cached channel
+    # down, else serving stays wedged on that node until the control plane restarts.
+    test_pid = self()
+    dead = %GRPC.RPCError{status: 2, message: "error occurred while receiving data: the connection is closed"}
+
+    ctx =
+      start_stack(
+        start_serving_fun: fn _ch, _req -> {:error, dead} end,
+        invalidate_fun: fn node_id, chan -> send(test_pid, {:invalidated, node_id, chan}) end,
+        wake_max: 100
+      )
+
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+
+    assert {:error, {:wake_failed, _}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    assert_receive {:invalidated, "node-4", :ch}, 1_000
+  end
+
+  test "a server-status wake failure leaves the channel up (no needless invalidate)" do
+    test_pid = self()
+
+    ctx =
+      start_stack(
+        start_serving_fun: fn _ch, _req -> {:error, %GRPC.RPCError{status: 9, message: "snapshot lost"}} end,
+        invalidate_fun: fn node_id, chan -> send(test_pid, {:invalidated, node_id, chan}) end,
+        wake_max: 100
+      )
+
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4")
+
+    assert {:error, {:wake_failed, _}} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    refute_receive {:invalidated, _, _}, 300
   end
 
   # -- straggler -------------------------------------------------------------

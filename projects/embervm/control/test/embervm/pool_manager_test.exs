@@ -26,10 +26,13 @@ defmodule Embervm.PoolManagerTest do
     {:ok, primes} = Agent.start_link(fn -> [] end)
     {:ok, status} = Agent.start_link(fn -> [] end)
 
-    prime_fun = fn _ch, %PrimeRequest{trace: %Trace{workload: wl}} ->
+    default_prime_fun = fn _ch, %PrimeRequest{trace: %Trace{workload: wl}} ->
       Agent.update(primes, &[wl | &1])
       {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}}
     end
+
+    prime_fun = Keyword.get(opts, :prime_fun, default_prime_fun)
+    invalidate_fun = Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end)
 
     status_writer = fn _ns, name, map ->
       Agent.update(status, &[{name, map} | &1])
@@ -45,6 +48,7 @@ defmodule Embervm.PoolManagerTest do
           depth_table: depth_table,
           clock: fn -> 1_000_000 end,
           channel_fun: fn _ -> {:ok, :ch} end,
+          invalidate_fun: invalidate_fun,
           prime_fun: prime_fun,
           deposit_fun: fn _srv, _node, _wl, _vm -> :ok end,
           status_writer: status_writer,
@@ -84,6 +88,43 @@ defmodule Embervm.PoolManagerTest do
   defp prime_counts(ctx) do
     Process.sleep(50)
     ctx.primes |> Agent.get(& &1) |> Enum.frequencies()
+  end
+
+  test "a transport-dead Prime invalidates the channel so the next tick re-dials" do
+    # Regression for the noded-pod-restart wedge: a Prime failing because the channel's
+    # transport is dead (wrapped by the Mint adapter as an RPCError) must tear the
+    # cached channel down; otherwise every refill reuses the dead channel forever.
+    test_pid = self()
+    dead = %GRPC.RPCError{status: 2, message: "error occurred while receiving data: the connection is closed"}
+
+    ctx =
+      start_pool(
+        prime_fun: fn _ch, _req -> {:error, dead} end,
+        invalidate_fun: fn node_id, chan -> send(test_pid, {:invalidated, node_id, chan}) end
+      )
+
+    put_catalog(ctx, "wl", 1)
+    put_facts(ctx, [{"wl", 0}], max: 10)
+    :ok = PoolManager.refill(ctx.pool)
+
+    assert_receive {:invalidated, "node-4", :ch}, 1_000
+  end
+
+  test "a server-status Prime failure leaves the channel up (no needless invalidate)" do
+    test_pid = self()
+    server_err = %GRPC.RPCError{status: 9, message: "snapshot lost"}
+
+    ctx =
+      start_pool(
+        prime_fun: fn _ch, _req -> {:error, server_err} end,
+        invalidate_fun: fn node_id, chan -> send(test_pid, {:invalidated, node_id, chan}) end
+      )
+
+    put_catalog(ctx, "wl", 1)
+    put_facts(ctx, [{"wl", 0}], max: 10)
+    :ok = PoolManager.refill(ctx.pool)
+
+    refute_receive {:invalidated, _, _}, 300
   end
 
   test "floor-first: primes each workload up to its floor" do

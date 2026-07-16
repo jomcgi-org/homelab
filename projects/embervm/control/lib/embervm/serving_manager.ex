@@ -158,6 +158,7 @@ defmodule Embervm.ServingManager do
       # Daemon serving-verb seams (injected for tests; production dials the real
       # NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       start_serving_fun: Keyword.get(opts, :start_serving_fun, &default_start_serving/2),
       # workload -> [{from, req, principal}] parked behind an in-flight wake, so
       # concurrent misses share ONE StartServing (single-flight). The first miss
@@ -958,7 +959,21 @@ defmodule Embervm.ServingManager do
 
   defp safe_start_serving(state, node_id, req) do
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
-      state.start_serving_fun.(channel, req)
+      case state.start_serving_fun.(channel, req) do
+        {:error, reason} = err ->
+          # A wake that failed because the channel's transport is dead (a replaced
+          # noded pod, wrapped by the Mint adapter as an RPCError) must tear the cached
+          # channel down so the NEXT miss re-dials; else serving stays wedged on that
+          # node until the control plane restarts (Embervm.NodeChannel.transport_dead?/1).
+          if Embervm.NodeChannel.transport_dead?(reason) do
+            _ = state.invalidate_fun.(node_id, channel)
+          end
+
+          err
+
+        other ->
+          other
+      end
     end
   rescue
     e -> {:error, {:start_serving_raised, e}}

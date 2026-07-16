@@ -391,11 +391,21 @@ defmodule Embervm.Session do
   end
 
   # Only a TRANSPORT fault means the shared node channel is bad and must be torn
-  # down. A server-returned gRPC status (%GRPC.RPCError{}) rode a HEALTHY channel to
-  # get here, so invalidating it would needlessly disconnect every other session
-  # sharing that channel (D-R2.7.2). Leave the channel up on any server status;
-  # invalidate only on a raw transport error (Mint.TransportError, :closed, etc.).
-  defp maybe_invalidate(_ctx, _channel, %GRPC.RPCError{}), do: :ok
+  # down. A real server-returned gRPC status rode a HEALTHY channel to get here, so
+  # invalidating it would needlessly disconnect every other session sharing that
+  # channel (D-R2.7.2). BUT the Mint adapter WRAPS a transport death (a replaced noded
+  # pod's broken connection) as a %GRPC.RPCError{status: 2} "...the connection is
+  # closed": treating that as a healthy-channel status is what wedged the node on a
+  # noded pod restart, so invalidate when transport_dead?/1 recognises the wrapped
+  # shape. Any non-RPCError reason (raw transport error, closed socket) stays
+  # invalidate-always, unchanged.
+  defp maybe_invalidate(ctx, channel, %GRPC.RPCError{} = reason) do
+    if Embervm.NodeChannel.transport_dead?(reason) do
+      _ = ctx.invalidate_fun.(ctx.node_id, channel)
+    end
+
+    :ok
+  end
 
   defp maybe_invalidate(ctx, channel, _reason) do
     _ = ctx.invalidate_fun.(ctx.node_id, channel)
