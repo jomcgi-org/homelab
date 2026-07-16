@@ -156,7 +156,11 @@ func nftRuleset(bridge, podIP string, entries []dnatEntry) string {
 		// eth0, not the bridge), and their reply is ct-established, so no filter rule is
 		// needed; inbound NEW falls through to the forward policy accept.
 		fmt.Fprintf(&b, "add chain inet %s %s { type nat hook prerouting priority dstnat; policy accept; }\n", nftTable, nftDNATChain)
-		for _, e := range entries {
+		// Sort a copy by vmPort (== tap-IP order) so the generated script is a
+		// deterministic pure function of the entry SET regardless of input order.
+		sorted := append([]dnatEntry(nil), entries...)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].vmPort < sorted[j].vmPort })
+		for _, e := range sorted {
 			fmt.Fprintf(&b, "add rule inet %s %s ip daddr %s tcp dport %d dnat ip to %s:%d\n",
 				nftTable, nftDNATChain, podIP, e.vmPort, e.tapIP, e.guestPort)
 		}
@@ -314,14 +318,13 @@ func (m *Manager) applyRulesetLocked(ctx context.Context) error {
 	return applyRuleset(ctx, m.runner, nftRuleset(m.bridge, m.podIP, m.dnatEntriesLocked()))
 }
 
-// dnatEntriesLocked returns the DNAT map as a slice sorted by vmPort (== tap-IP order),
-// for deterministic ruleset generation. Caller holds dnatMu.
+// dnatEntriesLocked returns the DNAT map as a slice (unordered); nftRuleset sorts it
+// deterministically, so the map's iteration order does not matter. Caller holds dnatMu.
 func (m *Manager) dnatEntriesLocked() []dnatEntry {
 	out := make([]dnatEntry, 0, len(m.dnat))
 	for _, e := range m.dnat {
 		out = append(out, e)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].vmPort < out[j].vmPort })
 	return out
 }
 
