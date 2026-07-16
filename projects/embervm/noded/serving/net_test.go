@@ -68,7 +68,7 @@ func TestTapSetupAndTeardownArgs(t *testing.T) {
 	}
 }
 
-// TestNftRuleset asserts the ingress-only ruleset as data: a dedicated table, a
+// TestNftRuleset asserts the serving forward ruleset as data: a dedicated table, a
 // forward chain, established/related accept, and a drop of VM-originated NEW
 // forwarding off the bridge interface.
 func TestNftRuleset(t *testing.T) {

@@ -2,9 +2,13 @@
 // A serving-class microVM (R3) is long-lived and answers HTTP DIRECTLY over a tap
 // NIC on a per-node bridge, unlike the vsock-only task/session classes. This
 // package owns the host side of that: the per-node bridge, one tap per VM attached
-// to it, static IP allocation from a reserved CIDR, the ingress-only nftables
-// posture on the bridge, and the per-VM health-probe loop the daemon REPORTS (but
-// never acts on) in NodeStatus.
+// to it, static IP allocation from a reserved CIDR, the forward-hook nftables posture
+// on the bridge, and the per-VM health-probe loop the daemon REPORTS (but never acts
+// on) in NodeStatus. v1 filters only the forward hook: it drops VM-originated NEW
+// FORWARDING (external egress) while allowing established/related return traffic. It
+// does NOT filter the input hook, so a serving guest can still reach host-local
+// services (the bridge gateway, the node IP); constraining that is folded into the
+// recorded egress-hardening follow-on (standing decision 6, brokered egress).
 //
 // Networking is done by execing the host `ip` and `nft` binaries (baked into the
 // noded image via apko), NOT a netlink library: there is no netlink dependency in
@@ -23,15 +27,17 @@ import (
 	"strings"
 )
 
-// nftTable is the DEDICATED nftables table the daemon owns for serving ingress
+// nftTable is the DEDICATED nftables table the daemon owns for the serving forward
 // posture. Teardown flushes only this table, so the daemon never touches or stomps
 // any other host firewall state (kube-proxy, CNI, node firewall).
 const nftTable = "embervm_serving"
 
-// nftChain is the forward-hook chain inside nftTable that enforces the ingress-only
-// posture: established/related return traffic is accepted (so responses to inbound
-// requests flow), and VM-originated NEW forwarding is dropped (serving egress stays
-// deny-by-default at the tap in v1; brokered egress is a recorded follow-on).
+// nftChain is the forward-hook chain inside nftTable. v1 filters the forward hook
+// only: established/related return traffic is accepted (so responses to inbound
+// requests flow), and VM-originated NEW forwarding is dropped (external egress is
+// deny-by-default in v1). It does NOT filter the input hook, so VM-to-host-local
+// traffic is unconstrained in v1; that is part of the recorded egress-hardening
+// follow-on (standing decision 6, brokered egress).
 const nftChain = "forward"
 
 // Runner executes a host command and returns its combined output. The real
@@ -85,14 +91,16 @@ func tapTeardownArgs(tap string) []string {
 	return []string{"ip", "link", "del", tap}
 }
 
-// nftRuleset returns the `nft -f -` ruleset text that installs the ingress-only
-// posture on the serving bridge as a self-contained, idempotent script: it flushes
-// and recreates ONLY the dedicated embervm_serving table, so applying it is safe to
-// repeat and never touches other tables. The forward chain accepts established/
-// related return traffic and drops NEW traffic whose input interface is the bridge
-// (VM-originated forwarding), leaving inbound request forwarding (dest = a VM) to the
-// kernel's normal forward path. It is a pure function of the bridge name so the exact
-// ruleset is asserted as data in a table test.
+// nftRuleset returns the `nft -f -` ruleset text that installs the serving FORWARD
+// posture on the bridge as a self-contained, idempotent script: it flushes and
+// recreates ONLY the dedicated embervm_serving table, so applying it is safe to repeat
+// and never touches other tables. The forward chain accepts established/related return
+// traffic and drops NEW traffic whose input interface is the bridge (VM-originated
+// forwarding, i.e. external egress), leaving inbound request forwarding (dest = a VM)
+// to the kernel's normal forward path. This filters the forward hook ONLY: v1 does not
+// constrain VM-to-host-local traffic on the input hook (that is the recorded egress
+// follow-on, standing decision 6). It is a pure function of the bridge name so the
+// exact ruleset is asserted as data in a table test.
 func nftRuleset(bridge string) string {
 	// `flush table` before `table` makes the script idempotent: a re-apply replaces
 	// the table's contents wholesale. `add table` is a no-op if it exists, so the
@@ -106,14 +114,17 @@ func nftRuleset(bridge string) string {
 	// Return traffic for an established inbound flow is always allowed.
 	fmt.Fprintf(&b, "add rule inet %s %s ct state established,related accept\n", nftTable, nftChain)
 	// VM-originated NEW forwarding (packets entering the forward path FROM the bridge,
-	// i.e. sourced by a serving VM) is dropped: serving VMs are ingress-only in v1.
+	// i.e. sourced by a serving VM) is dropped: v1 denies external egress at the forward
+	// hook. VM-to-host-local traffic on the input hook is not filtered in v1.
 	fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" ct state new drop\n", nftTable, nftChain, bridge)
 	return b.String()
 }
 
 // nftTeardownArgs returns the argv to remove the dedicated serving table entirely
-// (scoped: only our table). Idempotent at the call site (an absent table is treated
-// as already-gone). Pure for table testing.
+// (scoped: only our table). It is provided for a FUTURE teardown call site (the daemon
+// never tears the table down today: EnsureNetwork re-applies it idempotently on every
+// start). `nft delete table` errors on an absent table, so whatever call site wires
+// this in MUST tolerate that (e.g. ignore a not-found error). Pure for table testing.
 func nftTeardownArgs() []string {
 	return []string{"nft", "delete", "table", "inet", nftTable}
 }
@@ -162,9 +173,10 @@ func (m *Manager) CIDR() string {
 	return m.cidr.String()
 }
 
-// EnsureNetwork creates the bridge (idempotently) and installs the ingress-only
-// nftables posture. It is called once on daemon start before any serving VM is
-// brought up. Bridge-create batches that fail because the device already exists are
+// EnsureNetwork creates the bridge (idempotently) and installs the serving forward
+// nftables posture (drop VM-originated NEW forwarding; see nftRuleset). It is called
+// once on daemon start before any serving VM is brought up. Bridge-create batches that
+// fail because the device already exists are
 // tolerated (a daemon restart re-enters here with the bridge already present); the
 // nftables apply is inherently idempotent (flush-then-define of our own table).
 func (m *Manager) EnsureNetwork(ctx context.Context) error {
@@ -179,7 +191,7 @@ func (m *Manager) EnsureNetwork(ctx context.Context) error {
 	return m.applyNftables(ctx)
 }
 
-// applyNftables installs the ingress-only ruleset via `nft -f <file>` (see
+// applyNftables installs the serving forward ruleset via `nft -f <file>` (see
 // applyRuleset for why a temp file rather than a stdin pipe).
 func (m *Manager) applyNftables(ctx context.Context) error {
 	return applyRuleset(ctx, m.runner, nftRuleset(m.bridge))

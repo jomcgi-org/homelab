@@ -16,7 +16,7 @@ import (
 // concrete Manager) so a Server built without serving support still compiles and so
 // a reviewer sees exactly which network operations the serving handlers perform.
 type servingNetwork interface {
-	// EnsureNetwork creates the bridge and installs the ingress-only nftables posture
+	// EnsureNetwork creates the bridge and installs the serving forward nftables posture
 	// (idempotent), called once on daemon start.
 	EnsureNetwork(ctx context.Context) error
 	// AllocateTap allocates the next free IP and creates its tap; used by fresh start.
@@ -78,6 +78,12 @@ type servingEntry struct {
 	ip       net.IP
 	port     uint32
 	tap      string
+	// snapshotRef is the serving snapshot this VM was RELIT from, or "" for a fresh
+	// cold boot (which has no source snapshot). It correlates a live serving VM to the
+	// banked ref it depends on, so EvictSnapshot can refuse to delete a bundle out from
+	// under a live relit VM (mirrors the session in-use guard). A banked-then-relit VM
+	// keeps its source ref banked until the next StopServing(BANK) supersedes it.
+	snapshotRef string
 	// probe is the running health-probe loop for this VM; Stop() cancels it on
 	// teardown. Its latest Result() feeds NodeStatus.serving_vms.healthy.
 	probe *serving.ProbeHandle
@@ -148,6 +154,7 @@ type servingView struct {
 	port            uint32
 	healthy         bool
 	lastProbeUnixMs int64
+	snapshotRef     string
 }
 
 // snapshot returns a copy of every live serving VM including its current health
@@ -170,6 +177,19 @@ func (r *servingRegistry) snapshot() []servingView {
 			v.lastProbeUnixMs = res.LastProbeUnixMs
 		}
 		out = append(out, v)
+	}
+	return out
+}
+
+// snapshotWithRefs returns every live serving VM's vmID and the source snapshotRef it
+// was relit from, for the EvictSnapshot in-use guard (refusing to evict a bundle a
+// live VM was relit from). Mirrors the session registry's snapshotWithRefs.
+func (r *servingRegistry) snapshotWithRefs() []servingView {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]servingView, 0, len(r.vms))
+	for _, e := range r.vms {
+		out = append(out, servingView{vmID: e.vmID, snapshotRef: e.snapshotRef})
 	}
 	return out
 }

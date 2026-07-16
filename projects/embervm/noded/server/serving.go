@@ -16,10 +16,6 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
-// servingReadyTimeout bounds the post-start health-gate on the tap for a serving VM.
-// A fresh serving start is a cold boot (guest init), so it uses the longer cold-boot
-// budget; a relight resumes a warm snapshot, so it uses the short restore budget.
-
 // StartServing brings up a serving VM (fresh cold boot with a NIC, or relight from a
 // banked serving snapshot), allocates a tap IP, health-gates the guest HTTP server
 // over the tap, starts the per-VM health probe, and returns {vm_id, ip, port}. A
@@ -93,7 +89,8 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot serving vm: %v", err)
 	}
-	return s.finishServingStart(ctx, h, workload, ip, port, healthPath, s.cfg.BootReadyTimeout)
+	// A fresh cold boot has NO source snapshot ref (empty), so it never guards a bundle.
+	return s.finishServingStart(ctx, h, workload, "", ip, port, healthPath, s.cfg.BootReadyTimeout)
 }
 
 // startServingRelight resumes a banked serving snapshot (which already carries its NIC
@@ -132,27 +129,30 @@ func (s *Server) startServingRelight(ctx context.Context, req *nodev1.StartServi
 		// The snapshot is left on disk (never deleted on a failed restore).
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight serving snapshot %q: %v", ref, err)
 	}
-	return s.finishServingStart(ctx, h, workload, ip, port, healthPath, s.cfg.RestoreReadyTimeout)
+	// The relit VM depends on ref: record it so EvictSnapshot refuses to delete the
+	// bundle out from under this live VM (D-R3.4.1 relight-from state).
+	return s.finishServingStart(ctx, h, workload, ref, ip, port, healthPath, s.cfg.RestoreReadyTimeout)
 }
 
 // finishServingStart is the shared tail of both source modes: health-gate the guest
 // over the tap, and on success register the live serving VM and start its health
 // probe. On a readiness failure it reaps the VM and releases the tap (no half-alive
 // endpoint), returning FAILED_PRECONDITION.
-func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, workload string, ip net.IP, port uint32, healthPath string, readyBudget time.Duration) (*nodev1.StartServingResponse, error) {
+func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, workload, sourceRef string, ip net.IP, port uint32, healthPath string, readyBudget time.Duration) (*nodev1.StartServingResponse, error) {
 	if err := s.waitServingReady(ctx, ip, port, healthPath, readyBudget); err != nil {
 		s.reapServing(h, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving guest not ready over tap: %v", err)
 	}
 	probe := serving.StartProbe(s.newProber(), ip, port, healthPath)
 	s.servingVMs.add(&servingEntry{
-		vmID:     h.ID,
-		workload: workload,
-		handle:   h,
-		ip:       ip,
-		port:     port,
-		tap:      serving.TapNameForIP(ip),
-		probe:    probe,
+		vmID:        h.ID,
+		workload:    workload,
+		handle:      h,
+		ip:          ip,
+		port:        port,
+		tap:         serving.TapNameForIP(ip),
+		probe:       probe,
+		snapshotRef: sourceRef,
 	})
 	s.signalChange()
 	return &nodev1.StartServingResponse{VmId: h.ID, Ip: ip.String(), Port: port}, nil
