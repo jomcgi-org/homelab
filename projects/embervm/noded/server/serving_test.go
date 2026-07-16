@@ -92,17 +92,29 @@ func (f *fakeServingNet) pinReacquires() []string {
 // fakeServingDriver is a servingDriver that cold-boots (ClaimServing) and banks/
 // relights serving VMs in memory, recording the pinned IP so a relight round-trips it.
 type fakeServingDriver struct {
-	mu           sync.Mutex
-	live         int
-	claims       int
-	banked       map[string]string // snapshotRef -> pinnedIP
-	servingDir   string
-	failClaim    error
-	lastClaimNIC substrate.NICSpec
+	mu                 sync.Mutex
+	live               int
+	claims             int
+	banked             map[string]string // snapshotRef -> pinnedIP
+	handlers           map[string]string // baseKey -> handler artifact path (written)
+	handlerRuntimeRefs map[string]string // baseKey -> runtime image ref sidecar
+	servingDir         string
+	failClaim          error
+	lastClaimNIC       substrate.NICSpec
+	// lastHandlerDiskPath/lastHandlerZipBytes record the handler-disk args the last
+	// ClaimServing carried, so a test can assert the serving cold boot attached the
+	// artifact drive with the exact byte length (D-R3.11.2).
+	lastHandlerDiskPath string
+	lastHandlerZipBytes int64
 }
 
 func newFakeServingDriver(dir string) *fakeServingDriver {
-	return &fakeServingDriver{banked: map[string]string{}, servingDir: filepath.Join(dir, "serving")}
+	return &fakeServingDriver{
+		banked:             map[string]string{},
+		handlers:           map[string]string{},
+		handlerRuntimeRefs: map[string]string{},
+		servingDir:         filepath.Join(dir, "serving"),
+	}
 }
 
 // writeFile writes s to path 0600, failing the test on error.
@@ -113,7 +125,7 @@ func writeFile(t *testing.T, path, s string) {
 	}
 }
 
-func (f *fakeServingDriver) ClaimServing(_ context.Context, _ string, _ string, _ int, _ int, nic substrate.NICSpec) (substrate.Handle, error) {
+func (f *fakeServingDriver) ClaimServing(_ context.Context, _ string, _ string, _ int, _ int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -122,7 +134,39 @@ func (f *fakeServingDriver) ClaimServing(_ context.Context, _ string, _ string, 
 	f.live++
 	f.claims++
 	f.lastClaimNIC = nic
+	f.lastHandlerDiskPath = handlerDiskPath
+	f.lastHandlerZipBytes = handlerZipBytes
 	return substrate.Handle{ID: "serv-vm-" + strconv.Itoa(f.claims), ThreadID: "t-" + strconv.Itoa(f.claims), Node: "node-4"}, nil
+}
+
+// WriteServingHandlerArtifact records the handler artifact + runtime ref for a base key
+// and returns a deterministic fake path + the byte length, mirroring the real driver.
+func (f *fakeServingDriver) WriteServingHandlerArtifact(baseKey, runtimeImageRef string, zip []byte) (string, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	path := filepath.Join(f.servingDir, "..", "bases", baseKey, "handler.zip")
+	f.handlers[baseKey] = path
+	f.handlerRuntimeRefs[baseKey] = runtimeImageRef
+	return path, int64(len(zip)), nil
+}
+
+// ServingHandlerArtifactPath reports the recorded artifact path for a base key.
+func (f *fakeServingDriver) ServingHandlerArtifactPath(baseKey string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.handlers[baseKey]
+	return p, ok
+}
+
+// ScanServingHandlerArtifacts returns the recorded artifacts as a startup-rescan would.
+func (f *fakeServingDriver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifact {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]substrate.ServingHandlerArtifact, 0, len(f.handlers))
+	for k, p := range f.handlers {
+		out = append(out, substrate.ServingHandlerArtifact{BaseKey: k, Path: p, RuntimeImageRef: f.handlerRuntimeRefs[k]})
+	}
+	return out
 }
 
 // SnapshotServing records the bank (with its pinned IP) but does NOT decrement live:
@@ -235,6 +279,16 @@ func newServingTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeServingD
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	s.memHeadroom = func() uint64 { return 0 }
+	// Seed a built serving image "img-a" mapping to the runtime rootfs "img-a" and a
+	// handler artifact, so a fresh cold boot resolves the serving-images inventory
+	// (D-R3.11.2) exactly as a real BuildBase would have populated it.
+	s.servingImage.add(servingImageEntry{
+		baseKey:         "img-a",
+		workload:        "wl-serve",
+		handlerPath:     "/disks/bases/img-a/handler.zip",
+		runtimeImageRef: "img-a",
+		sizeBytes:       2048,
+	})
 	return s, fsn, fsd
 }
 
@@ -245,7 +299,7 @@ const servingHealthPath = "/healthz"
 func startFresh(t *testing.T, s *Server, port uint32) *nodev1.StartServingResponse {
 	t.Helper()
 	resp, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
-		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{SnapshotRef: "img-a"}},
+		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
 		Port:       port,
 		HealthPath: servingHealthPath,
 		Trace:      &nodev1.Trace{Workload: "wl-serve"},
@@ -277,6 +331,15 @@ func TestStartServingFresh(t *testing.T) {
 	if fsd.lastClaimNIC.IP != "127.0.0.1" || fsd.lastClaimNIC.GatewayIP != "172.31.0.1" {
 		t.Errorf("NIC not configured correctly: %+v", fsd.lastClaimNIC)
 	}
+	// The cold boot also carried the handler-disk artifact (path + EXACT byte length),
+	// resolved from the seeded serving-images inventory (D-R3.11.2), so the guest can
+	// import the handler off the second drive and read only the payload.
+	if fsd.lastHandlerDiskPath != "/disks/bases/img-a/handler.zip" {
+		t.Errorf("handler disk path = %q want the seeded artifact path", fsd.lastHandlerDiskPath)
+	}
+	if fsd.lastHandlerZipBytes != 2048 {
+		t.Errorf("handler zip bytes = %d want 2048 (exact length for the EOCD-padding defence)", fsd.lastHandlerZipBytes)
+	}
 	// The live serving VM is reported in NodeStatus.serving_vms and counted in live_vms,
 	// but NOT in any primed pool.
 	ns := s.nodeStatus()
@@ -299,7 +362,7 @@ func TestStartServingFreshUnknownImage(t *testing.T) {
 	_, port := healthServer(t, servingHealthPath)
 	s, _, _ := newServingTestServer(t)
 	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
-		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{SnapshotRef: "nope"}},
+		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "nope"}},
 		Port:       port,
 		HealthPath: servingHealthPath,
 	})
@@ -314,7 +377,7 @@ func TestStartServingReadinessFailureReapsAndReleases(t *testing.T) {
 	s, fsn, fsd := newServingTestServer(t)
 	s.cfg.BootReadyTimeout = 300 * time.Millisecond
 	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
-		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{SnapshotRef: "img-a"}},
+		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
 		Port:       1, // nothing listens
 		HealthPath: servingHealthPath,
 	})

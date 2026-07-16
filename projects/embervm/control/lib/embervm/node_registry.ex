@@ -384,6 +384,11 @@ defmodule Embervm.NodeRegistry do
          %{
            free_primed_slots: wc.free_primed_slots,
            snapshot_ref: wc.snapshot_ref,
+           # serving_image_ref is the cold-boot handler-artifact ref (D-R3.11.2),
+           # DISTINCT from snapshot_ref (the vsock-only base memory snapshot). Serving
+           # placement cold-boots THIS ref, never snapshot_ref; empty for a workload
+           # with no serving base built on this node.
+           serving_image_ref: wc.serving_image_ref,
            base_state: wc.base_state,
            # The vm_ids of this node's primed VMs for the workload, so the
            # dispatcher can adopt an existing warm pool into its inventory after

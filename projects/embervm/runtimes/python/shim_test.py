@@ -598,3 +598,82 @@ def test_invoke_wrong_path_is_404(tmp_path, monkeypatch, isolated_imports):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# cold-boot handler import off a (sector-padded) block device (D-R3.11.2)
+# ---------------------------------------------------------------------------
+
+
+def test_read_handler_zip_from_device_trims_sector_padding(tmp_path):
+    """The killer case: a block device is longer than the zip and the tail is zero
+    padding. Reading EXACTLY the zip length recovers a valid archive regardless of
+    how much padding follows; reading the WHOLE device breaks zipfile once the
+    padding exceeds its backward EOCD-scan window. The exact byte count is the
+    durable defence (the retired R1 sector-pad/EOCD bug class).
+
+    Python's zipfile only scans the last ~64 KiB for the EOCD signature, so a small
+    zero tail is tolerated but a large one is not; a real handler drive's padding is
+    unbounded (Firecracker never shrinks a drive file), so reading exactly N bytes is
+    the only size-independent guarantee. We pad past the 64 KiB window to make the
+    whole-device read fail deterministically here.
+    """
+    archive = _zip_bytes({"app.py": b"x = 1\n"})
+    device = tmp_path / "vdb"
+    padded = archive + b"\x00" * (70 * 1024)  # beyond zipfile's ~64 KiB EOCD scan
+    device.write_bytes(padded)
+    assert len(padded) > len(archive)  # there IS padding to trip on
+
+    # Reading the whole padded device is NOT a valid zip (the retired bug): the EOCD
+    # is hidden past the backward scan window.
+    with pytest.raises(zipfile.BadZipFile):
+        zipfile.ZipFile(io.BytesIO(padded))
+
+    # Reading exactly len(archive) bytes recovers the zip, padding notwithstanding.
+    got = shim.read_handler_zip_from_device(str(device), len(archive))
+    assert got == archive
+    assert zipfile.ZipFile(io.BytesIO(got)).namelist() == ["app.py"]
+
+
+def test_read_handler_zip_from_device_short_read_raises(tmp_path):
+    device = tmp_path / "vdb"
+    device.write_bytes(b"abc")
+    with pytest.raises(ValueError):
+        shim.read_handler_zip_from_device(str(device), 4096)
+
+
+def test_cold_boot_hydrate_imports_from_device(tmp_path, monkeypatch, isolated_imports):
+    """The full cold-boot import path: EMBER_HANDLER_ZIP names a padded device and
+    EMBER_HANDLER_ZIP_BYTES its exact length; _cold_boot_hydrate imports the handler
+    and flips ready, so a serving guest is ready without a network hydrate."""
+    state = _fresh_state(tmp_path, monkeypatch, "app.handle")
+    archive = _zip_bytes(
+        {"app.py": b"def handle(event, context):\n    return {'body': 'ok'}\n"}
+    )
+    device = tmp_path / "vdb"
+    device.write_bytes(archive + b"\x00" * 512)  # sector padding
+    monkeypatch.setenv(shim.HANDLER_ZIP_ENV, str(device))
+    monkeypatch.setenv(shim.HANDLER_ZIP_BYTES_ENV, str(len(archive)))
+
+    assert state.is_ready() is False
+    shim._cold_boot_hydrate(state)
+    assert state.is_ready() is True
+
+
+def test_cold_boot_hydrate_noop_without_env(tmp_path, monkeypatch):
+    """No EMBER_HANDLER_ZIP (task/session/relight boot): a no-op, state stays
+    un-ready and no device is read."""
+    state = _fresh_state(tmp_path, monkeypatch, "app.handle")
+    monkeypatch.delenv(shim.HANDLER_ZIP_ENV, raising=False)
+    shim._cold_boot_hydrate(state)
+    assert state.is_ready() is False
+
+
+def test_cold_boot_hydrate_missing_byte_count_raises(tmp_path, monkeypatch):
+    state = _fresh_state(tmp_path, monkeypatch, "app.handle")
+    device = tmp_path / "vdb"
+    device.write_bytes(_zip_bytes({"app.py": b"x = 1\n"}))
+    monkeypatch.setenv(shim.HANDLER_ZIP_ENV, str(device))
+    monkeypatch.delenv(shim.HANDLER_ZIP_BYTES_ENV, raising=False)
+    with pytest.raises(ValueError):
+        shim._cold_boot_hydrate(state)

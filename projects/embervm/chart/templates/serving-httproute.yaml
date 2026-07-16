@@ -1,16 +1,17 @@
 {{- if and .Values.servingEnvoy.enabled .Values.servingEnvoy.drillRoute.enabled }}
 {{- /*
 Static edge route for the R3 serving bring-up drill. A PATH on the existing
-private host (https://private.jomcgi.dev/serving-hello), NOT a new subdomain:
+private host (https://private.jomcgi.dev/og-image-serving), NOT a new subdomain:
 the private Envoy Gateway is HTTP-only and TLS terminates at Cloudflare's edge
 with the universal *.jomcgi.dev wildcard, so a new subdomain would need a new
 Cloudflare Tunnel ingress rule + DNS entry, while a path on the already-routed
 private host needs no DNS/cert/tunnel change. This mirrors the signoz/argocd
 path-route precedent on the same gateway. GitOps-managed, never runtime-written.
 
-The drill host header the serving Envoy's RouteConfiguration must match is the
-gateway hostname (private.jomcgi.dev), because the request Host header is that
-hostname; the hand-pushed drill snapshot's route uses host = drillRoute.matchHost.
+The edge forwards Host = the gateway hostname (private.jomcgi.dev), but the node
+Envoy's published virtual host matches on the workload's serving.host, so the
+URLRewrite filter below rewrites the Host to serving.host before the request
+reaches the node Envoy (D-R3.11.2 routing fix).
 */}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -30,6 +31,18 @@ spec:
         - path:
             type: PathPrefix
             value: {{ .Values.servingEnvoy.drillRoute.pathPrefix | quote }}
+      filters:
+        # Rewrite the Host to the serving workload's own host (D-R3.11.2 routing
+        # fix). The edge forwards Host = the gateway hostname (private.jomcgi.dev,
+        # because the drill is a PATH on the private host, not a subdomain), but the
+        # node Envoy's published virtual host matches on the workload's serving.host
+        # (og-image-serving.private.jomcgi.dev, EndpointPublisher route_for). Without
+        # this rewrite the node Envoy has no vhost for private.jomcgi.dev and 404s.
+        # URLRewrite.hostname is the canonical Gateway-API Host rewrite (a
+        # RequestHeaderModifier on Host is rejected by some implementations).
+        - type: URLRewrite
+          urlRewrite:
+            hostname: {{ .Values.servingOgImage.serving.host | quote }}
       backendRefs:
         - name: {{ include "embervm.serving.fullname" . }}
           port: {{ .Values.servingEnvoy.listenerPort }}

@@ -130,7 +130,7 @@ defmodule Embervm.NodeRoundtripTest do
     # echoes the requested port, proving the oneof fresh branch crossed the wire.
     {:ok, fresh} =
       NodeService.Stub.start_serving(ch, %StartServingRequest{
-        source: {:fresh, %FreshSource{snapshot_ref: "base-snap"}},
+        source: {:fresh, %FreshSource{serving_image_ref: "base-snap"}},
         port: 8080,
         health_path: "/healthz",
         resources: %ResourceSpec{vcpus: 1, mem_mib: 256}

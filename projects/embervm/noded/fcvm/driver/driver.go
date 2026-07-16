@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
@@ -241,7 +242,7 @@ func (d *Driver) removeStaleVsockUDS(threadID string) {
 // init=<path> so the guest boots straight into fc-agent-init (raw FC boot does
 // not honour the OCI image entrypoint).
 func (d *Driver) bootArgs() string {
-	return d.bootArgsFor(nil)
+	return d.bootArgsFor(coldBootSpec{})
 }
 
 // nicIfaceID is the Firecracker network-interface id for a serving VM's single tap.
@@ -250,16 +251,16 @@ const nicIfaceID = "eth0"
 // bootArgsFor is bootArgs plus, for a serving-class cold boot (nic != nil), the
 // kernel `ip=` directive that statically configures the guest's interface at boot:
 // ip=<vmip>::<gwip>:<mask>::<iface>:off (autoconf off; the daemon owns the address).
-// Task/session boots pass nil and get exactly the previous boot args (byte-unchanged).
-// The IP is baked at THIS cold boot; a later snapshot resume keeps it (a resume does
-// not re-run kernel init), which is why the serving IP is pinned across bank/relight
-// (D-R3.4.1).
-func (d *Driver) bootArgsFor(nic *substrate.NICSpec) string {
+// Task/session boots pass an empty spec (nil nic, empty handlerDiskPath) and get
+// exactly the previous boot args (byte-unchanged). The IP is baked at THIS cold boot;
+// a later snapshot resume keeps it (a resume does not re-run kernel init), which is
+// why the serving IP is pinned across bank/relight (D-R3.4.1).
+func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	args := d.cfg.KernelBootArgs
 	if d.cfg.HarnessInit != "" {
 		args += " init=" + d.cfg.HarnessInit
 	}
-	if nic != nil {
+	if nic := cb.nic; nic != nil {
 		iface := nic.IfaceName
 		if iface == "" {
 			iface = nicIfaceID
@@ -275,8 +276,30 @@ func (d *Driver) bootArgsFor(nic *substrate.NICSpec) string {
 			args += fmt.Sprintf(" ember.serving_port=%d", nic.ServingPort)
 		}
 	}
+	// Serving handler disk (R3, D-R3.11.2): signal the guest to import the handler
+	// off the second read-only drive before serving. ember.handler_disk=<dev> names
+	// the block device; ember.handler_zip_bytes=<N> is the EXACT zip length so the
+	// guest reads ONLY the payload. This length is LOAD-BEARING: a block device is
+	// sector-padded (Firecracker rounds a drive file up to a 512-byte boundary), so
+	// reading the raw device yields the zip followed by trailing zero padding, and
+	// Python's zipfile scans BACKWARD from the end for the End-Of-Central-Directory
+	// signature. Trailing padding past the real EOCD breaks that scan (BadZipFile).
+	// This is exactly the sector-pad/EOCD-trim bug class the R1 zip lane hit and
+	// retired when it moved archive delivery to vsock hydration; here the artifact
+	// is legitimately a block device again (a serving cold boot has no vsock archive
+	// channel), so we defuse it by conveying the exact length instead of making the
+	// guest guess where the zip ends. Only emitted when a handler disk is attached;
+	// task/session boots never carry these tokens.
+	if cb.handlerDiskPath != "" {
+		args += fmt.Sprintf(" ember.handler_disk=%s ember.handler_zip_bytes=%d", handlerDiskDevice, cb.handlerZipBytes)
+	}
 	return args
 }
+
+// handlerDiskDevice is the guest block-device path Firecracker assigns to the
+// SECOND drive (the rootfs is the root device /dev/vda; the handler drive, added
+// next, is /dev/vdb). guest-init exports this to the shim as EMBER_HANDLER_ZIP.
+const handlerDiskDevice = "/dev/vdb"
 
 // prefixLenToMask renders an IPv4 prefix length as a dotted-decimal netmask for the
 // kernel ip= boot directive (which wants a netmask, not a prefix length).
@@ -297,6 +320,91 @@ func (d *Driver) baseDir(key string) string {
 
 func (d *Driver) baseSnapfile(key string) string { return filepath.Join(d.baseDir(key), "snapfile") }
 func (d *Driver) baseMemfile(key string) string  { return filepath.Join(d.baseDir(key), "memfile") }
+
+// baseHandlerZip / baseHandlerRuntimeRef are the serving cold-boot handler artifact
+// (D-R3.11.2) and its runtime-ref sidecar, colocated in the base bundle dir alongside
+// the memory snapshot. handler.zip is the verified zip bytes noded holds, attached as a
+// read-only drive on a serving cold boot; runtime.ref records the runtime image whose
+// rootfs is drive 1 so a startup rescan can rebuild the serving-images inventory without
+// a control-plane round-trip.
+func (d *Driver) baseHandlerZip(key string) string {
+	return filepath.Join(d.baseDir(key), "handler.zip")
+}
+
+func (d *Driver) baseHandlerRuntimeRef(key string) string {
+	return filepath.Join(d.baseDir(key), "runtime.ref")
+}
+
+// WriteServingHandlerArtifact writes the verified zip bytes for a serving base to
+// bases/<key>/handler.zip plus a runtime.ref sidecar (the runtime image whose rootfs is
+// the cold-boot drive 1), and returns the zip's host path and exact byte length
+// (D-R3.11.2). It is idempotent (a re-write overwrites in place) and creates the base
+// dir if the serving artifact is written before the memory snapshot. The exact length
+// is the EOCD-padding defence: the guest reads only this many bytes off the
+// (sector-padded) block device. The sidecar lets a startup rescan rebuild the
+// serving-images inventory (base key -> handler + runtime ref) with no control-plane
+// round-trip.
+func (d *Driver) WriteServingHandlerArtifact(baseKey, runtimeImageRef string, zip []byte) (string, int64, error) {
+	if err := os.MkdirAll(d.baseDir(baseKey), 0o750); err != nil {
+		return "", 0, fmt.Errorf("driver: mkdir base bundle for handler artifact: %w", err)
+	}
+	path := d.baseHandlerZip(baseKey)
+	if err := os.WriteFile(path, zip, 0o640); err != nil {
+		return "", 0, fmt.Errorf("driver: write handler artifact: %w", err)
+	}
+	if err := os.WriteFile(d.baseHandlerRuntimeRef(baseKey), []byte(runtimeImageRef), 0o640); err != nil {
+		return "", 0, fmt.Errorf("driver: write handler runtime ref sidecar: %w", err)
+	}
+	return path, int64(len(zip)), nil
+}
+
+// ServingHandlerArtifactPath returns a base's handler-artifact path and whether it
+// exists on disk.
+func (d *Driver) ServingHandlerArtifactPath(baseKey string) (string, bool) {
+	path := d.baseHandlerZip(baseKey)
+	if _, err := os.Stat(path); err != nil {
+		return "", false
+	}
+	return path, true
+}
+
+// ScanServingHandlerArtifacts globs bases/*/handler.zip on startup and returns each
+// discovered artifact with its base key, path, size, and runtime ref (from the
+// runtime.ref sidecar), so the daemon re-seeds its serving-images inventory after a
+// restart. A base dir with a memory snapshot but no handler.zip (a task/session-only
+// base) is skipped; a handler.zip without a readable sidecar is skipped with no error
+// (it will be rebuilt on the next BuildBase), keeping the rescan best-effort like the
+// banked-snapshot rescan.
+func (d *Driver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifact {
+	basesDir := filepath.Join(d.cfg.SnapshotRoot, "bases")
+	entries, err := os.ReadDir(basesDir)
+	if err != nil {
+		return nil // no bases dir yet (fresh node): nothing to rescan
+	}
+	out := make([]substrate.ServingHandlerArtifact, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		baseKey := e.Name()
+		zipPath := d.baseHandlerZip(baseKey)
+		fi, err := os.Stat(zipPath)
+		if err != nil {
+			continue // not a serving base (no handler artifact)
+		}
+		runtimeRef, rerr := os.ReadFile(d.baseHandlerRuntimeRef(baseKey))
+		if rerr != nil {
+			continue // artifact without a runtime sidecar: skip, BuildBase rebuilds it
+		}
+		out = append(out, substrate.ServingHandlerArtifact{
+			BaseKey:         baseKey,
+			Path:            zipPath,
+			RuntimeImageRef: strings.TrimSpace(string(runtimeRef)),
+			SizeBytes:       fi.Size(),
+		})
+	}
+	return out
+}
 
 // SessionsDir is the parent directory holding all banked SESSION snapshot bundles
 // (one bundle dir per session snapshot_ref). It is a sibling of bases/ under the
@@ -421,6 +529,17 @@ type coldBootSpec struct {
 	vcpus      int
 	memMib     int
 	nic        *substrate.NICSpec
+	// handlerDiskPath, when non-empty, is a per-workload handler artifact (the
+	// verified zip bytes noded wrote host-side at BuildBase) attached as a SECOND
+	// read-only drive on a serving cold boot (D-R3.11.2). The guest reads the zip
+	// off this device and imports the handler before serving, so a NIC cold boot
+	// carries the handler without resuming the vsock-only base memory snapshot.
+	// Empty for task/session boots and for a serving relight (which resumes a
+	// NIC-bearing serving snapshot instead). handlerZipBytes is the EXACT zip
+	// length so the guest reads only the payload and not the block device's
+	// sector padding (see bootArgsFor for the EOCD-padding rationale).
+	handlerDiskPath string
+	handlerZipBytes int64
 }
 
 // coldBoot launches a fresh Firecracker process, provisions a per-thread rootfs (or
@@ -469,11 +588,24 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{VCPUCount: cb.vcpus, MemSizeMib: cb.memMib}); err != nil {
 			return err
 		}
-		if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgsFor(cb.nic)}); err != nil {
+		if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgsFor(cb)}); err != nil {
 			return err
 		}
 		if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true, IsReadOnly: d.cfg.RootfsReadOnly}); err != nil {
 			return err
+		}
+		// Serving handler disk (R3, D-R3.11.2): attach the per-workload handler
+		// artifact as a SECOND read-only drive so the guest can read the zip and
+		// import the handler on this NIC cold boot. Task/session boots leave
+		// handlerDiskPath empty and never reach this, so their drive set is
+		// byte-unchanged (rootfs-only). It is a non-root, read-only device; the
+		// guest never writes it and the cold boot is not snapshotted, so this
+		// re-introduces none of the block-device snapshot-backing-dep bug class
+		// the R1 zip lane retired (a serving cold boot does not snapshot the base).
+		if cb.handlerDiskPath != "" {
+			if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "handler", PathOnHost: cb.handlerDiskPath, IsRootDevice: false, IsReadOnly: true}); err != nil {
+				return err
+			}
 		}
 		// Serving class (R3): attach the tap NIC pre-Start. Task/session claims leave
 		// nic nil and never reach this, so their boot path is byte-unchanged
@@ -518,7 +650,12 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 // against the same driver. rootfsPath/vcpus/memMib come from the serving workload's
 // image identity (resolved by the server from its image table), NOT driver config, so
 // one shared driver serves every serving workload.
-func (d *Driver) ClaimServing(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec) (substrate.Handle, error) {
+// handlerDiskPath/handlerZipBytes, when set, attach the per-workload zip handler
+// artifact as a second read-only drive and tell the guest to import it before
+// serving (D-R3.11.2, zip lane). They are empty/zero for an image-lane serving
+// cold boot (whose handler is already in the rootfs), keeping that boot path
+// unchanged.
+func (d *Driver) ClaimServing(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
 	if nic.HostDevName == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: ClaimServing requires a host tap device")
 	}
@@ -530,10 +667,12 @@ func (d *Driver) ClaimServing(ctx context.Context, rootfsPath, harnessInit strin
 	memMib = orDefault(memMib, d.cfg.MemMib)
 	nicCopy := nic
 	return d.coldBoot(ctx, newID("serv"), coldBootSpec{
-		rootfsPath: rootfsPath,
-		vcpus:      vcpus,
-		memMib:     memMib,
-		nic:        &nicCopy,
+		rootfsPath:      rootfsPath,
+		vcpus:           vcpus,
+		memMib:          memMib,
+		nic:             &nicCopy,
+		handlerDiskPath: handlerDiskPath,
+		handlerZipBytes: handlerZipBytes,
 	})
 }
 

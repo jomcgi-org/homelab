@@ -47,7 +47,7 @@ func (s *Server) StartServing(ctx context.Context, req *nodev1.StartServingReque
 	// GetFresh()/GetRelight() return nil for the unset arm.
 	switch {
 	case req.GetFresh() != nil:
-		return s.startServingFresh(ctx, req, req.GetFresh().GetSnapshotRef(), workload, port, healthPath)
+		return s.startServingFresh(ctx, req, req.GetFresh().GetServingImageRef(), workload, port, healthPath)
 	case req.GetRelight() != nil:
 		return s.startServingRelight(ctx, req, req.GetRelight().GetSnapshotRef(), workload, port, healthPath)
 	default:
@@ -55,17 +55,27 @@ func (s *Server) StartServing(ctx context.Context, req *nodev1.StartServingReque
 	}
 }
 
-// startServingFresh cold-boots a serving VM from the workload's rootfs (resolved via
-// the image table, like BuildBase) WITH a freshly allocated tap NIC and its static IP
-// baked into boot-args, then health-gates over the tap. "snapshot_ref" here names the
-// base IMAGE/rootfs to cold-boot (D-R3.4.2), not a snapshot to resume.
-func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServingRequest, imageRef, workload string, port uint32, healthPath string) (*nodev1.StartServingResponse, error) {
-	if imageRef == "" {
-		return nil, status.Error(codes.InvalidArgument, "noded: fresh.snapshot_ref (serving image ref) required")
+// startServingFresh cold-boots a serving VM from the workload's cold-boot handler
+// artifact WITH a freshly allocated tap NIC and its static IP baked into boot-args,
+// then health-gates over the tap. servingImageRef names a SERVING IMAGE (a built
+// cold-boot handler artifact in the serving-images inventory), NOT a base snapshot to
+// resume (D-R3.4.2, D-R3.11.2): the runtime rootfs is drive 1 and the handler artifact
+// is drive 2, from which the guest imports the handler before serving.
+func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServingRequest, servingImageRef, workload string, port uint32, healthPath string) (*nodev1.StartServingResponse, error) {
+	if servingImageRef == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: fresh.serving_image_ref required")
 	}
-	img, ok := s.cfg.Images[imageRef]
+	// Resolve the serving image against the serving-images inventory (NOT the static
+	// runtime-rootfs image table): the ref is a built base key, and the inventory maps
+	// it to its handler artifact + the runtime image whose rootfs cold-boots. Looking a
+	// base key up in s.cfg.Images was the original "not provisioned" bug.
+	simg, ok := s.servingImage.get(servingImageRef)
 	if !ok {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving image %q not provisioned on this node", imageRef)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving image %q not provisioned on this node (no cold-boot handler artifact built)", servingImageRef)
+	}
+	img, ok := s.cfg.Images[simg.runtimeImageRef]
+	if !ok {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q for serving image %q not provisioned on this node", simg.runtimeImageRef, servingImageRef)
 	}
 	harnessInit := img.HarnessInit
 	if harnessInit == "" {
@@ -88,7 +98,10 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 		// daemon probes and publishes: GET http://ip:port{healthPath} (D-R3.11.1).
 		ServingPort: port,
 	}
-	h, err := s.servingDriver.ClaimServing(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic)
+	// Attach the handler artifact as the second read-only drive (D-R3.11.2); the guest
+	// imports the handler off it before serving. The exact byte length lets the guest
+	// read only the payload, not the block device's sector padding.
+	h, err := s.servingDriver.ClaimServing(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, simg.handlerPath, simg.sizeBytes)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot serving vm: %v", err)
@@ -198,7 +211,10 @@ func (s *Server) waitServingReady(ctx context.Context, ip net.IP, port uint32, h
 	if lastErr == nil {
 		lastErr = fmt.Errorf("timed out after %s", budget)
 	}
-	return lastErr
+	// lastErr is always a freshly-constructed fmt.Errorf (a status code, a dial
+	// error, or the timeout above), not a bare pass-through; the caller wraps it
+	// with the serving-guest context.
+	return lastErr // nosemgrep: no-bare-error-return
 }
 
 // StopServing tears down a live serving VM. BANK pauses it, writes a serving snapshot

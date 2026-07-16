@@ -92,7 +92,13 @@ defmodule Embervm.ServingManagerTest do
       serving_subnet_cidr: "10.99.0.0/24",
       max_live_vms: 4,
       live_vms: 0,
-      workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "base-a"}},
+      workloads: %{
+        "wl-a" => %{
+          base_state: :BASE_BUILD_STATE_READY,
+          snapshot_ref: "snap-a",
+          serving_image_ref: "base-a"
+        }
+      },
       serving_vms: Keyword.get(opts, :serving_vms, []),
       serving_snapshots: Keyword.get(opts, :serving_snapshots, [])
     })

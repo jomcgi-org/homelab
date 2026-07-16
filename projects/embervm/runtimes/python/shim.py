@@ -1,4 +1,4 @@
-"""EmberVM python runtime bootstrap shim (ADR embervm/002, R1 zip lane).
+"""EmberVM python runtime bootstrap shim (ADR embervm/001, R1 zip lane).
 
 This shim runs inside a disposable python-runtime microVM, launched by the guest
 init (a raw Firecracker boot ignores the OCI entrypoint, so Task 7 wires a PID-1
@@ -97,6 +97,22 @@ GUEST_HTTP_PORT = 1027
 # translates the `ember.serving_port=` kernel boot-arg (set by noded's
 # bootArgsFor only on a serving cold boot) into this env var.
 SERVING_PORT_ENV = "EMBER_SERVING_PORT"
+
+# R3 zip-lane serving cold-boot handler import (D-R3.11.2). A serving VM must COLD
+# BOOT with a NIC (Firecracker cannot hot-attach a NIC to a resumed snapshot), so it
+# cannot resume the vsock-only base memory snapshot the zip lane bakes the handler
+# into. Instead noded attaches the handler artifact (the verified zip bytes) as a
+# SECOND read-only drive and sets EMBER_HANDLER_ZIP to that block device; the shim
+# reads the zip off it and imports the handler BEFORE binding the serving socket, so
+# the guest is ready at its first health probe without a runtime hydrate. This is the
+# cold-boot analogue of the build-time POST /shim/hydrate. EMBER_HANDLER_ZIP_BYTES is
+# the EXACT zip length: a block device is sector-padded, and Python's zipfile scans
+# backward from the end for the EOCD signature, which trailing zero padding breaks, so
+# the shim reads ONLY this many bytes off the device (the retired R1 sector-pad/EOCD
+# bug class, defused by conveying the exact length instead of guessing where the zip
+# ends). Unset (task/session boots, relights) leaves this path inert.
+HANDLER_ZIP_ENV = "EMBER_HANDLER_ZIP"
+HANDLER_ZIP_BYTES_ENV = "EMBER_HANDLER_ZIP_BYTES"
 
 # Env-configured knobs, all read at boot with sane defaults (documented in
 # README.md). EMBER_INVOKE_PATH defaults to /invoke, matching noded's
@@ -402,6 +418,9 @@ def make_request_handler(
             try:
                 result = state.handler(event, context)
                 status, headers, body = response_from_return(result)
+            # nosemgrep: no-broad-except-swallow -- deliberate HTTP error boundary:
+            # any handler exception is caught, logged with a full traceback, and
+            # returned to the caller as a 502 (not swallowed).
             except Exception:  # noqa: BLE001 (any handler error is a 502)
                 tb = traceback.format_exc()
                 sys.stderr.write(tb)
@@ -424,6 +443,9 @@ def make_request_handler(
                 return
             try:
                 hydrate(state, archive)
+            # nosemgrep: no-broad-except-swallow -- deliberate build-error boundary:
+            # any hydrate failure (bad zip / zip-slip / import error) is caught,
+            # logged, and reported as a 422; ready stays False (not swallowed).
             except Exception:  # noqa: BLE001 (bad zip / zip-slip / import error)
                 tb = traceback.format_exc()
                 sys.stderr.write("ember-shim: hydrate failed\n")
@@ -532,23 +554,78 @@ def build_server(
     return VsockHTTPServer((VMADDR_CID_ANY, port), request_handler_cls)
 
 
+def read_handler_zip_from_device(device: str, nbytes: int) -> bytes:
+    """Read EXACTLY nbytes of zip payload from a handler-disk block device.
+
+    The handler artifact is a raw zip on a block device (D-R3.11.2), which is
+    sector-padded: the device is longer than the zip and the tail is zero padding.
+    Reading the whole device and handing it to zipfile fails, because zipfile scans
+    backward from the end for the EOCD signature and the padding hides it. noded
+    conveys the exact zip length (EMBER_HANDLER_ZIP_BYTES) so we read only the
+    payload. A short read (device smaller than nbytes) is an error: the artifact is
+    truncated and the handler cannot be trusted.
+    """
+    with open(device, "rb") as f:  # noqa: PTH123 (block device, not a path-y file)
+        data = f.read(nbytes)
+    if len(data) != nbytes:
+        raise ValueError(
+            f"handler disk {device!r}: read {len(data)} bytes, expected {nbytes}"
+        )
+    return data
+
+
+def _cold_boot_hydrate(state: ShimState) -> None:
+    """Import the handler off the handler-disk before serving (R3, D-R3.11.2).
+
+    When EMBER_HANDLER_ZIP names a block device, read exactly EMBER_HANDLER_ZIP_BYTES
+    from it and run the SAME hydrate() the build-time POST /shim/hydrate runs, so a
+    serving cold boot has its handler imported and /shim/ready answers 200 at the
+    first probe. A missing/zero byte count or an unreadable/invalid device raises,
+    which main() turns into a NON-ZERO exit: a serving guest that cannot import its
+    handler must crash the boot, not serve 503 forever (finishServingStart would reap
+    it either way, but a loud exit surfaces the cause in the guest console).
+    """
+    device = os.environ.get(HANDLER_ZIP_ENV, "").strip()
+    if not device:
+        return
+    raw_bytes = os.environ.get(HANDLER_ZIP_BYTES_ENV, "").strip()
+    if not raw_bytes:
+        raise ValueError(f"{HANDLER_ZIP_ENV} set without {HANDLER_ZIP_BYTES_ENV}")
+    nbytes = int(raw_bytes)
+    if nbytes <= 0:
+        raise ValueError(f"{HANDLER_ZIP_BYTES_ENV}={raw_bytes!r} must be positive")
+    archive = read_handler_zip_from_device(device, nbytes)
+    # hydrate() unpacks + imports and flips state.ready True (or execs bootstrap for
+    # the any-language escape hatch, which never returns).
+    hydrate(state, archive)
+
+
 def main() -> int:
     handler_symbol = os.environ.get("EMBER_HANDLER", DEFAULT_HANDLER)
     invoke_path = os.environ.get("EMBER_INVOKE_PATH", DEFAULT_INVOKE_PATH)
     serving_port = _serving_port()
 
     # Boot un-hydrated: serve immediately (so Prime's healthz probe answers) but
-    # report not-ready until a POST /shim/hydrate unpacks + imports the handler.
-    # A serving guest cold-boots from a base whose handler was already imported
-    # and baked at BuildBase (the zip is build-time-only, ADR embervm/002), so
-    # its restored handler is present without a runtime hydrate.
+    # report not-ready until the handler is imported. There are two import paths:
+    #   - TASK/SESSION (vsock): a build-time POST /shim/hydrate imports the handler,
+    #     then the base is snapshotted with the handler live; restores are ready.
+    #   - SERVING (tap NIC): a serving VM COLD-BOOTS with a NIC (D-R3.4.2) and cannot
+    #     resume that memory snapshot, so it imports the handler off the handler-disk
+    #     here, before serving (D-R3.11.2, _cold_boot_hydrate). No runtime network
+    #     hydrate is involved either way; the zip stays build-time-only.
     state = ShimState(invoke_path=invoke_path, handler_symbol=handler_symbol)
+
+    # Serving cold boot: import the handler off the handler-disk before binding the
+    # socket, so /shim/ready is 200 at the first probe. A failure crashes the boot
+    # (non-zero exit) rather than serving a permanently-not-ready guest.
+    _cold_boot_hydrate(state)
 
     server = build_server(state, invoke_path, serving_port)
     if serving_port is not None:
+        ready = "ready" if state.is_ready() else "awaiting hydrate"
         sys.stderr.write(
             f"ember-shim: serving on TCP 0.0.0.0:{serving_port} invokePath={invoke_path} "
-            f"handler={handler_symbol}\n"
+            f"handler={handler_symbol} ({ready})\n"
         )
     else:
         sys.stderr.write(

@@ -28,8 +28,17 @@ defmodule Embervm.ServingPlacementTest do
     })
   end
 
-  defp ready_workload(snapshot_ref \\ "base:img@sha256:abc") do
-    %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: snapshot_ref}}
+  # A ready serving workload advertises a serving_image_ref (the cold-boot handler
+  # artifact placement cold-boots, D-R3.11.2), NOT just the base snapshot_ref. The
+  # param names the serving image ref, which node_for_create returns for the cold boot.
+  defp ready_workload(serving_image_ref \\ "base:img@sha256:abc") do
+    %{
+      "wl-a" => %{
+        base_state: :BASE_BUILD_STATE_READY,
+        snapshot_ref: "snap:img@sha256:abc",
+        serving_image_ref: serving_image_ref
+      }
+    }
   end
 
   # -- node_for_create -------------------------------------------------------

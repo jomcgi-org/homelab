@@ -273,6 +273,21 @@ message BuildBaseRequest {
   // (workload initEnv). Node-side image identity (rootfs path, harness init) is
   // daemon configuration, NOT carried here.
   map<string, string> init_env = 7;
+  // serving marks a base whose workload is registered serving-class, so the
+  // daemon additionally produces a cold-boot-readable HANDLER ARTIFACT for the
+  // R3 serving lane (D-R3.11.2). A serving VM must COLD-BOOT with a NIC (FC
+  // cannot hot-attach a NIC to a resumed snapshot, D-R3.4.2), so it cannot
+  // consume the vsock-only base memory snapshot the zip lane bakes the handler
+  // into (the handler lives in the tmpfs->memfile RAM, never on a block device).
+  // When set on the ZIP lane, the daemon writes the verified archive bytes it
+  // already holds to a per-base handler artifact and reports it as
+  // WorkloadCapacity.serving_image_ref, which startServingFresh cold-boots from
+  // as a second read-only drive. The base memory snapshot is STILL produced
+  // (the task lane needs it if the workload is also task-class); skipping it for
+  // serving-exclusive bases is a deferred disk optimization, not done here.
+  // Ignored by the image lane. Task/session-only workloads leave it false and
+  // their build path is byte-unchanged.
+  bool serving = 9;
 }
 
 message BuildBaseResponse {
@@ -286,6 +301,14 @@ message BuildBaseResponse {
   // already_built is true when this call was a no-op hit on an existing base
   // for the same (image_digest, workload_revision) (idempotency observed).
   bool already_built = 5;
+  // serving_image_ref is the cold-boot handler-artifact ref, set ONLY when the
+  // request was serving (D-R3.11.2). It is DISTINCT from snapshot_ref: the
+  // snapshot_ref is the vsock-only base memory snapshot (the task-lane restore
+  // source), while serving_image_ref names the cold-boot-readable handler
+  // artifact StartServing(fresh) consumes. The two are deliberately NOT the same
+  // field; overloading snapshot_ref for both was the root of the serving
+  // "not provisioned" bug. Empty for a non-serving build.
+  string serving_image_ref = 6;
 }
 
 // ---- Prime -----------------------------------------------------------------
@@ -431,11 +454,20 @@ message EvictSnapshotResponse {}
 
 // ---- Serving verbs (R3) -----------------------------------------------------
 
-// FreshSource starts a serving VM cold from a pristine base ref, the serving
-// counterpart of Prime's snapshot_ref restore. The oneof sibling of
-// RelightSource in StartServingRequest.source.
+// FreshSource starts a serving VM COLD from the workload's cold-boot handler
+// artifact (D-R3.11.2), the serving counterpart of Prime's restore. The oneof
+// sibling of RelightSource in StartServingRequest.source.
 message FreshSource {
-  string snapshot_ref = 1;
+  // serving_image_ref names the cold-boot handler artifact the daemon resolves
+  // to a per-workload handler drive (attached read-only alongside the runtime
+  // rootfs on the NIC cold boot). It is DELIBERATELY NOT called snapshot_ref: a
+  // fresh serving start cold-boots a handler artifact, it does NOT resume the
+  // base memory snapshot (a NIC cold boot cannot, D-R3.4.2). Overloading
+  // snapshot_ref here (the field's original name) was the root of the serving
+  // "not provisioned" bug, where the control plane passed the base-snapshot key
+  // into a lookup against the runtime-rootfs image table. The daemon resolves
+  // this against its serving-images inventory, not the static image table.
+  string serving_image_ref = 1;
 }
 
 // RelightSource restarts a serving VM from a previously banked serving
@@ -519,9 +551,18 @@ message WorkloadCapacity {
   // workload on this node.
   uint32 free_primed_slots = 2;
   // snapshot_ref is the base this node currently has for the workload, empty if
-  // none is built here (the control plane then knows to BuildBase).
+  // none is built here (the control plane then knows to BuildBase). This is the
+  // vsock-only base MEMORY SNAPSHOT (the task/session-lane restore source), NOT
+  // the serving cold-boot source; see serving_image_ref below.
   string snapshot_ref = 3;
   BaseBuildState base_state = 4;
+  // serving_image_ref is the cold-boot handler-artifact ref for the serving lane
+  // (D-R3.11.2), reported when this node has built a serving base for the
+  // workload. DISTINCT from snapshot_ref: StartServing(fresh) cold-boots this
+  // (a NIC cold boot cannot resume the memory snapshot), so serving placement
+  // reads THIS field, never snapshot_ref. Empty for a workload with no serving
+  // base built here (task/session-only workloads leave it empty).
+  string serving_image_ref = 6;
   // primed_vm_ids lists the vm_id of every PRIMED (parked, unassigned) VM for
   // this workload on this node. free_primed_slots is len(primed_vm_ids); the
   // ids let a freshly (re)started control plane ADOPT the node's existing warm
