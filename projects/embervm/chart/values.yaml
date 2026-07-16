@@ -149,6 +149,56 @@ xds:
     limits:
       memory: 128Mi
 
+# Per-node serving Envoy tier (R3, PR-3): a DaemonSet of Envoys, one per serving
+# node, fronting the local serving-VM tap IPs. It runs with POD networking (the
+# tap IPs are node-local routable from pods via the PR-2 bridge) and takes its
+# whole routable config over ADS from the xds sidecar; only the listener + HCM are
+# static (the bootstrap ConfigMap). The edge Envoy Gateway routes serving traffic
+# to these via the embervm-serving Service.
+servingEnvoy:
+  enabled: true
+  image:
+    # Upstream Envoy (not an apko build): the config surface used (static listener,
+    # ADS RDS/CDS/EDS) is stable well before this release. Matches the tag the
+    # cloudflare-gateway tunnel Envoy pulls, so the image is already proven/cached
+    # in-cluster. Bump here to move the node tier's Envoy version.
+    repository: envoyproxy/envoy
+    tag: "v1.31-latest"
+    pullPolicy: IfNotPresent
+  # The static HTTP listener pod port the edge routes to; the Envoy admin endpoint
+  # (loopback-only, for /ready probes + config_dump); and the stats port declared
+  # for the later Task 9 Prometheus scrape (the scrape wiring lands in Task 9).
+  listenerPort: 10000
+  adminPort: 9901
+  statsPort: 9902
+  # node-4 pinning: serving runs where Firecracker serving VMs run. A dedicated
+  # serving label (not the noded homelab.io/firecracker label) so the two tiers can
+  # diverge later; v1 both land on node-4.
+  nodeSelector:
+    embervm.io/serving: "true"
+  tolerations: []
+  # Disposable tier: the data plane must yield before inference/DB under pressure.
+  priorityClassName: homelab-disposable
+  # Small, per repo convention: CPU request-only (no limit), memory req==limit.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 96Mi
+    limits:
+      memory: 192Mi
+  # The static edge route for the R3 bring-up drill (a path on the private host,
+  # not a new subdomain: no DNS/cert/tunnel change needed). matchHost is the Host
+  # header the serving Envoy's route matches (the private gateway hostname).
+  drillRoute:
+    enabled: true
+    tier: trusted
+    hostname: private.jomcgi.dev
+    pathPrefix: /serving-hello
+    matchHost: private.jomcgi.dev
+    gateway:
+      name: cloudflare-ingress
+      namespace: envoy-gateway-system
+
 # uid 65532 non-root convention. The control plane needs no privilege (only the
 # node daemon is privileged for KVM).
 podSecurityContext:

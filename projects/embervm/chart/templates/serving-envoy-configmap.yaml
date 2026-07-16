@@ -1,0 +1,100 @@
+{{- if .Values.servingEnvoy.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "embervm.servingEnvoy.fullname" . }}-bootstrap
+  labels:
+    {{- include "embervm.servingEnvoy.labels" . | nindent 4 }}
+data:
+  # Static Envoy bootstrap for the per-node serving tier (R3, PR-3). Only the
+  # LISTENER + HTTP connection manager are static here: the actual clusters,
+  # endpoints, and routes arrive dynamically over ADS (RDS/CDS/EDS) from the xds
+  # sidecar in the control-plane pod. Keeping the dynamic surface to three types
+  # (no LDS) is deliberate: the listener shape is fixed and node-local, so it does
+  # not belong in the control plane's desired state.
+  #
+  # node id = the Kubernetes node name. It is set at runtime by the DaemonSet's
+  # `--service-node "$(NODE_NAME)"` CLI flag (NODE_NAME comes from the downward API),
+  # which OVERRIDES the placeholder node.id below. The xds sidecar keys snapshots by
+  # this id, so the control plane addresses each node's Envoy by its node name.
+  #
+  # If the control plane / sidecar is unreachable, Envoy keeps its last-ACKed config
+  # (xDS is eventually consistent); a fresh Envoy with no ADS response yet serves
+  # the listener but 503s until the first snapshot arrives.
+  envoy-bootstrap.yaml: |
+    node:
+      # Placeholder only: --service-node on the DaemonSet overrides this with the
+      # k8s node name at boot. A non-empty value keeps the bootstrap self-valid.
+      id: "serving-envoy-bootstrap"
+      cluster: {{ include "embervm.servingEnvoy.fullname" . }}
+    admin:
+      # Admin bound to loopback ONLY (never the pod network): config_dump and
+      # /ready are for in-pod debugging, not an exposed surface.
+      address:
+        socket_address:
+          address: 127.0.0.1
+          port_value: {{ .Values.servingEnvoy.adminPort }}
+    dynamic_resources:
+      ads_config:
+        api_type: GRPC
+        transport_api_version: V3
+        grpc_services:
+          - envoy_grpc:
+              cluster_name: xds_cluster
+      cds_config:
+        resource_api_version: V3
+        ads: {}
+      # LDS is NOT used: the listener below is static. RDS/CDS/EDS are dynamic.
+    static_resources:
+      clusters:
+        # The ADS control cluster: the xds sidecar, reached via the embervm control-
+        # plane Service's xDS gRPC port. HTTP/2 (gRPC) with keepalive so a dropped
+        # control-plane pod is detected and the stream re-establishes on recovery.
+        - name: xds_cluster
+          type: STRICT_DNS
+          connect_timeout: 1s
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options:
+                  connection_keepalive:
+                    interval: 30s
+                    timeout: 5s
+          load_assignment:
+            cluster_name: xds_cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: {{ include "embervm.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+                          port_value: {{ .Values.xds.grpcPort }}
+      listeners:
+        # One HTTP listener on a fixed pod port. The HTTP connection manager routes
+        # via RDS (route_config_name = "embervm-serving", the name the xds sidecar
+        # serves its single RouteConfiguration under). The edge Envoy Gateway sends
+        # serving traffic here through the embervm-serving Service.
+        - name: serving_listener
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: {{ .Values.servingEnvoy.listenerPort }}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: serving_ingress
+                    codec_type: AUTO
+                    rds:
+                      config_source:
+                        resource_api_version: V3
+                        ads: {}
+                      route_config_name: embervm-serving
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+{{- end }}

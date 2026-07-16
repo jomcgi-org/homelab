@@ -53,6 +53,40 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
+The per-node serving Envoy tier (R3, PR-3) is a DaemonSet in this one chart. Like
+noded it uses a DISTINCT app.kubernetes.io/name ("<name>-serving-envoy") so its
+selector is disjoint from the control plane and noded, and carries a component
+label to disambiguate self-documentingly.
+*/}}
+{{- define "embervm.servingEnvoy.name" -}}
+{{- printf "%s-serving-envoy" (include "embervm.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "embervm.servingEnvoy.fullname" -}}
+{{- printf "%s-serving-envoy" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "embervm.servingEnvoy.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "embervm.servingEnvoy.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: serving-envoy
+{{- end -}}
+
+{{- define "embervm.servingEnvoy.labels" -}}
+{{ include "embervm.servingEnvoy.selectorLabels" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
+The stable per-node serving address the edge Envoy Gateway sees. v1 is one node
+so a ClusterIP Service suffices; the name is release-derived like every other
+service name here (survives a release rename).
+*/}}
+{{- define "embervm.serving.fullname" -}}
+{{- printf "%s-serving" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
 Per-guest-digest rootfs path: <dir>/rootfs-<tag>.ext4, so each pinned guest-image
 version bakes its OWN read-only rootfs file instead of overwriting one fixed path.
 The Firecracker memfile embeds this host path (restore re-attaches it, never
