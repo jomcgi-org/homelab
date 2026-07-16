@@ -4,7 +4,10 @@ defmodule Embervm.SyncWaitTest do
   waiter registry and park-count table (both booted by the supervision tree).
   Keys are made unique per test so these stay `async` despite the shared tables.
   """
-  use ExUnit.Case, async: true
+  # async: false: like session_bank_relight_test, these wait_until on real
+  # process-lifecycle timing, which flakes under async scheduler contention as
+  # the suite grows. Serial execution keeps the timing deterministic.
+  use ExUnit.Case, async: false
 
   alias Embervm.SyncWait
 
