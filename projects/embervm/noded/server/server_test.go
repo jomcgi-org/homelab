@@ -1040,6 +1040,45 @@ func TestBuildBaseZipServingWritesHandlerArtifact(t *testing.T) {
 	})
 }
 
+// TestWorkloadCapacitiesSkipsStaleServingImage: workloadCapacities reports only a
+// serving image whose runtime rootfs is STILL provisioned in cfg.Images. A base
+// built against a since-superseded runtime (its rootfs pruned when the node rolled)
+// is not cold-bootable, so it must not be offered to serving placement, otherwise
+// the control plane wakes onto it and gets FAILED_PRECONDITION "runtime image ...
+// not provisioned" (the transient post-roll 503, D-R3.11.3). Old serving bases are
+// not GC'd, so multiple coexist per workload and the registry map order is
+// nondeterministic; the filter makes the reported ref always cold-bootable.
+func TestWorkloadCapacitiesSkipsStaleServingImage(t *testing.T) {
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+			BootReadyTimeout: time.Second,
+			// Only the current runtime is provisioned; runtime-python:1 was pruned.
+			Images: map[string]config.Image{"runtime-python:2": {RootfsPath: "/runtime2.ext4"}},
+		},
+		Driver:        &fakeDriver{},
+		ServingDriver: newFakeServingDriver(t.TempDir()),
+		Transport:     &fakeTransport{},
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	// A stale serving base (runtime-python:1, gone) and the current one (runtime-python:2).
+	s.servingImage.add(servingImageEntry{baseKey: "wl__stale", workload: "wl", handlerPath: "/h1", runtimeImageRef: "runtime-python:1"})
+	s.servingImage.add(servingImageEntry{baseKey: "wl__current", workload: "wl", handlerPath: "/h2", runtimeImageRef: "runtime-python:2"})
+
+	var wl *nodev1.WorkloadCapacity
+	for _, c := range s.workloadCapacities(map[string][]string{}) {
+		if c.GetWorkload() == "wl" {
+			wl = c
+		}
+	}
+	if wl == nil {
+		t.Fatal("no capacity reported for workload wl")
+	}
+	if got := wl.GetServingImageRef(); got != "wl__current" {
+		t.Fatalf("serving_image_ref = %q, want wl__current (the provisioned-runtime base; the stale wl__stale must never be reported)", got)
+	}
+}
+
 func TestParseMemHeadroomMib(t *testing.T) {
 	cases := []struct {
 		maxRaw, curRaw string

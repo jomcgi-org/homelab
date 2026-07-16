@@ -1270,6 +1270,24 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 	// never snapshot_ref. A workload may have both (a base snapshot for the task lane
 	// AND a serving image for the serving lane); they are independent facts.
 	for _, si := range s.servingImage.snapshot() {
+		// Only report a serving image whose runtime rootfs is STILL provisioned on
+		// this node. A serving cold boot attaches that runtime rootfs as drive 1
+		// (startServingFresh resolves si.runtimeImageRef against s.cfg.Images), so a
+		// base built against a since-superseded runtime image, whose rootfs is gone
+		// after the node rolled, is not cold-bootable. Old serving bases are not GC'd,
+		// so after a runtime roll multiple serving bases coexist per workload, and the
+		// snapshot() map order is nondeterministic; reporting a stale one makes the
+		// control plane place a wake on it and get FAILED_PRECONDITION "runtime image
+		// ... not provisioned" (a transient post-roll 503). Filtering to
+		// provisioned-runtime bases keeps the reported serving_image_ref always
+		// cold-bootable; if a workload has ONLY stale bases, it reports none and the
+		// control plane rebuilds. Base GC of the stale bundles is a separate follow-up
+		// (D-R3.11.3); this makes them harmless to placement. When more than one base
+		// is provisioned (a brief runtime transition), any is cold-bootable, so the
+		// residual nondeterminism cannot cause a 503.
+		if _, ok := s.cfg.Images[si.runtimeImageRef]; !ok {
+			continue
+		}
 		c := get(si.workload)
 		c.ServingImageRef = si.baseKey
 	}
