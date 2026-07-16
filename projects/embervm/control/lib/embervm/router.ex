@@ -910,24 +910,29 @@ defmodule Embervm.Router do
           traceparent: SessionTrace.current_traceparent()
         }
 
+        # The activator miss path is PUBLIC (a public serving hostname reaches it), so
+        # every error response is GENERIC: a short message + a retryable hint, and
+        # nothing internal (no gRPC reason, tap IP/port, shim path, or workload name).
+        # The diagnostic detail is logged server-side by ServingManager (workload +
+        # reason), where ops read it; a public caller must not see cluster internals.
         case serving_manager().miss(serving_manager_server(), workload, req, activator_principal(workload)) do
           {:ok, endpoint} ->
             proxy_to_serving_vm(conn, endpoint, req)
 
           {:error, {:wake_rate, _}} ->
-            send_json(conn, 429, %{error: "serving wake-rate limit exceeded", reason: "wake_rate", workload: workload, retryable: true})
+            send_json(conn, 429, %{error: "rate limit exceeded", retryable: true})
 
           {:error, {:park_full, _}} ->
-            send_json(conn, 503, %{error: "serving parked-request cap exceeded", reason: "park_full", workload: workload, retryable: true})
+            send_json(conn, 503, %{error: "service temporarily unavailable", retryable: true})
 
-          {:error, {:wake_failed, reason}} ->
-            send_json(conn, 503, %{error: "serving wake failed", reason: inspect(reason), workload: workload, retryable: true})
+          {:error, {:wake_failed, _reason}} ->
+            send_json(conn, 503, %{error: "service temporarily unavailable", retryable: true})
 
           {:error, {:unknown_workload}} ->
-            send_json(conn, 404, %{error: "unknown serving workload", workload: workload, retryable: false})
+            send_json(conn, 404, %{error: "not found", retryable: false})
 
-          {:error, reason} ->
-            send_json(conn, 503, %{error: "serving miss failed", reason: inspect(reason), workload: workload, retryable: true})
+          {:error, _reason} ->
+            send_json(conn, 503, %{error: "service temporarily unavailable", retryable: true})
         end
 
       {:error, :too_large} ->

@@ -430,7 +430,13 @@ defmodule Embervm.ServingManager do
     %StartServingRequest{
       trace: %Trace{workload: instance.workload},
       source: {:relight, %RelightSource{snapshot_ref: instance.snapshot_ref}},
-      port: instance.port || serving_cfg(entry).port,
+      # The GUEST port (spec.serving.port), which noded probes over the tap and the
+      # guest listens on, NOT instance.port. Since the DNAT projection (D-R3.11.4)
+      # StartServingResponse.port is the PUBLISHED endpoint port (podIP:vmPort, e.g.
+      # 30002), which the store keeps as instance.port for routing; reusing it as the
+      # guest port made relight probe tapIP:30002 -> connection refused (the guest is
+      # on 8080). Cold boots always used serving_cfg.port and were unaffected.
+      port: serving_cfg(entry).port,
       health_path: serving_cfg(entry).health_path
     }
   end
