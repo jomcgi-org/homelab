@@ -78,6 +78,39 @@ defmodule Embervm.NodeChannel do
     GenServer.cast(server, {:invalidate, node_id, channel})
   end
 
+  @doc """
+  Whether `error` means the CHANNEL's transport is dead (so the cached channel
+  must be invalidated and re-dialed), as opposed to a server-returned gRPC status
+  that rode a HEALTHY channel (which must NOT tear the shared channel down, per
+  D-R2.7.2).
+
+  The subtle case this exists for: when a noded pod is replaced, its old
+  connection breaks, and the Mint gRPC adapter surfaces that as a
+  `%GRPC.RPCError{status: 2}` (UNKNOWN) whose message is a transport failure
+  ("...the connection is closed"), NOT as a raw `Mint.TransportError`. Callers that
+  treat every `%GRPC.RPCError{}` as a healthy-channel status therefore never
+  invalidate, and the node wedges (all Prime/StartServing/Assign fail with
+  "connection is closed" until the control plane restarts). This predicate catches
+  that wrapped shape as well as raw transport errors, so every call site can decide
+  invalidation consistently.
+  """
+  @spec transport_dead?(term()) :: boolean()
+  def transport_dead?(%GRPC.RPCError{status: 2, message: msg}) when is_binary(msg),
+    do: connection_closed_msg?(msg)
+
+  def transport_dead?(%GRPC.RPCError{}), do: false
+  def transport_dead?(:closed), do: true
+  # Mint's transport error, matched structurally so this module needs no compile-time
+  # dependency on the Mint struct definition.
+  def transport_dead?(%{__struct__: Mint.TransportError}), do: true
+  def transport_dead?({:error, reason}), do: transport_dead?(reason)
+  def transport_dead?(_), do: false
+
+  defp connection_closed_msg?(msg) do
+    m = String.downcase(msg)
+    String.contains?(m, "connection is closed") or String.contains?(m, "connection closed")
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true

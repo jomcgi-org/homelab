@@ -359,12 +359,26 @@ def _encode_body(body: Any, is_b64: bool) -> bytes:
 def make_request_handler(
     state: ShimState,
     invoke_path: str,
+    *,
+    serving: bool = False,
 ) -> type[BaseHTTPRequestHandler]:
     """Build the BaseHTTPRequestHandler class serving the frozen contract.
 
     All handler/ready state lives in `state`, mutated by a successful hydrate.
     Before hydration /shim/ready reports 503 and any POST to the invoke path is
     503; /shim/healthz is 200 throughout so noded's Prime probe answers.
+
+    Two dispatch modes share this handler:
+
+    - Task/session (vsock, ``serving=False``): the guest is an RPC endpoint. The
+      handler is invoked ONLY on ``POST`` to ``invoke_path``; every other
+      method/path is 404. This is byte-unchanged from the frozen contract.
+    - Serving (TCP, ``serving=True``): the guest is a WEB SERVER, so it owns its
+      own routing. Every request whose path is not one of the reserved ``/shim/*``
+      contract paths is passed to the handler with its real method/path/query, so a
+      browser ``GET /...?title=...`` (an OG-image card, say) reaches the handler.
+      The reserved ``/shim/*`` namespace stays owned by the shim (health, ready,
+      hydrate); it is never routed to the handler.
     """
 
     class ShimHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -381,7 +395,10 @@ def make_request_handler(
             # not chunked (noded's vsock transport rejects chunked framing).
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            if body:
+            # A HEAD response carries the headers (Content-Length included) but no
+            # body, per RFC 7231; serving mode invokes the handler to compute those
+            # headers, then suppresses the body here.
+            if body and self.command != "HEAD":
                 self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802 (http.server naming)
@@ -395,17 +412,69 @@ def make_request_handler(
                 else:
                     self._send(503, {}, b"shim not ready: not hydrated")
                 return
+            # Serving mode: the guest is a web server, so a GET to any non-reserved
+            # path invokes the handler (a browser fetching an OG-image card, say).
+            # Task/session mode never serves a handler over GET: 404.
+            if serving:
+                self._serving_invoke()
+                return
             self._send(404, {}, b"not found")
 
         def do_POST(self) -> None:  # noqa: N802 (http.server naming)
             path = self.path.split("?", 1)[0]
-            query = self.path.split("?", 1)[1] if "?" in self.path else ""
             if path == HYDRATE_PATH:
                 self._handle_hydrate()
+                return
+            # Serving mode routes any non-reserved path to the handler; task/session
+            # mode invokes ONLY the exact invoke_path (the frozen RPC contract).
+            if serving:
+                self._serving_invoke()
                 return
             if path != invoke_path:
                 self._send(404, {}, b"not found")
                 return
+            self._invoke_handler()
+
+        # Serving mode: the web-app handler owns its routes and may use any verb.
+        # Each maps to the same handler dispatch; the reserved /shim/* namespace is
+        # guarded inside _serving_invoke. GET/POST are handled above (they also carry
+        # the task/session contract); these cover the rest of a REST surface.
+        def do_PUT(self) -> None:  # noqa: N802
+            self._serving_only()
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._serving_only()
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            self._serving_only()
+
+        def do_HEAD(self) -> None:  # noqa: N802
+            self._serving_only()
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            self._serving_only()
+
+        def _serving_only(self) -> None:
+            # A non-GET/POST verb only makes sense in serving mode; task/session mode
+            # answers 405 (the RPC contract is POST-to-invoke_path only).
+            if serving:
+                self._serving_invoke()
+            else:
+                self._send(405, {}, b"method not allowed")
+
+        def _serving_invoke(self) -> None:
+            # The /shim/* namespace is the shim's contract surface (health, ready,
+            # hydrate), never the app's, so it is never routed to the handler even in
+            # serving mode: a stray /shim/* here is a 404, not a handler call.
+            path = self.path.split("?", 1)[0]
+            if path.startswith("/shim/"):
+                self._send(404, {}, b"not found")
+                return
+            self._invoke_handler()
+
+        def _invoke_handler(self) -> None:
+            path = self.path.split("?", 1)[0]
+            query = self.path.split("?", 1)[1] if "?" in self.path else ""
             if not state.is_ready() or state.handler is None:
                 self._send(503, {}, b"shim not ready")
                 return
@@ -547,7 +616,9 @@ def build_server(
     (reached over the guest's tap NIC) and never binds vsock; the vsock path is
     byte-unchanged when serving_port is None.
     """
-    request_handler_cls = make_request_handler(state, invoke_path)
+    request_handler_cls = make_request_handler(
+        state, invoke_path, serving=serving_port is not None
+    )
     if serving_port is not None:
         return ThreadingHTTPServer(("0.0.0.0", serving_port), request_handler_cls)  # noqa: S104
     port = int(os.environ.get("EMBER_HTTP_PORT", str(GUEST_HTTP_PORT)))
