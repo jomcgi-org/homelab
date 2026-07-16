@@ -375,10 +375,12 @@ hotImageDemo:
     # value, so the workload spec carries none of the cluster's ingress DNS. Keep in
     # sync with each route's rewriteHost.
     host: hot-image-demo.serving.internal
-    # Keep ONE instance always warm: "hot" means no cold-start on the hit path. The
-    # floor is never idle-banked, so a request never waits on (or 503s from) a wake.
+    # Floor of one warm instance: the sweeper never idle-banks the last instance, so
+    # once the workload has served its first request it STAYS live and no subsequent
+    # request waits on (or 503s from) an idle-wake. (There is no proactive primer, so
+    # the very first request after a cold start still cold-boots; steady-state is warm.)
     # This is the cold-vs-hot contrast the demo shows: cold-image-demo boots per
-    # request, hot-image-demo is always live. Costs one resident microVM.
+    # request, hot-image-demo stays live. Costs one resident microVM.
     minInstances: 1
     maxInstances: 2
     idleBankSeconds: 600

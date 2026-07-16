@@ -623,13 +623,13 @@ defmodule Embervm.RouterTest do
     # diagnostic detail stays in the server logs (D-R3.11.x error-leak fix). wl-503's fake
     # miss returns {:wake_failed, :readiness_timeout}.
     with_serving_fake()
-    conn = req(:get, "/x", [{"x-ember-workload", "wl-503"}])
+    resp = req(:get, "/x", [{"x-ember-workload", "wl-503"}])
 
-    assert conn.status == 503
-    assert conn.resp_body =~ "service temporarily unavailable"
-    refute conn.resp_body =~ "readiness_timeout"
-    refute conn.resp_body =~ "wl-503"
-    refute conn.resp_body =~ "reason"
+    assert resp.status == 503
+    assert resp.body =~ "service temporarily unavailable"
+    refute resp.body =~ "readiness_timeout"
+    refute resp.body =~ "wl-503"
+    refute resp.body =~ "reason"
   end
 
   test "an unmatched path WITHOUT the activator header is a plain 404, not a miss" do
