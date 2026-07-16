@@ -61,7 +61,11 @@ defmodule Embervm.ServingManager do
   use GenServer
   require Logger
 
-  alias Embervm.{EndpointPublisher, NodeCapacity, ServingPlacement, ServingState, ServingStore, WorkloadCatalog}
+  # Tracer.with_span/set_attributes are OpenTelemetry.Tracer MACROS, so the module
+  # must be required even though it is called fully-qualified via the alias.
+  require OpenTelemetry.Tracer, as: Tracer
+
+  alias Embervm.{EndpointPublisher, NodeCapacity, ServingPlacement, ServingState, ServingStore, SessionTrace, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
     FreshSource,
@@ -159,6 +163,15 @@ defmodule Embervm.ServingManager do
       # concurrent misses share ONE StartServing (single-flight). The first miss
       # kicks the worker; the rest append here.
       waking: %{},
+      # workload -> per-miss tracing bundle (Task 10): the router's activate ROOT
+      # traceparent plus the phase boundary timestamps (:opentelemetry.timestamp/0)
+      # recorded on the serialized manager as the miss advances park -> placement ->
+      # wake. finish_wake restores the root parent and emits the park/placement/wake/
+      # publish CHILD spans retroactively with explicit start_times (the session
+      # queue_wait idiom), so the whole miss is one connected trace even though the
+      # wake RPC ran async in a spawned worker. Seeded by the first miss, cleared by
+      # finish_wake. Absent (tracing off in CI) => spans are a clean no-op.
+      wake_traces: %{},
       # principal -> [wake timestamps within the window]. Sliding-window counter.
       wake_events: %{},
       wake_max: Keyword.get(opts, :wake_max, @default_wake_max),
@@ -262,9 +275,21 @@ defmodule Embervm.ServingManager do
   end
 
   # First miss for a workload: seed its parked list (the cap is never exceeded by
-  # the first entry).
+  # the first entry) AND its tracing bundle (the root traceparent this miss carried
+  # from the router + the park_start, so finish_wake can emit the connected child
+  # spans). park_start is stamped now: the parked callers wait from here until the
+  # wake resolves.
   defp park_new_wake(state, workload, req, principal, from) do
-    %{state | waking: Map.put(state.waking, workload, [{from, req, principal}])}
+    trace = %{
+      traceparent: Map.get(req, :traceparent),
+      park_start: :opentelemetry.timestamp()
+    }
+
+    %{
+      state
+      | waking: Map.put(state.waking, workload, [{from, req, principal}]),
+        wake_traces: Map.put(state.wake_traces, workload, trace)
+    }
   end
 
   # -- wake worker -----------------------------------------------------------
@@ -281,7 +306,24 @@ defmodule Embervm.ServingManager do
     owner = self()
     entry = catalog_entry(state, workload)
 
-    case plan_wake(state, workload) do
+    # Placement phase: the pure plan_wake read. Stamp its boundaries + the cold bool
+    # into the tracing bundle so finish_wake can emit the `placement` and `wake`
+    # child spans with real durations. placement_end == wake_start (the RPC begins
+    # the instant placement resolves).
+    placement_start = :opentelemetry.timestamp()
+    plan = plan_wake(state, workload)
+    wake_start = :opentelemetry.timestamp()
+    cold = match?({:cold, _, _}, plan)
+
+    state =
+      stamp_wake_trace(state, workload, %{
+        placement_start: placement_start,
+        placement_end: wake_start,
+        wake_start: wake_start,
+        cold: cold
+      })
+
+    case plan do
       {:relight, instance, node_id} ->
         # Move the banked instance to relighting (ETS-only, no op) before the RPC, so
         # a concurrent reconcile does not touch it and the later serving_relit is a
@@ -421,14 +463,37 @@ defmodule Embervm.ServingManager do
   # retries.
   defp finish_wake(state, workload, outcome) do
     {waiters, state} = pop_waiters(state, workload)
+    {trace, state} = pop_wake_trace(state, workload)
+
+    # The wake RPC returned now: this closes the `wake` phase. Emit the retroactive
+    # `park`/`placement`/`wake` child spans (Task 10) under the restored root: they
+    # spanned the async wake worker and cannot wrap live code on this serialized
+    # process, so they are emitted with explicit start_times (the session queue_wait
+    # idiom). `wake` carries ember.wake_ms + ember.cold, the numbers the Task 12
+    # wake-p95 + cold-vs-warm gate reads. The `publish` child span is opened LIVE
+    # inside publish_and_resolve (it wraps real code) under the same root. Tracing
+    # off (no traceparent) is a clean no-op.
+    wake_ended = :opentelemetry.timestamp()
+    emit_wake_phase_spans(trace, workload, wake_ended)
 
     case outcome do
       {:created, attrs, endpoint} ->
-        finish_created(state, workload, attrs, endpoint, waiters)
+        finish_created(state, workload, attrs, endpoint, waiters, trace)
 
       {:relit, instance_id, node_id, endpoint} ->
-        finish_relit(state, workload, instance_id, node_id, endpoint, waiters)
+        finish_relit(state, workload, instance_id, node_id, endpoint, waiters, trace)
 
+      other ->
+        finish_wake_failure(state, workload, other, waiters)
+    end
+  end
+
+  # The wake-failure branches (no instance to publish, so no `publish` span): 503 the
+  # parked callers and leave the activator published so the next miss retries. The
+  # park/placement/wake child spans were already emitted by finish_wake (the wake
+  # phase is timed whether or not it succeeded).
+  defp finish_wake_failure(state, workload, outcome, waiters) do
+    case outcome do
       # A relight RPC failure: the instance was marked `relighting` before the RPC.
       # The snapshot is intact (the proto never deletes it on a failed restore), so
       # return it `relighting -> banked` (ETS-only, no op) and 503 the callers; a
@@ -450,14 +515,14 @@ defmodule Embervm.ServingManager do
     end
   end
 
-  defp finish_created(state, workload, attrs, endpoint, waiters) do
+  defp finish_created(state, workload, attrs, endpoint, waiters, trace) do
     instance_id = mint_id(state)
     attrs = Map.put(attrs, :instance_id, instance_id)
     attrs = Map.merge(attrs, %{vm_id: endpoint.vm_id, ip: endpoint.ip, port: endpoint.port})
 
     case ServingStore.start(state.store, attrs) do
       {:ok, _instance} ->
-        publish_and_resolve(state, instance_id, workload, endpoint, :started, waiters)
+        publish_and_resolve(state, instance_id, workload, endpoint, :started, waiters, trace)
 
       {:error, reason} ->
         Logger.error("embervm serving: start record failed", workload: workload, reason: inspect(reason))
@@ -466,7 +531,7 @@ defmodule Embervm.ServingManager do
     end
   end
 
-  defp finish_relit(state, workload, instance_id, node_id, endpoint, waiters) do
+  defp finish_relit(state, workload, instance_id, node_id, endpoint, waiters, trace) do
     # A banked instance relit: serving_relit moves it back to starting with the
     # fresh vm/endpoint, then serving_published publishes it.
     relit =
@@ -481,7 +546,7 @@ defmodule Embervm.ServingManager do
 
     case relit do
       {:ok, _} ->
-        publish_and_resolve(state, instance_id, workload, endpoint, :relit, waiters)
+        publish_and_resolve(state, instance_id, workload, endpoint, :relit, waiters, trace)
 
       {:error, reason} ->
         Logger.warning("embervm serving: relit transition failed",
@@ -499,25 +564,60 @@ defmodule Embervm.ServingManager do
   # update that adds the real endpoint), then resolve every parked caller to the
   # endpoint so the router proxies. The publish is the single point where the
   # workload leaves the activator fallback.
-  defp publish_and_resolve(state, instance_id, workload, endpoint, reason, waiters) do
-    case ServingStore.publish(state.store, instance_id, endpoint.ip, endpoint.port, reason) do
-      {:ok, _} ->
-        EndpointPublisher.publish(state.publisher)
+  defp publish_and_resolve(state, instance_id, workload, endpoint, reason, waiters, trace) do
+    # The `publish` child span (Task 10): the control-plane publish step, wrapped
+    # LIVE (it is real code on this process, unlike the retroactive wake phases).
+    # ember.publish_ms is the span duration; the sidecar PUT ACK round-trip is
+    # instrumented SEPARATELY on the EndpointPublisher flush (it is debounced/
+    # coalesced and cannot be folded in here). ember.endpoint_count is the workload's
+    # healthy-published set AFTER this publish.
+    principal = wake_principal(state, workload)
+    SessionTrace.restore_parent(trace_parent(trace))
+    publish_start = :opentelemetry.timestamp()
 
-        Logger.info("embervm serving woken",
-          workload: workload,
-          instance_id: instance_id,
-          reason: reason
-        )
+    Tracer.with_span "embervm.serving.publish",
+                     %{
+                       attributes: %{
+                         "ember.workload" => workload,
+                         "ember.instance_id" => instance_id,
+                         "ember.principal" => principal
+                       }
+                     } do
+      result =
+        case ServingStore.publish(state.store, instance_id, endpoint.ip, endpoint.port, reason) do
+          {:ok, _} ->
+            EndpointPublisher.publish(state.publisher)
 
-        reply_all(waiters, {:ok, %{ip: endpoint.ip, port: endpoint.port}})
-        state
+            Logger.info("embervm serving woken",
+              workload: workload,
+              instance_id: instance_id,
+              reason: reason
+            )
 
-      {:error, reason} ->
-        Logger.error("embervm serving: publish failed", instance_id: instance_id, reason: inspect(reason))
-        reply_all(waiters, {:error, {:wake_failed, {:publish, reason}}})
-        state
+            reply_all(waiters, {:ok, %{ip: endpoint.ip, port: endpoint.port}})
+            state
+
+          {:error, reason} ->
+            Logger.error("embervm serving: publish failed", instance_id: instance_id, reason: inspect(reason))
+            reply_all(waiters, {:error, {:wake_failed, {:publish, reason}}})
+            state
+        end
+
+      publish_ms = span_ms(publish_start, :opentelemetry.timestamp())
+      endpoint_count = length(ServingStore.published_endpoints(result.store, workload))
+
+      Tracer.set_attributes(%{
+        "ember.publish_ms" => publish_ms,
+        "ember.endpoint_count" => endpoint_count
+      })
+
+      result
     end
+    |> tap(fn _ ->
+      # Reset the restored remote parent off the manager process dict (see
+      # emit_wake_phase_spans): this runs on the long-lived manager, not a spawn.
+      clear_current_span()
+    end)
   end
 
   defp pop_waiters(state, workload) do
@@ -528,6 +628,94 @@ defmodule Embervm.ServingManager do
   defp reply_all(waiters, reply) do
     for {from, _req, _principal} <- waiters, do: GenServer.reply(from, reply)
     :ok
+  end
+
+  # -- miss tracing (Task 10) ------------------------------------------------
+
+  # Merge boundary stamps into a workload's tracing bundle. A no-op when the miss
+  # never seeded a bundle (a straggler proxied without a wake, or tracing off).
+  defp stamp_wake_trace(state, workload, fields) do
+    case Map.get(state.wake_traces, workload) do
+      nil -> state
+      trace -> %{state | wake_traces: Map.put(state.wake_traces, workload, Map.merge(trace, fields))}
+    end
+  end
+
+  defp pop_wake_trace(state, workload) do
+    {Map.get(state.wake_traces, workload), %{state | wake_traces: Map.delete(state.wake_traces, workload)}}
+  end
+
+  defp trace_parent(nil), do: nil
+  defp trace_parent(trace), do: Map.get(trace, :traceparent)
+
+  # Emit the retroactive `park`/`placement`/`wake` child spans under the router's
+  # activate ROOT (the session queue_wait idiom: explicit start_times reconstruct a
+  # phase that spanned another process). A nil bundle (straggler / tracing off) or a
+  # nil traceparent restores no parent, so the spans are roots the exporter drops
+  # when tracing is off -> a clean no-op. `wake` carries the gate numbers
+  # (ember.wake_ms, ember.cold). placement/wake stamps are absent only if the wake
+  # errored before start_wake stamped them (a bad plan); guard each phase.
+  defp emit_wake_phase_spans(nil, _workload, _wake_ended), do: :ok
+
+  defp emit_wake_phase_spans(trace, workload, wake_ended) do
+    SessionTrace.restore_parent(Map.get(trace, :traceparent))
+    attrs = %{"ember.workload" => workload}
+
+    with %{park_start: park_start, placement_start: placement_start} <- trace do
+      # park: the first miss parked here until the wake began the placement read.
+      emit_phase_span("embervm.serving.park", park_start, placement_start, attrs)
+      # placement: the pure plan_wake read (relight-vs-cold decision).
+      emit_phase_span("embervm.serving.placement", placement_start, trace.placement_end, attrs)
+
+      # wake: the StartServing RPC (cold boot or relight). Carries the gate numbers.
+      wake_attrs = Map.merge(attrs, %{"ember.cold" => trace.cold, "ember.wake_ms" => span_ms(trace.wake_start, wake_ended)})
+      emit_phase_span("embervm.serving.wake", trace.wake_start, wake_ended, wake_attrs)
+    else
+      # No placement stamp: the miss was denied/failed before start_wake ran. Emit
+      # just the park span so the parked wait is still visible.
+      _ ->
+        if is_integer(trace[:park_start]) do
+          emit_phase_span("embervm.serving.park", trace.park_start, wake_ended, attrs)
+        end
+    end
+
+    # This runs on the long-lived manager process: reset the restored remote parent
+    # off the process dict so it never leaks into the NEXT {:wake_done}. publish
+    # re-restores the same root for its own span.
+    clear_current_span()
+    :ok
+  end
+
+  # A retroactive completed span: opened with an explicit start_time and closed
+  # immediately (its wall duration is start_time..now). Mirrors the session
+  # queue_wait span. Skipped if either boundary is missing.
+  defp emit_phase_span(_name, nil, _stop, _attrs), do: :ok
+  defp emit_phase_span(_name, _start, nil, _attrs), do: :ok
+
+  defp emit_phase_span(name, start_time, _stop, attrs) do
+    Tracer.with_span name, %{start_time: start_time, attributes: attrs} do
+      :ok
+    end
+  end
+
+  # :opentelemetry.timestamp/0 returns erlang NATIVE time units (what the span
+  # start_time option expects). The *_ms gate attributes want milliseconds, so
+  # convert the native delta (never assume nanoseconds).
+  defp span_ms(start_native, stop_native) when is_integer(start_native) and is_integer(stop_native) do
+    System.convert_time_unit(stop_native - start_native, :native, :millisecond)
+  end
+
+  defp span_ms(_, _), do: 0
+
+  # Detach any restored remote parent from THIS process's OTel context. Guarded: a
+  # trace hiccup must never crash finish_wake.
+  defp clear_current_span do
+    Tracer.set_current_span(:undefined)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   # -- adoption --------------------------------------------------------------

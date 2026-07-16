@@ -73,6 +73,10 @@ defmodule Embervm.EndpointPublisher do
   use GenServer
   require Logger
 
+  # Tracer.with_span/set_attributes are OpenTelemetry.Tracer MACROS, so the module
+  # must be required even though it is called fully-qualified via the alias.
+  require OpenTelemetry.Tracer, as: Tracer
+
   alias Embervm.{NodeCapacity, ServingStore, WorkloadCatalog}
 
   # Debounce window: coalesce a burst of fact changes into one PUT.
@@ -175,6 +179,12 @@ defmodule Embervm.EndpointPublisher do
       # Debounce bookkeeping: a pending timer ref (or nil) and whether a publish is
       # dirty (requested since the last flush).
       debounce_ref: nil,
+      # The OTel timestamp (native units) of the OLDEST pending fact-change since the
+      # last flush, set when a debounce window opens and cleared on flush. The
+      # publish_flush span (Task 10) measures fact-change -> sidecar ACK from here, so
+      # gate 4's "fact change to Envoy ACK p95" is derivable. nil = a periodic re-push
+      # with no pending change (the publish_flush span is then a re-push, start=now).
+      dirty_since: nil,
       # Whether to arm the periodic re-push + run the boot publish. Tests set
       # active: false to drive flush/1 deterministically with no timers.
       active: Keyword.get(opts, :active, true)
@@ -228,7 +238,10 @@ defmodule Embervm.EndpointPublisher do
 
   defp arm_debounce(state) do
     ref = Process.send_after(self(), :debounce_flush, state.debounce_ms)
-    %{state | debounce_ref: ref}
+    # Stamp the oldest pending fact-change (the window's first request) so the flush's
+    # publish_flush span measures the true fact-change -> ACK latency, not just the
+    # PUT wall time. Coalesced later requests in the window keep this oldest stamp.
+    %{state | debounce_ref: ref, dirty_since: state.dirty_since || :opentelemetry.timestamp()}
   end
 
   defp schedule_repush(%{repush_ms: ms}) when ms > 0 do
@@ -248,32 +261,74 @@ defmodule Embervm.EndpointPublisher do
     state = cancel_debounce(state)
     ctx = render_ctx(state)
     nodes = serving_nodes(state)
+    # The oldest pending fact-change this flush resolves (nil on a pure re-push). Used
+    # as the publish_flush span start so gate 4's fact-change -> ACK p95 is derivable.
+    dirty_since = state.dirty_since
+    endpoint_count = total_endpoint_count(ctx)
 
-    Enum.reduce(nodes, state, fn node_id, acc ->
-      {version, acc} = next_version(acc, node_id)
-      desired = desired_for_node(ctx, version)
+    state =
+      Enum.reduce(nodes, state, fn node_id, acc ->
+        {version, acc} = next_version(acc, node_id)
+        desired = desired_for_node(ctx, version)
+        put_result = safe_put(acc.put_fun, node_id, desired)
+        emit_publish_flush_span(node_id, version, endpoint_count, dirty_since, put_result)
 
-      case safe_put(acc.put_fun, node_id, desired) do
-        :ok ->
-          acc
+        case put_result do
+          :ok ->
+            acc
 
-        {:error, reason} ->
-          Logger.error("embervm endpoint publisher: PUT to node #{node_id} failed",
-            reason: inspect(reason),
-            version: version
-          )
+          {:error, reason} ->
+            Logger.error("embervm endpoint publisher: PUT to node #{node_id} failed",
+              reason: inspect(reason),
+              version: version
+            )
 
-          # ALWAYS-INCREMENT: the counter is NOT rolled back on a failed PUT, so the
-          # next flush strictly ADVANCES the version. Rolling back would re-send the
-          # same version, which the sidecar 409s if the "failed" PUT was actually
-          # ACCEPTED but its HTTP ACK was lost (accept-then-lost-ACK) -- a wedge that
-          # only the periodic re-push could unstick. A gap in the version sequence is
-          # harmless: monotonicity needs only strictly-greater, and the next flush's
-          # higher version is accepted whether or not this PUT landed. Endpoints keep
-          # serving on Envoy's last-ACKed config until the retry lands.
-          acc
-      end
-    end)
+            # ALWAYS-INCREMENT: the counter is NOT rolled back on a failed PUT, so the
+            # next flush strictly ADVANCES the version. Rolling back would re-send the
+            # same version, which the sidecar 409s if the "failed" PUT was actually
+            # ACCEPTED but its HTTP ACK was lost (accept-then-lost-ACK) -- a wedge that
+            # only the periodic re-push could unstick. A gap in the version sequence is
+            # harmless: monotonicity needs only strictly-greater, and the next flush's
+            # higher version is accepted whether or not this PUT landed. Endpoints keep
+            # serving on Envoy's last-ACKed config until the retry lands.
+            acc
+        end
+      end)
+
+    # The pending fact-change window is now resolved: clear the oldest-dirty stamp so
+    # the next window opens a fresh one.
+    %{state | dirty_since: nil}
+  end
+
+  # The publish_flush span (Task 10): one span per node PUT, its start pinned to the
+  # OLDEST pending fact-change (dirty_since) so its duration is the true fact-change
+  # -> sidecar ACK latency the gate-4 p95 reads, NOT just the PUT wall time. On a
+  # pure re-push (no pending change) it starts now (a ~PUT-latency span). ember.
+  # ack_ok is the sidecar ACK success the publication-failure alert reads; ember.
+  # publish_ms is the same duration as a queryable attribute. A re-push flush with
+  # tracing off is a clean no-op.
+  defp emit_publish_flush_span(node_id, version, endpoint_count, dirty_since, put_result) do
+    now = :opentelemetry.timestamp()
+    start_time = dirty_since || now
+    ack_ok = put_result == :ok
+
+    Tracer.with_span "embervm.serving.publish_flush",
+                     %{
+                       start_time: start_time,
+                       attributes: %{
+                         "ember.node_id" => node_id,
+                         "ember.version" => version,
+                         "ember.endpoint_count" => endpoint_count,
+                         "ember.ack_ok" => ack_ok,
+                         "ember.publish_ms" => System.convert_time_unit(now - start_time, :native, :millisecond)
+                       }
+                     } do
+      # ember.ack_ok is the queryable success/fail signal the publication-failure
+      # alert reads; a failed PUT keeps ack_ok=false and publish_ms captures the
+      # latency to the failing ACK. (No span status API is used here to stay on the
+      # OTel surface the rest of the control plane already exercises.)
+      :ok
+    end
   end
 
   # The render context: the fact-source handles the pure projection reads against.
@@ -328,6 +383,17 @@ defmodule Embervm.EndpointPublisher do
       end
     end)
     |> Enum.sort()
+  end
+
+  # Total REAL healthy-published endpoints across every serving workload (the
+  # activator fallback is not counted: it is not a served instance). The
+  # publish_flush span carries this as ember.endpoint_count so a publication is
+  # correlatable to how many endpoints it fanned out.
+  defp total_endpoint_count(ctx) do
+    serving_catalog_workloads(ctx.catalog_table)
+    |> Enum.reduce(0, fn workload, acc ->
+      acc + length(ServingStore.published_endpoints(ctx.store, workload))
+    end)
   end
 
   # One cluster per workload: the healthy published endpoints, OR the activator

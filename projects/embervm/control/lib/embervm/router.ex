@@ -880,13 +880,34 @@ defmodule Embervm.Router do
   # anonymous end-user traffic with no bearer principal), passed as the manager's
   # principal so the audit ops attribute to the workload.
   defp handle_activator_miss(conn, workload) do
+    # Restore any caller trace (an unfurler/browser rarely carries one, but a
+    # traced synthetic probe does), then open the activator ROOT span so the
+    # manager's `park`/`placement`/`wake`/`publish` and this `proxy` all nest
+    # under one per-miss trace. This is the ONE control-plane touch of a serving
+    # request (standing decision 1: the HIT path has NO control-plane span); the
+    # gate's off-path proof + wake-latency read this connected miss trace. Same
+    # `from_remote_span` idiom as the session invoke; see Embervm.SessionTrace.
+    SessionTrace.restore_parent(header_value(conn, "traceparent"))
+
+    Tracer.with_span "embervm.serving.activate",
+                     %{attributes: %{"ember.workload" => workload, "ember.principal" => activator_principal(workload)}} do
+      do_activator_miss(conn, workload)
+    end
+  end
+
+  defp do_activator_miss(conn, workload) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->
         req = %{
           method: conn.method,
           path: activator_path(conn),
           headers: activator_headers(conn),
-          body: body
+          body: body,
+          # Serialize the activate ROOT span so the manager's park/placement/wake/
+          # publish child spans (opened across the {:miss} GenServer.call and the
+          # async {:wake_done} message, where the OTel process context does not
+          # follow) nest under it. nil when tracing is off (CI). See SessionTrace.
+          traceparent: SessionTrace.current_traceparent()
         }
 
         case serving_manager().miss(serving_manager_server(), workload, req, activator_principal(workload)) do
