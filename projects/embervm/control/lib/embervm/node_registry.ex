@@ -67,7 +67,16 @@ defmodule Embervm.NodeRegistry do
 
   alias Embervm.NodeCapacity
 
-  alias Embervm.Node.V1.{NodeService, NodeStatus, SessionSnapshot, SessionVm, WatchNodeRequest, WorkloadCapacity}
+  alias Embervm.Node.V1.{
+    NodeService,
+    NodeStatus,
+    ServingSnapshot,
+    ServingVm,
+    SessionSnapshot,
+    SessionVm,
+    WatchNodeRequest,
+    WorkloadCapacity
+  }
 
   @unknown_after_ms 5_000
   @down_after_ms 15_000
@@ -403,9 +412,48 @@ defmodule Embervm.NodeRegistry do
       session_vms: session_vms_from_status(s),
       session_snapshots: session_snapshots_from_status(s),
       snapshot_disk_free_bytes: s.snapshot_disk_free_bytes,
-      snapshot_disk_used_bytes: s.snapshot_disk_used_bytes
+      snapshot_disk_used_bytes: s.snapshot_disk_used_bytes,
+      # Serving facts (R3): the node's LIVE serving VMs (with the daemon's health
+      # probe fact) and BANKED serving-snapshot inventory, plus the serving subnet
+      # CIDR. These mirror the session facts above and are the source of truth the
+      # serving lifecycle (Embervm.EndpointPublisher's node derivation,
+      # Embervm.ServingHealth's ejection, and Task 8 adoption) reconciles against.
+      # Empty when a daemon never sets them (wire-compatible): a node with no
+      # serving_subnet_cidr is simply not a serving-capable node, so the publisher
+      # pushes it no snapshot.
+      serving_vms: serving_vms_from_status(s),
+      serving_snapshots: serving_snapshots_from_status(s),
+      serving_subnet_cidr: s.serving_subnet_cidr
     }
   end
+
+  defp serving_vms_from_status(%NodeStatus{serving_vms: vms}) when is_list(vms) do
+    for %ServingVm{} = v <- vms do
+      %{
+        vm_id: v.vm_id,
+        workload: v.workload,
+        ip: v.ip,
+        port: v.port,
+        healthy: v.healthy,
+        last_probe_unix_ms: v.last_probe_unix_ms
+      }
+    end
+  end
+
+  defp serving_vms_from_status(_s), do: []
+
+  defp serving_snapshots_from_status(%NodeStatus{serving_snapshots: snaps}) when is_list(snaps) do
+    for %ServingSnapshot{} = snap <- snaps do
+      %{
+        snapshot_ref: snap.snapshot_ref,
+        workload: snap.workload,
+        size_bytes: snap.size_bytes,
+        created_at_unix_ms: snap.created_at_unix_ms
+      }
+    end
+  end
+
+  defp serving_snapshots_from_status(_s), do: []
 
   defp session_vms_from_status(%NodeStatus{session_vms: vms}) when is_list(vms) do
     for %SessionVm{} = v <- vms do

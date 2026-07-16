@@ -118,6 +118,15 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: {{ .Values.tracing.serviceName | default "embervm-control" | quote }}
             {{- end }}
+            {{- if .Values.xds.enabled }}
+            # xDS sidecar snapshot API port (R3): the control plane (Embervm.
+            # EndpointPublisher) PUTs the serving fan-out to the sidecar over
+            # 127.0.0.1:this port (the sidecar binds loopback only, sharing this
+            # pod's netns). Same value the sidecar container reads as its listen
+            # port, so both derive from values.xds.httpPort.
+            - name: EMBERVM_XDS_HTTP_PORT
+              value: {{ .Values.xds.httpPort | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
