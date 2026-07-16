@@ -617,6 +617,21 @@ defmodule Embervm.RouterTest do
     assert req(:get, "/x", [{"x-ember-workload", "wl-unknown"}]).status == 404
   end
 
+  test "activator error responses are generic and do NOT leak internals" do
+    # The activator miss path is PUBLIC, so a wake-failure body must not expose the gRPC
+    # reason (tap IP/DNAT port/shim path), the workload name, or any internal detail; the
+    # diagnostic detail stays in the server logs (D-R3.11.x error-leak fix). wl-503's fake
+    # miss returns {:wake_failed, :readiness_timeout}.
+    with_serving_fake()
+    conn = req(:get, "/x", [{"x-ember-workload", "wl-503"}])
+
+    assert conn.status == 503
+    assert conn.resp_body =~ "service temporarily unavailable"
+    refute conn.resp_body =~ "readiness_timeout"
+    refute conn.resp_body =~ "wl-503"
+    refute conn.resp_body =~ "reason"
+  end
+
   test "an unmatched path WITHOUT the activator header is a plain 404, not a miss" do
     with_serving_fake()
     # No x-ember-workload header: the catch-all 404s rather than treating it as a miss.

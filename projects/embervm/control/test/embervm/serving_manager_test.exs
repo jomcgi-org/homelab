@@ -380,7 +380,7 @@ defmodule Embervm.ServingManagerTest do
 
   # Seed a banked instance born from `base_snapshot_ref`, whose snapshot the node
   # reports as `snapshot_ref` (so node_for_relight resolves it).
-  defp seed_banked(ctx, id, base_snapshot_ref, snapshot_ref) do
+  defp seed_banked(ctx, id, base_snapshot_ref, snapshot_ref, port \\ 8080) do
     {:ok, _} =
       ServingStore.start(ctx.store, %{
         instance_id: id,
@@ -390,11 +390,11 @@ defmodule Embervm.ServingManagerTest do
         node_id: "node-4",
         vm_id: "vm-#{id}",
         ip: "10.99.0.9",
-        port: 8080,
+        port: port,
         base_snapshot_ref: base_snapshot_ref
       })
 
-    {:ok, _} = ServingStore.publish(ctx.store, id, "10.99.0.9", 8080, :started)
+    {:ok, _} = ServingStore.publish(ctx.store, id, "10.99.0.9", port, :started)
     {:ok, _} = ServingStore.unpublish(ctx.store, id, :bank)
     {:ok, _} = ServingStore.mark(ctx.store, id, :bank)
 
@@ -416,6 +416,36 @@ defmodule Embervm.ServingManagerTest do
     end
 
     {fun, srcs}
+  end
+
+  test "relight sends the GUEST port, not the stored (projected) endpoint port" do
+    # Regression for the DNAT-projection relight bug (D-R3.11.4 fallout): the store keeps
+    # instance.port as the PUBLISHED endpoint port (podIP:vmPort, e.g. 30002) for routing,
+    # but a relight must send the GUEST port (spec.serving.port, 8080) so noded probes the
+    # guest correctly. Reusing instance.port made relight probe tapIP:30002 -> refused.
+    {:ok, ports} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        start_serving_fun: fn _ch, req ->
+          Agent.update(ports, &[req.port | &1])
+          {:ok, %StartServingResponse{vm_id: "vm-relit", ip: "10.99.0.5", port: 8080}}
+        end
+      )
+
+    serving_workload(ctx, "wl-a")
+
+    serving_node(ctx, "node-4",
+      serving_snapshots: [%{snapshot_ref: "serving/s-1", workload: "wl-a", size_bytes: 10, created_at_unix_ms: 1}]
+    )
+
+    # Banked instance whose STORED port is the projected DNAT port 30002 (the bug
+    # trigger); current lineage (base-a matches the node's serving_image_ref) so it relights.
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1", 30002)
+
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    # The relight sent the guest port 8080 (serving_workload's serving.port), NOT 30002.
+    assert Agent.get(ports, & &1) == [8080]
   end
 
   test "a STALE-lineage banked instance is NOT relit: the wake cold-boots the current base" do
