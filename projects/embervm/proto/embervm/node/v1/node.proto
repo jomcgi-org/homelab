@@ -144,6 +144,58 @@ service NodeService {
   // that ref and still runs. This is the ADR embervm/003 eviction verb landed
   // early, shaped so base eviction later reuses it unchanged.
   rpc EvictSnapshot(EvictSnapshotRequest) returns (EvictSnapshotResponse);
+
+  // -- Serving verbs (R3) -----------------------------------------------------
+  //
+  // These two verbs are the serving-class lifecycle vocabulary, ADDITIVE to the
+  // task and session contracts above (every existing RPC and message is
+  // byte-for-byte unchanged). A serving VM is a long-lived microVM that answers
+  // many HTTP requests directly over a tap NIC, unlike task and session VMs which
+  // are vsock-only and carry no NIC (ADR embervm/001: the daemon creates the tap,
+  // reports the endpoint, and is thenceforth uninvolved). Serving snapshots reuse
+  // EvictSnapshot (R2) unchanged: a serving snapshot ref is evicted exactly like
+  // a session snapshot ref, just stored under the serving/ prefix. Refs stay
+  // opaque strings exactly as elsewhere: no file path, no netlink or tap-naming
+  // detail, no IP-allocation mechanism crosses this seam. Serving VMs count
+  // against max_live_vms like any other live VM, and are EXCLUDED from
+  // WorkloadCapacity.primed_vm_ids (a serving VM is never in the task pool,
+  // mirroring the session-VM exclusion above).
+  //
+  // Health probing: the daemon probes `GET {health_path}` on each live serving
+  // VM's tap IP every probe_interval (a daemon flag, default 5s), flips healthy
+  // false after unhealthy_threshold consecutive probe failures (default 3) and
+  // back to true after exactly one success. This is a FACT the daemon reports in
+  // NodeStatus.serving_vms; the control plane consumes it and decides what to do
+  // (unpublish, rebank, alert). The daemon itself never acts on the health
+  // verdict: it does not destroy, restart, or otherwise touch a VM because it
+  // became unhealthy. Nothing Envoy-specific (no xDS, no cluster, no endpoint
+  // concept) is known to the daemon; it reports only the raw {ip, port, healthy}
+  // fact and the control plane owns everything downstream of that.
+
+  // StartServing brings up a serving VM, either fresh from a pristine base ref
+  // or relit from a serving snapshot ref (exactly one of StartServingRequest's
+  // source fields is set), attaches a tap NIC with an IP drawn from the node's
+  // serving subnet, and waits for guest HTTP readiness on {port, health_path}
+  // probed OVER THE TAP (not vsock, unlike Prime/Relight's vsock wait-ready).
+  // Returns {vm_id, ip, port} once ready. FAILED_PRECONDITION on an unknown or
+  // unrestorable ref. A readiness timeout DESTROYS the VM and returns the error:
+  // there is no half-alive endpoint state a caller could observe or publish.
+  // The tap IP MAY differ across relights of the same workload (IP assignment is
+  // daemon-internal, never guest-visible or guest-persisted), so a caller must
+  // treat every StartServing response as the current, authoritative endpoint.
+  rpc StartServing(StartServingRequest) returns (StartServingResponse);
+
+  // StopServing tears down a live serving VM. mode = BANK pauses the VM, writes
+  // a full snapshot to the sessions-style bundle dir under a serving/ prefix,
+  // destroys the VM, and returns {snapshot_ref, size_bytes}, exactly like Bank's
+  // mechanics for session VMs. mode = DESTROY tears the VM down with no snapshot
+  // (the DESTROY-mode counterpart of the task-class Destroy verb). BANK refuses
+  // with FAILED_PRECONDITION if a bank of the same vm_id is already in flight
+  // (the daemon backstop; the control plane is expected to serialize this on its
+  // own too, exactly as with session Bank). StopServing does not itself drain
+  // any edge or proxy: the daemon does not know such a thing exists, and
+  // ordering a drain before the bank call is entirely the control plane's job.
+  rpc StopServing(StopServingRequest) returns (StopServingResponse);
 }
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
@@ -377,6 +429,73 @@ message EvictSnapshotRequest {
 
 message EvictSnapshotResponse {}
 
+// ---- Serving verbs (R3) -----------------------------------------------------
+
+// FreshSource starts a serving VM cold from a pristine base ref, the serving
+// counterpart of Prime's snapshot_ref restore. The oneof sibling of
+// RelightSource in StartServingRequest.source.
+message FreshSource {
+  string snapshot_ref = 1;
+}
+
+// RelightSource restarts a serving VM from a previously banked serving
+// snapshot ref, the serving counterpart of Relight's restore. The tap IP is
+// re-allocated on every relight and may differ from any prior allocation for
+// the same workload; the response is always the current fact.
+message RelightSource {
+  string snapshot_ref = 1;
+}
+
+message StartServingRequest {
+  Trace trace = 1;
+  // source selects fresh-from-base or relight-from-serving-snapshot. Exactly
+  // one is set.
+  oneof source {
+    FreshSource fresh = 2;
+    RelightSource relight = 3;
+  }
+  // Guest contract knobs (frozen contract, same shape as BuildBaseRequest):
+  // the port the guest HTTP server listens on over the tap, and the path that
+  // answers 200 when ready and, subsequently, healthy.
+  uint32 port = 4;
+  string health_path = 5;
+  // Resource shape of the serving VM (vcpus, mem), carried exactly as Prime's
+  // implicit base-derived shape is for task VMs.
+  ResourceSpec resources = 6;
+}
+
+message StartServingResponse {
+  // vm_id names the live serving VM. Opaque; the control plane holds it and
+  // passes it to StopServing.
+  string vm_id = 1;
+  // ip is the tap IP the daemon assigned from its serving subnet. Opaque to
+  // the control plane beyond routing to it; the daemon owns tap naming and
+  // subnet management entirely.
+  string ip = 2;
+  // port echoes StartServingRequest.port: the guest port callers reach the
+  // VM's HTTP server on at ip:port.
+  uint32 port = 3;
+}
+
+enum StopServingMode {
+  STOP_SERVING_MODE_UNSPECIFIED = 0;
+  STOP_SERVING_MODE_BANK = 1;
+  STOP_SERVING_MODE_DESTROY = 2;
+}
+
+message StopServingRequest {
+  Trace trace = 1;
+  string vm_id = 2;
+  StopServingMode mode = 3;
+}
+
+message StopServingResponse {
+  // snapshot_ref and size_bytes are set only when mode was BANK; both are the
+  // zero value for DESTROY.
+  string snapshot_ref = 1;
+  uint64 size_bytes = 2;
+}
+
 // ---- Node status -----------------------------------------------------------
 
 message WatchNodeRequest {
@@ -448,6 +567,34 @@ message SessionSnapshot {
   int64 created_at_unix_ms = 5;
 }
 
+// ServingVm is one LIVE serving VM the node currently holds, reported so a
+// restarted control plane adopts rather than orphans it and so the control
+// plane can consume the daemon's health-probe fact. healthy and
+// last_probe_unix_ms are set by the daemon's local probe loop (see the
+// StartServing/StopServing RPC comments for the probe contract); the daemon
+// itself never acts on healthy, it only reports it. Excluded from every
+// WorkloadCapacity.primed_vm_ids list, exactly like SessionVm.
+message ServingVm {
+  string vm_id = 1;
+  string workload = 2;
+  string ip = 3;
+  uint32 port = 4;
+  bool healthy = 5;
+  int64 last_probe_unix_ms = 6;
+}
+
+// ServingSnapshot is one BANKED serving snapshot bundle on node disk, stored
+// under the serving/ prefix of the sessions-style bundle dir. The daemon
+// rescans this dir on start and reports what it finds, exactly like
+// SessionSnapshot, so the control plane reconciles banked-serving inventory
+// from node truth.
+message ServingSnapshot {
+  string snapshot_ref = 1;
+  string workload = 2;
+  uint64 size_bytes = 3;
+  int64 created_at_unix_ms = 4;
+}
+
 // NodeStatus is the whole capacity fact set: per-workload primed slots and base
 // states, node-level memory/cpu headroom, and the draining flag. A draining
 // daemon reports draining=true and the control plane stops new assignments
@@ -485,4 +632,22 @@ message NodeStatus {
   // on a low-watermark crossing and the watermark alert can trip.
   uint64 snapshot_disk_free_bytes = 11;
   uint64 snapshot_disk_used_bytes = 12;
+
+  // -- Serving facts (R3, additive) -------------------------------------------
+  // These three fields mirror the session facts above for serving-class VMs:
+  // adoption of live state, banked-snapshot inventory, and the daemon's serving
+  // subnet fact. All are optional/repeated and wire-compatible with a daemon
+  // that never sets them.
+
+  // serving_vms lists every LIVE serving VM this node holds, including each
+  // one's current health-probe verdict. Disjoint from every
+  // WorkloadCapacity.primed_vm_ids and from session_vms.
+  repeated ServingVm serving_vms = 13;
+  // serving_snapshots is the banked-serving-snapshot inventory scanned from the
+  // serving/ prefix of the sessions snapshot dir.
+  repeated ServingSnapshot serving_snapshots = 14;
+  // serving_subnet_cidr is the CIDR the daemon allocates serving VM tap IPs
+  // from, reported so the control plane can reason about address space without
+  // ever performing allocation itself (allocation stays daemon-internal).
+  string serving_subnet_cidr = 15;
 }
