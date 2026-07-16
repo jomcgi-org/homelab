@@ -124,10 +124,12 @@ defmodule Embervm.EndpointPublisher do
   end
 
   @doc """
-  The PURE desired-state document for one node, rendered from `store`'s facts +
-  the workload `catalog`, at `version`. Exposed for the pure-function tests
-  (facts in, snapshot map out) and used by the flush path. Reads ONLY the two
-  fact sources, never the durable op-log.
+  The PURE desired-state document for one node at `version`, rendered from `ctx`,
+  a render context bundling the fact sources: `%{store, catalog_table,
+  activator_endpoint, connect_timeout_ms}` (built by `render_ctx/1` from the
+  publisher's state). Reads ONLY the ServingStore facts + the WorkloadCatalog it
+  names, never the durable op-log. Exposed for the pure-function tests (facts in,
+  snapshot map out) and used by the flush path.
   """
   @spec desired_for_node(map(), String.t()) :: map()
   def desired_for_node(ctx, version) do

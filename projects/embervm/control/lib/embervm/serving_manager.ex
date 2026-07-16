@@ -113,13 +113,13 @@ defmodule Embervm.ServingManager do
   workload is woken and returns `{:ok, %{ip, port}}` for the router to proxy the
   request to, OR a denial the router maps to a status:
 
-    * `{:error, {:wake_rate, ...}}`  -> 429 (per-principal wake-rate limit)
+    * `{:ok, %{ip, port}}`           -> proxy (a fresh wake, OR the STRAGGLER path: a
+      request reached the activator while a healthy instance already exists; it is
+      resolved to that live endpoint and proxied, never errored).
+    * `{:error, {:wake_rate, ...}}`  -> 429 (per-workload wake-rate limit)
     * `{:error, {:park_full, ...}}`  -> 503 (parked-request cap for the workload)
     * `{:error, {:wake_failed, r}}`  -> 503 (start error / readiness timeout)
     * `{:error, {:unknown_workload}}`-> 404
-    * `{:error, {:already_live, ep}}`-> resolved to a live endpoint (straggler: a
-      request reached the activator while a healthy instance exists; proxy it, do
-      not error).
   """
   @spec miss(GenServer.server(), String.t(), map(), String.t()) ::
           {:ok, map()} | {:error, term()}
