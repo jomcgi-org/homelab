@@ -44,7 +44,15 @@ data:
       cds_config:
         resource_api_version: V3
         ads: {}
-      # LDS is NOT used: the listener below is static. RDS/CDS/EDS are dynamic.
+      # LDS (R4, DECISIONS.md D-R4.PR-3.1): the R3 HTTP listener + connection
+      # manager below stay STATIC (byte-identical, no churn), but Envoy ALSO
+      # subscribes to LDS on the ADS stream so the control plane can add and remove
+      # per-workload stateful tcp_proxy listeners dynamically. Static and dynamic
+      # listeners coexist: an empty LDS response leaves the static listeners
+      # untouched, so a node with no stateful workloads serves exactly the R3 shape.
+      lds_config:
+        resource_api_version: V3
+        ads: {}
     static_resources:
       clusters:
         # The loopback admin, as an UPSTREAM cluster for the stats proxy listener
