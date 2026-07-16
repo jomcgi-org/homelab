@@ -1,0 +1,274 @@
+package volume
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestCreateSparseAndGenerationInit(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+
+	if m.Exists("wl-a") {
+		t.Fatal("volume should not exist before Create")
+	}
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !m.Exists("wl-a") {
+		t.Fatal("volume should exist after Create")
+	}
+	size, err := m.SizeBytes("wl-a")
+	if err != nil {
+		t.Fatalf("SizeBytes: %v", err)
+	}
+	if size != 1<<20 {
+		t.Errorf("SizeBytes = %d want %d", size, 1<<20)
+	}
+	gen, err := m.Generation("wl-a")
+	if err != nil {
+		t.Fatalf("Generation: %v", err)
+	}
+	if gen != 0 {
+		t.Errorf("initial generation = %d want 0", gen)
+	}
+	// Sparse: allocated bytes should be far less than the declared 1 MiB cap
+	// (no data has been written), proving Create used Truncate not zero-fill.
+	alloc, err := m.AllocatedBytes("wl-a")
+	if err != nil {
+		t.Fatalf("AllocatedBytes: %v", err)
+	}
+	if alloc >= uint64(size) {
+		t.Errorf("allocated bytes = %d should be far less than declared size %d (file should be sparse)", alloc, size)
+	}
+}
+
+// TestCreateIdempotentDoesNotClobber proves a second Create on an existing
+// volume does not recreate (and so does not reset) it: a live workload's data
+// must never be truncated by a repeat FRESH call.
+func TestCreateIdempotentDoesNotClobber(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := m.BumpGeneration("wl-a"); err != nil {
+		t.Fatalf("BumpGeneration: %v", err)
+	}
+	if err := m.Create("wl-a", 2<<20); err != nil {
+		t.Fatalf("second Create: %v", err)
+	}
+	size, err := m.SizeBytes("wl-a")
+	if err != nil {
+		t.Fatalf("SizeBytes: %v", err)
+	}
+	if size != 1<<20 {
+		t.Errorf("second Create must not resize an existing volume: size = %d want %d", size, 1<<20)
+	}
+	gen, err := m.Generation("wl-a")
+	if err != nil {
+		t.Fatalf("Generation: %v", err)
+	}
+	if gen != 1 {
+		t.Errorf("second Create must not reset the generation ledger: gen = %d want 1", gen)
+	}
+}
+
+// TestBumpGenerationOrderingAndMonotonic proves the ledger is durable and
+// strictly monotonic across repeated bumps, the pairing mechanism's core
+// invariant.
+func TestBumpGenerationOrderingAndMonotonic(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for want := uint64(1); want <= 5; want++ {
+		got, err := m.BumpGeneration("wl-a")
+		if err != nil {
+			t.Fatalf("BumpGeneration #%d: %v", want, err)
+		}
+		if got != want {
+			t.Errorf("BumpGeneration #%d = %d want %d", want, got, want)
+		}
+	}
+	// A fresh Manager instance reading the same root sees the durable value: the
+	// ledger survived process restart (simulated by a new in-memory Manager).
+	m2 := NewManager(dir)
+	gen, err := m2.Generation("wl-a")
+	if err != nil {
+		t.Fatalf("Generation after restart: %v", err)
+	}
+	if gen != 5 {
+		t.Errorf("generation after restart = %d want 5 (durable across a new Manager)", gen)
+	}
+}
+
+// TestGenerationUnreadableWithoutVolume proves a workload with no volume
+// (never created) reports a distinct, non-panicking error, matching the
+// "ledger_unreadable" contract the RELIGHT path relies on.
+func TestGenerationUnreadableWithoutVolume(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if _, err := m.Generation("nope"); err == nil {
+		t.Error("Generation for a never-created workload should error")
+	}
+}
+
+// TestGenerationUnreadableMalformedLedger proves a corrupted ledger file (not
+// a valid uint64) is reported as an error, not silently coerced to 0 or
+// panicking.
+func TestGenerationUnreadableMalformedLedger(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wl-a", genFile), []byte("not-a-number"), 0o600); err != nil {
+		t.Fatalf("corrupt ledger: %v", err)
+	}
+	if _, err := m.Generation("wl-a"); err == nil {
+		t.Error("Generation should error on a malformed ledger")
+	}
+}
+
+// TestAttachSingletonLockRefusal proves the singleton writable-attach
+// invariant: a second Attach for the same workload while the first is still
+// held is refused.
+func TestAttachSingletonLockRefusal(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Attach("wl-a"); err != nil {
+		t.Fatalf("first Attach: %v", err)
+	}
+	if err := m.Attach("wl-a"); err == nil {
+		t.Error("second Attach on the same workload should be refused")
+	}
+	if !m.IsAttached("wl-a") {
+		t.Error("IsAttached should report true while held")
+	}
+	m.Detach("wl-a")
+	if m.IsAttached("wl-a") {
+		t.Error("IsAttached should report false after Detach")
+	}
+	// Re-attach after detach succeeds.
+	if err := m.Attach("wl-a"); err != nil {
+		t.Errorf("Attach after Detach should succeed: %v", err)
+	}
+	// A different workload's attach is entirely independent.
+	if err := m.Attach("wl-b"); err != nil {
+		t.Errorf("Attach for a distinct workload should succeed: %v", err)
+	}
+}
+
+// TestDetachIdempotent proves Detach on an unattached workload is a safe no-op.
+func TestDetachIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	m.Detach("never-attached") // must not panic
+}
+
+// TestDeleteRefusesWhileAttached proves the ONLY destructive data verb refuses
+// to run against a live writable attach, and succeeds (idempotently) once
+// detached or on an already-absent volume.
+func TestDeleteRefusesWhileAttached(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := m.Attach("wl-a"); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := m.Delete("wl-a"); err == nil {
+		t.Error("Delete while attached should be refused")
+	}
+	m.Detach("wl-a")
+	if err := m.Delete("wl-a"); err != nil {
+		t.Errorf("Delete after Detach should succeed: %v", err)
+	}
+	if m.Exists("wl-a") {
+		t.Error("volume should be gone after Delete")
+	}
+	// Idempotent on an already-absent volume.
+	if err := m.Delete("wl-a"); err != nil {
+		t.Errorf("Delete of an already-absent volume should be idempotent OK: %v", err)
+	}
+}
+
+// TestScanInventoryRediscoversVolumes proves the boot-rescan source: a fresh
+// Manager pointed at the same root sees every workload's volume facts purely
+// from disk, with no in-memory state carried over (simulating a daemon
+// restart).
+func TestScanInventoryRediscoversVolumes(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create wl-a: %v", err)
+	}
+	if _, err := m.BumpGeneration("wl-a"); err != nil {
+		t.Fatalf("bump wl-a: %v", err)
+	}
+	if err := m.Create("wl-b", 2<<20); err != nil {
+		t.Fatalf("Create wl-b: %v", err)
+	}
+	if err := m.Attach("wl-b"); err != nil {
+		t.Fatalf("Attach wl-b: %v", err)
+	}
+
+	m2 := NewManager(dir) // simulates a restarted daemon: no in-memory state
+	inv, err := m2.Scan()
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(inv) != 2 {
+		t.Fatalf("Scan found %d volumes want 2", len(inv))
+	}
+	byWorkload := map[string]Inventory{}
+	for _, v := range inv {
+		byWorkload[v.Workload] = v
+	}
+	if a := byWorkload["wl-a"]; a.Generation != 1 || a.SizeBytes != 1<<20 {
+		t.Errorf("wl-a inventory = %+v", a)
+	}
+	// wl-b's attach state does NOT survive a restart (a fresh Manager has an
+	// empty in-process lock map): a restarted daemon's live-VM adoption is the
+	// control plane's job, not volume.Manager's, exactly as ReconcileStatefulFromDisk
+	// documents (a live stateful VM does not survive a daemon restart).
+	if b := byWorkload["wl-b"]; b.Attached {
+		t.Error("a fresh Manager (simulated restart) should not report an attach that died with the prior process")
+	}
+}
+
+// TestScanSkipsHalfCreatedWorkloadDir proves a directory with no vol.img
+// (half-written, or a race) is skipped rather than reported as a phantom
+// volume.
+func TestScanSkipsHalfCreatedWorkloadDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "half-baked"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(dir)
+	inv, err := m.Scan()
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(inv) != 0 {
+		t.Errorf("Scan should skip a workload dir with no vol.img, got %+v", inv)
+	}
+}
+
+// TestScanEmptyRoot proves Scan on a not-yet-created VolumeRoot returns an
+// empty inventory, not an error (a fresh node before any StartStateful).
+func TestScanEmptyRoot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does-not-exist-yet")
+	m := NewManager(dir)
+	inv, err := m.Scan()
+	if err != nil {
+		t.Fatalf("Scan on absent root should not error: %v", err)
+	}
+	if len(inv) != 0 {
+		t.Errorf("Scan on absent root should be empty, got %+v", inv)
+	}
+}
