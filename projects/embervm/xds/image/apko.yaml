@@ -1,0 +1,39 @@
+# Runtime image for the embervm-xds sidecar: the go-control-plane ADS server that
+# feeds the per-node serving Envoys (R3, PR-3). It runs as a SECOND container in
+# the control-plane pod. Unlike the noded image (uid 0 for Firecracker /dev/kvm),
+# this is a plain Go network server with no privileged needs, so it follows the
+# repo non-root uid 65532 convention.
+#
+# DUAL-ARCH: the binary is pure Go and cross-compiles cleanly, so the image is a
+# multi-arch index (x86_64 + aarch64), matching every other Go-binary apko image
+# in the repo. LEAN: only ca-certificates (the ADS server needs no outbound TLS
+# today, but the bundle is cheap and future-proofs OTLP) and busybox for a shell
+# during in-pod debugging.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - busybox
+
+archs:
+  - x86_64
+  - aarch64
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  run-as: 65532
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+entrypoint:
+  command: /usr/local/bin/embervm-xds

@@ -146,6 +146,48 @@ spec:
             # writable emptyDir. RELEASE_TMP is set in the image env (apko.yaml).
             - name: tmp
               mountPath: /tmp
+        {{- if .Values.xds.enabled }}
+        # xDS sidecar (R3, PR-3): the go-control-plane ADS server. It shares this
+        # pod's network namespace with the control-plane container, so the control
+        # plane reaches the snapshot API over 127.0.0.1:xds.httpPort (the API binds
+        # loopback only). The ADS gRPC port is exposed on the embervm Service so the
+        # per-node serving Envoys can dial it. The sidecar holds no durable state
+        # and makes no decisions: an empty cache at boot serves nothing until the
+        # first PUT, and if it restarts the node Envoys keep their last-ACKed config.
+        - name: xds
+          image: "{{ .Values.xds.image.repository }}:{{ .Values.xds.image.tag }}"
+          imagePullPolicy: {{ .Values.xds.image.pullPolicy }}
+          ports:
+            - name: xds-grpc
+              containerPort: {{ .Values.xds.grpcPort }}
+          env:
+            - name: EMBERVM_XDS_GRPC_PORT
+              value: {{ .Values.xds.grpcPort | quote }}
+            - name: EMBERVM_XDS_HTTP_PORT
+              value: {{ .Values.xds.httpPort | quote }}
+          readinessProbe:
+            # The snapshot API's /healthz is loopback-only; the ADS gRPC port is
+            # the pod-network surface. A TCP check on the gRPC port confirms the
+            # sidecar is accepting node-Envoy connections without needing a gRPC
+            # health probe in the image.
+            tcpSocket:
+              port: xds-grpc
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: xds-grpc
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.xds.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+        {{- end }}
       volumes:
         - name: oplog
           {{- if .Values.opLog.persistentVolume }}
