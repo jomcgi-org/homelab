@@ -99,11 +99,17 @@ func (s *Server) startStatefulCold(ctx context.Context, req *nodev1.StartStatefu
 }
 
 // startStatefulRelight resumes the banked bundle (relight_snapshot_ref) iff its
-// stamped generation equals the volume's CURRENT generation. On any mismatch,
-// missing bundle, or unreadable ledger, it EVICTS the bundle (warmth fails
-// open) and falls back to a cold boot from boot_image_ref against the EXISTING
-// volume (data fails closed: RELIGHT never creates a volume), setting
-// cold_boot_reason to name why the warmth was discarded.
+// stamped generation equals the volume's CURRENT generation. On a generation
+// mismatch or a missing bundle, it EVICTS the bundle (warmth fails open) and
+// falls back to a cold boot from boot_image_ref against the EXISTING volume
+// (data fails closed: RELIGHT never creates a volume), setting cold_boot_reason
+// to name why the warmth was discarded. The one exception is an UNREADABLE
+// ledger: the fallback cold boot's own required generation bump re-reads the
+// same corrupt ledger and fails, so an unreadable ledger fails CLOSED (returns
+// an error) rather than fabricating a generation for a volume whose ledger it
+// cannot trust (which could later false-match a stale bundle). The stale bundle
+// is still evicted first, and the volume bytes are never touched, so this is
+// fail-closed-but-data-safe, surfaced for an operator to repair.
 func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32) (*nodev1.StartStatefulResponse, error) {
 	ref := req.GetRelightSnapshotRef()
 	if ref == "" {
@@ -141,16 +147,14 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 		return s.coldBootStateful(ctx, req, workload, port, reason)
 	}
 
-	// Matched pair: resume the bundle. The generation still bumps BEFORE boot
+	// Matched pair: resume the bundle. Attach lock first, then bump (the same
+	// attach-before-bump ordering the cold-boot path uses, so a concurrent start
+	// cannot strand the generation). The generation still bumps BEFORE boot
 	// (every mode does), because resuming the memory snapshot re-exposes the
 	// SAME writable device to a guest that is about to run again, and any
 	// further write must be witnessed by a strictly newer generation than the
 	// one the bundle was stamped with, or a future relight of a LATER bank
 	// could falsely re-match this now-stale bundle.
-	gen, err := s.volumes.BumpGeneration(workload)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)
-	}
 	if err := s.volumes.Attach(workload); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: %v", err)
 	}
@@ -160,6 +164,10 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 			s.volumes.Detach(workload)
 		}
 	}()
+	gen, err := s.volumes.BumpGeneration(workload)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)
+	}
 
 	// A stateful relight does not pin a specific IP the way a serving relight
 	// does (D-R3.4.1): the stateful endpoint is control-plane-addressed (the
@@ -206,10 +214,12 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	}
 	res := req.GetResources()
 
-	gen, err := s.volumes.BumpGeneration(workload)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)
-	}
+	// Acquire the attach lock BEFORE bumping the generation: the bump is part of
+	// the attach, so a concurrent second start for the same workload is refused
+	// here and never bumps the ledger. Bumping first (outside the lock) would let
+	// a losing racer strand the winner's generation (ledger ahead of the booted
+	// VM's stamp), making every later relight cold-boot. Singleton by construction
+	// upstream, but the daemon enforces it where the data physically lives.
 	if err := s.volumes.Attach(workload); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: %v", err)
 	}
@@ -219,6 +229,10 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 			s.volumes.Detach(workload)
 		}
 	}()
+	gen, err := s.volumes.BumpGeneration(workload)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)
+	}
 
 	tap, ip, err := s.servingNet.AllocateTap(ctx)
 	if err != nil {
@@ -323,7 +337,7 @@ func (s *Server) StopStateful(ctx context.Context, req *nodev1.StopStatefulReque
 	vmID := req.GetVmId()
 	switch req.GetMode() {
 	case nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK:
-		return s.stopStatefulBank(ctx, req, vmID)
+		return s.stopStatefulBank(ctx, vmID)
 	case nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY:
 		return s.stopStatefulDestroy(vmID)
 	default:
@@ -335,7 +349,7 @@ func (s *Server) StopStateful(ctx context.Context, req *nodev1.StopStatefulReque
 // its CURRENT volume generation, evicts any prior bundle for the same
 // workload (D-R4: at most one banked bundle per workload), destroys the VM,
 // detaches the volume, and records the new banked bundle.
-func (s *Server) stopStatefulBank(ctx context.Context, req *nodev1.StopStatefulRequest, vmID string) (*nodev1.StopStatefulResponse, error) {
+func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.StopStatefulResponse, error) {
 	e, ok := s.statefulVMs.beginStop(vmID)
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful vm %q not bankable (unknown or a stop is already in flight)", vmID)
@@ -360,14 +374,17 @@ func (s *Server) stopStatefulBank(ctx context.Context, req *nodev1.StopStatefulR
 	// an orphan a relight could never reach (byWorkload lookups always resolve
 	// the newest add, but the stale bundle's disk bytes would leak with no
 	// eviction path). Best-effort: a disk error removing the old bundle must
-	// not block recording the new (successfully banked) one.
-	if prior, ok := s.statefulBundles.byWorkload(req.GetTrace().GetWorkload()); ok && prior.snapshotRef != ref.ID {
+	// not block recording the new (successfully banked) one. Keyed off the live
+	// entry's workload (e.workload), the authoritative fact, not the request
+	// trace, so the one-bundle-per-workload eviction cannot misfire on a trace
+	// that disagrees with the VM's actual workload.
+	if prior, ok := s.statefulBundles.byWorkload(e.workload); ok && prior.snapshotRef != ref.ID {
 		_ = s.statefulDriver.RemoveStatefulBundle(prior.snapshotRef)
 		s.statefulBundles.remove(prior.snapshotRef)
 	}
 	s.statefulBundles.add(statefulBundleEntry{
 		snapshotRef:     ref.ID,
-		workload:        req.GetTrace().GetWorkload(),
+		workload:        e.workload,
 		generation:      e.generation,
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
