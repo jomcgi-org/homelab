@@ -20,7 +20,13 @@ defmodule Embervm.SessionBankRelightTest do
     * LRU eviction: disk-pressure evicts the coldest banked sessions to the watermark;
     * expiry (live + banked) and banked-TTL GC.
   """
-  use ExUnit.Case, async: true
+  # async: false, not true. These tests wait (wait_until) for real session
+  # GenServer lifecycle transitions whose clock is an Agent round-trip, so they
+  # are timing-sensitive. Under a large async suite the scheduler contention made
+  # the wait_until budget flake (bumping it only postponed the failure as the
+  # suite grew). Running serially removes the contention and makes the timing
+  # deterministic regardless of suite size.
+  use ExUnit.Case, async: false
 
   alias Embervm.{NodeCapacity, SessionManager, SessionStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
