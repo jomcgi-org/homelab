@@ -120,6 +120,14 @@ func run(logger *slog.Logger) error {
 		Logger:                    logger,
 		ServingProbeInterval:      cfg.ServingProbeInterval,
 		ServingUnhealthyThreshold: cfg.ServingUnhealthyThreshold,
+		// The same restore driver also serves the R4 stateful verbs (ClaimStateful
+		// cold boot with a writable volume + SnapshotStateful/RestoreStateful under
+		// stateful/); the volume manager itself is a plain directory (VolumeRoot),
+		// not a driver capability.
+		StatefulDriver:             restoreDriver,
+		VolumeRoot:                 cfg.VolumeRoot,
+		StatefulProbeInterval:      cfg.StatefulProbeInterval,
+		StatefulUnhealthyThreshold: cfg.StatefulUnhealthyThreshold,
 	})
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.
@@ -131,6 +139,10 @@ func run(logger *slog.Logger) error {
 	// Report node-local BANKED serving snapshots (with their pinned IPs) the same way,
 	// so a relight after restart re-acquires the same tap IP (D-R3.4.1).
 	srv.ReconcileServingFromDisk()
+	// Report node-local BANKED stateful bundles (with their stamped generations) and
+	// ensure VolumeRoot exists; the durable volumes themselves need no in-memory
+	// seeding (volume.Manager reads VolumeRoot fresh off disk on every NodeStatus).
+	srv.ReconcileStatefulFromDisk()
 	// Create the serving bridge and install the ingress-only nftables posture before
 	// serving any StartServing. Idempotent across restarts (existing bridge tolerated).
 	if err := servingNet.EnsureNetwork(ctx); err != nil {

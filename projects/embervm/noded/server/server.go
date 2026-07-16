@@ -47,6 +47,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
+	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 )
 
 const (
@@ -181,6 +182,21 @@ type Server struct {
 	// newProber builds the per-VM health prober from config. Overridable in tests.
 	newProber func() *serving.Prober
 
+	statefulVMs     *statefulRegistry
+	statefulBundles *statefulBundleRegistry
+	// statefulDriver serves the stateful-class driver mechanics (cold boot with
+	// NIC + writable volume, bank/relight under stateful/). nil disables the
+	// stateful verbs (StartStateful/StopStateful/DeleteVolume then return
+	// Unimplemented). It reuses servingNet for tap/DNAT (the stateful and
+	// serving networking postures are identical: a tap NIC on the same bridge).
+	statefulDriver statefulDriver
+	// volumes owns the on-disk stateful volume layout (create/attach/generation
+	// ledger/delete). nil disables the stateful verbs alongside statefulDriver.
+	volumes *volume.Manager
+	// newTCPProber builds the per-VM TCP-connect health prober from config
+	// (R4). Overridable in tests, mirroring newProber.
+	newTCPProber func() *serving.TCPProber
+
 	drainingMu sync.RWMutex
 	draining   bool
 
@@ -211,6 +227,21 @@ type Options struct {
 	// probe loop (defaults applied when zero).
 	ServingProbeInterval      time.Duration
 	ServingUnhealthyThreshold int
+	// StatefulDriver serves the R4 stateful verbs (StartStateful/StopStateful/
+	// DeleteVolume). nil (the default) leaves them returning Unimplemented, so a
+	// Server built without stateful support still compiles and task/session/
+	// serving behavior is untouched. In production the same *driver.Driver
+	// satisfies ServingDriver and StatefulDriver.
+	StatefulDriver statefulDriver
+	// VolumeRoot is the directory the daemon creates per-workload stateful
+	// volume files under (VolumeRoot/<workload>/vol.img + gen). Required
+	// alongside StatefulDriver to enable the stateful verbs.
+	VolumeRoot string
+	// StatefulProbeInterval / StatefulUnhealthyThreshold configure the per-VM
+	// TCP-connect health probe loop (defaults applied when zero), mirroring the
+	// serving probe knobs but for opaque L4 TCP CONNECT instead of HTTP GET.
+	StatefulProbeInterval      time.Duration
+	StatefulUnhealthyThreshold int
 }
 
 // New builds a Server. Driver and Transport must not be nil.
@@ -220,26 +251,44 @@ func New(opts Options) *Server {
 		logger = slog.Default()
 	}
 	s := &Server{
-		cfg:            opts.Config,
-		driver:         opts.Driver,
-		sessionDriver:  opts.SessionDriver,
-		transport:      opts.Transport,
-		newBuildDriver: opts.NewBuildDriver,
-		logger:         logger,
-		vms:            newVMRegistry(),
-		bases:          newBaseRegistry(),
-		sessionVMs:     newSessionRegistry(),
-		sessionSnap:    newSessionSnapshotRegistry(),
-		servingVMs:     newServingRegistry(),
-		servingSnap:    newServingSnapshotRegistry(),
-		servingImage:   newServingImageRegistry(),
-		servingNet:     opts.ServingNet,
-		servingDriver:  opts.ServingDriver,
-		subs:           make(map[chan struct{}]struct{}),
+		cfg:             opts.Config,
+		driver:          opts.Driver,
+		sessionDriver:   opts.SessionDriver,
+		transport:       opts.Transport,
+		newBuildDriver:  opts.NewBuildDriver,
+		logger:          logger,
+		vms:             newVMRegistry(),
+		bases:           newBaseRegistry(),
+		sessionVMs:      newSessionRegistry(),
+		sessionSnap:     newSessionSnapshotRegistry(),
+		servingVMs:      newServingRegistry(),
+		servingSnap:     newServingSnapshotRegistry(),
+		servingImage:    newServingImageRegistry(),
+		servingNet:      opts.ServingNet,
+		servingDriver:   opts.ServingDriver,
+		statefulVMs:     newStatefulRegistry(),
+		statefulBundles: newStatefulBundleRegistry(),
+		statefulDriver:  opts.StatefulDriver,
+		subs:            make(map[chan struct{}]struct{}),
+	}
+	// VolumeRoot may be set directly on Options (mirroring how cmd/main.go wires
+	// every other stateful/serving knob explicitly) or left to fall back to
+	// Config.VolumeRoot, so a caller that only populates Config (as several
+	// existing tests do for other fields) still gets a working volume manager.
+	volumeRoot := opts.VolumeRoot
+	if volumeRoot == "" {
+		volumeRoot = opts.Config.VolumeRoot
+	}
+	if volumeRoot != "" {
+		s.volumes = volume.NewManager(volumeRoot)
+		s.cfg.VolumeRoot = volumeRoot
 	}
 	probeInterval := opts.ServingProbeInterval
 	probeThreshold := opts.ServingUnhealthyThreshold
 	s.newProber = func() *serving.Prober { return serving.NewProber(probeInterval, probeThreshold) }
+	statefulProbeInterval := opts.StatefulProbeInterval
+	statefulProbeThreshold := opts.StatefulUnhealthyThreshold
+	s.newTCPProber = func() *serving.TCPProber { return serving.NewTCPProber(statefulProbeInterval, statefulProbeThreshold) }
 	s.memHeadroom = readMemHeadroomMib
 	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
@@ -1145,7 +1194,12 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	// names the invariant at the call site).
 	sessionVMs := s.sessionVMsStatus()
 	servingVMs := s.servingVMsStatus()
-	live := taskLive + len(sessionVMs) + len(servingVMs)
+	statefulVMs := s.statefulVMsStatus()
+	// Stateful VMs count against the node live-VM total alongside task/session/
+	// serving (all four classes Claim through the same driver, so its LiveCount
+	// already sums them; naming the invariant here mirrors the session/serving
+	// comment above).
+	live := taskLive + len(sessionVMs) + len(servingVMs) + len(statefulVMs)
 	snaps := s.sessionSnapshotsStatus()
 	freeBytes, usedBytes := s.snapshotDiskUsage()
 	return &nodev1.NodeStatus{
@@ -1164,6 +1218,9 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		ServingVms:            servingVMs,
 		ServingSnapshots:      s.servingSnapshotsStatus(),
 		ServingSubnetCidr:     s.servingSubnetCIDR(),
+		StatefulVms:           statefulVMs,
+		StatefulBundles:       s.statefulBundlesStatus(),
+		Volumes:               s.volumesStatus(),
 	}
 }
 
@@ -1216,6 +1273,78 @@ func (s *Server) servingSubnetCIDR() string {
 		return ""
 	}
 	return s.servingNet.CIDR()
+}
+
+// statefulVMsStatus projects the live stateful-VM registry into the NodeStatus
+// message shape, including each VM's current TCP-probe health verdict and its
+// volume generation (the pair key). Reported ONLY here, never in
+// WorkloadCapacity.primed_vm_ids, session_vms, or serving_vms.
+func (s *Server) statefulVMsStatus() []*nodev1.StatefulVm {
+	if s.statefulVMs == nil {
+		return nil
+	}
+	live := s.statefulVMs.snapshot()
+	out := make([]*nodev1.StatefulVm, 0, len(live))
+	for _, e := range live {
+		ip, port := e.ip, e.port
+		if s.servingNet != nil {
+			ip, port = s.servingNet.Endpoint(net.ParseIP(e.ip), e.port)
+		}
+		out = append(out, &nodev1.StatefulVm{
+			VmId:            e.vmID,
+			Workload:        e.workload,
+			Ip:              ip,
+			Port:            port,
+			Healthy:         e.healthy,
+			Generation:      e.generation,
+			LastProbeUnixMs: e.lastProbeUnixMs,
+		})
+	}
+	return out
+}
+
+// statefulBundlesStatus projects the banked-stateful-bundle inventory into
+// NodeStatus (at most one entry per workload by construction).
+func (s *Server) statefulBundlesStatus() []*nodev1.StatefulBundle {
+	if s.statefulBundles == nil {
+		return nil
+	}
+	bundles := s.statefulBundles.snapshot()
+	out := make([]*nodev1.StatefulBundle, 0, len(bundles))
+	for _, e := range bundles {
+		out = append(out, &nodev1.StatefulBundle{
+			SnapshotRef:     e.snapshotRef,
+			Workload:        e.workload,
+			Generation:      e.generation,
+			SizeBytes:       uint64(e.sizeBytes),
+			CreatedAtUnixMs: e.createdAtUnixMs,
+		})
+	}
+	return out
+}
+
+// volumesStatus projects the durable volume inventory (scanned fresh off disk
+// on every call via volume.Manager.Scan, never cached) into NodeStatus.
+func (s *Server) volumesStatus() []*nodev1.Volume {
+	if s.volumes == nil {
+		return nil
+	}
+	inv, err := s.volumes.Scan()
+	if err != nil {
+		s.logger.Warn("noded: scan stateful volumes", "err", err)
+		return nil
+	}
+	out := make([]*nodev1.Volume, 0, len(inv))
+	for _, v := range inv {
+		out = append(out, &nodev1.Volume{
+			Workload:       v.Workload,
+			Generation:     v.Generation,
+			SizeBytes:      v.SizeBytes,
+			AllocatedBytes: v.AllocatedBytes,
+			Attached:       v.Attached,
+		})
+	}
+	return out
 }
 
 // sessionVMsStatus projects the live session-VM registry into the NodeStatus
@@ -1589,6 +1718,57 @@ func (s *Server) ReconcileServingFromDisk() {
 	}
 	if n > 0 {
 		s.logger.Info("noded: reconciled existing serving snapshots", "count", n)
+		s.signalChange()
+	}
+}
+
+// ReconcileStatefulFromDisk scans the stateful/ bundle dir (via the driver's
+// ScanStatefulBundles) and VolumeRoot (via volumeManager.Inventory) for state a
+// prior daemon incarnation left behind, and seeds both in-memory inventories,
+// so a restarted daemon reports what banked stateful warmth and durable volumes
+// survive. Unlike serving, a bundle's generation stamp is recovered from disk
+// (not an IP), and VOLUMES themselves also survive a restart (they are the
+// durable data, not disk-cache-of-a-live-VM), so this reconciles two disk
+// sources into two registries: statefulBundles (ephemeral warmth) and the
+// volume.Manager's own on-disk state (durable, needs no in-memory seeding
+// beyond what volume.Manager.Scan already reads live off disk on every call).
+// A live stateful VM does NOT survive a daemon restart (its Firecracker child
+// died with the daemon), exactly like session and serving; the control plane
+// resolves any orphaned live-instance record from its own projection.
+func (s *Server) ReconcileStatefulFromDisk() {
+	if s.statefulDriver == nil || s.volumes == nil {
+		return
+	}
+	root := s.statefulDriver.StatefulDir()
+	if root != "" {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			s.logger.Warn("noded: create stateful dir", "root", root, "err", err)
+		} else if err := os.Chmod(root, 0o700); err != nil {
+			s.logger.Warn("noded: chmod stateful dir 0700", "root", root, "err", err)
+		}
+	}
+	bundles := s.statefulDriver.ScanStatefulBundles()
+	for _, b := range bundles {
+		s.statefulBundles.add(statefulBundleEntry{
+			snapshotRef: b.SnapshotRef,
+			// workload is unknown from disk alone (the bundle dir name is the
+			// opaque snapshot_ref); the control plane rebinds by adoption, same
+			// as a disk-only serving/session rescan entry.
+			generation:      b.Generation,
+			sizeBytes:       b.SizeBytes,
+			createdAtUnixMs: b.CreatedAtUnixMs,
+		})
+	}
+	// The volume inventory itself needs no separate seeding step: volume.Manager
+	// scans VolumeRoot fresh on every Inventory() call (statefulVolumesStatus),
+	// so durable volumes are always reported from disk truth with no in-memory
+	// registry to reconcile. Only touch the dir here so a fresh node's VolumeRoot
+	// exists before the first StartStateful(FRESH) needs it.
+	if err := os.MkdirAll(s.cfg.VolumeRoot, 0o700); err != nil && s.cfg.VolumeRoot != "" {
+		s.logger.Warn("noded: create volume root", "root", s.cfg.VolumeRoot, "err", err)
+	}
+	if n := len(bundles); n > 0 {
+		s.logger.Info("noded: reconciled existing stateful bundles", "count", n)
 		s.signalChange()
 	}
 }

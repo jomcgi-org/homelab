@@ -1,0 +1,271 @@
+package server
+
+import (
+	"context"
+	"net"
+	"sync"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
+	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
+)
+
+// statefulDriver is the subset of the fcvm driver the R4 stateful verbs need on
+// top of vmDriver: cold-boot a stateful VM WITH a tap NIC and a writable volume
+// (mirroring ClaimServing plus the volume drive), bank a live stateful VM to a
+// self-contained bundle stamped with a generation, relight (restore) from a
+// banked bundle, remove a banked bundle, and rescan banked bundles on start.
+// The real *driver.Driver satisfies it; tests inject a fake. A separate seam
+// (like servingDriver) so a Server built without stateful support still
+// compiles and a reviewer sees exactly which driver mechanics stateful reuses.
+type statefulDriver interface {
+	// ClaimStateful cold-boots a stateful VM from a per-workload rootfs WITH the
+	// given tap NIC, the optional handler artifact drive (mirroring the serving
+	// cold-boot lane), and the workload's writable volume attached as a third
+	// drive. Mirrors ClaimServing with the volume parameters appended.
+	ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string) (substrate.Handle, error)
+	// SnapshotStateful pauses a live stateful VM and writes a self-contained
+	// stateful bundle stamped with the given volume generation; does not resume
+	// (the caller Releases). Mirrors SnapshotServing plus the generation stamp.
+	SnapshotStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (substrate.SnapshotRef, error)
+	// RestoreStateful launches a fresh VM from a banked stateful bundle and
+	// resumes it, WITH the NIC captured at bank time. volumeDiskPath is the
+	// workload's volume file the caller intends this restored VM to hold (see
+	// the driver method's doc for why the restore mechanic itself does not use
+	// it directly). Mirrors RestoreServing.
+	RestoreStateful(ctx context.Context, snapshotRef, volumeDiskPath string) (substrate.Handle, error)
+	// RemoveStatefulBundle deletes a banked stateful bundle from disk
+	// (idempotent). Never touches the volume file itself.
+	RemoveStatefulBundle(snapshotRef string) error
+	// ScanStatefulBundles globs the stateful bundle dir on startup and returns
+	// each discovered bundle with its stamped generation, so the daemon
+	// re-seeds its banked-stateful inventory after a restart.
+	ScanStatefulBundles() []substrate.StatefulBundleInfo
+	// StatefulDir is the directory holding banked stateful bundles, rescanned
+	// on start.
+	StatefulDir() string
+}
+
+// statefulEntry is one LIVE stateful microVM the daemon supervises (R4). Like a
+// serving VM it is NOT single-use: it survives every request (opaque L4 TCP,
+// no daemon involvement on the data hit path) and is removed only by a
+// StopStateful (bank or destroy) or an out-of-band Destroy. Unlike serving,
+// exactly one live VM may exist per WORKLOAD at a time (singleton, enforced by
+// the volume package's attach lock, not by this registry), so vmID is still the
+// map key (mirroring every other registry's shape) but workload uniqueness is
+// the real invariant callers rely on. generation is the volume generation this
+// VM was booted with; snapshotRef is the bundle it was relit from ("" for a
+// cold/fresh boot). The inFlight flag is the per-vm stop serialization guard,
+// identical to servingEntry's bank guard.
+type statefulEntry struct {
+	vmID       string
+	workload   string
+	handle     substrate.Handle
+	ip         net.IP
+	port       uint32
+	tap        string
+	generation uint64
+	// snapshotRef is the stateful bundle this VM was RELIT from, or "" for a
+	// cold/fresh boot (which has no source snapshot). Mirrors servingEntry's
+	// snapshotRef, though R4 v1 does not add an in-use eviction guard on it
+	// (there is at most one bundle per workload and BANK always evicts the
+	// prior one unconditionally, so no live VM can outlive the bundle it
+	// depends on the way a serving relight can).
+	snapshotRef string
+	// probe is the running TCP-connect health-probe loop for this VM.
+	probe *serving.ProbeHandle
+
+	mu       sync.Mutex // guards inFlight
+	inFlight bool
+}
+
+// statefulRegistry is the daemon's inventory of LIVE stateful microVMs, keyed
+// by the opaque vm_id the control plane holds. Kept DISTINCT from every other
+// class registry so a stateful VM is never reported in primed_vm_ids and never
+// confused with a session or serving VM, while still counting against the node
+// live-VM cap (the shared driver's LiveCount sums all classes).
+type statefulRegistry struct {
+	mu  sync.Mutex
+	vms map[string]*statefulEntry
+}
+
+func newStatefulRegistry() *statefulRegistry {
+	return &statefulRegistry{vms: make(map[string]*statefulEntry)}
+}
+
+// add registers a freshly started (fresh, cold, or relit) live stateful VM.
+func (r *statefulRegistry) add(e *statefulEntry) {
+	r.mu.Lock()
+	r.vms[e.vmID] = e
+	r.mu.Unlock()
+}
+
+// beginStop marks a stateful VM busy for a StopStateful(BANK), mirroring
+// servingRegistry.beginBank. It returns (entry, true) only when the id names a
+// known stateful VM with no stop already in flight; a concurrent bank on the
+// same vm_id gets (nil, false), mapped to FAILED_PRECONDITION.
+func (r *statefulRegistry) beginStop(id string) (*statefulEntry, bool) {
+	r.mu.Lock()
+	e, ok := r.vms[id]
+	r.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inFlight {
+		return nil, false
+	}
+	e.inFlight = true
+	return e, true
+}
+
+// remove deletes an id from the map and returns its entry (nil if absent).
+func (r *statefulRegistry) remove(id string) *statefulEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	delete(r.vms, id)
+	return e
+}
+
+// byWorkload finds the live stateful VM for a workload, if any. Since a
+// stateful workload is singleton (the volume attach lock enforces at most one
+// writable attach), this is at most one entry; used for lookups by workload
+// rather than by vm_id.
+func (r *statefulRegistry) byWorkload(workload string) (*statefulEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.vms {
+		if e.workload == workload {
+			return e, true
+		}
+	}
+	return nil, false
+}
+
+// statefulView is a lock-free, read-only projection of a statefulEntry, for
+// NodeStatus.stateful_vms.
+type statefulView struct {
+	vmID            string
+	workload        string
+	ip              string
+	port            uint32
+	healthy         bool
+	lastProbeUnixMs int64
+	generation      uint64
+}
+
+// snapshot returns a copy of every live stateful VM including its current
+// TCP-probe health verdict, for building NodeStatus.stateful_vms.
+func (r *statefulRegistry) snapshot() []statefulView {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]statefulView, 0, len(r.vms))
+	for _, e := range r.vms {
+		v := statefulView{
+			vmID:       e.vmID,
+			workload:   e.workload,
+			ip:         e.ip.String(),
+			port:       e.port,
+			generation: e.generation,
+		}
+		if e.probe != nil {
+			res := e.probe.Result()
+			v.healthy = res.Healthy
+			v.lastProbeUnixMs = res.LastProbeUnixMs
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// count is the number of live stateful VMs (for NodeStatus live_vms summing).
+func (r *statefulRegistry) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.vms)
+}
+
+// ---- banked stateful bundle inventory ---------------------------------------
+
+// statefulBundleEntry is the ONE banked stateful bundle for a workload on node
+// disk (D-R4: at most one per workload; a new bank evicts the prior). It sits
+// under the stateful/ prefix and is STAMPED with the volume generation it was
+// paused at, the pair key a relight checks against the volume's current
+// generation.
+type statefulBundleEntry struct {
+	snapshotRef     string
+	workload        string
+	generation      uint64
+	sizeBytes       int64
+	createdAtUnixMs int64
+}
+
+// statefulBundleRegistry is the in-memory banked-stateful-bundle inventory,
+// keyed by snapshot_ref. Seeded from disk on start and updated on bank/evict.
+// Unlike servingSnapshotRegistry (which may hold many snapshots per workload),
+// callers enforce the at-most-one-per-workload invariant by evicting any prior
+// bundle for a workload before adding a new one (see evictByWorkload).
+type statefulBundleRegistry struct {
+	mu    sync.Mutex
+	snaps map[string]*statefulBundleEntry
+}
+
+func newStatefulBundleRegistry() *statefulBundleRegistry {
+	return &statefulBundleRegistry{snaps: make(map[string]*statefulBundleEntry)}
+}
+
+// add records a banked stateful bundle (from a bank or a startup rescan).
+func (r *statefulBundleRegistry) add(e statefulBundleEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snaps[e.snapshotRef] = &statefulBundleEntry{
+		snapshotRef:     e.snapshotRef,
+		workload:        e.workload,
+		generation:      e.generation,
+		sizeBytes:       e.sizeBytes,
+		createdAtUnixMs: e.createdAtUnixMs,
+	}
+}
+
+// get returns a copy of the banked bundle entry for a ref.
+func (r *statefulBundleRegistry) get(ref string) (statefulBundleEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.snaps[ref]
+	if !ok {
+		return statefulBundleEntry{}, false
+	}
+	return *e, true
+}
+
+// byWorkload returns the current banked bundle for a workload, if any (at most
+// one by construction).
+func (r *statefulBundleRegistry) byWorkload(workload string) (statefulBundleEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.snaps {
+		if e.workload == workload {
+			return *e, true
+		}
+	}
+	return statefulBundleEntry{}, false
+}
+
+// remove deletes a snapshot_ref from the inventory. Idempotent.
+func (r *statefulBundleRegistry) remove(ref string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.snaps, ref)
+}
+
+// snapshot returns a copy of every banked stateful bundle entry, for NodeStatus.
+func (r *statefulBundleRegistry) snapshot() []statefulBundleEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]statefulBundleEntry, 0, len(r.snaps))
+	for _, e := range r.snaps {
+		out = append(out, *e)
+	}
+	return out
+}
