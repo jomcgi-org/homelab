@@ -219,31 +219,36 @@ defmodule Embervm.StatefulStoreTest do
     assert row.snapshot_generation == nil
   end
 
-  test "cold_boot (banked -> cold_booting -> starting) carries a reason on the payload", %{path: path} do
+  test "cold_boot/2 records a NEW instance via stateful_cold_booted carrying the reason", %{path: path} do
     {op_log, store} = start_pair(path)
     {:ok, _} = start_instance(store, generation: 0)
     _banked = bank(store, "sf-1", "wl-a", 1)
 
-    {:ok, cold_booting} = StatefulStore.mark(store, "sf-1", :cold_boot)
-    assert cold_booting.state == :cold_booting
-
+    # A wake that discarded warmth cold-boots a NEW instance (the old banked one is
+    # evicted separately by the wake path); cold_boot/2 records the new lifecycle as
+    # stateful_cold_booted{reason} rather than a plain stateful_started (gate 2). The
+    # banked sf-1 is not live, so the singleton gate admits the new cold boot.
     {:ok, cold} =
-      StatefulStore.transition(
-        store,
-        "sf-1",
-        :cold_ready,
-        :stateful_cold_booted,
-        %{node_id: "node-4", vm_id: "vm-cold", generation: 2, reason: "pair_broken"},
-        %{node_id: "node-4", vm_id: "vm-cold", generation: 2}
-      )
+      StatefulStore.cold_boot(store, %{
+        instance_id: "sf-2",
+        tenant: "t1",
+        principal: "p",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-cold",
+        generation: 2,
+        reason: "generation_mismatch"
+      })
 
+    assert cold.instance_id == "sf-2"
     assert cold.state == :starting
     assert cold.generation == 2
 
     # The discarded-warmth reason is reconstructable from the op payload's string key.
     {:ok, ops} = SQLite.read_from(op_log, 0)
     cold_op = Enum.find(ops, &(&1.kind == :stateful_cold_booted))
-    assert cold_op.payload["reason"] == "pair_broken" or cold_op.payload[:reason] == "pair_broken"
+    assert cold_op.stateful_instance_id == "sf-2"
+    assert cold_op.payload["reason"] == "generation_mismatch"
   end
 
   # -- terminal + illegal -----------------------------------------------------

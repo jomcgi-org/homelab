@@ -149,7 +149,6 @@ defmodule Embervm.StatefulManager do
     StartStatefulRequest,
     StartStatefulResponse,
     StopStatefulRequest,
-    StopStatefulResponse,
     DeleteVolumeRequest,
     Trace
   }
