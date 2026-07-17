@@ -17,6 +17,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
@@ -75,6 +76,18 @@ const (
 	volumeMountCmdlineKey = "ember.volume_mount"
 )
 
+// mmdsEnvCmdlinePrefix is the boot-arg token prefix noded's driver.bootArgsFor
+// appends for a STATEFUL FRESH/COLD cold boot's mmds_env (R4, D-R4.PR-7.1:
+// MMDS-lite over boot-args -- see DECISIONS.md for the full tradeoff and the
+// planned migration to a real MMDS service). Each entry rides as
+// `ember.env.<KEY>=<base64url(value)>`; the guest process env variable name is
+// exactly <KEY> (verbatim, not further transformed), so a workload's catalog
+// entry naming e.g. POSTGRES_PASSWORD as an mmds_env key gets POSTGRES_PASSWORD
+// set directly in the environment the image init inherits. A RELIGHT never
+// carries these tokens (the kernel does not re-init on a snapshot resume), so
+// this decoder is a complete no-op past first boot.
+const mmdsEnvCmdlinePrefix = "ember.env."
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -114,6 +127,14 @@ func run(logger *slog.Logger) error {
 	// off the second drive before serving. Absent (task/session boots, relights,
 	// image-lane serving) leaves the env unset and the shim's behavior unchanged.
 	setHandlerDiskEnv(logger)
+
+	// Stateful first-boot secrets (R4, D-R4.PR-7.1: MMDS-lite over boot-args):
+	// translate every `ember.env.<KEY>=<base64url>` kernel boot-arg into a
+	// process env var, set BEFORE mountStatefulVolume/execShim so the guest
+	// process (e.g. Postgres bootstrap) sees them from its very first read of
+	// the environment. Absent (every task/session/serving boot, and a stateful
+	// RELIGHT) leaves the env unchanged.
+	setMmdsEnv(logger)
 
 	// Stateful volume (R4): mount the workload's writable volume BEFORE handing
 	// off to the shim, so the guest process only ever sees an already-mounted
@@ -232,6 +253,85 @@ func valueFromCmdline(cmdline, key string) string {
 		}
 	}
 	return value
+}
+
+// setMmdsEnv reads /proc/cmdline for every `ember.env.<KEY>=<base64url>` token
+// (R4, D-R4.PR-7.1) and sets each decoded value as a process env var named
+// exactly <KEY>. A missing /proc/cmdline, no matching tokens, a KEY that fails
+// isValidEnvKeyName, or a value that fails base64url decoding are each skipped
+// individually (never fatal): one malformed secret must not block every other
+// one from being delivered, and a stateful guest whose bootstrap genuinely
+// needs the missing var will fail its own readiness loudly downstream, which is
+// the correct place for that failure to surface (not here, where guest-init has
+// no way to know which vars are actually required by the image). Duplicate
+// keys: the last occurrence wins, matching valueFromCmdline's convention.
+func setMmdsEnv(logger *slog.Logger) {
+	raw, err := os.ReadFile(procCmdlinePath)
+	if err != nil {
+		return
+	}
+	values := mmdsEnvFromCmdline(string(raw))
+	if len(values) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(values))
+	for k, v := range values {
+		if err := os.Setenv(k, v); err != nil {
+			// Log only the KEY name, never the value: mmds_env may carry a secret
+			// (e.g. a Postgres password), and this failure path must not persist
+			// it in plaintext logs any more than the success path does.
+			logger.Warn("could not set mmds env var", "key", k, "err", err)
+			continue
+		}
+		keys = append(keys, k)
+	}
+	logger.Info("stateful first-boot env: set from mmds_env boot-args", "keys", keys)
+}
+
+// mmdsEnvFromCmdline extracts every `ember.env.<KEY>=<base64url>` token from a
+// kernel command line and returns the decoded KEY -> value map. A KEY failing
+// isValidEnvKeyName or a value failing base64url decode is skipped (not fatal);
+// this mirrors the noded driver's own key-validation posture so a malformed or
+// adversarial token on either side of the seam degrades the same way. Uses
+// base64.RawURLEncoding (no padding, URL-safe alphabet), matching exactly what
+// the driver's mmdsEnvBootArgs encodes with.
+func mmdsEnvFromCmdline(cmdline string) map[string]string {
+	out := map[string]string{}
+	for _, tok := range strings.Fields(cmdline) {
+		k, val, ok := strings.Cut(tok, "=")
+		if !ok || val == "" || !strings.HasPrefix(k, mmdsEnvCmdlinePrefix) {
+			continue
+		}
+		key := strings.TrimPrefix(k, mmdsEnvCmdlinePrefix)
+		if !isValidEnvKeyName(key) {
+			continue
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(val)
+		if err != nil {
+			continue
+		}
+		out[key] = string(decoded)
+	}
+	return out
+}
+
+// isValidEnvKeyName mirrors the noded driver's isValidMmdsEnvKey exactly (a
+// shell/kernel-cmdline-safe identifier: letters, digits, underscore). Kept as
+// an independent copy rather than a shared package because the two live in
+// separate Go modules/binaries (noded vs guest-init) with no existing shared
+// dependency between them; duplicating this small pure function is simpler and
+// safer than introducing a new cross-binary shared package for one predicate.
+func isValidEnvKeyName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, r := range key {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // setDefaultEnv sets PATH and the baked frozen-contract defaults, so a raw boot
