@@ -265,6 +265,22 @@ service NodeService {
   // pairing mechanism.
   rpc StopStateful(StopStatefulRequest) returns (StopStatefulResponse);
 
+  // ResolveStateful is the second phase of the two-phase interruptible bank (ADR
+  // embervm/008): it resolves a VM left PAUSED by StopStateful(CHECKPOINT) into a
+  // terminal outcome. mode = COMMIT publishes the checkpoint's temporary snapshot
+  // as the workload's bundle (stamped with the now-frozen generation, snapfile
+  // published last), EVICTS any prior bundle, and destroys the VM, returning
+  // {snapshot_ref, generation, size_bytes} exactly as a BANK does. mode = ABORT
+  // bumps the volume generation, deletes the temporary snapshot, and RESUMES the
+  // paused VM (the same process image, genuinely hot), returning an empty result.
+  // The abort ORDER (bump generation, delete temp, THEN resume) plus the temp's
+  // invisibility to the bundle rescan are what keep a resumed VM's snapshot from
+  // ever being relit (ADR 008 Correctness). A checkpoint accepts exactly ONE
+  // resolve: a COMMIT arriving after the node's resolve-timeout auto-abort is
+  // refused FAILED_PRECONDITION, as is any unknown or already-resolved
+  // checkpoint_token.
+  rpc ResolveStateful(ResolveStatefulRequest) returns (ResolveStatefulResponse);
+
   // DeleteVolume removes a workload's volume file and its generation ledger. It
   // is the ONLY destructive data verb, and it exists so deletion is an explicit,
   // audited act (a CR deletion never reaches it; data outlives definitions).
@@ -770,6 +786,16 @@ enum StopStatefulMode {
   STOP_STATEFUL_MODE_UNSPECIFIED = 0;
   STOP_STATEFUL_MODE_BANK = 1;
   STOP_STATEFUL_MODE_DESTROY = 2;
+  // CHECKPOINT is the first phase of the two-phase interruptible bank (ADR
+  // embervm/008, opt-in per workload). It PAUSES the VM and writes a snapshot to
+  // a temporary path INVISIBLE to ScanStatefulBundles (outside the stateful/
+  // bundle dir, no snapfile-published-last completeness marker), then leaves the
+  // VM PAUSED and resumable. No bundle is published and the VM is NOT destroyed.
+  // The response carries a checkpoint_token the control plane passes to
+  // ResolveStateful to either COMMIT (publish the temp as the bundle, destroy) or
+  // ABORT (bump the generation, delete the temp, resume). Only issued for a
+  // workload that opted into spec.stateful.interruptibleBank.
+  STOP_STATEFUL_MODE_CHECKPOINT = 3;
 }
 
 message StopStatefulRequest {
@@ -781,7 +807,38 @@ message StopStatefulRequest {
 message StopStatefulResponse {
   // snapshot_ref, generation, and size_bytes are set only when mode was BANK;
   // all are the zero value for DESTROY. generation is the volume generation
-  // stamped into the bundle, the pair key a later RELIGHT checks.
+  // stamped into the bundle, the pair key a later RELIGHT checks. For CHECKPOINT
+  // the bundle is NOT yet published, so snapshot_ref and size_bytes are zero and
+  // generation carries the volume generation the temp snapshot was paused at (the
+  // control plane records it as the checkpointed generation).
+  string snapshot_ref = 1;
+  uint64 generation = 2;
+  uint64 size_bytes = 3;
+  // checkpoint_token is set ONLY for mode CHECKPOINT: an opaque handle to the
+  // paused VM plus its temporary snapshot, which the control plane passes back to
+  // ResolveStateful. Empty for BANK and DESTROY.
+  string checkpoint_token = 4;
+}
+
+enum ResolveMode {
+  RESOLVE_MODE_UNSPECIFIED = 0;
+  RESOLVE_MODE_COMMIT = 1; // publish the temp as the bundle, then destroy the VM
+  RESOLVE_MODE_ABORT = 2; // bump the generation, delete the temp, then resume the VM
+}
+
+message ResolveStatefulRequest {
+  Trace trace = 1;
+  string vm_id = 2;
+  // checkpoint_token is the opaque handle StopStateful(CHECKPOINT) returned. The
+  // node matches it to the paused VM and its temp snapshot; an unknown or
+  // already-resolved token is FAILED_PRECONDITION (single-resolve).
+  string checkpoint_token = 3;
+  ResolveMode mode = 4;
+}
+
+message ResolveStatefulResponse {
+  // Set only for COMMIT (the published bundle), exactly as StopStateful(BANK)
+  // reports it; all zero for ABORT (an abort publishes no bundle).
   string snapshot_ref = 1;
   uint64 generation = 2;
   uint64 size_bytes = 3;
@@ -1047,6 +1104,16 @@ message StatefulVm {
   // generation is the volume generation the live VM holds (bumped at its attach).
   uint64 generation = 6;
   int64 last_probe_unix_ms = 7;
+  // checkpoint_pending is true when this VM is PAUSED awaiting a ResolveStateful
+  // (a StopStateful(CHECKPOINT) landed but no resolve has yet, ADR embervm/008).
+  // A restarted control plane reads this to adopt and resolve the stranded
+  // checkpoint (default ABORT/resume) rather than leaving the VM dark; noded also
+  // auto-aborts it after its own resolve timeout so a dead control plane cannot
+  // pin the live-VM cap slot and its memory forever.
+  bool checkpoint_pending = 8;
+  // checkpoint_token is the handle to pass to ResolveStateful for a
+  // checkpoint_pending VM (empty otherwise), reported so adoption can resolve it.
+  string checkpoint_token = 9;
 }
 
 // StatefulBundle is the ONE banked stateful bundle for a workload on node disk,

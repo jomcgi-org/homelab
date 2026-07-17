@@ -165,17 +165,39 @@ func (fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulRequ
 	}, nil
 }
 
-// StopStateful returns a bundle ref, stamped generation, and size for BANK, and
-// zero values for DESTROY, so the client can assert both mode branches.
+// StopStateful returns a bundle ref, stamped generation, and size for BANK, a
+// checkpoint token plus the paused generation for CHECKPOINT, and zero values for
+// DESTROY, so the client can assert every mode branch.
 func (fakeServer) StopStateful(_ context.Context, req *nodev1.StopStatefulRequest) (*nodev1.StopStatefulResponse, error) {
-	if req.GetMode() == nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK {
+	switch req.GetMode() {
+	case nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK:
 		return &nodev1.StopStatefulResponse{
 			SnapshotRef: "stateful/" + req.GetVmId(),
 			Generation:  7,
 			SizeBytes:   16384,
 		}, nil
+	case nodev1.StopStatefulMode_STOP_STATEFUL_MODE_CHECKPOINT:
+		return &nodev1.StopStatefulResponse{
+			CheckpointToken: "ckpt:" + req.GetVmId(),
+			Generation:      7,
+		}, nil
+	default:
+		return &nodev1.StopStatefulResponse{}, nil
 	}
-	return &nodev1.StopStatefulResponse{}, nil
+}
+
+// ResolveStateful returns the published bundle for COMMIT (deriving the ref from
+// the token so the client proves it crossed the wire) and an empty response for
+// ABORT, so the client can assert both resolve branches (ADR embervm/008).
+func (fakeServer) ResolveStateful(_ context.Context, req *nodev1.ResolveStatefulRequest) (*nodev1.ResolveStatefulResponse, error) {
+	if req.GetMode() == nodev1.ResolveMode_RESOLVE_MODE_COMMIT {
+		return &nodev1.ResolveStatefulResponse{
+			SnapshotRef: "stateful/" + req.GetCheckpointToken(),
+			Generation:  8,
+			SizeBytes:   16384,
+		}, nil
+	}
+	return &nodev1.ResolveStatefulResponse{}, nil
 }
 
 // DeleteVolume is idempotent and returns an empty response for any workload.
@@ -291,6 +313,20 @@ func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequ
 				Healthy:         true,
 				Generation:      5,
 				LastProbeUnixMs: 1_700_000_003_000,
+			},
+			// A second VM PAUSED awaiting a resolve (ADR embervm/008), so the
+			// client can assert the checkpoint_pending inventory fields adoption
+			// reads round-trip.
+			{
+				VmId:              "vm-st2",
+				Workload:          "demo-postgres",
+				Ip:                "10.99.0.4",
+				Port:              5432,
+				Healthy:           false,
+				Generation:        9,
+				LastProbeUnixMs:   1_700_000_005_000,
+				CheckpointPending: true,
+				CheckpointToken:   "ckpt:vm-st2",
 			},
 		},
 		StatefulBundles: []*nodev1.StatefulBundle{
