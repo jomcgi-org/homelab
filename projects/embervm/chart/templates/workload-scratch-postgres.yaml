@@ -50,8 +50,11 @@ spec:
     # Guest path the volume is mounted at (guest-init mkfs+mounts a blank device;
     # PGDATA lives at <mount>/pgdata).
     volumeMountPath: /data
-    # Bank after 10 minutes idle; a live connection is never severed.
-    idleBankSeconds: 600
+    # Bank after 2 minutes idle; a live connection is never severed. Short so the
+    # bank COMPLETES inside a consumer's quiet window before its next background
+    # write reconnects (a longer idle let the bank race-and-abort against Loom's
+    # periodic control-plane commits); scratch-tier data makes a prompt bank cheap.
+    idleBankSeconds: 120
     # Version-convergence bound (1 week): the instance rides its birth image
     # until this expires; convergence is destroy-and-cold-boot against the volume.
     maxLifetimeSeconds: 604800
