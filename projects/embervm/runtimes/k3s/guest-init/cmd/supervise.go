@@ -24,20 +24,34 @@ func superviseK3s(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("build k3s command: %w", err)
 	}
 
+	// The effective role: a bare boot with no EMBER_GROUP_ROLE is the factless
+	// single-server spike (k3sArgv defaults it to server), so resolve the same
+	// default here for the token-auth decision and the log.
+	role := getenv(roleEnv)
+	if role == "" {
+		role = roleServer
+	}
+	secret := getenv(secretEnv)
+
 	// The server exposes a static token-auth entry derived from EMBER_GROUP_SECRET
-	// (decision 13). Write it before starting k3s so --token-auth-file resolves.
-	if getenv(roleEnv) == roleServer {
-		if err := writeServerTokenAuth(getenv(secretEnv)); err != nil {
+	// (decision 13), but ONLY when a secret is present: a factless spike has no
+	// external consumer kubeconfig and k3sArgv omits the --token-auth-file flag,
+	// so writing the file would be dead. Write it before starting k3s so the flag
+	// (when present) resolves.
+	if role == roleServer && secret != "" {
+		if err := writeServerTokenAuth(secret); err != nil {
 			return fmt.Errorf("write server token-auth file: %w", err)
 		}
 	}
 
 	logger.Info("starting k3s",
-		"role", getenv(roleEnv),
+		"role", role,
+		"factless", getenv(roleEnv) == "",
+		"health_port", roleHealthPort(role),
 		"own_ip", getenv(ownIPEnv),
 		"peers", peerFactsForLog(os.Environ()),
-		// argv[2:] omits the binary + subcommand; --token's value is NOT logged
-		// (it is the secret). Log only the flag names for the same reason.
+		// argv omits nothing structurally, but --token's value is NOT logged (it
+		// is the secret). redactArgv logs the flag names with the token redacted.
 		"flags", redactArgv(argv),
 	)
 

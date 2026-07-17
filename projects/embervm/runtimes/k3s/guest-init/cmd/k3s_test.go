@@ -19,7 +19,7 @@ func TestK3sArgv(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "server maps to k3s server with host-gw, token, node-ip, and token-auth",
+			name: "server with a secret maps to k3s server with host-gw, token, node-ip, and token-auth",
 			env: map[string]string{
 				"EMBER_GROUP_ROLE":   "server",
 				"EMBER_GROUP_SECRET": "s3cr3t",
@@ -30,6 +30,30 @@ func TestK3sArgv(t *testing.T) {
 				"--flannel-backend=host-gw",
 				"--token", "s3cr3t",
 				"--kube-apiserver-arg=token-auth-file=/run/ember/token-auth.csv",
+				"--node-ip", "10.101.0.10",
+				"--advertise-address", "10.101.0.10",
+			},
+		},
+		{
+			// The Task 3 single-VM spike: a bare, factless boot defaults to a
+			// single k3s server with NO token flag (k3s auto-generates one) and NO
+			// token-auth file (no external consumer kubeconfig).
+			name: "factless boot (no env) defaults to a single k3s server, auto-token",
+			env:  map[string]string{},
+			want: []string{
+				"/usr/local/bin/k3s", "server",
+				"--flannel-backend=host-gw",
+			},
+		},
+		{
+			name: "explicit server role without a secret is also factless (auto-token)",
+			env: map[string]string{
+				"EMBER_GROUP_ROLE": "server",
+				"EMBER_GROUP_IP":   "10.101.0.10",
+			},
+			want: []string{
+				"/usr/local/bin/k3s", "server",
+				"--flannel-backend=host-gw",
 				"--node-ip", "10.101.0.10",
 				"--advertise-address", "10.101.0.10",
 			},
@@ -50,9 +74,9 @@ func TestK3sArgv(t *testing.T) {
 			},
 		},
 		{
-			name: "server without a secret is rejected",
+			name: "agent without a secret is rejected (agents are multi-node)",
 			env: map[string]string{
-				"EMBER_GROUP_ROLE": "server",
+				"EMBER_GROUP_ROLE": "agent",
 			},
 			wantErr: "EMBER_GROUP_SECRET is unset",
 		},
@@ -63,11 +87,6 @@ func TestK3sArgv(t *testing.T) {
 				"EMBER_GROUP_SECRET": "s3cr3t",
 			},
 			wantErr: "EMBER_PEER_SERVER",
-		},
-		{
-			name:    "missing role is rejected",
-			env:     map[string]string{},
-			wantErr: "EMBER_GROUP_ROLE is unset",
 		},
 		{
 			name: "unknown role is rejected",
@@ -118,6 +137,19 @@ func TestRedactArgv(t *testing.T) {
 	// The IP (non-secret) survives so a failed boot is debuggable.
 	if !reflect.DeepEqual(got, []string{"/usr/local/bin/k3s", "server", "--token", "<redacted>", "--node-ip", "10.0.0.1"}) {
 		t.Fatalf("unexpected redaction: %v", got)
+	}
+}
+
+func TestRoleHealthPort(t *testing.T) {
+	if got := roleHealthPort("server"); got != 6443 {
+		t.Fatalf("server health port = %d, want 6443", got)
+	}
+	if got := roleHealthPort("agent"); got != 10250 {
+		t.Fatalf("agent health port = %d, want 10250", got)
+	}
+	// The factless default (empty role) is a server.
+	if got := roleHealthPort(""); got != 6443 {
+		t.Fatalf("factless health port = %d, want 6443 (server default)", got)
 	}
 }
 

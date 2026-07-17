@@ -30,48 +30,79 @@ const (
 
 // k3sServerPort / k3sAgentPort are the health surfaces (plan Task 3): the server
 // API on 6443, the agent kubelet on 10250. Named here for the flag mapping and
-// so a reader sees the health contract in one place.
+// so a reader sees the health contract in one place. The actual TCP health-gate
+// is done by noded on the port from the CR (finishStatefulStart); these are the
+// values that CR should carry per role, surfaced by roleHealthPort for logging.
 const (
 	k3sServerPort = 6443
 	k3sAgentPort  = 10250
 )
 
+// roleHealthPort returns the TCP port a member of the given role serves its
+// health surface on (server API 6443, agent kubelet 10250), so the startup log
+// records the port noded is expected to health-gate. A pure helper; it keeps the
+// two port constants live and documents the role/port contract in one place.
+func roleHealthPort(role string) int {
+	switch role {
+	case roleAgent:
+		return k3sAgentPort
+	default: // server, and the factless single-server default
+		return k3sServerPort
+	}
+}
+
 // k3sArgv builds the k3s command line from the environment (standing decision
 // 13). It is a pure function of an env lookup so it is table-testable without a
 // microVM. env mirrors os.Getenv. It returns the argv (starting with the k3s
-// binary path) or an error when a required fact is missing (a member that cannot
-// form its command must fail the boot loudly, not start a misconfigured node).
+// binary path) or an error only for a genuinely malformed request (an unknown
+// role, or an agent missing its required multi-node facts).
 //
-// Server (role server): `k3s server` with the sqlite datastore (the k3s
-// default, so no datastore flag), flannel host-gw (works over the group's flat
-// L2 subnet without vxlan kernel modules, Fork 3), the group secret as the
-// cluster token, and node-ip pinned to the member's own group IP so the
-// advertised API and flannel routes use the stable pinned address. The static
-// token-auth API entry is written separately (writeServerTokenAuth) from the
-// same secret.
+// A BARE, FACTLESS boot runs a single k3s server. When EMBER_GROUP_ROLE is
+// unset the member defaults to the server role: this is the Task 3 single-VM
+// spike, which boots factlessly and proves one k3s server reaches Ready with no
+// injected env. The peer map and shared secret are a MULTI-NODE concern injected
+// later by Task 5's StartGroupMember FRESH env seam, NOT by this spike, so a
+// missing role must NOT kill PID 1.
+//
+// Server (role server, or the factless default): `k3s server` with the sqlite
+// datastore (the k3s default, so no datastore flag), flannel host-gw (works over
+// the group's flat L2 subnet without vxlan kernel modules, Fork 3), and node-ip
+// pinned to the member's own group IP when supplied. The cluster token is the
+// group secret WHEN PRESENT; when EMBER_GROUP_SECRET is unset (the factless
+// spike) k3s AUTO-GENERATES its own token, which is correct for a single-server
+// cluster with no peers to join it. The static token-auth API entry is likewise
+// written only when a secret is present (writeServerTokenAuth); a factless spike
+// has no external consumer kubeconfig to authenticate.
 //
 // Agent (role agent): `k3s agent` joining the server at
-// https://$EMBER_PEER_SERVER:6443 with the same token, node-ip pinned likewise.
+// https://$EMBER_PEER_SERVER:6443 with the shared token, node-ip pinned
+// likewise. Agents are inherently multi-node: they REQUIRE the secret and the
+// server peer IP (a missing fact IS a malformed agent request, so it errors).
 func k3sArgv(env func(string) string) ([]string, error) {
 	const bin = "/usr/local/bin/k3s"
 	role := env(roleEnv)
+	if role == "" {
+		// Factless boot: the single-server spike. Default to the server role.
+		role = roleServer
+	}
 	secret := env(secretEnv)
 	ownIP := env(ownIPEnv)
 
 	switch role {
 	case roleServer:
-		if secret == "" {
-			return nil, fmt.Errorf("%s is server but %s is unset", roleEnv, secretEnv)
-		}
 		argv := []string{
 			bin, "server",
 			"--flannel-backend=host-gw",
-			"--token", secret,
-			// Static token-auth entry derived from the same secret (decision 13):
-			// the consumer's kubeconfig authenticates with EMBER_GROUP_SECRET as a
-			// bearer token. The file is written by the supervisor before exec
-			// (writeServerTokenAuth) from serverTokenAuthCSV(secret).
-			"--kube-apiserver-arg=token-auth-file=" + tokenAuthPath,
+		}
+		if secret != "" {
+			// A supplied secret becomes the cluster token AND the static token-auth
+			// API entry (decision 13): the consumer's kubeconfig authenticates with
+			// EMBER_GROUP_SECRET as a bearer token. Absent (the factless spike) k3s
+			// auto-generates its own token and no token-auth file is written.
+			argv = append(argv,
+				"--token", secret,
+				"--kube-apiserver-arg=token-auth-file="+tokenAuthPath,
+			)
 		}
 		if ownIP != "" {
 			argv = append(argv, "--node-ip", ownIP, "--advertise-address", ownIP)
@@ -96,8 +127,6 @@ func k3sArgv(env func(string) string) ([]string, error) {
 		}
 		return argv, nil
 
-	case "":
-		return nil, fmt.Errorf("%s is unset (expected %q or %q)", roleEnv, roleServer, roleAgent)
 	default:
 		return nil, fmt.Errorf("%s=%q is not a known role (expected %q or %q)", roleEnv, role, roleServer, roleAgent)
 	}

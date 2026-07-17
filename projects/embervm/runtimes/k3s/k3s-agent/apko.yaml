@@ -18,9 +18,18 @@ contents:
     # - coreutils: k3s/containerd invoke a few GNU utilities (mount helpers,
     #   `nsenter` for CNI) beyond busybox's applets.
     - coreutils
-    # - e2fsprogs + util-linux: mount/blkid style helpers containerd's snapshotter
-    #   and the kubelet expect on the host.
+    # - util-linux: mount/nsenter helpers containerd's snapshotter and the
+    #   kubelet expect on the host.
     - util-linux
+    # - e2fsprogs: mkfs.ext4 for the stateful lane's writable volume (guest-init
+    #   formats a blank volume ext4 and mounts it at k3s's data dir, mirroring
+    #   scratch-postgres). k3s boots on the STATEFUL lane (the exact precedent for
+    #   a full non-shim image with a tap-NIC TCP health-gate + mmds_env seam).
+    - e2fsprogs
+    # - blkid: the mkfs-if-blank probe (guest-init detects an existing filesystem
+    #   signature before formatting, so a populated volume is never reformatted).
+    #   e2fsprogs does NOT ship blkid; it lives in this dedicated Wolfi package.
+    - blkid
 
 archs:
   - x86_64
@@ -41,11 +50,14 @@ environment:
   PATH: /usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 paths:
-  # k3s's writable state tree. The rootfs is read-only and snapshot-shared, so
-  # these directories MUST exist in the image (mkdir on a read-only rootfs fails);
-  # the guest-init layers tmpfs over the volatile children (/run, /var/log). The
-  # baked airgap tarball lands under agent/images (../../BUILD via the k3s_archive
-  # layer), which k3s imports at startup.
+  # k3s's data dir AND the stateful lane's volume mount point. The rootfs is
+  # read-only and snapshot-shared, so this directory MUST exist in the image
+  # (the volume mounts over it via the unix.Mount syscall, and mkdir on a
+  # read-only rootfs fails). The guest-init mkfs-if-blank + mounts the writable
+  # volume here (scratch-postgres precedent), then stages the baked airgap
+  # tarball from /opt/k3s-airgap into agent/images so k3s imports it at startup.
+  # The airgap is baked OUTSIDE this tree (at /opt/k3s-airgap, via the
+  # k3s_archive layer) precisely so the volume mount does not hide it.
   - path: /var/lib/rancher/k3s
     type: directory
     uid: 0
@@ -72,8 +84,7 @@ entrypoint:
   # Firecracker boot the kernel ignores this and boots init=<harnessInit>; there
   # PID 1 is /usr/local/bin/ember-k3s-init (layered by ../../BUILD), which mounts
   # k3s's filesystems, decodes the EMBER_GROUP_* facts, starts the vsock clock
-  # agent, and supervises `k3s agent` (role from EMBER_GROUP_ROLE). Both paths
-  # converge on the same init. The server and agent images share this apko config
-  # and the same init binary; the role is data (EMBER_GROUP_ROLE), and the airgap
-  # set is identical (one tarball serves both server and agent nodes).
+  # agent, and supervises `k3s agent` (role from EMBER_GROUP_ROLE). The server
+  # and agent images share this apko config and the same init binary; the role
+  # is data and the airgap set is identical (one tarball serves both).
   command: /usr/local/bin/ember-k3s-init

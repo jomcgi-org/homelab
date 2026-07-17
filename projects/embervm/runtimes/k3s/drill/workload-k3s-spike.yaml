@@ -2,67 +2,75 @@
 # deploy: it is applied by hand for the drill and removed after (it lives here,
 # under the runtime, NOT in the deployed chart under projects/embervm/deploy/).
 #
-# It boots ONE k3s-server guest as a serving-class workload so noded cold-boots
-# it through the existing R3 serving lane (tap NIC + TCP health-gate), with NO
-# composite/group machinery (which does not exist yet, plan Task 3 scope). This
-# proves k3s reaches Ready inside a Firecracker guest on the kata kernel before
-# any group code is written (the rung's riskiest unknown).
+# It boots ONE k3s-server guest on the STATEFUL lane. The stateful lane is the
+# exact precedent (scratch-postgres) for booting a FULL non-shim image: it
+# cold-boots the runtime rootfs with NO drive-2 handler artifact, attaches a
+# writable volume, and health-gates a TCP connect to the guest port over the tap
+# NIC. This is why the drill uses `class: stateful` and NOT `class: serving`: the
+# serving lane expects a base-built handler-ARTIFACT shape (drive 2, zip lane),
+# which a full k3s image is not, and it has no env-injection seam. (See the
+# runbook for the full lane rationale.)
 #
-# The EMBER_GROUP_* facts a real composite member would receive from the platform
-# are injected here BY HAND through the serving lane's mmds_env seam (spec.env),
-# since there is no GroupManager to compose them. For a single-node server spike
-# the peer map is empty (no agents) and the secret is a throwaway literal.
+# The spike is FACTLESS: a bare k3s server that boots with NO injected env. The
+# guest-init defaults to the server role when EMBER_GROUP_ROLE is unset, and k3s
+# auto-generates its own cluster token when EMBER_GROUP_SECRET is unset, which is
+# correct for a single-server cluster with no peers to join it. Multi-node fact
+# injection (roles, the peer map, a shared secret) is a MULTI-NODE concern
+# exercised later via Task 5's StartGroupMember FRESH env seam, and is
+# deliberately OUT OF SPIKE SCOPE. There is therefore NO secretRef here.
 apiVersion: embervm.dev/v1alpha1
 kind: Workload
 metadata:
   name: k3s-spike
   namespace: embervm
 spec:
-  class: serving
+  class: stateful
   source:
     image:
-      # The k3s-server image built by this PR. Pin to a digest for a real drill
-      # (the CI-built tag), or :latest for a throwaway hand-drill; noded resolves
-      # it via EMBERVM_NODED_IMAGES.
+      # The k3s-server image built by this PR. noded base-builds it (the guest
+      # answers the frozen vsock /shim/ready contract on GuestHTTPPort so the base
+      # snapshot completes and the image becomes cold-bootable), then cold-boots
+      # it on the stateful lane. Pin the CI-built digest for a reproducible drill.
       ref: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/k3s/k3s-server:latest
-      # The serving lane's health/readiness surface. k3s serves the API on 6443
-      # over the tap NIC; noded TCP-health-gates ip:6443. There is no vsock
-      # /shim/ready contract in the k3s guest (it is opaque L4, like postgres),
-      # so readyPath/invokePath are unused for this class of guest.
-      port: 6443
-      readyPath: /
-      invokePath: /
+      # The frozen guest-contract readiness surface the BASE BUILD gates on (the
+      # guest-init answers GET /shim/ready 200 on this vsock port for the base
+      # snapshot). Distinct from the RUNTIME health, which is a TCP connect to the
+      # k3s API over the tap NIC (stateful.port below).
+      port: 1027
+      readyPath: /shim/ready
+      invokePath: /invoke
   resources:
     # Provisional; the spike RECORDS the real floor (the airgap import at first
     # boot sets the high-water mark, fc-base sizing coupling). Start generous so
     # the drill is not the thing that OOMs; trim from the measured floor.
     vcpus: 2
     memMib: 2048
-  concurrency:
-    cap: 1
-  serving:
-    # The API port, reached over the tap NIC. noded health-gates this.
+  stateful:
+    # The k3s API port the guest serves over the tap NIC. Runtime health is a TCP
+    # connect here (opaque L4, no health path). Server API = 6443.
     port: 6443
-    # Liveness probe path. k3s answers TLS on 6443; a plain TCP connect is the
-    # health signal the serving lane uses (it connects, it does not HTTP-GET the
-    # k3s API), so the path is nominal.
-    healthPath: /
-    host: k3s-spike.serve.jomcgi.dev
-    # Keep one instance live for the drill (no scale-to-zero cold-start race).
-    minInstances: 1
-    maxInstances: 1
+    # The node Envoy TCP listener port for cluster-internal reach. Must fall
+    # inside the chart's stateful range (default 5400-5409) and be unique. Pick a
+    # free port in that range for the throwaway drill (5409 here); if it collides
+    # with a live stateful workload, choose another free port in the range.
+    listenPort: 5409
+    # Sparse cap of the raw volume file, in GiB. k3s state (sqlite datastore,
+    # kubelet, containerd) lives on this volume, mounted at the data dir below.
+    volumeSizeGiB: 10
+    # The volume mounts at k3s's data dir. guest-init mkfs-if-blank + mounts it,
+    # then stages the baked airgap tarball (from /opt/k3s-airgap) into
+    # <mount>/agent/images so k3s imports it (the airgap is baked OUTSIDE this
+    # tree so the mount does not hide it).
+    volumeMountPath: /var/lib/rancher/k3s
+    # Bank after 10 minutes idle. The spike does not exercise bank/relight (that
+    # is Task 5+); a generous idle keeps the instance up for the drill.
     idleBankSeconds: 600
-    drainSeconds: 5
-    maxLifetimeSeconds: 86400
-  # The MMDS-lite facts, injected by hand for the spike (a real composite member
-  # gets these from the GroupManager). Single-node server: no peers, throwaway
-  # secret. These land in the guest env as EMBER_GROUP_ROLE etc. via the serving
-  # lane's mmds_env boot-args.
-  env:
-    EMBER_GROUP_ROLE: server
-    EMBER_GROUP_SECRET: spike-throwaway-token-do-not-reuse
-    # EMBER_GROUP_IP is the member's own IP on the tap subnet; for the serving
-    # lane the tap IP is assigned by noded, so leave it unset here and let k3s
-    # bind 0.0.0.0 (the spike is a single node; --node-ip pinning matters under
-    # the group lane, Task 4). If the drill needs it pinned, set it to the tap IP
-    # noded reports for the instance.
+    maxLifetimeSeconds: 604800
+    bankedTtlSeconds: 2592000
+    # Wake deadline: generous, because a cold boot includes k3s bring-up AND the
+    # first-boot airgap image import (the memory + time high-water mark).
+    wakeTimeoutSeconds: 180
+  # NO secretRef: the factless single-server spike needs no injected facts (k3s
+  # auto-tokens). A multi-node group (Task 5+) injects EMBER_GROUP_ROLE /
+  # EMBER_GROUP_SECRET / EMBER_PEER_* via the group lane's FRESH env seam, not
+  # here.
