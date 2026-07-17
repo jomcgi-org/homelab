@@ -36,12 +36,24 @@ type fakeStatefulDriver struct {
 	lastVolMount string
 	claimCount   int
 	lastMmdsEnv  map[string]string
+	// checkpoints maps a checkpoint token -> the pending checkpoint (ADR 008). A
+	// checkpointed VM stays live (paused). failCheckpoint / failResume script the
+	// failure paths.
+	checkpoints    map[string]fakeCheckpoint
+	failCheckpoint error
+	failResume     error
+}
+
+type fakeCheckpoint struct {
+	snapshotRef string
+	generation  uint64
 }
 
 func newFakeStatefulDriver(dir string) *fakeStatefulDriver {
 	return &fakeStatefulDriver{
 		banked:      map[string]uint64{},
 		statefulDir: dir + "/stateful",
+		checkpoints: map[string]fakeCheckpoint{},
 	}
 }
 
@@ -95,6 +107,65 @@ func (f *fakeStatefulDriver) ScanStatefulBundles() []substrate.StatefulBundleInf
 }
 
 func (f *fakeStatefulDriver) StatefulDir() string { return f.statefulDir }
+
+// CheckpointStateful records a pending checkpoint and returns its token; the VM
+// stays live (paused), so `live` is unchanged (ADR 008 phase one).
+func (f *fakeStatefulDriver) CheckpointStateful(_ context.Context, _ substrate.Handle, snapshotRef string, generation uint64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failCheckpoint != nil {
+		return "", f.failCheckpoint
+	}
+	token := "ckpt-" + snapshotRef
+	f.checkpoints[token] = fakeCheckpoint{snapshotRef: snapshotRef, generation: generation}
+	return token, nil
+}
+
+// ResolveStatefulCommit publishes the checkpoint as a banked bundle and DESTROYS
+// the VM (decrementing live, modeling the driver's internal Release), consuming
+// the token (single-resolve).
+func (f *fakeStatefulDriver) ResolveStatefulCommit(_ context.Context, token string) (substrate.SnapshotRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp, ok := f.checkpoints[token]
+	if !ok {
+		return substrate.SnapshotRef{}, status.Errorf(codes.FailedPrecondition, "unknown checkpoint token %q", token)
+	}
+	delete(f.checkpoints, token)
+	f.banked[cp.snapshotRef] = cp.generation
+	if f.live > 0 {
+		f.live--
+	}
+	return substrate.SnapshotRef{ID: cp.snapshotRef, SizeBytes: 4096}, nil
+}
+
+// ResolveStatefulAbort resumes the VM (live unchanged) and consumes the token. If
+// failResume is set it models the driver tearing the VM down on a resume failure.
+func (f *fakeStatefulDriver) ResolveStatefulAbort(_ context.Context, token string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.checkpoints[token]; !ok {
+		return status.Errorf(codes.FailedPrecondition, "unknown checkpoint token %q", token)
+	}
+	delete(f.checkpoints, token)
+	if f.failResume != nil {
+		if f.live > 0 {
+			f.live--
+		}
+		return f.failResume
+	}
+	return nil
+}
+
+// GCStatefulCheckpoints clears all pending checkpoints (a restart), returning the
+// count swept.
+func (f *fakeStatefulDriver) GCStatefulCheckpoints() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := len(f.checkpoints)
+	f.checkpoints = map[string]fakeCheckpoint{}
+	return n
+}
 
 func (f *fakeStatefulDriver) liveCount() int {
 	f.mu.Lock()
@@ -614,5 +685,262 @@ func TestReconcileStatefulFromDiskRediscoversBundles(t *testing.T) {
 	}
 	if len(ns.GetVolumes()) != 1 || ns.GetVolumes()[0].GetGeneration() != 1 {
 		t.Errorf("volumes = %+v want one volume at generation 1", ns.GetVolumes())
+	}
+}
+
+// ---- interruptible bank checkpoint/resolve (ADR embervm/008) -----------------
+
+// checkpointStateful CHECKPOINTs a running stateful VM and returns the response.
+func checkpointStateful(t *testing.T, s *Server, vmID, workload string) *nodev1.StopStatefulResponse {
+	t.Helper()
+	resp, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId:  vmID,
+		Mode:  nodev1.StopStatefulMode_STOP_STATEFUL_MODE_CHECKPOINT,
+		Trace: &nodev1.Trace{Workload: workload},
+	})
+	if err != nil {
+		t.Fatalf("StopStateful(checkpoint): %v", err)
+	}
+	return resp
+}
+
+func statefulVMStatus(t *testing.T, s *Server, vmID string) *nodev1.StatefulVm {
+	t.Helper()
+	ns, err := s.GetNodeStatus(context.Background(), &nodev1.GetNodeStatusRequest{NodeId: "node-4"})
+	if err != nil {
+		t.Fatalf("GetNodeStatus: %v", err)
+	}
+	for _, v := range ns.GetStatefulVms() {
+		if v.GetVmId() == vmID {
+			return v
+		}
+	}
+	return nil
+}
+
+// TestStatefulCheckpointReportsPending: a CHECKPOINT returns a token and leaves
+// the VM live and reported checkpoint_pending, not destroyed and not banked.
+func TestStatefulCheckpointReportsPending(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+	if ckpt.GetCheckpointToken() == "" {
+		t.Fatal("checkpoint must return a token")
+	}
+	if ckpt.GetGeneration() != 1 {
+		t.Fatalf("checkpoint generation = %d want 1", ckpt.GetGeneration())
+	}
+	if ckpt.GetSnapshotRef() != "" {
+		t.Fatalf("checkpoint publishes no bundle yet, got snapshot_ref %q", ckpt.GetSnapshotRef())
+	}
+	// The VM is paused, not destroyed, so it still counts as live.
+	if fsd.liveCount() != 1 {
+		t.Fatalf("live count after checkpoint = %d want 1 (paused, not destroyed)", fsd.liveCount())
+	}
+	v := statefulVMStatus(t, s, started.GetVmId())
+	if v == nil || !v.GetCheckpointPending() {
+		t.Fatalf("status should report the VM checkpoint_pending; got %+v", v)
+	}
+	if v.GetCheckpointToken() != ckpt.GetCheckpointToken() {
+		t.Fatalf("status checkpoint_token = %q want %q", v.GetCheckpointToken(), ckpt.GetCheckpointToken())
+	}
+}
+
+// TestStatefulResolveCommit: COMMIT publishes the bundle, destroys the VM, and
+// records the banked bundle stamped with the checkpoint generation.
+func TestStatefulResolveCommit(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	resp, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId:            started.GetVmId(),
+		CheckpointToken: ckpt.GetCheckpointToken(),
+		Mode:            nodev1.ResolveMode_RESOLVE_MODE_COMMIT,
+	})
+	if err != nil {
+		t.Fatalf("ResolveStateful(commit): %v", err)
+	}
+	if resp.GetSnapshotRef() == "" || resp.GetGeneration() != 1 || resp.GetSizeBytes() == 0 {
+		t.Fatalf("commit response = %+v, want a ref, generation 1, non-zero size", resp)
+	}
+	// VM destroyed.
+	if fsd.liveCount() != 0 {
+		t.Fatalf("live count after commit = %d want 0 (destroyed)", fsd.liveCount())
+	}
+	// Bundle recorded, stamped at the checkpoint generation.
+	if b, ok := s.statefulBundles.byWorkload("wl-state"); !ok || b.snapshotRef != resp.GetSnapshotRef() || b.generation != 1 {
+		t.Fatalf("expected a banked bundle for wl-state at gen 1; got %+v ok=%v", b, ok)
+	}
+	// A relight off it succeeds (proves the committed bundle is valid + paired).
+	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
+		BootImageRef: "img-a", RelightSnapshotRef: resp.GetSnapshotRef(), Port: port, VolumeMount: "/data",
+	})
+	if err != nil {
+		t.Fatalf("relight off committed bundle: %v", err)
+	}
+	if !relit.GetWasRelight() {
+		t.Error("relight off a committed checkpoint bundle should be warm")
+	}
+}
+
+// TestStatefulResolveAbort: ABORT resumes the VM (still live), bumps the
+// generation, and records NO bundle.
+func TestStatefulResolveAbort(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	resp, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId:            started.GetVmId(),
+		CheckpointToken: ckpt.GetCheckpointToken(),
+		Mode:            nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+	})
+	if err != nil {
+		t.Fatalf("ResolveStateful(abort): %v", err)
+	}
+	if resp.GetSnapshotRef() != "" || resp.GetGeneration() != 0 || resp.GetSizeBytes() != 0 {
+		t.Fatalf("abort response should be empty; got %+v", resp)
+	}
+	// VM resumed, still live; no bundle.
+	if fsd.liveCount() != 1 {
+		t.Fatalf("live count after abort = %d want 1 (resumed)", fsd.liveCount())
+	}
+	if _, ok := s.statefulBundles.byWorkload("wl-state"); ok {
+		t.Fatal("abort must not record a bundle")
+	}
+	// The abort bumped the generation (1 -> 2); status reports the resumed VM as
+	// no longer checkpoint_pending, at the bumped generation.
+	v := statefulVMStatus(t, s, started.GetVmId())
+	if v == nil || v.GetCheckpointPending() {
+		t.Fatalf("resumed VM should not be checkpoint_pending; got %+v", v)
+	}
+	if v.GetGeneration() != 2 {
+		t.Fatalf("resumed VM generation = %d want 2 (abort bumped)", v.GetGeneration())
+	}
+}
+
+// TestStatefulResolveUnknownTokenErrors: a resolve for an unknown vm or a wrong
+// token is FAILED_PRECONDITION.
+func TestStatefulResolveUnknownTokenErrors(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	// Wrong token for a real checkpoint-pending VM.
+	_, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId: started.GetVmId(), CheckpointToken: "wrong", Mode: nodev1.ResolveMode_RESOLVE_MODE_COMMIT,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("wrong token: err = %v, want FailedPrecondition", err)
+	}
+	// Unknown vm.
+	_, err = s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId: "no-such-vm", CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unknown vm: err = %v, want FailedPrecondition", err)
+	}
+}
+
+// TestStatefulSecondCheckpointInFlightErrors: a second CHECKPOINT (or a BANK) of
+// an already-checkpointed VM is FAILED_PRECONDITION (the stop guard).
+func TestStatefulSecondCheckpointInFlightErrors(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	_ = checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	_, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_CHECKPOINT,
+		Trace: &nodev1.Trace{Workload: "wl-state"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second checkpoint: err = %v, want FailedPrecondition", err)
+	}
+}
+
+// TestStatefulResolveSingleResolve: a second resolve of a consumed token is
+// FAILED_PRECONDITION (single-resolve).
+func TestStatefulResolveSingleResolve(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	if _, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+	}); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	_, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_COMMIT,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second resolve of a consumed token: err = %v, want FailedPrecondition", err)
+	}
+}
+
+// TestStatefulResolveTimeoutAutoAborts: noded auto-aborts an unresolved
+// checkpoint after its resolve timeout, so a dead control plane cannot pin the
+// paused VM; a COMMIT arriving after the auto-abort is refused (single-resolve).
+func TestStatefulResolveTimeoutAutoAborts(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	s.statefulResolveTimeout = 40 * time.Millisecond
+	started := startFreshStateful(t, s, port, "wl-state")
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	// Wait past the resolve timeout for the auto-abort to fire.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		v := statefulVMStatus(t, s, started.GetVmId())
+		if v != nil && !v.GetCheckpointPending() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	v := statefulVMStatus(t, s, started.GetVmId())
+	if v == nil || v.GetCheckpointPending() {
+		t.Fatalf("auto-abort should have resumed the VM (not checkpoint_pending); got %+v", v)
+	}
+	if fsd.liveCount() != 1 {
+		t.Fatalf("live count after auto-abort = %d want 1 (resumed)", fsd.liveCount())
+	}
+	// A late COMMIT is refused: the timer already claimed the resolve.
+	_, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_COMMIT,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("late commit after auto-abort: err = %v, want FailedPrecondition", err)
+	}
+}
+
+// TestStatefulResolveInvalidModeDoesNotConsume: an invalid resolve mode is
+// InvalidArgument and does NOT consume the checkpoint (a valid resolve still works).
+func TestStatefulResolveInvalidModeDoesNotConsume(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	_, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(),
+		Mode: nodev1.ResolveMode_RESOLVE_MODE_UNSPECIFIED,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid mode: err = %v, want InvalidArgument", err)
+	}
+	// The checkpoint is still resolvable (not consumed by the invalid attempt).
+	if _, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+	}); err != nil {
+		t.Fatalf("abort after invalid-mode attempt should still work: %v", err)
 	}
 }
