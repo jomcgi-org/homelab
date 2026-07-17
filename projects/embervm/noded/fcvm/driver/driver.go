@@ -148,6 +148,9 @@ type statefulCheckpoint struct {
 	snapshotRef string
 	generation  uint64
 	tmpDir      string
+	// pinnedIP is the tap IP the paused VM held, recorded so a COMMIT publishes it
+	// as the bundle's pinned-IP sidecar and a later relight re-acquires the same IP.
+	pinnedIP string
 }
 
 type instance struct {
@@ -1311,16 +1314,51 @@ func (d *Driver) statefulGenfile(ref string) string {
 	return filepath.Join(d.statefulDir(ref), "gen")
 }
 
+// statefulMetafile is the sidecar recording the tap IP a stateful bundle was
+// banked with, the exact analogue of the serving pinned-IP sidecar. A relight
+// resumes the guest from its memory snapshot, which has this IP baked into eth0,
+// so the relight MUST re-acquire the SAME tap IP or the resumed guest answers on
+// an address the fresh tap does not have and is unreachable ("guest not ready over
+// tap"). Published alongside the gen sidecar before the completeness snapfile, so
+// StatefulPinnedIP reads it back after a restart.
+func (d *Driver) statefulMetafile(ref string) string {
+	return filepath.Join(d.statefulDir(ref), "pinned-ip")
+}
+
+// StatefulPinnedIP reads the tap IP a stateful bundle was banked with, for a
+// relight to re-acquire before restoring. "" when the sidecar is absent (a bundle
+// banked before pinning, or an unreadable sidecar), in which case the caller falls
+// back to a fresh tap.
+func (d *Driver) StatefulPinnedIP(snapshotRef string) string {
+	b, err := os.ReadFile(d.statefulMetafile(snapshotRef))
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// writeStatefulPinnedIP publishes the pinned-IP sidecar, a no-op for an empty IP
+// (which leaves the relight to fall back to a fresh tap, so an older bundle with no
+// sidecar still relights, just without the IP-match guarantee).
+func (d *Driver) writeStatefulPinnedIP(snapshotRef, pinnedIP string) error {
+	if pinnedIP == "" {
+		return nil
+	}
+	if err := os.WriteFile(d.statefulMetafile(snapshotRef), []byte(pinnedIP), 0o600); err != nil {
+		return fmt.Errorf("driver: write stateful pinned-ip sidecar: %w", err)
+	}
+	return nil
+}
+
 // SnapshotStateful pauses a live stateful VM and writes a self-contained
-// stateful bundle (memfile + snapfile) under stateful/<ref>, plus the
-// generation sidecar. It does NOT resume: the caller Releases the VM
+// stateful bundle (memfile + snapfile) under stateful/<ref>, plus the generation
+// and pinned-IP sidecars. It does NOT resume: the caller Releases the VM
 // immediately after (StopStateful BANK destroys). It mirrors SnapshotServing
-// exactly except the sidecar is a generation, not a pinned IP, and it stamps
-// NOTHING about the volume itself: the volume file is not opened, copied, or
-// hashed here. On any failure after the handle is confirmed the VM is torn
-// down (a bank is destructive), so a failed bank never leaves a live/paused
-// handle behind.
-func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (substrate.SnapshotRef, error) {
+// (which also pins the tap IP) and stamps NOTHING about the volume itself: the
+// volume file is not opened, copied, or hashed here. On any failure after the
+// handle is confirmed the VM is torn down (a bank is destructive), so a failed
+// bank never leaves a live/paused handle behind.
+func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64, pinnedIP string) (substrate.SnapshotRef, error) {
 	if snapshotRef == "" {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: SnapshotStateful requires a snapshot_ref")
 	}
@@ -1357,6 +1395,9 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 	}
 	if err := os.WriteFile(d.statefulGenfile(snapshotRef), []byte(strconv.FormatUint(generation, 10)), 0o600); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: write stateful generation sidecar: %w", err)
+	}
+	if err := d.writeStatefulPinnedIP(snapshotRef, pinnedIP); err != nil {
+		return substrate.SnapshotRef{}, err
 	}
 	if err := os.Rename(snapTmp, snapPath); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish stateful snapfile: %w", err)
@@ -1398,7 +1439,7 @@ func (d *Driver) checkpointTmpDir(token string) string {
 // destroy) or ResolveStatefulAbort (delete the temp, resume). On a pause/snapshot
 // failure the VM is resumed best-effort and the temp removed, so a FAILED
 // checkpoint leaves the VM live rather than stranded paused.
-func (d *Driver) CheckpointStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (string, error) {
+func (d *Driver) CheckpointStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64, pinnedIP string) (string, error) {
 	if snapshotRef == "" {
 		return "", fmt.Errorf("driver: CheckpointStateful requires a snapshot_ref")
 	}
@@ -1425,7 +1466,7 @@ func (d *Driver) CheckpointStateful(ctx context.Context, h substrate.Handle, sna
 		return "", fmt.Errorf("driver: create checkpoint snapshot: %w", err)
 	}
 	d.mu.Lock()
-	d.checkpoints[token] = &statefulCheckpoint{handle: h, snapshotRef: snapshotRef, generation: generation, tmpDir: tmpDir}
+	d.checkpoints[token] = &statefulCheckpoint{handle: h, snapshotRef: snapshotRef, generation: generation, tmpDir: tmpDir, pinnedIP: pinnedIP}
 	d.mu.Unlock()
 	return token, nil
 }
@@ -1477,6 +1518,9 @@ func (d *Driver) ResolveStatefulCommit(ctx context.Context, token string) (subst
 	}
 	if err := os.WriteFile(d.statefulGenfile(ref), []byte(strconv.FormatUint(cp.generation, 10)), 0o600); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: write stateful generation sidecar: %w", err)
+	}
+	if err := d.writeStatefulPinnedIP(ref, cp.pinnedIP); err != nil {
+		return substrate.SnapshotRef{}, err
 	}
 	if err := os.Rename(filepath.Join(cp.tmpDir, "snapfile"), snapPath); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish stateful snapfile: %w", err)

@@ -42,11 +42,15 @@ type fakeStatefulDriver struct {
 	checkpoints    map[string]fakeCheckpoint
 	failCheckpoint error
 	failResume     error
+	// pinnedIPs maps a banked snapshotRef -> the tap IP it was banked with, so a
+	// test can assert relight re-pins it (ADR embervm/008 relight IP fix).
+	pinnedIPs map[string]string
 }
 
 type fakeCheckpoint struct {
 	snapshotRef string
 	generation  uint64
+	pinnedIP    string
 }
 
 func newFakeStatefulDriver(dir string) *fakeStatefulDriver {
@@ -54,6 +58,7 @@ func newFakeStatefulDriver(dir string) *fakeStatefulDriver {
 		banked:      map[string]uint64{},
 		statefulDir: dir + "/stateful",
 		checkpoints: map[string]fakeCheckpoint{},
+		pinnedIPs:   map[string]string{},
 	}
 }
 
@@ -72,11 +77,18 @@ func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, _ string, _ string
 	return substrate.Handle{ID: "state-vm-" + strconv.Itoa(f.claims), ThreadID: "t-" + strconv.Itoa(f.claims), Node: "node-4"}, nil
 }
 
-func (f *fakeStatefulDriver) SnapshotStateful(_ context.Context, _ substrate.Handle, snapshotRef string, generation uint64) (substrate.SnapshotRef, error) {
+func (f *fakeStatefulDriver) SnapshotStateful(_ context.Context, _ substrate.Handle, snapshotRef string, generation uint64, pinnedIP string) (substrate.SnapshotRef, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.banked[snapshotRef] = generation
+	f.pinnedIPs[snapshotRef] = pinnedIP
 	return substrate.SnapshotRef{ID: snapshotRef, SizeBytes: 4096}, nil
+}
+
+func (f *fakeStatefulDriver) StatefulPinnedIP(snapshotRef string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pinnedIPs[snapshotRef]
 }
 
 func (f *fakeStatefulDriver) RestoreStateful(_ context.Context, snapshotRef, _ string) (substrate.Handle, error) {
@@ -110,14 +122,14 @@ func (f *fakeStatefulDriver) StatefulDir() string { return f.statefulDir }
 
 // CheckpointStateful records a pending checkpoint and returns its token; the VM
 // stays live (paused), so `live` is unchanged (ADR 008 phase one).
-func (f *fakeStatefulDriver) CheckpointStateful(_ context.Context, _ substrate.Handle, snapshotRef string, generation uint64) (string, error) {
+func (f *fakeStatefulDriver) CheckpointStateful(_ context.Context, _ substrate.Handle, snapshotRef string, generation uint64, pinnedIP string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failCheckpoint != nil {
 		return "", f.failCheckpoint
 	}
 	token := "ckpt-" + snapshotRef
-	f.checkpoints[token] = fakeCheckpoint{snapshotRef: snapshotRef, generation: generation}
+	f.checkpoints[token] = fakeCheckpoint{snapshotRef: snapshotRef, generation: generation, pinnedIP: pinnedIP}
 	return token, nil
 }
 
@@ -133,6 +145,7 @@ func (f *fakeStatefulDriver) ResolveStatefulCommit(_ context.Context, token stri
 	}
 	delete(f.checkpoints, token)
 	f.banked[cp.snapshotRef] = cp.generation
+	f.pinnedIPs[cp.snapshotRef] = cp.pinnedIP
 	if f.live > 0 {
 		f.live--
 	}
@@ -942,5 +955,46 @@ func TestStatefulResolveInvalidModeDoesNotConsume(t *testing.T) {
 		VmId: started.GetVmId(), CheckpointToken: ckpt.GetCheckpointToken(), Mode: nodev1.ResolveMode_RESOLVE_MODE_ABORT,
 	}); err != nil {
 		t.Fatalf("abort after invalid-mode attempt should still work: %v", err)
+	}
+}
+
+// TestStartStatefulRelightRepinsTapIP proves the relight IP-pin fix: a bank
+// records the VM's tap IP, and the relight re-acquires that SAME IP via
+// AllocateTapForIP (not a fresh AllocateTap), so the resumed guest's baked-in
+// eth0 matches the host tap and is reachable.
+func TestStartStatefulRelightRepinsTapIP(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, fsn, _ := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+
+	bankResp, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK,
+		Trace: &nodev1.Trace{Workload: "wl-state"},
+	})
+	if err != nil {
+		t.Fatalf("StopStateful(bank): %v", err)
+	}
+
+	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
+		BootImageRef: "img-a", RelightSnapshotRef: bankResp.GetSnapshotRef(), Port: port, VolumeMount: "/data",
+	})
+	if err != nil {
+		t.Fatalf("StartStateful(relight): %v", err)
+	}
+	if !relit.GetWasRelight() {
+		t.Fatal("a matched-generation relight should report was_relight")
+	}
+	// The relight re-acquired the SAME tap IP the bank recorded (127.0.0.1, the
+	// fake AllocateTap IP), via AllocateTapForIP.
+	pins := fsn.pinReacquires()
+	found := false
+	for _, ip := range pins {
+		if ip == "127.0.0.1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("relight should re-pin the banked tap IP 127.0.0.1 via AllocateTapForIP; got pins %v", pins)
 	}
 }
