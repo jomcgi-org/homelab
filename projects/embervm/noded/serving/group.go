@@ -178,12 +178,15 @@ type groupEntry struct {
 // current set of group bridges and the entry-member DNAT set:
 //
 //   - a group_forward filter chain that accepts established/related (so entry-path
-//     return traffic and reply packets flow), then DROPS every ordered pair of
-//     distinct group bridges (bridge A in, bridge B out): this is the
-//     composite<->composite isolation, and enumerating BOTH ordered pairs covers
-//     both directions. It also DROPS every group-bridge-in / serving-bridge-out
-//     pair (composite->serving). Members thus have NO L3 egress beyond their own
-//     group bridge plus the entry path (task-class zero-egress posture at L3);
+//     return traffic and reply packets flow), then, PER BRIDGE, DROPS every NEW
+//     packet leaving that bridge to anywhere else (iifname "emgX" oifname != "emgX"
+//     ct state new drop): this is the primary ZERO-EGRESS denial (standing decision
+//     4), keeping intra-group member<->member forwarding but denying other groups,
+//     the serving bridge, AND external/CNI egress. It ALSO redundantly DROPS every
+//     ordered pair of distinct group bridges (composite<->composite) and every
+//     group-bridge-in / serving-bridge-out pair (composite->serving), kept for
+//     readability though subsumed by the per-bridge egress drop. Members thus have
+//     NO L3 egress beyond their own group bridge plus the entry path;
 //   - when podIP is set (the deployed D-R3.11.4 posture), a group_dnat prerouting
 //     nat chain with one rule per group's ENTRY member rewriting podIP:vmPort ->
 //     entryTapIP:guestPort, the exact serving_dnat lane reused. When podIP is
@@ -204,9 +207,24 @@ func nftGroupRuleset(bridges []string, servingBridge, podIP string, entries []gr
 	// any reply to an accepted flow), evaluated before the drops so isolation only
 	// ever bites NEW cross-boundary forwarding.
 	fmt.Fprintf(&b, "add rule inet %s %s ct state established,related accept\n", nftGroupTable, nftGroupForwardChain)
+	// Per-bridge ZERO-EGRESS denial (standing decision 4: members have no egress
+	// beyond their own group and the entry path). For each group bridge, drop every
+	// NEW packet whose input iface is that bridge and whose output iface is NOT the
+	// same bridge: this keeps intra-group member<->member forwarding (iif==oif==emgX)
+	// but denies a member reaching ANYWHERE else (other groups, the serving bridge,
+	// AND the external/CNI overlay). It SUBSUMES the explicit cross-group and
+	// group->serving drops below; those are kept as belt-and-braces so the isolation
+	// intent stays legible in the rendered ruleset. The entry-DNAT lane is unaffected:
+	// an inbound entry packet has iif=<pod iface>, not a group bridge, so it never
+	// matches this drop, and its DNAT'd forward (oif=emgX) plus the established reply
+	// flow through the accept above.
+	for _, br := range sortedBridges {
+		fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" oifname != \"%s\" ct state new drop\n", nftGroupTable, nftGroupForwardChain, br, br)
+	}
 	// composite<->composite: drop every ordered pair of DISTINCT group bridges.
 	// Enumerating ordered pairs (A->B and B->A both appear) covers both directions
-	// with a single, deterministic loop.
+	// with a single, deterministic loop. Redundant with the per-bridge egress drop
+	// above (kept for readability).
 	for _, in := range sortedBridges {
 		for _, out := range sortedBridges {
 			if in == out {
