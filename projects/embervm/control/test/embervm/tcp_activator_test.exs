@@ -83,10 +83,20 @@ defmodule Embervm.TcpActivatorTest do
     # FakeManager (linked to the now-dead test process) may not have fully released
     # that name yet when the next test starts, so start_link would return
     # {:error, {:already_started, _}}. Synchronously stop any lingering one first so
-    # the name is free (Agent.stop waits for termination).
+    # the name is free (Agent.stop waits for termination). The whereis lookup and
+    # the stop race: that lingering FakeManager is linked to a dead test process and
+    # can exit between the two, so Agent.stop then raises exit(:noproc) — swallow it,
+    # since a gone process is exactly the state we wanted.
     case Process.whereis(FakeManager) do
-      nil -> :ok
-      pid -> Agent.stop(pid, :normal, 1_000)
+      nil ->
+        :ok
+
+      pid ->
+        try do
+          Agent.stop(pid, :normal, 1_000)
+        catch
+          :exit, _ -> :ok
+        end
     end
 
     {:ok, _} = FakeManager.start_link(reply_table)
