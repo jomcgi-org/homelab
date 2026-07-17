@@ -458,6 +458,12 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: build base %q: %v", baseKey, err)
 	}
 	s.bases.readyBuild(baseKey, workload, imageDigest, readyPath, sizeBytes)
+	// Persist the runtime image ref alongside the snapshot so a daemon restart can
+	// restore it (ReconcileBasesFromDisk). The base dir name is <workload>__<sig>
+	// and does NOT encode the runtime image, but a stateful cold boot resolves the
+	// rootfs via base.imageDigest -> cfg.Images, so a base adopted from disk without
+	// it is unbootable. Best-effort: a missing ref file just forces a rebuild.
+	s.writeBaseImageRef(baseKey, imageDigest)
 
 	// Serving base (R3, D-R3.11.2): additionally persist a cold-boot-readable handler
 	// artifact from the SAME verified archive bytes noded already holds, so a serving
@@ -1397,6 +1403,17 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 		return c
 	}
 	for _, b := range s.bases.snapshot() {
+		// A READY base is only reportable if its runtime image is still provisioned:
+		// the control plane places a stateful cold boot on snapshot_ref and the daemon
+		// resolves it via imageDigest -> cfg.Images, so advertising a base built against
+		// a superseded image (or an in-memory entry whose disk snapshot was GC'd) would
+		// place a wake that fails FAILED_PRECONDITION. BUILDING/FAILED are reported as-is
+		// so the control plane sees progress. Mirrors the serving-image filter below.
+		if b.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+			if _, ok := s.cfg.Images[b.imageDigest]; !ok {
+				continue
+			}
+		}
 		c := get(b.workload)
 		c.SnapshotRef = b.snapshotRef
 		c.BaseState = b.state
@@ -1564,7 +1581,7 @@ func (s *Server) ReconcileBasesFromDisk() {
 		}
 		return
 	}
-	n := 0
+	n, gc := 0, 0
 	for _, ent := range entries {
 		if !ent.IsDir() {
 			continue
@@ -1576,6 +1593,19 @@ func (s *Server) ReconcileBasesFromDisk() {
 			// A dir without a snapfile is a half-written or unrelated bundle; skip.
 			continue
 		}
+		// Restore the runtime image ref persisted at build (writeBaseImageRef). A base
+		// whose ref file is missing (built before this was persisted) or whose runtime
+		// image is no longer provisioned (a superseded image tag after a deploy) is not
+		// cold-bootable: a stateful cold boot resolves the rootfs via imageDigest ->
+		// cfg.Images. GC it here so superseded snapshots do not accumulate on node NVMe
+		// (D-R3.11.3) and are never reported to the control plane.
+		imageRef := s.readBaseImageRef(baseKey)
+		if _, provisioned := s.cfg.Images[imageRef]; imageRef == "" || !provisioned {
+			if err := os.RemoveAll(filepath.Join(root, baseKey)); err == nil {
+				gc++
+			}
+			continue
+		}
 		memfile := filepath.Join(root, baseKey, "memfile")
 		var size int64 = fi.Size()
 		if mfi, err := os.Stat(memfile); err == nil {
@@ -1584,16 +1614,38 @@ func (s *Server) ReconcileBasesFromDisk() {
 		s.bases.register(baseEntry{
 			snapshotRef: baseKey,
 			workload:    workloadFromBaseKey(baseKey),
+			imageDigest: imageRef,
 			readyPath:   defaultReadyPath,
 			sizeBytes:   size,
 			state:       nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
 		})
 		n++
 	}
-	if n > 0 {
-		s.logger.Info("noded: reconciled existing base snapshots", "count", n)
+	if n > 0 || gc > 0 {
+		s.logger.Info("noded: reconciled base snapshots", "adopted", n, "gc_superseded", gc)
 		s.signalChange()
 	}
+}
+
+// writeBaseImageRef persists a base's runtime image ref next to its snapshot so a
+// daemon restart can restore base.imageDigest (the base dir name does not encode
+// it). Best-effort: a write failure just means the base is GC'd and rebuilt on the
+// next reconcile.
+func (s *Server) writeBaseImageRef(baseKey, imageRef string) {
+	path := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey, "imageref")
+	if err := os.WriteFile(path, []byte(imageRef), 0o644); err != nil {
+		s.logger.Warn("noded: persist base imageref", "base", baseKey, "err", err)
+	}
+}
+
+// readBaseImageRef reads the persisted runtime image ref for a base, or "" if the
+// file is absent (a base built before persistence, or a partial write).
+func (s *Server) readBaseImageRef(baseKey string) string {
+	b, err := os.ReadFile(filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey, "imageref"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // ReconcileSessionsFromDisk scans the sessions snapshot dir for banked session
