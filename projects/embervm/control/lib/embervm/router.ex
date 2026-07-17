@@ -153,6 +153,12 @@ defmodule Embervm.Router do
     handle_delete_stateful_volume(conn, name)
   end
 
+  # -- composite (group) routes (R5, management introspection) ---------------
+
+  get "/v1/groups/:name" do
+    handle_get_group(conn, name)
+  end
+
   # The activator fallback (R3, Task 8): the catch-all is the front-end the node
   # Envoy routes a MISS to (the fallback endpoint of an empty serve|<workload>
   # cluster). It is identified by the `x-ember-workload` request header the serving
@@ -1008,6 +1014,104 @@ defmodule Embervm.Router do
 
   defp stateful_manager, do: Application.get_env(:embervm, :stateful_manager_mod, Embervm.StatefulManager)
   defp stateful_manager_server, do: Application.get_env(:embervm, :stateful_manager, Embervm.StatefulManager)
+
+  # GET /v1/groups/:name (management auth): the composite group's instance state,
+  # members with health, set id + completeness (the banked set_id, null when nothing
+  # is banked), subnet, and published entry endpoint. Mirrors handle_get_stateful/2's
+  # primary-instance selection.
+  defp handle_get_group(conn, workload) do
+    if group_workload?(workload) do
+      instances = group_store().list(group_store_server(), workload)
+      primary = primary_group_instance(instances)
+      banked = Enum.find(instances, &(&1.state == :banked))
+
+      members =
+        if primary do
+          group_store().members(group_store_server(), primary.instance_id)
+          |> Enum.map(&group_member_view/1)
+        else
+          []
+        end
+
+      send_json(
+        conn,
+        200,
+        json_nullify(%{
+          workload: workload,
+          instance: primary && group_instance_view(primary),
+          state: primary && to_string(primary.state),
+          members: members,
+          # The banked bundle-set handle (the whole-set warmth key), null if nothing
+          # is banked; its presence means a complete set is banked (a partial set is
+          # eagerly evicted, clearing set_id).
+          set_id: (primary && primary.set_id) || (banked && banked.set_id),
+          subnet_cidr: primary && primary.subnet_cidr,
+          degraded_member: primary && primary.degraded_member,
+          published_endpoint: group_store().entry_endpoint(group_store_server(), workload)
+        })
+      )
+    else
+      send_json(conn, 404, %{error: "unknown composite workload", workload: workload, retryable: false})
+    end
+  end
+
+  # The instance the GET's top-level fields describe: the live one (at most one by the
+  # group-level singleton invariant), else the banked one, else the newest row.
+  defp primary_group_instance(instances) do
+    live_states = [:creating, :running, :banking, :relighting, :fresh_booting]
+
+    Enum.find(instances, &(&1.state in live_states)) ||
+      Enum.find(instances, &(&1.state == :banked)) ||
+      List.first(instances)
+  end
+
+  defp group_instance_view(instance) do
+    %{
+      instance_id: instance.instance_id,
+      workload: instance.workload,
+      state: to_string(instance.state),
+      node_id: instance.node_id,
+      subnet_cidr: instance.subnet_cidr,
+      entry_member: instance.entry_member,
+      entry_port: instance.entry_port,
+      listen_port: instance.listen_port,
+      set_id: instance.set_id,
+      degraded_member: instance.degraded_member,
+      entry_ip: instance.entry_ip,
+      entry_port_published: instance.entry_port_published,
+      created_at: instance.created_at,
+      last_active_at: instance.last_active_at,
+      updated_at: instance.updated_at,
+      terminal_reason: instance.terminal_reason
+    }
+  end
+
+  defp group_member_view(member) do
+    %{
+      member_name: member.member_name,
+      member_index: member.member_index,
+      state: member.state,
+      healthy: member.healthy,
+      vm_id: member.vm_id,
+      ip: member.ip,
+      snapshot_ref: member.snapshot_ref
+    }
+  end
+
+  # Whether `workload` is a COMPOSITE-class workload in the catalog. Resolves the
+  # catalog module + table from app-env so a request test can inject a fake.
+  defp group_workload?(workload) do
+    mod = Application.get_env(:embervm, :workload_catalog_mod, Embervm.WorkloadCatalog)
+    table = Application.get_env(:embervm, :workload_catalog_table, Embervm.WorkloadCatalog.table())
+
+    case mod.fetch(table, workload) do
+      {:ok, %{class: "composite"}} -> true
+      _ -> false
+    end
+  end
+
+  defp group_store, do: Application.get_env(:embervm, :group_store_mod, Embervm.GroupStore)
+  defp group_store_server, do: Application.get_env(:embervm, :group_store, Embervm.GroupStore)
 
   defp serving_sweeper, do: Application.get_env(:embervm, :serving_sweeper_mod, Embervm.ServingSweeper)
   defp serving_sweeper_server, do: Application.get_env(:embervm, :serving_sweeper, Embervm.ServingSweeper)

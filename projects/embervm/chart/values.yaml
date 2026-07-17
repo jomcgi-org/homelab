@@ -562,6 +562,14 @@ noded:
   # three do not collide. The bridges live in noded's pod netns and die with the pod;
   # the durable truth is the on-disk group_networks/<gid>/config.json record.
   compositeSupernet: 10.101.0.0/16
+  # The base of noded's deterministic per-VM/entry DNAT port space:
+  # vmPort = servingPortBase + hostOffset(tapIP). This is the SINGLE source of truth
+  # for the port base: it is rendered into BOTH the noded env
+  # (EMBERVM_NODED_SERVING_PORT_BASE) and the control-plane env
+  # (EMBERVM_COMPOSITE_PORT_BASE), so the CP's entry-endpoint port re-derivation
+  # (which mirrors noded's PortForIP) can never drift from the daemon's. Default 30000
+  # (noded's own compile-time default), clear of noded's 8080/9090.
+  servingPortBase: 30000
 
   # Static bearer token gating the gRPC surface. Disabled here (daemon runs open +
   # warns; Cilium/Linkerd policy is the layer). A 1Password-provisioned secret is

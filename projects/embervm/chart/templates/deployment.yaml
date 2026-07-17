@@ -50,6 +50,14 @@ spec:
             - name: state-{{ $p }}
               containerPort: {{ $p }}
             {{- end }}
+            # The R5 composite (group) TCP activator binds this range on the pod so the
+            # node Envoy can reach the wake-on-connect fallback at podIP:<listenPort>
+            # (Task 7). Same range the node Envoy exposes as group-<port>.
+            {{- $gr := .Values.servingEnvoy.compositeTcpPortRange }}
+            {{- range $p := untilStep (int $gr.start) (int (add (int $gr.end) 1)) 1 }}
+            - name: group-{{ $p }}
+              containerPort: {{ $p }}
+            {{- end }}
             {{- end }}
           env:
             - name: EMBERVM_HTTP_PORT
@@ -174,6 +182,31 @@ spec:
               value: "{{ .Values.servingEnvoy.compositeTcpPortRange.start }}-{{ .Values.servingEnvoy.compositeTcpPortRange.end }}"
             - name: EMBERVM_MAX_GROUP_SIZE
               value: {{ .Values.servingEnvoy.maxGroupSize | quote }}
+            # The R5 composite (group) TCP activator port range: the values-declared
+            # range the activator physically binds on the pod (Task 7), so the node
+            # Envoy's group tcp_proxy fallback dials podIP:<listenPort>. Same range as
+            # the container ports above, mirroring EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE.
+            - name: EMBERVM_COMPOSITE_ACTIVATOR_PORT_RANGE
+              value: "{{ .Values.servingEnvoy.compositeTcpPortRange.start }}-{{ .Values.servingEnvoy.compositeTcpPortRange.end }}"
+            # The composite supernet the CONTROL PLANE allocates per-group /24s from
+            # (lowest-free) and the DNAT port base it re-derives each group's entry
+            # vmPort from. BOTH are the SAME chart values that feed noded's
+            # CompositeSupernet + ServingPortBase (noded.compositeSupernet /
+            # noded.servingPortBase, rendered into the noded env too), so the CP's
+            # subnet allocation and entry-endpoint port derivation stay in lockstep with
+            # the daemon. Rendering from the noded.* keys (not a second independently
+            # defaulted value) is the one-source-of-truth guard.
+            - name: EMBERVM_COMPOSITE_SUPERNET
+              value: {{ .Values.noded.compositeSupernet | quote }}
+            - name: EMBERVM_COMPOSITE_PORT_BASE
+              value: {{ .Values.noded.servingPortBase | quote }}
+            # The control-plane pod IP: the composite entry endpoint is published as
+            # {pod IP, vmPort} (the D-R3.11.4 DNAT lane), so the publisher needs the pod's
+            # own routable address.
+            - name: EMBERVM_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             {{- end }}
             {{- if .Values.servingEnvoy.enabled }}
             # The node Envoy stats base URL (R3, Task 9): the ServingSweeper GETs
