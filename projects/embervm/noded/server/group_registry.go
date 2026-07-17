@@ -36,11 +36,67 @@ type groupNetwork interface {
 	// List projects every held group network for NodeStatus assembly.
 	List() []serving.GroupNetworkInfo
 	// MemberAddressingFor derives the deterministic (tap, mac, ip) for a member
-	// without reserving the IP (read-only; Task 5 uses the reserving variant).
+	// without reserving the IP (read-only; the reserving/creating variant is
+	// EnsureMemberTap).
 	MemberAddressingFor(groupInstanceID, memberName string, memberIndex uint32) (tap, mac string, ip net.IP, err error)
+	// EnsureMemberTap pins a member's NIC world on the group bridge (derive + verify
+	// against the request IP, reserve the IP, create + attach the tap) and returns
+	// the (tap, mac). Used by BOTH FRESH boot and RELIGHT resume: a relight recreates
+	// the SAME tap/MAC/IP the member had at bank time (the pinned-world reconstruction).
+	EnsureMemberTap(ctx context.Context, groupInstanceID, memberName string, memberIndex uint32, wantIP net.IP) (tap, mac string, err error)
+	// RemoveMemberTap deletes a member's tap and releases its pinned IP (idempotent),
+	// the symmetric teardown for EnsureMemberTap.
+	RemoveMemberTap(ctx context.Context, groupInstanceID, tap string, ip net.IP)
+	// GatewayIP is the group's .1 gateway (the member's default route); nil if absent.
+	GatewayIP(groupInstanceID string) net.IP
+	// PrefixLen is the group's /24 prefix length (24); 0 if the group is absent.
+	PrefixLen(groupInstanceID string) int
 	// EntryEndpoint projects a group entry member's (tap IP, guest port) into the
 	// reported endpoint (pod IP + DNAT port when enabled, else the tap unchanged).
 	EntryEndpoint(entryIP net.IP, guestPort uint32) (string, uint32)
+}
+
+// groupMemberDriver is the subset of the fcvm driver the R5 member lifecycle needs
+// on top of vmDriver: cold-boot a member VM WITH a tap NIC on the group bridge and
+// its first-boot env (FRESH), bank a live member to a self-contained bundle under
+// group/<set_id>/<member_name>/ (BANK), resume from a banked member bundle (RELIGHT),
+// remove a banked member bundle, and rescan banked group bundle SETS on start. The
+// real *driver.Driver satisfies it; tests inject a fake. A separate seam (like
+// statefulDriver) so a Server built without group support still compiles and a
+// reviewer sees exactly which driver mechanics the member path reuses.
+type groupMemberDriver interface {
+	// ClaimGroupMember cold-boots a member VM from a per-member rootfs WITH the given
+	// tap NIC on the group bridge and its first-boot env (MMDS-lite over boot-args).
+	// No handler artifact and no writable volume: a member is a plain NIC guest.
+	ClaimGroupMember(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, env map[string]string) (substrate.Handle, error)
+	// SnapshotGroupMember pauses a live member VM and writes a self-contained member
+	// bundle under group/<set_id>/<member_name>/; does not resume (the caller Releases).
+	SnapshotGroupMember(ctx context.Context, h substrate.Handle, setID, memberName string) (substrate.SnapshotRef, error)
+	// RestoreGroupMember launches a fresh VM from a banked member bundle and resumes
+	// it, WITH the NIC captured at bank time. The caller has already recreated the
+	// pinned tap world before calling this.
+	RestoreGroupMember(ctx context.Context, setID, memberName string) (substrate.Handle, error)
+	// RemoveGroupMemberBundle deletes a banked member bundle from disk (idempotent).
+	RemoveGroupMemberBundle(setID, memberName string) error
+	// ScanGroupBundleSets globs the group bundle dir on startup and returns each set
+	// dir with the per-member bundles found under it, GROUPED BY set (no completeness
+	// judgment; that is the control plane's).
+	ScanGroupBundleSets() []substrate.GroupBundleSetInfo
+	// GroupSetsDir is the directory holding banked group member bundles, rescanned
+	// on start.
+	GroupSetsDir() string
+}
+
+// groupClock is the host-side clock-resync seam the RELIGHT path uses to re-set a
+// resumed member guest's wall clock over the port-1024 length-prefixed JSON agent
+// channel and VERIFY the read-back within one second. The real groupclock.Resync
+// (with a groupclock.VsockDialer) satisfies it; tests inject a fake scripting
+// success / >1s failure / timeout without a real guest.
+type groupClock interface {
+	// Resync dials the member guest's clock agent, sends the host epoch, reads the
+	// clock back, and returns an error (failing the relight) when the read-back is
+	// more than one second off the host's epoch at send.
+	Resync(ctx context.Context, udsPath string) error
 }
 
 // groupRecordStore is the on-disk group-network record seam: write a record on
@@ -67,14 +123,21 @@ type groupMemberEntry struct {
 	vmID            string
 	groupInstanceID string
 	memberName      string
+	memberIndex     uint32
 	ip              net.IP
+	// tap is the member's host tap device on the group bridge (derived from the
+	// group + member), kept so teardown deletes the exact device without re-deriving.
+	tap string
+	// port is the guest TCP port the member health-gates and probes on (health_port).
+	port uint32
+	// handle is the live Firecracker handle, for bank/destroy/reap.
+	handle substrate.Handle
 	// isEntry marks the group's entry member (the one exposed via the entry DNAT).
 	isEntry bool
-	// probe is the running TCP-connect health-probe loop for this member (set by
-	// Task 5). nil in Task 4 (no live members yet).
+	// probe is the running TCP-connect health-probe loop for this member.
 	probe *serving.ProbeHandle
 
-	mu       sync.Mutex // guards inFlight (Task 5's stop serialization)
+	mu       sync.Mutex // guards inFlight (the per-vm stop serialization)
 	inFlight bool
 }
 
@@ -108,6 +171,34 @@ func (r *groupMemberRegistry) remove(id string) *groupMemberEntry {
 	e := r.members[id]
 	delete(r.members, id)
 	return e
+}
+
+// get returns the entry for a vm_id (nil if absent).
+func (r *groupMemberRegistry) get(id string) *groupMemberEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.members[id]
+}
+
+// beginStop marks a member VM busy for a StopGroupMember, mirroring
+// statefulRegistry.beginStop. It returns (entry, true) only when the id names a
+// known live member with no stop already in flight; a concurrent stop on the same
+// vm_id gets (nil, false), which the handler maps to FAILED_PRECONDITION. This is
+// the concurrent-stop refusal per vm_id.
+func (r *groupMemberRegistry) beginStop(id string) (*groupMemberEntry, bool) {
+	r.mu.Lock()
+	e, ok := r.members[id]
+	r.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inFlight {
+		return nil, false
+	}
+	e.inFlight = true
+	return e, true
 }
 
 // memberCount is the number of live members currently attached to a group's
@@ -165,10 +256,63 @@ func (r *groupMemberRegistry) snapshot() []groupMemberView {
 	return out
 }
 
-// count is the number of live member VMs (for NodeStatus live_vms summing once
-// Task 5 lands; 0 in Task 4).
+// count is the number of live member VMs (for NodeStatus live_vms summing).
 func (r *groupMemberRegistry) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.members)
+}
+
+// ---- banked group bundle inventory ------------------------------------------
+
+// groupBundleEntry is one member's banked snapshot within a group bundle set on
+// disk (R5), stored under group/<set_id>/<member_name>/. Seeded from disk on start
+// (ScanGroupBundleSets) and updated on a member bank. The daemon reports these
+// GROUPED BY set_id and makes NO completeness judgment (the control plane decides
+// whether a set has every member it needs to relight).
+type groupBundleEntry struct {
+	setID           string
+	memberName      string
+	groupInstanceID string
+	snapshotRef     string
+	sizeBytes       int64
+	createdAtUnixMs int64
+}
+
+// groupBundleRegistry is the in-memory banked-group-bundle inventory, keyed by the
+// opaque per-member snapshot_ref (group/<set_id>/<member_name>). Seeded from disk on
+// start and updated on bank; the NodeStatus projection groups entries by set_id.
+type groupBundleRegistry struct {
+	mu    sync.Mutex
+	snaps map[string]*groupBundleEntry
+}
+
+func newGroupBundleRegistry() *groupBundleRegistry {
+	return &groupBundleRegistry{snaps: make(map[string]*groupBundleEntry)}
+}
+
+// add records a banked group member bundle (from a bank or a startup rescan).
+func (r *groupBundleRegistry) add(e groupBundleEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := e
+	r.snaps[e.snapshotRef] = &cp
+}
+
+// remove deletes a snapshot_ref from the inventory (idempotent).
+func (r *groupBundleRegistry) remove(ref string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.snaps, ref)
+}
+
+// snapshot returns a copy of every banked group bundle entry.
+func (r *groupBundleRegistry) snapshot() []groupBundleEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]groupBundleEntry, 0, len(r.snaps))
+	for _, e := range r.snaps {
+		out = append(out, *e)
+	}
+	return out
 }

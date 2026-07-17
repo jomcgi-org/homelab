@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -677,5 +678,126 @@ func TestServingSnapshotRoundTrip(t *testing.T) {
 	}
 	if _, err := d.RestoreServing(ctx, "servref-1"); err == nil {
 		t.Fatal("restore of an evicted serving bundle should error")
+	}
+}
+
+// TestDriverGroupMemberSnapshotRestoreRoundTrip proves the R5 member bank/relight
+// mechanic on the real driver: cold-boot a member on a group NIC (ClaimGroupMember),
+// snapshot it into a self-contained bundle under group/<set_id>/<member_name>/
+// (SnapshotGroupMember, no resume, so the caller destroys), then relight a fresh VM
+// from that bundle (RestoreGroupMember). The bundle carries NO sidecar (the pinned
+// world is derivable). RemoveGroupMemberBundle reclaims it and a subsequent relight
+// fails.
+func TestDriverGroupMemberSnapshotRestoreRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+
+	h, err := d.ClaimGroupMember(ctx, "/rootfs/member", "/init", 1, 256,
+		substrate.NICSpec{HostDevName: "emgt0a1b2c", GuestMAC: "02:00:00:00:00:01", IP: "10.101.1.10", GatewayIP: "10.101.1.1", PrefixLen: 24}, map[string]string{"EMBER_GROUP_ROLE": "worker"})
+	if err != nil {
+		t.Fatalf("ClaimGroupMember: %v", err)
+	}
+	ref, err := d.SnapshotGroupMember(ctx, h, "set-abc", "worker-0")
+	if err != nil {
+		t.Fatalf("SnapshotGroupMember: %v", err)
+	}
+	wantRef := "group/set-abc/worker-0"
+	if ref.ID != wantRef || ref.Node != "node-4" || ref.Arch != "amd64" || ref.SizeBytes == 0 {
+		t.Fatalf("unexpected member ref: %+v (want ID %q)", ref, wantRef)
+	}
+	// The bundle lives under group/<set_id>/<member>/, never sessions/ or a per-thread dir.
+	if _, err := os.Stat(d.groupMemberSnapfile("set-abc", "worker-0")); err != nil {
+		t.Fatalf("member bundle snapfile missing under group/set-abc/worker-0: %v", err)
+	}
+	// No sidecar: a member's pinned world is derivable, not banked.
+	if _, err := os.Stat(filepath.Join(d.groupMemberDir("set-abc", "worker-0"), "ip")); !os.IsNotExist(err) {
+		t.Errorf("a member bundle must carry no ip sidecar (pinned world is derivable), stat err=%v", err)
+	}
+	// SnapshotGroupMember does not resume; the caller destroys.
+	if err := d.Release(ctx, h); err != nil {
+		t.Fatalf("Release banked member: %v", err)
+	}
+
+	h2, err := d.RestoreGroupMember(ctx, "set-abc", "worker-0")
+	if err != nil {
+		t.Fatalf("RestoreGroupMember: %v", err)
+	}
+	if h2.ID == "" || h2.ID == h.ID {
+		t.Fatalf("relit member should have a fresh id, got %q (was %q)", h2.ID, h.ID)
+	}
+	if err := d.Release(ctx, h2); err != nil {
+		t.Fatalf("Release relit member: %v", err)
+	}
+
+	if err := d.RemoveGroupMemberBundle("set-abc", "worker-0"); err != nil {
+		t.Fatalf("RemoveGroupMemberBundle: %v", err)
+	}
+	if _, err := d.RestoreGroupMember(ctx, "set-abc", "worker-0"); err == nil {
+		t.Fatal("relight of an evicted member bundle should error")
+	}
+	// Idempotent evict.
+	if err := d.RemoveGroupMemberBundle("set-abc", "worker-0"); err != nil {
+		t.Fatalf("idempotent RemoveGroupMemberBundle: %v", err)
+	}
+}
+
+// TestDriverClaimGroupMemberRequiresTap proves ClaimGroupMember refuses a NIC with
+// no host tap (a member is always on the group bridge).
+func TestDriverClaimGroupMemberRequiresTap(t *testing.T) {
+	d := testDriver(t)
+	if _, err := d.ClaimGroupMember(context.Background(), "/rootfs/x", "/init", 1, 128, substrate.NICSpec{}, nil); err == nil {
+		t.Fatal("ClaimGroupMember without a host tap should error")
+	}
+}
+
+// TestDriverScanGroupBundleSets proves the startup rescan globs group/*/*/snapfile
+// and returns each set with its per-member bundles GROUPED BY set dir, skipping a
+// half-written member (a member dir with no snapfile).
+func TestDriverScanGroupBundleSets(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+
+	// Bank two members under one set and one under another.
+	bank := func(setID, member string) {
+		h, err := d.ClaimGroupMember(ctx, "/rootfs/member", "/init", 1, 128,
+			substrate.NICSpec{HostDevName: "emgt-" + member, IP: "10.101.1.10"}, nil)
+		if err != nil {
+			t.Fatalf("ClaimGroupMember %s/%s: %v", setID, member, err)
+		}
+		if _, err := d.SnapshotGroupMember(ctx, h, setID, member); err != nil {
+			t.Fatalf("SnapshotGroupMember %s/%s: %v", setID, member, err)
+		}
+		_ = d.Release(ctx, h)
+	}
+	bank("set-1", "worker-0")
+	bank("set-1", "worker-1")
+	bank("set-2", "leader")
+
+	// A half-written member dir (no snapfile) under set-1 must be skipped.
+	if err := os.MkdirAll(d.groupMemberDir("set-1", "ghost"), 0o700); err != nil {
+		t.Fatalf("mkdir ghost: %v", err)
+	}
+
+	sets := d.ScanGroupBundleSets()
+	if len(sets) != 2 {
+		t.Fatalf("ScanGroupBundleSets found %d sets, want 2: %+v", len(sets), sets)
+	}
+	bySet := map[string][]string{}
+	for _, s := range sets {
+		for _, m := range s.Members {
+			bySet[s.SetID] = append(bySet[s.SetID], m.MemberName)
+			if m.SnapshotRef != filepath.Join("group", s.SetID, m.MemberName) {
+				t.Errorf("member ref = %q want group/%s/%s", m.SnapshotRef, s.SetID, m.MemberName)
+			}
+			if m.SizeBytes == 0 {
+				t.Errorf("member %s/%s reported zero size", s.SetID, m.MemberName)
+			}
+		}
+	}
+	if len(bySet["set-1"]) != 2 {
+		t.Errorf("set-1 members = %v want [worker-0 worker-1] (ghost skipped)", bySet["set-1"])
+	}
+	if len(bySet["set-2"]) != 1 {
+		t.Errorf("set-2 members = %v want [leader]", bySet["set-2"])
 	}
 }

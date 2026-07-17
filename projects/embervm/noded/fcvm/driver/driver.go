@@ -1546,6 +1546,216 @@ func (d *Driver) ScanGroupNetworks() []substrate.GroupNetworkRecord {
 	return out
 }
 
+// ---- Group member snapshot mechanics (R5) -----------------------------------
+//
+// A composite-group member VM banks to a self-contained bundle exactly like a
+// session/serving/stateful VM (memfile + snapfile, no archive backing file), but
+// the bundle layout is group/<set_id>/<member_name>/ so the control plane can
+// address a whole RELIGHTABLE SET by set_id and the daemon reports member bundles
+// GROUPED BY set dir (ScanGroupBundleSets). A member bundle carries NO sidecar: the
+// member's pinned tap/MAC/IP are DETERMINISTIC from (group_instance_id, member_name,
+// member_index) via Task 4's addressing, so a relight re-derives the pinned world
+// from the request identity rather than reading it back, and there is no generation
+// ledger for a member the way a stateful volume has one. The pinned world (tap name
+// + MAC + IP) MUST be recreated identically BEFORE the resume, because the guest's
+// eth0 keeps the address baked at fresh boot and a snapshot resume never re-runs
+// kernel init (the D-R3.4.1 pin, applied to a member's group bridge).
+
+// GroupSetsDir is the parent directory holding all banked GROUP member bundles,
+// under the group/ prefix of the snapshot root (a sibling of bases/, sessions/,
+// serving/, and stateful/). The daemon rescans exactly this dir on start via
+// ScanGroupBundleSets. Callers own its 0700 permission and daemon-ownership.
+func (d *Driver) GroupSetsDir() string { return filepath.Join(d.cfg.SnapshotRoot, "group") }
+
+// groupMemberDir is the bundle directory for one banked member snapshot, keyed by
+// the opaque set_id and the member_name: group/<set_id>/<member_name>/.
+func (d *Driver) groupMemberDir(setID, memberName string) string {
+	return filepath.Join(d.GroupSetsDir(), setID, memberName)
+}
+
+func (d *Driver) groupMemberSnapfile(setID, memberName string) string {
+	return filepath.Join(d.groupMemberDir(setID, memberName), "snapfile")
+}
+
+func (d *Driver) groupMemberMemfile(setID, memberName string) string {
+	return filepath.Join(d.groupMemberDir(setID, memberName), "memfile")
+}
+
+// ClaimGroupMember cold-boots a composite-group member microVM (R5) from a
+// per-member rootfs WITH the given tap NIC on the group bridge (exactly as
+// ClaimServing) PLUS the member's first-boot env delivered via the MMDS-lite
+// boot-args seam (D-R4.PR-7.1), and NO handler artifact and NO writable volume (a
+// group member is a plain NIC guest). It mirrors ClaimServing's shape precisely
+// (same NIC requirement, same harness-init threading, same coldBoot reuse) with the
+// addition of mmdsEnv. env is only meaningful on a FRESH cold boot; a RELIGHT
+// resumes a memory snapshot via RestoreGroupMember and never re-reads boot-args, so
+// the resumed member keeps its BIRTH env.
+func (d *Driver) ClaimGroupMember(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, env map[string]string) (substrate.Handle, error) {
+	if nic.HostDevName == "" {
+		return substrate.Handle{}, fmt.Errorf("driver: ClaimGroupMember requires a host tap device")
+	}
+	vcpus = orDefault(vcpus, d.cfg.VCPUs)
+	memMib = orDefault(memMib, d.cfg.MemMib)
+	nicCopy := nic
+	return d.coldBoot(ctx, newID("grpm"), coldBootSpec{
+		rootfsPath:  rootfsPath,
+		vcpus:       vcpus,
+		memMib:      memMib,
+		nic:         &nicCopy,
+		harnessInit: harnessInit,
+		mmdsEnv:     env,
+	})
+}
+
+// SnapshotGroupMember pauses a live member VM and writes a self-contained member
+// bundle (memfile + snapfile) under group/<set_id>/<member_name>/. It does NOT
+// resume: the caller Releases the VM immediately after (StopGroupMember BANK
+// destroys). It mirrors SnapshotSession exactly (no sidecar: a member's pinned
+// world is derivable, not banked). On any failure after the handle is confirmed the
+// VM is torn down (a bank is destructive), so a failed bank never leaves a live/
+// paused handle behind for the server to misreport as capacity.
+func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, setID, memberName string) (substrate.SnapshotRef, error) {
+	if setID == "" || memberName == "" {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: SnapshotGroupMember requires a set_id and member_name")
+	}
+	inst := d.get(h.ID)
+	if inst == nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot-group-member of unknown handle %q", h.ID)
+	}
+	banked := false
+	defer func() {
+		if !banked {
+			_ = d.Release(ctx, h)
+		}
+	}()
+	if err := os.MkdirAll(d.groupMemberDir(setID, memberName), 0o700); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir group member bundle: %w", err)
+	}
+	snapPath := d.groupMemberSnapfile(setID, memberName)
+	memPath := d.groupMemberMemfile(setID, memberName)
+	snapTmp := snapPath + ".tmp"
+	memTmp := memPath + ".tmp"
+
+	if err := inst.client.Pause(ctx); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause group member: %w", err)
+	}
+	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create group member snapshot: %w", err)
+	}
+	// Publish memfile before snapfile (a restore reads the snapfile to locate the
+	// memfile), then the snapfile LAST so a rescan that finds a snapfile always
+	// finds a complete bundle (the same publish-last discipline every other class
+	// uses so a half-written bundle is skipped).
+	if err := os.Rename(memTmp, memPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish group member memfile: %w", err)
+	}
+	if err := os.Rename(snapTmp, snapPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish group member snapfile: %w", err)
+	}
+	banked = true
+	return substrate.SnapshotRef{
+		ID:        filepath.Join("group", setID, memberName),
+		Node:      d.cfg.Node,
+		Arch:      d.cfg.Arch,
+		SizeBytes: bundleSize(snapPath, memPath),
+	}, nil
+}
+
+// RestoreGroupMember launches a fresh Firecracker process and loads a banked member
+// bundle (group/<set_id>/<member_name>/), resuming it so the guest continues exactly
+// where it was banked, WITH the NIC it captured at bank time. It mirrors
+// RestoreServing. The caller has already recreated the host tap (same name + MAC)
+// and configured the pinned IP on the group bridge BEFORE this runs (the pinned
+// world is derived from the group + member + index, not read from a sidecar), so the
+// resumed guest's baked eth0 still routes. A missing bundle is an error the caller
+// maps to FAILED_PRECONDITION (the bundle is NEVER deleted on a failed restore: a
+// lost member must surface loudly).
+func (d *Driver) RestoreGroupMember(ctx context.Context, setID, memberName string) (substrate.Handle, error) {
+	if setID == "" || memberName == "" {
+		return substrate.Handle{}, fmt.Errorf("driver: RestoreGroupMember requires a set_id and member_name")
+	}
+	snapPath := d.groupMemberSnapfile(setID, memberName)
+	if _, err := os.Stat(snapPath); err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: group member bundle missing for group/%s/%s: %w", setID, memberName, err)
+	}
+	threadID := newID("grpm")
+	return d.loadInto(ctx, threadID, snapPath, d.groupMemberMemfile(setID, memberName), "restore.sock")
+}
+
+// RemoveGroupMemberBundle deletes a banked member snapshot's on-disk bundle
+// (group/<set_id>/<member_name>/). It is the member EvictSnapshot-equivalent
+// mechanic. Idempotent: a missing bundle is not an error.
+func (d *Driver) RemoveGroupMemberBundle(setID, memberName string) error {
+	if setID == "" || memberName == "" {
+		return fmt.Errorf("driver: RemoveGroupMemberBundle requires a set_id and member_name")
+	}
+	if err := os.RemoveAll(d.groupMemberDir(setID, memberName)); err != nil {
+		return fmt.Errorf("driver: remove group member bundle: %w", err)
+	}
+	return nil
+}
+
+// ScanGroupBundleSets globs group/*/*/snapfile on startup and returns each set dir
+// with the per-member bundles found under it, so a restarted daemon reports what
+// banked group warmth survives GROUPED BY set. The daemon makes NO completeness
+// judgment (whether a set has every member it needs to relight is the control
+// plane's to decide); it reports refs grouped by the set dir it wrote them under. A
+// member dir without a snapfile is half-written or mid-evict and is skipped; a set
+// dir with no complete member bundle is omitted entirely.
+func (d *Driver) ScanGroupBundleSets() []substrate.GroupBundleSetInfo {
+	root := d.GroupSetsDir()
+	setEntries, err := os.ReadDir(root)
+	if err != nil {
+		return nil // no group dir yet (fresh node): nothing to rescan
+	}
+	out := make([]substrate.GroupBundleSetInfo, 0, len(setEntries))
+	for _, se := range setEntries {
+		if !se.IsDir() {
+			continue
+		}
+		setID := se.Name()
+		memberEntries, merr := os.ReadDir(filepath.Join(root, setID))
+		if merr != nil {
+			continue
+		}
+		members := make([]substrate.GroupBundleMemberInfo, 0, len(memberEntries))
+		var createdMs int64
+		for _, me := range memberEntries {
+			if !me.IsDir() {
+				continue
+			}
+			memberName := me.Name()
+			snapPath := d.groupMemberSnapfile(setID, memberName)
+			fi, serr := os.Stat(snapPath)
+			if serr != nil {
+				continue // half-written or evicting: skip
+			}
+			if ms := fi.ModTime().UnixMilli(); ms > createdMs {
+				createdMs = ms
+			}
+			size := fi.Size()
+			if mfi, err := os.Stat(d.groupMemberMemfile(setID, memberName)); err == nil {
+				size += mfi.Size()
+			}
+			members = append(members, substrate.GroupBundleMemberInfo{
+				MemberName:  memberName,
+				SnapshotRef: filepath.Join("group", setID, memberName),
+				SizeBytes:   size,
+			})
+		}
+		if len(members) == 0 {
+			continue // a set dir with no complete member bundle is not reported
+		}
+		sort.Slice(members, func(i, j int) bool { return members[i].MemberName < members[j].MemberName })
+		out = append(out, substrate.GroupBundleSetInfo{
+			SetID:           setID,
+			Members:         members,
+			CreatedAtUnixMs: createdMs,
+		})
+	}
+	return out
+}
+
 // Exec is provided by the in-VM harness over the wrapper channel (Phase 2); the
 // FC-direct driver does not run processes in the guest from the host.
 func (d *Driver) Exec(_ context.Context, _ substrate.Handle, _ substrate.Request) (substrate.Stream, error) {
