@@ -31,6 +31,7 @@ defmodule Embervm.NodeRoundtripTest do
     PrimeRequest,
     RelightRequest,
     RelightSource,
+    ResolveStatefulRequest,
     ResourceSpec,
     SessionAssignRequest,
     StartGroupMemberRequest,
@@ -266,6 +267,45 @@ defmodule Embervm.NodeRoundtripTest do
     assert destroyed.generation == 0
     assert destroyed.size_bytes == 0
 
+    # StopStateful CHECKPOINT (ADR embervm/008 phase one): pauses and returns an
+    # opaque token plus the paused generation, publishing NO bundle yet (empty
+    # snapshot_ref / zero size_bytes).
+    {:ok, ckpt} =
+      NodeService.Stub.stop_stateful(ch, %StopStatefulRequest{
+        vm_id: "vm-st1",
+        mode: :STOP_STATEFUL_MODE_CHECKPOINT
+      })
+
+    assert ckpt.checkpoint_token == "ckpt:vm-st1"
+    assert ckpt.generation == 7
+    assert ckpt.snapshot_ref == ""
+    assert ckpt.size_bytes == 0
+
+    # ResolveStateful COMMIT (phase two): publishes the temp as the bundle and
+    # returns the ref, deriving it from the token so the client proves it crossed.
+    {:ok, committed} =
+      NodeService.Stub.resolve_stateful(ch, %ResolveStatefulRequest{
+        vm_id: "vm-st1",
+        checkpoint_token: "ckpt:vm-st1",
+        mode: :RESOLVE_MODE_COMMIT
+      })
+
+    assert committed.snapshot_ref == "stateful/ckpt:vm-st1"
+    assert committed.generation == 8
+    assert committed.size_bytes == 16384
+
+    # ResolveStateful ABORT: resumes the VM and publishes no bundle (empty result).
+    {:ok, aborted} =
+      NodeService.Stub.resolve_stateful(ch, %ResolveStatefulRequest{
+        vm_id: "vm-st1",
+        checkpoint_token: "ckpt:vm-st1",
+        mode: :RESOLVE_MODE_ABORT
+      })
+
+    assert aborted.snapshot_ref == ""
+    assert aborted.generation == 0
+    assert aborted.size_bytes == 0
+
     # DeleteVolume: idempotent, returns an empty response.
     assert {:ok, _} =
              NodeService.Stub.delete_volume(ch, %DeleteVolumeRequest{workload: "scratch-postgres"})
@@ -379,7 +419,7 @@ defmodule Embervm.NodeRoundtripTest do
   test "NodeStatus reports stateful facts (R4 additive fields)", %{channel: ch} do
     {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
 
-    assert [vm] = ns.stateful_vms
+    assert [vm, ckpt_vm] = ns.stateful_vms
     assert vm.vm_id == "vm-st1"
     assert vm.workload == "scratch-postgres"
     assert vm.ip == "10.99.0.3"
@@ -387,6 +427,16 @@ defmodule Embervm.NodeRoundtripTest do
     assert vm.healthy == true
     assert vm.generation == 5
     assert vm.last_probe_unix_ms == 1_700_000_003_000
+    # A live VM is never checkpoint-pending.
+    assert vm.checkpoint_pending == false
+    assert vm.checkpoint_token == ""
+
+    # The second VM is PAUSED awaiting a resolve (ADR embervm/008): adoption reads
+    # checkpoint_pending + the token to resolve a stranded checkpoint.
+    assert ckpt_vm.vm_id == "vm-st2"
+    assert ckpt_vm.workload == "demo-postgres"
+    assert ckpt_vm.checkpoint_pending == true
+    assert ckpt_vm.checkpoint_token == "ckpt:vm-st2"
 
     assert [bundle] = ns.stateful_bundles
     assert bundle.snapshot_ref == "stateful/scratch-postgres"
