@@ -94,3 +94,10 @@ ui:
 # manages.
 networkPolicy:
   enabled: false
+
+# Transform workers are a not-yet-built Loom component (README: "transform service
+# not built"); the upstream chart declares a worker Deployment but publishes no
+# loom-worker image (ghcr.io/weave-hand/loom-worker is absent). Scale it to zero
+# so it does not ImagePullBackOff. Re-enable when upstream ships the worker.
+worker:
+  replicas: 0
