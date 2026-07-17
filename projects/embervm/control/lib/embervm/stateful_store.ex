@@ -78,6 +78,7 @@ defmodule Embervm.StatefulStore do
   """
 
   use GenServer
+  require Logger
 
   alias Embervm.OpLog.Op
   alias Embervm.StatefulState
@@ -955,12 +956,31 @@ defmodule Embervm.StatefulStore do
   # equals the workload's volume generation. False if either the banked instance or
   # the volume row is missing, and false when the generations diverge.
   defp do_pair_valid?(state, workload) do
-    with %{snapshot_generation: sg} when is_integer(sg) <- banked_instance(state, workload),
-         %{generation: vg} when is_integer(vg) <- fetch_volume(state, workload) do
-      sg == vg
-    else
-      _ -> false
+    banked = banked_instance(state, workload)
+    volume = fetch_volume(state, workload)
+
+    result =
+      with %{snapshot_generation: sg} when is_integer(sg) <- banked,
+           %{generation: vg} when is_integer(vg) <- volume do
+        sg == vg
+      else
+        _ -> false
+      end
+
+    # TEMP diagnostic (debug/embervm-stateful-pair-logging): log the exact pair
+    # inputs so a persistent false (demo-postgres never relighting) can be
+    # attributed to a missing volume row vs a generation mismatch. Only when a
+    # banked instance exists, so a scaled-to-zero-no-bundle workload stays quiet.
+    if is_map(banked) do
+      Logger.info("embervm stateful pair check",
+        workload: workload,
+        banked_snapshot_generation: Map.get(banked, :snapshot_generation),
+        volume: (if is_map(volume), do: Map.get(volume, :generation), else: :no_volume_row),
+        pair_valid: result
+      )
     end
+
+    result
   end
 
   # Evict every banked instance whose pair is broken, through the DURABLE path (so
