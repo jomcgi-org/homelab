@@ -9,7 +9,7 @@ defmodule Embervm.GroupStoreTest do
   """
   use ExUnit.Case, async: true
 
-  alias Embervm.{GroupStore, GroupState}
+  alias Embervm.GroupStore
   alias Embervm.OpLog.SQLite
 
   defp start_store(_opts \\ []) do
@@ -211,7 +211,6 @@ defmodule Embervm.GroupStoreTest do
     {:ok, _} = member(ctx, "g-1", "leader", 0)
     {:ok, _} = member(ctx, "g-1", "worker", 1)
     {:ok, _} = GroupStore.publish(ctx.store, "g-1", "10.0.0.9", 30012)
-    {:ok, _} = GroupStore.set_member_health(ctx.store, "g-1", "worker", false)
 
     # A fresh store over the SAME op-log rebuilds from the projection alone.
     {:ok, store2} = GroupStore.start_link(name: nil, op_log: ctx.op_log, clock: fn -> 9_000 end)
@@ -219,8 +218,9 @@ defmodule Embervm.GroupStoreTest do
     assert {:ok, inst} = GroupStore.get(store2, "g-1")
     assert inst.state == :running
     assert inst.entry_member == "leader"
-    # The degraded flag is reconstructed from the unhealthy member row.
-    assert inst.degraded_member == "worker"
+    # A durably-running group is whole (group_running marked every member healthy
+    # durably), so no degraded flag on rebuild.
+    assert inst.degraded_member == nil
     # The entry endpoint is reconstructed from durable facts alone: the entry
     # member's tap ip + the group's entry.port (Task 7 adoption re-derives the DNAT
     # {pod IP, vmPort} on the next sweep).
@@ -228,6 +228,25 @@ defmodule Embervm.GroupStoreTest do
 
     members = GroupStore.members(store2, "g-1")
     assert length(members) == 2
-    assert Enum.find(members, &(&1.member_name == "worker")).healthy == false
+    assert Enum.all?(members, & &1.healthy)
+  end
+
+  test "an ETS-only member-health flip is LOSSY: it does not survive a rebuild" do
+    ctx = start_store()
+    {:ok, _} = create(ctx, "g-1")
+    {:ok, _} = member(ctx, "g-1", "leader", 0)
+    {:ok, _} = member(ctx, "g-1", "worker", 1)
+    {:ok, _} = GroupStore.publish(ctx.store, "g-1", "10.0.0.9", 30012)
+
+    # set_member_health is an ETS-only lossy node fact (no op-log append), exactly
+    # like the stateful set_health/2: the degraded flag is live-visible...
+    {:ok, inst} = GroupStore.set_member_health(ctx.store, "g-1", "worker", false)
+    assert inst.degraded_member == "worker"
+
+    # ...but a rebuild from the durable projection (which was never told the member
+    # went unhealthy) sees a whole group. A durable degrade rides a group_degraded op
+    # (Task 7's health/adoption path), not this ETS-only flip.
+    {:ok, store2} = GroupStore.start_link(name: nil, op_log: ctx.op_log, clock: fn -> 9_000 end)
+    assert {:ok, %{degraded_member: nil}} = GroupStore.get(store2, "g-1")
   end
 end
