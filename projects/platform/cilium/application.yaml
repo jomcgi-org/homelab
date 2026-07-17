@@ -27,27 +27,15 @@ spec:
   # policy=default, cni-exclusive=false) match the live install, and the rendered
   # resource set equals the tracked set, so adoption is metadata-only (no agent
   # roll, nothing pruned).
-  ignoreDifferences:
-    # Cilium's chart generates the Hubble CA and mTLS certs at Helm template time
-    # (tls.auto.method=helm), so each render produces DIFFERENT random certs than
-    # the live (bootstrap-generated) ones. Without this, every sync would rotate
-    # Hubble's certs (Hubble observability churn; the eBPF datapath and WireGuard
-    # keys are unaffected). Ignore their data so the live certs are preserved.
-    - group: ""
-      kind: Secret
-      name: cilium-ca
-      jsonPointers:
-        - /data
-    - group: ""
-      kind: Secret
-      name: hubble-server-certs
-      jsonPointers:
-        - /data
-    - group: ""
-      kind: Secret
-      name: hubble-relay-client-certs
-      jsonPointers:
-        - /data
+  # No ignoreDifferences for the Hubble certs any more. They used to be needed
+  # because tls.auto.method=helm generated random CA + leaf certs at template
+  # time (a fresh diff every render, masked here so live certs were not rotated).
+  # With method=certmanager (../values.yaml) the chart renders deterministic
+  # Certificate CRs and cert-manager owns the Secrets, so cilium-ca /
+  # hubble-server-certs / hubble-relay-client-certs are no longer part of the
+  # rendered desired state and ArgoCD never diffs them. The one-time switch
+  # reissues the Hubble certs via cert-manager (a brief Hubble reconnect; the
+  # eBPF datapath and WireGuard keys are unaffected).
   syncPolicy:
     automated:
       prune: true

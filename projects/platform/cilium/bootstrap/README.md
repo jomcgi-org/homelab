@@ -55,6 +55,14 @@ Per the full runbook in `docs/plans/2026-07-10-cilium-migration.md` (Track 2):
 values as `../values.yaml`, so the bootstrap install and the ArgoCD-managed
 release converge on identical config. Keep the two in sync if either changes.
 
+**One deliberate exception:** the Hubble TLS method. `../values.yaml` uses
+`hubble.tls.auto.method=certmanager`; this seed stays on the upstream default
+(`helm`). cert-manager and its CRDs are not installed yet at a cold cluster
+bootstrap, so a `kind: Certificate` here would fail to apply and, with
+`failurePolicy: abort`, leave the cluster with no CNI. ArgoCD reissues the
+Hubble certs through cert-manager when it adopts the release, so the two
+converge in steady state without the seed depending on cert-manager.
+
 Note the two pull from **different registries on purpose**: this bootstrap CR
 uses the classic Helm repo `https://helm.cilium.io` (what the k3s `HelmChart`
 CR's `repo:` field expects), while `../application.yaml` / `../Chart.lock` pin

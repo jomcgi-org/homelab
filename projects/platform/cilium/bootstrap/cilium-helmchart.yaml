@@ -62,6 +62,14 @@ spec:
       enabled: true
       relay:
         enabled: true
+      # NO tls.auto override here on purpose: this seed keeps the upstream
+      # default (method=helm), while ../values.yaml uses method=certmanager.
+      # This is a DELIBERATE divergence (unlike the metrics list, which must
+      # match): cert-manager and its CRDs are not installed yet at a cold
+      # cluster bootstrap, so a cert-manager Certificate CR here would fail to
+      # apply and, with failurePolicy=abort, leave the cluster with no CNI. The
+      # helm-generated certs are fine for the bootstrap seed; ArgoCD reissues
+      # them via cert-manager when it adopts the release.
       # httpV2 emits nothing until an L7 CiliumNetworkPolicy redirects a surface
       # through Envoy (ADR networking/003 #2); inert until the /invoke L7 rule
       # lands. This list MUST match ../values.yaml or a node reboot reverts it.
