@@ -781,7 +781,15 @@ defmodule Embervm.Application do
   # parked). The reconcile reuses the stateful reconcile cadence env by default so a
   # restart's group endpoint re-derivation lands on the same tempo.
   defp group_wake_manager_opts do
-    [reconcile_interval_ms: group_reconcile_interval_ms()] ++ group_wake_opts()
+    [
+      reconcile_interval_ms: group_reconcile_interval_ms(),
+      # The shared supernet + DNAT port base + pod IP the adoption reconcile re-derives
+      # the entry DNAT endpoint from (the SAME values group_manager_supervisor_opts
+      # threads into every GroupManager, so a republish equals the live publish).
+      supernet: composite_supernet_env(),
+      port_base: composite_port_base_env(),
+      pod_ip: trimmed_env("EMBERVM_POD_IP") |> nil_if_empty()
+    ] ++ group_wake_opts()
   end
 
   defp group_reconcile_interval_ms do

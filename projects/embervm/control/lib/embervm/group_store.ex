@@ -280,6 +280,21 @@ defmodule Embervm.GroupStore do
   end
 
   @doc """
+  Adoption: FORCE an instance's published entry endpoint (`entry_ip` /
+  `entry_port_published`) from authoritative node truth, bypassing the FSM and NOT
+  appending an op (the ETS-force sibling of `adopt_state/3`, mirroring
+  `StatefulStore.adopt_endpoint`). The reconcile re-derives the DNAT `{pod_ip,
+  vm_port}` the LIVE publish recorded (which the op-log projection does not persist a
+  column for; a rebuild reconstructs the fallback `{entry tap IP, entry guest port}`
+  instead) and forces it here so a control-plane restart republishes the IDENTICAL
+  endpoint. A no-op for an unknown or terminal instance. Returns `:ok`.
+  """
+  @spec adopt_endpoint(GenServer.server(), String.t(), String.t(), non_neg_integer()) :: :ok
+  def adopt_endpoint(store \\ __MODULE__, instance_id, entry_ip, entry_port) do
+    GenServer.call(store, {:adopt_endpoint, instance_id, entry_ip, entry_port})
+  end
+
+  @doc """
   Set-completeness sweep PRIMITIVE (eager eviction). `reported_sets` maps
   `instance_id -> MapSet` of member_names the node reports a bundle for. For every
   `banked` instance whose reported set is missing ANY of its group's member names
@@ -640,6 +655,19 @@ defmodule Embervm.GroupStore do
         end
 
       :error ->
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:adopt_endpoint, instance_id, entry_ip, entry_port}, _from, state) do
+    case fetch(state, instance_id) do
+      {:ok, %{state: cur} = instance}
+      when cur not in [:destroyed, :failed] and is_binary(entry_ip) and entry_ip != "" and is_integer(entry_port) ->
+        updated = %{instance | entry_ip: entry_ip, entry_port_published: entry_port, updated_at: state.clock.()}
+        :ets.insert(state.instances, {instance_id, updated})
+        {:reply, :ok, state}
+
+      _ ->
         {:reply, :ok, state}
     end
   end
@@ -1027,10 +1055,14 @@ defmodule Embervm.GroupStore do
 
   # A group is the workload's SINGLE servable entry endpoint exactly when it is that
   # workload's, in the `running` FSM state, and carries a routable entry {ip, port}.
-  # (The entry member's health rides the degraded flag; a degraded group whose entry
-  # member is the dead one has no entry endpoint because publish/bank would have
-  # dropped it, but a running group with a live entry endpoint is servable even if a
-  # NON-entry member is degraded.)
+  # In R5 core a running group publishes a HEALTHY entry by construction (the entry
+  # member is health-gated before publish, and a bank/terminal transition drops the
+  # endpoint), so a running instance with a recorded entry {ip, port} is servable. A
+  # NON-entry member falling unhealthy only sets the degraded FLAG and keeps the entry
+  # endpoint live. Health-DRIVEN withdrawal of a live entry member's endpoint (pulling
+  # the endpoint when the entry member itself later goes unhealthy) is a LATER path,
+  # not this predicate: this check reads only the recorded {ip, port}, it does not
+  # re-probe the entry member's current health.
   defp entry_servable?(instance, workload) do
     instance.workload == workload and instance.state == :running and
       is_binary(instance.entry_ip) and instance.entry_ip != "" and

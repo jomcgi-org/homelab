@@ -81,6 +81,7 @@ defmodule Embervm.GroupWakeManager do
 
   use GenServer
   require Logger
+  import Bitwise
 
   alias Embervm.{EndpointPublisher, GroupManager, GroupState, GroupStore, NodeCapacity, WorkloadCatalog}
 
@@ -142,6 +143,16 @@ defmodule Embervm.GroupWakeManager do
       # implementing create_group/2 + wake_group/1 (or a per-workload scripted fake).
       # Production drives Embervm.GroupManager.Supervisor.
       supervisor_mod: Keyword.get(opts, :supervisor_mod, GroupManager.Supervisor),
+      # The composite supernet + DNAT port base + control-plane pod IP, the SAME
+      # shared values that feed the GroupManager (and noded's CompositeSupernet /
+      # ServingPortBase). Adoption re-derives the entry DNAT endpoint `{pod_ip,
+      # port_base + host_offset(entry ip, supernet)}` from these so a CP restart
+      # republishes the IDENTICAL endpoint the live publish recorded (the op-log
+      # rebuild reconstructs only the fallback {tap ip, guest port}). Defaulted to the
+      # group_manager_defaults app-env so production and the GroupManager agree.
+      supernet: Keyword.get(opts, :supernet, group_default(:supernet, "10.101.0.0/16")),
+      port_base: Keyword.get(opts, :port_base, group_default(:port_base, 30_000)),
+      pod_ip: Keyword.get(opts, :pod_ip, group_default(:pod_ip, nil)),
       # workload -> [{from, principal}] parked behind an in-flight wake (single-flight).
       waking: %{},
       # principal -> [wake timestamps within the window] (sliding-window rate limit).
@@ -437,11 +448,13 @@ defmodule Embervm.GroupWakeManager do
   end
 
   # Adopt a node-reported live group WITHOUT touching a VM: force the ETS state to
-  # running, rebind every reported member's live facts + health, respawn the
-  # GroupManager owner in the adopted state, and re-derive the entry endpoint from
-  # the entry member's node-reported ip (the CP-derived DNAT port stays authoritative
-  # for the published endpoint; adoption keeps the SAME entry endpoint the pre-restart
-  # publish recorded, so the republish is identical).
+  # running, rebind every reported member's health, re-derive + force the DNAT entry
+  # endpoint from the entry member's NODE-REPORTED ip (the same `{pod_ip, port_base +
+  # host_offset(entry ip, supernet)}` math the live publish used), and respawn the
+  # GroupManager owner. Forcing the DNAT endpoint is load-bearing: the op-log rebuild
+  # reconstructs only the FALLBACK `{entry tap ip, entry guest port}`, so without this
+  # a CP restart would republish a DIFFERENT endpoint. With it the republish is
+  # byte-identical to the pre-restart snapshot.
   defp adopt_live(state, instance, members) do
     GroupStore.adopt_state(state.store, instance.instance_id, :running)
 
@@ -449,8 +462,34 @@ defmodule Embervm.GroupWakeManager do
       _ = GroupStore.set_member_health(state.store, instance.instance_id, m.member_name, m.healthy)
     end
 
+    _ = adopt_entry_endpoint(state, instance, members)
     _ = adopt_owner(state, instance)
     state
+  end
+
+  # Re-derive the DNAT entry endpoint from the ENTRY member's node-reported ip and
+  # force it into the instance, so the republish equals the pre-restart publish. The
+  # entry member is the instance's `entry_member`; its live ip comes from node truth
+  # (the member VMs the reconcile just indexed). vm_port = port_base + host_offset(ip,
+  # supernet), the exact derivation GroupManager.entry_vm_port uses. A missing entry
+  # member ip, an ip outside the supernet, or no pod_ip configured leaves the endpoint
+  # untouched (the fallback rebuild stands; adoption never publishes a bad endpoint).
+  defp adopt_entry_endpoint(state, instance, members) do
+    with entry_name when is_binary(entry_name) <- instance.entry_member,
+         %{ip: entry_ip} when is_binary(entry_ip) and entry_ip != "" <-
+           Enum.find(members, &(&1.member_name == entry_name)),
+         {:ok, offset} <- host_offset(state.supernet, entry_ip),
+         pod_ip when is_binary(pod_ip) and pod_ip != "" <- state.pod_ip || entry_ip do
+      vm_port = state.port_base + offset
+
+      if vm_port >= 1 and vm_port <= 65_535 do
+        GroupStore.adopt_endpoint(state.store, instance.instance_id, pod_ip, vm_port)
+      else
+        :ok
+      end
+    else
+      _ -> :ok
+    end
   end
 
   defp heal_to_banked(state, %{state: :banked}), do: state
@@ -557,6 +596,45 @@ defmodule Embervm.GroupWakeManager do
   end
 
   defp schedule(_msg, _interval), do: :ok
+
+  # Read a shared group default (supernet / port_base / pod_ip) from the app-env the
+  # GroupManager.Supervisor also reads, so adoption's DNAT re-derivation uses the SAME
+  # values the live publish did. Tests inject these directly via opts.
+  defp group_default(key, fallback) do
+    :embervm
+    |> Application.get_env(:group_manager_defaults, [])
+    |> Keyword.get(key, fallback)
+  end
+
+  # host_offset within the supernet: the ip's host part masked by the supernet prefix,
+  # the EXACT derivation GroupManager.host_offset uses (kept in lockstep with noded's
+  # serving/net.go). v1 supernets are /16, so the offset is (third_octet << 8) |
+  # fourth_octet. Errors when the ip is not inside the supernet.
+  defp host_offset(supernet_cidr, ip) do
+    with [net, prefix_str] <- String.split(supernet_cidr, "/"),
+         {prefix, ""} <- Integer.parse(prefix_str),
+         {:ok, net_int} <- ip_to_int(net),
+         {:ok, ip_int} <- ip_to_int(ip) do
+      mask = mask_for(prefix)
+
+      if band(net_int, mask) == band(ip_int, mask) do
+        {:ok, ip_int |> band(bnot(mask)) |> band(0xFFFFFFFF)}
+      else
+        {:error, {:ip_outside_supernet, ip, supernet_cidr}}
+      end
+    else
+      _ -> {:error, {:bad_supernet, supernet_cidr, ip}}
+    end
+  end
+
+  defp ip_to_int(ip) do
+    case ip |> String.split(".") |> Enum.map(&Integer.parse/1) do
+      [{a, ""}, {b, ""}, {c, ""}, {d, ""}] -> {:ok, bsl(a, 24) + bsl(b, 16) + bsl(c, 8) + d}
+      _ -> :error
+    end
+  end
+
+  defp mask_for(prefix), do: band(bsl(0xFFFFFFFF, 32 - prefix), 0xFFFFFFFF)
 
   defp default_clock, do: System.system_time(:millisecond)
 end

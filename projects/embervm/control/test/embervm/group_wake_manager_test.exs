@@ -89,8 +89,14 @@ defmodule Embervm.GroupWakeManagerTest do
       {{:ok, endpoint}, s}
     end
 
+    # Drive the instance to running with its published entry endpoint, exactly as a
+    # real relight (banked -> relighting -> creating -> running -> publish) leaves it,
+    # so the brain's straggler re-read of GroupStore.entry_endpoint/2 sees the live
+    # endpoint. Uses the ETS-force adopt path (adopt_state + adopt_endpoint) to reach
+    # running from banked without replaying every FSM edge in the fake.
     defp publish_running(%{store: store, instance_id: instance_id}) when is_binary(instance_id) do
-      _ = GroupStore.publish(store, instance_id, "10.0.0.9", 30_010)
+      _ = GroupStore.adopt_state(store, instance_id, :running)
+      _ = GroupStore.adopt_endpoint(store, instance_id, "10.0.0.9", 30_010)
       :ok
     end
 
@@ -144,6 +150,13 @@ defmodule Embervm.GroupWakeManagerTest do
         capacity_table: cap_table,
         catalog_table: cat_table,
         supervisor_mod: FakeSupervisor,
+        # The shared DNAT-derivation values (same as the live publish): a group /24
+        # entry at .10 in the 10.101.0.0/16 supernet derives vm_port = 30000 + 10 =
+        # 30010, published as {pod_ip 10.0.0.9, 30010} -> the endpoint the fake's
+        # publish_running records AND adoption must re-derive identically.
+        supernet: "10.101.0.0/16",
+        port_base: 30_000,
+        pod_ip: "10.0.0.9",
         clock: clock,
         reconcile_interval_ms: 0
       )
@@ -321,6 +334,13 @@ defmodule Embervm.GroupWakeManagerTest do
 
     {:ok, inst} = GroupStore.get(ctx.store, instance_id)
     assert inst.state == :running
+    # The DNAT entry endpoint was RE-DERIVED from the entry member's node-reported ip
+    # (.10 -> 30000 + 10) and forced back, so the republished endpoint is IDENTICAL to
+    # the pre-restart live publish {pod_ip 10.0.0.9, 30010} (NOT the fallback {tap ip,
+    # guest port}). This is the "republish identical snapshot without touching a VM" bar.
+    assert %{ip: "10.0.0.9", port: 30_010} = GroupStore.entry_endpoint(ctx.store, "grp-a")
+    assert inst.entry_ip == "10.0.0.9"
+    assert inst.entry_port_published == 30_010
     # The GroupManager owner was respawned for the adopted-live group.
     {_c, _w, adopts} = sup_counts()
     assert adopts >= 1

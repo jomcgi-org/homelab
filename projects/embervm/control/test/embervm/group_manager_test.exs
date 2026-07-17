@@ -64,9 +64,36 @@ defmodule Embervm.GroupManagerTest do
       {:ok, %Embervm.Node.V1.DeleteGroupNetworkResponse{}}
     end
 
+    # Models noded's pinned-IP allocator: reserve a member's IP on start, REJECT a
+    # double-reserve (:ip_in_use), release it on StopGroupMember DESTROY. So a fresh
+    # re-pin over a member whose relight-resumed VM was NOT destroyed first FAILS on
+    # its IP, exactly as the real EnsureMemberTap/alloc.reserve would. `vm_id -> ip`
+    # tracks live members so a DESTROY (by vm_id) frees the right IP.
+    {:ok, alloc} = Agent.start_link(fn -> %{reserved: MapSet.new(), by_vm: %{}} end)
+
+    reserve = fn ip, vm_id ->
+      Agent.get_and_update(alloc, fn s ->
+        if MapSet.member?(s.reserved, ip) do
+          {:error, s}
+        else
+          {:ok, %{reserved: MapSet.put(s.reserved, ip), by_vm: Map.put(s.by_vm, vm_id, ip)}}
+        end
+      end)
+    end
+
+    release = fn vm_id ->
+      Agent.update(alloc, fn s ->
+        case Map.get(s.by_vm, vm_id) do
+          nil -> s
+          ip -> %{reserved: MapSet.delete(s.reserved, ip), by_vm: Map.delete(s.by_vm, vm_id)}
+        end
+      end)
+    end
+
     start_group_member_fun = fn _ch, req ->
       relight? = req.mode == :START_GROUP_MEMBER_MODE_RELIGHT
       record(rec, {:start_member, req.member_name, req.member_index, req.ip, req.env, req.mode})
+      vm_id = "vm-#{req.member_name}"
 
       cond do
         req.member_name == fail_member ->
@@ -77,12 +104,26 @@ defmodule Embervm.GroupManagerTest do
 
         relight? and req.member_name == relight_unverified_member ->
           # A resume the daemon could not verify (clock-resync out of bounds):
-          # was_relight=false on a RELIGHT-mode response.
-          {:ok, %StartGroupMemberResponse{vm_id: "vm-#{req.member_name}", ip: req.ip, was_relight: false}}
+          # was_relight=false on a RELIGHT-mode response. It still RESERVED the IP (the
+          # VM did resume before verification failed), so a later fresh re-pin collides
+          # unless it is destroyed first.
+          case reserve.(req.ip, vm_id) do
+            :ok -> {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: req.ip, was_relight: false}}
+            :error -> {:error, :ip_in_use}
+          end
 
         true ->
-          {:ok, %StartGroupMemberResponse{vm_id: "vm-#{req.member_name}", ip: req.ip, was_relight: relight?}}
+          case reserve.(req.ip, vm_id) do
+            :ok -> {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: req.ip, was_relight: relight?}}
+            :error -> {:error, :ip_in_use}
+          end
       end
+    end
+
+    stop_group_member_fun = fn _ch, req ->
+      record(rec, {:stop_member, req.vm_id, req.mode})
+      if req.mode == :STOP_GROUP_MEMBER_MODE_DESTROY, do: release.(req.vm_id)
+      {:ok, %Embervm.Node.V1.StopGroupMemberResponse{}}
     end
 
     evict_snapshot_fun = fn _ch, req ->
@@ -115,6 +156,7 @@ defmodule Embervm.GroupManagerTest do
       create_group_network_fun: create_group_network_fun,
       delete_group_network_fun: delete_group_network_fun,
       start_group_member_fun: start_group_member_fun,
+      stop_group_member_fun: stop_group_member_fun,
       evict_snapshot_fun: evict_snapshot_fun,
       get_secret_fun: get_secret_fun,
       secret_fun: Keyword.get(opts, :secret_fun, fn -> "minted-secret" end),
@@ -123,7 +165,7 @@ defmodule Embervm.GroupManagerTest do
 
     {:ok, mgr} = GroupManager.start_link(mgr_opts)
 
-    %{mgr: mgr, store: store, pub: pub, rec: rec, op_log: op_log, secret_reads: secret_reads}
+    %{mgr: mgr, store: store, pub: pub, rec: rec, op_log: op_log, secret_reads: secret_reads, alloc: alloc}
   end
 
   defp default_entry do
@@ -266,7 +308,10 @@ defmodule Embervm.GroupManagerTest do
   # -- wake (relight / fresh fallback), R5 Task 7 ----------------------------
 
   # Drive the created group to `banked` with a complete set (a snapshot_ref for every
-  # expanded member), so a wake_group relights it.
+  # expanded member), so a wake_group relights it. A real bank (StopGroupMember BANK)
+  # snapshots then tears down every live VM, freeing its pinned tap+IP; the store-level
+  # bank_ready here bypasses the RPC, so free the allocator model to match (otherwise a
+  # relight would spuriously collide on the still-reserved create-time IPs).
   defp bank_complete(ctx) do
     {:ok, _} = GroupStore.mark(ctx.store, "g-1", :bank)
 
@@ -277,6 +322,7 @@ defmodule Embervm.GroupManagerTest do
     ]
 
     {:ok, _} = GroupStore.bank_ready(ctx.store, "g-1", "set-1", members)
+    Agent.update(ctx.alloc, fn _ -> %{reserved: MapSet.new(), by_vm: %{}} end)
     :ok
   end
 
@@ -326,6 +372,20 @@ defmodule Embervm.GroupManagerTest do
     # The banked snapshots were EvictSnapshot'd on the node.
     evicted = for {:evict_snapshot, ref} <- events(ctx.rec), do: ref
     assert Enum.sort(evicted) == ["snap-leader", "snap-worker-0", "snap-worker-1"]
+
+    # CRITICAL (the collision fix): every member that DID resume (leader order 0,
+    # worker-0 order 1) was StopGroupMember DESTROY'd BEFORE the fresh re-pin, so their
+    # taps+IPs were freed. Without this the fresh boot would collide on .10/.11
+    # (:ip_in_use, modeled by the allocator fake) and the whole wake would fail.
+    destroyed =
+      for {:stop_member, vm_id, :STOP_GROUP_MEMBER_MODE_DESTROY} <- events(ctx.rec), do: vm_id
+
+    assert "vm-leader" in destroyed
+    assert "vm-worker-0" in destroyed
+
+    # Each DESTROY preceded the fresh re-pin of that member's IP (the allocator would
+    # have rejected the fresh reserve otherwise, so the run reaching :ok proves order):
+    # the successful {:ok, endpoint, {:fresh, ...}} above is the end-to-end proof.
 
     # After the fallback, every member was FRESH-started (mode FRESH), and the group
     # is whole again.
