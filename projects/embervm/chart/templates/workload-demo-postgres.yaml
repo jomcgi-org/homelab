@@ -1,0 +1,54 @@
+{{- if and .Values.demoPostgres.enabled .Values.scratchPostgres.enabled }}
+# Demo-postgres: the private demos page's sleep/wake exhibit. A second stateful
+# Postgres alongside scratch-postgres, tuned so the lifecycle is watchable: it
+# banks ~a tick after the demo's connection closes and pays a visible relight on
+# the next query. It reuses scratchPostgres' guest image pin (the SAME image ref
+# string, so the noded rootfs base and EMBERVM_NODED_IMAGES entry resolve with
+# zero extra provisioning) and the same first-boot POSTGRES_PASSWORD Secret; only
+# the workload identity, port, and lifecycle economics differ. The volume is its
+# own (volumes are keyed by workload name), so demo rows never land in a real
+# tenant's database.
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: demo-postgres
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Apply after the CRD (wave 0) establishes, like the other workloads.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  class: stateful
+  source:
+    image:
+      # Must match scratchPostgres.guestImage exactly: the rootfs-builder base
+      # and the noded image table are keyed on this ref via the scratchPostgres
+      # workloads entry, so an identical string is what makes this workload
+      # bootable without its own base bake.
+      ref: "{{ .Values.scratchPostgres.guestImage.repository }}:{{ .Values.scratchPostgres.guestImage.tag }}"
+      port: 1027
+      readyPath: /shim/ready
+  resources:
+    # Same warm-peak sizing as scratch-postgres (the fc-base sizing coupling
+    # keys memMib to the shared base image, D-R3.11.1).
+    vcpus: 1
+    memMib: 512
+  stateful:
+    # The port Postgres listens on inside the VM. Health is a TCP connect here.
+    port: 5432
+    listenPort: {{ .Values.demoPostgres.listenPort }}
+    volumeSizeGiB: {{ .Values.demoPostgres.volumeSizeGiB }}
+    volumeMountPath: /data
+    # The demo knob: bank as soon as one sweeper tick sees the workload idle.
+    # A live connection is still never severed (decision 7); the demo backend
+    # uses short-lived connections precisely so this window is reachable.
+    idleBankSeconds: {{ .Values.demoPostgres.idleBankSeconds }}
+    # Version-convergence bound (1 week), as scratch-postgres.
+    maxLifetimeSeconds: 604800
+    # A banked bundle untouched 30 days is GC'd; the volume is never GC'd.
+    bankedTtlSeconds: 2592000
+    # Wake deadline (generous: cold boots include WAL recovery and, on first
+    # boot, mkfs + initdb).
+    wakeTimeoutSeconds: 60
+    # Reuse the scratch-postgres Secret: same superuser password on first boot.
+    secretRef: {{ include "embervm.fullname" . }}-scratch-postgres
+{{- end }}

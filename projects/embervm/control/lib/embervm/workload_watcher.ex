@@ -815,9 +815,14 @@ defmodule Embervm.WorkloadWatcher do
     banked_ttl_seconds: 604_800,
     wake_timeout_seconds: 60
   }
-  # The minimum idleBankSeconds (decision: a too-eager bank thrashes wake/bank);
-  # the CRD schema also enforces this, re-checked here for the LIST/WATCH path.
-  @stateful_min_idle_bank_seconds 30
+  # The minimum idleBankSeconds; the CRD schema also enforces this, re-checked
+  # here for the LIST/WATCH path. Floor lowered 30 -> 1 for the demo-postgres
+  # exhibit (the demos page deliberately banks ~a tick after each query so the
+  # sleep/wake cycle is watchable). The original 30s guard kept a tenant from
+  # ACCIDENTALLY configuring wake/bank thrash; a sub-30 value is now an informed
+  # opt-in, the default (300s) still protects the unconfigured path, and zero
+  # stays invalid (a 0 window would bank with no idle observation at all).
+  @stateful_min_idle_bank_seconds 1
 
   defp validate_stateful(_state, _name, spec, class)
        when class in ["task", "session", "serving", "composite"] do

@@ -438,6 +438,9 @@ agent:
 # (monolith) the SCRATCH_POSTGRES_DSN env for run_python sessions.
 scratchPostgres:
   enabled: true
+  # Renders DEMO_POSTGRES_DSN for the firecracker demos page's sleep/wake
+  # exhibit (matches the embervm chart's demoPostgres.listenPort).
+  demoListenPort: 5401
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
 

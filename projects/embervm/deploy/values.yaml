@@ -97,3 +97,21 @@ scratchK8s:
   enabled: true
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-k8s"
+
+# Demo-postgres (private demos page sleep/wake exhibit): a second stateful
+# Postgres on 5401 with a 1s idle window, so the demo can show the VM banking
+# itself moments after a query and relighting on the next connection. Reuses the
+# scratch-postgres guest image pin + Secret; its own volume keeps demo rows out
+# of real tenants' data.
+demoPostgres:
+  enabled: true
+
+# ~1s sweeper tick makes the idle bank visibly prompt (default is 30s, which
+# would leave the demo VM "awake" for up to half a minute after its 1s idle
+# window elapses). Wake cap raised 10 -> 30/min: with a 1s idle bank every demo
+# query is a wake, and the default cap would turn quick successive clicks into
+# refusals. Both are control-plane-wide; scratch-postgres banking is still
+# gated by its own 120s idleBankSeconds.
+statefulSweeper:
+  sweepIntervalMs: "1000"
+  wakeMax: "30"

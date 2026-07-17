@@ -146,6 +146,15 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: SCRATCH_POSTGRES_DSN
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
+            {{- if .Values.scratchPostgres.demoListenPort }}
+            # Demo-postgres DSN (the demos page's sleep/wake exhibit): the SAME
+            # serving Service and password (the demo workload reuses the scratch-
+            # postgres Secret on the embervm side), a different stateful listen
+            # port. The demos API connects here so a page visit wakes the demo
+            # VM, never the real scratch-postgres tenant.
+            - name: DEMO_POSTGRES_DSN
+              value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.demoListenPort }}/scratch"
+            {{- end }}
             {{- end }}
             {{- if and .Values.scratchK8s.enabled .Values.scratchK8s.onepassword.itemPath }}
             # EmberVM R5 scratch-k8s kubeconfig (plan Task 10). Agent run_python

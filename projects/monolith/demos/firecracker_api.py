@@ -9,6 +9,9 @@ waterfall:
 - ``POST /goose``   submits a goosecracker agent run (async, returns immediately).
 - ``GET  /goose/{thread_id}`` polls the agent run ledger for that run's state.
 - ``GET  /trace/{trace_id}``  returns the SigNoz spans for a captured trace.
+- ``GET  /postgres/status``  the demo-postgres stateful lifecycle (sleep indicator).
+- ``POST /postgres/query``   timed connect (the wake) + row append against demo-postgres.
+- ``POST /postgres/reset``   destroy the live VM + evict its snapshot (force cold boot).
 
 Each POST wraps its invocation in a fresh ROOT span, detached from any inbound
 trace context, via ``context=Context()``. Browser-initiated requests arrive
@@ -27,9 +30,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from time import perf_counter
 from uuid import uuid4
 
+import httpx
+import psycopg
 from fastapi import APIRouter, HTTPException
 from opentelemetry import trace
 from opentelemetry.context import Context
@@ -42,8 +48,9 @@ import goosecracker.api as goosecracker
 from app.db import get_engine
 from demos.loadtest_corpus import load_corpus
 from home.observability.traces import fetch_correlated_spans, fetch_trace_spans
-from sandbox.client import run_python_in_sandbox
+from sandbox.client import EMBERVM_URL, run_python_in_sandbox
 from semgrep_scan.client import scan_files
+from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -541,3 +548,239 @@ async def get_load_test_scan(run_id: str, scan_id: int) -> dict:
     if detail is None:
         raise HTTPException(status_code=404, detail="scan not found")
     return detail
+
+
+# ---------------------------------------------------------------------------
+# Demo-postgres (embervm R4 stateful sleep/wake exhibit).
+#
+# A dedicated stateful Postgres workload (NOT the scratch-postgres real tenants
+# use) tuned to bank ~a sweeper tick after its last connection closes. The
+# demo's three verbs map straight onto the embervm surfaces:
+#   status -> GET  {EMBERVM_URL}/v1/stateful/demo-postgres (management introspection;
+#             an HTTP read of the control plane, so POLLING NEVER WAKES THE VM)
+#   query  -> a short-lived psycopg connect to DEMO_POSTGRES_DSN; the TCP
+#             activator wakes the VM on a miss, so connect wall time IS the wake
+#   reset  -> DELETE {EMBERVM_URL}/v1/stateful/demo-postgres/instance (destroys
+#             the live VM AND evicts the banked bundle; the volume survives, so
+#             the next connect cold-boots against retained data)
+# ---------------------------------------------------------------------------
+
+_DEMO_PG_WORKLOAD = "demo-postgres"
+# The workload's wakeTimeoutSeconds is 60 (cold boots include WAL recovery and,
+# on first boot, mkfs + initdb); the client timeout must outlast it so a cold
+# wake surfaces as a slow-but-successful connect, not a client-side timeout.
+_DEMO_PG_CONNECT_TIMEOUT_S = 75
+_DEMO_PG_HISTORY_ROWS = 15
+
+
+def _demo_pg_dsn() -> str:
+    """Read at call time (not import) so tests can patch the environment."""
+    return os.environ.get("DEMO_POSTGRES_DSN", "")
+
+
+async def _fetch_demo_pg_status() -> dict:
+    """GET the control plane's stateful introspection for the demo workload."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{EMBERVM_URL}/v1/stateful/{_DEMO_PG_WORKLOAD}",
+            headers=auth_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _shape_pg_status(status: dict) -> dict:
+    """Reduce the control-plane payload to what the sleep indicator renders."""
+    instance = status.get("instance") or {}
+    return {
+        "state": status.get("state"),
+        "generation": status.get("generation"),
+        "bundle_generation": status.get("bundle_generation"),
+        "pair_valid": status.get("pair_valid"),
+        "volume_bytes": status.get("volume_bytes"),
+        "healthy": instance.get("healthy"),
+        "last_active_at": instance.get("last_active_at"),
+        "created_at": instance.get("created_at"),
+    }
+
+
+def _classify_wake(before: dict | None) -> str:
+    """Predict this query's boot path from the PRE-query lifecycle state.
+
+    The StartStateful response's was_relight never reaches the management API,
+    so the demo classifies from what the workload looked like the instant
+    before the connect: a serving instance answers warm, a banked bundle whose
+    stamped generation still pairs with the volume relights, a broken pair or
+    no instance at all cold-boots. A mid-transition snapshot (banking,
+    relighting, ...) is reported as such rather than guessed at.
+    """
+    if before is None:
+        return "unknown"
+    state = before.get("state")
+    if state == "serving":
+        return "warm"
+    if state == "banked":
+        return "relight" if before.get("pair_valid") else "cold"
+    if not state:
+        return "cold"
+    return "transitional"
+
+
+def _demo_pg_roundtrip(dsn: str, note: str) -> dict:
+    """Connect, append a visit row, and read history. Sync; via to_thread.
+
+    Two separately-bracketed wall times are the whole point:
+      connect_ms - the TCP connect + auth handshake. When the VM is banked the
+                   activator parks this connect while it relights (or cold-
+                   boots) the VM, so this number IS the wake cost.
+      query_ms   - DDL-if-missing + insert + reads on the open connection: the
+                   "Postgres is just Postgres once awake" baseline.
+
+    Each row records pg_postmaster_start_time() as its proof-of-lifecycle: a
+    relight RESUMES the paused postmaster (older start time than the row), a
+    cold boot starts a fresh one, and either way earlier rows surviving shows
+    the volume outliving the VM. The connection is short-lived by design: an
+    open connection pins the VM awake (the sweeper never severs a live
+    connection), which would keep the exhibit from ever falling asleep.
+    """
+    started = perf_counter()
+    conn = psycopg.connect(dsn, connect_timeout=_DEMO_PG_CONNECT_TIMEOUT_S)
+    connect_ms = (perf_counter() - started) * 1000
+
+    query_started = perf_counter()
+    # psycopg3: the connection context commits on clean exit AND closes.
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS demo_visits ("
+            "  id bigserial PRIMARY KEY,"
+            "  note text NOT NULL,"
+            "  written_at timestamptz NOT NULL DEFAULT now(),"
+            "  postmaster_start timestamptz NOT NULL)"
+        )
+        cur.execute(
+            "INSERT INTO demo_visits (note, postmaster_start) "
+            "VALUES (%s, pg_postmaster_start_time()) RETURNING id",
+            (note,),
+        )
+        inserted_id = cur.fetchone()[0]
+        cur.execute(
+            "SELECT id, note, written_at, postmaster_start FROM demo_visits "
+            "ORDER BY id DESC LIMIT %s",
+            (_DEMO_PG_HISTORY_ROWS,),
+        )
+        rows = [
+            {
+                "id": r[0],
+                "note": r[1],
+                "written_at": r[2].isoformat(),
+                "postmaster_start": r[3].isoformat(),
+            }
+            for r in cur.fetchall()
+        ]
+        cur.execute("SELECT pg_postmaster_start_time(), count(*) FROM demo_visits")
+        postmaster_start, total_rows = cur.fetchone()
+    query_ms = (perf_counter() - query_started) * 1000
+
+    return {
+        "connect_ms": connect_ms,
+        "query_ms": query_ms,
+        "inserted_id": inserted_id,
+        "rows": rows,
+        "total_rows": total_rows,
+        "postmaster_start": postmaster_start.isoformat(),
+    }
+
+
+class PostgresQueryRequest(BaseModel):
+    note: str = ""
+
+
+@router.get("/postgres/status")
+async def postgres_status() -> dict:
+    """The demo-postgres lifecycle snapshot driving the sleep indicator.
+
+    A management-API read only: the frontend polls this sub-second while the
+    exhibit is on screen, and because no TCP connection ever reaches the
+    workload's listener the poll cannot keep the VM awake or wake it. Errors
+    come back in-band (not as 5xx) so one flaky poll doesn't redline the UI.
+    """
+    if not EMBERVM_URL or not _demo_pg_dsn():
+        return {"configured": False}
+    try:
+        status = await _fetch_demo_pg_status()
+    except Exception as exc:  # noqa: BLE001 - poll errors are data, not faults
+        logger.warning("demo-postgres status poll failed: %s", exc)
+        return {"configured": True, "error": str(exc)}
+    return {"configured": True, **_shape_pg_status(status)}
+
+
+@router.post("/postgres/query")
+async def postgres_query(body: PostgresQueryRequest) -> dict:
+    """Timed roundtrip against demo-postgres: the wake IS the connect time.
+
+    Captures the lifecycle state just before connecting to classify what this
+    connect is about to pay for (warm / relight / cold), then measures the
+    connect and the SQL work separately. A failed connect is returned in-band
+    (mirroring the python demo's error shape): the likeliest causes are the
+    wake-rate limiter refusing a burst and a wake genuinely failing, both of
+    which the visitor recovers from by waiting a beat and retrying.
+    """
+    dsn = _demo_pg_dsn()
+    if not dsn:
+        raise HTTPException(
+            status_code=503, detail="DEMO_POSTGRES_DSN is not configured"
+        )
+
+    before = None
+    if EMBERVM_URL:
+        try:
+            before = await _fetch_demo_pg_status()
+        except Exception as exc:  # noqa: BLE001 - classification is best-effort
+            logger.warning("demo-postgres pre-query status failed: %s", exc)
+            before = None
+
+    note = (body.note or "").strip()[:200] or "hello from the demos page"
+    started = perf_counter()
+    try:
+        result = await asyncio.to_thread(_demo_pg_roundtrip, dsn, note)
+    except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
+        logger.warning("demo-postgres query roundtrip failed: %s", exc)
+        return {
+            "error": str(exc),
+            "classification": _classify_wake(before),
+            "phase_before": (before or {}).get("state"),
+            "total_ms": (perf_counter() - started) * 1000,
+        }
+
+    return {
+        **result,
+        "total_ms": (perf_counter() - started) * 1000,
+        "classification": _classify_wake(before),
+        "phase_before": (before or {}).get("state"),
+        "generation": (before or {}).get("generation"),
+        "error": None,
+    }
+
+
+@router.post("/postgres/reset")
+async def postgres_reset() -> dict:
+    """Force the next wake down the cold-boot path.
+
+    DELETE .../instance destroys the live VM (if any) AND evicts the banked
+    bundle; the volume is untouched. The next connect therefore cold-boots
+    Postgres against the retained data: the demo's way of producing the
+    cold-start number (and proving durability) on demand.
+    """
+    if not EMBERVM_URL:
+        raise HTTPException(status_code=503, detail="EMBERVM_URL is not configured")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.delete(
+            f"{EMBERVM_URL}/v1/stateful/{_DEMO_PG_WORKLOAD}/instance",
+            headers=auth_headers(),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    return {
+        "destroyed": data.get("destroyed", 0),
+        "evicted": data.get("evicted", 0),
+    }
