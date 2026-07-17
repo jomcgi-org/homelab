@@ -164,14 +164,27 @@ defmodule Embervm.TcpActivator do
 
   # -- listen + accept loop ------------------------------------------------------
 
-  defp listen(port) do
-    :gen_tcp.listen(port, [
-      :binary,
-      packet: :raw,
-      active: false,
-      reuseaddr: true,
-      backlog: 128
-    ])
+  defp listen(port), do: listen(port, 10)
+
+  # Bind the listener, retrying briefly on :eaddrinuse. reuseaddr clears a socket
+  # lingering in TIME_WAIT, but it cannot bind over a still-open listener: on a
+  # control-plane restart the new activator rebinds the same fixed stateful port
+  # range the prior instance held, and its socket can take a beat to release. A
+  # silent drop here would leave that port's stateful workload permanently
+  # unwakeable until the next restart, so we retry the address for ~1s before
+  # giving up. (Also deflakes the fixed-port test suite, where serial tests reuse
+  # the same ports.)
+  defp listen(port, attempts_left) do
+    opts = [:binary, packet: :raw, active: false, reuseaddr: true, backlog: 128]
+
+    case :gen_tcp.listen(port, opts) do
+      {:error, :eaddrinuse} when attempts_left > 1 ->
+        Process.sleep(100)
+        listen(port, attempts_left - 1)
+
+      result ->
+        result
+    end
   end
 
   # Runs in its own linked Task process (one per bound port): blocks in accept,
