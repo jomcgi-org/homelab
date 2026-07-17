@@ -38,7 +38,7 @@ defmodule Embervm.TcpActivator do
   If `Embervm.StatefulStore.published_endpoint/1` ALREADY shows a live
   endpoint (a race: the VM came up between the node Envoy's empty-cluster
   fallback decision and this accept), the connection is spliced DIRECTLY to it,
-  no wake. Otherwise `Embervm.StatefulManager.wake/2` is called, which
+  no wake. Otherwise `Embervm.StatefulManager.wake/3` is called, which
   single-flights: this handler process IS the `from` parked behind the
   GenServer call (`:infinity`, bounded by the manager's reply contract), so
   correctness here reduces entirely to the manager's single-flight guarantee.
@@ -49,7 +49,7 @@ defmodule Embervm.TcpActivator do
   and TWO processes pump bytes: the handler process reads from the CLIENT
   socket and writes to the UPSTREAM (VM) socket; a spawned peer process reads
   from UPSTREAM and writes to CLIENT. Each direction is a DUMB byte pump (no
-  framing assumptions: opaque L4, decision 4) using `{:active, once}` so a
+  framing assumptions: opaque L4, decision 4) using `{:active, false}` so a
   slow reader cannot let the mailbox unboundedly buffer the other direction's
   backpressure. When either side's read returns `{:error, :closed}` (or any
   other read error), that pump:
@@ -69,7 +69,7 @@ defmodule Embervm.TcpActivator do
 
   ## wake failure / timeout
 
-  A `{:error, _}` from `StatefulManager.wake/2` (rate limit, park-full,
+  A `{:error, _}` from `StatefulManager.wake/3` (rate limit, park-full,
   wake-failed, or the volume's anchor node gone) simply closes the accepted
   client socket (a TCP RST-adjacent close, no explicit reset frame at this
   layer: `:gen_tcp.close/1` sends a normal FIN, which is what a raw byte-proxy

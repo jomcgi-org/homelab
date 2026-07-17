@@ -406,9 +406,9 @@ defmodule Embervm.StatefulManager do
             send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
         end
 
-      {:cold, node_id, boot_ref, mode} ->
+      {:cold, node_id, boot_ref, mode, reason} ->
         req = cold_request(entry, workload, boot_ref, mode)
-        spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, boot_ref, mode, req) end)
+        spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, boot_ref, mode, reason, req) end)
 
       {:error, reason} ->
         send(self(), {:wake_done, workload, {:error, reason}})
@@ -449,7 +449,10 @@ defmodule Embervm.StatefulManager do
 
     case banked_instance(state, workload) do
       nil ->
-        cold_plan(state, workload, volume)
+        # No bundle to resume: a genuine FRESH first boot (no volume yet, reason
+        # nil -> stateful_started) or a COLD boot against an existing volume whose
+        # bundle is gone (reason :no_bundle -> stateful_cold_booted{no_bundle}).
+        cold_plan(state, workload, volume, cold_reason(volume))
 
       instance ->
         if StatefulStore.pair_valid?(state.store, workload) do
@@ -459,7 +462,9 @@ defmodule Embervm.StatefulManager do
           end
         else
           # Broken pair: evict the stale bundle through the durable path (so a
-          # rebuild agrees it is gone) and fall through to a cold boot.
+          # rebuild agrees it is gone) and fall through to a cold boot, carrying the
+          # mismatch reason so the wake records stateful_cold_booted{generation_mismatch}
+          # (gate 2: the op-log alone tells the whole story).
           _ =
             StatefulStore.transition(
               state.store,
@@ -470,26 +475,32 @@ defmodule Embervm.StatefulManager do
               %{}
             )
 
-          cold_plan(state, workload, volume)
+          cold_plan(state, workload, volume, :generation_mismatch)
         end
     end
   end
 
+  # The discarded-warmth reason for a cold boot with no banked instance: nil (a
+  # genuine FRESH first boot, no volume yet) vs :no_bundle (a volume exists but no
+  # bundle to resume, e.g. after a forced roll).
+  defp cold_reason(nil), do: nil
+  defp cold_reason(_volume), do: :no_bundle
+
   # Cold placement: FRESH (no volume row exists yet, the daemon must create it)
-  # when `volume` is nil; COLD (an existing volume, no bundle to resume, either
-  # because none was ever banked or the pair just broke) otherwise. Both modes
-  # are anchored to the resolved node.
-  defp cold_plan(state, workload, nil) do
+  # when `volume` is nil; COLD (an existing volume, no bundle to resume) otherwise.
+  # `reason` is the discarded-warmth reason threaded into the boot op (nil for a
+  # fresh first boot). Both modes are anchored to the resolved node.
+  defp cold_plan(state, workload, nil, _reason) do
     case eligible_node_for_fresh(state, workload) do
-      {:ok, node_id} -> {:cold, node_id, boot_image_ref(state, node_id, workload), :fresh}
+      {:ok, node_id} -> {:cold, node_id, boot_image_ref(state, node_id, workload), :fresh, nil}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp cold_plan(state, workload, volume) do
+  defp cold_plan(state, workload, volume, reason) do
     case anchor_node(state, volume) do
-      {:ok, node_id} -> {:cold, node_id, boot_image_ref(state, node_id, workload), :cold}
-      {:error, reason} -> {:error, reason}
+      {:ok, node_id} -> {:cold, node_id, boot_image_ref(state, node_id, workload), :cold, reason}
+      {:error, anchor_error} -> {:error, anchor_error}
     end
   end
 
@@ -634,7 +645,7 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  defp run_cold(state, workload, node_id, boot_ref, mode, req) do
+  defp run_cold(state, workload, node_id, boot_ref, mode, reason, req) do
     case safe_start_stateful(state, node_id, req) do
       {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
       when is_binary(vm_id) and vm_id != "" ->
@@ -643,13 +654,25 @@ defmodule Embervm.StatefulManager do
           principal: wake_principal(workload),
           workload: workload,
           node_id: node_id,
-          generation: generation
+          generation: generation,
+          # The volume the daemon reported it created/attached at (size the request
+          # asked for); FRESH boots record a volume_created off this (see finish_created).
+          volume_size_bytes: cold_volume_size_bytes(state, workload)
         }
 
-        {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref}
+        {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref, reason}
 
       other ->
         {:error, {:start_failed, other}}
+    end
+  end
+
+  # The declared volume size (bytes) for a workload, from its catalog stateful
+  # config, recorded on the volume_created op a FRESH boot emits.
+  defp cold_volume_size_bytes(state, workload) do
+    case catalog_entry(state, workload) do
+      %{stateful: %{volume_size_gib: gib}} when is_integer(gib) -> gib * 1024 * 1024 * 1024
+      _ -> nil
     end
   end
 
@@ -659,8 +682,8 @@ defmodule Embervm.StatefulManager do
     {waiters, state} = pop_waiters(state, workload)
 
     case outcome do
-      {:created, attrs, endpoint, _mode, _boot_ref} ->
-        finish_created(state, workload, attrs, endpoint, waiters)
+      {:created, attrs, endpoint, mode, _boot_ref, reason} ->
+        finish_created(state, workload, attrs, endpoint, mode, reason, waiters)
 
       {:relit, instance_id, node_id, endpoint} ->
         finish_relit(state, workload, instance_id, node_id, endpoint, waiters)
@@ -688,18 +711,47 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  defp finish_created(state, workload, attrs, endpoint, waiters) do
+  defp finish_created(state, workload, attrs, endpoint, mode, reason, waiters) do
     instance_id = mint_id(state)
-    attrs = Map.put(attrs, :instance_id, instance_id)
-    attrs = Map.merge(attrs, %{vm_id: endpoint.vm_id})
 
-    case StatefulStore.start(state.store, attrs) do
+    attrs =
+      attrs
+      |> Map.put(:instance_id, instance_id)
+      |> Map.put(:vm_id, endpoint.vm_id)
+      |> Map.put(:reason, reason)
+
+    # A FRESH boot is the first time the daemon created the workload's volume file:
+    # record volume_created so the durable volumes projection has a row (a boot op's
+    # bump_volume_generation only UPDATEs an existing row, so without this the
+    # volumes table would stay empty). COLD boots reuse an existing volume.
+    if mode == :fresh do
+      _ =
+        StatefulStore.create_volume(state.store, workload, %{
+          node_id: Map.get(attrs, :node_id),
+          generation: Map.get(attrs, :generation, 0),
+          size_bytes: Map.get(attrs, :volume_size_bytes),
+          allocated_bytes: 0
+        })
+    end
+
+    # A discarded-warmth cold boot records stateful_cold_booted{reason} (gate 2); a
+    # genuine FRESH first boot records stateful_started.
+    record =
+      if is_nil(reason) do
+        StatefulStore.start(state.store, attrs)
+      else
+        StatefulStore.cold_boot(state.store, attrs)
+      end
+
+    audit = if is_nil(reason), do: :started, else: :cold_booted
+
+    case record do
       {:ok, _instance} ->
-        publish_and_resolve(state, instance_id, workload, endpoint, :started, waiters)
+        publish_and_resolve(state, instance_id, workload, endpoint, audit, waiters)
 
-      {:error, reason} ->
-        Logger.error("embervm stateful: start record failed", workload: workload, reason: inspect(reason))
-        reply_all(waiters, {:error, {:wake_failed, {:store, reason}}})
+      {:error, store_reason} ->
+        Logger.error("embervm stateful: start record failed", workload: workload, reason: inspect(store_reason))
+        reply_all(waiters, {:error, {:wake_failed, {:store, store_reason}}})
         state
     end
   end
@@ -726,25 +778,26 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  # The daemon itself fell back RELIGHT -> cold at StartStateful time (a
-  # generation mismatch or unreadable ledger it discovered we could not see
-  # from here): the ORIGINAL banked instance never resumed, so mark it evicted
-  # (cold_boot_reason from the wire), and record a NEW instance the same way
-  # any other cold/fresh boot is recorded (StatefulStore.start/2's own doc
-  # covers "a fresh first boot OR an explicit cold boot that begins a new
-  # lifecycle" under the single stateful_started op; the schema's distinct
-  # stateful_cold_booted op kind exists for a future audit-granularity pass,
-  # not something this store's public API currently exposes a seam for).
-  # Mirrors ServingManager treating a daemon-side relight fallback as a fresh
-  # instance rather than trying to force it back into the relit shape.
+  # The daemon itself fell back RELIGHT -> cold at StartStateful time (a generation
+  # mismatch or unreadable ledger it discovered that we could not see from here):
+  # the ORIGINAL banked instance never resumed. It is currently in :relighting (the
+  # wake marked it so when it planned the relight), and :evict is legal ONLY from
+  # :banked, so we first abort the relight (:relight_abort is ETS-only, back to
+  # :banked) THEN evict (the legal banked->evicted durable edge). Both MUST land
+  # before the new instance's boot, or the singleton gate would see the stranded
+  # :relighting instance as live and wedge the workload forever. The new instance
+  # is recorded as a stateful_cold_booted carrying the wire cold_boot_reason (gate
+  # 2: the op-log alone reconstructs the discarded warmth).
   defp finish_relight_fallback(state, workload, old_instance_id, node_id, endpoint, reason, waiters) do
+    _ = StatefulStore.mark(state.store, old_instance_id, :relight_abort)
+
     _ =
       StatefulStore.transition(
         state.store,
         old_instance_id,
         :evict,
         :stateful_evicted,
-        %{reason: to_string(reason)},
+        %{reason: "pair_broken"},
         %{}
       )
 
@@ -757,15 +810,16 @@ defmodule Embervm.StatefulManager do
       workload: workload,
       node_id: node_id,
       vm_id: endpoint.vm_id,
-      generation: endpoint.generation
+      generation: endpoint.generation,
+      reason: reason
     }
 
-    case StatefulStore.start(state.store, attrs) do
+    case StatefulStore.cold_boot(state.store, attrs) do
       {:ok, _instance} ->
         publish_and_resolve(state, instance_id, workload, endpoint, :cold_booted, waiters)
 
       {:error, store_reason} ->
-        Logger.error("embervm stateful: relight-fallback start record failed", workload: workload, reason: inspect(store_reason))
+        Logger.error("embervm stateful: relight-fallback cold_boot record failed", workload: workload, reason: inspect(store_reason))
         reply_all(waiters, {:error, {:wake_failed, {:store, store_reason}}})
         state
     end

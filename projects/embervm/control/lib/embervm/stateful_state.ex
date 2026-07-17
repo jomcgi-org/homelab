@@ -120,6 +120,7 @@ defmodule Embervm.StatefulState do
     :relight_abort,
     :cold_boot,
     :cold_ready,
+    :cold_abort,
     :evict,
     :destroy,
     :fail

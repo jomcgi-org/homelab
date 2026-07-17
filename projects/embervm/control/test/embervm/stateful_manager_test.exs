@@ -303,8 +303,21 @@ defmodule Embervm.StatefulManagerTest do
     id
   end
 
-  test "plan_wake relights a VALID pair (bundle generation matches the volume)" do
-    ctx = start_stack()
+  test "plan_wake relights a VALID pair (daemon actually relit: was_relight=true)" do
+    # A relight where the daemon genuinely resumed the bundle: the SAME banked
+    # instance transitions in place via stateful_relit, no new lifecycle.
+    relit_fun = fn _ch, _req ->
+      {:ok,
+       %StartStatefulResponse{
+         vm_id: "vm-relit",
+         ip: "10.88.0.5",
+         port: 5432,
+         generation: 4,
+         was_relight: true
+       }}
+    end
+
+    ctx = start_stack(start_stateful_fun: relit_fun)
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4")
 
@@ -313,11 +326,58 @@ defmodule Embervm.StatefulManagerTest do
 
     assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
 
-    # The banked instance transitioned via relight (not a fresh instance): still
-    # exactly one non-terminal instance for the workload.
+    # The SAME instance transitioned via relight (not a fresh instance): stf-banked
+    # is now serving, and it is the only non-terminal instance.
+    {:ok, relit} = StatefulStore.get(ctx.store, "stf-banked")
+    assert relit.state == :serving
     live = Enum.reject(StatefulStore.list(ctx.store, "wl-a"), &Embervm.StatefulState.terminal?(&1.state))
     assert length(live) == 1
-    assert Agent.get(ctx.starts, & &1) == 1
+  end
+
+  test "a RELIGHT the DAEMON falls back to cold (was_relight=false) evicts the old instance, cold-boots a new one, and does not wedge" do
+    # Regression: the control plane plans a relight (pair looks valid from here),
+    # marks the banked instance :relighting, but the daemon discovers the pair is
+    # actually broken and cold-boots, returning was_relight=false + cold_boot_reason.
+    # The old :relighting instance MUST reach a terminal state via a legal edge
+    # before the new instance's boot, or the singleton gate wedges the workload.
+    fallback_fun = fn _ch, _req ->
+      {:ok,
+       %StartStatefulResponse{
+         vm_id: "vm-cold",
+         ip: "10.88.0.6",
+         port: 5432,
+         generation: 4,
+         was_relight: false,
+         cold_boot_reason: "generation_mismatch"
+       }}
+    end
+
+    ctx = start_stack(start_stateful_fun: fallback_fun)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+    assert StatefulStore.pair_valid?(ctx.store, "wl-a")
+
+    # The wake SUCCEEDS (not wedged): the daemon-side fallback still yields a live VM.
+    assert {:ok, %{ip: "10.88.0.6", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    # The old banked instance did NOT strand in :relighting: it is terminal.
+    {:ok, old} = StatefulStore.get(ctx.store, "stf-banked")
+    assert old.state == :evicted
+
+    # A NEW instance was cold-booted and is serving (exactly one live instance).
+    live = Enum.reject(StatefulStore.list(ctx.store, "wl-a"), &Embervm.StatefulState.terminal?(&1.state))
+    assert [new_i] = live
+    assert new_i.instance_id != "stf-banked"
+    assert new_i.state == :serving
+
+    # gate 2: the op-log alone tells the story (a stateful_cold_booted with the
+    # discarded-warmth reason, not a plain stateful_started).
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    cold = Enum.find(ops, &(&1.kind == :stateful_cold_booted))
+    assert cold, "expected a stateful_cold_booted op after a daemon-side relight fallback"
+    assert cold.payload["reason"] == "generation_mismatch"
   end
 
   test "plan_wake evicts a BROKEN pair (generation mismatch) and cold-boots instead" do
