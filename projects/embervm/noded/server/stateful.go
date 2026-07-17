@@ -184,13 +184,29 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 		return nil, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)
 	}
 
-	// A stateful relight does not pin a specific IP the way a serving relight
-	// does (D-R3.4.1): the stateful endpoint is control-plane-addressed (the
-	// control plane reads {ip, port} fresh off every StartStateful response),
-	// not guest-baked-critical, so a fresh tap allocation is sufficient.
-	_, ip, err := s.servingNet.AllocateTap(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: allocate stateful tap: %v", err)
+	// Re-acquire the SAME tap IP the bundle was banked with, exactly as serving
+	// relight does. A relight resumes the guest from its memory snapshot, which has
+	// this IP configured on eth0; a fresh tap with a DIFFERENT IP leaves the resumed
+	// guest answering on an address the host tap does not have, so the readiness
+	// probe times out ("guest not ready over tap") and the relight fails, which then
+	// burns two generations (relight bump + cold fallback bump) and strands the
+	// bundle. An absent pin (a bundle banked before this fix) falls back to a fresh
+	// tap, so older bundles still relight, just without the IP-match guarantee.
+	pinned := s.statefulDriver.StatefulPinnedIP(ref)
+	var ip net.IP
+	if pinned != "" {
+		ip = net.ParseIP(pinned)
+		if ip == nil {
+			return nil, status.Errorf(codes.Internal, "noded: stateful snapshot %q has a malformed pinned ip %q", ref, pinned)
+		}
+		if _, aerr := s.servingNet.AllocateTapForIP(ctx, ip); aerr != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: re-acquire pinned stateful ip %s: %v", pinned, aerr)
+		}
+	} else {
+		var aerr error
+		if _, ip, aerr = s.servingNet.AllocateTap(ctx); aerr != nil {
+			return nil, status.Errorf(codes.ResourceExhausted, "noded: allocate stateful tap: %v", aerr)
+		}
 	}
 	h, err := s.statefulDriver.RestoreStateful(ctx, ref, s.volumes.VolumePath(workload))
 	if err != nil {
@@ -400,7 +416,7 @@ func (s *Server) stopStatefulCheckpoint(ctx context.Context, vmID string) (*node
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful vm %q not checkpointable (unknown or a stop is already in flight)", vmID)
 	}
 	snapshotRef := newID("state")
-	token, err := s.statefulDriver.CheckpointStateful(ctx, e.handle, snapshotRef, e.generation)
+	token, err := s.statefulDriver.CheckpointStateful(ctx, e.handle, snapshotRef, e.generation, e.ip.String())
 	if err != nil {
 		s.statefulVMs.clearInFlight(vmID)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: checkpoint stateful vm %q: %v", vmID, err)
@@ -540,7 +556,7 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 	}
 	e.probe.Stop()
 	snapshotRef := newID("state")
-	ref, err := s.statefulDriver.SnapshotStateful(ctx, e.handle, snapshotRef, e.generation)
+	ref, err := s.statefulDriver.SnapshotStateful(ctx, e.handle, snapshotRef, e.generation, e.ip.String())
 	if err != nil {
 		// A bank is destructive: SnapshotStateful tore the VM down on failure, so
 		// drop the now-dead registry entry, release its tap, and detach the

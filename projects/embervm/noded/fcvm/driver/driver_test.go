@@ -825,7 +825,7 @@ func TestDriverCheckpointCommit(t *testing.T) {
 	d := testDriver(t)
 	h := statefulCheckpointHandle(t, d)
 
-	token, err := d.CheckpointStateful(ctx, h, "state-commit", 7)
+	token, err := d.CheckpointStateful(ctx, h, "state-commit", 7, "10.0.0.5")
 	if err != nil {
 		t.Fatalf("CheckpointStateful: %v", err)
 	}
@@ -863,6 +863,11 @@ func TestDriverCheckpointCommit(t *testing.T) {
 	if string(gen) != "7" {
 		t.Fatalf("gen sidecar = %q, want 7", string(gen))
 	}
+	// The pinned tap IP is published so a relight re-acquires the SAME IP (the
+	// resumed guest's baked-in eth0 matches the fresh tap).
+	if got := d.StatefulPinnedIP("state-commit"); got != "10.0.0.5" {
+		t.Fatalf("StatefulPinnedIP after commit = %q, want 10.0.0.5", got)
+	}
 	// The VM was destroyed at commit, and the temp is gone.
 	if d.LiveCount() != 0 {
 		t.Fatalf("LiveCount after commit = %d, want 0 (VM destroyed)", d.LiveCount())
@@ -879,7 +884,7 @@ func TestDriverCheckpointAbort(t *testing.T) {
 	d := testDriver(t)
 	h := statefulCheckpointHandle(t, d)
 
-	token, err := d.CheckpointStateful(ctx, h, "state-abort", 4)
+	token, err := d.CheckpointStateful(ctx, h, "state-abort", 4, "10.0.0.5")
 	if err != nil {
 		t.Fatalf("CheckpointStateful: %v", err)
 	}
@@ -911,7 +916,7 @@ func TestDriverResolveUnknownTokenErrors(t *testing.T) {
 	}
 	// A second resolve of a consumed token also errors.
 	h := statefulCheckpointHandle(t, d)
-	token, err := d.CheckpointStateful(ctx, h, "state-once", 1)
+	token, err := d.CheckpointStateful(ctx, h, "state-once", 1, "10.0.0.5")
 	if err != nil {
 		t.Fatalf("CheckpointStateful: %v", err)
 	}
@@ -932,7 +937,7 @@ func TestDriverGCStatefulCheckpointsAndReuse(t *testing.T) {
 
 	// An orphaned temp (a checkpoint whose noded died) is swept on start.
 	h := statefulCheckpointHandle(t, d)
-	token, err := d.CheckpointStateful(ctx, h, "state-orphan", 2)
+	token, err := d.CheckpointStateful(ctx, h, "state-orphan", 2, "10.0.0.5")
 	if err != nil {
 		t.Fatalf("CheckpointStateful: %v", err)
 	}
@@ -951,14 +956,14 @@ func TestDriverGCStatefulCheckpointsAndReuse(t *testing.T) {
 
 	// Abort, then a fresh checkpoint+commit still banks a valid bundle.
 	h2 := statefulCheckpointHandle(t, d)
-	tok2, err := d.CheckpointStateful(ctx, h2, "state-reuse", 5)
+	tok2, err := d.CheckpointStateful(ctx, h2, "state-reuse", 5, "10.0.0.5")
 	if err != nil {
 		t.Fatalf("CheckpointStateful reuse: %v", err)
 	}
 	if err := d.ResolveStatefulAbort(ctx, tok2); err != nil {
 		t.Fatalf("abort reuse: %v", err)
 	}
-	tok3, err := d.CheckpointStateful(ctx, h2, "state-reuse", 6)
+	tok3, err := d.CheckpointStateful(ctx, h2, "state-reuse", 6, "10.0.0.5")
 	if err != nil {
 		t.Fatalf("second CheckpointStateful reuse: %v", err)
 	}

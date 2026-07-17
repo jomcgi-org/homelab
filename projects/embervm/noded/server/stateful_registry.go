@@ -30,14 +30,20 @@ type statefulDriver interface {
 	// snapshot via RestoreStateful instead).
 	ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error)
 	// SnapshotStateful pauses a live stateful VM and writes a self-contained
-	// stateful bundle stamped with the given volume generation; does not resume
-	// (the caller Releases). Mirrors SnapshotServing plus the generation stamp.
-	SnapshotStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (substrate.SnapshotRef, error)
+	// stateful bundle stamped with the given volume generation and the pinnedIP the
+	// VM held; does not resume (the caller Releases). Mirrors SnapshotServing plus
+	// the generation stamp. pinnedIP is re-acquired on relight so the resumed
+	// guest's baked-in eth0 IP matches the fresh tap.
+	SnapshotStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64, pinnedIP string) (substrate.SnapshotRef, error)
 	// CheckpointStateful is phase one of the interruptible bank (ADR embervm/008):
 	// it pauses a live stateful VM and writes its snapshot to a temp OUTSIDE the
 	// stateful/ bundle dir, leaving the VM PAUSED and resumable (no bundle
-	// published, no Release), and returns an opaque token for the resolve.
-	CheckpointStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (string, error)
+	// published, no Release), and returns an opaque token for the resolve. pinnedIP
+	// is carried so the COMMIT publishes it as the bundle's pinned-IP sidecar.
+	CheckpointStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64, pinnedIP string) (string, error)
+	// StatefulPinnedIP reads the tap IP a bundle was banked with (empty if absent),
+	// so a relight re-acquires the SAME IP before restoring.
+	StatefulPinnedIP(snapshotRef string) string
 	// ResolveStatefulCommit publishes a checkpoint's temp as the workload's bundle
 	// (snapfile last) and DESTROYS the paused VM, returning the bundle ref. It
 	// consumes the token (single-resolve).
