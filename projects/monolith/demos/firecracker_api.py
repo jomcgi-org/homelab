@@ -837,3 +837,32 @@ async def postgres_reset() -> dict:
         "destroyed": data.get("destroyed", 0),
         "evicted": data.get("evicted", 0),
     }
+
+
+def _demo_pg_truncate(dsn: str) -> dict:
+    """TRUNCATE demo_orders. Sync; via to_thread. Wakes the VM like any connect."""
+    started = perf_counter()
+    conn = psycopg.connect(dsn, connect_timeout=_DEMO_PG_CONNECT_TIMEOUT_S)
+    connect_ms = (perf_counter() - started) * 1000
+    with conn, conn.cursor() as cur:
+        cur.execute(_DEMO_PG_DDL)
+        cur.execute("TRUNCATE demo_orders")
+    return {"truncated": True, "connect_ms": connect_ms}
+
+
+@router.post("/postgres/truncate")
+async def postgres_truncate() -> dict:
+    """Clear the ledger. The data dies, the VM lives: the mirror image of reset
+    (which destroys the VM and keeps the data). Private tier only, like the
+    rest of this router. Errors come back in-band, mirroring the query shape.
+    """
+    dsn = _demo_pg_dsn()
+    if not dsn:
+        raise HTTPException(
+            status_code=503, detail="DEMO_POSTGRES_DSN is not configured"
+        )
+    try:
+        return await asyncio.to_thread(_demo_pg_truncate, dsn)
+    except Exception as exc:  # noqa: BLE001 - surface connect failures in-band
+        logger.warning("demo-postgres truncate failed: %s", exc)
+        return {"truncated": False, "error": str(exc)}

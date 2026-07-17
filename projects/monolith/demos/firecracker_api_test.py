@@ -479,3 +479,38 @@ def test_postgres_reset_proxies_destroy(monkeypatch):
     resp = _client().post("/api/demos/firecracker/postgres/reset")
     assert resp.status_code == 200
     assert resp.json() == {"destroyed": 1, "evicted": 1}
+
+
+def test_postgres_truncate_unconfigured_is_503(monkeypatch):
+    monkeypatch.delenv("DEMO_POSTGRES_DSN", raising=False)
+
+    resp = _client().post("/api/demos/firecracker/postgres/truncate")
+    assert resp.status_code == 503
+
+
+def test_postgres_truncate_ok(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+
+    def fake_truncate(dsn):
+        return {"truncated": True, "connect_ms": 5.0}
+
+    monkeypatch.setattr(fc, "_demo_pg_truncate", fake_truncate)
+
+    resp = _client().post("/api/demos/firecracker/postgres/truncate")
+    assert resp.status_code == 200
+    assert resp.json() == {"truncated": True, "connect_ms": 5.0}
+
+
+def test_postgres_truncate_error_in_band(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+
+    def fake_truncate(dsn):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(fc, "_demo_pg_truncate", fake_truncate)
+
+    resp = _client().post("/api/demos/firecracker/postgres/truncate")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["truncated"] is False
+    assert "connection refused" in body["error"]
