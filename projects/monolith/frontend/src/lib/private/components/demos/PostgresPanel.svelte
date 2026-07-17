@@ -51,6 +51,48 @@
 
   let pollTimer = null;
 
+  // Live wake stopwatch: ticks via requestAnimationFrame while a query is
+  // in flight, so the visitor watches the wake happen instead of just
+  // seeing the final number appear.
+  let stopwatchMs = $state(0);
+  let stopwatchRaf = null;
+  let stopwatchStart = 0;
+  let connectPulse = $state(false);
+  let pulseTimer = null;
+
+  function startStopwatch() {
+    stopwatchStart = performance.now();
+    stopwatchMs = 0;
+    const tick = () => {
+      stopwatchMs = performance.now() - stopwatchStart;
+      stopwatchRaf = requestAnimationFrame(tick);
+    };
+    stopwatchRaf = requestAnimationFrame(tick);
+  }
+
+  function stopStopwatch() {
+    if (stopwatchRaf != null) {
+      cancelAnimationFrame(stopwatchRaf);
+      stopwatchRaf = null;
+    }
+  }
+
+  function flashConnectPulse() {
+    connectPulse = false;
+    // Retrigger the CSS animation even if it fired moments ago.
+    requestAnimationFrame(() => {
+      connectPulse = true;
+      if (pulseTimer) clearTimeout(pulseTimer);
+      pulseTimer = setTimeout(() => {
+        connectPulse = false;
+      }, 500);
+    });
+  }
+
+  // Falling-asleep narration: seconds since the VM's last activity, ticked
+  // by the status poll (not a fabricated countdown, just a rough approach).
+  let idleSeconds = $state(0);
+
   async function pollStatus() {
     try {
       const resp = await fetch(`${API}/status`);
@@ -66,6 +108,10 @@
       }
       statusError = "";
       status = body;
+      idleSeconds =
+        body.state === "serving" && body.last_active_at
+          ? (Date.now() - new Date(body.last_active_at).getTime()) / 1000
+          : 0;
     } catch (err) {
       statusError = String(err);
     }
@@ -76,6 +122,7 @@
     truncateConfirming = false;
     running = true;
     runError = "";
+    startStopwatch();
     try {
       const resp = await fetch(`${API}/query`, {
         method: "POST",
@@ -100,10 +147,12 @@
       if (tiers[tier] == null || body.connect_ms < tiers[tier]) {
         tiers = { ...tiers, [tier]: body.connect_ms };
       }
+      flashConnectPulse();
     } catch (err) {
       runError = String(err);
     } finally {
       running = false;
+      stopStopwatch();
     }
   }
 
@@ -165,8 +214,23 @@
     runQuery("aggregate");
     pollStatus();
     pollTimer = setInterval(pollStatus, POLL_MS);
-    return () => clearInterval(pollTimer);
+    return () => {
+      clearInterval(pollTimer);
+      stopStopwatch();
+      if (pulseTimer) clearTimeout(pulseTimer);
+    };
   });
+
+  const WAKE_NARRATION = {
+    banked: "connection parked, waking the VM",
+    relighting: "relighting from snapshot",
+    cold_booting: "cold booting against the volume",
+    serving: "spliced through, running SQL",
+  };
+
+  let wakeNarration = $derived(
+    WAKE_NARRATION[status?.state] ?? "connection parked, waking the VM",
+  );
 
   const STATE_VIEW = {
     serving: { label: "Awake", tone: "awake", hint: "VM live, next query is warm" },
@@ -240,6 +304,26 @@
   let maxRevenue = $derived(
     Math.max(1, ...((lastRun?.breakdown ?? []).map((b) => b.revenue))),
   );
+
+  // Asleep hero strip: the "0 vCPU" lead line replaces the muted hint when
+  // the VM is fully banked, so the panel's rest state reads as a claim
+  // rather than an absence.
+  let asleepHero = $derived.by(() => {
+    if (status?.state !== "banked") return null;
+    const mib =
+      status?.volume_bytes != null ? `${(status.volume_bytes / 1024 / 1024).toFixed(1)} MiB` : "some";
+    const wake = tiers.relight != null ? ms(tiers.relight) : "under 100 ms";
+    return `${mib} of orders on disk, waiting. The next connection brings Postgres back in ~${wake}.`;
+  });
+
+  // Dozing narration while serving-but-idle: an approach, not a countdown.
+  let dozeHint = $derived(
+    status?.state === "serving" && !running
+      ? idleSeconds < 1
+        ? "idle, falls asleep about a second after the last connection closes"
+        : "dozing off any moment"
+      : null,
+  );
 </script>
 
 <section class="pg-panel">
@@ -248,7 +332,13 @@
       <span class="state-dot" aria-hidden="true"></span>
       <span class="state-label">{stateView.label}</span>
     </div>
-    <p class="state-hint">{stateView.hint}</p>
+    {#if asleepHero}
+      <p class="state-hero">
+        <strong>0 vCPU · 0 MiB RAM right now.</strong> {asleepHero}
+      </p>
+    {:else}
+      <p class="state-hint">{dozeHint ?? stateView.hint}</p>
+    {/if}
     <dl class="state-facts">
       <div>
         <dt>generation</dt>
@@ -331,11 +421,18 @@
     </p>
   {/if}
 
+  {#if running}
+    <div class="stopwatch-card">
+      <span class="stopwatch-value">{ms(stopwatchMs)}</span>
+      <span class="stopwatch-narration">{wakeNarration}</span>
+    </div>
+  {/if}
+
   {#if lastRun}
     <div class="timing-card">
       <div class="timing-headline">
         <div class="timing-big">
-          <span class="timing-value">{ms(lastRun.connect_ms)}</span>
+          <span class="timing-value" class:connect-pulse={connectPulse}>{ms(lastRun.connect_ms)}</span>
           <span class="timing-label">connect (the wake)</span>
         </div>
         <div class="timing-big">
@@ -437,7 +534,7 @@
               </td>
             </tr>
             {#each band.rows as row (row.id)}
-              <tr>
+              <tr class:row-new={row.id === lastRun?.inserted?.id}>
                 <td class="col-numeric">{row.id}</td>
                 <td>{row.item}</td>
                 <td class="col-numeric">{row.qty}</td>
@@ -550,6 +647,18 @@
     flex: 1 1 200px;
   }
 
+  .state-hero {
+    margin: 0;
+    color: var(--ink);
+    font-size: 19px;
+    line-height: 1.4;
+    flex: 1 1 100%;
+  }
+
+  .state-hero strong {
+    font-weight: 700;
+  }
+
   .state-facts {
     display: flex;
     gap: 18px;
@@ -646,6 +755,28 @@
   }
 
   .run-error-hint {
+    color: var(--text-dim);
+  }
+
+  .stopwatch-card {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 20px;
+  }
+
+  .stopwatch-value {
+    font-size: 26px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+  }
+
+  .stopwatch-narration {
+    font-size: 13px;
     color: var(--text-dim);
   }
 
@@ -979,5 +1110,36 @@
   .history-connect,
   .history-query {
     color: var(--text-dim);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .connect-pulse {
+      display: inline-block;
+      animation: connect-pulse 0.5s ease-out;
+    }
+
+    @keyframes connect-pulse {
+      0% {
+        transform: scale(1.25);
+        color: var(--svc-fc);
+      }
+      100% {
+        transform: scale(1);
+        color: var(--ink);
+      }
+    }
+
+    .row-new {
+      animation: row-new-fade 0.8s ease-out;
+    }
+
+    @keyframes row-new-fade {
+      0% {
+        background: color-mix(in srgb, var(--accent) 35%, transparent);
+      }
+      100% {
+        background: transparent;
+      }
+    }
   }
 </style>
