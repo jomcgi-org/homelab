@@ -32,6 +32,13 @@ helm_chart(
         # R4 stateful consumer (D-R4.PR-11.1): the scratch-postgres base image.
         # Distinct FLAT top-level key (D14a.6), digest-pinned from its .info.
         "scratchPostgres.guestImage": "//projects/embervm/runtimes/postgres:image.info",
+        # R5 composite consumer (plan Task 10): the scratch-k8s k3s server + agent
+        # base images. Two DISTINCT FLAT top-level keys (D14a.6), digest-pinned
+        # from their .info providers so the noded EMBERVM_NODED_IMAGES refs, the
+        # rootfs-builder GUEST_IMAGE, and the composite Workload CR's per-member
+        # source.image.ref all resolve to the same pinned digest.
+        "scratchK8sServer.guestImage": "//projects/embervm/runtimes/k3s/k3s-server:image.info",
+        "scratchK8sAgent.guestImage": "//projects/embervm/runtimes/k3s/k3s-agent:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

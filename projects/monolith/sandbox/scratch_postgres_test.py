@@ -43,16 +43,16 @@ class _FakeClient:
         return _Resp()
 
 
-def test_with_scratch_dsn_unset_returns_code_unchanged(monkeypatch):
+def test_with_scratch_env_unset_returns_code_unchanged(monkeypatch):
     monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", "")
     code = "print('hi')"
-    assert client._with_scratch_dsn(code) == code
+    assert client._with_scratch_env(code) == code
 
 
-def test_with_scratch_dsn_injects_env_assignment(monkeypatch):
+def test_with_scratch_env_injects_env_assignment(monkeypatch):
     dsn = "postgresql://postgres:pw@embervm-serving.embervm.svc:5400/scratch"
     monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", dsn)
-    out = client._with_scratch_dsn("print('hi')")
+    out = client._with_scratch_env("print('hi')")
     # The user code is preserved and the DSN is set in the guest process env
     # before it runs.
     assert out.endswith("print('hi')")
@@ -60,11 +60,11 @@ def test_with_scratch_dsn_injects_env_assignment(monkeypatch):
     assert dsn in out
 
 
-def test_with_scratch_dsn_repr_escapes_special_chars(monkeypatch):
+def test_with_scratch_env_repr_escapes_special_chars(monkeypatch):
     # A password with a quote/backslash must not break out of the literal.
     dsn = "postgresql://postgres:p'w\\x@host:5400/scratch"
     monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", dsn)
-    out = client._with_scratch_dsn("pass")
+    out = client._with_scratch_env("pass")
     # repr() escaping means the raw quote is not left unescaped in the assignment.
     assert repr(dsn) in out
 
