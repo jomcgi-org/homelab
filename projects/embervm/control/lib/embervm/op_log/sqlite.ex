@@ -1824,7 +1824,11 @@ defmodule Embervm.OpLog.SQLite do
   defp project_usage_group(conn, %Op{payload: payload} = op) do
     case Map.get(payload, :usage) do
       usage when is_map(usage) ->
-        member_count = Map.get(payload, :member_count, 1)
+        # member_count is coerced the same defensive way the usage values go through
+        # to_float/1: a malformed op (e.g. a string member_count) must never raise an
+        # ArithmeticError inside the append transaction. A non-integer/absent count
+        # bills one member's worth.
+        member_count = to_pos_int(Map.get(payload, :member_count), 1)
         vcpu_seconds = to_float(Map.get(usage, :vcpu_seconds, 0)) * member_count
         gb_seconds = to_float(Map.get(usage, :gb_seconds, 0)) * member_count
 
@@ -1859,6 +1863,12 @@ defmodule Embervm.OpLog.SQLite do
 
   defp to_float(n) when is_number(n), do: n * 1.0
   defp to_float(_), do: 0.0
+
+  # Coerce a payload count to a POSITIVE integer, defaulting on anything else (a
+  # non-positive, non-integer, or absent value). Keeps a malformed op from raising
+  # inside the append transaction, mirroring to_float/1's total-function shape.
+  defp to_pos_int(n, _default) when is_integer(n) and n > 0, do: n
+  defp to_pos_int(_n, default), do: default
 
   defp existing_task_for_idempotency_key(_conn, _workload, nil), do: {:ok, nil}
 

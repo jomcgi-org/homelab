@@ -38,6 +38,13 @@ defmodule Embervm.Application do
     Application.put_env(:embervm, :quota, quota_config())
     Application.put_env(:embervm, :usage_admins, usage_admins())
 
+    # Composite-group (R5) capacity from the chart env into app-env BEFORE the
+    # supervisor starts, so Embervm.WorkloadWatcher (reads them at init) sees an
+    # operator's override of compositeTcpPortRange / maxGroupSize. Absent or
+    # malformed env falls back to the watcher's own compile-time defaults (they are
+    # NOT put here in that case, so the watcher's Application.get_env default fires).
+    put_composite_group_config()
+
     children = [
       # The sync-wait waiter registry + park-count ETS owner come FIRST: every
       # terminal task-state write in TaskStore calls Embervm.SyncWait.notify,
@@ -643,6 +650,65 @@ defmodule Embervm.Application do
       end
     else
       []
+    end
+  end
+
+  # Composite-group capacity (R5): translate the chart env vars into the app-env
+  # keys Embervm.WorkloadWatcher reads. EMBERVM_COMPOSITE_LISTEN_PORT_RANGE is a
+  # "start-end" pair (e.g. "5410-5419"), parsed EXACTLY like
+  # stateful_activator_port_range/0 parses its range; EMBERVM_MAX_GROUP_SIZE is a
+  # positive integer. An absent or malformed value is left UNSET (put_env is
+  # skipped), so the watcher's own Application.get_env default fires (5410..5419 /
+  # 4) rather than a bad override taking hold. Only the R5 seam is wired here; the
+  # R4 :stateful_listen_range seam is deliberately left as-is.
+  defp put_composite_group_config do
+    case composite_listen_range_env() do
+      nil -> :ok
+      range -> Application.put_env(:embervm, :composite_listen_range, range)
+    end
+
+    case max_group_size_env() do
+      nil -> :ok
+      size -> Application.put_env(:embervm, :max_group_size, size)
+    end
+  end
+
+  # Parse "start-end" into a start..end Range, or nil when unset/malformed (so the
+  # watcher default fires). Mirrors stateful_activator_port_range/0's split+parse.
+  defp composite_listen_range_env do
+    case trimmed_env("EMBERVM_COMPOSITE_LISTEN_PORT_RANGE") do
+      "" ->
+        nil
+
+      raw ->
+        case String.split(raw, "-", parts: 2) do
+          [s, e] ->
+            with {start_port, ""} <- Integer.parse(String.trim(s)),
+                 {end_port, ""} <- Integer.parse(String.trim(e)),
+                 true <- start_port <= end_port do
+              start_port..end_port
+            else
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+    end
+  end
+
+  # Parse EMBERVM_MAX_GROUP_SIZE into a positive integer, or nil when unset/malformed
+  # (so the watcher default fires).
+  defp max_group_size_env do
+    case trimmed_env("EMBERVM_MAX_GROUP_SIZE") do
+      "" ->
+        nil
+
+      raw ->
+        case Integer.parse(raw) do
+          {size, ""} when size > 0 -> size
+          _ -> nil
+        end
     end
   end
 
