@@ -277,6 +277,21 @@ defmodule Embervm.StatefulStore do
   end
 
   @doc """
+  Durably deletes `workload`'s volume row: appends `volume_deleted` (write-
+  through) and ONLY on success removes the ETS volume fact. The ONLY destructive
+  data verb in the system (a CR deletion never reaches this); `Embervm.StatefulManager`
+  calls it from the explicit `DELETE /v1/stateful/:name/volume` management act,
+  never automatically. Idempotent: deleting an already-absent volume still
+  appends the op (the durable record of the act) and returns `:ok`. Returns
+  `{:error, reason}` on an append failure, leaving the ETS row untouched (as
+  durable as the op-log agrees).
+  """
+  @spec delete_volume(GenServer.server(), String.t()) :: :ok | {:error, term()}
+  def delete_volume(store \\ __MODULE__, workload) do
+    GenServer.call(store, {:delete_volume, workload})
+  end
+
+  @doc """
   Whether `workload`'s banked bundle is VALID against the current volume: true iff
   the workload has a `banked` instance whose `snapshot_generation` equals the
   workload's volume `generation`. False when either side is missing (no banked
@@ -573,6 +588,33 @@ defmodule Embervm.StatefulStore do
     merged = base |> Map.merge(fields) |> Map.put(:workload, workload) |> Map.put(:updated_at, ts)
     :ets.insert(state.volumes, {workload, merged})
     {:reply, merged, state}
+  end
+
+  def handle_call({:delete_volume, workload}, _from, state) do
+    ts = state.clock.()
+
+    op = %Op{
+      kind: :volume_deleted,
+      tenant: "homelab",
+      # The volume delete act has no per-request caller identity crossing this
+      # store boundary (the router's management auth already authorized the
+      # caller; the op's principal records the workload's synthesized system
+      # owner, matching every other stateful lifecycle op, e.g.
+      # StatefulManager.wake_principal/1's `system:stateful:<workload>`).
+      principal: "system:stateful:#{workload}",
+      workload: workload,
+      ts: ts,
+      payload: %{}
+    }
+
+    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      {:ok, _seq} ->
+        :ets.delete(state.volumes, workload)
+        {:reply, :ok, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
   end
 
   def handle_call({:pair_valid, workload}, _from, state) do

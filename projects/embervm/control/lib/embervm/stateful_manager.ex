@@ -1,0 +1,1158 @@
+defmodule Embervm.StatefulManager do
+  @moduledoc """
+  The stateful wake brain (R4, Task 8): the L4 counterpart of
+  `Embervm.ServingManager`, and the headline verb of this rung. An inbound TCP
+  connection to a sleeping (banked or cold) stateful workload arrives at
+  `Embervm.TcpActivator`, which resolves the workload from the LOCAL accept port
+  (the listener port IS the workload identity at L4, decision 5: there is no
+  header to read) and calls `wake/2` here. This module single-flights the wake
+  (relight a banked bundle, or cold/fresh-boot on the volume), publishes the
+  fresh endpoint via `Embervm.EndpointPublisher`, and hands the woken `{ip,
+  port}` back to every parked connection so the activator can splice bytes to
+  the VM. Every SUBSEQUENT connection reaches the VM node-Envoy-direct with zero
+  control-plane involvement (the same off-hit-path shape as serving).
+
+  ## single-flight wake (exactly one StartStateful per concurrent connect burst)
+
+  N concurrent inbound connections for one workload must produce exactly ONE
+  StartStateful and N spliced sessions. `waking` maps `workload -> [{from,
+  principal}]`, the same shape as `ServingManager.waking` minus the request
+  envelope (a stateful miss carries no HTTP request to replay, only the raw
+  socket the activator already holds). The FIRST connection for a workload
+  registers its caller AND kicks one wake worker; every concurrent connection
+  finds the workload already in `waking` and only appends. When the wake
+  completes, every parked caller is resolved to the fresh endpoint.
+
+  Because the class is a SINGLETON (decision 3, `StatefulStore.start/2` refuses
+  a second live instance), the single-flight here is not just an optimization
+  against duplicate StartStateful calls, it is what KEEPS the class singleton
+  under concurrent misses: without it, two connections racing the empty cluster
+  could both attempt to boot the volume writable, and the daemon's own
+  FAILED_PRECONDITION guard would only catch the loser after a wasted RPC.
+
+  ## the reply contract (a parked connection never blocks forever)
+
+  A caller parks as `GenServer.call(manager, {:wake, workload, principal},
+  :infinity)`. Every terminal path replies: a rate-limit or parked-cap denial
+  replies immediately; a wake success replies `{:ok, endpoint}`; a wake failure
+  or the volume being gone replies `{:error, reason}`. No path drops a `from`.
+
+  ## wake failure keeps the activator published (retryable)
+
+  On a wake failure the parked callers get an error (the activator closes their
+  sockets), the instance (if one was created) is marked `failed`, and the
+  workload's L4 cluster STAYS on the activator fallback (the publisher renders
+  it whenever `StatefulStore.published_endpoint/1` is nil, which is still true
+  after a failed wake). The client's OWN retry (a reconnect) is therefore the
+  retry mechanism: TCP has no request-level replay the way the serving
+  activator can hold and resolve a parked HTTP request, so a failed miss simply
+  closes and the NEXT inbound connection tries again, subject to the wake-rate
+  limit. This is the "reconnect-once" caveat: a stateful client behind a
+  connection pool that does not retry on a reset will see one failed dial per
+  wake failure.
+
+  ## plan_wake: relight vs cold, and the volume-anchored node
+
+  `plan_wake/2` reads `StatefulStore` + `StatefulStore.pair_valid?/1` purely (ETS
+  reads only, mirroring `ServingManager.plan_wake/2`):
+
+    * a VALID pair (a banked bundle whose `snapshot_generation` matches the
+      volume's current `generation`) relights: `{:relight, instance, node_id,
+      snapshot_ref}`.
+    * a banked bundle with a BROKEN pair is evicted first (the durable
+      `stateful_evicted` op, reason `pair_broken`), then the wake falls through
+      to cold: `{:cold, node_id, boot_ref, mode}`.
+    * no bundle at all: cold or fresh, `{:cold, node_id, boot_ref, mode}`, `mode`
+      is `FRESH` when the workload has never had a volume (no volume row yet:
+      the daemon must create it) and `COLD` when a volume row already exists
+      (an explicit cold boot against existing data, no bundle to resume).
+
+  Unlike serving (whose cold placement is a rendezvous hash over any eligible
+  node), a stateful wake is NOT a free placement choice once the workload has a
+  volume: decision 11 anchors the wake to the NODE THAT HOLDS THE VOLUME (volume
+  files are node-local NVMe, never migrated by this rung). `plan_wake/2` reads
+  the volume's `node_id` from `StatefulStore.get_volume/2` and requires that
+  node to still be reporting (`Embervm.NodeCapacity.fetch/2`); if the node is
+  gone, the wake is `{:error, :volume_node_gone}` (a FAILED_PRECONDITION-shaped
+  refusal, never a silent recreate on a different node). Only a workload with NO
+  volume row yet (its true first boot) is free to place via
+  `Embervm.ServingPlacement`-style eligibility, because there is no data to
+  anchor to.
+
+  ## wake-rate limit: per-workload (the per-principal intent, singleton-reduced)
+
+  The plan's per-principal wake-rate default (10/min) is honored here KEYED BY
+  WORKLOAD, exactly the `ServingManager` per-workload adaptation and for the
+  same underlying reason stated more strongly: a stateful workload is a
+  SINGLETON owned by exactly one principal (there is no concept of many
+  concurrent tenants sharing one stateful sandbox), so "per principal" and "per
+  workload" name the same set for this class. A future PR that adds a real
+  per-CR owner principal to the catalog can key on it directly without changing
+  this module's shape; today `wake_principal/1` synthesizes
+  `system:stateful:<workload>` as the op-log's owner attribution, matching
+  `ServingManager.wake_principal/2` in spirit (that one also takes a `state`
+  arg it does not use; this one drops the unused param).
+
+  ## the parked-connection cap (no 429 at L4; the audited op is the signal)
+
+  `park_cap` bounds how many connections may queue behind one in-flight wake
+  (default 16, an order of magnitude below serving's 64: a stateful sandbox is a
+  singleton with one owner, so a burst this deep is already anomalous). There is
+  no HTTP status to return at L4; `Embervm.TcpActivator` closes the excess
+  connection after this module records an audit denial op
+  (`Embervm.Metering.record_denial/3`), so the observable is the op, not a
+  response code.
+
+  ## restart adoption (the #3517 lesson, fourth application)
+
+  `reconcile/1` (boot + periodic timer) reconciles the `StatefulStore`
+  projection against every node's reported `stateful_vms` + `stateful_bundles` +
+  `volumes` (mirrors `ServingManager.reconcile/1` exactly, adapted for the
+  singleton + persistent-volume shape):
+
+    * a node-reported LIVE stateful VM (by `vm_id`) -> `adopt_state(:serving)` +
+      `adopt_endpoint` (rebind ip/port/healthy from node truth), healing a
+      control-plane restart without touching the VM;
+    * no live VM but the node reports the instance's BUNDLE (by
+      `snapshot_ref`) -> heal to `:banked`;
+    * neither, and the instance's node IS reporting -> the VM and bundle both
+      vanished, mark it `failed` (the only reaping, only on node-confirmed
+      absence, never a mere disconnect);
+    * every reporting node's `volumes` facts are folded into
+      `StatefulStore.upsert_volume/3` (the live node-ledger fact: generation +
+      allocated_bytes), so the pair-validity check always compares against the
+      CURRENT node-reported generation, not a stale boot-time snapshot;
+    * `StatefulStore.eager_evict_broken_pairs/0` runs after the volume facts are
+      refreshed, so a bundle whose pair broke while the control plane was down
+      (a generation bump the daemon recorded but the control plane missed) is
+      evicted on the very first reconcile rather than surviving until a client
+      tries to relight it.
+
+  A single-flight wake in progress for a workload is left untouched by a
+  periodic reconcile (mirroring `ServingManager.adopt_one/4`'s `waking` guard):
+  the in-flight wake owns that workload's transition, and the reconcile that
+  runs after the wake's own `finish_wake` will see the live VM and adopt it
+  cleanly (idempotent). After every reconcile pass, `EndpointPublisher.publish/1`
+  re-derives the L4 fan-out so a control-plane restart with a live stateful VM
+  republishes the identical endpoint without ever touching the VM.
+  """
+
+  use GenServer
+  require Logger
+
+  require OpenTelemetry.Tracer, as: Tracer
+
+  alias Embervm.{EndpointPublisher, NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
+
+  alias Embervm.Node.V1.{
+    ResourceSpec,
+    StartStatefulRequest,
+    StartStatefulResponse,
+    StopStatefulRequest,
+    StopStatefulResponse,
+    DeleteVolumeRequest,
+    Trace
+  }
+
+  # Wake-rate limit: wakes per WORKLOAD per window. See the moduledoc's
+  # "per-workload, singleton-reduced" note for why this is the per-principal
+  # intent, not a deviation from it.
+  @default_wake_max 10
+  @default_wake_window_ms 60_000
+
+  # Parked-connection cap per workload: an order of magnitude below serving's
+  # default (64) because a stateful sandbox has exactly one owner, so a deep
+  # burst is already anomalous rather than ordinary multi-tenant fan-in.
+  @default_park_cap 16
+
+  # -- Client API ------------------------------------------------------------
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
+  end
+
+  @doc """
+  Handles one activator connect for `workload` on behalf of `principal` (the
+  workload's synthesized owner; see the moduledoc). Blocks (`:infinity`) until
+  the workload is woken and returns `{:ok, %{ip, port}}` for the
+  `Embervm.TcpActivator` to splice the parked connection to, OR a denial:
+
+    * `{:ok, %{ip, port}}`             -> splice (a fresh wake, OR the
+      STRAGGLER path: a connection reached the activator while a healthy
+      instance already exists, resolved without a wake).
+    * `{:error, {:wake_rate, _}}`               -> close (per-workload wake-rate limit)
+    * `{:error, {:park_full, _}}`                -> close (parked-connection cap)
+    * `{:error, {:wake_failed, r}}`              -> close (start error / readiness
+      timeout / a placement refusal, INCLUDING `{:wake_failed, :volume_node_gone}`
+      when the volume's anchor node is down and `{:wake_failed, :no_capacity}`
+      when no node is eligible for a true first boot: both ride the same
+      generic wake-failure wrap as an RPC failure, since from the caller's
+      perspective they are equally "this wake did not happen, try again")
+    * `{:error, {:unknown_workload}}`            -> close (misconfig / race with catalog)
+  """
+  @spec wake(GenServer.server(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def wake(server \\ __MODULE__, workload, principal) do
+    GenServer.call(server, {:wake, workload, principal}, :infinity)
+  end
+
+  @doc """
+  Runs one adoption reconcile synchronously (the boot continue + the periodic
+  sweep run the same code) and returns after it completes. Reconciles the
+  StatefulStore projection against every node's reported stateful inventory
+  (live VMs, banked bundles, volume facts), then re-derives + re-pushes the L4
+  fan-out. Tests drive adoption deterministically through this.
+  """
+  @spec reconcile(GenServer.server()) :: :ok
+  def reconcile(server \\ __MODULE__) do
+    GenServer.call(server, :reconcile, :infinity)
+  end
+
+  @doc """
+  Destroys the live instance of `workload` (StopStateful DESTROY) AND evicts
+  its banked bundle, so the next connection cold-boots the CURRENT image
+  against the still-intact volume. The management verb behind `DELETE
+  /v1/stateful/:name/instance`. Synchronous; returns `%{destroyed: n, evicted:
+  m}` (each 0 or 1, the class is a singleton).
+  """
+  @spec destroy_instance(GenServer.server(), String.t()) :: %{destroyed: non_neg_integer(), evicted: non_neg_integer()}
+  def destroy_instance(server \\ __MODULE__, workload) do
+    GenServer.call(server, {:destroy_instance, workload}, :infinity)
+  end
+
+  @doc """
+  Deletes `workload`'s volume file and generation ledger (the ONLY destructive
+  data verb; a CR deletion never reaches this). The management verb behind
+  `DELETE /v1/stateful/:name/volume`. REFUSES `{:error, :instance_exists}` while
+  ANY non-terminal instance exists for the workload (live OR banked; a banked
+  instance's bundle is paired to this volume's generation, so deleting the
+  volume out from under it would silently orphan the bundle) so deletion is
+  always an explicit, unambiguous act against a workload with nothing left
+  attached. Synchronous; returns `{:ok, %{deleted: true}}` or the refusal.
+  """
+  @spec delete_volume(GenServer.server(), String.t()) :: {:ok, %{deleted: true}} | {:error, term()}
+  def delete_volume(server \\ __MODULE__, workload) do
+    GenServer.call(server, {:delete_volume, workload}, :infinity)
+  end
+
+  # -- GenServer callbacks ---------------------------------------------------
+
+  @impl true
+  def init(opts) do
+    state = %{
+      store: Keyword.get(opts, :store, StatefulStore),
+      publisher: Keyword.get(opts, :publisher, EndpointPublisher),
+      capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
+      catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
+      clock: Keyword.get(opts, :clock, &default_clock/0),
+      id_fun: Keyword.get(opts, :id_fun, nil),
+      tenant: Keyword.get(opts, :tenant, "homelab"),
+      # Daemon stateful-verb seams (injected for tests; production dials the
+      # real NodeService stub over the shared NodeChannel).
+      channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
+      start_stateful_fun: Keyword.get(opts, :start_stateful_fun, &default_start_stateful/2),
+      stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
+      delete_volume_fun: Keyword.get(opts, :delete_volume_fun, &default_delete_volume/2),
+      # workload -> [{from, principal}] parked behind an in-flight wake
+      # (single-flight). No request envelope: a stateful miss carries no HTTP
+      # request to replay, only the raw socket the activator already holds.
+      waking: %{},
+      # principal -> [wake timestamps within the window]. Sliding-window counter,
+      # keyed by workload per the moduledoc (a stateful workload's principal IS
+      # its workload).
+      wake_events: %{},
+      wake_max: Keyword.get(opts, :wake_max, @default_wake_max),
+      wake_window_ms: Keyword.get(opts, :wake_window_ms, @default_wake_window_ms),
+      park_cap: Keyword.get(opts, :park_cap, @default_park_cap),
+      # The adoption reconcile cadence (0 = off, tests drive reconcile/1).
+      reconcile_interval_ms: Keyword.get(opts, :reconcile_interval_ms, 0)
+    }
+
+    if state.reconcile_interval_ms > 0 do
+      {:ok, state, {:continue, :boot}}
+    else
+      {:ok, state}
+    end
+  end
+
+  @impl true
+  def handle_continue(:boot, state) do
+    state = do_reconcile(state)
+    schedule(:reconcile, state.reconcile_interval_ms)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_call({:wake, workload, principal}, from, state) do
+    handle_wake(state, workload, principal, from)
+  end
+
+  def handle_call(:reconcile, _from, state) do
+    {:reply, :ok, do_reconcile(state)}
+  end
+
+  def handle_call({:destroy_instance, workload}, _from, state) do
+    {reply, state} = do_destroy_instance(state, workload)
+    {:reply, reply, state}
+  end
+
+  def handle_call({:delete_volume, workload}, _from, state) do
+    {reply, state} = do_delete_volume(state, workload)
+    {:reply, reply, state}
+  end
+
+  # The async wake worker finished: complete the durable transition + publish,
+  # then resolve every parked caller for the workload.
+  @impl true
+  def handle_info({:wake_done, workload, outcome}, state) do
+    {:noreply, finish_wake(state, workload, outcome)}
+  end
+
+  def handle_info(:reconcile, state) do
+    state = do_reconcile(state)
+    schedule(:reconcile, state.reconcile_interval_ms)
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  # -- wake handling -----------------------------------------------------------
+
+  defp handle_wake(state, workload, principal, from) do
+    # A straggler: the VM came up between the node Envoy's miss and this call
+    # reaching us (a race with a just-published wake). Resolve to the live
+    # endpoint directly, do NOT wake or error.
+    case StatefulStore.published_endpoint(state.store, workload) do
+      %{ip: ip, port: port} when is_binary(ip) and ip != "" and is_integer(port) ->
+        {:reply, {:ok, %{ip: ip, port: port}}, state}
+
+      _ ->
+        handle_cold_wake(state, workload, principal, from)
+    end
+  end
+
+  defp handle_cold_wake(state, workload, principal, from) do
+    cond do
+      not stateful_workload?(state, workload) ->
+        {:reply, {:error, {:unknown_workload}}, state}
+
+      # Already a wake in flight for this workload: park behind it
+      # (single-flight), subject to the parked-connection cap. Does NOT consult
+      # the wake-rate limit (the wake was already counted by the first miss).
+      Map.has_key?(state.waking, workload) ->
+        park_behind_wake(state, workload, principal, from)
+
+      # First miss: apply the per-workload wake-rate limit, then park + kick
+      # ONE wake worker.
+      wake_allowed?(state, principal) ->
+        state = record_wake(state, principal)
+        state = park_new_wake(state, workload, principal, from)
+        {:noreply, start_wake(state, workload)}
+
+      true ->
+        audit_denial(state, principal, workload, :wake_rate)
+        {:reply, {:error, {:wake_rate, "per-workload wake-rate limit exceeded"}}, state}
+    end
+  end
+
+  defp park_behind_wake(state, workload, principal, from) do
+    waiters = Map.get(state.waking, workload, [])
+
+    if length(waiters) >= state.park_cap do
+      audit_denial(state, principal, workload, :park_full)
+      {:reply, {:error, {:park_full, "parked-connection cap exceeded for workload"}}, state}
+    else
+      state = %{state | waking: Map.put(state.waking, workload, waiters ++ [{from, principal}])}
+      {:noreply, state}
+    end
+  end
+
+  defp park_new_wake(state, workload, principal, from) do
+    %{state | waking: Map.put(state.waking, workload, [{from, principal}])}
+  end
+
+  # -- wake worker -------------------------------------------------------------
+
+  # Kick ONE async wake for a workload. The relight-vs-cold DECISION and, for a
+  # relight, the ETS `banked -> relighting` mark happen HERE on the serialized
+  # manager process (a cheap pure placement read + one ETS mark), so the FSM
+  # edge is taken in order and crash-consistently. The StartStateful RPC itself
+  # runs in a spawned worker so a multi-second boot never head-of-line-blocks
+  # another workload's wake; the worker reports the RPC result and finish_wake
+  # completes the durable transition + publish on this process.
+  defp start_wake(state, workload) do
+    owner = self()
+    entry = catalog_entry(state, workload)
+
+    case plan_wake(state, workload) do
+      {:relight, instance, node_id, snapshot_ref} ->
+        case StatefulStore.mark(state.store, instance.instance_id, :relight) do
+          {:ok, _} ->
+            # boot_image_ref rides even a RELIGHT: if the daemon discovers the
+            # generation pair is actually broken (a mismatch we could not see
+            # from here, or an unreadable ledger) it falls back to a cold boot
+            # from THIS ref rather than failing the call outright.
+            fallback_ref = boot_image_ref(state, node_id, workload)
+            req = relight_request(entry, snapshot_ref, fallback_ref)
+            spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, req) end)
+
+          {:error, reason} ->
+            # The instance moved off banked concurrently: report a wake failure
+            # so the parked callers error and the next connection retries.
+            send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+        end
+
+      {:cold, node_id, boot_ref, mode} ->
+        req = cold_request(entry, workload, boot_ref, mode)
+        spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, boot_ref, mode, req) end)
+
+      {:error, reason} ->
+        send(self(), {:wake_done, workload, {:error, reason}})
+    end
+
+    state
+  end
+
+  # Spawn a wake worker that ALWAYS reports a {:wake_done} outcome, even if the
+  # RPC body crashes: a worker that died without reporting would leave the
+  # parked `:infinity` callers blocked forever.
+  defp spawn_wake(owner, workload, fun) do
+    spawn(fn ->
+      outcome =
+        try do
+          fun.()
+        rescue
+          e -> {:error, {:wake_crashed, e}}
+        catch
+          kind, reason -> {:error, {:wake_crashed, {kind, reason}}}
+        end
+
+      send(owner, {:wake_done, workload, outcome})
+    end)
+  end
+
+  # -- placement (relight vs cold, volume-anchored) ---------------------------
+
+  # PURE (ETS reads only). A banked instance with a VALID pair relights; a
+  # banked instance with a BROKEN pair is evicted first (so it never resurfaces
+  # as a relight candidate) and the wake falls through to cold; no banked
+  # instance at all goes straight to cold. Cold placement is ANCHORED to the
+  # volume's node when a volume row already exists (decision 11: volume files
+  # are node-local, never migrated); a workload with NO volume row yet is a true
+  # first boot, free to place among any eligible node.
+  defp plan_wake(state, workload) do
+    volume = StatefulStore.get_volume(state.store, workload)
+
+    case banked_instance(state, workload) do
+      nil ->
+        cold_plan(state, workload, volume)
+
+      instance ->
+        if StatefulStore.pair_valid?(state.store, workload) do
+          case anchor_node(state, volume) do
+            {:ok, node_id} -> {:relight, instance, node_id, instance.snapshot_ref}
+            {:error, reason} -> {:error, reason}
+          end
+        else
+          # Broken pair: evict the stale bundle through the durable path (so a
+          # rebuild agrees it is gone) and fall through to a cold boot.
+          _ =
+            StatefulStore.transition(
+              state.store,
+              instance.instance_id,
+              :evict,
+              :stateful_evicted,
+              %{reason: "pair_broken"},
+              %{}
+            )
+
+          cold_plan(state, workload, volume)
+        end
+    end
+  end
+
+  # Cold placement: FRESH (no volume row exists yet, the daemon must create it)
+  # when `volume` is nil; COLD (an existing volume, no bundle to resume, either
+  # because none was ever banked or the pair just broke) otherwise. Both modes
+  # are anchored to the resolved node.
+  defp cold_plan(state, workload, nil) do
+    case eligible_node_for_fresh(state, workload) do
+      {:ok, node_id} -> {:cold, node_id, boot_image_ref(state, node_id, workload), :fresh}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp cold_plan(state, workload, volume) do
+    case anchor_node(state, volume) do
+      {:ok, node_id} -> {:cold, node_id, boot_image_ref(state, node_id, workload), :cold}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The volume's anchor node MUST still be reporting (fail-closed: never
+  # silently place a writable attach on a different node than the one holding
+  # the volume file). A gone node is `{:error, :volume_node_gone}`, surfaced to
+  # the caller so the activator closes the connection loudly rather than
+  # hanging.
+  defp anchor_node(_state, %{node_id: node_id}) when not is_binary(node_id) or node_id == "" do
+    {:error, :volume_node_missing}
+  end
+
+  defp anchor_node(state, %{node_id: node_id}) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, _fact} -> {:ok, node_id}
+      :error -> {:error, :volume_node_gone}
+    end
+  end
+
+  defp anchor_node(_state, nil), do: {:error, :volume_node_missing}
+
+  # A genuine first boot (no volume row anywhere): any node reporting a
+  # stateful-capable subnet AND live-VM budget is eligible. Rendezvous-hashed on
+  # the workload, mirroring ServingPlacement.node_for_create/2; with one node
+  # this is trivially that node.
+  defp eligible_node_for_fresh(state, workload) do
+    NodeCapacity.all(state.capacity_table)
+    |> Enum.filter(&stateful_capable?/1)
+    |> Enum.filter(&has_budget?/1)
+    |> rendezvous_pick(workload)
+    |> case do
+      nil -> {:error, :no_capacity}
+      fact -> {:ok, fact.configured_id}
+    end
+  end
+
+  defp stateful_capable?(fact) do
+    cidr = Map.get(fact, :serving_subnet_cidr)
+    is_binary(cidr) and cidr != ""
+  end
+
+  defp has_budget?(fact) do
+    max = Map.get(fact, :max_live_vms, 0)
+    max > 0 and Map.get(fact, :live_vms, 0) < max
+  end
+
+  defp rendezvous_pick([], _key), do: nil
+  defp rendezvous_pick(facts, key), do: Enum.max_by(facts, fn fact -> :erlang.phash2({key, fact.configured_id}, 4_294_967_296) end)
+
+  # The cold-boot source: the node's serving_image_ref for the workload (the
+  # same built-handler-artifact seam serving cold boots use, per the task spec:
+  # a stateful workload's base is built via the same BaseBuilder path, flagged
+  # serving-class-alike). Empty when the node has not built one yet; the daemon
+  # then fails the RPC loudly rather than booting an empty rootfs.
+  defp boot_image_ref(state, node_id, workload) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        fact
+        |> Map.get(:workloads, %{})
+        |> Map.get(workload, %{})
+        |> Map.get(:serving_image_ref)
+
+      :error ->
+        nil
+    end
+  end
+
+  defp banked_instance(state, workload) do
+    StatefulStore.list(state.store, workload)
+    |> Enum.find(&(&1.state == :banked))
+  end
+
+  # -- request builders --------------------------------------------------------
+
+  defp relight_request(entry, snapshot_ref, fallback_ref) do
+    cfg = stateful_cfg(entry)
+
+    %StartStatefulRequest{
+      trace: %Trace{workload: Map.get(entry, :name, "")},
+      mode: :START_STATEFUL_MODE_RELIGHT,
+      boot_image_ref: fallback_ref || "",
+      relight_snapshot_ref: snapshot_ref,
+      port: cfg.port,
+      volume_size_bytes: gib_to_bytes(cfg.volume_size_gib),
+      volume_mount: cfg.volume_mount_path,
+      create_if_missing: false,
+      resources: resource_spec(entry),
+      mmds_env: %{}
+    }
+  end
+
+  defp cold_request(entry, workload, boot_ref, mode) do
+    cfg = stateful_cfg(entry)
+
+    %StartStatefulRequest{
+      trace: %Trace{workload: workload},
+      mode: start_mode(mode),
+      boot_image_ref: boot_ref || "",
+      relight_snapshot_ref: "",
+      port: cfg.port,
+      volume_size_bytes: gib_to_bytes(cfg.volume_size_gib),
+      volume_mount: cfg.volume_mount_path,
+      # FRESH creates the volume if it is absent (the true first boot); COLD
+      # never creates (a volume row already exists, per plan_wake/2's cold_plan
+      # branch selection).
+      create_if_missing: mode == :fresh,
+      resources: resource_spec(entry),
+      mmds_env: %{}
+    }
+  end
+
+  defp start_mode(:fresh), do: :START_STATEFUL_MODE_FRESH
+  defp start_mode(:cold), do: :START_STATEFUL_MODE_COLD
+
+  defp resource_spec(entry) do
+    resources = Map.get(entry, :resources, %{})
+    %ResourceSpec{vcpus: Map.get(resources, :vcpus, 1), mem_mib: Map.get(resources, :mem_mib, 512)}
+  end
+
+  defp gib_to_bytes(nil), do: 0
+  defp gib_to_bytes(gib) when is_integer(gib), do: gib * 1024 * 1024 * 1024
+
+  # -- wake RPC workers ---------------------------------------------------------
+
+  defp run_relight(state, instance, node_id, req) do
+    case safe_start_stateful(state, node_id, req) do
+      {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
+      when is_binary(vm_id) and vm_id != "" ->
+        {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}
+
+      # A RELIGHT call that fell back to a cold boot on the daemon side
+      # (generation mismatch discovered only at the daemon, or an unreadable
+      # ledger): treat it as a fresh instance, not a relit one, and let the
+      # ORIGINAL banked row be evicted (it never resumed). was_relight=false on
+      # a RELIGHT-mode response is exactly that fallback signal.
+      {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: false, cold_boot_reason: reason}}
+      when is_binary(vm_id) and vm_id != "" ->
+        {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}
+
+      other ->
+        {:error, {:relight_failed, instance.instance_id, other}}
+    end
+  end
+
+  defp run_cold(state, workload, node_id, boot_ref, mode, req) do
+    case safe_start_stateful(state, node_id, req) do
+      {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
+      when is_binary(vm_id) and vm_id != "" ->
+        attrs = %{
+          tenant: state.tenant,
+          principal: wake_principal(workload),
+          workload: workload,
+          node_id: node_id,
+          generation: generation
+        }
+
+        {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref}
+
+      other ->
+        {:error, {:start_failed, other}}
+    end
+  end
+
+  # -- finish wake (serialized, durable) ---------------------------------------
+
+  defp finish_wake(state, workload, outcome) do
+    {waiters, state} = pop_waiters(state, workload)
+
+    case outcome do
+      {:created, attrs, endpoint, _mode, _boot_ref} ->
+        finish_created(state, workload, attrs, endpoint, waiters)
+
+      {:relit, instance_id, node_id, endpoint} ->
+        finish_relit(state, workload, instance_id, node_id, endpoint, waiters)
+
+      {:relight_fell_back, instance_id, node_id, endpoint, reason} ->
+        finish_relight_fallback(state, workload, instance_id, node_id, endpoint, reason, waiters)
+
+      other ->
+        finish_wake_failure(state, workload, other, waiters)
+    end
+  end
+
+  defp finish_wake_failure(state, workload, outcome, waiters) do
+    case outcome do
+      {:error, {:relight_failed, instance_id, reason}} ->
+        Logger.warning("embervm stateful relight failed", workload: workload, instance_id: instance_id, reason: inspect(reason))
+        _ = StatefulStore.mark(state.store, instance_id, :relight_abort)
+        reply_all(waiters, {:error, {:wake_failed, reason}})
+        state
+
+      {:error, reason} ->
+        Logger.warning("embervm stateful wake failed", workload: workload, reason: inspect(reason))
+        reply_all(waiters, {:error, {:wake_failed, reason}})
+        state
+    end
+  end
+
+  defp finish_created(state, workload, attrs, endpoint, waiters) do
+    instance_id = mint_id(state)
+    attrs = Map.put(attrs, :instance_id, instance_id)
+    attrs = Map.merge(attrs, %{vm_id: endpoint.vm_id})
+
+    case StatefulStore.start(state.store, attrs) do
+      {:ok, _instance} ->
+        publish_and_resolve(state, instance_id, workload, endpoint, :started, waiters)
+
+      {:error, reason} ->
+        Logger.error("embervm stateful: start record failed", workload: workload, reason: inspect(reason))
+        reply_all(waiters, {:error, {:wake_failed, {:store, reason}}})
+        state
+    end
+  end
+
+  defp finish_relit(state, workload, instance_id, node_id, endpoint, waiters) do
+    relit =
+      StatefulStore.transition(
+        state.store,
+        instance_id,
+        :relight_ready,
+        :stateful_relit,
+        %{node_id: node_id, vm_id: endpoint.vm_id, generation: endpoint.generation},
+        %{node_id: node_id, vm_id: endpoint.vm_id, generation: endpoint.generation}
+      )
+
+    case relit do
+      {:ok, _} ->
+        publish_and_resolve(state, instance_id, workload, endpoint, :relit, waiters)
+
+      {:error, reason} ->
+        Logger.warning("embervm stateful: relit transition failed", instance_id: instance_id, reason: inspect(reason))
+        reply_all(waiters, {:error, {:wake_failed, {:relit, reason}}})
+        state
+    end
+  end
+
+  # The daemon itself fell back RELIGHT -> cold at StartStateful time (a
+  # generation mismatch or unreadable ledger it discovered we could not see
+  # from here): the ORIGINAL banked instance never resumed, so mark it evicted
+  # (cold_boot_reason from the wire), and record a NEW instance the same way
+  # any other cold/fresh boot is recorded (StatefulStore.start/2's own doc
+  # covers "a fresh first boot OR an explicit cold boot that begins a new
+  # lifecycle" under the single stateful_started op; the schema's distinct
+  # stateful_cold_booted op kind exists for a future audit-granularity pass,
+  # not something this store's public API currently exposes a seam for).
+  # Mirrors ServingManager treating a daemon-side relight fallback as a fresh
+  # instance rather than trying to force it back into the relit shape.
+  defp finish_relight_fallback(state, workload, old_instance_id, node_id, endpoint, reason, waiters) do
+    _ =
+      StatefulStore.transition(
+        state.store,
+        old_instance_id,
+        :evict,
+        :stateful_evicted,
+        %{reason: to_string(reason)},
+        %{}
+      )
+
+    instance_id = mint_id(state)
+
+    attrs = %{
+      instance_id: instance_id,
+      tenant: state.tenant,
+      principal: wake_principal(workload),
+      workload: workload,
+      node_id: node_id,
+      vm_id: endpoint.vm_id,
+      generation: endpoint.generation
+    }
+
+    case StatefulStore.start(state.store, attrs) do
+      {:ok, _instance} ->
+        publish_and_resolve(state, instance_id, workload, endpoint, :cold_booted, waiters)
+
+      {:error, store_reason} ->
+        Logger.error("embervm stateful: relight-fallback start record failed", workload: workload, reason: inspect(store_reason))
+        reply_all(waiters, {:error, {:wake_failed, {:store, store_reason}}})
+        state
+    end
+  end
+
+  defp publish_and_resolve(state, instance_id, workload, endpoint, reason, waiters) do
+    Tracer.with_span "embervm.stateful.publish",
+                     %{attributes: %{"ember.workload" => workload, "ember.instance_id" => instance_id}} do
+      case StatefulStore.publish(state.store, instance_id, endpoint.ip, endpoint.port, reason) do
+        {:ok, _} ->
+          EndpointPublisher.publish(state.publisher)
+
+          Logger.info("embervm stateful woken", workload: workload, instance_id: instance_id, reason: reason)
+
+          reply_all(waiters, {:ok, %{ip: endpoint.ip, port: endpoint.port}})
+          state
+
+        {:error, publish_reason} ->
+          Logger.error("embervm stateful: publish failed", instance_id: instance_id, reason: inspect(publish_reason))
+          reply_all(waiters, {:error, {:wake_failed, {:publish, publish_reason}}})
+          state
+      end
+    end
+  end
+
+  defp pop_waiters(state, workload) do
+    waiters = Map.get(state.waking, workload, [])
+    {waiters, %{state | waking: Map.delete(state.waking, workload)}}
+  end
+
+  defp reply_all(waiters, reply) do
+    for {from, _principal} <- waiters, do: GenServer.reply(from, reply)
+    :ok
+  end
+
+  # -- destroy (management verb) -----------------------------------------------
+
+  # DELETE /v1/stateful/:name/instance: destroy the live instance AND evict the
+  # banked bundle, so the next connection cold-boots the current image against
+  # the still-intact volume (the volume itself is untouched; deletion is only
+  # ever the separate explicit DELETE /volume act). No drain wait: an operator
+  # override, mirroring ServingSweeper.force_roll's forced-destroy semantics
+  # (accepts the in-flight drop).
+  defp do_destroy_instance(state, workload) do
+    instances = StatefulStore.list(state.store, workload)
+
+    {state, destroyed, evicted} =
+      Enum.reduce(instances, {state, 0, 0}, fn instance, {acc, d, e} ->
+        cond do
+          StatefulState.terminal?(instance.state) ->
+            {acc, d, e}
+
+          instance.state == :banked ->
+            {evict_banked(acc, instance), d, e + 1}
+
+          true ->
+            {force_destroy_live(acc, instance), d + 1, e}
+        end
+      end)
+
+    EndpointPublisher.publish(state.publisher)
+    Logger.info("embervm stateful: instance destroyed", workload: workload, destroyed: destroyed, evicted: evicted)
+    {%{destroyed: destroyed, evicted: evicted}, state}
+  end
+
+  defp force_destroy_live(state, instance) do
+    _ = stop_stateful_destroy(state, instance)
+
+    _ =
+      StatefulStore.transition(
+        state.store,
+        instance.instance_id,
+        :destroy,
+        :stateful_destroyed,
+        %{reason: "forced_destroy"},
+        %{}
+      )
+
+    state
+  end
+
+  defp evict_banked(state, instance) do
+    _ =
+      StatefulStore.transition(
+        state.store,
+        instance.instance_id,
+        :evict,
+        :stateful_evicted,
+        %{reason: "forced_destroy"},
+        %{}
+      )
+
+    state
+  end
+
+  defp stop_stateful_destroy(state, %{node_id: node_id, vm_id: vm_id}) when is_binary(node_id) and is_binary(vm_id) do
+    req = %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_DESTROY}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.stop_stateful_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp stop_stateful_destroy(_state, _instance), do: :ok
+
+  # -- delete volume (management verb) -----------------------------------------
+
+  # DELETE /v1/stateful/:name/volume: refused while ANY non-terminal instance
+  # exists (live or banked; see the doc). On a clean workload, calls the
+  # daemon's DeleteVolume (best-effort; the durable volume_deleted append lands
+  # regardless, exactly the destroy_instance pattern of "the record is
+  # authoritative even if the RPC silently no-ops on an already-gone file").
+  defp do_delete_volume(state, workload) do
+    instances = StatefulStore.list(state.store, workload)
+
+    if Enum.any?(instances, &(not StatefulState.terminal?(&1.state))) do
+      {{:error, :instance_exists}, state}
+    else
+      volume = StatefulStore.get_volume(state.store, workload)
+      _ = safe_delete_volume(state, volume, workload)
+
+      case StatefulStore.delete_volume(state.store, workload) do
+        :ok ->
+          Logger.info("embervm stateful: volume deleted", workload: workload)
+          {{:ok, %{deleted: true}}, state}
+
+        {:error, reason} ->
+          Logger.error("embervm stateful: volume_deleted append failed", workload: workload, reason: inspect(reason))
+          {{:error, {:store, reason}}, state}
+      end
+    end
+  end
+
+  defp safe_delete_volume(state, %{node_id: node_id}, workload) when is_binary(node_id) do
+    req = %DeleteVolumeRequest{trace: %Trace{workload: workload}, workload: workload}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.delete_volume_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp safe_delete_volume(_state, _volume, _workload), do: :ok
+
+  # -- adoption ------------------------------------------------------------
+
+  # Reconcile the StatefulStore projection against every node's reported
+  # stateful inventory, refresh volume facts, eager-evict any pair the reconcile
+  # itself just broke, then re-derive + re-push. Mirrors
+  # ServingManager.do_reconcile/1; see the moduledoc's adoption section.
+  defp do_reconcile(state) do
+    facts = NodeCapacity.all(state.capacity_table)
+    live_vms = index_stateful_vms(facts)
+    bundles = index_stateful_bundles(facts)
+
+    state =
+      StatefulStore.all(state.store)
+      |> Enum.reject(&StatefulState.terminal?(&1.state))
+      |> Enum.reduce(state, fn instance, acc -> adopt_one(acc, instance, live_vms, bundles) end)
+
+    state = refresh_volume_facts(state, facts)
+
+    _ = StatefulStore.eager_evict_broken_pairs(state.store)
+
+    EndpointPublisher.publish(state.publisher)
+    state
+  end
+
+  defp index_stateful_vms(facts) do
+    for f <- facts, v <- Map.get(f, :stateful_vms, []) || [], into: %{} do
+      {v.vm_id, {f.configured_id, v}}
+    end
+  end
+
+  defp index_stateful_bundles(facts) do
+    for f <- facts, b <- Map.get(f, :stateful_bundles, []) || [], into: %{} do
+      {b.snapshot_ref, {f.configured_id, b}}
+    end
+  end
+
+  defp adopt_one(state, instance, live_vms, bundles) do
+    cond do
+      # An in-flight wake for the workload owns its transition; a periodic
+      # reconcile must not touch it (the wake's own finish_wake will land, and
+      # the NEXT reconcile adopts the result cleanly). On boot `waking` is
+      # empty, so boot adoption still fully heals every limbo.
+      Map.has_key?(state.waking, instance.workload) ->
+        state
+
+      is_binary(instance.vm_id) and Map.has_key?(live_vms, instance.vm_id) ->
+        {node_id, vm} = Map.fetch!(live_vms, instance.vm_id)
+        adopt_live(state, instance, node_id, vm)
+
+      is_binary(instance.snapshot_ref) and Map.has_key?(bundles, instance.snapshot_ref) ->
+        heal_to_banked(state, instance)
+
+      node_reporting?(state, instance.node_id) ->
+        fail_instance(state, instance.instance_id, "vm_and_bundle_vanished")
+        state
+
+      true ->
+        state
+    end
+  end
+
+  defp adopt_live(state, instance, node_id, vm) do
+    StatefulStore.adopt_state(state.store, instance.instance_id, :serving)
+
+    StatefulStore.adopt_endpoint(state.store, instance.instance_id, node_id, vm.vm_id, %{
+      ip: Map.get(vm, :ip),
+      port: Map.get(vm, :port),
+      healthy: Map.get(vm, :healthy, true)
+    })
+
+    state
+  end
+
+  defp heal_to_banked(state, %{state: :banked}), do: state
+
+  defp heal_to_banked(state, instance) do
+    StatefulStore.adopt_state(state.store, instance.instance_id, :banked)
+    Logger.info("embervm stateful adopted (banked)", instance_id: instance.instance_id)
+    state
+  end
+
+  defp node_reporting?(state, node_id) when is_binary(node_id) do
+    match?({:ok, _}, NodeCapacity.fetch(state.capacity_table, node_id))
+  end
+
+  defp node_reporting?(_state, _node_id), do: false
+
+  # Fold every reporting node's `volumes` facts into the StatefulStore's live
+  # volume ledger (generation + allocated_bytes), so pair-validity always
+  # compares against the CURRENT node-reported generation. A volume is
+  # node-anchored (decision 11), so each reported row is keyed by its own
+  # workload; no cross-node merge is needed (at most one node reports a given
+  # workload's volume).
+  defp refresh_volume_facts(state, facts) do
+    for f <- facts, v <- Map.get(f, :volumes, []) || [] do
+      StatefulStore.upsert_volume(state.store, v.workload, %{
+        node_id: f.configured_id,
+        generation: v.generation,
+        size_bytes: v.size_bytes,
+        allocated_bytes: v.allocated_bytes
+      })
+    end
+
+    state
+  end
+
+  defp fail_instance(state, instance_id, reason) do
+    case StatefulStore.get(state.store, instance_id) do
+      {:ok, instance} ->
+        unless StatefulState.terminal?(instance.state) do
+          _ =
+            StatefulStore.transition(
+              state.store,
+              instance_id,
+              :fail,
+              :stateful_failed,
+              %{reason: reason},
+              %{}
+            )
+        end
+
+        :ok
+
+      :error ->
+        :ok
+    end
+  end
+
+  # -- wake-rate limit -----------------------------------------------------
+
+  defp wake_allowed?(%{wake_max: max}, _principal) when not is_integer(max) or max <= 0, do: true
+
+  defp wake_allowed?(state, principal) do
+    now = state.clock.()
+    length(recent_wakes(state, principal, now)) < state.wake_max
+  end
+
+  defp record_wake(state, principal) do
+    now = state.clock.()
+    recent = recent_wakes(state, principal, now)
+    %{state | wake_events: Map.put(state.wake_events, principal, [now | recent])}
+  end
+
+  defp recent_wakes(state, principal, now) do
+    cutoff = now - state.wake_window_ms
+
+    state.wake_events
+    |> Map.get(principal, [])
+    |> Enum.filter(&(&1 > cutoff))
+  end
+
+  # -- catalog helpers -------------------------------------------------------
+
+  defp stateful_workload?(state, workload) do
+    match?({:ok, %{class: "stateful"}}, WorkloadCatalog.fetch(state.catalog_table, workload))
+  end
+
+  defp catalog_entry(state, workload) do
+    case WorkloadCatalog.fetch(state.catalog_table, workload) do
+      {:ok, entry} -> Map.put(entry, :name, workload)
+      :error -> %{name: workload}
+    end
+  end
+
+  defp stateful_cfg(entry),
+    do: Map.get(entry, :stateful, %{port: 5432, volume_size_gib: 1, volume_mount_path: "/data"})
+
+  defp wake_principal(workload), do: "system:stateful:#{workload}"
+
+  # -- daemon seams ------------------------------------------------------------
+
+  defp safe_start_stateful(state, node_id, req) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      case state.start_stateful_fun.(channel, req) do
+        {:error, reason} = err ->
+          # A wake that failed because the channel's transport is dead must tear
+          # the cached channel down so the NEXT wake re-dials; see
+          # Embervm.NodeChannel.transport_dead?/1 (the wrapped-RPCError case).
+          if Embervm.NodeChannel.transport_dead?(reason) do
+            _ = state.invalidate_fun.(node_id, channel)
+          end
+
+          err
+
+        other ->
+          other
+      end
+    end
+  rescue
+    e -> {:error, {:start_stateful_raised, e}}
+  catch
+    kind, reason -> {:error, {:start_stateful_raised, {kind, reason}}}
+  end
+
+  defp safe_channel(channel_fun, node_id) do
+    channel_fun.(node_id)
+  rescue
+    e -> {:error, {:channel_raised, e}}
+  catch
+    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  defp default_start_stateful(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.start_stateful(channel, req)
+  end
+
+  defp default_stop_stateful(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.stop_stateful(channel, req)
+  end
+
+  defp default_delete_volume(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req)
+  end
+
+  # -- misc --------------------------------------------------------------------
+
+  defp audit_denial(_state, principal, workload, reason) do
+    Embervm.Metering.record_denial(principal, workload, reason)
+  end
+
+  defp mint_id(%{id_fun: fun}) when is_function(fun, 0), do: fun.()
+  defp mint_id(state), do: "stf-" <> String.trim_leading(Embervm.SessionId.new(state.clock.()), "s-")
+
+  defp schedule(msg, interval_ms) when interval_ms > 0 do
+    Process.send_after(self(), msg, interval_ms)
+  end
+
+  defp schedule(_msg, _interval), do: :ok
+
+  defp default_clock, do: System.system_time(:millisecond)
+end
