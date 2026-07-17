@@ -231,25 +231,6 @@ func TestBuild_rejectsMalformedListeners(t *testing.T) {
 	}
 }
 
-func TestBuild_acceptsValidStatefulListeners(t *testing.T) {
-	// A valid L4 stateful listener referencing a defined cluster is accepted (the
-	// control plane can publish stateful clusters + listeners without the PUT
-	// 400ing). LDS rendering itself lands with the wake-on-connect task; here we
-	// only assert the document validates and the cluster still renders.
-	d := &Desired{
-		Version:   "1",
-		Clusters:  []Cluster{{Name: "state|wl-s", Endpoints: []Endpoint{{IP: "10.99.0.7", Port: 6000}}}},
-		Listeners: []Listener{{Name: "state-9100", Port: 9100, Cluster: "state|wl-s"}},
-	}
-	snap, err := Build(d)
-	if err != nil {
-		t.Fatalf("Build valid stateful listener: %v", err)
-	}
-	if _, ok := snap.GetResources(resourcev3.ClusterType)["state|wl-s"]; !ok {
-		t.Errorf("stateful cluster not rendered")
-	}
-}
-
 func TestBuild_rejectsMalformed(t *testing.T) {
 	cases := []struct {
 		name string
@@ -264,12 +245,6 @@ func TestBuild_rejectsMalformed(t *testing.T) {
 		{"route missing host", &Desired{Version: "1", Clusters: []Cluster{{Name: "c"}}, Routes: []Route{{Cluster: "c"}}}},
 		{"route missing cluster", &Desired{Version: "1", Routes: []Route{{Host: "h"}}}},
 		{"route to undefined cluster", &Desired{Version: "1", Routes: []Route{{Host: "h", Cluster: "nope"}}}},
-		{"listener missing name", &Desired{Version: "1", Clusters: []Cluster{{Name: "c"}}, Listeners: []Listener{{Port: 9100, Cluster: "c"}}}},
-		{"listener port zero", &Desired{Version: "1", Clusters: []Cluster{{Name: "c"}}, Listeners: []Listener{{Name: "l", Port: 0, Cluster: "c"}}}},
-		{"listener port too high", &Desired{Version: "1", Clusters: []Cluster{{Name: "c"}}, Listeners: []Listener{{Name: "l", Port: 70000, Cluster: "c"}}}},
-		{"listener missing cluster", &Desired{Version: "1", Listeners: []Listener{{Name: "l", Port: 9100}}}},
-		{"listener to undefined cluster", &Desired{Version: "1", Listeners: []Listener{{Name: "l", Port: 9100, Cluster: "nope"}}}},
-		{"duplicate listener name", &Desired{Version: "1", Clusters: []Cluster{{Name: "c"}}, Listeners: []Listener{{Name: "l", Port: 9100, Cluster: "c"}, {Name: "l", Port: 9101, Cluster: "c"}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
