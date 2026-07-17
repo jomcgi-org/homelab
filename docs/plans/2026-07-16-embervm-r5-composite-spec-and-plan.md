@@ -334,3 +334,28 @@
 ## R6 planning seed (carried forward at closure)
 
 R6 Facade (virtual control planes, the kine-style etcd shim over the op-log) requires its own ADR before commitment. The R5 out-of-scope items most likely to be consumed first: stamped ephemeral instances, durable group members (the clustered-stateful bridge), and guest-cluster ingress.
+
+---
+
+## Closure
+
+**Status: code Shipped 2026-07-17, live gates PENDING.** All eleven tasks landed and deployed across eight PRs (contract #3610, k3s guest substrate #3612, noded groups #3614, composite core #3616, economics #3617, observability #3618, scratch-k8s #3619, this closure), each two-stage reviewed (spec then quality) on green CI; the embervm chart is live at 0.1.88 with the control plane, noded, and serving Envoy running the composite code. ADR embervm/001 marks R5 `Shipped 2026-07-17 (gates live-pending)`, matching the R4 posture. The ten gates below are the empirical acceptance; they require live boots on the Firecracker node and were deliberately deferred (they mutate cluster state: booting k3s clusters, killing member VMs). Each is instrumented so its number is derivable from spans plus Envoy stats plus the op-log alone (Task 9). Fill each `TODO` from a drill run against the live cluster, then flip the ADR row to `Shipped` without the live-pending qualifier if all pass.
+
+| # | Gate | Evidence to record | Result |
+| - | ---- | ------------------ | ------ |
+| 1 | Real distributed cluster | `scratch-k8s` create-to-all-Ready time; host taps quiet beyond the group bridge during bring-up (zero external egress) | TODO |
+| 2 | Subnet isolation both ways | members of group A reach each other; a second live drill group cannot reach A's subnet; neither reaches the serving bridge | TODO |
+| 3 | Stable identity across warmth | member IPs/MACs identical pre-bank and post-relight (op-log + in-guest `ip addr`); flannel host-gw routes valid post-relight without rejoin | TODO |
+| 4 | Relight with correct time | park-to-first-kubectl-response p95 <= 15s warm over 5 cycles; per-member post-resync clock delta <= 1s (span/verdict evidence); no TLS/lease errors across resume | TODO |
+| 5 | All-members-or-none | delete one member's bundle from a banked set: next wake fresh-boots with `group_fresh_booted{partial_set}` and the remnant set evicted; op-log tells the story | TODO |
+| 6 | Real node kills | destroy one agent member VM: k8s node NotReady, pods reschedule to the surviving agent, group reports `degraded` naming the member, a forced roll recovers to three Ready | TODO |
+| 7 | Wake single-flight | 10 concurrent TCP connects to a banked group produce exactly one relight sequence (op-log count) and 10 working sessions | TODO |
+| 8 | Off-path and adoption | Envoy-arrived kubectl watch survives a 60s control-plane scale-to-zero; on restore adoption republishes an identical snapshot and respawns the GroupManager in the correct state; a noded restart resolves the group per set completeness | TODO |
+| 9 | Never-sever and idle honesty | a group with one long-lived open entry connection is never banked across 2x `idleBankSeconds`; closing it banks on the next sweep; banked disk cost equals one complete set plus the bridge | TODO |
+| 10 | Consumer soak | scratch-k8s serves agent-platform traffic 48h across >= 5 bank/wake cycles with zero composite-attributed errors; latency table (fresh boot, warm relight, per-member clock deltas) recorded | TODO |
+
+**Live-drill runbook:** `projects/embervm/runtimes/k3s/drill/` (the Task 3 single-VM spike numbers and the scratch-k8s latency table also land there). One observability item carries into the drill: the OTel ctx-across-Task span nesting (Task 9) is verified only in SigNoz (CI runs `traces_exporter: :none`), so gate 4's per-member clock-delta spans must be confirmed to nest under the group relight root during the drill.
+
+**Known shipped-shape gaps to note when the gates run:**
+- `ember.clock_delta_ms` is a `-1` sentinel: noded's `StartGroupMemberResponse` returns only `{vm_id, ip, was_relight}`, not the measured delta, so gate 4's `<= 1s` evidence is currently the boolean verdict (a successful verified relight implies noded checked the delta), not the number. Echoing the measured delta from noded is a small additive-proto follow-on if the gate wants the value.
+- The composite bank-size/disk-watermark and fresh-boot op-count alerts ship as documented placeholders (no op-log-to-metrics or spanmetrics bridge in-cluster; the reasons are on the `fresh_boot` span). See DECISIONS.md D-R5.PR-6.1.
