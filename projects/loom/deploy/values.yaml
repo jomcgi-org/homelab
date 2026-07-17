@@ -56,10 +56,16 @@ migrations:
   mode: onBoot
 
 postgres:
-  enabled: true
-  instances: 1
-  storage:
-    size: 3Gi
+  # Scale-to-zero external Postgres: the EmberVM R4 scratch-postgres datastore in
+  # the embervm namespace (wakes on an inbound connection, banks when idle). Set
+  # enabled=false to drop the bundled CNPG cluster (loom-pg); loom connects via
+  # the loom-scratch-postgres Secret (OnePasswordItem sync, keys host/port/
+  # username/password/dbname matching external.keys defaults). Loom's data is
+  # disposable demo data, recreated by migrations.mode=onBoot on first connect
+  # (which is itself what wakes the datastore).
+  enabled: false
+  external:
+    existingSecret: loom-scratch-postgres
 
 # Iceberg warehouse on the cluster SeaweedFS (s3://loom). The in-cluster S3
 # gateway runs without identities (anonymous), so the referenced secret
