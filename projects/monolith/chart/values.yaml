@@ -816,8 +816,13 @@ scratchPostgres:
   # exposed on (must match the embervm chart's scratchPostgres.listenPort).
   listenPort: 5400
   # The embervm namespace the serving Service lives in (the DSN host is
-  # embervm-serving.<namespace>.svc).
+  # <servingService>.<embervmNamespace>.svc).
   embervmNamespace: embervm
+  # The embervm serving Service NAME. Helm prepends the release name to chart
+  # service names, so the embervm chart's `serving` Service is actually
+  # `embervm-embervm-serving` (release `embervm` + `embervm.fullname`). This is
+  # NOT `embervm-serving`; a wrong host silently NXDOMAINs the DSN at runtime.
+  servingService: embervm-embervm-serving
   onepassword:
     # 1Password item path whose POSTGRES_PASSWORD field syncs into the
     # <fullname>-scratch-postgres Secret in the MONOLITH namespace. Must be the

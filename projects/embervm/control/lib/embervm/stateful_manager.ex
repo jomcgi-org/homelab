@@ -586,18 +586,21 @@ defmodule Embervm.StatefulManager do
   defp rendezvous_pick([], _key), do: nil
   defp rendezvous_pick(facts, key), do: Enum.max_by(facts, fn fact -> :erlang.phash2({key, fact.configured_id}, 4_294_967_296) end)
 
-  # The cold-boot source: the node's serving_image_ref for the workload (the
-  # same built-handler-artifact seam serving cold boots use, per the task spec:
-  # a stateful workload's base is built via the same BaseBuilder path, flagged
-  # serving-class-alike). Empty when the node has not built one yet; the daemon
-  # then fails the RPC loudly rather than booting an empty rootfs.
+  # The cold-boot source: the node's base SNAPSHOT ref for the workload. A
+  # stateful workload is an image-lane, opaque-L4 guest (e.g. Postgres): its base
+  # is built by the same BaseBuilder path but produces NO serving handler artifact
+  # (that is a zip-serving-only mechanism, D-R3.11.2), so serving_image_ref is
+  # always empty here. The daemon cold-boots the rootfs behind the base snapshot
+  # key instead (resolving it via its base registry, not the serving-image
+  # inventory). Empty when the node has not built the base yet; the daemon then
+  # fails the RPC loudly rather than booting an empty rootfs.
   defp boot_image_ref(state, node_id, workload) do
     case NodeCapacity.fetch(state.capacity_table, node_id) do
       {:ok, fact} ->
         fact
         |> Map.get(:workloads, %{})
         |> Map.get(workload, %{})
-        |> Map.get(:serving_image_ref)
+        |> Map.get(:snapshot_ref)
 
       :error ->
         nil

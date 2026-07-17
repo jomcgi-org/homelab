@@ -145,7 +145,7 @@ spec:
                   name: {{ include "monolith.fullname" . }}-scratch-postgres
                   key: POSTGRES_PASSWORD
             - name: SCRATCH_POSTGRES_DSN
-              value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@embervm-serving.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
+              value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
             {{- end }}
             {{- if .Values.semgrep.shadowProject }}
             # Route B shadow project: the relay reports App scans under this name

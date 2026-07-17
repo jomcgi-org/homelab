@@ -212,16 +212,18 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	if bootImageRef == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: boot_image_ref required")
 	}
-	// Resolve against the SAME serving-images inventory a serving cold boot
-	// uses (D-R3.11.2): boot_image_ref names a built base key, not a static
-	// runtime image ref.
-	simg, ok := s.servingImage.get(bootImageRef)
-	if !ok {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: boot image %q not provisioned on this node (no cold-boot handler artifact built)", bootImageRef)
+	// boot_image_ref names a built base SNAPSHOT key. A stateful workload is an
+	// image-lane, opaque-L4 guest (e.g. Postgres): its base is NOT a serving
+	// handler-artifact base (that is a zip-serving-only mechanism, D-R3.11.2), so
+	// it lives in the base registry, not the serving-images inventory. Resolve it
+	// there and cold-boot the runtime rootfs behind it with NO drive-2 handler.
+	base, ok := s.bases.get(bootImageRef)
+	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: boot image %q is not a ready base on this node", bootImageRef)
 	}
-	img, ok := s.cfg.Images[simg.runtimeImageRef]
+	img, ok := s.cfg.Images[base.imageDigest]
 	if !ok {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q for boot image %q not provisioned on this node", simg.runtimeImageRef, bootImageRef)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q for boot image %q not provisioned on this node", base.imageDigest, bootImageRef)
 	}
 	harnessInit := img.HarnessInit
 	if harnessInit == "" {
@@ -271,7 +273,10 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	if len(mmdsEnv) > 0 {
 		s.logger.Info("noded: stateful cold boot carrying mmds_env", "workload", workload, "keys", mmdsEnvKeyNamesSorted(mmdsEnv))
 	}
-	h, err := s.statefulDriver.ClaimStateful(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, simg.handlerPath, simg.sizeBytes, s.volumes.VolumePath(workload), req.GetVolumeMount(), mmdsEnv)
+	// No handler artifact for an image-lane stateful base (drive 2 is omitted; the
+	// writable volume attaches as drive 2 -> /dev/vdb, which the driver signals to
+	// the guest dynamically). Pass an empty handler path / zero size.
+	h, err := s.statefulDriver.ClaimStateful(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, "", 0, s.volumes.VolumePath(workload), req.GetVolumeMount(), mmdsEnv)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot stateful vm: %v", err)

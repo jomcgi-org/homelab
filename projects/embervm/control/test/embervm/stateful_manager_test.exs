@@ -134,7 +134,10 @@ defmodule Embervm.StatefulManagerTest do
       max_live_vms: 4,
       live_vms: 0,
       workloads: %{
-        "wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a", serving_image_ref: "base-a"}
+        # snapshot_ref is the cold-boot source for a stateful workload: an
+        # image-lane guest has no serving handler artifact, so boot_image_ref is
+        # the base snapshot key the daemon resolves against its base registry.
+        "wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}
       },
       stateful_vms: Keyword.get(opts, :stateful_vms, []),
       stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
