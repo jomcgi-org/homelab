@@ -20,9 +20,14 @@ import (
 type statefulDriver interface {
 	// ClaimStateful cold-boots a stateful VM from a per-workload rootfs WITH the
 	// given tap NIC, the optional handler artifact drive (mirroring the serving
-	// cold-boot lane), and the workload's writable volume attached as a third
-	// drive. Mirrors ClaimServing with the volume parameters appended.
-	ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string) (substrate.Handle, error)
+	// cold-boot lane), the workload's writable volume attached as a third
+	// drive, and mmdsEnv (R4, D-R4.PR-7.1: MMDS-lite over boot-args), the
+	// workload's first-boot secrets encoded into ember.env.<KEY>= kernel
+	// boot-args. Mirrors ClaimServing with the volume + mmdsEnv parameters
+	// appended. mmdsEnv is meaningful only for FRESH/COLD; callers on a
+	// RELIGHT path never reach this method at all (relight resumes a memory
+	// snapshot via RestoreStateful instead).
+	ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error)
 	// SnapshotStateful pauses a live stateful VM and writes a self-contained
 	// stateful bundle stamped with the given volume generation; does not resume
 	// (the caller Releases). Mirrors SnapshotServing plus the generation stamp.

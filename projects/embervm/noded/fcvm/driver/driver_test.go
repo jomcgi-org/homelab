@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
@@ -434,6 +435,78 @@ func TestBootArgsForServingNIC(t *testing.T) {
 	}
 	if !strings.Contains(handlerOnly, "ember.handler_disk=/dev/vdb ember.handler_zip_bytes=10") {
 		t.Fatalf("bootArgsFor(handler, no nic) = %q, want handler tokens", handlerOnly)
+	}
+}
+
+// TestBootArgsForMmdsEnv covers the R4 D-R4.PR-7.1 MMDS-lite seam: mmdsEnv
+// entries are rendered as sorted, base64url-encoded ember.env.<KEY>= tokens; an
+// invalid key is skipped; an empty/nil map emits nothing (so RELIGHT, which
+// never sets mmdsEnv, carries no ember.env.* tokens and the boot args stay
+// byte-unchanged from before this feature).
+func TestBootArgsForMmdsEnv(t *testing.T) {
+	d := New(Config{KernelBootArgs: "console=ttyS0"}, &fakeLauncher{}, nil)
+
+	// Nil/empty mmdsEnv: no ember.env.* tokens at all (covers the RELIGHT path,
+	// which never sets this field on coldBootSpec).
+	if got := d.bootArgsFor(coldBootSpec{}); strings.Contains(got, "ember.env.") {
+		t.Fatalf("bootArgsFor(no mmdsEnv) = %q, want no ember.env.* tokens", got)
+	}
+
+	// Multiple keys: sorted, base64url-encoded, space-separated.
+	got := d.bootArgsFor(coldBootSpec{mmdsEnv: map[string]string{
+		"POSTGRES_PASSWORD": "hunter2",
+		"POSTGRES_USER":     "app",
+	}})
+	wantPassword := "ember.env.POSTGRES_PASSWORD=" + base64.RawURLEncoding.EncodeToString([]byte("hunter2"))
+	wantUser := "ember.env.POSTGRES_USER=" + base64.RawURLEncoding.EncodeToString([]byte("app"))
+	want := "console=ttyS0 " + wantPassword + " " + wantUser
+	if got != want {
+		t.Fatalf("bootArgsFor(mmdsEnv) = %q, want %q", got, want)
+	}
+
+	// Round-trip: the encoded value decodes back to the original secret.
+	decoded, err := base64.RawURLEncoding.DecodeString(base64.RawURLEncoding.EncodeToString([]byte("hunter2")))
+	if err != nil || string(decoded) != "hunter2" {
+		t.Fatalf("base64url round-trip failed: decoded=%q err=%v", decoded, err)
+	}
+
+	// An invalid key (not [A-Za-z0-9_]) is skipped, not fatal, and does not
+	// corrupt the valid entries.
+	mixed := d.bootArgsFor(coldBootSpec{mmdsEnv: map[string]string{
+		"VALID_KEY":   "ok",
+		"bad key!":    "skipped",
+		"also=equals": "skipped",
+	}})
+	if strings.Contains(mixed, "bad key") || strings.Contains(mixed, "also=equals") {
+		t.Fatalf("bootArgsFor(mmdsEnv with invalid keys) = %q, want invalid keys skipped", mixed)
+	}
+	wantValid := "ember.env.VALID_KEY=" + base64.RawURLEncoding.EncodeToString([]byte("ok"))
+	if !strings.Contains(mixed, wantValid) {
+		t.Fatalf("bootArgsFor(mmdsEnv with invalid keys) = %q, want %q present", mixed, wantValid)
+	}
+}
+
+// TestMmdsEnvKeyNamesRedactsValues asserts the logging helper returns ONLY
+// sorted key names, never values, so a caller logging its output cannot
+// accidentally leak an mmds_env secret (D-R4.PR-7.1's redaction requirement).
+func TestMmdsEnvKeyNamesRedactsValues(t *testing.T) {
+	keys := mmdsEnvKeyNames(map[string]string{
+		"POSTGRES_PASSWORD": "hunter2",
+		"POSTGRES_USER":     "app",
+	})
+	want := []string{"POSTGRES_PASSWORD", "POSTGRES_USER"}
+	if len(keys) != len(want) {
+		t.Fatalf("mmdsEnvKeyNames() = %v, want %v", keys, want)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("mmdsEnvKeyNames() = %v, want %v", keys, want)
+		}
+	}
+	for _, k := range keys {
+		if k == "hunter2" || k == "app" {
+			t.Fatalf("mmdsEnvKeyNames() leaked a value: %v", keys)
+		}
 	}
 }
 

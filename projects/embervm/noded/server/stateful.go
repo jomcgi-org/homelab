@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -14,6 +15,20 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
+
+// mmdsEnvKeyNamesSorted returns the sorted key names of an mmds_env map, for
+// logging ONLY. It never returns values (see the D-R4.PR-7.1 redaction note at
+// this function's call site in coldBootStateful): mmds_env may carry a
+// first-boot secret (e.g. a Postgres password), so a log line built from this
+// helper's output is safe to emit while the raw map is not.
+func mmdsEnvKeyNamesSorted(mmdsEnv map[string]string) []string {
+	keys := make([]string, 0, len(mmdsEnv))
+	for k := range mmdsEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // Cold-boot fallback reasons StartStateful(RELIGHT) reports when it discards a
 // banked bundle rather than resuming it. Exported as constants (not inlined
@@ -246,7 +261,17 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 		IfaceName:   "eth0",
 		ServingPort: port,
 	}
-	h, err := s.statefulDriver.ClaimStateful(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, simg.handlerPath, simg.sizeBytes, s.volumes.VolumePath(workload), req.GetVolumeMount())
+	// MMDS-lite over boot-args (R4, D-R4.PR-7.1): mmds_env rides ONLY a
+	// FRESH/COLD boot (this function), never a RELIGHT (startStatefulRelight's
+	// resume path never calls ClaimStateful at all, so mmds_env cannot leak
+	// onto a relight by construction). SECURITY: log only the key NAMES, never
+	// the request's mmds_env values -- they may be a first-boot secret (e.g. a
+	// Postgres password) and this log line must not persist it in plaintext.
+	mmdsEnv := req.GetMmdsEnv()
+	if len(mmdsEnv) > 0 {
+		s.logger.Info("noded: stateful cold boot carrying mmds_env", "workload", workload, "keys", mmdsEnvKeyNamesSorted(mmdsEnv))
+	}
+	h, err := s.statefulDriver.ClaimStateful(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, simg.handlerPath, simg.sizeBytes, s.volumes.VolumePath(workload), req.GetVolumeMount(), mmdsEnv)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot stateful vm: %v", err)
