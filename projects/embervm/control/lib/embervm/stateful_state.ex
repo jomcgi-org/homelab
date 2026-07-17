@@ -39,14 +39,15 @@ defmodule Embervm.StatefulState do
 
   `state_from_string/1` in `StatefulStore` must be total over precisely that set
   for a projection-rebuild-then-publish to be byte-identical to the pre-restart
-  snapshot (the property the EndpointPublisher's correctness rests on). The three
-  states NOT in the projection are `banking`, `relighting`, and `cold_booting`:
-  all three are transient, ETS-only markers never persisted (see below).
+  snapshot (the property the EndpointPublisher's correctness rests on). The states
+  NOT in the projection are `banking`, `checkpointed`, `relighting`, and
+  `cold_booting`: all are transient, ETS-only markers never persisted (see below).
 
   ## transient (ETS-only) states
 
-  `banking`, `relighting`, and `cold_booting` are the stateful counterparts of
-  the serving FSM's `banking`/`relighting`: entered by `StatefulStore.mark/2`
+  `banking`, `checkpointed`, `relighting`, and `cold_booting` are the stateful
+  counterparts of the serving FSM's `banking`/`relighting`: entered by
+  `StatefulStore.mark/2`
   with NO op-log append (the durable log records only COMPLETED lifecycle
   transitions, standing decision), and healed from node inventory by adoption if
   a crash strands them. The paired durable completion op (`stateful_banked`,
@@ -94,6 +95,7 @@ defmodule Embervm.StatefulState do
     :starting,
     :serving,
     :banking,
+    :checkpointed,
     :banked,
     :relighting,
     :cold_booting,
@@ -107,7 +109,10 @@ defmodule Embervm.StatefulState do
   # The states that hold a LIVE stateful VM (not a banked snapshot, not a terminal
   # row). A live instance is the singleton the class allows exactly one of.
   # `banked` is deliberately NOT live: it holds a snapshot + volume, no VM.
-  @live_states [:starting, :serving, :banking, :relighting, :cold_booting]
+  # `checkpointed` (ADR embervm/008) IS live: the interruptible-bank checkpoint
+  # leaves the VM PAUSED (not destroyed), still holding the volume attach, awaiting
+  # a resolve, so the singleton guard must count it.
+  @live_states [:starting, :serving, :banking, :checkpointed, :relighting, :cold_booting]
 
   @events [
     :publish,
@@ -115,6 +120,9 @@ defmodule Embervm.StatefulState do
     :bank,
     :bank_ready,
     :bank_abort,
+    :checkpoint_ready,
+    :commit,
+    :abort,
     :relight,
     :relight_ready,
     :relight_abort,
@@ -146,6 +154,18 @@ defmodule Embervm.StatefulState do
     # healed-from-node.
     {:banking, :bank_ready} => :banked,
     {:banking, :bank_abort} => :serving,
+    # Interruptible bank (ADR embervm/008, opt-in): the CHECKPOINT completes
+    # (banking -> checkpointed), leaving the VM PAUSED awaiting a control-plane
+    # resolve. checkpointed is transient/ETS-only (like banking), healed from node
+    # inventory by adoption (noded reports checkpoint_pending). The resolve forks:
+    # `commit` publishes the temp as the bundle and destroys (checkpointed ->
+    # banked), `abort` bumps the generation, resumes the SAME paused VM, and
+    # republishes (checkpointed -> serving, hot, no relight). A CHECKPOINT *RPC*
+    # failure reuses the existing bank_abort edge (banking -> serving): noded left
+    # the VM live, so nothing entered checkpointed.
+    {:banking, :checkpoint_ready} => :checkpointed,
+    {:checkpointed, :commit} => :banked,
+    {:checkpointed, :abort} => :serving,
     # WARM wake: banked -> relighting (StartStateful relight in flight) -> starting
     # (then a paired publish moves it to serving). The relight_abort edge
     # (relighting -> banked) is the ETS-only recovery when a transient (non-
@@ -171,6 +191,7 @@ defmodule Embervm.StatefulState do
     {:starting, :destroy} => :destroyed,
     {:serving, :destroy} => :destroyed,
     {:banking, :destroy} => :destroyed,
+    {:checkpointed, :destroy} => :destroyed,
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
     {:cold_booting, :destroy} => :destroyed,
@@ -181,6 +202,10 @@ defmodule Embervm.StatefulState do
     {:starting, :fail} => :failed,
     {:serving, :fail} => :failed,
     {:banking, :fail} => :failed,
+    # A checkpointed instance fails when its resolve RPC errors irrecoverably (a
+    # commit whose publish failed, or an abort whose resume failed so noded tore
+    # the paused VM down): the VM is gone, so the instance fails from checkpointed.
+    {:checkpointed, :fail} => :failed,
     {:relighting, :fail} => :failed,
     {:cold_booting, :fail} => :failed
   }
@@ -189,6 +214,7 @@ defmodule Embervm.StatefulState do
           :starting
           | :serving
           | :banking
+          | :checkpointed
           | :banked
           | :relighting
           | :cold_booting
@@ -202,6 +228,9 @@ defmodule Embervm.StatefulState do
           | :bank
           | :bank_ready
           | :bank_abort
+          | :checkpoint_ready
+          | :commit
+          | :abort
           | :relight
           | :relight_ready
           | :relight_abort
