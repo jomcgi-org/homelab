@@ -114,6 +114,34 @@ defmodule Embervm.StatefulStore do
   end
 
   @doc """
+  Records a WAKE that discarded warmth and cold-booted, a NEW instance replacing a
+  retired banked one. Identical to `start/2` (singleton gate, mints a fresh
+  lifecycle) EXCEPT it appends `stateful_cold_booted` carrying `attrs.reason`
+  (`generation_mismatch | no_bundle | ledger_unreadable`) instead of
+  `stateful_started`, so the op-log alone reconstructs why the warmth was
+  discarded (R4 gate 2). Used by the wake path when the pair broke (the control
+  plane saw it in plan_wake, or the daemon fell back at StartStateful time); a
+  genuine FRESH first boot still uses `start/2`.
+  """
+  @spec cold_boot(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
+  def cold_boot(store \\ __MODULE__, attrs) do
+    GenServer.call(store, {:cold_boot, attrs})
+  end
+
+  @doc """
+  Durably records a freshly created volume: appends `volume_created` (write-
+  through) carrying `{node_id, generation, size_bytes, allocated_bytes}` and
+  upserts the `volumes` ETS row, so the durable volumes projection is populated
+  the first time a FRESH boot creates the workload's volume file (without this the
+  boot ops' `bump_volume_generation` projection has no row to update and the
+  volumes table stays empty). Idempotent-ish: a re-create upserts the row.
+  """
+  @spec create_volume(GenServer.server(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def create_volume(store \\ __MODULE__, workload, fields) do
+    GenServer.call(store, {:create_volume, workload, fields})
+  end
+
+  @doc """
   Applies an FSM transition to an instance, appending the matching op
   write-through. `event` is a `StatefulState` event; `op_kind` and `payload`
   describe the op; `updates` are extra fields merged into the ETS row AFTER the
@@ -452,7 +480,11 @@ defmodule Embervm.StatefulStore do
 
   @impl true
   def handle_call({:start, attrs}, _from, state) do
-    do_start(attrs, state)
+    do_start(attrs, state, :stateful_started)
+  end
+
+  def handle_call({:cold_boot, attrs}, _from, state) do
+    do_start(attrs, state, :stateful_cold_booted)
   end
 
   def handle_call({:transition, instance_id, event, op_kind, payload, updates}, _from, state) do
@@ -590,6 +622,44 @@ defmodule Embervm.StatefulStore do
     {:reply, merged, state}
   end
 
+  def handle_call({:create_volume, workload, fields}, _from, state) do
+    ts = state.clock.()
+
+    op = %Op{
+      kind: :volume_created,
+      tenant: "homelab",
+      # The volume-create act has no per-request caller crossing this boundary; the
+      # op's principal records the workload's synthesized system owner, matching
+      # every other stateful lifecycle op (StatefulManager.wake_principal/1).
+      principal: "system:stateful:#{workload}",
+      workload: workload,
+      ts: ts,
+      payload: %{
+        node_id: Map.get(fields, :node_id),
+        generation: Map.get(fields, :generation, 0),
+        size_bytes: Map.get(fields, :size_bytes),
+        allocated_bytes: Map.get(fields, :allocated_bytes)
+      }
+    }
+
+    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      {:ok, _seq} ->
+        base = fetch_volume(state, workload) || %{workload: workload}
+
+        merged =
+          base
+          |> Map.merge(fields)
+          |> Map.put(:workload, workload)
+          |> Map.put(:updated_at, ts)
+
+        :ets.insert(state.volumes, {workload, merged})
+        {:reply, {:ok, merged}, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
   def handle_call({:delete_volume, workload}, _from, state) do
     ts = state.clock.()
 
@@ -679,7 +749,14 @@ defmodule Embervm.StatefulStore do
 
   # -- start -----------------------------------------------------------------
 
-  defp do_start(attrs, state) do
+  # A cold-boot birth op carries its discarded-warmth reason; a fresh start carries
+  # none (and a nil reason on a cold boot is dropped rather than recorded as nil).
+  defp maybe_put_reason(payload, :stateful_cold_booted, reason) when not is_nil(reason),
+    do: Map.put(payload, :reason, to_string(reason))
+
+  defp maybe_put_reason(payload, _op_kind, _reason), do: payload
+
+  defp do_start(attrs, state, op_kind) do
     workload = Map.fetch!(attrs, :workload)
 
     # Singleton gate BEFORE any durable write: refuse a second live instance for the
@@ -689,27 +766,36 @@ defmodule Embervm.StatefulStore do
     if has_live_instance?(state, workload) do
       {:reply, {:error, :already_live}, state}
     else
-      append_start(attrs, workload, state)
+      append_start(attrs, workload, state, op_kind)
     end
   end
 
-  defp append_start(attrs, workload, state) do
+  # Appends the birth op for a new instance lifecycle and inserts its ETS row.
+  # op_kind is :stateful_started (a FRESH first boot) or :stateful_cold_booted (a
+  # wake that discarded warmth); the latter carries the discarded-warmth reason so
+  # the op-log alone reconstructs the pairing decision (gate 2). Both project into
+  # a "starting" instance identically; only the op kind and the reason differ.
+  defp append_start(attrs, workload, state, op_kind) do
     ts = state.clock.()
     instance_id = Map.fetch!(attrs, :instance_id)
     generation = Map.get(attrs, :generation, 0)
 
-    payload = %{
-      node_id: Map.get(attrs, :node_id),
-      vm_id: Map.get(attrs, :vm_id),
-      # The projection defaults stateful_started to "starting"; recorded explicitly
-      # for clarity. The volume generation this attach booted with (the pair-key
-      # baseline) rides the payload so the projection can bump volumes.generation.
-      generation: generation,
-      state: "starting"
-    }
+    payload =
+      %{
+        node_id: Map.get(attrs, :node_id),
+        vm_id: Map.get(attrs, :vm_id),
+        # The projection defaults the birth op to "starting"; recorded explicitly
+        # for clarity. The volume generation this attach booted with (the pair-key
+        # baseline) rides the payload so the projection can bump volumes.generation.
+        generation: generation,
+        state: "starting"
+      }
+      # A cold boot carries the reason it discarded warmth (generation_mismatch |
+      # no_bundle | ledger_unreadable); a fresh start has none.
+      |> maybe_put_reason(op_kind, Map.get(attrs, :reason))
 
     op = %Op{
-      kind: :stateful_started,
+      kind: op_kind,
       tenant: Map.fetch!(attrs, :tenant),
       principal: Map.get(attrs, :principal),
       workload: workload,

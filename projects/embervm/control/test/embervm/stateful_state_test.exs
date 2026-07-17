@@ -66,6 +66,7 @@ defmodule Embervm.StatefulStateTest do
                :relight_abort,
                :cold_boot,
                :cold_ready,
+               :cold_abort,
                :evict,
                :destroy,
                :fail
@@ -82,12 +83,7 @@ defmodule Embervm.StatefulStateTest do
   end
 
   test "every (state, event) pair NOT in the legal table is illegal" do
-    # cold_abort is a legal transient event (cold_booting -> banked) not in @events
-    # (it never rides an op), so include it in the sweep's event universe so its one
-    # legal cell is not mistakenly asserted illegal.
-    events = [:cold_abort | StatefulState.events()]
-
-    for state <- StatefulState.states(), event <- events do
+    for state <- StatefulState.states(), event <- StatefulState.events() do
       unless Map.has_key?(@legal, {state, event}) do
         assert StatefulState.transition(state, event) == {:error, {:illegal_transition, state, event}}
 
