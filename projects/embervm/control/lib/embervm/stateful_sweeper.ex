@@ -648,12 +648,23 @@ defmodule Embervm.StatefulSweeper do
   # current_stats so the max-lifetime pass later in this same tick sees it
   # too. Otherwise admit the bank (per-node cap) and spawn the worker.
   defp recheck_and_bank(state, instance) do
-    state = refresh_current_stats(state, instance.node_id)
+    {state, fresh?} = refresh_current_stats(state, instance.node_id)
 
-    if connection_raced_in?(state, instance) do
-      abort_bank(state, instance, recheck_abort_reason(state, instance))
-    else
-      if bank_at_cap?(state, instance.node_id) do
+    cond do
+      # A FRESH reading shows a connection raced in: abort for everyone.
+      connection_raced_in?(state, instance) ->
+        abort_bank(state, instance, :recheck_active)
+
+      # Fail CLOSED for an interruptible workload whose re-scrape did NOT produce a
+      # fresh reading (ADR embervm/008): a checkpoint PAUSES a live VM, so it must
+      # not proceed on an unconfirmed scrape. Crucially this is gated on `fresh?`,
+      # NOT on whether a (possibly STALE) reading is present in current_stats: a
+      # failed re-scrape leaves the last-known reading behind, and pausing on stale
+      # evidence is exactly the risk the two-phase design refuses.
+      interruptible?(state, instance.workload) and not fresh? ->
+        abort_bank(state, instance, :recheck_scrape_failed)
+
+      bank_at_cap?(state, instance.node_id) ->
         # Deferred: abort back to serving and let the next tick's idle
         # confirmation re-drive the bank once a slot is free. This costs one
         # extra idle-confirmation cycle under sustained cap pressure, the same
@@ -661,65 +672,42 @@ defmodule Embervm.StatefulSweeper do
         # stateful's synchronous-within-a-tick shape (there is no drain timer
         # to re-arm here).
         abort_bank(state, instance, :bank_at_cap)
-      else
+
+      true ->
         admit_bank(state, instance)
-      end
     end
   end
 
-  # Re-scrape the instance's node RIGHT NOW (not the tick-start reading) and
-  # fold it into current_stats, so the recheck consults the freshest possible
-  # signal. A scrape failure leaves current_stats for the node UNCHANGED
-  # (keeps whatever the tick-start scrape produced, or absent if that also
-  # failed): connection_raced_in?/2 then fails open via Map.fetch missing.
+  # Re-scrape the instance's node RIGHT NOW (not the tick-start reading) and fold
+  # it into current_stats, so the recheck consults the freshest possible signal.
+  # Returns {state, fresh?}: fresh? is true only when THIS re-scrape succeeded. On
+  # a scrape failure current_stats is left UNCHANGED (keeps whatever the tick-start
+  # scrape produced, or absent if that also failed) and fresh? is false, so an
+  # interruptible workload can fail closed on a stale reading rather than pausing
+  # a live VM on unconfirmed evidence (see recheck_and_bank).
   defp refresh_current_stats(state, node_id) do
     case scrape_node(state, %{configured_id: node_id}) do
       {:ok, reading} ->
-        %{state | current_stats: Map.put(state.current_stats, node_id, reading)}
+        {%{state | current_stats: Map.put(state.current_stats, node_id, reading)}, true}
 
       {:error, _reason} ->
-        state
+        {state, false}
     end
   end
 
-  # True when the instance's node's FRESHEST reading (post-recheck-rescrape)
-  # reports cx_active > 0 for its listener, i.e. a connection raced in and the
-  # bank must abort. When there is NO fresh reading for the node (never scraped,
-  # or every scrape this tick failed) the direction depends on the workload:
-  #
-  #   * a DEFAULT (atomic-bank) workload FAILS OPEN toward proceeding (returns
-  #     false): the atomic BANK destroys the VM, and the idle confirmation that
-  #     got us here already required cx_active == 0 on the last successful scrape,
-  #     so the narrow undetected race is accepted for warmth (unchanged behavior).
-  #   * an INTERRUPTIBLE workload (ADR embervm/008) FAILS CLOSED (returns true, so
-  #     the bank aborts this cycle with reason :recheck_scrape_failed): a
-  #     checkpoint PAUSES a live VM, and pausing under an unobserved connection is
-  #     exactly the risk the two-phase design refuses to take on missing evidence.
+  # True when the instance's node's reading reports cx_active > 0 for its listener,
+  # i.e. a connection raced in and the bank must abort. When there is NO reading
+  # for the node it FAILS OPEN (returns false): the interruptible fail-closed case
+  # is handled separately in recheck_and_bank via the re-scrape freshness flag, so
+  # this predicate is purely "does a present reading show an active connection".
   defp connection_raced_in?(state, instance) do
     with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
          {:ok, cfg} <- stateful_cfg(state, instance.workload),
          {:ok, %{active: active}} <- Map.fetch(entry, stat_prefix(cfg.listen_port)) do
       active > 0
     else
-      _ -> interruptible?(state, instance.workload)
+      _ -> false
     end
-  end
-
-  # The abort reason for a recheck that decided to abort: an actual fresh reading
-  # of cx_active > 0 is a genuine race (:recheck_active); a missing reading that
-  # aborted only because the workload is interruptible (fail-closed) is
-  # :recheck_scrape_failed, the distinct observable the ADR names.
-  defp recheck_abort_reason(state, instance) do
-    has_fresh_reading? =
-      with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
-           {:ok, cfg} <- stateful_cfg(state, instance.workload),
-           {:ok, _} <- Map.fetch(entry, stat_prefix(cfg.listen_port)) do
-        true
-      else
-        _ -> false
-      end
-
-    if has_fresh_reading?, do: :recheck_active, else: :recheck_scrape_failed
   end
 
   # Whether the workload is opted in to the two-phase interruptible bank. A
