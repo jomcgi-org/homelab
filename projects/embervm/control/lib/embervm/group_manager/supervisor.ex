@@ -114,6 +114,31 @@ defmodule Embervm.GroupManager.Supervisor do
   end
 
   @doc """
+  Banks the live group `instance_id` of `workload` as ONE set (R5, Task 8): locate
+  (or spawn) the GroupManager child bound to the instance and drive its
+  `bank_group/1`. The sweeper calls this once a group is confirmed idle (it already
+  unpublished the entry endpoint). Returns `{:ok, %{set_id, banked, pause_spread_ms}}`
+  on a clean whole-set bank or `{:error, reason}` on an abort (the group is back
+  `running` and the sweeper re-publishes). A group with no live owner process (e.g.
+  a CP restart that has not re-adopted it yet) spawns one bound to the instance so
+  the bank has a driver. A missing catalog entry / anchor node is `{:error, reason}`.
+  """
+  @spec bank_group(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def bank_group(workload, instance_id, opts \\ []) do
+    defaults = Application.get_env(:embervm, :group_manager_defaults, [])
+    opts = Keyword.merge(defaults, opts)
+
+    catalog_table = Keyword.get(opts, :catalog_table, WorkloadCatalog.table())
+    capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
+
+    with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
+         {:ok, node_id} <- anchor_node(capacity_table),
+         {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, opts) do
+      GroupManager.bank_group(pid)
+    end
+  end
+
+  @doc """
   Adoption (R5, Task 7): (re)spawn the GroupManager child for a live-adopted instance
   so a later bank/relight has an owner, WITHOUT driving any lifecycle. Idempotent: a
   child already registered under the workload is left as-is. Returns `:ok`. Never
@@ -217,6 +242,7 @@ defmodule Embervm.GroupManager.Supervisor do
       :evict_snapshot_fun,
       :get_secret_fun,
       :secret_fun,
+      :set_id_fun,
       :clock
     ]
   end

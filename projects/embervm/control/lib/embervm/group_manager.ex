@@ -90,6 +90,7 @@ defmodule Embervm.GroupManager do
     StartGroupMemberRequest,
     StartGroupMemberResponse,
     StopGroupMemberRequest,
+    StopGroupMemberResponse,
     ResourceSpec,
     Trace
   }
@@ -145,6 +146,42 @@ defmodule Embervm.GroupManager do
     GenServer.call(server, :wake_group, :infinity)
   end
 
+  @doc """
+  Banks the whole group as ONE set (R5, Task 8), the bank half of the economics
+  loop the `Embervm.GroupSweeper` drives once a group is confirmed idle. The
+  instance MUST already be in the transient `banking` state: the SWEEPER moves it
+  `running -> banking` (which drops the entry endpoint from the fan-out) and installs
+  the activator BEFORE calling, so a racing connection parks on the activator, not a
+  VM about to be paused (standing decision 7, mirroring StatefulSweeper's
+  unpublish-then-bank). The sequence, decision 3 (all-or-nothing) + decision 10 (an
+  honest pause-spread number):
+
+    1. mint ONE `set_id` shared across the members, and `StopGroupMember(BANK)` every
+       LIVE member under `group/<set_id>/<member>/` (each BANK pauses, snapshots, AND
+       destroys that member's VM per the proto), collecting `{member, snapshot_ref}`;
+    2. if EVERY member banked, record the whole set ATOMICALLY
+       (`GroupStore.bank_ready/4` -> one `group_banked` append, `banking -> banked`,
+       stamping `set_id` + each member's `snapshot_ref`, and dropping the entry
+       endpoint), then re-publish so the activator install is current;
+    3. if ANY member's BANK failed, ABORT (`banking -> running` via `bank_abort`,
+       ETS-only): the partial snapshots are orphans the daemon's own bundle GC
+       reclaims, and the group returns to `running`. The sweeper re-publishes so the
+       still-live group re-enters the fan-out (a failed bank must not leave a warm
+       group dark).
+
+  A crash mid-bank strands the instance in `banking`; adoption heals it (it finds no
+  live members and no complete set and resolves the instance fresh-bootable).
+
+  Returns `{:ok, %{set_id, banked: n, pause_spread_ms: ms}}` on a clean whole-set
+  bank (the closure gate reads `pause_spread_ms`, decision 10), or
+  `{:error, reason}` on an abort (the group is back `running`). Blocks until the
+  bank completes or aborts.
+  """
+  @spec bank_group(GenServer.server()) :: {:ok, map()} | {:error, term()}
+  def bank_group(server) do
+    GenServer.call(server, :bank_group, :infinity)
+  end
+
   @doc "The group instance's current entry endpoint (or nil), for tests + straggler resolution."
   @spec entry_endpoint(GenServer.server()) :: map() | nil
   def entry_endpoint(server) do
@@ -183,6 +220,9 @@ defmodule Embervm.GroupManager do
         Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
       get_secret_fun: Keyword.get(opts, :get_secret_fun, &Embervm.K8s.get_secret/2),
       secret_fun: Keyword.get(opts, :secret_fun, &mint_secret/0),
+      # The bank set_id minter (injected in tests to pin the opaque set directory);
+      # production mints instance_id + bank-start clock (see mint_set_id/2).
+      set_id_fun: Keyword.get(opts, :set_id_fun),
       clock: Keyword.get(opts, :clock, &default_clock/0)
     }
 
@@ -197,6 +237,11 @@ defmodule Embervm.GroupManager do
 
   def handle_call(:wake_group, _from, state) do
     {reply, state} = do_wake_group(state)
+    {:reply, reply, state}
+  end
+
+  def handle_call(:bank_group, _from, state) do
+    {reply, state} = do_bank_group(state)
     {:reply, reply, state}
   end
 
@@ -679,6 +724,186 @@ defmodule Embervm.GroupManager do
     end
 
     :ok
+  end
+
+  # -- bank sequence (whole-set BANK off running, R5 Task 8) ------------------
+
+  # The whole-set bank: StopGroupMember(BANK) every live member under ONE shared
+  # set_id, and either record the set atomically (all banked, banking -> banked) or
+  # abort back to running (any member failed, banking -> running). The instance is
+  # already `banking` (the sweeper moved it there and installed the activator before
+  # calling), so a racing connection already parks on the activator; this sequence
+  # never re-publishes a live endpoint (a clean bank drops it via group_banked; an
+  # abort returns to running and the sweeper re-publishes).
+  defp do_bank_group(state) do
+    with {:ok, instance} <- fetch_instance(state),
+         :banking <- instance.state do
+      members = live_members(state)
+
+      if members == [] do
+        # A banking group with no live member rows: nothing to bank. Abort back to
+        # running so the sweeper can re-publish (an empty group is a degraded/adoption
+        # edge the reconcile heals, not the bank's concern).
+        _ = GroupStore.mark(state.store, instance.instance_id, :bank_abort)
+        {{:error, :no_live_members}, state}
+      else
+        attempt_bank(state, instance, members)
+      end
+    else
+      {:error, _reason} = error ->
+        {error, state}
+
+      other_state when is_atom(other_state) ->
+        # Not banking (a race: already banked, destroyed, or a sweeper that did not
+        # pre-mark). The sweeper re-reads the store next tick; return an error it ignores.
+        {{:error, {:not_banking, other_state}}, state}
+    end
+  end
+
+  defp attempt_bank(state, instance, members) do
+    set_id = mint_set_id(state, instance)
+    {results, pause_spread_ms} = bank_members_parallel(state, members, set_id)
+
+    failed = Enum.filter(results, &match?({:error, _}, &1))
+
+    if failed == [] do
+      finish_bank(state, instance, set_id, results, pause_spread_ms)
+    else
+      abort_bank(state, instance, failed)
+    end
+  end
+
+  # StopGroupMember(BANK) every live member in PARALLEL under the shared set_id (bank
+  # order is irrelevant: each BANK pauses+snapshots+destroys its own VM independently,
+  # and crash-consistency is per-VM, never cross-member, per the GroupState moduledoc).
+  # Returns the per-member results and the pause-spread (decision 10): the wall-clock
+  # span between the first and last member's BANK completing, the honesty number the
+  # closure gate reads. Each task body is wrapped so a raised/exited BANK becomes an
+  # {:error, _} result rather than taking the GroupManager down mid-bank.
+  defp bank_members_parallel(state, members, set_id) do
+    started = state.clock.()
+
+    results =
+      members
+      |> Enum.map(fn member ->
+        Task.async(fn ->
+          try do
+            bank_one_member(state, member, set_id)
+          rescue
+            e -> {:error, {:member_bank_crashed, member.member_name, e}}
+          catch
+            kind, reason -> {:error, {:member_bank_crashed, member.member_name, {kind, reason}}}
+          end
+        end)
+      end)
+      |> Enum.map(&Task.await(&1, :infinity))
+
+    pause_spread_ms = max(state.clock.() - started, 0)
+    {results, pause_spread_ms}
+  end
+
+  defp bank_one_member(state, member, set_id) do
+    req = %StopGroupMemberRequest{
+      trace: %Trace{workload: state.workload},
+      vm_id: member.vm_id,
+      mode: :STOP_GROUP_MEMBER_MODE_BANK,
+      set_id: set_id,
+      member_name: member.member_name
+    }
+
+    with {:ok, channel} <- safe_channel(state, state.node_id),
+         {:ok, %StopGroupMemberResponse{snapshot_ref: ref}} when is_binary(ref) and ref != "" <-
+           state.stop_group_member_fun.(channel, req) do
+      {:ok, %{name: member.member_name, snapshot_ref: ref}}
+    else
+      other -> {:error, {:member_bank_failed, member.member_name, other}}
+    end
+  rescue
+    e -> {:error, {:member_bank_raised, member.member_name, e}}
+  catch
+    kind, reason -> {:error, {:member_bank_raised, member.member_name, {kind, reason}}}
+  end
+
+  # Every member banked: record the whole set ATOMICALLY (one group_banked append
+  # stamping set_id + each member's snapshot_ref, dropping the entry endpoint) and
+  # re-publish so the activator install is current (bank_ready dropped the endpoint,
+  # so this publish swaps in the activator for the now-empty group cluster).
+  defp finish_bank(state, instance, set_id, results, pause_spread_ms) do
+    members = for {:ok, m} <- results, do: m
+
+    case GroupStore.bank_ready(state.store, instance.instance_id, set_id, members) do
+      {:ok, _} ->
+        Embervm.EndpointPublisher.publish(state.publisher)
+
+        Logger.info("embervm group banked",
+          workload: state.workload,
+          instance_id: instance.instance_id,
+          set_id: set_id,
+          members: length(members),
+          pause_spread_ms: pause_spread_ms
+        )
+
+        {{:ok, %{set_id: set_id, banked: length(members), pause_spread_ms: pause_spread_ms}}, state}
+
+      {:error, reason} ->
+        # The durable group_banked append failed AFTER every member's VM was already
+        # snapshotted+destroyed: the set exists on disk but the log never recorded it.
+        # We cannot return to a live group (the VMs are gone). Fail the instance so the
+        # next connection fresh-boots (the orphan snapshots are the daemon's GC and the
+        # adoption casualty path's concern), the honest terminal for an unrecordable
+        # bank.
+        _ =
+          GroupStore.transition(
+            state.store,
+            instance.instance_id,
+            :fail,
+            :group_failed,
+            %{reason: "bank_record_failed"},
+            %{}
+          )
+
+        Embervm.EndpointPublisher.publish(state.publisher)
+        {{:error, {:bank_record_failed, reason}}, state}
+    end
+  end
+
+  # A member BANK failed: abort back to running (banking -> running, ETS-only). The
+  # members that DID bank left orphan snapshots (the daemon's bundle GC reclaims them)
+  # and their VMs are gone; the members that did NOT are still live. The group returns
+  # to running with a partial member set, which the health/adoption path reconciles;
+  # the sweeper re-publishes so the still-live group re-enters the fan-out. A failed
+  # bank must never leave a warm group dark.
+  defp abort_bank(state, instance, failed) do
+    _ = GroupStore.mark(state.store, instance.instance_id, :bank_abort)
+
+    Logger.warning("embervm group: bank aborted (member failure), returning to running",
+      workload: state.workload,
+      instance_id: instance.instance_id,
+      failures: length(failed)
+    )
+
+    {{:error, {:bank_partial, failed}}, state}
+  end
+
+  # The live member rows (a live vm_id): the members a bank pauses+snapshots. A banked
+  # instance's member rows carry nil vm_id (the bank cleared them), so this is empty
+  # for a non-running instance, the guard do_bank_group already enforces.
+  defp live_members(state) do
+    state.store
+    |> GroupStore.members(state.instance_id)
+    |> Enum.filter(fn m -> is_binary(m.vm_id) and m.vm_id != "" end)
+  end
+
+  # A shared set_id across the members of ONE bank (the opaque set directory
+  # group/<set_id>/<member>/ each member's snapshot is written under). The instance_id
+  # plus the bank's start clock keeps it unique across successive banks of the same
+  # instance (a re-bank after a wake gets a fresh set dir, never colliding with the
+  # evicted prior set's dir). The id_fun seam lets a test pin it.
+  defp mint_set_id(state, instance) do
+    case Map.get(state, :set_id_fun) do
+      fun when is_function(fun, 0) -> fun.()
+      _ -> "set-#{instance.instance_id}-#{state.clock.()}"
+    end
   end
 
   # -- member address plan (deterministic, lockstep with the watcher + noded) -

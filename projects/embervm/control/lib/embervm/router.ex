@@ -159,6 +159,15 @@ defmodule Embervm.Router do
     handle_get_group(conn, name)
   end
 
+  # DELETE /v1/groups/:name/instance (management auth): the forced roll. Destroys
+  # every live member + deletes the network + evicts the banked set, KEEPING the
+  # workload definition so the next connection fresh-boots a new environment on the
+  # current images. The convergence + degraded-recovery lever. Returns the counts
+  # destroyed + evicted (each 0 or 1, the class is a group-level singleton).
+  delete "/v1/groups/:name/instance" do
+    handle_force_roll_group(conn, name)
+  end
+
   # The activator fallback (R3, Task 8): the catch-all is the front-end the node
   # Envoy routes a MISS to (the fallback endpoint of an empty serve|<workload>
   # cluster). It is identified by the `x-ember-workload` request header the serving
@@ -1110,8 +1119,23 @@ defmodule Embervm.Router do
     end
   end
 
+  # DELETE /v1/groups/:name/instance handler: forced roll (management auth). Drives
+  # GroupSweeper.force_roll (destroy live members + delete network + evict banked set,
+  # keep the definition) so the next connection fresh-boots on the current images.
+  # Returns the counts; a workload with no instances rolls zero (200), never a 404
+  # (mirrors the serving/stateful forced-roll "rolling nothing is still success").
+  defp handle_force_roll_group(conn, workload) do
+    %{destroyed: destroyed, evicted: evicted} =
+      group_sweeper().force_roll(group_sweeper_server(), workload)
+
+    send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+  end
+
   defp group_store, do: Application.get_env(:embervm, :group_store_mod, Embervm.GroupStore)
   defp group_store_server, do: Application.get_env(:embervm, :group_store, Embervm.GroupStore)
+
+  defp group_sweeper, do: Application.get_env(:embervm, :group_sweeper_mod, Embervm.GroupSweeper)
+  defp group_sweeper_server, do: Application.get_env(:embervm, :group_sweeper, Embervm.GroupSweeper)
 
   defp serving_sweeper, do: Application.get_env(:embervm, :serving_sweeper_mod, Embervm.ServingSweeper)
   defp serving_sweeper_server, do: Application.get_env(:embervm, :serving_sweeper, Embervm.ServingSweeper)

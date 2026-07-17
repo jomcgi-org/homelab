@@ -232,6 +232,14 @@ defmodule Embervm.Application do
       # a control-plane restart republishes exactly the same entry endpoint without
       # touching any VM. With no composite node wired, a wake denies :no_capacity.
       {Embervm.GroupWakeManager, group_wake_manager_opts()},
+      # The composite activator live-splice counter (R5, Task 8): a per-workload ETS
+      # count of the byte-pump splices the TcpActivator holds open for a group's entry
+      # member. A splice that began during a wake never re-enters the entry listener's
+      # Envoy cx_active counter, so the GroupSweeper's idle predicate reads this to
+      # avoid banking a group with a live session (standing decision 7). Placed BEFORE
+      # TcpActivator (which increments it per composite splice) and GroupSweeper (which
+      # reads it); it owns only a public named ETS table, so a restart is cheap.
+      {Embervm.ActivatorSplices, []},
       # The L4 TCP activator (R4, Task 8; R5 composite): binds the values-declared
       # stateful (5400-5409) AND composite (5410-5419) port ranges and dispatches an
       # accepted connection to StatefulManager.wake/3 or GroupWakeManager.wake/3
@@ -253,6 +261,18 @@ defmodule Embervm.Application do
       # wake path). With no stats_base wired (reuses EMBERVM_SERVING_STATS_BASE) every
       # tick fails open and banks nothing, mirroring ServingSweeper's no-op default.
       {Embervm.StatefulSweeper, stateful_sweeper_opts()},
+      # The composite-group lifecycle-economics sweeper (R5, Task 8): the group
+      # idle-to-bank / max-lifetime / banked-TTL loop, plus the forced-roll verb the
+      # Router's DELETE /v1/groups/:name/instance calls. It scrapes the SAME node Envoy
+      # stats port for the group's entry listener L4 connection counters (keyed by the
+      # group-<entry.listenPort> stat_prefix), ANDs in the ActivatorSplices count (the
+      # session-splice signal Envoy cannot see), excludes degraded groups from banking
+      # (decision 11), and drives GroupManager.Supervisor.bank_group/2. Placed AFTER
+      # GroupStore/EndpointPublisher (it mutates + re-pushes) and AFTER the
+      # GroupManager.Supervisor + GroupWakeManager + ActivatorSplices it drives/reads.
+      # With no stats_base wired (reuses EMBERVM_SERVING_STATS_BASE) every tick fails
+      # open and banks nothing, mirroring StatefulSweeper's no-op default.
+      {Embervm.GroupSweeper, group_sweeper_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -602,6 +622,29 @@ defmodule Embervm.Application do
     end
   end
 
+  # GroupSweeper (R5, Task 8) config: the sweep cadence, the node Envoy stats base URL
+  # (reuses sweeper_stats_base/0, EMBERVM_SERVING_STATS_BASE: composite entry listeners
+  # live on the SAME node Envoy admin the serving/stateful scrape reaches), the
+  # activator live-splice table (the idle predicate's third clause), and the
+  # max-lifetime drain patience window. Unset stats_base disables the scrape, so every
+  # tick fails open and banks nothing, exactly the StatefulSweeper default.
+  defp group_sweeper_opts do
+    [
+      sweep_interval_ms: group_sweep_interval_ms(),
+      stats_base: sweeper_stats_base(),
+      splices_table: Embervm.ActivatorSplices,
+      lifetime_drain_max_ms: int_env_or_nil("EMBERVM_GROUP_LIFETIME_DRAIN_MAX_MS")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp group_sweep_interval_ms do
+    case trimmed_env("EMBERVM_GROUP_SWEEP_INTERVAL_MS") do
+      "" -> 30_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
   # StatefulManager (R4, Task 8) config: the adoption reconcile cadence + the
   # wake-rate/parked-cap knobs. Defaults keep the reconcile timer ON in
   # production; the module defaults the caps (10/min wake, 16 parked), an order
@@ -653,7 +696,10 @@ defmodule Embervm.Application do
   defp tcp_activator_opts do
     [
       port_range: stateful_activator_port_range() ++ composite_activator_port_range(),
-      activator_ip: stateful_activator_ip()
+      activator_ip: stateful_activator_ip(),
+      # The composite live-splice counter table the activator increments per group
+      # splice and the GroupSweeper reads for its idle predicate (Task 8).
+      splices_table: Embervm.ActivatorSplices
     ]
   end
 
