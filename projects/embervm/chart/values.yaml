@@ -517,6 +517,10 @@ scratchPostgres:
   # The node Envoy TCP listener port (must fall in the stateful 5400-5409 range;
   # see the CRD's listenPort validation). Shared with the monolith DSN wiring.
   listenPort: 5400
+  # Opt in to the two-phase interruptible bank (ADR embervm/008). Off until the
+  # mode is vetted on demo-postgres under real traffic; the atomic bank is
+  # unchanged while false.
+  interruptibleBank: false
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/postgres
     tag: latest
@@ -582,6 +586,11 @@ demoPostgres:
   # Bank almost immediately once idle. The effective floor is the stateful
   # sweeper tick (statefulSweeper.sweepIntervalMs), not this value.
   idleBankSeconds: 1
+  # Opt in to the two-phase interruptible bank (ADR embervm/008): with the
+  # aggressive 1s idle window above, a query landing mid-bank would otherwise
+  # cold-boot; the interruptible bank resumes the paused VM hot instead. demo-
+  # postgres is the named consumer this mode exists for.
+  interruptibleBank: true
   # Toy dataset: a handful of demo rows, not a real datastore.
   volumeSizeGiB: 2
 

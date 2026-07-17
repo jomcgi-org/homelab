@@ -64,6 +64,11 @@ spec:
     # Wake deadline (generous: cold boots include WAL recovery and, on first boot,
     # mkfs + initdb).
     wakeTimeoutSeconds: 60
+    # Opt in to the two-phase interruptible bank (ADR embervm/008). Off by default
+    # for scratch-postgres until the mode is vetted under real tenant traffic (the
+    # atomic bank is unchanged when false); plumbed from values so enabling it is
+    # a one-line flip once proven on demo-postgres.
+    interruptibleBank: {{ .Values.scratchPostgres.interruptibleBank }}
     # The K8s Secret in THIS namespace whose keys become the guest's first-boot
     # env (POSTGRES_PASSWORD). Created by the OnePasswordItem alongside this CR.
     # The control plane reads it into StartStateful.mmds_env on a FRESH/COLD wake

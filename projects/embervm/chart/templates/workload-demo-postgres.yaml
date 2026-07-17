@@ -49,6 +49,11 @@ spec:
     # Wake deadline (generous: cold boots include WAL recovery and, on first
     # boot, mkfs + initdb).
     wakeTimeoutSeconds: 60
+    # Opt in to the two-phase interruptible bank (ADR embervm/008): a query that
+    # lands mid-bank resumes the paused VM (hot) instead of cold booting, so the
+    # aggressive idleBankSeconds:1 above is safe. This is exactly the exhibit the
+    # mode exists for (a human clicking at the wrong moment).
+    interruptibleBank: {{ .Values.demoPostgres.interruptibleBank }}
     # Reuse the scratch-postgres Secret: same superuser password on first boot.
     secretRef: {{ include "embervm.fullname" . }}-scratch-postgres
 {{- end }}
