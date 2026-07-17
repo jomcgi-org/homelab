@@ -878,7 +878,14 @@ defmodule Embervm.WorkloadWatcher do
       idle_bank_seconds: Map.get(s, "idleBankSeconds") || @stateful_defaults.idle_bank_seconds,
       max_lifetime_seconds: Map.get(s, "maxLifetimeSeconds") || @stateful_defaults.max_lifetime_seconds,
       banked_ttl_seconds: Map.get(s, "bankedTtlSeconds") || @stateful_defaults.banked_ttl_seconds,
-      wake_timeout_seconds: Map.get(s, "wakeTimeoutSeconds") || @stateful_defaults.wake_timeout_seconds
+      wake_timeout_seconds: Map.get(s, "wakeTimeoutSeconds") || @stateful_defaults.wake_timeout_seconds,
+      # secretRef (R4, D-R4.PR-7.1: MMDS-lite over boot-args): the NAME of a K8s
+      # Secret in the workload's OWN namespace whose data keys/values become the
+      # guest's first-boot process env (e.g. POSTGRES_PASSWORD). Optional; nil
+      # when absent, matching every other optional stateful field's shape.
+      # Embervm.StatefulManager reads it (via Embervm.K8s.get_secret) ONLY on a
+      # FRESH/COLD wake, never on RELIGHT.
+      secret_ref: Map.get(s, "secretRef")
     }
   end
 

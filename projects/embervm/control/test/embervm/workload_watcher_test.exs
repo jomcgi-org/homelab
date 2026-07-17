@@ -604,7 +604,8 @@ defmodule Embervm.WorkloadWatcherTest do
           "idleBankSeconds" => 600,
           "maxLifetimeSeconds" => 604_800,
           "bankedTtlSeconds" => 2_592_000,
-          "wakeTimeoutSeconds" => 60
+          "wakeTimeoutSeconds" => 60,
+          "secretRef" => "scratch-postgres-creds"
         }
       }
     }
@@ -633,6 +634,7 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.stateful.max_lifetime_seconds == 604_800
     assert entry.stateful.banked_ttl_seconds == 2_592_000
     assert entry.stateful.wake_timeout_seconds == 60
+    assert entry.stateful.secret_ref == "scratch-postgres-creds"
 
     assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
     assert status_map["observedGeneration"] == 1
@@ -661,6 +663,9 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.stateful.max_lifetime_seconds == 86_400
     assert entry.stateful.banked_ttl_seconds == 604_800
     assert entry.stateful.wake_timeout_seconds == 60
+    # secretRef is optional; omitted here, so it parses to nil (D-R4.PR-7.1: a
+    # workload with no first-boot secrets to deliver never reads a Secret).
+    assert entry.stateful.secret_ref == nil
   end
 
   test "stateful class missing spec.stateful is Ready=False/StatefulSpecMissing, not cataloged" do

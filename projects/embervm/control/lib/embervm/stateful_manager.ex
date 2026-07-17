@@ -259,6 +259,11 @@ defmodule Embervm.StatefulManager do
       start_stateful_fun: Keyword.get(opts, :start_stateful_fun, &default_start_stateful/2),
       stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
       delete_volume_fun: Keyword.get(opts, :delete_volume_fun, &default_delete_volume/2),
+      # R4, D-R4.PR-7.1 (MMDS-lite over boot-args): reads a K8s Secret into a
+      # decoded key/value map for cold_request/2 to populate mmds_env from.
+      # Injected so tests can fake the K8s round-trip; production defaults to
+      # the real Embervm.K8s client.
+      get_secret_fun: Keyword.get(opts, :get_secret_fun, &Embervm.K8s.get_secret/2),
       # workload -> [{from, principal}] parked behind an in-flight wake
       # (single-flight). No request envelope: a stateful miss carries no HTTP
       # request to replay, only the raw socket the activator already holds.
@@ -438,7 +443,7 @@ defmodule Embervm.StatefulManager do
         end
 
       {:cold, node_id, boot_ref, mode, reason} ->
-        req = cold_request(entry, workload, boot_ref, mode)
+        req = cold_request(state, entry, workload, boot_ref, mode)
         spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, boot_ref, mode, reason, req) end)
 
       {:error, reason} ->
@@ -606,6 +611,14 @@ defmodule Embervm.StatefulManager do
 
   # -- request builders --------------------------------------------------------
 
+  # RELIGHT never carries mmds_env (R4, D-R4.PR-7.1): a relight resumes the
+  # running VM from its memory snapshot, so the kernel never re-inits and the
+  # boot-args carrying a first-boot secret are never read again. The secret was
+  # already consumed at the ORIGINAL FRESH/COLD boot and baked into the
+  # volume's initialized data (e.g. Postgres's initdb password). mmds_env is
+  # therefore unconditionally %{} here, with no secret read at all -- not even
+  # a wasted one -- keeping a relight's K8s footprint identical to before this
+  # feature.
   defp relight_request(entry, snapshot_ref, fallback_ref) do
     cfg = stateful_cfg(entry)
 
@@ -623,7 +636,12 @@ defmodule Embervm.StatefulManager do
     }
   end
 
-  defp cold_request(entry, workload, boot_ref, mode) do
+  # FRESH/COLD only: when the workload's catalog stateful config carries a
+  # secretRef, read it (via state.get_secret_fun) and populate mmds_env from
+  # its decoded key/values (R4, D-R4.PR-7.1: MMDS-lite over boot-args). Absent
+  # secretRef leaves mmds_env at %{} (no K8s call at all, matching the
+  # zero-new-runtime-RBAC baseline for a workload that declares none).
+  defp cold_request(state, entry, workload, boot_ref, mode) do
     cfg = stateful_cfg(entry)
 
     %StartStatefulRequest{
@@ -639,9 +657,47 @@ defmodule Embervm.StatefulManager do
       # branch selection).
       create_if_missing: mode == :fresh,
       resources: resource_spec(entry),
-      mmds_env: %{}
+      mmds_env: cold_boot_mmds_env(state, entry, workload)
     }
   end
+
+  # Fail-open on a secret-read failure (DECISION, D-R4.PR-7.1): a scratch-tier
+  # stateful workload with an unreadable secretRef proceeds to boot with an
+  # EMPTY mmds_env rather than failing the whole wake. The guest's own
+  # readiness probe (waitStatefulReady's TCP CONNECT) is the loud failure
+  # surface: a Postgres image that requires POSTGRES_PASSWORD and does not get
+  # it will fail to start and never open its listen port, so the wake times out
+  # and the caller sees {:wake_failed, ...} -- the same operator-visible signal
+  # a hard secret-read failure would have produced, just one hop later and with
+  # a clearer "guest never came up" symptom than an opaque K8s error would have
+  # been. Chosen over fail-closed because a K8s API blip (a transient 5xx, a
+  # slow apiserver) must not take down an otherwise-healthy scratch datastore
+  # wake; the RELIGHT path (the common case once seeded) never reads the secret
+  # at all, so this only matters on the rare first-boot/cold-boot-after-evict
+  # path.
+  defp cold_boot_mmds_env(_state, %{stateful: %{secret_ref: nil}}, _workload), do: %{}
+  defp cold_boot_mmds_env(_state, %{stateful: %{secret_ref: ""}}, _workload), do: %{}
+
+  defp cold_boot_mmds_env(state, %{namespace: namespace, stateful: %{secret_ref: secret_ref}}, workload)
+       when is_binary(secret_ref) do
+    case state.get_secret_fun.(namespace, secret_ref) do
+      {:ok, data} ->
+        data
+
+      {:error, reason} ->
+        Logger.warning(
+          "embervm stateful: secretRef read failed, proceeding with empty mmds_env (fail-open)",
+          workload: workload,
+          namespace: namespace,
+          secret_ref: secret_ref,
+          reason: inspect(reason)
+        )
+
+        %{}
+    end
+  end
+
+  defp cold_boot_mmds_env(_state, _entry, _workload), do: %{}
 
   defp start_mode(:fresh), do: :START_STATEFUL_MODE_FRESH
   defp start_mode(:cold), do: :START_STATEFUL_MODE_COLD

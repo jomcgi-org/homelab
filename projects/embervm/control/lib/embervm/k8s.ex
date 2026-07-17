@@ -238,6 +238,53 @@ defmodule Embervm.K8s do
   end
 
   @doc """
+  Reads one K8s Secret and returns its `data` map with every value base64-
+  decoded (the apiserver always base64-encodes Secret `data` values on the
+  wire). This is the R4, D-R4.PR-7.1 MMDS-lite seam: `Embervm.StatefulManager`
+  calls this on a FRESH/COLD wake when the workload's catalog entry carries
+  `spec.stateful.secretRef`, and feeds the decoded map straight into
+  `StartStatefulRequest.mmds_env`. Requires `get` on `secrets` (core API group,
+  granted in the chart RBAC) for the Secret's namespace; a plain resource GET,
+  mirroring `patch_workload_status`'s single-resource-path shape rather than
+  `list_workloads`'s collection shape.
+
+  Returns `{:error, {:apiserver_status, 404}}` for a missing Secret (the
+  caller decides fail-open vs fail-closed; this function does no interpreting).
+  A value that fails base64 decoding is dropped from the returned map rather
+  than failing the whole call, matching the mmds_env boot-args seam's own
+  posture of skipping a single malformed entry rather than discarding every
+  other one.
+  """
+  @spec get_secret(String.t(), String.t()) :: {:ok, %{String.t() => String.t()}} | {:error, term()}
+  def get_secret(namespace, name) do
+    path = "/api/v1/namespaces/#{URI.encode(namespace)}/secrets/#{URI.encode(name)}"
+
+    case do_request(:get, path, nil, nil) do
+      {:ok, 200, resp_body} ->
+        decoded = :json.decode(resp_body)
+        data = Map.get(decoded, "data", %{})
+        {:ok, decode_secret_data(data)}
+
+      {:ok, status, _resp_body} ->
+        {:error, {:apiserver_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Base64-decodes every value in a Secret's `data` map. A value that is not
+  # valid base64 (should not happen against a real apiserver, but a defensive
+  # boundary against a malformed or hand-edited Secret) is dropped rather than
+  # crashing the whole read, so one bad key does not deny every other secret
+  # value the workload legitimately needs.
+  defp decode_secret_data(data) do
+    for {k, v} <- data, is_binary(v), {:ok, decoded} <- [Base.decode64(v)], into: %{} do
+      {k, decoded}
+    end
+  end
+
+  @doc """
   Patches one `Workload`'s `/status` subresource with `status_map` (a
   binary-keyed map the caller already built). Uses a JSON merge patch
   (`application/merge-patch+json`), so unspecified status fields are left
