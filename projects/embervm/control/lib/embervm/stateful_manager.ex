@@ -802,6 +802,9 @@ defmodule Embervm.StatefulManager do
 
     case record do
       {:ok, _instance} ->
+        # The {:created} endpoint carries only {vm_id, ip, port}; surface the boot
+        # generation (from attrs) on the reply so it matches the relit/fallback paths.
+        endpoint = Map.put(endpoint, :generation, Map.get(attrs, :generation, 0))
         publish_and_resolve(state, instance_id, workload, endpoint, audit, waiters)
 
       {:error, store_reason} ->
@@ -893,7 +896,7 @@ defmodule Embervm.StatefulManager do
 
           Logger.info("embervm stateful woken", workload: workload, instance_id: instance_id, reason: reason)
 
-          reply_all(waiters, {:ok, %{ip: endpoint.ip, port: endpoint.port, generation: endpoint.generation || 0}})
+          reply_all(waiters, {:ok, %{ip: endpoint.ip, port: endpoint.port, generation: Map.get(endpoint, :generation, 0)}})
           state
 
         {:error, publish_reason} ->
