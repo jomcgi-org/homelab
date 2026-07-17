@@ -78,7 +78,6 @@ defmodule Embervm.StatefulStore do
   """
 
   use GenServer
-  require Logger
 
   alias Embervm.OpLog.Op
   alias Embervm.StatefulState
@@ -850,6 +849,9 @@ defmodule Embervm.StatefulStore do
 
         :ets.insert(state.instances, {instance_id, instance})
         state = bump_counts(state, nil, :starting, workload)
+        # Mirror the node's volume-generation bump for this boot in real time, so a
+        # fast-churning workload's volume pair-key never lags its next banked bundle.
+        state = bump_volume_ets(state, workload, Map.get(attrs, :node_id), generation)
         {:reply, {:ok, instance}, state}
 
       {:error, _reason} = error ->
@@ -930,6 +932,17 @@ defmodule Embervm.StatefulStore do
 
         :ets.insert(state.instances, {instance.instance_id, updated})
         state = bump_counts(state, instance.state, next_state, instance.workload)
+        # A relight also bumps the volume ledger on the node (every StartStateful
+        # mode does), so mirror it in real time exactly as the cold/fresh boot path
+        # does, or the next bank after a relight would strand its bundle against a
+        # stale volume pair-key.
+        state =
+          if op_kind == :stateful_relit do
+            bump_volume_ets(state, instance.workload, Map.get(updates, :node_id), Map.get(updates, :generation))
+          else
+            state
+          end
+
         {:ok, updated, state}
 
       {:error, reason} ->
@@ -956,34 +969,12 @@ defmodule Embervm.StatefulStore do
   # equals the workload's volume generation. False if either the banked instance or
   # the volume row is missing, and false when the generations diverge.
   defp do_pair_valid?(state, workload) do
-    banked = banked_instance(state, workload)
-    volume = fetch_volume(state, workload)
-
-    result =
-      with %{snapshot_generation: sg} when is_integer(sg) <- banked,
-           %{generation: vg} when is_integer(vg) <- volume do
-        sg == vg
-      else
-        _ -> false
-      end
-
-    # TEMP diagnostic (debug/embervm-stateful-pair-logging): log the exact pair
-    # inputs so a persistent false (demo-postgres never relighting) can be
-    # attributed to a missing volume row vs a generation mismatch. Only when a
-    # banked instance exists, so a scaled-to-zero-no-bundle workload stays quiet.
-    if is_map(banked) do
-      vol_gen = if is_map(volume), do: Map.get(volume, :generation), else: :no_volume_row
-      vol_node = if is_map(volume), do: Map.get(volume, :node_id), else: nil
-
-      Logger.info(
-        "embervm stateful pair check " <>
-          "workload=#{workload} banked_snap_gen=#{inspect(Map.get(banked, :snapshot_generation))} " <>
-          "volume_gen=#{inspect(vol_gen)} volume_node=#{inspect(vol_node)} " <>
-          "banked_node=#{inspect(Map.get(banked, :node_id))} pair_valid=#{result}"
-      )
+    with %{snapshot_generation: sg} when is_integer(sg) <- banked_instance(state, workload),
+         %{generation: vg} when is_integer(vg) <- fetch_volume(state, workload) do
+      sg == vg
+    else
+      _ -> false
     end
-
-    result
   end
 
   # Evict every banked instance whose pair is broken, through the DURABLE path (so
@@ -1095,6 +1086,40 @@ defmodule Embervm.StatefulStore do
       [] -> nil
     end
   end
+
+  # Bump the ETS volume row's pair-key generation to the value an attach (a
+  # cold/fresh boot or a relight) just booted the volume at, in REAL TIME. Every
+  # StartStateful mode bumps the volume ledger on the node before boot and returns
+  # the new generation; the control plane must mirror that immediately, because the
+  # pair check (do_pair_valid?) compares a freshly-banked bundle's
+  # snapshot_generation to this volume generation. Before this, the ETS volume
+  # generation only advanced on the periodic refresh_volume_facts reconcile, so a
+  # workload that banks faster than the reconcile interval (demo-postgres at
+  # idleBankSeconds:1) had its volume pair-key perpetually lag its just-banked
+  # bundle by >= 1, so pair_valid? was always false and every wake cold-booted
+  # (never relit). Merges (preserving size/allocated from the last node refresh),
+  # creates the row if absent, and never moves the generation backward (a stale
+  # refresh must not undo a newer boot's bump).
+  defp bump_volume_ets(state, workload, node_id, generation) when is_integer(generation) do
+    ts = state.clock.()
+
+    base =
+      fetch_volume(state, workload) ||
+        %{workload: workload, node_id: nil, generation: 0, size_bytes: nil, allocated_bytes: nil, updated_at: ts}
+
+    if generation >= Map.get(base, :generation, 0) do
+      merged =
+        base
+        |> Map.merge(%{generation: generation, node_id: node_id || Map.get(base, :node_id), updated_at: ts})
+        |> Map.put(:workload, workload)
+
+      :ets.insert(state.volumes, {workload, merged})
+    end
+
+    state
+  end
+
+  defp bump_volume_ets(state, _workload, _node_id, _generation), do: state
 
   defp fetch(state, instance_id) do
     case :ets.lookup(state.instances, instance_id) do

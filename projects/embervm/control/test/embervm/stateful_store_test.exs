@@ -296,6 +296,18 @@ defmodule Embervm.StatefulStoreTest do
     assert StatefulStore.pair_valid?(store, "wl-a")
   end
 
+  test "a boot bumps the volume pair-key in real time so a same-generation bank pairs without a reconcile", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    # A cold/fresh boot at generation 7 must set the volume pair-key to 7
+    # IMMEDIATELY (not only on the next refresh_volume_facts reconcile). Before the
+    # fix the ETS volume row lagged the freshly-banked bundle, so a workload that
+    # banks faster than the reconcile interval (demo-postgres, idleBankSeconds:1)
+    # never paired and cold-booted forever. No upsert_volume / reconcile here.
+    {:ok, _} = start_instance(store, generation: 7)
+    _ = bank(store, "sf-1", "wl-a", 7)
+    assert StatefulStore.pair_valid?(store, "wl-a")
+  end
+
   test "pair_valid? is false when the generations diverge", %{path: path} do
     {_op_log, store} = start_pair(path)
     {:ok, _} = start_instance(store, generation: 0)
