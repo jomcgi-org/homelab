@@ -68,11 +68,12 @@
             </p>
           {:else if app.slug === "firecracker"}
             <p>
-              fc-invoke serves <code>POST /invoke/&#123;workload&#125;</code>:
-              boot a workload once, freeze it, restore the snapshot for every
+              Boot a workload once, freeze it, restore the snapshot for every
               request. The guest never holds a real secret; an egress proxy
               swaps placeholder tokens for credentials at the network hop.
-              Watch a microVM restore from disk in <b>{sandboxRestoreMs}ms</b>.
+              <b>EmberVM</b> runs this substrate today: one-shot tasks, stateful
+              sessions, and warm HTTP serving. Watch a microVM restore from
+              disk in <b>{sandboxRestoreMs}ms</b>.
               <a class="more" href="/app/firecracker">watch it restore &rarr;</a>
             </p>
           {/if}
