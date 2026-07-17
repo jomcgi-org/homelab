@@ -139,8 +139,16 @@ defmodule Embervm.GroupWakeManagerTest do
         adopts: 0
       }
 
-    {:ok, _} = Agent.start_link(fn -> sup_state end, name: FakeSupervisor)
-    on_exit(fn -> if Process.whereis(FakeSupervisor), do: Agent.stop(FakeSupervisor) end)
+    # Start the fake's state Agent under the ExUnit test supervisor (start_supervised),
+    # NOT a bare Agent.start_link with a hand-rolled on_exit. Two robustness reasons:
+    # (1) start_supervised tears the child down SYNCHRONOUSLY between tests, so the next
+    # test's Agent under the same module name can never collide with a prior test's not-
+    # yet-reaped one (a bare Agent.start_link linked to the test process dies
+    # asynchronously when the test process exits, and a whereis-then-stop on_exit then
+    # races the name being re-registered -> the "no process" exit we hit); (2) no manual
+    # stop, so there is no double-stop of an already-dead name. The Agent is keyed by a
+    # fixed id (:fake_supervisor) but registered under the module name the fake resolves.
+    _ = start_supervised!(%{id: :fake_supervisor, start: {Agent, :start_link, [fn -> sup_state end, [name: FakeSupervisor]]}})
 
     {:ok, mgr} =
       GroupWakeManager.start_link(
