@@ -182,7 +182,10 @@ defmodule Embervm.StatefulManager do
 
     * `{:ok, %{ip, port}}`             -> splice (a fresh wake, OR the
       STRAGGLER path: a connection reached the activator while a healthy
-      instance already exists, resolved without a wake).
+      instance already exists, resolved without a wake). A fresh wake's map
+      also carries `generation` (the volume generation the boot landed on,
+      Task 10 observability); the straggler path replies with just `{ip, port}`
+      since it never wakes anything.
     * `{:error, {:wake_rate, _}}`               -> close (per-workload wake-rate limit)
     * `{:error, {:park_full, _}}`                -> close (parked-connection cap)
     * `{:error, {:wake_failed, r}}`              -> close (start error / readiness
@@ -260,6 +263,15 @@ defmodule Embervm.StatefulManager do
       # (single-flight). No request envelope: a stateful miss carries no HTTP
       # request to replay, only the raw socket the activator already holds.
       waking: %{},
+      # workload -> per-miss tracing bundle (Task 10), the stateful counterpart of
+      # ServingManager's wake_traces. UNLIKE serving, a raw TCP accept carries no
+      # HTTP request and so no router-issued traceparent to nest phases under: the
+      # `park`/`wake` spans emitted from this bundle are therefore ROOTS (accept-
+      # driven, the same "no caller trace" shape as the sweeper's stats_sweep), not
+      # children of an upstream trace. Seeded by the first connection (park_start),
+      # stamped by start_wake (wake_start + the cold bool), cleared by finish_wake.
+      # Absent (tracing off in CI) => spans are a clean no-op.
+      wake_traces: %{},
       # principal -> [wake timestamps within the window]. Sliding-window counter,
       # keyed by workload per the moduledoc (a stateful workload's principal IS
       # its workload).
@@ -370,8 +382,18 @@ defmodule Embervm.StatefulManager do
     end
   end
 
+  # First connection for a workload: seed its parked list (the cap is never
+  # exceeded by the first entry) AND its tracing bundle (park_start), the
+  # stateful counterpart of ServingManager.park_new_wake/4 minus the
+  # traceparent (no HTTP request to carry one from).
   defp park_new_wake(state, workload, principal, from) do
-    %{state | waking: Map.put(state.waking, workload, [{from, principal}])}
+    trace = %{park_start: :opentelemetry.timestamp()}
+
+    %{
+      state
+      | waking: Map.put(state.waking, workload, [{from, principal}]),
+        wake_traces: Map.put(state.wake_traces, workload, trace)
+    }
   end
 
   # -- wake worker -------------------------------------------------------------
@@ -387,7 +409,17 @@ defmodule Embervm.StatefulManager do
     owner = self()
     entry = catalog_entry(state, workload)
 
-    case plan_wake(state, workload) do
+    # Stamp the wake phase's start + the cold bool into the tracing bundle now
+    # (before the plan/RPC), so finish_wake can emit the `wake` child span with a
+    # real duration. Mirrors ServingManager.start_wake/2's placement/wake stamps,
+    # collapsed to one boundary here (plan_wake is a cheap pure ETS read, not
+    # worth its own child span at this granularity).
+    wake_start = :opentelemetry.timestamp()
+    plan = plan_wake(state, workload)
+    cold = match?({:cold, _, _, _, _}, plan)
+    state = stamp_wake_trace(state, workload, %{wake_start: wake_start, cold: cold})
+
+    case plan do
       {:relight, instance, node_id, snapshot_ref} ->
         case StatefulStore.mark(state.store, instance.instance_id, :relight) do
           {:ok, _} ->
@@ -679,21 +711,45 @@ defmodule Embervm.StatefulManager do
 
   defp finish_wake(state, workload, outcome) do
     {waiters, state} = pop_waiters(state, workload)
+    {trace, state} = pop_wake_trace(state, workload)
+
+    # The wake RPC returned now: this closes the `wake` phase. Emit the
+    # retroactive `park`/`wake` root spans (Task 10) with explicit start_times
+    # (the session queue_wait / serving wake idiom): they spanned the async wake
+    # worker and cannot wrap live code on this serialized process. `wake` carries
+    # ember.wake_ms/ember.cold, the numbers the Task 12 wake-p95 + cold-vs-warm
+    # gate reads. relight/cold_boot_reason are folded in by the caller once the
+    # outcome is known (finish_created/finish_relit/finish_relight_fallback).
+    # The `publish` child span is opened LIVE inside publish_and_resolve. Tracing
+    # off (no OTel exporter) is a clean no-op throughout.
+    wake_ended = :opentelemetry.timestamp()
 
     case outcome do
       {:created, attrs, endpoint, mode, _boot_ref, reason} ->
+        emit_wake_phase_spans(trace, workload, wake_ended, false, cold_boot_reason_string(reason))
         finish_created(state, workload, attrs, endpoint, mode, reason, waiters)
 
       {:relit, instance_id, node_id, endpoint} ->
+        emit_wake_phase_spans(trace, workload, wake_ended, true, "")
         finish_relit(state, workload, instance_id, node_id, endpoint, waiters)
 
       {:relight_fell_back, instance_id, node_id, endpoint, reason} ->
+        emit_wake_phase_spans(trace, workload, wake_ended, false, cold_boot_reason_string(reason))
         finish_relight_fallback(state, workload, instance_id, node_id, endpoint, reason, waiters)
 
       other ->
+        emit_wake_phase_spans(trace, workload, wake_ended, false, "")
         finish_wake_failure(state, workload, other, waiters)
     end
   end
+
+  # The wire cold_boot_reason as a plain string attribute (empty when there was
+  # none, e.g. a genuine fresh first boot): a nil value must never reach a span
+  # attribute (the OTel Elixir SDK expects a concrete type per key).
+  defp cold_boot_reason_string(nil), do: ""
+  defp cold_boot_reason_string(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp cold_boot_reason_string(reason) when is_binary(reason), do: reason
+  defp cold_boot_reason_string(reason), do: inspect(reason)
 
   defp finish_wake_failure(state, workload, outcome, waiters) do
     case outcome do
@@ -824,6 +880,10 @@ defmodule Embervm.StatefulManager do
     end
   end
 
+  # endpoint.generation rides the success reply (additive keys past {ip, port}):
+  # ember.generation on the wake span AND the volume generation the caller booted
+  # against are the same number, so surfacing it here means the reply itself is
+  # gate-derivable without a second store read.
   defp publish_and_resolve(state, instance_id, workload, endpoint, reason, waiters) do
     Tracer.with_span "embervm.stateful.publish",
                      %{attributes: %{"ember.workload" => workload, "ember.instance_id" => instance_id}} do
@@ -833,7 +893,7 @@ defmodule Embervm.StatefulManager do
 
           Logger.info("embervm stateful woken", workload: workload, instance_id: instance_id, reason: reason)
 
-          reply_all(waiters, {:ok, %{ip: endpoint.ip, port: endpoint.port}})
+          reply_all(waiters, {:ok, %{ip: endpoint.ip, port: endpoint.port, generation: endpoint.generation || 0}})
           state
 
         {:error, publish_reason} ->
@@ -854,6 +914,82 @@ defmodule Embervm.StatefulManager do
     :ok
   end
 
+  # -- wake tracing (Task 10) --------------------------------------------------
+
+  # Merge boundary stamps into a workload's tracing bundle. A no-op when the
+  # workload never seeded a bundle (should not happen on the wake path, since
+  # park_new_wake always seeds one before start_wake runs, but guarded exactly
+  # like ServingManager.stamp_wake_trace/3 for symmetry).
+  defp stamp_wake_trace(state, workload, fields) do
+    case Map.get(state.wake_traces, workload) do
+      nil -> state
+      trace -> %{state | wake_traces: Map.put(state.wake_traces, workload, Map.merge(trace, fields))}
+    end
+  end
+
+  defp pop_wake_trace(state, workload) do
+    {Map.get(state.wake_traces, workload), %{state | wake_traces: Map.delete(state.wake_traces, workload)}}
+  end
+
+  # Emit the retroactive `park`/`wake` ROOT spans (Task 10) with explicit
+  # start_times reconstructing phases that spanned another process (the
+  # session queue_wait / serving wake idiom). UNLIKE serving these are roots,
+  # not children of a restored remote parent: a raw TCP accept carries no W3C
+  # traceparent to nest under. A nil bundle (should not happen; guarded anyway)
+  # is a clean no-op.
+  defp emit_wake_phase_spans(nil, _workload, _wake_ended, _relight, _cold_boot_reason), do: :ok
+
+  defp emit_wake_phase_spans(trace, workload, wake_ended, relight, cold_boot_reason) do
+    attrs = %{"ember.workload" => workload}
+
+    if is_integer(trace[:park_start]) do
+      # park: the first connection parked here until the wake began.
+      park_stop = trace[:wake_start] || wake_ended
+      emit_phase_span("embervm.stateful.park", trace.park_start, park_stop, attrs)
+    end
+
+    if is_integer(trace[:wake_start]) do
+      # wake: the StartStateful RPC (relight, cold, or a relight-fell-back-to-cold).
+      # Carries the gate numbers the Task 12 wake-p95 + relight-vs-cold-boot gate
+      # reads: ember.wake_ms (park-to-first-response), ember.relight (true only for
+      # a clean relight; a fallback cold boot is NOT a relight), and
+      # ember.cold_boot_reason (empty unless a cold-boot fallback discarded warmth).
+      wake_attrs =
+        Map.merge(attrs, %{
+          "ember.cold" => Map.get(trace, :cold, false),
+          "ember.wake_ms" => span_ms(trace.wake_start, wake_ended),
+          "ember.relight" => relight,
+          "ember.cold_boot_reason" => cold_boot_reason
+        })
+
+      emit_phase_span("embervm.stateful.wake", trace.wake_start, wake_ended, wake_attrs)
+    end
+
+    :ok
+  end
+
+  # A retroactive completed span: opened with an explicit start_time and closed
+  # immediately (its wall duration is start_time..now). Mirrors
+  # ServingManager.emit_phase_span/4. Skipped if either boundary is missing.
+  defp emit_phase_span(_name, nil, _stop, _attrs), do: :ok
+  defp emit_phase_span(_name, _start, nil, _attrs), do: :ok
+
+  defp emit_phase_span(name, start_time, _stop, attrs) do
+    Tracer.with_span name, %{start_time: start_time, attributes: attrs} do
+      :ok
+    end
+  end
+
+  # :opentelemetry.timestamp/0 returns erlang NATIVE time units (what the span
+  # start_time option expects). The *_ms gate attributes want milliseconds, so
+  # convert the native delta (never assume nanoseconds). Mirrors
+  # ServingManager.span_ms/2.
+  defp span_ms(start_native, stop_native) when is_integer(start_native) and is_integer(stop_native) do
+    System.convert_time_unit(stop_native - start_native, :native, :millisecond)
+  end
+
+  defp span_ms(_, _), do: 0
+
   # -- destroy (management verb) -----------------------------------------------
 
   # DELETE /v1/stateful/:name/instance: destroy the live instance AND evict the
@@ -863,25 +999,31 @@ defmodule Embervm.StatefulManager do
   # override, mirroring ServingSweeper.force_roll's forced-destroy semantics
   # (accepts the in-flight drop).
   defp do_destroy_instance(state, workload) do
-    instances = StatefulStore.list(state.store, workload)
+    # The `forced_roll` span (Task 10): a ROOT span around the whole operator-
+    # override destroy (no caller trace, timer/API-driven, mirrors
+    # ServingSweeper.force_roll's span shape). Bounds the StopStateful(DESTROY)
+    # RPC + the durable transitions so a slow or stuck forced destroy is visible.
+    Tracer.with_span "embervm.stateful.forced_roll", %{attributes: %{"ember.workload" => workload}} do
+      instances = StatefulStore.list(state.store, workload)
 
-    {state, destroyed, evicted} =
-      Enum.reduce(instances, {state, 0, 0}, fn instance, {acc, d, e} ->
-        cond do
-          StatefulState.terminal?(instance.state) ->
-            {acc, d, e}
+      {state, destroyed, evicted} =
+        Enum.reduce(instances, {state, 0, 0}, fn instance, {acc, d, e} ->
+          cond do
+            StatefulState.terminal?(instance.state) ->
+              {acc, d, e}
 
-          instance.state == :banked ->
-            {evict_banked(acc, instance), d, e + 1}
+            instance.state == :banked ->
+              {evict_banked(acc, instance), d, e + 1}
 
-          true ->
-            {force_destroy_live(acc, instance), d + 1, e}
-        end
-      end)
+            true ->
+              {force_destroy_live(acc, instance), d + 1, e}
+          end
+        end)
 
-    EndpointPublisher.publish(state.publisher)
-    Logger.info("embervm stateful: instance destroyed", workload: workload, destroyed: destroyed, evicted: evicted)
-    {%{destroyed: destroyed, evicted: evicted}, state}
+      EndpointPublisher.publish(state.publisher)
+      Logger.info("embervm stateful: instance destroyed", workload: workload, destroyed: destroyed, evicted: evicted)
+      {%{destroyed: destroyed, evicted: evicted}, state}
+    end
   end
 
   defp force_destroy_live(state, instance) do
