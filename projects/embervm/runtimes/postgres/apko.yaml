@@ -14,8 +14,14 @@ contents:
     # /usr/libexec/postgresql to cover the versioned layout.
     - postgresql-16
     - postgresql-16-client
-    # mkfs.ext4 / blkid for the stateful volume (guest-init mkfs-if-blank + mount).
+    # mkfs.ext4 for the stateful volume (guest-init formats a blank volume ext4).
     - e2fsprogs
+    # blkid for the mkfs-if-blank probe: guest-init runs `blkid` to detect an
+    # existing filesystem signature before formatting, so a populated volume is
+    # never reformatted. e2fsprogs does NOT ship blkid (it lives in this dedicated
+    # Wolfi package), and the guest mounts via the unix.Mount syscall (no `mount`
+    # binary needed), so blkid is the only extra volume tool required.
+    - blkid
 
 archs:
   - x86_64
