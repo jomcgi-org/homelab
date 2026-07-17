@@ -516,6 +516,18 @@ defmodule Embervm.StatefulSweeperTest do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a", 5400, %{banked_ttl_seconds: 1_000_000, max_lifetime_seconds: 1_000_000})
     stateful_node(ctx, "node-4")
+
+    # A matching volume (generation 1 == the bundle's stamped generation) so the
+    # pair is VALID and the per-tick eager-evict does not remove the bundle; only
+    # the TTL/lifetime sweeps could, and both are far in the future here.
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-4",
+        generation: 1,
+        size_bytes: 1_073_741_824,
+        allocated_bytes: 100
+      })
+
     banked_instance(ctx, "sf-1", "wl-a", "vm-1", 1)
 
     advance(ctx.clock_agent, 200_000)
