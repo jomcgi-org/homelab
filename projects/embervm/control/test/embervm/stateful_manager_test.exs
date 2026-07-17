@@ -62,6 +62,14 @@ defmodule Embervm.StatefulManagerTest do
          }}
       end)
 
+    {:ok, secret_reads} = Agent.start_link(fn -> [] end)
+
+    get_secret_fun =
+      Keyword.get(opts, :get_secret_fun, fn namespace, name ->
+        Agent.update(secret_reads, &[{namespace, name} | &1])
+        {:ok, %{"POSTGRES_PASSWORD" => "hunter2"}}
+      end)
+
     mgr_opts =
       [
         name: nil,
@@ -74,13 +82,23 @@ defmodule Embervm.StatefulManagerTest do
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_stateful_fun: start_stateful_fun,
         stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, fn _ch, _req -> {:ok, %Embervm.Node.V1.StopStatefulResponse{}} end),
+        get_secret_fun: get_secret_fun,
         reconcile_interval_ms: 0,
         id_fun: id_seq(suffix)
       ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap])
 
     {:ok, mgr} = StatefulManager.start_link(mgr_opts)
 
-    %{mgr: mgr, store: store, cap_table: cap_table, cat_table: cat_table, starts: starts, pub: pub, op_log: op_log}
+    %{
+      mgr: mgr,
+      store: store,
+      cap_table: cap_table,
+      cat_table: cat_table,
+      starts: starts,
+      pub: pub,
+      op_log: op_log,
+      secret_reads: secret_reads
+    }
   end
 
   defp id_seq(suffix) do
@@ -99,12 +117,13 @@ defmodule Embervm.StatefulManagerTest do
           idle_bank_seconds: 300,
           max_lifetime_seconds: 86_400,
           banked_ttl_seconds: 604_800,
-          wake_timeout_seconds: 60
+          wake_timeout_seconds: 60,
+          secret_ref: nil
         },
         extra
       )
 
-    WorkloadCatalog.upsert(ctx.cat_table, name, %{class: "stateful", stateful: stateful_cfg})
+    WorkloadCatalog.upsert(ctx.cat_table, name, %{class: "stateful", namespace: "embervm-workloads", stateful: stateful_cfg})
   end
 
   defp stateful_node(ctx, node_id, opts \\ []) do
@@ -140,6 +159,133 @@ defmodule Embervm.StatefulManagerTest do
 
     {:ok, [row]} = SQLite.load_stateful_instances(ctx.op_log)
     assert row.state == "serving"
+  end
+
+  # -- mmds_env (R4, D-R4.PR-7.1: MMDS-lite over boot-args) --------------------
+
+  test "a FRESH/COLD wake with a secretRef reads the secret and populates mmds_env" do
+    {:ok, captured} = Agent.start_link(fn -> nil end)
+
+    ctx =
+      start_stack(
+        start_stateful_fun: fn _ch, req ->
+          Agent.update(captured, fn _ -> req end)
+
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-woken",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: 1,
+             was_relight: false
+           }}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a", %{secret_ref: "wl-a-creds"})
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+
+    req = Agent.get(captured, & &1)
+    assert req.mmds_env == %{"POSTGRES_PASSWORD" => "hunter2"}
+    assert Agent.get(ctx.secret_reads, & &1) == [{"embervm-workloads", "wl-a-creds"}]
+  end
+
+  test "a wake with no secretRef leaves mmds_env empty and never reads a secret" do
+    {:ok, captured} = Agent.start_link(fn -> nil end)
+
+    ctx =
+      start_stack(
+        start_stateful_fun: fn _ch, req ->
+          Agent.update(captured, fn _ -> req end)
+
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-woken",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: 1,
+             was_relight: false
+           }}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+
+    req = Agent.get(captured, & &1)
+    assert req.mmds_env == %{}
+    assert Agent.get(ctx.secret_reads, & &1) == []
+  end
+
+  test "a secret-read failure fails OPEN: the wake proceeds with an empty mmds_env" do
+    {:ok, captured} = Agent.start_link(fn -> nil end)
+
+    ctx =
+      start_stack(
+        get_secret_fun: fn _namespace, _name -> {:error, {:apiserver_status, 404}} end,
+        start_stateful_fun: fn _ch, req ->
+          Agent.update(captured, fn _ -> req end)
+
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-woken",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: 1,
+             was_relight: false
+           }}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a", %{secret_ref: "missing-secret"})
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+
+    req = Agent.get(captured, & &1)
+    assert req.mmds_env == %{}
+  end
+
+  test "a RELIGHT never reads the workload's secret (mmds_env stays out of the request)" do
+    {:ok, captured} = Agent.start_link(fn -> nil end)
+
+    relit_fun = fn _ch, req ->
+      Agent.update(captured, fn _ -> req end)
+
+      {:ok,
+       %StartStatefulResponse{
+         vm_id: "vm-relit",
+         ip: "10.88.0.5",
+         port: 5432,
+         generation: 3,
+         was_relight: true
+       }}
+    end
+
+    # get_secret_fun raises if called at all: a RELIGHT must never invoke it
+    # (D-R4.PR-7.1), so any call here fails the test loudly rather than
+    # silently passing with an unasserted empty read.
+    ctx =
+      start_stack(
+        start_stateful_fun: relit_fun,
+        get_secret_fun: fn _ns, _name -> raise "get_secret_fun must not be called on RELIGHT" end
+      )
+
+    stateful_workload(ctx, "wl-a", %{secret_ref: "wl-a-creds"})
+    stateful_node(ctx, "node-4")
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+    assert StatefulStore.pair_valid?(ctx.store, "wl-a")
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    req = Agent.get(captured, & &1)
+    assert req.mode == :START_STATEFUL_MODE_RELIGHT
+    assert req.mmds_env == %{}
   end
 
   test "an unknown (non-stateful) workload is a 404-shaped miss" do
