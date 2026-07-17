@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -108,6 +109,94 @@ func TestSetHandlerDiskEnv(t *testing.T) {
 		setHandlerDiskEnv(logger)
 		if _, set := os.LookupEnv(handlerZipEnv); set {
 			t.Fatalf("%s set, want unset (non-zip-serving boot)", handlerZipEnv)
+		}
+	})
+}
+
+// TestMmdsEnvFromCmdline covers the R4 D-R4.PR-7.1 boot-arg decoder: multiple
+// ember.env.<KEY>= tokens, base64url decoding, an invalid key skipped, a
+// malformed base64 value skipped, an absent prefix ignored, and duplicate keys
+// (last wins, matching valueFromCmdline's convention).
+func TestMmdsEnvFromCmdline(t *testing.T) {
+	pw := base64.RawURLEncoding.EncodeToString([]byte("hunter2"))
+	user := base64.RawURLEncoding.EncodeToString([]byte("app"))
+
+	for _, tc := range []struct {
+		name    string
+		cmdline string
+		want    map[string]string
+	}{
+		{
+			"multiple keys",
+			"console=ttyS0 ember.env.POSTGRES_PASSWORD=" + pw + " ember.env.POSTGRES_USER=" + user,
+			map[string]string{"POSTGRES_PASSWORD": "hunter2", "POSTGRES_USER": "app"},
+		},
+		{"absent (non-stateful boot)", "console=ttyS0 init=/init", map[string]string{}},
+		{"invalid key skipped", "ember.env.bad-key=" + pw, map[string]string{}},
+		{"malformed base64 skipped", "ember.env.POSTGRES_PASSWORD=not!valid!base64", map[string]string{}},
+		{
+			"duplicate key: last wins",
+			"ember.env.KEY=" + base64.RawURLEncoding.EncodeToString([]byte("first")) + " ember.env.KEY=" + base64.RawURLEncoding.EncodeToString([]byte("second")),
+			map[string]string{"KEY": "second"},
+		},
+		{"empty value skipped", "ember.env.POSTGRES_PASSWORD=", map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mmdsEnvFromCmdline(tc.cmdline)
+			if len(got) != len(tc.want) {
+				t.Fatalf("mmdsEnvFromCmdline(%q) = %v, want %v", tc.cmdline, got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Fatalf("mmdsEnvFromCmdline(%q)[%q] = %q, want %q", tc.cmdline, k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestSetMmdsEnv drives the full seam: a /proc/cmdline fixture carrying
+// ember.env.* tokens sets each decoded value as a process env var; an absent
+// token or missing cmdline file is a no-op (covers the RELIGHT / non-stateful
+// boot case, which never carries these tokens).
+func TestSetMmdsEnv(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	t.Run("tokens present set env vars", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cmdline")
+		pw := base64.RawURLEncoding.EncodeToString([]byte("hunter2"))
+		content := "init=/init ember.env.POSTGRES_PASSWORD=" + pw + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Unsetenv("POSTGRES_PASSWORD")
+		t.Cleanup(func() { os.Unsetenv("POSTGRES_PASSWORD") })
+		withCmdlinePath(t, path)
+		setMmdsEnv(logger)
+		if got := os.Getenv("POSTGRES_PASSWORD"); got != "hunter2" {
+			t.Fatalf("POSTGRES_PASSWORD = %q, want %q", got, "hunter2")
+		}
+	})
+
+	t.Run("tokens absent leaves env unset (relight/non-stateful boot)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cmdline")
+		if err := os.WriteFile(path, []byte("init=/init console=ttyS0\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Unsetenv("POSTGRES_PASSWORD")
+		withCmdlinePath(t, path)
+		setMmdsEnv(logger)
+		if _, set := os.LookupEnv("POSTGRES_PASSWORD"); set {
+			t.Fatalf("POSTGRES_PASSWORD set, want unset (no mmds_env tokens)")
+		}
+	})
+
+	t.Run("missing cmdline file is a no-op", func(t *testing.T) {
+		os.Unsetenv("POSTGRES_PASSWORD")
+		withCmdlinePath(t, filepath.Join(t.TempDir(), "does-not-exist"))
+		setMmdsEnv(logger)
+		if _, set := os.LookupEnv("POSTGRES_PASSWORD"); set {
+			t.Fatalf("POSTGRES_PASSWORD set from a missing cmdline, want unset")
 		}
 	})
 }
