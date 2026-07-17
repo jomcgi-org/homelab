@@ -106,6 +106,16 @@ defmodule Embervm.GroupSweeperTest do
       {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
     end
 
+    # The status.group writer seam (Task 9): records every {namespace, name,
+    # status_map} the sweep patches, so a test asserts the debounce (one write per
+    # changed workload per sweep, none when unchanged). Mirrors StatefulSweeperTest.
+    {:ok, status_calls} = Agent.start_link(fn -> [] end)
+
+    status_writer = fn namespace, name, status_map ->
+      Agent.update(status_calls, &[{namespace, name, status_map} | &1])
+      :ok
+    end
+
     sweeper_opts = [
       name: nil,
       store: store,
@@ -122,6 +132,7 @@ defmodule Embervm.GroupSweeperTest do
       stop_group_member_fun: stop_group_member_fun,
       delete_group_network_fun: delete_group_network_fun,
       evict_snapshot_fun: evict_snapshot_fun,
+      status_writer: status_writer,
       lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, 3_600_000),
       sweep_interval_ms: 0
     ]
@@ -142,11 +153,13 @@ defmodule Embervm.GroupSweeperTest do
       bank_result: bank_result,
       stop_calls: stop_calls,
       delete_net_calls: delete_net_calls,
-      evict_calls: evict_calls
+      evict_calls: evict_calls,
+      status_calls: status_calls
     }
   end
 
   defp set_scrape(ctx, reading), do: Agent.update(ctx.scrape_agent, fn _ -> reading end)
+  defp status_writes(ctx), do: Agent.get(ctx.status_calls, &Enum.reverse(&1))
   defp bank_calls(ctx), do: Agent.get(ctx.bank_calls, &Enum.reverse(&1))
   defp stop_calls(ctx), do: Agent.get(ctx.stop_calls, &Enum.reverse(&1))
   defp delete_net_calls(ctx), do: Agent.get(ctx.delete_net_calls, &Enum.reverse(&1))
@@ -567,5 +580,89 @@ defmodule Embervm.GroupSweeperTest do
       })
 
     assert {:ok, %{"group-5410" => %{active: 1, total: 9}}} = GroupSweeper.parse_stats(body)
+  end
+
+  # -- status.group (Task 9) --------------------------------------------------
+
+  test "the sweep writes status.group {state,members{live,degraded},setId,subnetCidr} + groupSummary" do
+    ctx = start_stack()
+    group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 60})
+    group_node(ctx, "node-4")
+    running_group(ctx, "gi-1", "grp-a")
+
+    # A single non-idle tick: no bank, but a status.group write for the running group.
+    set_scrape(ctx, reading("group-5410", 1, 3))
+    GroupSweeper.sweep(ctx.sweeper)
+
+    assert [{"embervm", "grp-a", status_map}] = status_writes(ctx)
+    assert status_map["group"]["state"] == "running"
+    assert status_map["group"]["members"] == %{"live" => 2, "degraded" => 0}
+    assert status_map["group"]["subnetCidr"] == "10.101.0.0/24"
+    # A running group holds no banked set, so setId is "" (never nil).
+    assert status_map["group"]["setId"] == ""
+    assert status_map["groupSummary"] == "running 2/0"
+  end
+
+  test "status.group is debounced: unchanged workload is not re-written next tick" do
+    ctx = start_stack()
+    group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
+    group_node(ctx, "node-4")
+    running_group(ctx, "gi-1", "grp-a")
+
+    set_scrape(ctx, reading("group-5410", 1, 3))
+    GroupSweeper.sweep(ctx.sweeper)
+    assert length(status_writes(ctx)) == 1
+
+    # Second tick, same facts (still running, still active): no new status write.
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("group-5410", 1, 4))
+    GroupSweeper.sweep(ctx.sweeper)
+    assert length(status_writes(ctx)) == 1
+  end
+
+  test "status.group reports degraded state + a degraded member count when a member is unhealthy" do
+    ctx = start_stack()
+    group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
+    group_node(ctx, "node-4")
+    running_group(ctx, "gi-1", "grp-a")
+    # Flip member b unhealthy: the running group is now degraded, one live, one degraded.
+    {:ok, _} = GroupStore.set_member_health(ctx.store, "gi-1", "b", false)
+
+    set_scrape(ctx, reading("group-5410", 1, 3))
+    GroupSweeper.sweep(ctx.sweeper)
+
+    assert [{"embervm", "grp-a", status_map}] = status_writes(ctx)
+    assert status_map["group"]["state"] == "degraded"
+    assert status_map["group"]["members"] == %{"live" => 1, "degraded" => 1}
+    assert status_map["groupSummary"] == "degraded 1/1"
+  end
+
+  test "status.group carries the banked set_id and zero live members once banked" do
+    ctx = start_stack()
+    group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
+    group_node(ctx, "node-4")
+    banked_group(ctx, "gi-1", "grp-a")
+
+    set_scrape(ctx, reading("group-5410", 0, 3))
+    GroupSweeper.sweep(ctx.sweeper)
+
+    assert [{"embervm", "grp-a", status_map}] = status_writes(ctx)
+    assert status_map["group"]["state"] == "banked"
+    assert status_map["group"]["setId"] == "set-gi-1"
+    # A banked instance cleared its live member vm_ids, so live/degraded are both 0.
+    assert status_map["group"]["members"] == %{"live" => 0, "degraded" => 0}
+  end
+
+  test "a status-write failure never crashes the sweep" do
+    ctx = start_stack()
+    group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
+    group_node(ctx, "node-4")
+    running_group(ctx, "gi-1", "grp-a")
+
+    :sys.replace_state(ctx.sweeper, fn s -> %{s | status_writer: fn _ns, _n, _m -> raise "boom" end} end)
+
+    set_scrape(ctx, reading("group-5410", 1, 3))
+    assert :ok = GroupSweeper.sweep(ctx.sweeper)
+    assert {:ok, %{state: :running}} = GroupStore.get(ctx.store, "gi-1")
   end
 end

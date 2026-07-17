@@ -202,6 +202,18 @@ defmodule Embervm.GroupSweeper do
       delete_group_network_fun:
         Keyword.get(opts, :delete_group_network_fun, &default_delete_group_network/2),
       evict_snapshot_fun: Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
+      # status.group {state, members{live,degraded}, setId, subnetCidr} + groupSummary
+      # writer (Task 9). Defaults to the K8s merge-patch on the workload status
+      # subresource, the SAME seam StatefulSweeper.status_writer uses; tests inject a
+      # recorder. Disjoint status keys (group/groupSummary) from
+      # status.stateful/serving/sessions and the watcher, so the merge-patch never
+      # clobbers another writer.
+      status_writer: Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3),
+      # workload -> last-written {state, live, degraded, set_id, subnet_cidr} tuple, so
+      # the sweep patches only a workload whose values changed (debounce: at most one
+      # API call per composite workload per sweep, never per transition). Mirrors
+      # StatefulSweeper.stateful_status_written.
+      group_status_written: %{},
       lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, @default_lifetime_drain_max_ms),
       # workload -> the ms it was first observed idle this run (cx_active == 0 AND flat
       # cx_total delta AND no live splice), so idleBankSeconds measures from the first
@@ -264,7 +276,120 @@ defmodule Embervm.GroupSweeper do
       |> idle_bank_pass(now)
       |> sweep_lifetime(now)
       |> sweep_banked_ttl(now)
+      |> write_group_status()
     end
+  end
+
+  # -- status.group (Task 9) --------------------------------------------------
+
+  # Write status.group {state, members{live,degraded}, setId, subnetCidr} +
+  # groupSummary for every composite-class workload, DEBOUNCED: only patch a workload
+  # whose values changed since the last write. Runs on the sweep tick (not per
+  # transition), so the K8s API is touched at most once per composite workload per
+  # sweep. Disjoint status keys (group/groupSummary) from the other writers, so the
+  # merge-patch never clobbers another. Mirrors StatefulSweeper.write_stateful_status/1.
+  defp write_group_status(state) do
+    composite_workloads_with_ns(state)
+    |> Enum.reduce(state, fn %{workload: workload, namespace: namespace}, acc ->
+      fields = group_status_fields(acc, workload)
+      key = {fields.state, fields.live, fields.degraded, fields.set_id, fields.subnet_cidr}
+
+      if Map.get(acc.group_status_written, workload) == key do
+        acc
+      else
+        _ = patch_group_status(acc, namespace, workload, fields)
+        %{acc | group_status_written: Map.put(acc.group_status_written, workload, key)}
+      end
+    end)
+  end
+
+  # Every cataloged composite-class workload with its namespace, for the status write.
+  # A catalog with no composite workloads yields [], a no-op on non-composite clusters.
+  # Mirrors StatefulSweeper.stateful_workloads_with_ns/1.
+  defp composite_workloads_with_ns(state) do
+    for name <- WorkloadCatalog.all_names(state.catalog_table),
+        {:ok, %{class: "composite", namespace: namespace}} <- [WorkloadCatalog.fetch(state.catalog_table, name)],
+        is_binary(namespace) do
+      %{workload: name, namespace: namespace}
+    end
+  end
+
+  # Reads the primary (non-terminal) instance's group facts from GroupStore: the FSM
+  # state string (with `degraded` derived from the degraded_member flag on a running
+  # group, and `expired` folded into `destroyed` per the CRD contract), the live /
+  # degraded member health counts (from the instance's member rows), the banked
+  # set_id (present only while banked), and the group's private subnet. Every field
+  # defaults to a concrete value ("" for strings, 0 for counts) when absent, so the
+  # status-patch map never carries a nil (the router's `:json.encode` nil trap: OTP
+  # renders Elixir nil as the STRING "nil"). WARMTH-ONLY (the CRD contract): reflects
+  # live state, evaporates on destroy/TTL/fresh-boot.
+  defp group_status_fields(state, workload) do
+    instances = GroupStore.list(state.store, workload)
+    primary = Enum.find(instances, &(not GroupState.terminal?(&1.state)))
+
+    case primary do
+      nil ->
+        %{state: "", live: 0, degraded: 0, set_id: "", subnet_cidr: ""}
+
+      instance ->
+        {live, degraded} = member_health_counts(state, instance)
+
+        %{
+          state: group_state_string(instance),
+          live: live,
+          degraded: degraded,
+          set_id: instance.set_id || "",
+          subnet_cidr: instance.subnet_cidr || ""
+        }
+    end
+  end
+
+  # The status `state` string: `degraded` when a running instance carries a
+  # degraded_member flag (the CRD names this as its own status state, distinct from the
+  # FSM's `running`), else the FSM state. `banking`/`relighting`/`fresh_booting` are
+  # transient ETS-only states the projection never persists, but a mid-transition read
+  # could surface one; they map through Atom.to_string unchanged (all valid CRD status
+  # enum values). A never-yet-booted workload has no instance and reads "" (handled by
+  # the nil branch above).
+  defp group_state_string(%{state: :running, degraded_member: dm}) when is_binary(dm), do: "degraded"
+  defp group_state_string(%{state: fsm_state}), do: Atom.to_string(fsm_state)
+
+  # Live vs degraded member counts across the instance's member rows. A member is live
+  # iff it holds a live vm_id AND is healthy; degraded iff it holds a live vm_id but is
+  # unhealthy (a member that fell over while the group stayed up). Members with no live
+  # vm_id (a banked instance cleared them) count as neither, so a banked group reads
+  # 0/0, consistent with its "" set-of-live-VMs.
+  defp member_health_counts(state, instance) do
+    GroupStore.members(state.store, instance.instance_id)
+    |> Enum.filter(fn m -> is_binary(m.vm_id) and m.vm_id != "" end)
+    |> Enum.reduce({0, 0}, fn m, {live, degraded} ->
+      if m.healthy == false, do: {live, degraded + 1}, else: {live + 1, degraded}
+    end)
+  end
+
+  defp patch_group_status(state, namespace, name, fields) do
+    status_map = %{
+      "group" => %{
+        "state" => fields.state,
+        "members" => %{"live" => fields.live, "degraded" => fields.degraded},
+        "setId" => fields.set_id,
+        "subnetCidr" => fields.subnet_cidr
+      },
+      "groupSummary" => "#{fields.state} #{fields.live}/#{fields.degraded}"
+    }
+
+    case state.status_writer.(namespace, name, status_map) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        # Visibility-only: a status-write failure must never crash the sweep.
+        Logger.warning("embervm group status patch failed for #{namespace}/#{name}: #{inspect(reason)}")
+    end
+  rescue
+    e -> Logger.warning("embervm group status patch raised for #{namespace}/#{name}: #{inspect(e)}")
+  catch
+    _, _ -> :ok
   end
 
   # -- usage: per-member live-seconds (decision 9) ---------------------------
@@ -727,25 +852,31 @@ defmodule Embervm.GroupSweeper do
   # group_destroyed); a banked one has its set evicted + the instance destroyed. The
   # publisher re-derives once at the end (the activator swap for the now-gone group).
   defp do_force_roll(state, workload) do
-    instances = GroupStore.list(state.store, workload)
+    # The `forced_roll` root span (Task 9): a ROOT span around the whole operator-
+    # override roll (no caller trace; a management-API/timer-driven destroy), bounding
+    # every member DESTROY + network delete + set eviction so a slow or stuck forced
+    # roll is visible. Mirrors StatefulManager.do_destroy_instance's forced_roll span.
+    Tracer.with_span "embervm.group.forced_roll", %{attributes: %{"ember.workload" => workload}} do
+      instances = GroupStore.list(state.store, workload)
 
-    {state, destroyed, evicted} =
-      Enum.reduce(instances, {state, 0, 0}, fn instance, {acc, d, e} ->
-        cond do
-          GroupState.terminal?(instance.state) ->
-            {acc, d, e}
+      {state, destroyed, evicted} =
+        Enum.reduce(instances, {state, 0, 0}, fn instance, {acc, d, e} ->
+          cond do
+            GroupState.terminal?(instance.state) ->
+              {acc, d, e}
 
-          instance.state == :banked ->
-            {destroy_banked(acc, instance, "forced_roll"), d, e + 1}
+            instance.state == :banked ->
+              {destroy_banked(acc, instance, "forced_roll"), d, e + 1}
 
-          true ->
-            {destroy_live_group(acc, instance, "forced_roll"), d + 1, e}
-        end
-      end)
+            true ->
+              {destroy_live_group(acc, instance, "forced_roll"), d + 1, e}
+          end
+        end)
 
-    Embervm.EndpointPublisher.publish(state.publisher)
-    Logger.info("embervm group: forced roll", workload: workload, destroyed: destroyed, evicted: evicted)
-    {%{destroyed: destroyed, evicted: evicted}, state}
+      Embervm.EndpointPublisher.publish(state.publisher)
+      Logger.info("embervm group: forced roll", workload: workload, destroyed: destroyed, evicted: evicted)
+      {%{destroyed: destroyed, evicted: evicted}, state}
+    end
   end
 
   # -- destroy / evict RPCs + durable ops --------------------------------------
