@@ -35,6 +35,7 @@ type fakeStatefulDriver struct {
 	lastVolPath  string
 	lastVolMount string
 	claimCount   int
+	lastMmdsEnv  map[string]string
 }
 
 func newFakeStatefulDriver(dir string) *fakeStatefulDriver {
@@ -44,7 +45,7 @@ func newFakeStatefulDriver(dir string) *fakeStatefulDriver {
 	}
 }
 
-func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, _ string, _ string, _ int, _ int, _ substrate.NICSpec, _ string, _ int64, volumeDiskPath, volumeMount string) (substrate.Handle, error) {
+func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, _ string, _ string, _ int, _ int, _ substrate.NICSpec, _ string, _ int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -55,6 +56,7 @@ func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, _ string, _ string
 	f.claimCount++
 	f.lastVolPath = volumeDiskPath
 	f.lastVolMount = volumeMount
+	f.lastMmdsEnv = mmdsEnv
 	return substrate.Handle{ID: "state-vm-" + strconv.Itoa(f.claims), ThreadID: "t-" + strconv.Itoa(f.claims), Node: "node-4"}, nil
 }
 

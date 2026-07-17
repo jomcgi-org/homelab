@@ -12,12 +12,14 @@ package driver
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -314,7 +316,75 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	if cb.volumeDiskPath != "" {
 		args += fmt.Sprintf(" ember.volume_dev=%s ember.volume_mount=%s", statefulVolumeDevice, cb.volumeMount)
 	}
+	// MMDS-lite over boot-args (R4, D-R4.PR-7.1): a stateful workload's first-boot
+	// secrets (e.g. a Postgres superuser password) ride the kernel cmdline as
+	// ember.env.<KEY>=<base64url(value)> tokens, one per mmdsEnv entry, sorted by
+	// key for a deterministic boot-arg string (test-friendly, and stable across
+	// identical calls). This is a deliberate MMDS substitute: no metadata service
+	// exists yet, the workload is cluster-internal and low-stakes (a scratch
+	// datastore), and the cmdline is a few small secrets only (length + charset
+	// limits on the kernel command line rule out anything bulk). See DECISIONS.md
+	// D-R4.PR-7.1 for the full tradeoff and the migration path to a real MMDS.
+	// SECURITY: do not log mmdsEnv values anywhere in this package; only key
+	// names are safe to log (see mmdsEnvKeyNames below).
+	if len(cb.mmdsEnv) > 0 {
+		args += " " + mmdsEnvBootArgs(cb.mmdsEnv)
+	}
 	return args
+}
+
+// mmdsEnvKeyPattern is the allowed charset for an mmds_env key: a shell/kernel-
+// cmdline-safe identifier. A key outside this set is silently skipped (never
+// included in the boot-arg string) rather than failing the whole boot, since a
+// single malformed key must not block every other secret from being delivered.
+func isValidMmdsEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, r := range key {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// mmdsEnvBootArgs renders mmdsEnv as space-separated ember.env.<KEY>=<base64url>
+// tokens, one per entry, sorted by key so the output is deterministic. Keys are
+// validated against isValidMmdsEnvKey (skipped, not fatal, if invalid); values
+// are base64url-encoded (RawURLEncoding: no padding, no '+'/'/' characters that
+// would need cmdline escaping) so an arbitrary secret value survives the kernel
+// command line's space-separated token parsing intact.
+func mmdsEnvBootArgs(mmdsEnv map[string]string) string {
+	keys := make([]string, 0, len(mmdsEnv))
+	for k := range mmdsEnv {
+		if isValidMmdsEnvKey(k) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	tokens := make([]string, 0, len(keys))
+	for _, k := range keys {
+		encoded := base64.RawURLEncoding.EncodeToString([]byte(mmdsEnv[k]))
+		tokens = append(tokens, fmt.Sprintf("ember.env.%s=%s", k, encoded))
+	}
+	return strings.Join(tokens, " ")
+}
+
+// mmdsEnvKeyNames returns the sorted key names of mmdsEnv for logging. It NEVER
+// returns values: mmds_env carries first-boot secrets (e.g. a Postgres
+// password), and the boot-args tradeoff already puts the value on the guest's
+// /proc/cmdline (D-R4.PR-7.1) -- the daemon's own logs must not compound that by
+// also persisting the plaintext value. Callers log only this, never cb.mmdsEnv
+// directly.
+func mmdsEnvKeyNames(mmdsEnv map[string]string) []string {
+	keys := make([]string, 0, len(mmdsEnv))
+	for k := range mmdsEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // handlerDiskDevice is the guest block-device path Firecracker assigns to the
@@ -631,6 +701,13 @@ type coldBootSpec struct {
 	// keeps their drive set byte-unchanged.
 	volumeDiskPath string
 	volumeMount    string
+	// mmdsEnv carries a stateful FRESH/COLD boot's first-boot secrets (R4,
+	// D-R4.PR-7.1: MMDS-lite over boot-args), encoded into ember.env.<KEY>=
+	// boot-args by bootArgsFor. Empty for every task/session/serving boot and
+	// for a stateful RELIGHT (a relight resumes a memory snapshot; the kernel
+	// never re-inits, so boot-args are not read again -- the secret was already
+	// consumed at first boot and baked into the volume's initialized data).
+	mmdsEnv map[string]string
 }
 
 // coldBoot launches a fresh Firecracker process, provisions a per-thread rootfs (or
@@ -792,12 +869,15 @@ func orDefault(v, def int) int {
 // rootfs WITH a tap NIC (exactly as ClaimServing) PLUS the workload's writable
 // volume attached as a third drive. It mirrors ClaimServing's shape precisely
 // (same NIC requirement, same harness-init threading, same coldBoot reuse) with
-// the one addition of volumeDiskPath/volumeMount, kept as explicit parameters
-// (not folded into a struct) so the call site names every field the way
-// ClaimServing's call sites do. The caller (server.StartStateful) is
+// the addition of volumeDiskPath/volumeMount and mmdsEnv, kept as explicit
+// parameters (not folded into a struct) so the call site names every field the
+// way ClaimServing's call sites do. The caller (server.StartStateful) is
 // responsible for bumping the volume's generation BEFORE calling this: the
 // driver has no notion of the generation ledger, only the raw file path.
-func (d *Driver) ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string) (substrate.Handle, error) {
+// mmdsEnv (R4, D-R4.PR-7.1: MMDS-lite over boot-args) is only meaningful on a
+// FRESH/COLD boot; callers on the RELIGHT path must pass nil/empty, since a
+// relight resumes a memory snapshot and never re-reads boot-args.
+func (d *Driver) ClaimStateful(ctx context.Context, rootfsPath, harnessInit string, vcpus, memMib int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
 	if nic.HostDevName == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: ClaimStateful requires a host tap device")
 	}
@@ -817,6 +897,7 @@ func (d *Driver) ClaimStateful(ctx context.Context, rootfsPath, harnessInit stri
 		handlerZipBytes: handlerZipBytes,
 		volumeDiskPath:  volumeDiskPath,
 		volumeMount:     volumeMount,
+		mmdsEnv:         mmdsEnv,
 	})
 }
 
