@@ -93,7 +93,19 @@ defmodule Embervm.TcpActivatorTest do
         store_mod: Keyword.fetch!(opts, :store_mod)
       )
 
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    # Stop tolerantly: a still-open spliced connection can make the activator exit
+    # with a non-:normal reason as its listeners tear down, which GenServer.stop
+    # would re-raise. The teardown only needs the process gone, not a clean reason.
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        try do
+          GenServer.stop(pid, :normal, 1_000)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+    end)
+
     pid
   end
 

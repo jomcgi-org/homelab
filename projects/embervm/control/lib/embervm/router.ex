@@ -1319,11 +1319,17 @@ defmodule Embervm.Router do
   defp encode_json(map), do: map |> :json.encode() |> :erlang.iolist_to_binary()
 
   # OTP's :json.encode renders the Elixir `nil` atom as the JSON STRING "nil" (nil
-  # is just an atom to the encoder), not JSON null; only the `null` atom encodes as
-  # null. A response with genuinely-null fields (e.g. a banked stateful workload's
-  # absent live endpoint) must convert nil -> :null recursively before encoding.
-  defp json_nullify(nil), do: :null
-  defp json_nullify(map) when is_map(map), do: Map.new(map, fn {k, v} -> {k, json_nullify(v)} end)
+  # is just an atom to the encoder), not JSON null. Rather than depend on the
+  # encoder's atom handling, OMIT nil-valued keys entirely: a JSON object without a
+  # key decodes to a map where accessing it yields nil, which is exactly what a
+  # genuinely-null field (a banked stateful workload's absent live endpoint, an
+  # absent bundle generation) should read back as. Recurses into nested maps/lists.
+  defp json_nullify(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Map.new(fn {k, v} -> {k, json_nullify(v)} end)
+  end
+
   defp json_nullify(list) when is_list(list), do: Enum.map(list, &json_nullify/1)
   defp json_nullify(other), do: other
 
