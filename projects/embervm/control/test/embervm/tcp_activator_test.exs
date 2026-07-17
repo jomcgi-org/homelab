@@ -66,7 +66,14 @@ defmodule Embervm.TcpActivatorTest do
     WorkloadCatalog.upsert(cat_table, "wl-b", %{class: "stateful", stateful: %{listen_port: @port_b, port: 5432}})
 
     Process.register(self(), :tcp_activator_test_listener)
-    on_exit(fn -> Process.unregister(:tcp_activator_test_listener) end)
+    # on_exit runs in a separate process AFTER the test process has exited, by
+    # which point the registered name is already auto-freed (a name is released
+    # when its process dies), so an unconditional unregister raises "not a pid".
+    # Guard it: only unregister if the name is somehow still registered.
+    on_exit(fn ->
+      if Process.whereis(:tcp_activator_test_listener),
+        do: Process.unregister(:tcp_activator_test_listener)
+    end)
 
     %{cat_table: cat_table}
   end

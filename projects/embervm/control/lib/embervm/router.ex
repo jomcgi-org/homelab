@@ -911,18 +911,22 @@ defmodule Embervm.Router do
       banked = Enum.find(instances, &(&1.state == :banked))
       volume = stateful_store().get_volume(stateful_store_server(), workload)
 
-      send_json(conn, 200, %{
-        workload: workload,
-        instance: primary && stateful_instance_view(primary),
-        state: primary && to_string(primary.state),
-        generation: primary && primary.generation,
-        # The banked bundle's stamped generation (the pair key), nil if nothing is banked.
-        bundle_generation: banked && banked.snapshot_generation,
-        pair_valid: stateful_store().pair_valid?(stateful_store_server(), workload),
-        # The volume's actual block usage (the watermark), nil if there is no volume row.
-        volume_bytes: volume && volume.allocated_bytes,
-        published_endpoint: stateful_store().published_endpoint(stateful_store_server(), workload)
-      })
+      send_json(
+        conn,
+        200,
+        json_nullify(%{
+          workload: workload,
+          instance: primary && stateful_instance_view(primary),
+          state: primary && to_string(primary.state),
+          generation: primary && primary.generation,
+          # The banked bundle's stamped generation (the pair key), null if nothing is banked.
+          bundle_generation: banked && banked.snapshot_generation,
+          pair_valid: stateful_store().pair_valid?(stateful_store_server(), workload),
+          # The volume's actual block usage (the watermark), null if there is no volume row.
+          volume_bytes: volume && volume.allocated_bytes,
+          published_endpoint: stateful_store().published_endpoint(stateful_store_server(), workload)
+        })
+      )
     else
       send_json(conn, 404, %{error: "unknown stateful workload", workload: workload, retryable: false})
     end
@@ -1313,6 +1317,15 @@ defmodule Embervm.Router do
   end
 
   defp encode_json(map), do: map |> :json.encode() |> :erlang.iolist_to_binary()
+
+  # OTP's :json.encode renders the Elixir `nil` atom as the JSON STRING "nil" (nil
+  # is just an atom to the encoder), not JSON null; only the `null` atom encodes as
+  # null. A response with genuinely-null fields (e.g. a banked stateful workload's
+  # absent live endpoint) must convert nil -> :null recursively before encoding.
+  defp json_nullify(nil), do: :null
+  defp json_nullify(map) when is_map(map), do: Map.new(map, fn {k, v} -> {k, json_nullify(v)} end)
+  defp json_nullify(list) when is_list(list), do: Enum.map(list, &json_nullify/1)
+  defp json_nullify(other), do: other
 
   # The submit API reads/writes only through TaskStore (ETS + result store),
   # never the op-log internals. The store is resolvable from app env for symmetry

@@ -289,8 +289,9 @@ defmodule Embervm.StatefulManagerTest do
       })
 
     {:ok, _} = StatefulStore.publish(ctx.store, id, "10.88.0.9", 5432, :started)
+    # unpublish already moves serving -> banking (ETS-only); a second :bank mark
+    # from :banking would be illegal. Go straight to the durable bank_ready.
     {:ok, _} = StatefulStore.unpublish(ctx.store, id, :bank)
-    {:ok, _} = StatefulStore.mark(ctx.store, id, :bank)
 
     {:ok, _} =
       StatefulStore.transition(
@@ -472,8 +473,8 @@ defmodule Embervm.StatefulManagerTest do
       })
 
     {:ok, _} = StatefulStore.publish(ctx.store, "stf-limbo", "10.88.0.9", 5432, :started)
+    # unpublish already moves serving -> banking; a second :bank mark is illegal.
     {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-limbo", :bank)
-    {:ok, _} = StatefulStore.mark(ctx.store, "stf-limbo", :bank)
 
     {:ok, _} =
       StatefulStore.transition(
