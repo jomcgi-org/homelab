@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -1439,6 +1440,108 @@ func (d *Driver) ScanStatefulBundles() []substrate.StatefulBundleInfo {
 			SizeBytes:       size,
 			CreatedAtUnixMs: createdMs,
 		})
+	}
+	return out
+}
+
+// ---- Group networks (R5) ---------------------------------------------------
+//
+// A composite group's per-instance bridge lives in noded's pod netns and dies
+// with the pod, so the DURABLE truth is a small on-disk record. These methods own
+// that record under group_networks/<group_instance_id>/config.json (a sibling of
+// bases/, sessions/, serving/, and stateful/ under the snapshot root). The daemon
+// writes it on CreateGroupNetwork, removes it on DeleteGroupNetwork, and rescans
+// it on start (ScanGroupNetworks) to re-seed NodeStatus.group_networks. The bridge
+// itself is NOT persisted (it is netns state); the record is what lets the control
+// plane re-issue an idempotent CreateGroupNetwork to rebuild the bridge.
+
+// GroupNetworksDir is the parent directory holding all on-disk group-network
+// records, under the group_networks/ prefix of the snapshot root. The daemon
+// rescans exactly this dir on start via ScanGroupNetworks.
+func (d *Driver) GroupNetworksDir() string {
+	return filepath.Join(d.cfg.SnapshotRoot, "group_networks")
+}
+
+// groupNetworkRecordPath is the config.json path for one group-network record,
+// keyed by the opaque group_instance_id.
+func (d *Driver) groupNetworkRecordPath(groupInstanceID string) string {
+	return filepath.Join(d.GroupNetworksDir(), groupInstanceID, "config.json")
+}
+
+// WriteGroupNetworkRecord persists a group-network record atomically (write a
+// temp file, then rename), so a rescan never reads a half-written config.json. It
+// is idempotent: re-writing the same record for the same group_instance_id
+// overwrites in place (CreateGroupNetwork is idempotent, so a re-issue re-writes
+// the identical record). The dir is 0700 (daemon-owned).
+func (d *Driver) WriteGroupNetworkRecord(rec substrate.GroupNetworkRecord) error {
+	if rec.GroupInstanceID == "" {
+		return fmt.Errorf("driver: WriteGroupNetworkRecord requires a group_instance_id")
+	}
+	dir := filepath.Dir(d.groupNetworkRecordPath(rec.GroupInstanceID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("driver: mkdir group network record dir: %w", err)
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("driver: marshal group network record: %w", err)
+	}
+	path := d.groupNetworkRecordPath(rec.GroupInstanceID)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("driver: write group network record: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("driver: publish group network record: %w", err)
+	}
+	return nil
+}
+
+// RemoveGroupNetworkRecord deletes a group-network record dir from disk
+// (idempotent: a missing record is not an error). Called on DeleteGroupNetwork.
+func (d *Driver) RemoveGroupNetworkRecord(groupInstanceID string) error {
+	if groupInstanceID == "" {
+		return fmt.Errorf("driver: RemoveGroupNetworkRecord requires a group_instance_id")
+	}
+	dir := filepath.Dir(d.groupNetworkRecordPath(groupInstanceID))
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("driver: remove group network record: %w", err)
+	}
+	return nil
+}
+
+// ScanGroupNetworks globs group_networks/*/config.json on startup and returns
+// each valid record, so a restarted daemon re-seeds its group-network inventory
+// and reports it in NodeStatus.group_networks. A record dir without a readable,
+// parseable config.json is skipped (half-written or corrupt); a fresh node with
+// no group_networks dir yields nil. The bridges these records name no longer
+// exist (they died with the prior pod), so the control plane re-issues
+// CreateGroupNetwork to rebuild them; this rescan is purely the durable-truth
+// re-seed.
+func (d *Driver) ScanGroupNetworks() []substrate.GroupNetworkRecord {
+	root := d.GroupNetworksDir()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil // no group_networks dir yet (fresh node): nothing to rescan
+	}
+	out := make([]substrate.GroupNetworkRecord, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(d.groupNetworkRecordPath(e.Name()))
+		if err != nil {
+			continue // no config.json yet (mid-write) or unreadable: skip
+		}
+		var rec substrate.GroupNetworkRecord
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			continue // corrupt record: skip
+		}
+		if rec.GroupInstanceID == "" {
+			// A record whose dir name is the id but whose body omitted it: recover
+			// the id from the dir name so the rescan is robust to an older writer.
+			rec.GroupInstanceID = e.Name()
+		}
+		out = append(out, rec)
 	}
 	return out
 }

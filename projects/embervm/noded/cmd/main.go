@@ -103,6 +103,17 @@ func run(logger *slog.Logger) error {
 		logger.Warn("serving: EMBERVM_NODED_POD_IP unset; serving endpoints report node-internal tap IPs and DNAT is disabled")
 	}
 
+	// The composite-group network Manager (R5) owns per-group bridges, deterministic
+	// member addressing, the inter-group isolation (a dedicated embervm_group nft
+	// table, so it never collides with the serving forward/serving_dnat chains), and
+	// the entry-member pod-IP DNAT (the same D-R3.11.4 lane). It carves a /24 per
+	// group out of the composite supernet and denies composite->serving toward the
+	// serving bridge. A malformed supernet fails startup loudly.
+	groupNet, err := serving.NewGroupManager(serving.ExecRunner{}, cfg.CompositeSupernet, cfg.ServingBridge, cfg.PodIP, cfg.ServingPortBase)
+	if err != nil {
+		return err
+	}
+
 	srv := server.New(server.Options{
 		Config: cfg,
 		Driver: restoreDriver,
@@ -128,6 +139,11 @@ func run(logger *slog.Logger) error {
 		VolumeRoot:                 cfg.VolumeRoot,
 		StatefulProbeInterval:      cfg.StatefulProbeInterval,
 		StatefulUnhealthyThreshold: cfg.StatefulUnhealthyThreshold,
+		// The composite-group network Manager (R5) and the same restore driver for
+		// the durable on-disk group-network records (group_networks/<gid>/config.json,
+		// a sibling of the bases/sessions/serving/stateful bundle dirs).
+		GroupNet:     groupNet,
+		GroupRecords: restoreDriver,
 	})
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.
@@ -143,10 +159,20 @@ func run(logger *slog.Logger) error {
 	// ensure VolumeRoot exists; the durable volumes themselves need no in-memory
 	// seeding (volume.Manager reads VolumeRoot fresh off disk on every NodeStatus).
 	srv.ReconcileStatefulFromDisk()
+	// Report node-local group-network records left by a prior incarnation so the
+	// control plane reconciles group networks from node truth (the bridges died with
+	// the prior pod; the durable records survive and the control plane re-issues
+	// CreateGroupNetwork to rebuild each bridge, Task 7).
+	srv.ReconcileGroupNetworksFromDisk()
 	// Create the serving bridge and install the ingress-only nftables posture before
 	// serving any StartServing. Idempotent across restarts (existing bridge tolerated).
 	if err := servingNet.EnsureNetwork(ctx); err != nil {
 		return fmt.Errorf("serving network setup: %w", err)
+	}
+	// Enable forwarding and install the composite-group isolation nftables posture
+	// (initially the empty-group / post-adoption table) before any CreateGroupNetwork.
+	if err := groupNet.EnsureNetwork(ctx); err != nil {
+		return fmt.Errorf("group network setup: %w", err)
 	}
 
 	var serverOpts []grpc.ServerOption

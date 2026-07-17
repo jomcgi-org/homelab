@@ -23,6 +23,7 @@ go_test(
     name = "driver_test",
     srcs = [
         "driver_test.go",
+        "group_test.go",
         "gueststats_test.go",
         "provisioner_test.go",
     ],

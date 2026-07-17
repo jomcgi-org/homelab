@@ -127,6 +127,13 @@ spec:
                   fieldPath: status.podIP
             - name: EMBERVM_NODED_MAX_LIVE_VMS
               value: {{ .Values.noded.maxLiveVMs | quote }}
+            # R5 composite-group supernet: noded carves a /24 per group out of this
+            # supernet and VALIDATES each control-plane-assigned group cidr is a /24
+            # wholly within it. Distinct from the serving 172.31/12 tap space so the
+            # two classes never share address space. Mirrors how the serving subnet
+            # is a daemon config knob (defaulted in config.go, overridable here).
+            - name: EMBERVM_NODED_COMPOSITE_SUPERNET
+              value: {{ .Values.noded.compositeSupernet | quote }}
             # Per-invoke FC bundle snapshots and the fixed vsock dir the snapshot
             # embeds both derive from nvmeRoot so the scratch disk is one knob.
             - name: EMBERVM_NODED_SNAPSHOT_ROOT

@@ -67,6 +67,35 @@ func TestLoadDefaults(t *testing.T) {
 	if c.ServingUnhealthyThreshold != 3 {
 		t.Errorf("ServingUnhealthyThreshold = %d, want 3", c.ServingUnhealthyThreshold)
 	}
+	// Default composite supernet is 10.101.0.0/16 (distinct from the serving space).
+	if c.CompositeSupernet != "10.101.0.0/16" {
+		t.Errorf("CompositeSupernet = %q, want 10.101.0.0/16", c.CompositeSupernet)
+	}
+	if c.GroupProbeInterval != 5*time.Second {
+		t.Errorf("GroupProbeInterval = %v, want 5s", c.GroupProbeInterval)
+	}
+	if c.GroupUnhealthyThreshold != 3 {
+		t.Errorf("GroupUnhealthyThreshold = %d, want 3", c.GroupUnhealthyThreshold)
+	}
+}
+
+func TestLoadCompositeSupernetOverride(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_COMPOSITE_SUPERNET", "10.150.0.0/16")
+	t.Setenv("EMBERVM_NODED_GROUP_PROBE_INTERVAL", "7s")
+	t.Setenv("EMBERVM_NODED_GROUP_UNHEALTHY_THRESHOLD", "4")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.CompositeSupernet != "10.150.0.0/16" {
+		t.Errorf("CompositeSupernet = %q", c.CompositeSupernet)
+	}
+	if c.GroupProbeInterval != 7*time.Second {
+		t.Errorf("GroupProbeInterval = %v", c.GroupProbeInterval)
+	}
+	if c.GroupUnhealthyThreshold != 4 {
+		t.Errorf("GroupUnhealthyThreshold = %d", c.GroupUnhealthyThreshold)
+	}
 }
 
 func TestLoadServingOverrides(t *testing.T) {
