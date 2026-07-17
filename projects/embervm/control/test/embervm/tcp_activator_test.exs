@@ -79,6 +79,16 @@ defmodule Embervm.TcpActivatorTest do
   end
 
   defp start_activator(reply_table, opts \\ []) do
+    # FakeManager registers under its fixed __MODULE__ name. A prior test's
+    # FakeManager (linked to the now-dead test process) may not have fully released
+    # that name yet when the next test starts, so start_link would return
+    # {:error, {:already_started, _}}. Synchronously stop any lingering one first so
+    # the name is free (Agent.stop waits for termination).
+    case Process.whereis(FakeManager) do
+      nil -> :ok
+      pid -> Agent.stop(pid, :normal, 1_000)
+    end
+
     {:ok, _} = FakeManager.start_link(reply_table)
     cat_table = Keyword.fetch!(opts, :catalog_table)
 
