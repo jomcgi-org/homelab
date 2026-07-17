@@ -11,9 +11,13 @@
   //                  off in real time without heisenberging the demo.
   //   query       -> POST /api/demos/firecracker/postgres/query. The backend
   //                  psycopg-connects (short-lived by design: an open
-  //                  connection pins the VM awake), appends a visit row, and
-  //                  returns two separately-bracketed wall times: connect
-  //                  (which IS the wake when asleep) and query.
+  //                  connection pins the VM awake), runs the mode's
+  //                  statements against an orders ledger, and returns two
+  //                  separately-bracketed wall times: connect (which IS the
+  //                  wake when asleep) and query, plus the verbatim SQL run.
+  //   truncate    -> POST /api/demos/firecracker/postgres/truncate. Clears
+  //                  the ledger; the VM lives, the data dies (the mirror of
+  //                  reset, which destroys the VM and keeps the data).
   //   reset       -> POST /api/demos/firecracker/postgres/reset. Destroys the
   //                  live VM AND evicts its snapshot; the data volume
   //                  survives, so the next query pays a full cold boot against
@@ -24,11 +28,20 @@
   const POLL_MS = 700;
   const HISTORY_MAX = 8;
 
+  const COLUMN_TYPES = [
+    { key: "id", label: "id", type: "bigserial" },
+    { key: "item", label: "item", type: "text" },
+    { key: "qty", label: "qty", type: "int" },
+    { key: "unit_price", label: "unit_price", type: "numeric(8,2)" },
+    { key: "written_at", label: "written_at", type: "timestamptz" },
+  ];
+
   let status = $state(null);
   let statusError = $state("");
   let running = $state(false);
   let resetting = $state(false);
-  let note = $state("");
+  let truncating = $state(false);
+  let truncateConfirming = $state(false);
   let lastRun = $state(null);
   let runs = $state([]);
   let runError = $state("");
@@ -58,15 +71,16 @@
     }
   }
 
-  async function runQuery() {
+  async function runQuery(mode) {
     if (running) return;
+    truncateConfirming = false;
     running = true;
     runError = "";
     try {
       const resp = await fetch(`${API}/query`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ note }),
+        body: JSON.stringify({ mode }),
       });
       const body = await resp.json();
       if (!resp.ok) {
@@ -86,7 +100,6 @@
       if (tiers[tier] == null || body.connect_ms < tiers[tier]) {
         tiers = { ...tiers, [tier]: body.connect_ms };
       }
-      note = "";
     } catch (err) {
       runError = String(err);
     } finally {
@@ -94,8 +107,42 @@
     }
   }
 
+  function onTruncateClick() {
+    if (running || truncating) return;
+    if (!truncateConfirming) {
+      truncateConfirming = true;
+      return;
+    }
+    truncateConfirming = false;
+    truncateLedger();
+  }
+
+  async function truncateLedger() {
+    truncating = true;
+    runError = "";
+    try {
+      const resp = await fetch(`${API}/truncate`, { method: "POST" });
+      const body = await resp.json();
+      if (!resp.ok) {
+        runError = body?.detail || `truncate failed (${resp.status})`;
+        return;
+      }
+      if (!body.truncated) {
+        runError = body.error || "truncate failed";
+        return;
+      }
+      lastRun = null;
+      runs = [];
+    } catch (err) {
+      runError = String(err);
+    } finally {
+      truncating = false;
+    }
+  }
+
   async function resetInstance() {
     if (resetting) return;
+    truncateConfirming = false;
     resetting = true;
     runError = "";
     try {
@@ -112,9 +159,10 @@
   }
 
   onMount(() => {
-    // Opening the tab IS the wake-on-connect demo: fire a query unprompted so
-    // the visitor watches the VM wake for them, then start the lifecycle poll.
-    runQuery();
+    // Opening the tab IS the wake-on-connect demo: fire a read-only aggregate
+    // unprompted so the visitor watches the VM wake for them without writing,
+    // then start the lifecycle poll.
+    runQuery("aggregate");
     pollStatus();
     pollTimer = setInterval(pollStatus, POLL_MS);
     return () => clearInterval(pollTimer);
@@ -156,11 +204,42 @@
     return isNaN(d) ? iso : d.toLocaleTimeString();
   }
 
+  function money(v) {
+    return `£${(v ?? 0).toFixed(2)}`;
+  }
+
   function barPct(run, part) {
     const total = (run.connect_ms ?? 0) + (run.query_ms ?? 0);
     if (!total) return 0;
     return (part / total) * 100;
   }
+
+  // Statements shown in the strip: everything the backend ran minus the
+  // DDL-if-missing (real work, but not part of the story we're telling).
+  let strippedStatements = $derived(
+    (lastRun?.statements ?? []).filter((s) => !s.sql.startsWith("CREATE TABLE")),
+  );
+
+  // Group rows into epoch bands by postmaster_start, newest group first, so
+  // the grid visually shows which rows share a resumed process and which
+  // rows outlived a cold boot.
+  let epochBands = $derived.by(() => {
+    const rows = lastRun?.rows ?? [];
+    const bands = [];
+    for (const row of rows) {
+      let band = bands[bands.length - 1];
+      if (!band || band.postmaster_start !== row.postmaster_start) {
+        band = { postmaster_start: row.postmaster_start, rows: [] };
+        bands.push(band);
+      }
+      band.rows.push(row);
+    }
+    return bands;
+  });
+
+  let maxRevenue = $derived(
+    Math.max(1, ...((lastRun?.breakdown ?? []).map((b) => b.revenue))),
+  );
 </script>
 
 <section class="pg-panel">
@@ -194,26 +273,53 @@
   </div>
 
   <div class="controls">
-    <input
-      class="note-input"
-      type="text"
-      maxlength="200"
-      placeholder="leave a note for the next visitor (optional)"
-      bind:value={note}
-      onkeydown={(e) => e.key === "Enter" && runQuery()}
-    />
-    <button class="run-btn" type="button" onclick={runQuery} disabled={running}>
-      {running ? "Connecting…" : "Query (wakes the VM)"}
+    <button
+      class="run-btn"
+      type="button"
+      onclick={() => runQuery("insert")}
+      disabled={running}
+      title="appends a random line item from the menu"
+    >
+      {running ? "Connecting…" : "INSERT an order"}
     </button>
     <button
-      class="reset-btn"
+      class="aggregate-btn"
       type="button"
-      onclick={resetInstance}
-      disabled={resetting || running}
-      title="Destroy the VM and evict its snapshot. The data volume survives, so the next query pays a full cold boot against retained rows."
+      onclick={() => runQuery("aggregate")}
+      disabled={running}
+      title="SELECT only: wakes the VM without writing"
     >
-      {resetting ? "Resetting…" : "Force cold boot"}
+      {running ? "Connecting…" : "Run aggregate"}
     </button>
+    <div class="destructive-group">
+      <button
+        class="truncate-btn"
+        class:confirming={truncateConfirming}
+        type="button"
+        onclick={onTruncateClick}
+        disabled={running || truncating}
+        title="TRUNCATE demo_orders. The VM lives, the data dies."
+      >
+        {truncating
+          ? "Truncating…"
+          : truncateConfirming
+            ? "really truncate?"
+            : "Clear ledger (TRUNCATE)"}
+      </button>
+      <button
+        class="reset-btn"
+        type="button"
+        onclick={resetInstance}
+        disabled={resetting || running}
+        title="Destroy the VM and evict its snapshot. The data volume survives, so the next query pays a full cold boot against retained rows."
+      >
+        {resetting ? "Resetting…" : "Force cold boot"}
+      </button>
+    </div>
+    <p class="destructive-caption">
+      truncate keeps the VM and kills the data; cold boot keeps the data and
+      kills the VM
+    </p>
   </div>
 
   {#if runError}
@@ -270,32 +376,79 @@
     </div>
   {/if}
 
+  {#if strippedStatements.length}
+    <div class="statement-card">
+      <h3 class="statement-title">statements run</h3>
+      <ul class="statement-list">
+        {#each strippedStatements as stmt, i (i)}
+          <li class="statement-row">
+            <code class="statement-sql">{stmt.sql}</code>
+            <span class="statement-ms">-&gt; {ms(stmt.ms)}</span>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
+  {#if lastRun?.breakdown?.length}
+    <div class="aggregate-card">
+      <p class="aggregate-headline">
+        <span class="aggregate-revenue">{money(lastRun.total_revenue)} total revenue</span>
+        · <span class="aggregate-orders">{lastRun.total_orders} orders</span>
+      </p>
+      <ul class="aggregate-list">
+        {#each lastRun.breakdown as item (item.item)}
+          <li class="aggregate-row">
+            <span class="aggregate-item">{item.item}</span>
+            <span class="aggregate-units">{item.units} units</span>
+            <span class="aggregate-item-revenue">{money(item.revenue)}</span>
+            <span class="aggregate-bar-track" aria-hidden="true">
+              <span
+                class="aggregate-bar-fill"
+                style:width="{(item.revenue / maxRevenue) * 100}%"
+              ></span>
+            </span>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
   {#if lastRun?.rows?.length}
     <div class="rows-card">
-      <h3 class="rows-title">
-        visit log · {lastRun.total_rows} rows retained across every sleep, wake,
-        and cold boot
-      </h3>
+      <h3 class="rows-title">orders ledger</h3>
       <table class="rows-table">
         <thead>
           <tr>
-            <th>#</th>
-            <th>note</th>
-            <th>written</th>
-            <th>postgres process born</th>
+            {#each COLUMN_TYPES as col (col.key)}
+              <th class={col.key === "qty" || col.key === "unit_price" ? "col-numeric" : ""}>
+                <span class="col-name">{col.label}</span>
+                <span class="col-type">{col.type}</span>
+              </th>
+            {/each}
           </tr>
         </thead>
         <tbody>
-          {#each lastRun.rows as row (row.id)}
-            <tr>
-              <td>{row.id}</td>
-              <td class="row-note">{row.note}</td>
-              <td>{clock(row.written_at)}</td>
-              <td>{clock(row.postmaster_start)}</td>
+          {#each epochBands as band, i (band.postmaster_start)}
+            <tr class="epoch-band" class:epoch-current={i === 0}>
+              <td colspan={COLUMN_TYPES.length}>
+                process born {clock(band.postmaster_start)}
+                · {i === 0 ? "current" : "survived a later boot"}
+              </td>
             </tr>
+            {#each band.rows as row (row.id)}
+              <tr>
+                <td class="col-numeric">{row.id}</td>
+                <td>{row.item}</td>
+                <td class="col-numeric">{row.qty}</td>
+                <td class="col-numeric">{money(row.unit_price)}</td>
+                <td>{clock(row.written_at)}</td>
+              </tr>
+            {/each}
           {/each}
         </tbody>
       </table>
+      <p class="rows-footer">({lastRun.total_orders} rows)</p>
       <p class="rows-note">
         "Process born" is pg_postmaster_start_time(): rows sharing it were
         served by the same resumed process (a relight never restarts Postgres);
@@ -425,21 +578,14 @@
 
   .controls {
     display: flex;
+    align-items: center;
     gap: 10px;
     flex-wrap: wrap;
   }
 
-  .note-input {
-    flex: 1 1 260px;
-    padding: 10px 14px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--surface);
-    color: var(--ink);
-    font-size: 14px;
-  }
-
   .run-btn,
+  .aggregate-btn,
+  .truncate-btn,
   .reset-btn {
     padding: 10px 18px;
     border-radius: 8px;
@@ -455,15 +601,42 @@
     color: var(--surface);
   }
 
+  .aggregate-btn {
+    background: var(--surface);
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
   .run-btn:disabled,
+  .aggregate-btn:disabled,
+  .truncate-btn:disabled,
   .reset-btn:disabled {
     opacity: 0.6;
     cursor: default;
   }
 
+  .destructive-group {
+    display: flex;
+    gap: 10px;
+  }
+
+  .truncate-btn,
   .reset-btn {
     background: var(--surface);
     color: var(--danger);
+  }
+
+  .truncate-btn.confirming {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: var(--surface);
+  }
+
+  .destructive-caption {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-faint);
   }
 
   .run-error {
@@ -577,6 +750,121 @@
     color: var(--text-faint);
   }
 
+  .statement-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 20px;
+  }
+
+  .statement-title {
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+
+  .statement-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .statement-row {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    font-size: 13px;
+  }
+
+  .statement-sql {
+    flex: 1 1 auto;
+    font-family: var(--font-mono, monospace);
+    color: var(--ink);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .statement-ms {
+    flex: 0 0 auto;
+    font-family: var(--font-mono, monospace);
+    text-align: right;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .aggregate-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px;
+  }
+
+  .aggregate-headline {
+    margin: 0 0 14px;
+    font-size: 22px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .aggregate-revenue {
+    color: var(--accent);
+  }
+
+  .aggregate-orders {
+    color: var(--ink);
+  }
+
+  .aggregate-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .aggregate-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    column-gap: 14px;
+    row-gap: 4px;
+    font-size: 13px;
+  }
+
+  .aggregate-item {
+    font-weight: 600;
+  }
+
+  .aggregate-units {
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .aggregate-item-revenue {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    text-align: right;
+  }
+
+  .aggregate-bar-track {
+    grid-column: 1 / -1;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--paper);
+    overflow: hidden;
+  }
+
+  .aggregate-bar-fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+
   .rows-card,
   .history {
     background: var(--surface);
@@ -597,16 +885,35 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
+    font-family: var(--font-mono, monospace);
   }
 
   .rows-table th {
     text-align: left;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-faint);
-    padding: 4px 10px 6px 0;
+    padding: 4px 10px 8px 0;
     border-bottom: 1px solid var(--line);
+    vertical-align: bottom;
+  }
+
+  .rows-table th.col-numeric {
+    text-align: right;
+  }
+
+  .col-name {
+    display: block;
+    font-size: 12px;
+    text-transform: lowercase;
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  .col-type {
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+    font-weight: 400;
   }
 
   .rows-table td {
@@ -615,11 +922,30 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .row-note {
-    max-width: 320px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .rows-table td.col-numeric {
+    text-align: right;
+  }
+
+  .epoch-band td {
+    padding: 6px 10px;
+    font-family: var(--font-sans, inherit);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .epoch-band.epoch-current td {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .rows-footer {
+    margin: 10px 0 0;
+    font-size: 12px;
+    font-family: var(--font-mono, monospace);
+    color: var(--text-faint);
   }
 
   .rows-note {
