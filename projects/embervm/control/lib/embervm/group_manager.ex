@@ -89,6 +89,7 @@ defmodule Embervm.GroupManager do
     EvictSnapshotRequest,
     StartGroupMemberRequest,
     StartGroupMemberResponse,
+    StopGroupMemberRequest,
     ResourceSpec,
     Trace
   }
@@ -474,18 +475,26 @@ defmodule Embervm.GroupManager do
     end
   end
 
-  # The all-or-nothing fallback: evict the banked set (durable group_set_evicted,
-  # per-ref EvictSnapshot best-effort), transition banked -> fresh_booting ->
-  # creating, then run the SAME role-ordered fresh member starts a create does,
-  # re-issuing the network first (it may already be up from the relight attempt;
-  # CreateGroupNetwork is idempotent daemon-side). The parked caller is still
-  # blocked on the one wake_group call, so this holds the connection across the
-  # fallback. group_fresh_booted{reason} records why the warmth was discarded.
+  # The all-or-nothing fallback: DESTROY every already-resumed live member (a partial
+  # relight left member A's VM running, holding its pinned tap+IP in noded's group
+  # allocator; a fresh boot of the WHOLE plan would then collide on that IP via
+  # EnsureMemberTap's alloc.reserve, the exact case this fallback exists to handle),
+  # evict the banked set (durable group_set_evicted, per-ref EvictSnapshot best-
+  # effort), transition banked -> fresh_booting -> creating, then run the SAME role-
+  # ordered fresh member starts a create does, re-issuing the network (idempotent
+  # daemon-side; the taps/IPs it hangs off are now freed by the DESTROY drain). The
+  # parked caller is still blocked on the one wake_group call, so this holds the
+  # connection across the fallback. group_fresh_booted{reason} records the discarded
+  # warmth.
   defp fallback_fresh(state, instance, subnet_cidr, secret, group, reason) do
     fresh_reason = fresh_reason_string(reason)
+    # Free tap+IP for any member that DID resume before the relight aborted, so the
+    # fresh re-pin does not collide on an occupied tap. Drains from the instance's
+    # stored live member rows (member_started recorded each resumed member).
+    _ = destroy_live_members(state)
     _ = evict_set(state, instance)
 
-    with {:ok, _} <- GroupStore.mark(state.store, instance.instance_id, :fresh_boot) |> ok_or(),
+    with {:ok, _} <- GroupStore.mark(state.store, instance.instance_id, :fresh_boot),
          {:ok, _} <-
            GroupStore.transition(
              state.store,
@@ -582,9 +591,16 @@ defmodule Embervm.GroupManager do
             record_member_live(state, member, vm_id, ip)
 
           # A RELIGHT that the daemon could not verify (clock-resync out of bounds,
-          # decision 7, surfaces as was_relight=false or a FAILED_PRECONDITION): treat
-          # it as a relight failure so the whole set falls back to fresh. We never
-          # accept a half-resumed member.
+          # decision 7, surfaces as was_relight=false): the VM DID resume and is holding
+          # its pinned tap+IP, so RECORD it live first (so the fresh-fallback drain
+          # destroys it and frees the tap) THEN treat it as a relight failure so the
+          # whole set falls back to fresh. We never accept a half-resumed member as
+          # part of a live relit set, but we must not leak its tap either.
+          {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip, was_relight: false}}
+          when is_binary(vm_id) and vm_id != "" ->
+            _ = record_member_live(state, member, vm_id, ip)
+            {:error, {:member_relight_unverified, member.expanded_name}}
+
           {:ok, %StartGroupMemberResponse{was_relight: false}} ->
             {:error, {:member_relight_unverified, member.expanded_name}}
 
@@ -789,7 +805,13 @@ defmodule Embervm.GroupManager do
   # state (nothing extra to persist; the assigned CIDR is recorded in group_created so
   # a rebuild reconstructs the held set) and reuses freed /24s so the /16 cannot be
   # exhausted. The supernet is the SAME value noded validates group cidrs against, so
-  # every assigned /24 is a valid /24 wholly within it.
+  # every assigned /24 is a valid /24 wholly within it. Two concurrent creates for
+  # DIFFERENT workloads could momentarily read the same held set and pick the same /24
+  # (this is not serialized across GroupManager instances); that race is
+  # DAEMON-BACKSTOPPED: noded's CreateGroupNetwork refuses an overlapping CIDR
+  # (FAILED_PRECONDITION), so the loser's create fails and retries, which re-reads the
+  # now-updated held set and picks the next free /24. The CP allocation is an
+  # optimization over that backstop, not the sole guard.
   defp allocate_subnet(state) do
     held = GroupStore.held_subnets(state.store)
     {a, b, _c, _d} = parse_ip(supernet_base(state.supernet))
@@ -944,6 +966,44 @@ defmodule Embervm.GroupManager do
 
   defp default_evict_snapshot(channel, req) do
     Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+  end
+
+  # DESTROY every currently-live member VM of the instance (a partial relight that
+  # resumed some members before aborting), freeing each member's pinned tap+IP in
+  # noded's group allocator (StopGroupMember DESTROY -> RemoveMemberTap +
+  # ReleaseMember) so the fresh re-pin does not collide. Drains from the instance's
+  # stored member rows: a member with a live vm_id is one that came up. Best-effort
+  # per member (a failed DESTROY leaves its tap held, which the fresh boot's own
+  # collision surfaces loudly rather than being silently skipped here).
+  defp destroy_live_members(state) do
+    state.store
+    |> GroupStore.members(state.instance_id)
+    |> Enum.filter(fn m -> is_binary(m.vm_id) and m.vm_id != "" end)
+    |> Enum.each(fn m -> _ = destroy_one_member(state, m) end)
+
+    :ok
+  end
+
+  defp destroy_one_member(state, member) do
+    req = %StopGroupMemberRequest{
+      trace: %Trace{workload: state.workload},
+      vm_id: member.vm_id,
+      mode: :STOP_GROUP_MEMBER_MODE_DESTROY,
+      set_id: "",
+      member_name: member.member_name
+    }
+
+    with {:ok, channel} <- safe_channel(state, state.node_id) do
+      try do
+        state.stop_group_member_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
   end
 
   # Best-effort EvictSnapshot of one member's banked bundle (group bundles reuse the
