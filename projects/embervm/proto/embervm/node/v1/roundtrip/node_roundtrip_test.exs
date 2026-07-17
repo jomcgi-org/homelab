@@ -18,6 +18,8 @@ defmodule Embervm.NodeRoundtripTest do
     AssignRequest,
     BankRequest,
     BuildBaseRequest,
+    CreateGroupNetworkRequest,
+    DeleteGroupNetworkRequest,
     DeleteVolumeRequest,
     DestroyRequest,
     EvictSnapshotRequest,
@@ -31,8 +33,10 @@ defmodule Embervm.NodeRoundtripTest do
     RelightSource,
     ResourceSpec,
     SessionAssignRequest,
+    StartGroupMemberRequest,
     StartServingRequest,
     StartStatefulRequest,
+    StopGroupMemberRequest,
     StopServingRequest,
     StopStatefulRequest,
     Trace,
@@ -267,6 +271,111 @@ defmodule Embervm.NodeRoundtripTest do
              NodeService.Stub.delete_volume(ch, %DeleteVolumeRequest{workload: "scratch-postgres"})
   end
 
+  test "group verbs round-trip across the wire (R5 additive contract)", %{channel: ch} do
+    # CreateGroupNetwork: derives bridge_name/gateway_ip from the request, proving
+    # the group_instance_id and cidr fields crossed the wire.
+    {:ok, net} =
+      NodeService.Stub.create_group_network(ch, %CreateGroupNetworkRequest{
+        trace: %Trace{workload: "composite"},
+        group_instance_id: "grp-inst1",
+        cidr: "10.100.0.0/24"
+      })
+
+    assert net.bridge_name == "br-grp-inst1"
+    assert net.gateway_ip == "10.100.0.1"
+
+    # CreateGroupNetwork refusal: the fake scripts a CIDR-overlap FAILED_PRECONDITION
+    # off the cidr content, proving the refusal status crosses the wire.
+    {:error, refused} =
+      NodeService.Stub.create_group_network(ch, %CreateGroupNetworkRequest{
+        group_instance_id: "grp-inst2",
+        cidr: "10.100.0.0/24-overlap"
+      })
+
+    assert refused.status == GRPC.Status.failed_precondition()
+
+    # StartGroupMember FRESH: cold-boots from source, echoes the pinned ip, no
+    # relight. Proves the mode enum, source, member identity, and env map cross.
+    {:ok, fresh} =
+      NodeService.Stub.start_group_member(ch, %StartGroupMemberRequest{
+        trace: %Trace{workload: "composite"},
+        mode: :START_GROUP_MEMBER_MODE_FRESH,
+        group_instance_id: "grp-inst1",
+        member_name: "worker-0",
+        member_index: 0,
+        ip: "10.100.0.10",
+        source: "worker-base",
+        health_port: 8080,
+        resources: %ResourceSpec{vcpus: 1, mem_mib: 256},
+        env: %{"EMBER_GROUP_SIZE" => "3"}
+      })
+
+    assert fresh.vm_id == "vm:worker-base"
+    assert fresh.ip == "10.100.0.10"
+    assert fresh.was_relight == false
+
+    # StartGroupMember RELIGHT, verified: resumes warm (was_relight true) once the
+    # clock-resync handshake verified within one second. The fake scripts a warm
+    # relight for any ordinary ref.
+    {:ok, warm} =
+      NodeService.Stub.start_group_member(ch, %StartGroupMemberRequest{
+        mode: :START_GROUP_MEMBER_MODE_RELIGHT,
+        group_instance_id: "grp-inst1",
+        member_name: "worker-0",
+        member_index: 0,
+        ip: "10.100.0.10",
+        snapshot_ref: "group/set-abc/worker-0"
+      })
+
+    assert warm.vm_id == "vm:group/set-abc/worker-0"
+    assert warm.ip == "10.100.0.10"
+    assert warm.was_relight == true
+
+    # StartGroupMember RELIGHT, clock-resync failure: the fake scripts a
+    # FAILED_PRECONDITION off the ref content, proving the resync-failure status
+    # crosses the wire (standing decision 7: a >1s delta fails the resume).
+    {:error, clockfail} =
+      NodeService.Stub.start_group_member(ch, %StartGroupMemberRequest{
+        mode: :START_GROUP_MEMBER_MODE_RELIGHT,
+        group_instance_id: "grp-inst1",
+        member_name: "worker-0",
+        ip: "10.100.0.10",
+        snapshot_ref: "group/set-abc/worker-0-clockfail"
+      })
+
+    assert clockfail.status == GRPC.Status.failed_precondition()
+
+    # StopGroupMember BANK: derives the per-member bundle ref from set_id/member_name.
+    {:ok, banked} =
+      NodeService.Stub.stop_group_member(ch, %StopGroupMemberRequest{
+        vm_id: "vm-g1",
+        mode: :STOP_GROUP_MEMBER_MODE_BANK,
+        set_id: "set-abc",
+        member_name: "worker-0"
+      })
+
+    assert banked.snapshot_ref == "group/set-abc/worker-0"
+    assert banked.size_bytes == 5120
+
+    # StopGroupMember DESTROY: no snapshot produced.
+    {:ok, destroyed} =
+      NodeService.Stub.stop_group_member(ch, %StopGroupMemberRequest{
+        vm_id: "vm-g1",
+        mode: :STOP_GROUP_MEMBER_MODE_DESTROY,
+        set_id: "set-abc",
+        member_name: "worker-0"
+      })
+
+    assert destroyed.snapshot_ref == ""
+    assert destroyed.size_bytes == 0
+
+    # DeleteGroupNetwork: idempotent, returns an empty response.
+    assert {:ok, _} =
+             NodeService.Stub.delete_group_network(ch, %DeleteGroupNetworkRequest{
+               group_instance_id: "grp-inst1"
+             })
+  end
+
   test "NodeStatus reports stateful facts (R4 additive fields)", %{channel: ch} do
     {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
 
@@ -292,6 +401,36 @@ defmodule Embervm.NodeRoundtripTest do
     assert vol.size_bytes == 10_737_418_240
     assert vol.allocated_bytes == 536_870_912
     assert vol.attached == true
+  end
+
+  test "NodeStatus reports group facts (R5 additive fields)", %{channel: ch} do
+    {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
+
+    assert [net] = ns.group_networks
+    assert net.group_instance_id == "grp-inst1"
+    assert net.cidr == "10.100.0.0/24"
+    assert net.bridge == "br-grp-inst1"
+    assert net.member_count == 2
+
+    assert [vm] = ns.group_member_vms
+    assert vm.vm_id == "vm-g1"
+    assert vm.group_instance_id == "grp-inst1"
+    assert vm.member_name == "worker-0"
+    assert vm.ip == "10.100.0.10"
+    assert vm.healthy == true
+    assert vm.last_probe_unix_ms == 1_700_000_005_000
+
+    # The bundle set is deliberately PARTIAL (one member ref), proving the daemon
+    # reports refs grouped by set dir and leaves the completeness judgment to the
+    # control plane.
+    assert [set] = ns.group_bundle_sets
+    assert set.set_id == "set-abc"
+    assert set.group_instance_id == "grp-inst1"
+    assert set.created_at_unix_ms == 1_700_000_006_000
+    assert [member] = set.members
+    assert member.member_name == "worker-0"
+    assert member.snapshot_ref == "group/set-abc/worker-0"
+    assert member.size_bytes == 5120
   end
 
   test "NodeStatus reports serving facts (R3 additive fields)", %{channel: ch} do

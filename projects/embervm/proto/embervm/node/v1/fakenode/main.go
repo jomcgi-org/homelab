@@ -20,6 +20,8 @@ import (
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // watchNodeHeartbeats is how many NodeStatus messages WatchNode streams before
@@ -181,6 +183,60 @@ func (fakeServer) DeleteVolume(_ context.Context, _ *nodev1.DeleteVolumeRequest)
 	return &nodev1.DeleteVolumeResponse{}, nil
 }
 
+// CreateGroupNetwork derives the bridge_name and gateway_ip from the request so
+// the client can prove the fields crossed the wire, and scripts the CIDR-overlap
+// refusal off the cidr content ("overlap" -> FAILED_PRECONDITION), which is how
+// the round-trip test exercises the create-refusal branch against a stateless fake.
+func (fakeServer) CreateGroupNetwork(_ context.Context, req *nodev1.CreateGroupNetworkRequest) (*nodev1.CreateGroupNetworkResponse, error) {
+	if strings.Contains(req.GetCidr(), "overlap") {
+		return nil, status.Errorf(codes.FailedPrecondition, "cidr %q overlaps an existing group bridge", req.GetCidr())
+	}
+	return &nodev1.CreateGroupNetworkResponse{
+		BridgeName: "br-" + req.GetGroupInstanceId(),
+		GatewayIp:  "10.100.0.1",
+	}, nil
+}
+
+// DeleteGroupNetwork is idempotent and returns an empty response for any group.
+func (fakeServer) DeleteGroupNetwork(_ context.Context, _ *nodev1.DeleteGroupNetworkRequest) (*nodev1.DeleteGroupNetworkResponse, error) {
+	return &nodev1.DeleteGroupNetworkResponse{}, nil
+}
+
+// StartGroupMember derives its response from mode so the client can assert every
+// member boot path crosses the wire. RELIGHT scripts the clock-resync outcome off
+// the snapshot_ref content ("clockfail" -> FAILED_PRECONDITION with a clock-delta
+// detail, otherwise a verified warm relight), which is how the round-trip test
+// exercises the resync-failure branch against a stateless fake. FRESH cold-boots
+// from source and echoes the pinned ip.
+func (fakeServer) StartGroupMember(_ context.Context, req *nodev1.StartGroupMemberRequest) (*nodev1.StartGroupMemberResponse, error) {
+	if req.GetMode() == nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT {
+		ref := req.GetSnapshotRef()
+		if strings.Contains(ref, "clockfail") {
+			return nil, status.Errorf(codes.FailedPrecondition, "clock resync delta exceeds 1s for %q", ref)
+		}
+		return &nodev1.StartGroupMemberResponse{
+			VmId: "vm:" + ref, Ip: req.GetIp(), WasRelight: true,
+		}, nil
+	}
+	// FRESH: cold boot from the source, echo the pinned ip.
+	return &nodev1.StartGroupMemberResponse{
+		VmId: "vm:" + req.GetSource(), Ip: req.GetIp(), WasRelight: false,
+	}, nil
+}
+
+// StopGroupMember returns a per-member bundle ref under the caller-supplied set
+// dir and a size for BANK, and zero values for DESTROY, so the client can assert
+// both mode branches and that set_id/member_name crossed the wire.
+func (fakeServer) StopGroupMember(_ context.Context, req *nodev1.StopGroupMemberRequest) (*nodev1.StopGroupMemberResponse, error) {
+	if req.GetMode() == nodev1.StopGroupMemberMode_STOP_GROUP_MEMBER_MODE_BANK {
+		return &nodev1.StopGroupMemberResponse{
+			SnapshotRef: "group/" + req.GetSetId() + "/" + req.GetMemberName(),
+			SizeBytes:   5120,
+		}, nil
+	}
+	return &nodev1.StopGroupMemberResponse{}, nil
+}
+
 func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequest) (*nodev1.NodeStatus, error) {
 	return &nodev1.NodeStatus{
 		NodeId:     req.GetNodeId(),
@@ -253,6 +309,39 @@ func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequ
 				SizeBytes:      10_737_418_240,
 				AllocatedBytes: 536_870_912,
 				Attached:       true,
+			},
+		},
+		// Group facts (R5): deterministic, so the client can assert the new
+		// repeated group status fields round-trip. The bundle set is scripted
+		// PARTIAL on purpose (one member ref where a whole group would report
+		// several), proving the daemon reports refs grouped by set without judging
+		// completeness (that judgment is the control plane's).
+		GroupNetworks: []*nodev1.GroupNetwork{
+			{
+				GroupInstanceId: "grp-inst1",
+				Cidr:            "10.100.0.0/24",
+				Bridge:          "br-grp-inst1",
+				MemberCount:     2,
+			},
+		},
+		GroupMemberVms: []*nodev1.GroupMemberVm{
+			{
+				VmId:            "vm-g1",
+				GroupInstanceId: "grp-inst1",
+				MemberName:      "worker-0",
+				Ip:              "10.100.0.10",
+				Healthy:         true,
+				LastProbeUnixMs: 1_700_000_005_000,
+			},
+		},
+		GroupBundleSets: []*nodev1.GroupBundleSet{
+			{
+				SetId:           "set-abc",
+				GroupInstanceId: "grp-inst1",
+				Members: []*nodev1.GroupBundleMember{
+					{MemberName: "worker-0", SnapshotRef: "group/set-abc/worker-0", SizeBytes: 5120},
+				},
+				CreatedAtUnixMs: 1_700_000_006_000,
 			},
 		},
 	}, nil

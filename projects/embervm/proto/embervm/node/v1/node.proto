@@ -272,6 +272,100 @@ service NodeService {
   // an already-absent volume (the desired end-state, gone, already holds).
   // Stateful bundles reuse EvictSnapshot (R2) unchanged; bundle refs are opaque.
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
+
+  // -- Group verbs (R5) -------------------------------------------------------
+  //
+  // These verbs are the composite-workload vocabulary, ADDITIVE to the task,
+  // session, serving, and stateful contracts above (every existing RPC and
+  // message is byte-for-byte unchanged). A group is a set of member VMs pinned
+  // to deterministic addresses on a private per-group bridge, the physical
+  // substrate a composite workload (many cooperating members addressing each
+  // other by stable name/IP) needs. The physical primitives are all on the node:
+  // a bridge, N pinned-address members attached to it, and a bundle SET (the
+  // per-member banked snapshots that resume the group as a unit). The daemon owns
+  // these primitives behind the verbs; NOTHING about what the members ARE crosses
+  // this seam. The contract is GENERIC group networking: the daemon knows a
+  // bridge, a CIDR, member names, indices, and addresses, and nothing about the
+  // application shape wired on top of it. Refs stay opaque strings exactly as
+  // elsewhere: no bridge device name detail, no snapshot file path, no netlink or
+  // nftables rule text crosses this seam beyond the reported facts.
+  //
+  // Membership is the control plane's, not the daemon's: the daemon never decides
+  // which members belong to a set. set_id (StopGroupMember) is caller-supplied and
+  // OPAQUE; the daemon groups the per-member snapshot refs it produces by the set
+  // directory it is told to write under, and reports them grouped, but the
+  // completeness judgment (is this set whole enough to relight) stays entirely in
+  // the control plane. Group member VMs count against max_live_vms like any other
+  // live VM, and are EXCLUDED from every WorkloadCapacity.primed_vm_ids (a member
+  // VM is never in the task pool), exactly like session, serving, and stateful VMs.
+  //
+  // Group bundles reuse EvictSnapshot (R2) unchanged: each per-member snapshot ref
+  // is evicted exactly like a session snapshot ref (the control plane evicts a set
+  // by evicting each of its member refs). The daemon offers no set-level eviction
+  // verb; set membership is the control plane's fact.
+  //
+  // Guest control agent contract (Task 3 implements it; stated here as the spec):
+  // a member guest runs a control agent listening on a dedicated vsock port
+  // (GROUP_GUEST_AGENT_VSOCK_PORT below) that speaks the D-R2.6.1 length-prefixed
+  // JSON frame convention (a 4-byte big-endian length prefix, then that many bytes
+  // of JSON). It answers exactly one request:
+  //   request  {"cmd":"sync_clock","epoch_ns":<int>}   host wall-clock at resume
+  //   response {"clock_realtime_ns":<int>}             guest CLOCK_REALTIME after
+  //                                                     it has set its clock
+  // On a RELIGHT resume, noded sends sync_clock with the current host epoch, the
+  // guest sets its clock and reads CLOCK_REALTIME back, and noded VERIFIES the
+  // read-back: it fails the StartGroupMember call (FAILED_PRECONDITION, a clock
+  // delta detail) if abs(clock_realtime_ns - epoch_ns) > 1s (standing decision 7).
+  // A resumed member with a clock more than one second off host time is a failed
+  // resume, never a live member.
+
+  // CreateGroupNetwork creates the private per-group bridge for
+  // {group_instance_id, cidr} plus the inter-group nftables deny that isolates
+  // this group's bridge from every other group's, and returns {bridge_name,
+  // gateway_ip} (the bridge's own address on the CIDR, the members' default
+  // gateway). Idempotent per group_instance_id: a repeat call for an
+  // already-created network returns the existing {bridge_name, gateway_ip}
+  // without recreating it. FAILED_PRECONDITION if the CIDR overlaps an existing
+  // group bridge's CIDR (address space is the daemon's to keep disjoint; the
+  // control plane must pick a non-overlapping range). The bridge and its deny
+  // rules are daemon-internal; only the two reported facts cross the seam.
+  rpc CreateGroupNetwork(CreateGroupNetworkRequest) returns (CreateGroupNetworkResponse);
+
+  // DeleteGroupNetwork tears the group bridge and its nftables rules down,
+  // reclaiming the CIDR. FAILED_PRECONDITION while any member VM is still
+  // attached to the bridge (the control plane stops every member first; this is
+  // the daemon backstop against tearing a live group's network out from under
+  // it). Idempotent on an already-absent network (the desired end-state, gone,
+  // already holds).
+  rpc DeleteGroupNetwork(DeleteGroupNetworkRequest) returns (DeleteGroupNetworkResponse);
+
+  // StartGroupMember boots or resumes exactly one member on its group bridge,
+  // attaching a tap NIC pinned to the member's DETERMINISTIC name/MAC/IP (all
+  // derived by the control plane from {group_instance_id, member_name,
+  // member_index} and passed in; the daemon pins the tap to the given ip, it does
+  // not allocate). mode selects the boot path:
+  //   FRESH   cold-boot the member's image rootfs (source) with the pinned tap,
+  //           deliver the env map via the MMDS-lite seam (FRESH-only, see below),
+  //           and TCP-health-gate {ip, health_port} before returning ready.
+  //   RELIGHT recreate the IDENTICAL tap world (same name/MAC/IP) and resume the
+  //           member's banked bundle (snapshot_ref), then perform the guest
+  //           control agent clock-resync handshake and FAIL the call if the
+  //           verified read-back delta exceeds one second (standing decision 7).
+  // Returns {vm_id, ip, was_relight}. FAILED_PRECONDITION on an unknown or
+  // unrestorable snapshot_ref (RELIGHT), a missing source (FRESH), or a
+  // clock-resync verification failure; on a failed RELIGHT the bundle is NEVER
+  // deleted (a lost member must surface loudly, not silently relight blank).
+  rpc StartGroupMember(StartGroupMemberRequest) returns (StartGroupMemberResponse);
+
+  // StopGroupMember tears down one live member VM. mode = BANK PAUSES the VM,
+  // writes a full snapshot under the caller-supplied set directory
+  // (group/<set_id>/<member>/), destroys the VM, and returns {snapshot_ref,
+  // size_bytes}. mode = DESTROY kills the VM with no snapshot. set_id is OPAQUE to
+  // the daemon: it is only the directory the member's snapshot is written under so
+  // the daemon can report member refs grouped by set; the daemon never decides
+  // set membership. BANK refuses FAILED_PRECONDITION if a stop of the same vm_id
+  // is already in flight (the daemon backstop; the control plane serializes too).
+  rpc StopGroupMember(StopGroupMemberRequest) returns (StopGroupMemberResponse);
 }
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
@@ -703,6 +797,129 @@ message DeleteVolumeRequest {
 
 message DeleteVolumeResponse {}
 
+// ---- Group verbs (R5) ------------------------------------------------------
+
+// GROUP_GUEST_AGENT_VSOCK_PORT is the dedicated vsock port a member guest's
+// control agent listens on for the sync_clock handshake (see the StartGroupMember
+// / group-verbs comment for the frame contract). It is a documented constant of
+// the frozen guest contract, distinct from the guest HTTP port; the daemon dials
+// it only on a RELIGHT resume.
+enum GroupGuestAgent {
+  GROUP_GUEST_AGENT_UNSPECIFIED = 0;
+  GROUP_GUEST_AGENT_VSOCK_PORT = 1024;
+}
+
+// CreateGroupNetworkRequest asks the daemon to stand up the per-group bridge for
+// group_instance_id on cidr. group_instance_id is the control plane's opaque
+// per-group-instance identity, the idempotency key for the bridge; cidr is the
+// address range the members' pinned IPs are drawn from (by the control plane, not
+// the daemon).
+message CreateGroupNetworkRequest {
+  Trace trace = 1;
+  string group_instance_id = 2;
+  string cidr = 3;
+}
+
+message CreateGroupNetworkResponse {
+  // bridge_name is the daemon-assigned name of the group bridge, reported as an
+  // opaque fact (the control plane never manipulates it, only records it). Stable
+  // across idempotent recreate calls for the same group_instance_id.
+  string bridge_name = 1;
+  // gateway_ip is the bridge's own address on the CIDR, the default gateway the
+  // members route through. Deterministic for the CIDR; reported so the control
+  // plane can compose member routes without knowing the daemon's allocation rule.
+  string gateway_ip = 2;
+}
+
+// DeleteGroupNetworkRequest tears down the bridge for group_instance_id.
+message DeleteGroupNetworkRequest {
+  Trace trace = 1;
+  string group_instance_id = 2;
+}
+
+message DeleteGroupNetworkResponse {}
+
+enum StartGroupMemberMode {
+  START_GROUP_MEMBER_MODE_UNSPECIFIED = 0;
+  START_GROUP_MEMBER_MODE_FRESH = 1;    // cold-boot the image rootfs on the pinned tap
+  START_GROUP_MEMBER_MODE_RELIGHT = 2;  // resume the bundle, then clock-resync verify
+}
+
+message StartGroupMemberRequest {
+  Trace trace = 1;
+  StartGroupMemberMode mode = 2;
+  // group_instance_id names the group whose bridge this member attaches to (its
+  // network must already exist via CreateGroupNetwork). member_name and
+  // member_index are the control-plane-assigned member identity the daemon uses
+  // to pin the tap deterministically (the tap name and MAC are derived from them);
+  // ip is the control-plane-assigned pinned address on the group CIDR the tap is
+  // configured with (the daemon pins to the given ip, it does not allocate).
+  string group_instance_id = 3;
+  string member_name = 4;
+  uint32 member_index = 5;
+  string ip = 6;
+  // source is the FRESH cold-boot source the daemon resolves to a bootable rootfs
+  // (same role as stateful boot_image_ref: a NIC cold boot cannot resume a
+  // vsock-only base memory snapshot, D-R3.4.2). Set for FRESH; empty for RELIGHT.
+  string source = 7;
+  // snapshot_ref is the banked member bundle to resume, set for RELIGHT (empty
+  // otherwise). Opaque; on a failed restore it is NEVER deleted (a lost member
+  // must surface loudly).
+  string snapshot_ref = 8;
+  // health_port is the guest TCP port the daemon health-gates by CONNECT to
+  // {ip, health_port} on FRESH before returning ready (opaque L4, matching the
+  // stateful contract; there is no ready_path).
+  uint32 health_port = 9;
+  // Resource shape of the member VM (vcpus, mem), carried exactly as serving and
+  // stateful.
+  ResourceSpec resources = 10;
+  // env are first-boot environment values delivered to the guest via the
+  // MMDS-lite seam, exactly as StartStateful.mmds_env: the same secrets/first-boot
+  // seam. It is FRESH-ONLY: a RELIGHT resume IGNORES this map and the resumed guest
+  // keeps its BIRTH env (the env was baked into the memory image at first boot).
+  // The platform-injected EMBER_GROUP_* keys are composed by the control plane,
+  // not the daemon; the daemon delivers whatever map it is handed and interprets
+  // none of it.
+  map<string, string> env = 11;
+}
+
+message StartGroupMemberResponse {
+  // vm_id names the live member VM. Opaque; the control plane holds it and passes
+  // it to StopGroupMember.
+  string vm_id = 1;
+  // ip is the member's pinned address on the group bridge (the same ip the request
+  // carried, echoed as the authoritative live fact).
+  string ip = 2;
+  // was_relight is true when the call resumed a banked bundle (a verified RELIGHT,
+  // clock-resync within one second); false for a FRESH cold boot.
+  bool was_relight = 3;
+}
+
+enum StopGroupMemberMode {
+  STOP_GROUP_MEMBER_MODE_UNSPECIFIED = 0;
+  STOP_GROUP_MEMBER_MODE_BANK = 1;
+  STOP_GROUP_MEMBER_MODE_DESTROY = 2;
+}
+
+message StopGroupMemberRequest {
+  Trace trace = 1;
+  string vm_id = 2;
+  StopGroupMemberMode mode = 3;
+  // set_id is the caller-supplied OPAQUE set directory the member's BANK snapshot
+  // is written under (group/<set_id>/<member>/). The daemon groups reported member
+  // refs by it but never decides membership. member_name names the member subdir.
+  string set_id = 4;
+  string member_name = 5;
+}
+
+message StopGroupMemberResponse {
+  // snapshot_ref and size_bytes are set only when mode was BANK; both are the zero
+  // value for DESTROY. snapshot_ref is the opaque per-member bundle handle the
+  // control plane records and later passes to EvictSnapshot (R2, reused unchanged).
+  string snapshot_ref = 1;
+  uint64 size_bytes = 2;
+}
+
 // ---- Node status -----------------------------------------------------------
 
 message WatchNodeRequest {
@@ -859,6 +1076,53 @@ message Volume {
   bool attached = 5;
 }
 
+// GroupNetwork is one per-group bridge the node currently holds, reported so a
+// restarted control plane reconciles group networks from node truth (a bridge
+// survives a daemon restart) and can see the CIDR each group occupies without
+// tracking allocation itself. member_count is the number of member VMs currently
+// attached to the bridge (the DeleteGroupNetwork backstop reads it).
+message GroupNetwork {
+  string group_instance_id = 1;
+  string cidr = 2;
+  string bridge = 3;
+  uint32 member_count = 4;
+}
+
+// GroupMemberVm is one LIVE group member VM the node currently holds, reported so
+// a restarted control plane adopts rather than orphans it and consumes the
+// daemon's TCP-connect health verdict. Excluded from every
+// WorkloadCapacity.primed_vm_ids, session_vms, serving_vms, and stateful_vms (a
+// member VM is never in the task pool).
+message GroupMemberVm {
+  string vm_id = 1;
+  string group_instance_id = 2;
+  string member_name = 3;
+  string ip = 4;
+  bool healthy = 5;
+  int64 last_probe_unix_ms = 6;
+}
+
+// GroupBundleMember is one member's banked snapshot within a group bundle set: the
+// opaque per-member ref and its size. Grouped under a GroupBundleSet by the set
+// directory the daemon was told to write it under.
+message GroupBundleMember {
+  string member_name = 1;
+  string snapshot_ref = 2;
+  uint64 size_bytes = 3;
+}
+
+// GroupBundleSet is the per-member banked snapshots the daemon found grouped under
+// one set directory (group/<set_id>/), reported so the control plane reconciles
+// banked-group inventory from node truth. The daemon reports refs GROUPED BY the
+// set dir it wrote them under; it makes NO completeness judgment (whether the set
+// has every member it needs to relight is the control plane's to decide).
+message GroupBundleSet {
+  string set_id = 1;
+  string group_instance_id = 2;
+  repeated GroupBundleMember members = 3;
+  int64 created_at_unix_ms = 4;
+}
+
 // NodeStatus is the whole capacity fact set: per-workload primed slots and base
 // states, node-level memory/cpu headroom, and the draining flag. A draining
 // daemon reports draining=true and the control plane stops new assignments
@@ -933,4 +1197,23 @@ message NodeStatus {
   // from the volumes dir, the durable data the control plane never reads but must
   // account for (generation for pairing, allocated_bytes for the watermark).
   repeated Volume volumes = 18;
+
+  // -- Group facts (R5, additive) ---------------------------------------------
+  // These three fields report the composite-workload substrate: the per-group
+  // bridges (with their CIDR and attached member count), the live member VMs (with
+  // their group identity and TCP-connect health verdict), and the banked bundle
+  // SETS (per-member refs grouped by set directory). All are optional/repeated and
+  // wire-compatible with a daemon that never sets them. The daemon reports refs
+  // grouped by set; the completeness judgment (is a set whole enough to relight)
+  // stays in the control plane.
+
+  // group_networks lists every per-group bridge this node currently holds.
+  repeated GroupNetwork group_networks = 19;
+  // group_member_vms lists every LIVE group member VM this node holds. Disjoint
+  // from every WorkloadCapacity.primed_vm_ids, session_vms, serving_vms, and
+  // stateful_vms.
+  repeated GroupMemberVm group_member_vms = 20;
+  // group_bundle_sets is the banked-group-bundle inventory scanned from the
+  // group/ prefix of the bundle dir, refs grouped by set directory.
+  repeated GroupBundleSet group_bundle_sets = 21;
 }
