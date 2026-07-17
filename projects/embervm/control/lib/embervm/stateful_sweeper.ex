@@ -1,0 +1,1099 @@
+defmodule Embervm.StatefulSweeper do
+  @moduledoc """
+  The stateful lifecycle-economics loop (R4, Task 9): the L4 counterpart of
+  `Embervm.ServingSweeper`, and the piece that makes an idle stateful sandbox
+  actually cost one volume file plus one bundle rather than a running VM
+  forever. Like serving, a stateful instance has NO per-instance supervised
+  process (it is an ETS row in `Embervm.StatefulStore`), so this ONE process
+  drives every economic decision on a timer: it scrapes each node Envoy's L4
+  connection counters to detect idleness, banks idle instances (unpublish then
+  StopStateful BANK), expires over-lifetime ones, GCs stale banked bundles, and
+  keeps the pairing hygiene current between wakes.
+
+  ## the idle signal: opaque L4, not request counts
+
+  Serving is HTTP, so its idle signal is a request-count delta on the node
+  Envoy's cluster. Stateful is opaque L4 TCP (a raw byte stream to, say,
+  Postgres), so there is no request boundary to count. Instead the signal is
+  the node Envoy's PER-LISTENER tcp_proxy connection stats (Task 5 set
+  `stat_prefix` to the listener name, `state-<listenPort>`):
+
+    * `downstream_cx_active`: the number of currently-open connections. This
+      MUST be zero before a bank is even considered (standing decision 7: NEVER
+      sever a live connection to pause the VM underneath it).
+    * `downstream_cx_total`: the CUMULATIVE connection count. A zero delta
+      across `idleBankSeconds` means no new connection arrived either, so the
+      workload is truly quiet, not merely between two long-lived connections
+      that both happen to be momentarily closed.
+
+  An instance is idle-bankable iff `downstream_cx_active == 0` AND the
+  `downstream_cx_total` delta across the window is `0`. The active check is
+  RE-READ with a fresh scrape at bank time too (the recheck below), because a
+  connection racing in between the tick-start idle scan and the actual bank
+  action is exactly the case decision 7 exists to catch.
+
+  ## fail-open for warmth (ADR embervm/001 posture), exactly as serving
+
+  A scrape failure yields no reading for that node this tick: idle detection is
+  suppressed for every stateful workload on that node, never banking on missing
+  or stale stats. Lifetime/TTL GC still run (they read the durable store, not
+  stats). A fresh sweeper's first tick only baselines (no prior reading to
+  delta against), banking nothing; the same code path a scrape failure takes.
+
+  ## the bank sequence (standing decision 7, no drain window)
+
+  Serving's idle bank waits `drainSeconds` after unpublish so an in-flight HTTP
+  request can finish before the VM is paused; a stateful L4 connection has no
+  such natural completion boundary (it may be a long-lived session), so the
+  precondition IS the wait: banking only begins once `downstream_cx_active` has
+  already read zero for the whole idle window. The sequence is therefore:
+
+    1. `StatefulStore.unpublish` (serving -> banking, ETS-only per the store's
+       "unpublish is ETS-only" decision): the endpoint leaves the fan-out and,
+       if this was the workload's only route to a live instance, the SAME
+       `EndpointPublisher.publish` call installs the activator TCP fallback so
+       a racing connection parks and wakes fresh instead of hitting a dead
+       socket.
+    2. RECHECK `downstream_cx_active` with a FRESH re-scrape (not the
+       tick-start reading the idle scan acted on): if a connection opened
+       between the idle decision and this point, the bank ABORTS
+       (`bank_abort`, banking -> serving) and the instance is republished
+       immediately. This is the decision-7 guard actually enforced at the
+       moment it matters, not just at the idle-scan moment a tick earlier.
+    3. `StopStateful(BANK)` via the node stub (spawned off this process,
+       exactly like serving's bank worker, since it writes GiBs and can take
+       seconds).
+    4. On success: `StatefulStore.transition(:bank_ready, :stateful_banked,
+       ...)` with `{snapshot_ref, generation, size_bytes}` (the pair-key
+       baseline the wake path checks), then `EndpointPublisher.publish` again
+       (a no-op fan-out-wise, since the endpoint already left, but keeps the
+       publisher's derived state current).
+    5. On RPC failure: `StatefulStore.mark(:bank_abort)` (banking -> serving,
+       ETS-only: no snapshot was written, the VM is still alive) and
+       republish, so the instance stays live and the next sweep retries.
+
+  ## max-lifetime: bounded drain patience, then destroy anyway (decision 8)
+
+  An instance older than `maxLifetimeSeconds` must eventually go so a stale
+  base lineage cannot squat forever, but destroying a stateful VM mid-connection
+  loses whatever the client was doing (there is no HTTP retry semantics to fall
+  back on). The compromise (standing decision 8): wait for
+  `downstream_cx_active == 0` up to a capped patience window
+  (`EMBERVM_STATEFUL_LIFETIME_DRAIN_MAX_MS`, default 1 hour), then destroy
+  regardless. This is safe because the class carries a durable, node-local
+  volume and the guest's own WAL (or equivalent) recovers a mid-write
+  interruption on the NEXT boot; the alternative (waiting forever for a
+  long-lived idle-looking connection to close) would let a single stuck client
+  pin a workload on an ancient base indefinitely. The patience window is
+  tracked per-instance from the first tick it was seen both over-lifetime AND
+  active (never from creation, so a workload that only recently exceeded its
+  lifetime gets the full window, not a window already half-consumed by however
+  long it has been over).
+
+  ## banked-TTL GC: the bundle, never the volume
+
+  A banked bundle untouched (`updated_at`, the banked-at or last-touched
+  timestamp) longer than `bankedTtlSeconds` is evicted: `EvictSnapshot` on the
+  node (reclaiming the bundle's disk, the same RPC session snapshots reuse per
+  the R2 `EvictSnapshot` doc) plus the durable `stateful_evicted` transition,
+  reason `"ttl"`. The VOLUME is NEVER touched by this GC (or by anything in
+  this module): the volume is the durable data, the bundle is only a warm-start
+  shortcut to resuming a live VM against it. Losing the bundle costs one cold
+  boot on the next wake; losing the volume would lose data. `DELETE
+  /v1/stateful/:name/volume` (Task 8's management route, already wired) is the
+  ONLY destructive-to-data verb in the system, and this sweeper never calls it.
+
+  ## eager broken-pair eviction, every tick
+
+  `StatefulStore.eager_evict_broken_pairs/1` is called on every sweep so a
+  bundle whose pair broke (the volume's generation moved out from under it,
+  e.g. via a cold boot from a DIFFERENT banked-then-evicted lineage, or an
+  adoption reconcile that refreshed the volume fact) is evicted BEFORE the next
+  wake attempt discovers it stale, not AT wake time (which would cost the
+  connecting client an extra round trip through the discovery). This mirrors
+  `StatefulManager.reconcile/1`'s post-refresh eager-evict call; running it
+  here too means the hygiene runs on the sweep cadence even between
+  reconciles.
+
+  ## no stale-base lineage GC (unlike serving)
+
+  `Embervm.ServingSweeper` carries a `sweep_stale_lineage` pass that evicts a
+  banked serving snapshot whose base was superseded by a runtime roll. There is
+  deliberately no counterpart here: a stateful bundle is paired to its VOLUME's
+  generation (`snapshot_generation == volume.generation`), not to a base image
+  lineage, so the equivalent staleness is exactly a broken pair, already handled
+  by `eager_evict_broken_pairs` above. A runtime image roll for a stateful
+  workload surfaces as a cold boot on the next wake (the daemon boots the current
+  image against the intact volume), not as a squatting stale snapshot to GC.
+
+  ## economics: what R4 buys
+
+  Before this task, an idle stateful workload keeps its VM (and the vCPU/mem it
+  holds) running forever: the "actually cost one volume file + one bundle" goal
+  only exists once idle instances bank. This sweeper is the piece that turns
+  the class's promised economics (pay for compute only while a client is
+  connected, pay for storage always) into an enforced behavior.
+  """
+
+  use GenServer
+  require Logger
+
+  require OpenTelemetry.Tracer, as: Tracer
+
+  alias Embervm.{NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
+  alias Embervm.OpLog.Op
+
+  alias Embervm.Node.V1.{
+    EvictSnapshotRequest,
+    StopStatefulRequest,
+    StopStatefulResponse,
+    Trace
+  }
+
+  # Per-node concurrent-bank cap (banking writes GiBs; serialize per node), the
+  # exact ServingSweeper default and rationale.
+  @default_bank_concurrency 1
+
+  # The capped patience window for a live over-lifetime instance to drain
+  # (downstream_cx_active reach zero) before it is destroyed anyway (decision
+  # 8). One hour default: long enough that a genuinely finishing session is not
+  # cut off, short enough that a stuck client cannot pin an ancient base
+  # forever.
+  @default_lifetime_drain_max_ms 3_600_000
+
+  # -- Client API ------------------------------------------------------------
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
+  end
+
+  @doc """
+  Runs one full sweep synchronously (scrape + stateful_stats + idle-bank +
+  recheck-and-bank + lifetime GC + banked-TTL GC + eager broken-pair eviction)
+  and returns after it completes. Tests drive the economics deterministically
+  through this (with an injected clock + stats seam) instead of waiting on the
+  timer.
+  """
+  @spec sweep(GenServer.server()) :: :ok
+  def sweep(server \\ __MODULE__) do
+    GenServer.call(server, :sweep, :infinity)
+  end
+
+  # -- GenServer callbacks ---------------------------------------------------
+
+  @impl true
+  def init(opts) do
+    state = %{
+      store: Keyword.get(opts, :store, StatefulStore),
+      publisher: Keyword.get(opts, :publisher, Embervm.EndpointPublisher),
+      capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
+      catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
+      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      clock: Keyword.get(opts, :clock, &default_clock/0),
+      tenant: Keyword.get(opts, :tenant, "homelab"),
+      # The node Envoy stats scrape seam: (stats_url) -> {:ok, %{stat_prefix =>
+      # %{active: n, total: n}}} | {:error, reason}. Production GETs
+      # /stats?format=json over Finch and parses the per-listener
+      # tcp.<prefix>.downstream_cx_{active,total} counters; tests inject
+      # scripted readings.
+      scrape_fun: Keyword.get(opts, :scrape_fun, &default_scrape/1),
+      # The base URL of the node Envoy's stats port. Reuses the SAME serving
+      # stats endpoint (EMBERVM_SERVING_STATS_BASE): stateful's tcp_proxy
+      # listeners live on the same node Envoy admin the serving scrape already
+      # reaches. nil disables the scrape (fails open: no idle-bank decision
+      # ever runs), the safe default.
+      stats_base: Keyword.get(opts, :stats_base, nil),
+      # The daemon stateful-verb seams (injected for tests; production dials
+      # the real NodeService stub over the shared NodeChannel).
+      channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
+      evict_snapshot_fun: Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
+      bank_concurrency: Keyword.get(opts, :bank_concurrency, @default_bank_concurrency),
+      bank_inflight: %{},
+      lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, @default_lifetime_drain_max_ms),
+      # workload -> the wall-clock ms the workload was first observed idle
+      # (cx_active == 0 AND cx_total delta == 0) this run, so idleBankSeconds is
+      # measured from the FIRST idle tick, not re-armed every tick a scrape
+      # happens to re-confirm zero. A nonzero delta or nonzero active resets
+      # (deletes) the entry: any activity restarts the idle clock.
+      idle_since: %{},
+      # instance_id -> workload, for an instance currently unpublished
+      # (banking) awaiting the recheck-and-bank step within the SAME sweep, or
+      # whose bank RPC is in flight in a spawned worker. Prevents a second tick
+      # from re-arming a bank already in progress.
+      banking: %{},
+      # workload -> the wall-clock ms an over-lifetime LIVE instance was first
+      # seen both over-lifetime and with an active connection, so the drain
+      # patience window is measured from THAT point (never from created_at, so
+      # a workload only recently over lifetime gets the full window).
+      lifetime_drain_since: %{},
+      # The prior tick's per-node stats reading: node_id -> %{stat_prefix =>
+      # %{active, total}}. A delta needs two consecutive successful readings; a
+      # failed scrape drops the node's prior reading so the next success
+      # re-establishes a baseline.
+      last_stats: %{},
+      # THIS tick's per-node reading, kept alongside last_stats so the bank
+      # recheck can consult the freshest read without a second network hop
+      # (the reading a moment old within the same tick is fresh enough; the
+      # correctness the recheck buys is against races that happened BEFORE
+      # this tick's scrape, not within it).
+      current_stats: %{},
+      sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, 0)
+    }
+
+    if state.sweep_interval_ms > 0 do
+      schedule(:sweep, state.sweep_interval_ms)
+    end
+
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:sweep, _from, state) do
+    {:reply, :ok, do_sweep(state)}
+  end
+
+  @impl true
+  def handle_info(:sweep, state) do
+    state = do_sweep(state)
+    schedule(:sweep, state.sweep_interval_ms)
+    {:noreply, state}
+  end
+
+  # The async StopStateful(BANK) worker finished: complete the durable
+  # transition + inflight release on this serialized process. ip/port are the
+  # endpoint captured BEFORE unpublish cleared the ETS row (see
+  # spawn_bank_worker/2's comment); needed to restore it on a failed bank.
+  def handle_info({:bank_done, instance_id, node_id, vm_id, ip, port, workload, outcome}, state) do
+    {:noreply, finish_bank(state, instance_id, node_id, vm_id, ip, port, workload, outcome)}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  # -- the sweep -------------------------------------------------------------
+
+  # One tick: (1) scrape every stateful-capable node's L4 listener stats,
+  # append stateful_stats + touch activity; (2) idle-bank: unpublish + recheck
+  # + StopStateful(BANK) for instances confirmed idle past idleBankSeconds;
+  # (3) max-lifetime expiry (drain-then-destroy, capped patience); (4)
+  # banked-TTL GC; (5) eager broken-pair eviction.
+  defp do_sweep(state) do
+    now = state.clock.()
+
+    # A ROOT span per sweep tick (timer-driven, no caller trace to nest under),
+    # mirroring embervm.serving.stats_sweep.
+    Tracer.with_span "embervm.stateful.stats_sweep", %{attributes: %{"ember.tenant" => state.tenant}} do
+      state
+      |> scrape_and_record(now)
+      |> idle_bank_pass(now)
+      |> sweep_lifetime(now)
+      |> sweep_banked_ttl(now)
+      |> eager_evict_broken_pairs()
+    end
+  end
+
+  # -- stats scrape + activity -----------------------------------------------
+
+  # Scrape each stateful-capable node's Envoy stats, keyed by listener
+  # stat_prefix (state-<listenPort>), map each prefix back to its workload via
+  # the catalog, and: append a stateful_stats op for any cx_total delta (the
+  # usage signal, connection-count based) and touch last_active_at when there
+  # was cx activity (a positive total delta OR a nonzero cx_active reading,
+  # since an open connection is itself activity even if no NEW connection
+  # arrived this window). A failed node scrape drops its prior reading (so the
+  # next success re-baselines) and is otherwise ignored: idle detection for its
+  # workloads is suppressed this tick (fail-open).
+  defp scrape_and_record(state, now) do
+    nodes = stateful_nodes(state)
+
+    {state, last_stats, current_stats} =
+      Enum.reduce(nodes, {state, state.last_stats, %{}}, fn node, {state_acc, last_acc, current_acc} ->
+        case scrape_node(state_acc, node) do
+          {:ok, reading} ->
+            prior = Map.get(state_acc.last_stats, node.configured_id)
+            state_acc = record_reading(state_acc, node, prior, reading, now)
+            {state_acc, Map.put(last_acc, node.configured_id, reading), Map.put(current_acc, node.configured_id, reading)}
+
+          {:error, reason} ->
+            Logger.debug("embervm stateful: stats scrape failed",
+              node_id: node.configured_id,
+              reason: inspect(reason)
+            )
+
+            {state_acc, Map.delete(last_acc, node.configured_id), current_acc}
+        end
+      end)
+
+    scraped_ids = MapSet.new(nodes, & &1.configured_id)
+    last_stats = Map.take(last_stats, MapSet.to_list(scraped_ids))
+
+    %{state | last_stats: last_stats, current_stats: current_stats}
+  end
+
+  # For every listener in this node's reading: charge usage on a positive
+  # cx_total delta, touch activity, and maintain the idle_since baseline. No
+  # prior reading (first tick or post-failure) means no delta is computable;
+  # skip usage/idle accounting entirely for that listener this tick (baseline
+  # only, mirroring serving's record_deltas nil-prior clause).
+  defp record_reading(state, _node, nil, _reading, _now), do: state
+
+  defp record_reading(state, node, prior, reading, now) do
+    Enum.reduce(reading, state, fn {stat_prefix, %{active: active, total: total}}, acc ->
+      workload = workload_of_stat_prefix(acc, stat_prefix)
+      prior_entry = Map.get(prior, stat_prefix)
+      record_one_reading(acc, node, workload, prior_entry, active, total, now)
+    end)
+  end
+
+  defp record_one_reading(state, _node, nil, _prior, _active, _total, _now), do: state
+  defp record_one_reading(state, _node, _workload, nil, _active, _total, _now), do: state
+
+  defp record_one_reading(state, node, workload, %{total: prior_total}, active, total, now) do
+    delta = total - prior_total
+
+    cond do
+      delta < 0 ->
+        # Counter reset (Envoy restarted): re-baseline, no usage charge, and
+        # reset the idle clock (we cannot tell how much traffic the reset hid,
+        # the same posture as serving's negative-delta clause).
+        clear_idle_since(state, workload)
+
+      delta > 0 or active > 0 ->
+        # Either a new connection arrived (delta > 0, chargeable usage) or a
+        # connection is currently open (active > 0, not chargeable by itself
+        # but still activity): touch active and clear the idle clock either
+        # way. Only charge usage for the actual delta.
+        if delta > 0 do
+          append_stateful_stats(state, node, workload, delta, now)
+        end
+
+        touch_workload_active(state, workload, now)
+        clear_idle_since(state, workload)
+
+      true ->
+        # active == 0 and delta == 0: confirmed idle this tick against a prior
+        # reading. Record the FIRST idle tick's timestamp so idleBankSeconds is
+        # measured from when idleness began, not re-armed on every confirming
+        # tick.
+        mark_idle_since(state, workload, now)
+    end
+  end
+
+  # Record the FIRST idle tick's timestamp only: a workload already marked
+  # idle keeps its original baseline (idleBankSeconds is measured from when
+  # idleness BEGAN, not re-armed by a later confirming tick).
+  defp mark_idle_since(state, workload, now) do
+    if Map.has_key?(state.idle_since, workload) do
+      state
+    else
+      %{state | idle_since: Map.put(state.idle_since, workload, now)}
+    end
+  end
+
+  defp clear_idle_since(state, workload) do
+    %{state | idle_since: Map.delete(state.idle_since, workload)}
+  end
+
+  # Append a stateful_stats op (connection-count usage, the L4 unit of work).
+  # A best-effort append: a usage-op failure must never wedge the sweep.
+  defp append_stateful_stats(state, _node, workload, cx_delta, now) do
+    op = %Op{
+      kind: :stateful_stats,
+      tenant: state.tenant,
+      principal: usage_principal(workload),
+      workload: workload,
+      stateful_instance_id: nil,
+      ts: now,
+      payload: %{workload: workload, cx_delta: cx_delta, window_ms: nil}
+    }
+
+    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm stateful: stateful_stats append raised", workload: workload, error: inspect(e))
+      :ok
+  end
+
+  defp touch_workload_active(state, workload, now) do
+    StatefulStore.list(state.store, workload)
+    |> Enum.filter(&live_instance?/1)
+    |> Enum.each(fn instance ->
+      _ = StatefulStore.touch_active(state.store, instance.instance_id, now)
+    end)
+  end
+
+  # -- idle-bank pass ---------------------------------------------------------
+
+  # For every SERVING stateful instance whose workload has been confirmed idle
+  # (cx_active == 0, cx_total delta == 0) for at least idleBankSeconds: begin
+  # the bank (unpublish, recheck, StopStateful BANK). A workload with no
+  # confirmed-idle reading this tick (a scrape failed, first reading, or it saw
+  # activity) is untouched: fail-open for warmth.
+  defp idle_bank_pass(state, now) do
+    StatefulStore.all(state.store)
+    |> Enum.filter(&(&1.state == :serving))
+    |> Enum.reject(&Map.has_key?(state.banking, &1.instance_id))
+    |> Enum.reduce(state, fn instance, acc -> maybe_begin_bank(acc, instance, now) end)
+  end
+
+  defp maybe_begin_bank(state, instance, now) do
+    with {:ok, cfg} <- stateful_cfg(state, instance.workload),
+         since when is_integer(since) <- Map.get(state.idle_since, instance.workload) do
+      idle_ms = cfg.idle_bank_seconds * 1000
+
+      if now - since >= idle_ms do
+        begin_bank(state, instance, now)
+      else
+        state
+      end
+    else
+      _ -> state
+    end
+  end
+
+  # Begin the bank: unpublish (serving -> banking, ETS-only), republish so the
+  # activator installs atomically, RECHECK the freshest cx_active reading, and
+  # either abort (a connection raced in) or proceed to StopStateful(BANK).
+  defp begin_bank(state, instance, _now) do
+    Tracer.with_span "embervm.stateful.drain",
+                     %{attributes: %{"ember.workload" => instance.workload, "ember.instance_id" => instance.instance_id}} do
+      begin_bank_body(state, instance)
+    end
+  end
+
+  defp begin_bank_body(state, instance) do
+    case StatefulStore.unpublish(state.store, instance.instance_id, :bank) do
+      {:ok, _} ->
+        Embervm.EndpointPublisher.publish(state.publisher)
+        recheck_and_bank(state, instance)
+
+      {:error, reason} ->
+        Logger.warning("embervm stateful: bank-drain unpublish failed",
+          instance_id: instance.instance_id,
+          reason: inspect(reason)
+        )
+
+        state
+    end
+  end
+
+  # The decision-7 recheck: RE-SCRAPE (a fresh network read, not the
+  # tick-start reading idle_bank_pass acted on) to catch a connection that
+  # opened in the gap between the idle decision and this point. A nonzero
+  # cx_active means a connection raced in: ABORT (banking -> serving) and
+  # republish immediately, never severing a live connection. A scrape failure
+  # here fails OPEN toward proceeding (the idle confirmation that got us here
+  # already required cx_active == 0 on the last successful scrape, and a
+  # stateful workload is a singleton with one owner, so the undetected race
+  # window is narrow); the freshly re-scraped reading also updates
+  # current_stats so the max-lifetime pass later in this same tick sees it
+  # too. Otherwise admit the bank (per-node cap) and spawn the worker.
+  defp recheck_and_bank(state, instance) do
+    state = refresh_current_stats(state, instance.node_id)
+
+    if connection_raced_in?(state, instance) do
+      abort_bank(state, instance, :recheck_active)
+    else
+      if bank_at_cap?(state, instance.node_id) do
+        # Deferred: abort back to serving and let the next tick's idle
+        # confirmation re-drive the bank once a slot is free. This costs one
+        # extra idle-confirmation cycle under sustained cap pressure, the same
+        # trade serving's `admit_bank` defers via a short timer, adapted to
+        # stateful's synchronous-within-a-tick shape (there is no drain timer
+        # to re-arm here).
+        abort_bank(state, instance, :bank_at_cap)
+      else
+        admit_bank(state, instance)
+      end
+    end
+  end
+
+  # Re-scrape the instance's node RIGHT NOW (not the tick-start reading) and
+  # fold it into current_stats, so the recheck consults the freshest possible
+  # signal. A scrape failure leaves current_stats for the node UNCHANGED
+  # (keeps whatever the tick-start scrape produced, or absent if that also
+  # failed): connection_raced_in?/2 then fails open via Map.fetch missing.
+  defp refresh_current_stats(state, node_id) do
+    case scrape_node(state, %{configured_id: node_id}) do
+      {:ok, reading} ->
+        %{state | current_stats: Map.put(state.current_stats, node_id, reading)}
+
+      {:error, _reason} ->
+        state
+    end
+  end
+
+  # True when the instance's node's FRESHEST reading (post-recheck-rescrape)
+  # reports cx_active > 0 for its listener. No fresh reading for the node
+  # (never scraped, or every scrape this tick failed) fails OPEN toward
+  # proceeding with the bank (see recheck_and_bank/2's doc).
+  defp connection_raced_in?(state, instance) do
+    with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
+         {:ok, cfg} <- stateful_cfg(state, instance.workload),
+         {:ok, %{active: active}} <- Map.fetch(entry, stat_prefix(cfg.listen_port)) do
+      active > 0
+    else
+      _ -> false
+    end
+  end
+
+  # `bank_abort` (banking -> serving) lands the instance DIRECTLY back in the
+  # live `serving` state (unlike ServingState, where bank_abort only reaches
+  # the intermediate `draining` and a separate `publish` edge is needed to
+  # reach `published`). StatefulState's `{:banking, :bank_abort} => :serving`
+  # has no such intermediate, so calling `publish` here would attempt the
+  # ILLEGAL edge `{:serving, :publish}` (not in the transition table).
+  # `unpublish/3` cleared ip/port when the bank began, so the row is now
+  # `serving` with a nil endpoint; restore the endpoint fields directly via
+  # `StatefulStore.adopt_endpoint/5` (an ETS-only fact write with no FSM
+  # transition, the same seam adoption uses to rebind a live VM's endpoint
+  # without an illegal transition).
+  defp abort_bank(state, instance, reason) do
+    _ = StatefulStore.mark(state.store, instance.instance_id, :bank_abort)
+
+    _ =
+      StatefulStore.adopt_endpoint(state.store, instance.instance_id, instance.node_id, instance.vm_id, %{
+        ip: instance.ip,
+        port: instance.port,
+        healthy: true
+      })
+
+    Embervm.EndpointPublisher.publish(state.publisher)
+
+    Logger.info("embervm stateful: bank aborted, republished",
+      instance_id: instance.instance_id,
+      workload: instance.workload,
+      reason: reason
+    )
+
+    state
+  end
+
+  # Admit the bank: reserve the node slot and spawn the StopStateful(BANK)
+  # worker. The durable stateful_banked op lands in finish_bank, AFTER the
+  # daemon returns (the crash-consistent order).
+  defp admit_bank(state, instance) do
+    state = incr_bank_inflight(state, instance.node_id)
+    state = %{state | banking: Map.put(state.banking, instance.instance_id, instance.workload)}
+    spawn_bank_worker(state, instance)
+    state
+  end
+
+  # Carries the endpoint (ip/port/vm_id) captured BEFORE unpublish cleared it
+  # from the ETS row (StatefulStore.unpublish/3 nils ip/port, unlike
+  # ServingStore.unpublish/3 which leaves them intact): a failed bank needs
+  # this to restore the still-alive VM's endpoint fact via adopt_endpoint, and
+  # StatefulStore.get/2 by then would only return the nil'd-out row.
+  defp spawn_bank_worker(state, instance) do
+    owner = self()
+    channel_fun = state.channel_fun
+    stop_fun = state.stop_stateful_fun
+    instance_id = instance.instance_id
+    workload = instance.workload
+    node_id = instance.node_id
+    vm_id = instance.vm_id
+    ip = instance.ip
+    port = instance.port
+
+    spawn(fn ->
+      outcome =
+        Tracer.with_span "embervm.stateful.bank",
+                         %{
+                           attributes: %{
+                             "ember.workload" => workload,
+                             "ember.instance_id" => instance_id,
+                             "ember.node_id" => node_id
+                           }
+                         } do
+          try do
+            with {:ok, channel} <- safe_channel(channel_fun, node_id),
+                 {:ok, %StopStatefulResponse{snapshot_ref: ref, size_bytes: size, generation: generation}}
+                 when is_binary(ref) and ref != "" <-
+                   stop_fun.(channel, bank_request(vm_id)) do
+              Tracer.set_attributes(%{"ember.snapshot_bytes" => size})
+              {:ok, ref, size, generation}
+            else
+              other -> {:error, other}
+            end
+          rescue
+            e -> {:error, {:bank_raised, e}}
+          catch
+            kind, reason -> {:error, {:bank_raised, {kind, reason}}}
+          end
+        end
+
+      send(owner, {:bank_done, instance_id, node_id, vm_id, ip, port, workload, outcome})
+    end)
+  end
+
+  defp bank_request(vm_id) do
+    %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_BANK}
+  end
+
+  # The StopStateful(BANK) completed: release the node slot + banking
+  # bookkeeping, then:
+  #   * on success: `banking -[bank_ready]-> banked` with stateful_banked
+  #     (snapshot fact + generation, the pair-key baseline);
+  #   * on failure: `banking -[bank_abort]-> serving` (ETS-only, VM intact) and
+  #     republish (a failed bank must not leave a warm VM dark).
+  defp finish_bank(state, instance_id, node_id, vm_id, ip, port, workload, outcome) do
+    state =
+      state
+      |> decr_bank_inflight(node_id)
+      |> Map.update!(:banking, &Map.delete(&1, instance_id))
+
+    case StatefulStore.get(state.store, instance_id) do
+      # Terminal mid-bank (a forced destroy raced it): never resurrect.
+      {:ok, %{state: st}} when st in [:evicted, :destroyed, :failed] ->
+        state
+
+      {:ok, instance} ->
+        finish_bank_active(state, instance, node_id, vm_id, ip, port, workload, outcome)
+
+      :error ->
+        state
+    end
+  end
+
+  defp finish_bank_active(state, instance, node_id, _vm_id, _ip, _port, workload, {:ok, ref, size, generation}) do
+    _ =
+      StatefulStore.transition(
+        state.store,
+        instance.instance_id,
+        :bank_ready,
+        :stateful_banked,
+        %{snapshot_ref: ref, size_bytes: size, generation: generation},
+        %{snapshot_ref: ref, snapshot_size_bytes: size, snapshot_generation: generation, node_id: node_id, vm_id: nil}
+      )
+
+    Embervm.EndpointPublisher.publish(state.publisher)
+
+    Logger.info("embervm stateful banked",
+      instance_id: instance.instance_id,
+      workload: workload,
+      node_id: node_id,
+      snapshot_bytes: size
+    )
+
+    state
+  end
+
+  defp finish_bank_active(state, instance, node_id, vm_id, ip, port, workload, {:error, reason}) do
+    Logger.warning("embervm stateful: bank failed, returning to fan-out",
+      instance_id: instance.instance_id,
+      workload: workload,
+      reason: inspect(reason)
+    )
+
+    # bank_abort (banking -> serving) lands directly in the live state; no
+    # further FSM transition applies (see abort_bank/3's comment on why a
+    # `publish` call here would be the illegal {:serving, :publish} edge).
+    # Restore the endpoint fact via adopt_endpoint (ETS-only, no transition)
+    # so the still-alive VM re-enters the fan-out, using the endpoint captured
+    # BEFORE unpublish cleared the ETS row (the freshly re-fetched `instance`
+    # here has nil ip/port, per StatefulStore.unpublish/3's clearing).
+    _ = StatefulStore.mark(state.store, instance.instance_id, :bank_abort)
+
+    if republishable_endpoint?(ip, port) do
+      _ =
+        StatefulStore.adopt_endpoint(state.store, instance.instance_id, node_id, vm_id, %{
+          ip: ip,
+          port: port,
+          healthy: true
+        })
+
+      Embervm.EndpointPublisher.publish(state.publisher)
+    end
+
+    state
+  end
+
+  # -- max-lifetime expiry -----------------------------------------------------
+
+  # An instance older than maxLifetimeSeconds is destroyed. A banked one is
+  # evicted immediately (it holds no VM to drain). A live one waits for
+  # downstream_cx_active == 0 up to the capped patience window (decision 8),
+  # tracked from the first tick it was BOTH over-lifetime and active; once the
+  # window elapses, destroy anyway (WAL recovery covers the interruption).
+  defp sweep_lifetime(state, now) do
+    StatefulStore.all(state.store)
+    |> Enum.reject(&StatefulState.terminal?(&1.state))
+    # An instance with a bank RPC in flight this tick (see idle_bank_pass) is
+    # left alone: destroying it here would race the spawned worker's
+    # {:bank_done} report. finish_bank's terminal-state guard would no-op
+    # correctly even without this filter (mirroring serving's exact
+    # mid-bank-destroy safety), but skipping it here avoids an unnecessary
+    # StopStateful(DESTROY) racing a StopStateful(BANK) against the same VM.
+    |> Enum.reject(&Map.has_key?(state.banking, &1.instance_id))
+    |> Enum.filter(&over_lifetime?(state, &1, now))
+    |> Enum.reduce(state, fn instance, acc -> expire_instance(acc, instance, now) end)
+  end
+
+  defp over_lifetime?(state, instance, now) do
+    case stateful_cfg(state, instance.workload) do
+      {:ok, cfg} ->
+        max_ms = cfg.max_lifetime_seconds * 1000
+        is_integer(instance.created_at) and now - instance.created_at >= max_ms
+
+      :error ->
+        false
+    end
+  end
+
+  defp expire_instance(state, %{state: :banked} = instance, _now) do
+    state = clear_lifetime_drain_since(state, instance.workload)
+    evict_banked(state, instance, "lifetime")
+  end
+
+  defp expire_instance(state, instance, now) do
+    if instance_active?(state, instance) do
+      lifetime_drain_wait(state, instance, now)
+    else
+      state = clear_lifetime_drain_since(state, instance.workload)
+      destroy_over_lifetime(state, instance)
+    end
+  end
+
+  # An active live instance over its lifetime: track the drain-since baseline
+  # and destroy only once the patience window elapses.
+  defp lifetime_drain_wait(state, instance, now) do
+    since = Map.get(state.lifetime_drain_since, instance.workload, now)
+    state = %{state | lifetime_drain_since: Map.put(state.lifetime_drain_since, instance.workload, since)}
+
+    if now - since >= state.lifetime_drain_max_ms do
+      destroy_over_lifetime(clear_lifetime_drain_since(state, instance.workload), instance)
+    else
+      state
+    end
+  end
+
+  defp clear_lifetime_drain_since(state, workload) do
+    %{state | lifetime_drain_since: Map.delete(state.lifetime_drain_since, workload)}
+  end
+
+  # Whether the instance's L4 listener currently reports an open connection,
+  # from THIS tick's freshest reading (falls back to "not active" when there
+  # is no fresh reading for the node, which only delays a destroy that will
+  # still happen once the patience window elapses regardless).
+  defp instance_active?(state, instance) do
+    with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
+         {:ok, cfg} <- stateful_cfg(state, instance.workload),
+         {:ok, %{active: active}} <- Map.fetch(entry, stat_prefix(cfg.listen_port)) do
+      active > 0
+    else
+      _ -> false
+    end
+  end
+
+  # Destroy a live over-lifetime instance: unpublish first (if published, i.e.
+  # `serving`; a `starting`/`banking` instance was never in the fan-out) so the
+  # activator swap lands, then StopStateful(DESTROY) + the durable
+  # stateful_destroyed.
+  defp destroy_over_lifetime(state, instance) do
+    if instance.state == :serving do
+      _ = StatefulStore.unpublish(state.store, instance.instance_id, :destroyed)
+      Embervm.EndpointPublisher.publish(state.publisher)
+    end
+
+    destroy_instance(state, instance, "lifetime")
+  end
+
+  # -- banked-TTL GC -----------------------------------------------------------
+
+  # A banked bundle untouched (last_active_at, else updated_at) for longer than
+  # bankedTtlSeconds is evicted: EvictSnapshot on the node + the durable
+  # stateful_evicted (reason "ttl"). The volume is never touched.
+  defp sweep_banked_ttl(state, now) do
+    StatefulStore.all(state.store)
+    |> Enum.filter(&(&1.state == :banked))
+    |> Enum.reduce(state, fn instance, acc ->
+      case stateful_cfg(acc, instance.workload) do
+        {:ok, cfg} ->
+          ttl_ms = cfg.banked_ttl_seconds * 1000
+          last = instance.last_active_at || instance.updated_at || 0
+
+          if now - last >= ttl_ms do
+            evict_banked(acc, instance, "ttl")
+          else
+            acc
+          end
+
+        :error ->
+          acc
+      end
+    end)
+  end
+
+  # -- eager broken-pair eviction ----------------------------------------------
+
+  # Runs the store's sweep primitive every tick, so a bundle whose pair broke
+  # (the volume's generation moved out from under it) is evicted before the
+  # next wake discovers it stale.
+  defp eager_evict_broken_pairs(state) do
+    _ = StatefulStore.eager_evict_broken_pairs(state.store)
+    state
+  end
+
+  # -- destroy / evict RPCs + durable ops --------------------------------------
+
+  defp destroy_instance(state, instance, reason) do
+    _ = stop_stateful_destroy(state, instance)
+
+    _ =
+      StatefulStore.transition(
+        state.store,
+        instance.instance_id,
+        :destroy,
+        :stateful_destroyed,
+        %{reason: reason},
+        %{}
+      )
+
+    Logger.info("embervm stateful destroyed", instance_id: instance.instance_id, workload: instance.workload, reason: reason)
+
+    state
+  end
+
+  defp evict_banked(state, instance, reason) do
+    _ = evict_snapshot(state, instance)
+
+    _ =
+      StatefulStore.transition(
+        state.store,
+        instance.instance_id,
+        :evict,
+        :stateful_evicted,
+        %{reason: reason},
+        %{}
+      )
+
+    Logger.info("embervm stateful evicted", instance_id: instance.instance_id, workload: instance.workload, reason: reason)
+
+    state
+  end
+
+  defp stop_stateful_destroy(state, %{node_id: node_id, vm_id: vm_id}) when is_binary(node_id) and is_binary(vm_id) do
+    req = %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_DESTROY}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.stop_stateful_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp stop_stateful_destroy(_state, _instance), do: :ok
+
+  defp evict_snapshot(state, %{node_id: node_id, snapshot_ref: ref}) when is_binary(node_id) and is_binary(ref) do
+    req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: ref}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.evict_snapshot_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp evict_snapshot(_state, _instance), do: :ok
+
+  # -- per-node bank cap --------------------------------------------------------
+
+  defp bank_at_cap?(state, node_id) do
+    Map.get(state.bank_inflight, node_id, 0) >= state.bank_concurrency
+  end
+
+  defp incr_bank_inflight(state, node_id) do
+    %{state | bank_inflight: Map.update(state.bank_inflight, node_id, 1, &(&1 + 1))}
+  end
+
+  defp decr_bank_inflight(state, node_id) do
+    %{state | bank_inflight: Map.update(state.bank_inflight, node_id, 0, &max(&1 - 1, 0))}
+  end
+
+  # -- stats scrape helpers -----------------------------------------------------
+
+  # Stateful workloads run on the same node Envoy as serving (the TCP proxy
+  # listeners live alongside the serving clusters), so this reuses the serving
+  # capacity predicate: any node reporting a serving_subnet_cidr is scraped.
+  defp stateful_nodes(state) do
+    NodeCapacity.all(state.capacity_table)
+    |> Enum.filter(&stateful_capable?/1)
+  end
+
+  defp stateful_capable?(fact) do
+    cidr = Map.get(fact, :serving_subnet_cidr)
+    is_binary(cidr) and cidr != ""
+  end
+
+  defp scrape_node(%{stats_base: nil}, _node), do: {:error, :no_stats_base}
+
+  defp scrape_node(state, _node) do
+    state.scrape_fun.(stats_url(state.stats_base))
+  end
+
+  defp stats_url(base), do: String.trim_trailing(base, "/") <> "/stats?format=json"
+
+  # -- catalog + instance helpers -----------------------------------------------
+
+  defp stateful_cfg(state, workload) do
+    case WorkloadCatalog.fetch(state.catalog_table, workload) do
+      {:ok, %{class: "stateful", stateful: cfg}} when is_map(cfg) -> {:ok, cfg}
+      _ -> :error
+    end
+  end
+
+  # The listener stat_prefix for a workload's listen_port (state-<listenPort>,
+  # Task 5's stat_prefix wiring), the key the scrape reading is keyed by.
+  @stat_prefix "state-"
+  defp stat_prefix(listen_port) when is_integer(listen_port), do: @stat_prefix <> Integer.to_string(listen_port)
+
+  # Map a scraped stat_prefix back to its owning workload via the catalog: the
+  # inverse of stat_prefix/1, found by matching every stateful-class catalog
+  # entry's listen_port. O(workload count) per lookup, called once per (node,
+  # listener) pair per tick, an acceptable cost at this cadence and workload
+  # count.
+  defp workload_of_stat_prefix(state, @stat_prefix <> port_str) do
+    case Integer.parse(port_str) do
+      {port, ""} -> find_workload_by_listen_port(state, port)
+      _ -> nil
+    end
+  end
+
+  defp workload_of_stat_prefix(_state, _other), do: nil
+
+  defp find_workload_by_listen_port(state, port) do
+    WorkloadCatalog.all_names(state.catalog_table)
+    |> Enum.find_value(fn name ->
+      case WorkloadCatalog.fetch(state.catalog_table, name) do
+        {:ok, %{class: "stateful", stateful: %{listen_port: ^port}}} -> name
+        _ -> nil
+      end
+    end)
+  end
+
+  # A live instance is any non-terminal, non-banked state (mirrors
+  # StatefulState.live_states/0's set, but expressed against the instance
+  # struct rather than the bare state atom for call-site brevity).
+  defp live_instance?(instance), do: StatefulState.live?(instance.state)
+
+  defp republishable_endpoint?(ip, port) do
+    is_binary(ip) and ip != "" and is_integer(port)
+  end
+
+  defp usage_principal(workload), do: "system:stateful:#{workload}"
+
+  # -- daemon + stats seams -------------------------------------------------
+
+  defp safe_channel(channel_fun, node_id) do
+    channel_fun.(node_id)
+  rescue
+    e -> {:error, {:channel_raised, e}}
+  catch
+    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  defp default_stop_stateful(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.stop_stateful(channel, req)
+  end
+
+  defp default_evict_snapshot(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+  end
+
+  # Production scrape: GET /stats?format=json over the shared Finch pool, parse
+  # the per-listener tcp.<prefix>.downstream_cx_{active,total} counters into
+  # %{stat_prefix => %{active: n, total: n}}. A non-200, a transport error, or
+  # an unparseable body is a scrape failure (fail-open). Envoy's ?format=json
+  # emits {"stats":[{"name":..,"value":..}, ...]}; keep only the
+  # tcp.<prefix>.downstream_cx_{active,total} gauges/counters.
+  defp default_scrape(url) do
+    req = Finch.build(:get, url)
+
+    case Finch.request(req, Embervm.Finch, receive_timeout: 3_000) do
+      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
+        parse_stats(body)
+
+      {:ok, %Finch.Response{status: status}} ->
+        {:error, {:stats_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @tcp_stat_prefix "tcp."
+  @cx_active_suffix ".downstream_cx_active"
+  @cx_total_suffix ".downstream_cx_total"
+
+  @doc """
+  Parse an Envoy `/stats?format=json` body into `%{stat_prefix => %{active: n,
+  total: n}}`, keeping only `tcp.<prefix>.downstream_cx_{active,total}`
+  counters. `@doc false` only so the parse path is exercised directly on a
+  realistic raw body in tests; production reaches it via `default_scrape`. Not
+  part of the module's public API.
+  """
+  @doc false
+  @spec parse_stats(binary()) :: {:ok, %{optional(String.t()) => %{active: integer(), total: integer()}}} | {:error, term()}
+  def parse_stats(body) do
+    case Jason.decode(body) do
+      {:ok, %{"stats" => stats}} when is_list(stats) ->
+        reading =
+          stats
+          |> Enum.reduce(%{}, fn stat, acc -> fold_tcp_stat(stat, acc) end)
+
+        {:ok, reading}
+
+      _ ->
+        {:error, :unparseable_stats}
+    end
+  rescue
+    e -> {:error, {:stats_parse_raised, e}}
+  end
+
+  defp fold_tcp_stat(%{"name" => @tcp_stat_prefix <> rest, "value" => value}, acc) when is_integer(value) do
+    cond do
+      String.ends_with?(rest, @cx_active_suffix) ->
+        prefix = String.replace_suffix(rest, @cx_active_suffix, "")
+        put_field(acc, prefix, :active, value)
+
+      String.ends_with?(rest, @cx_total_suffix) ->
+        prefix = String.replace_suffix(rest, @cx_total_suffix, "")
+        put_field(acc, prefix, :total, value)
+
+      true ->
+        acc
+    end
+  end
+
+  defp fold_tcp_stat(_stat, acc), do: acc
+
+  defp put_field(acc, prefix, field, value) do
+    entry = Map.get(acc, prefix, %{active: 0, total: 0})
+    Map.put(acc, prefix, Map.put(entry, field, value))
+  end
+
+  defp schedule(msg, interval_ms) when interval_ms > 0 do
+    Process.send_after(self(), msg, interval_ms)
+  end
+
+  defp schedule(_msg, _interval), do: :ok
+
+  defp default_clock, do: System.system_time(:millisecond)
+end

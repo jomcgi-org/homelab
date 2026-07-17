@@ -204,6 +204,17 @@ defmodule Embervm.Application do
       # wires EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE) it binds nothing, a clean
       # no-op, exactly like PoolManager priming nothing with no base ready.
       {Embervm.TcpActivator, tcp_activator_opts()},
+      # The stateful lifecycle-economics sweeper (R4, Task 9): the L4 idle-to-bank /
+      # max-lifetime / banked-TTL loop, the counterpart to Embervm.ServingSweeper. It
+      # scrapes the SAME node Envoy stats port for per-listener L4 connection counters
+      # (downstream_cx_active/total, keyed by the state-<listenPort> stat_prefix) rather
+      # than serving's per-cluster request counters. Placed AFTER StatefulStore/
+      # EndpointPublisher (it mutates the store + re-pushes) and AFTER StatefulManager +
+      # TcpActivator (banking must not race an in-flight wake's own transition, and this
+      # ordering means a StatefulSweeper restart under :rest_for_one does not bounce the
+      # wake path). With no stats_base wired (reuses EMBERVM_SERVING_STATS_BASE) every
+      # tick fails open and banks nothing, mirroring ServingSweeper's no-op default.
+      {Embervm.StatefulSweeper, stateful_sweeper_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -526,6 +537,30 @@ defmodule Embervm.Application do
     case trimmed_env("EMBERVM_SERVING_STATS_BASE") do
       "" -> nil
       raw -> raw
+    end
+  end
+
+  # StatefulSweeper (R4, Task 9) config: the sweep cadence, the node Envoy stats base
+  # URL (reuses sweeper_stats_base/0, EMBERVM_SERVING_STATS_BASE: stateful's L4
+  # tcp_proxy listeners live on the SAME node Envoy admin the serving scrape already
+  # reaches, so there is no separate stateful stats env var), the per-node concurrent-
+  # bank cap, and the max-lifetime drain patience window. Unset stats_base disables the
+  # scrape, so every tick fails open and banks nothing, exactly the ServingSweeper
+  # default.
+  defp stateful_sweeper_opts do
+    [
+      sweep_interval_ms: stateful_sweep_interval_ms(),
+      stats_base: sweeper_stats_base(),
+      bank_concurrency: int_env_or_nil("EMBERVM_STATEFUL_BANK_CONCURRENCY"),
+      lifetime_drain_max_ms: int_env_or_nil("EMBERVM_STATEFUL_LIFETIME_DRAIN_MAX_MS")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp stateful_sweep_interval_ms do
+    case trimmed_env("EMBERVM_STATEFUL_SWEEP_INTERVAL_MS") do
+      "" -> 30_000
+      raw -> String.to_integer(raw)
     end
   end
 
