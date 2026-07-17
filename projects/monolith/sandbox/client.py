@@ -33,6 +33,15 @@ SANDBOX_DISPATCH = os.environ.get("SANDBOX_DISPATCH", "fc-invoke")
 # to a specific release wiring.
 SANDBOX_SESSION_WORKLOAD = os.environ.get("SANDBOX_SESSION_WORKLOAD", "sandbox-session")
 
+# EmberVM R4 scratch-postgres DSN (D-R4.PR-11.1). When set (the chart wires it
+# from the monolith-namespace 1Password secret + the embervm serving Service),
+# agent run_python snippets can psycopg-connect to the scale-to-zero scratch
+# Postgres. The guest is zero-egress to the public internet but CAN reach the
+# in-cluster serving Service, so the DSN is injected into the executed code's
+# process env (as os.environ["SCRATCH_POSTGRES_DSN"]) rather than baked into the
+# guest image. Empty leaves the guest env untouched (feature off).
+SCRATCH_POSTGRES_DSN = os.environ.get("SCRATCH_POSTGRES_DSN", "")
+
 SANDBOX_CONNECT_TIMEOUT = 5.0
 # Guest wall-clock cap is 25s inside a 30s workload requestTimeout; read a
 # little past that so the daemon's timeout error reaches us intact.
@@ -41,6 +50,26 @@ SANDBOX_READ_TIMEOUT = 35.0
 # a session invoke reads a little longer than a one-shot to let a cold-banked
 # session relight and still return within the read window.
 SANDBOX_SESSION_READ_TIMEOUT = 45.0
+
+
+def _with_scratch_dsn(code: str) -> str:
+    """Prepend a SCRATCH_POSTGRES_DSN os.environ assignment when the DSN is set.
+
+    The guest exec protocol carries only code + files (no per-invoke env), so the
+    DSN reaches the snippet as a tiny preamble that sets it in the guest process
+    env before the user code runs. A snippet can then ``os.environ["SCRATCH_
+    POSTGRES_DSN"]`` and psycopg-connect. When the DSN is unset (feature off) the
+    code is returned unchanged. The value is a Python-repr literal so any special
+    characters in the password are escaped safely.
+    """
+    if not SCRATCH_POSTGRES_DSN:
+        return code
+    preamble = (
+        "import os as _os\n"
+        f"_os.environ['SCRATCH_POSTGRES_DSN'] = {SCRATCH_POSTGRES_DSN!r}\n"
+        "del _os\n"
+    )
+    return preamble + code
 
 
 async def run_python_in_sandbox(
@@ -63,7 +92,7 @@ async def run_python_in_sandbox(
     if not code or not code.strip():
         return {"error": "no code provided"}
 
-    payload: dict = {"code": code}
+    payload: dict = {"code": _with_scratch_dsn(code)}
     if files:
         payload["files"] = files
 

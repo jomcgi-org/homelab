@@ -130,6 +130,23 @@ spec:
             - name: SANDBOX_SESSION_WORKLOAD
               value: {{ .Values.sandbox.sessionWorkload | quote }}
             {{- end }}
+            {{- if and .Values.scratchPostgres.enabled .Values.scratchPostgres.onepassword.itemPath }}
+            # EmberVM R4 scratch-postgres DSN (D-R4.PR-11.1). Agent run_python
+            # sessions psycopg-connect to the scale-to-zero scratch Postgres via
+            # this DSN. The password comes from the monolith-namespace Secret the
+            # OnePasswordItem syncs (the SAME 1Password item embervm uses); the
+            # host is the embervm serving Service, which routes the listenPort to
+            # the workload's VM (waking it on the first connection). SCRATCH_PG_
+            # PASSWORD is a separate env var so the secret never appears inline;
+            # $(SCRATCH_PG_PASSWORD) is expanded by the kubelet at container start.
+            - name: SCRATCH_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-scratch-postgres
+                  key: POSTGRES_PASSWORD
+            - name: SCRATCH_POSTGRES_DSN
+              value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@embervm-serving.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
+            {{- end }}
             {{- if .Values.semgrep.shadowProject }}
             # Route B shadow project: the relay reports App scans under this name
             # instead of the real repo, keeping self-hosted scans in a separate
