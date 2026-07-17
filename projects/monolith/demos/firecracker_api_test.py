@@ -293,34 +293,128 @@ def test_postgres_query_returns_timings_and_classification(monkeypatch):
     async def fake_status():
         return _pg_status_payload(state="banked", pair_valid=True)
 
-    def fake_roundtrip(dsn, note):
+    def fake_roundtrip(dsn, mode):
         assert dsn == "postgresql://x"
-        assert note == "my note"
+        assert mode == "insert"
         return {
             "connect_ms": 850.0,
             "query_ms": 12.0,
-            "inserted_id": 42,
-            "rows": [{"id": 42, "note": "my note"}],
-            "total_rows": 42,
+            "mode": mode,
+            "statements": [
+                {"sql": "CREATE TABLE IF NOT EXISTS demo_orders (...)", "ms": 1.0},
+                {"sql": "INSERT INTO demo_orders (...)", "ms": 2.0},
+                {"sql": "SELECT ... FROM demo_orders ORDER BY id DESC", "ms": 3.0},
+                {"sql": "SELECT item, sum(qty) ... GROUP BY item", "ms": 4.0},
+                {"sql": "SELECT count(*), coalesce(sum(...)), ...", "ms": 5.0},
+            ],
+            "inserted": {
+                "id": 42,
+                "item": "flat white",
+                "qty": 2,
+                "unit_price": 3.50,
+            },
+            "rows": [
+                {
+                    "id": 42,
+                    "item": "flat white",
+                    "qty": 2,
+                    "unit_price": 3.50,
+                    "written_at": "2026-07-17T08:00:00+00:00",
+                    "postmaster_start": "2026-07-17T08:00:00+00:00",
+                }
+            ],
+            "breakdown": [{"item": "flat white", "units": 2, "revenue": 7.0}],
+            "total_orders": 42,
+            "total_revenue": 7.0,
             "postmaster_start": "2026-07-17T08:00:00+00:00",
         }
 
     monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
-    monkeypatch.setattr(fc, "_demo_pg_roundtrip", fake_roundtrip)
+    monkeypatch.setattr(fc, "_demo_pg_orders_roundtrip", fake_roundtrip)
 
     resp = _client().post(
-        "/api/demos/firecracker/postgres/query", json={"note": "my note"}
+        "/api/demos/firecracker/postgres/query", json={"mode": "insert"}
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["error"] is None
     assert body["connect_ms"] == 850.0
     assert body["query_ms"] == 12.0
+    assert body["mode"] == "insert"
     assert body["classification"] == "relight"
     assert body["phase_before"] == "banked"
     assert body["generation"] == 7
     assert body["rows"][0]["id"] == 42
+    assert len(body["statements"]) == 5
+    assert body["breakdown"][0]["item"] == "flat white"
+    assert body["total_revenue"] == 7.0
     assert body["total_ms"] >= 0
+
+
+def test_postgres_query_aggregate_mode(monkeypatch):
+    """Aggregate mode is read-only: it wakes the VM but writes nothing."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(state="serving")
+
+    def fake_roundtrip(dsn, mode):
+        assert mode == "aggregate"
+        return {
+            "connect_ms": 1.5,
+            "query_ms": 3.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": None,
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 0,
+            "total_revenue": 0.0,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(fc, "_demo_pg_orders_roundtrip", fake_roundtrip)
+
+    resp = _client().post(
+        "/api/demos/firecracker/postgres/query", json={"mode": "aggregate"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "aggregate"
+    assert body["inserted"] is None
+
+
+def test_postgres_query_default_mode_is_insert(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(state="serving")
+
+    def fake_roundtrip(dsn, mode):
+        assert mode == "insert"
+        return {
+            "connect_ms": 1.5,
+            "query_ms": 3.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": {"id": 1, "item": "flat white", "qty": 1, "unit_price": 3.50},
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 1,
+            "total_revenue": 3.50,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(fc, "_demo_pg_orders_roundtrip", fake_roundtrip)
+
+    resp = _client().post("/api/demos/firecracker/postgres/query", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "insert"
 
 
 def test_postgres_query_connect_failure_is_in_band(monkeypatch):
@@ -331,16 +425,17 @@ def test_postgres_query_connect_failure_is_in_band(monkeypatch):
     async def fake_status():
         return _pg_status_payload(state="serving")
 
-    def fake_roundtrip(dsn, note):
+    def fake_roundtrip(dsn, mode):
         raise OSError("connection refused")
 
     monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
-    monkeypatch.setattr(fc, "_demo_pg_roundtrip", fake_roundtrip)
+    monkeypatch.setattr(fc, "_demo_pg_orders_roundtrip", fake_roundtrip)
 
     resp = _client().post("/api/demos/firecracker/postgres/query", json={})
     assert resp.status_code == 200
     body = resp.json()
     assert "connection refused" in body["error"]
+    assert body["mode"] == "insert"
     assert body["classification"] == "warm"
 
 

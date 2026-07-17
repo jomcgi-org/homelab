@@ -13,10 +13,10 @@ go_library(
     visibility = ["//projects/firecracker/semgrep/guest-init:__subpackages__"],
     deps = select({
         "@rules_go//go/platform:android": [
-            "@org_golang_x_sys//unix",
+            "@org_golang_x_sys//unix:go_default_library",
         ],
         "@rules_go//go/platform:linux": [
-            "@org_golang_x_sys//unix",
+            "@org_golang_x_sys//unix:go_default_library",
         ],
         "//conditions:default": [],
     }),

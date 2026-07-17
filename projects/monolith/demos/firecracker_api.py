@@ -10,7 +10,7 @@ waterfall:
 - ``GET  /goose/{thread_id}`` polls the agent run ledger for that run's state.
 - ``GET  /trace/{trace_id}``  returns the SigNoz spans for a captured trace.
 - ``GET  /postgres/status``  the demo-postgres stateful lifecycle (sleep indicator).
-- ``POST /postgres/query``   timed connect (the wake) + row append against demo-postgres.
+- ``POST /postgres/query``   timed connect (the wake) + insert or aggregate against demo-postgres.
 - ``POST /postgres/reset``   destroy the live VM + evict its snapshot (force cold boot).
 
 Each POST wraps its invocation in a fresh ROOT span, detached from any inbound
@@ -31,7 +31,9 @@ import asyncio
 import json
 import logging
 import os
+import random
 from time import perf_counter
+from typing import Literal
 from uuid import uuid4
 
 import httpx
@@ -626,73 +628,124 @@ def _classify_wake(before: dict | None) -> str:
     return "transitional"
 
 
-def _demo_pg_roundtrip(dsn: str, note: str) -> dict:
-    """Connect, append a visit row, and read history. Sync; via to_thread.
+# The fixed menu keeps the demo zero-typing: an insert picks a random line item
+# server-side. Prices are illustrative; the aggregate query is the point.
+_DEMO_PG_MENU = [
+    ("flat white", 3.50),
+    ("mechanical keyboard", 89.00),
+    ("rubber duck", 1.20),
+    ("gpu", 1999.00),
+    ("ergonomic chair", 349.00),
+    ("sticker pack", 4.75),
+]
 
-    Two separately-bracketed wall times are the whole point:
-      connect_ms - the TCP connect + auth handshake. When the VM is banked the
-                   activator parks this connect while it relights (or cold-
-                   boots) the VM, so this number IS the wake cost.
-      query_ms   - DDL-if-missing + insert + reads on the open connection: the
-                   "Postgres is just Postgres once awake" baseline.
+_DEMO_PG_DDL = (
+    "CREATE TABLE IF NOT EXISTS demo_orders ("
+    "  id bigserial PRIMARY KEY,"
+    "  item text NOT NULL,"
+    "  qty int NOT NULL,"
+    "  unit_price numeric(8,2) NOT NULL,"
+    "  written_at timestamptz NOT NULL DEFAULT now(),"
+    "  postmaster_start timestamptz NOT NULL)"
+)
 
-    Each row records pg_postmaster_start_time() as its proof-of-lifecycle: a
-    relight RESUMES the paused postmaster (older start time than the row), a
-    cold boot starts a fresh one, and either way earlier rows surviving shows
-    the volume outliving the VM. The connection is short-lived by design: an
-    open connection pins the VM awake (the sweeper never severs a live
-    connection), which would keep the exhibit from ever falling asleep.
+_DEMO_PG_INSERT = (
+    "INSERT INTO demo_orders (item, qty, unit_price, postmaster_start) "
+    "VALUES (%s, %s, %s, pg_postmaster_start_time()) RETURNING id"
+)
+
+_DEMO_PG_RECENT = (
+    "SELECT id, item, qty, unit_price, written_at, postmaster_start "
+    "FROM demo_orders ORDER BY id DESC LIMIT %s"
+)
+
+_DEMO_PG_AGGREGATE = (
+    "SELECT item, sum(qty) AS units, sum(qty * unit_price) AS revenue "
+    "FROM demo_orders GROUP BY item ORDER BY revenue DESC"
+)
+
+_DEMO_PG_TOTALS = (
+    "SELECT count(*), coalesce(sum(qty * unit_price), 0), "
+    "pg_postmaster_start_time() FROM demo_orders"
+)
+
+
+def _demo_pg_orders_roundtrip(dsn: str, mode: str) -> dict:
+    """Connect, run the mode's statements, and time each one. Sync; to_thread.
+
+    connect_ms is the wake (the activator parks the TCP connect while the VM
+    relights or cold-boots); each executed statement is returned verbatim with
+    its own wall time so the UI can show the SQL that just ran. The connection
+    is short-lived by design: an open connection pins the VM awake.
+
+    insert    - DDL-if-missing, append a random menu line item, then read the
+                recent rows, the aggregate breakdown, and the totals.
+    aggregate - read-only: the same reads without writing anything, proving a
+                wake needs no write.
     """
     started = perf_counter()
     conn = psycopg.connect(dsn, connect_timeout=_DEMO_PG_CONNECT_TIMEOUT_S)
     connect_ms = (perf_counter() - started) * 1000
 
+    statements: list[dict] = []
+
+    def run(cur, sql: str, params=None):
+        stmt_started = perf_counter()
+        cur.execute(sql, params)
+        statements.append({"sql": sql, "ms": (perf_counter() - stmt_started) * 1000})
+
+    inserted = None
     query_started = perf_counter()
     # psycopg3: the connection context commits on clean exit AND closes.
     with conn, conn.cursor() as cur:
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS demo_visits ("
-            "  id bigserial PRIMARY KEY,"
-            "  note text NOT NULL,"
-            "  written_at timestamptz NOT NULL DEFAULT now(),"
-            "  postmaster_start timestamptz NOT NULL)"
-        )
-        cur.execute(
-            "INSERT INTO demo_visits (note, postmaster_start) "
-            "VALUES (%s, pg_postmaster_start_time()) RETURNING id",
-            (note,),
-        )
-        inserted_id = cur.fetchone()[0]
-        cur.execute(
-            "SELECT id, note, written_at, postmaster_start FROM demo_visits "
-            "ORDER BY id DESC LIMIT %s",
-            (_DEMO_PG_HISTORY_ROWS,),
-        )
+        run(cur, _DEMO_PG_DDL)
+        if mode == "insert":
+            item, unit_price = random.choice(_DEMO_PG_MENU)
+            qty = random.randint(1, 5)
+            run(cur, _DEMO_PG_INSERT, (item, qty, unit_price))
+            inserted = {
+                "id": cur.fetchone()[0],
+                "item": item,
+                "qty": qty,
+                "unit_price": unit_price,
+            }
+        run(cur, _DEMO_PG_RECENT, (_DEMO_PG_HISTORY_ROWS,))
         rows = [
             {
                 "id": r[0],
-                "note": r[1],
-                "written_at": r[2].isoformat(),
-                "postmaster_start": r[3].isoformat(),
+                "item": r[1],
+                "qty": r[2],
+                "unit_price": float(r[3]),
+                "written_at": r[4].isoformat(),
+                "postmaster_start": r[5].isoformat(),
             }
             for r in cur.fetchall()
         ]
-        cur.execute("SELECT pg_postmaster_start_time(), count(*) FROM demo_visits")
-        postmaster_start, total_rows = cur.fetchone()
+        run(cur, _DEMO_PG_AGGREGATE)
+        breakdown = [
+            {"item": r[0], "units": int(r[1]), "revenue": float(r[2])}
+            for r in cur.fetchall()
+        ]
+        run(cur, _DEMO_PG_TOTALS)
+        total_orders, total_revenue, postmaster_start = cur.fetchone()
     query_ms = (perf_counter() - query_started) * 1000
 
     return {
         "connect_ms": connect_ms,
         "query_ms": query_ms,
-        "inserted_id": inserted_id,
+        "mode": mode,
+        "statements": statements,
+        "inserted": inserted,
         "rows": rows,
-        "total_rows": total_rows,
+        "breakdown": breakdown,
+        "total_orders": total_orders,
+        "total_revenue": float(total_revenue),
         "postmaster_start": postmaster_start.isoformat(),
     }
 
 
 class PostgresQueryRequest(BaseModel):
-    note: str = ""
+    mode: Literal["insert", "aggregate"] = "insert"
 
 
 @router.get("/postgres/status")
@@ -739,14 +792,14 @@ async def postgres_query(body: PostgresQueryRequest) -> dict:
             logger.warning("demo-postgres pre-query status failed: %s", exc)
             before = None
 
-    note = (body.note or "").strip()[:200] or "hello from the demos page"
     started = perf_counter()
     try:
-        result = await asyncio.to_thread(_demo_pg_roundtrip, dsn, note)
+        result = await asyncio.to_thread(_demo_pg_orders_roundtrip, dsn, body.mode)
     except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
         logger.warning("demo-postgres query roundtrip failed: %s", exc)
         return {
             "error": str(exc),
+            "mode": body.mode,
             "classification": _classify_wake(before),
             "phase_before": (before or {}).get("state"),
             "total_ms": (perf_counter() - started) * 1000,
