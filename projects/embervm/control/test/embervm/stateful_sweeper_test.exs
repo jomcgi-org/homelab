@@ -23,7 +23,7 @@ defmodule Embervm.StatefulSweeperTest do
 
   alias Embervm.{NodeCapacity, StatefulStore, StatefulSweeper, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{EvictSnapshotResponse, StopStatefulResponse}
+  alias Embervm.Node.V1.{EvictSnapshotResponse, ResolveStatefulResponse, StopStatefulResponse}
 
   # A publisher that RECORDS each publish/1 cast, mirroring ServingSweeperTest's
   # FakePublisher.
@@ -37,6 +37,25 @@ defmodule Embervm.StatefulSweeperTest do
     def handle_cast(:publish, n), do: {:noreply, n + 1}
     @impl true
     def handle_call(:count, _from, n), do: {:reply, n, n}
+  end
+
+  # A stand-in StatefulManager that records the {:checkpoint_resolved, workload,
+  # outcome} casts the sweeper sends on resolve, so a test asserts the manager was
+  # notified. Also answers parked?/2 falsely (unused here; the sweeper's
+  # parked_fun is injected directly off an Agent).
+  defmodule FakeManager do
+    use GenServer
+    def start_link(notes_agent), do: GenServer.start_link(__MODULE__, notes_agent)
+    @impl true
+    def init(notes_agent), do: {:ok, notes_agent}
+    @impl true
+    def handle_cast({:checkpoint_resolved, workload, outcome}, notes) do
+      Agent.update(notes, &[{workload, outcome} | &1])
+      {:noreply, notes}
+    end
+
+    @impl true
+    def handle_call({:parked?, _workload}, _from, notes), do: {:reply, false, notes}
   end
 
   defp clock(agent), do: fn -> Agent.get(agent, & &1) end
@@ -66,6 +85,12 @@ defmodule Embervm.StatefulSweeperTest do
     {:ok, stop_calls} = Agent.start_link(fn -> [] end)
     {:ok, bank_fail} = Agent.start_link(fn -> false end)
     {:ok, evict_calls} = Agent.start_link(fn -> [] end)
+    {:ok, resolve_calls} = Agent.start_link(fn -> [] end)
+    {:ok, resolve_fail} = Agent.start_link(fn -> false end)
+    # Whether a connection is "parked" for the checkpoint fork (commit vs abort).
+    # A test flips this before the resolve decision runs.
+    {:ok, parked} = Agent.start_link(fn -> false end)
+    {:ok, resolved_notes} = Agent.start_link(fn -> [] end)
 
     stop_stateful_fun = fn _ch, req ->
       Agent.update(stop_calls, &[req | &1])
@@ -77,10 +102,35 @@ defmodule Embervm.StatefulSweeperTest do
         req.mode == :STOP_STATEFUL_MODE_BANK ->
           {:ok, %StopStatefulResponse{snapshot_ref: "snap-#{req.vm_id}", size_bytes: 4_096, generation: 1}}
 
+        req.mode == :STOP_STATEFUL_MODE_CHECKPOINT ->
+          {:ok, %StopStatefulResponse{checkpoint_token: "ckpt-#{req.vm_id}", generation: 1}}
+
         true ->
           {:ok, %StopStatefulResponse{}}
       end
     end
+
+    resolve_stateful_fun = fn _ch, req ->
+      Agent.update(resolve_calls, &[req | &1])
+
+      if Agent.get(resolve_fail, & &1) do
+        {:error, :resolve_boom}
+      else
+        case req.mode do
+          :RESOLVE_MODE_COMMIT ->
+            {:ok, %ResolveStatefulResponse{snapshot_ref: "snap-#{req.vm_id}", generation: 2, size_bytes: 8_192}}
+
+          :RESOLVE_MODE_ABORT ->
+            {:ok, %ResolveStatefulResponse{}}
+        end
+      end
+    end
+
+    # A fake manager (a GenServer that records {:checkpoint_resolved, ...} casts),
+    # so the sweeper's notify + the parked_fun both have a real ref. parked_fun is
+    # injected directly off the `parked` Agent so the commit/abort fork is
+    # deterministic without wiring a real StatefulManager.
+    {:ok, fake_mgr} = FakeManager.start_link(resolved_notes)
 
     evict_snapshot_fun = fn _ch, req ->
       Agent.update(evict_calls, &[req | &1])
@@ -100,7 +150,13 @@ defmodule Embervm.StatefulSweeperTest do
         stats_base: Keyword.get(opts, :stats_base, "http://serving:9902"),
         channel_fun: fn _node -> {:ok, :ch} end,
         stop_stateful_fun: stop_stateful_fun,
+        resolve_stateful_fun: resolve_stateful_fun,
         evict_snapshot_fun: evict_snapshot_fun,
+        manager: fake_mgr,
+        parked_fun: fn _wl -> Agent.get(parked, & &1) end,
+        flap_abort_threshold: Keyword.get(opts, :flap_abort_threshold, 20),
+        # Instant tests: never actually sleep on the propagation settle.
+        propagation_settle_ms: Keyword.get(opts, :propagation_settle_ms, 0),
         bank_concurrency: Keyword.get(opts, :bank_concurrency, 1),
         lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, 3_600_000),
         sweep_interval_ms: 0
@@ -133,7 +189,12 @@ defmodule Embervm.StatefulSweeperTest do
       stop_calls: stop_calls,
       bank_fail: bank_fail,
       evict_calls: evict_calls,
-      status_calls: status_calls
+      status_calls: status_calls,
+      resolve_calls: resolve_calls,
+      resolve_fail: resolve_fail,
+      parked: parked,
+      fake_mgr: fake_mgr,
+      resolved_notes: resolved_notes
     }
   end
 
@@ -141,6 +202,9 @@ defmodule Embervm.StatefulSweeperTest do
   defp stop_calls(ctx), do: Agent.get(ctx.stop_calls, &Enum.reverse(&1))
   defp evict_calls(ctx), do: Agent.get(ctx.evict_calls, &Enum.reverse(&1))
   defp status_writes(ctx), do: Agent.get(ctx.status_calls, &Enum.reverse(&1))
+  defp resolve_calls(ctx), do: Agent.get(ctx.resolve_calls, &Enum.reverse(&1))
+  defp resolved_notes(ctx), do: Agent.get(ctx.resolved_notes, &Enum.reverse(&1))
+  defp set_parked(ctx, v), do: Agent.update(ctx.parked, fn _ -> v end)
 
   # Flush the sweeper's mailbox: a plain :sys call is processed AFTER every
   # message already queued, so anything sent (e.g. a spawned bank worker's
@@ -672,6 +736,222 @@ defmodule Embervm.StatefulSweeperTest do
 
     assert [%{mode: :STOP_STATEFUL_MODE_BANK}] = stop_calls(ctx)
     assert load_ops(ctx, "stateful_banked") == []
+  end
+
+  # -- interruptible bank (ADR embervm/008) -------------------------------------
+
+  # Drive an interruptible workload's serving instance to the point a bank fires,
+  # returning after the first two priming ticks (baseline + idle_since set).
+  defp prime_idle_interruptible(ctx, workload, listen_port, id, vm_id) do
+    stateful_workload(ctx, workload, listen_port, %{idle_bank_seconds: 60, interruptible_bank: true})
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, id, workload, vm_id, "10.98.0.5")
+
+    prefix = "state-#{listen_port}"
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    prefix
+  end
+
+  test "interruptible workload NOT parked -> CHECKPOINT then COMMIT: instance banked, bundle recorded, resolve COMMIT" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, false)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    {:ok, banked} = StatefulStore.get(ctx.store, "sf-1")
+    assert banked.state == :banked
+    assert banked.snapshot_ref == "snap-vm-1"
+    assert banked.snapshot_generation == 2
+
+    # A CHECKPOINT (not an atomic BANK) was issued, then a COMMIT resolve.
+    modes = Enum.map(stop_calls(ctx), & &1.mode)
+    assert :STOP_STATEFUL_MODE_CHECKPOINT in modes
+    refute :STOP_STATEFUL_MODE_BANK in modes
+
+    assert [%{mode: :RESOLVE_MODE_COMMIT, vm_id: "vm-1", checkpoint_token: "ckpt-vm-1"}] = resolve_calls(ctx)
+
+    # The manager was notified of the commit (drain the fake manager's mailbox first).
+    _ = :sys.get_state(ctx.fake_mgr)
+    assert {"wl-i", :commit} in resolved_notes(ctx)
+
+    ops = load_ops(ctx, "stateful_banked")
+    assert length(ops) == 1
+  end
+
+  test "interruptible workload PARKED -> CHECKPOINT then ABORT: instance back to serving, no bundle, resolve ABORT, aborts incremented" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, true)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    {:ok, instance} = StatefulStore.get(ctx.store, "sf-1")
+    assert instance.state == :serving
+    assert instance.ip == "10.98.0.5"
+    assert instance.port == 5432
+
+    assert [%{mode: :RESOLVE_MODE_ABORT, vm_id: "vm-1"}] = resolve_calls(ctx)
+
+    # No bundle was committed.
+    assert load_ops(ctx, "stateful_banked") == []
+
+    # The consecutive-abort counter was incremented for the workload.
+    aborts = :sys.get_state(ctx.sweeper).checkpoint_aborts
+    assert Map.get(aborts, "wl-i") == 1
+
+    _ = :sys.get_state(ctx.fake_mgr)
+    assert {"wl-i", :abort} in resolved_notes(ctx)
+  end
+
+  test "flap guard: at the abort threshold the next cycle FORCES COMMIT even though parked, and resets the counter" do
+    ctx = start_stack(flap_abort_threshold: 3)
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    # Pre-seed the counter AT the threshold so this cycle force-commits.
+    :sys.replace_state(ctx.sweeper, fn s -> %{s | checkpoint_aborts: %{"wl-i" => 3}} end)
+    set_parked(ctx, true)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    # Forced commit despite parked==true.
+    assert [%{mode: :RESOLVE_MODE_COMMIT}] = resolve_calls(ctx)
+
+    # Counter reset (settled to banked).
+    aborts = :sys.get_state(ctx.sweeper).checkpoint_aborts
+    assert Map.get(aborts, "wl-i") == 0
+  end
+
+  test "a resolve RPC error FAILS the instance (checkpointed -> failed)" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, false)
+    Agent.update(ctx.resolve_fail, fn _ -> true end)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :failed}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    {:ok, failed} = StatefulStore.get(ctx.store, "sf-1")
+    assert failed.state == :failed
+    assert load_ops(ctx, "stateful_failed") != []
+  end
+
+  test "non-interruptible workload is unchanged: atomic BANK, never CHECKPOINT/ResolveStateful" do
+    ctx = start_stack()
+    # Default cfg: interruptible_bank absent (false).
+    stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    modes = Enum.map(stop_calls(ctx), & &1.mode)
+    assert :STOP_STATEFUL_MODE_BANK in modes
+    refute :STOP_STATEFUL_MODE_CHECKPOINT in modes
+    assert resolve_calls(ctx) == []
+  end
+
+  test "fail-closed recheck: an interruptible workload does NOT checkpoint when the recheck scrape fails" do
+    ctx = start_stack()
+
+    stateful_workload(ctx, "wl-i", 5400, %{idle_bank_seconds: 60, interruptible_bank: true})
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, "sf-1", "wl-i", "vm-1", "10.98.0.5")
+
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    # Tick 3: the tick-start scan reads idle (call 0), but the recheck re-scrape
+    # (call 1) FAILS. For an interruptible workload this fails CLOSED: no
+    # checkpoint issued, the instance stays serving.
+    {:ok, call_count} = Agent.start_link(fn -> 0 end)
+
+    scrape_fun = fn _url ->
+      n = Agent.get_and_update(call_count, fn n -> {n, n + 1} end)
+      if n == 0, do: reading("state-5400", 0, 3), else: {:error, :timeout}
+    end
+
+    :sys.replace_state(ctx.sweeper, fn s -> %{s | scrape_fun: scrape_fun} end)
+
+    advance(ctx.clock_agent, 65_000)
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    {:ok, instance} = StatefulStore.get(ctx.store, "sf-1")
+    assert instance.state == :serving
+    assert stop_calls(ctx) == []
+    assert resolve_calls(ctx) == []
+  end
+
+  test "fail-open recheck unchanged for a non-interruptible workload when the recheck scrape fails" do
+    ctx = start_stack()
+
+    stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    {:ok, call_count} = Agent.start_link(fn -> 0 end)
+
+    scrape_fun = fn _url ->
+      n = Agent.get_and_update(call_count, fn n -> {n, n + 1} end)
+      if n == 0, do: reading("state-5400", 0, 3), else: {:error, :timeout}
+    end
+
+    :sys.replace_state(ctx.sweeper, fn s -> %{s | scrape_fun: scrape_fun} end)
+
+    advance(ctx.clock_agent, 65_000)
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    # Fail-open: the atomic bank still proceeds despite the failed recheck scrape.
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    modes = Enum.map(stop_calls(ctx), & &1.mode)
+    assert :STOP_STATEFUL_MODE_BANK in modes
   end
 
   # -- raw stats-body parse path -------------------------------------------------

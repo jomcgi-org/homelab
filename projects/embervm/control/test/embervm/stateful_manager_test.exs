@@ -713,6 +713,163 @@ defmodule Embervm.StatefulManagerTest do
     assert evicted.terminal_reason == "pair_broken"
   end
 
+  # -- interruptible bank: adoption of a stranded checkpoint (ADR embervm/008) --
+
+  test "adoption ABORTS a stranded checkpoint the node reports as checkpoint_pending (safe default)" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+
+    # A control-plane restart left the store showing :checkpointed while the node
+    # still reports the paused VM as checkpoint_pending. Rebuild that ETS shape.
+    {:ok, _} =
+      StatefulStore.start(ctx.store, %{
+        instance_id: "stf-ck",
+        tenant: "homelab",
+        principal: "p",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-ck",
+        generation: 1
+      })
+
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-ck", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-ck", :bank)
+    {:ok, _} = StatefulStore.mark_with(ctx.store, "stf-ck", :checkpoint_ready, %{checkpoint_token: "ckpt-vm-ck", vm_id: "vm-ck"})
+
+    stateful_node(ctx, "node-4",
+      stateful_vms: [
+        %{vm_id: "vm-ck", workload: "wl-a", ip: "10.88.0.9", port: 5432, healthy: true, generation: 1, checkpoint_pending: true, last_probe_unix_ms: 1}
+      ]
+    )
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    # Safe default: aborted back to serving, endpoint restored, republished.
+    {:ok, resolved} = StatefulStore.get(ctx.store, "stf-ck")
+    assert resolved.state == :serving
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.9", port: 5432}
+  end
+
+  # -- interruptible bank: wake-during-checkpoint parking (ADR embervm/008) -----
+
+  # Drive a workload's instance into the transient :checkpointed state (serving ->
+  # banking -> checkpointed), the paused-awaiting-resolve window a wake must park
+  # behind rather than cold-boot.
+  defp checkpointed_instance(ctx, id, workload, vm_id) do
+    {:ok, _} =
+      StatefulStore.start(ctx.store, %{
+        instance_id: id,
+        tenant: "homelab",
+        principal: "p",
+        workload: workload,
+        node_id: "node-4",
+        vm_id: vm_id,
+        generation: 1
+      })
+
+    {:ok, _} = StatefulStore.publish(ctx.store, id, "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, id, :bank)
+    {:ok, _} = StatefulStore.mark_with(ctx.store, id, :checkpoint_ready, %{checkpoint_token: "ckpt-#{vm_id}", vm_id: vm_id})
+    id
+  end
+
+  test "parked?/2 reflects whether a caller is parked for the workload" do
+    ctx = start_stack(start_sleep_ms: 200)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    refute StatefulManager.parked?(ctx.mgr, "wl-a")
+
+    first = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    Process.sleep(20)
+
+    assert StatefulManager.parked?(ctx.mgr, "wl-a")
+
+    assert {:ok, _} = Task.await(first, 5_000)
+    refute StatefulManager.parked?(ctx.mgr, "wl-a")
+  end
+
+  test "a wake arriving while the workload is :checkpointed PARKS (no cold boot), and is served hot on a :abort resolve" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    checkpointed_instance(ctx, "stf-ck", "wl-a", "vm-ck")
+
+    # The wake must PARK, not boot: run it in a task so it blocks.
+    waiter = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    Process.sleep(30)
+
+    # No StartStateful was issued (parked, not cold-booted).
+    assert Agent.get(ctx.starts, & &1) == 0
+    assert StatefulManager.parked?(ctx.mgr, "wl-a")
+
+    # Simulate the sweeper's ABORT resolve: the paused VM resumes hot and is
+    # republished, THEN the manager is told. Drive the instance back to serving +
+    # publish exactly as an abort would, then cast the resolution.
+    {:ok, _} = StatefulStore.mark(ctx.store, "stf-ck", :abort)
+
+    StatefulStore.adopt_endpoint(ctx.store, "stf-ck", "node-4", "vm-ck", %{
+      ip: "10.88.0.9",
+      port: 5432,
+      healthy: true
+    })
+
+    GenServer.cast(ctx.mgr, {:checkpoint_resolved, "wl-a", :abort})
+
+    # The parked caller is served the hot endpoint, no boot ever happened.
+    assert {:ok, %{ip: "10.88.0.9", port: 5432}} = Task.await(waiter, 5_000)
+    assert Agent.get(ctx.starts, & &1) == 0
+    refute StatefulManager.parked?(ctx.mgr, "wl-a")
+  end
+
+  test "a wake parked during :checkpointed is served by a relight wake on a :commit resolve" do
+    # A relight fun: the commit path leaves a banked bundle, and the manager's
+    # commit cast starts a normal wake that relights it.
+    relit_fun = fn _ch, _req ->
+      {:ok,
+       %StartStatefulResponse{
+         vm_id: "vm-relit",
+         ip: "10.88.0.5",
+         port: 5432,
+         generation: 4,
+         was_relight: true
+       }}
+    end
+
+    ctx = start_stack(start_stateful_fun: relit_fun)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    # A checkpointed instance the commit converts into a banked bundle. Set up the
+    # committed banked bundle + a matching volume so the relight pair is valid.
+    checkpointed_instance(ctx, "stf-ck", "wl-a", "vm-ck")
+
+    waiter = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    Process.sleep(30)
+    assert Agent.get(ctx.starts, & &1) == 0
+
+    # Simulate the sweeper's COMMIT: the temp becomes the bundle (checkpointed ->
+    # banked) with a matching volume generation, then the manager is told.
+    {:ok, _} =
+      StatefulStore.transition(
+        ctx.store,
+        "stf-ck",
+        :commit,
+        :stateful_banked,
+        %{snapshot_ref: "stateful/ck", size_bytes: 10, generation: 4},
+        %{snapshot_ref: "stateful/ck", snapshot_size_bytes: 10, snapshot_generation: 4, vm_id: nil}
+      )
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 4, size_bytes: 10, allocated_bytes: 1})
+
+    GenServer.cast(ctx.mgr, {:checkpoint_resolved, "wl-a", :commit})
+
+    # The parked caller is served by a relight wake off the committed bundle.
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = Task.await(waiter, 5_000)
+    assert Agent.get(ctx.starts, & &1) == 1
+  end
+
   # -- destroy_instance / delete_volume management verbs ------------------------
 
   test "destroy_instance destroys the live instance and evicts the banked bundle" do
