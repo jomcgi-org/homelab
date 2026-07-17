@@ -1,6 +1,7 @@
 // Maps project ids from engineering-data.js to diagram components.
 // Keys must stay in sync with registry-ids.js (checked below).
 import AgentPlatform from "./AgentPlatform.svelte";
+import EmberVm from "./EmberVm.svelte";
 import Goosecracker from "./Goosecracker.svelte";
 import KnowledgeGraph from "./KnowledgeGraph.svelte";
 import Loom from "./Loom.svelte";
@@ -16,6 +17,7 @@ import { diagramIds } from "./registry-ids.js";
 
 export const diagrams = {
   "agent-platform": AgentPlatform,
+  embervm: EmberVm,
   goosecracker: Goosecracker,
   "knowledge-graph": KnowledgeGraph,
   loom: Loom,

@@ -55,7 +55,8 @@ hard-stopped at submit, and metering rides the operation itself rather than a
 flush timer, so a crash cannot lose usage. Usage is billed per task on both
 success and failure and is queryable at `/v1/usage`.
 
-The one public route (og-image at jomcgi.dev/og-image-serving) is scoped at
+The one public route (jomcgi.dev/functions/hot-image-demo, an image
+renderer served warm) is scoped at
 three layers: the HTTPRoute pins the Host rewrite and matches a single path,
 the node Envoy exact-matches that internal authority and og-image is the only
 serving-class workload on it, and the guest shim reserves the `/shim/` prefix
