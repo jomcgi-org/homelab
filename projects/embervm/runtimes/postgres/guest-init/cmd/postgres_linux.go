@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -69,11 +70,24 @@ func bootstrapAndLaunchPostgres(ctx context.Context, logger *slog.Logger, mountP
 		if err := runInitdb(logger, pgdata, password); err != nil {
 			return fmt.Errorf("initdb: %w", err)
 		}
-		if err := configurePostgres(pgdata); err != nil {
-			return fmt.Errorf("configure postgres: %w", err)
-		}
 	} else {
 		logger.Info("stateful postgres: PGDATA already initialized, skipping initdb (WAL recovery runs on start)", "pgdata", pgdata)
+	}
+
+	// Ensure the cluster-internal pg_hba rule on EVERY boot, not just first boot.
+	// pgDataInitialized keys on PG_VERSION, which initdb writes BEFORE this policy
+	// is appended; a first boot interrupted in that window (an aggressive idle-bank
+	// or a destroy during boot) leaves PG_VERSION present but pg_hba.conf without
+	// the pod-network rule, and a first-boot-only config would then skip it forever,
+	// leaving the volume permanently rejecting every cluster connection ("no
+	// pg_hba.conf entry for host ..."). Running it unconditionally and idempotently
+	// self-heals such a volume on its next cold boot and closes the race for good.
+	// It runs before postgres launches, so the server reads the corrected file at
+	// startup with no reload needed. (Relights resume a snapshot taken from an
+	// already-serving VM, whose pg_hba was necessarily complete, so they are
+	// unaffected; only cold boots re-read the on-disk file.)
+	if err := ensureHostAuth(logger, pgdata); err != nil {
+		return fmt.Errorf("configure pg_hba: %w", err)
 	}
 
 	// Launch the server as a child so PID 1 (this init) keeps the vsock ready
@@ -168,17 +182,33 @@ func runInitdb(logger *slog.Logger, pgdata, password string) error {
 	return nil
 }
 
-// configurePostgres appends the network policy initdb does not set: listen on
-// the tap NIC and require scram auth for TCP connections from the cluster-
-// internal pod network. The CR is cluster-internal, low-stakes scratch tier
-// (D-R4.PR-11.1), so a single scram rule for all sources is the policy.
-func configurePostgres(pgdata string) error {
+// hbaRuleMarker is the comment that heads the cluster-internal pg_hba block.
+// ensureHostAuth uses it as an idempotency key: its presence means the policy is
+// already installed, so the block is not appended twice.
+const hbaRuleMarker = "# EmberVM scratch-postgres (R4): scram for cluster-internal TCP."
+
+// ensureHostAuth appends the network policy initdb does not set: require scram
+// auth for TCP connections from the cluster-internal pod network. The CR is
+// cluster-internal, low-stakes scratch tier (D-R4.PR-11.1), so a single scram
+// rule for all sources is the policy. IDEMPOTENT: it reads pg_hba.conf first and
+// appends the block only when hbaRuleMarker is absent, so it can run on every
+// boot (see the call site's rationale) without duplicating the rule on a volume
+// that already has it.
+func ensureHostAuth(logger *slog.Logger, pgdata string) error {
 	hba := filepath.Join(pgdata, "pg_hba.conf")
+	existing, err := os.ReadFile(hba)
+	if err != nil {
+		return fmt.Errorf("read pg_hba.conf: %w", err)
+	}
+	if strings.Contains(string(existing), hbaRuleMarker) {
+		return nil
+	}
+
 	// Append: scram over TCP from anywhere (the tap NIC is only reachable from
 	// the node Envoy). initdb already wrote a trust local line plus host scram
 	// lines for 127.0.0.1/::1; this widens host to all IPv4/IPv6 so the
 	// Envoy-forwarded connection (from the pod network) authenticates with scram.
-	rule := "\n# EmberVM scratch-postgres (R4): scram for cluster-internal TCP.\nhost all all 0.0.0.0/0 scram-sha-256\nhost all all ::/0 scram-sha-256\n"
+	rule := "\n" + hbaRuleMarker + "\nhost all all 0.0.0.0/0 scram-sha-256\nhost all all ::/0 scram-sha-256\n"
 	f, err := os.OpenFile(hba, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open pg_hba.conf: %w", err)
@@ -187,6 +217,7 @@ func configurePostgres(pgdata string) error {
 	if _, err := f.WriteString(rule); err != nil {
 		return fmt.Errorf("append pg_hba.conf: %w", err)
 	}
+	logger.Info("stateful postgres: installed cluster-internal pg_hba rule", "pgdata", pgdata)
 	return nil
 }
 

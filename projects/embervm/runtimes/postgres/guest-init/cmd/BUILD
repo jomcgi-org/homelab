@@ -45,6 +45,9 @@ go_binary(
 
 go_test(
     name = "cmd_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "main_test.go",
+        "postgres_linux_test.go",
+    ],
     embed = [":cmd_lib"],
 )
