@@ -972,11 +972,14 @@ defmodule Embervm.StatefulStore do
     # attributed to a missing volume row vs a generation mismatch. Only when a
     # banked instance exists, so a scaled-to-zero-no-bundle workload stays quiet.
     if is_map(banked) do
-      Logger.info("embervm stateful pair check",
-        workload: workload,
-        banked_snapshot_generation: Map.get(banked, :snapshot_generation),
-        volume: (if is_map(volume), do: Map.get(volume, :generation), else: :no_volume_row),
-        pair_valid: result
+      vol_gen = if is_map(volume), do: Map.get(volume, :generation), else: :no_volume_row
+      vol_node = if is_map(volume), do: Map.get(volume, :node_id), else: nil
+
+      Logger.info(
+        "embervm stateful pair check " <>
+          "workload=#{workload} banked_snap_gen=#{inspect(Map.get(banked, :snapshot_generation))} " <>
+          "volume_gen=#{inspect(vol_gen)} volume_node=#{inspect(vol_node)} " <>
+          "banked_node=#{inspect(Map.get(banked, :node_id))} pair_valid=#{result}"
       )
     end
 
