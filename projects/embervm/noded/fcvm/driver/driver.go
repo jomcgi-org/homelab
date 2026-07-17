@@ -314,7 +314,18 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	// content is opaque to the daemon). Only emitted when a volume is attached;
 	// every other boot class carries neither token.
 	if cb.volumeDiskPath != "" {
-		args += fmt.Sprintf(" ember.volume_dev=%s ember.volume_mount=%s", statefulVolumeDevice, cb.volumeMount)
+		// Drives land on /dev/vd{a,b,c...} in ATTACH ORDER: rootfs is always vda.
+		// A serving-style stateful boot attaches the read-only handler as drive 2
+		// (vdb), pushing the writable volume to drive 3 (vdc). An image-lane
+		// stateful boot (opaque-L4, e.g. Postgres) has NO handler drive, so the
+		// volume is drive 2 and lands on vdb. Signal the ACTUAL device so guest-init
+		// mounts the right one; a fixed /dev/vdc would be a nonexistent device on
+		// the handler-less path.
+		volumeDev := statefulVolumeDeviceNoHandler
+		if cb.handlerDiskPath != "" {
+			volumeDev = statefulVolumeDevice
+		}
+		args += fmt.Sprintf(" ember.volume_dev=%s ember.volume_mount=%s", volumeDev, cb.volumeMount)
 	}
 	// MMDS-lite over boot-args (R4, D-R4.PR-7.1): a stateful workload's first-boot
 	// secrets (e.g. a Postgres superuser password) ride the kernel cmdline as
@@ -392,16 +403,25 @@ func mmdsEnvKeyNames(mmdsEnv map[string]string) []string {
 // next, is /dev/vdb). guest-init exports this to the shim as EMBER_HANDLER_ZIP.
 const handlerDiskDevice = "/dev/vdb"
 
-// statefulVolumeDevice is the guest block-device path Firecracker assigns to a
-// stateful VM's writable volume drive (R4). A stateful boot_image_ref always
-// carries a handler artifact (mirroring the serving cold-boot lane: rootfs is
-// drive 1 / /dev/vda, the read-only handler is drive 2 / /dev/vdb), and the
-// writable volume is attached LAST as drive 3, landing on /dev/vdc. guest-init
-// reads ember.volume_dev from /proc/cmdline and mounts exactly this device; the
-// host never mounts it. Fixed rather than derived because ClaimStateful always
-// attaches all three drives together (unlike serving, which may cold-boot with
-// no handler for the image lane), so the position never varies.
-const statefulVolumeDevice = "/dev/vdc"
+// statefulVolumeDevice / statefulVolumeDeviceNoHandler are the guest block-device
+// paths Firecracker assigns to a stateful VM's writable volume drive (R4),
+// selected by whether a drive-2 handler artifact is present. Drives land on
+// /dev/vd{a,b,c...} in ATTACH ORDER. rootfs is always drive 1 / /dev/vda.
+//
+//   - WITH a handler (a serving-style stateful boot, if one ever carries a zip
+//     handler): handler is drive 2 / /dev/vdb, so the writable volume is drive 3
+//     and lands on /dev/vdc.
+//   - WITHOUT a handler (an image-lane, opaque-L4 stateful guest like Postgres):
+//     there is no drive 2, so the writable volume is drive 2 and lands on
+//     /dev/vdb.
+//
+// guest-init reads ember.volume_dev from /proc/cmdline and mounts exactly the
+// signalled device; the host never mounts it. The device is derived (not fixed)
+// because the handler drive's presence shifts the volume's position by one.
+const (
+	statefulVolumeDevice          = "/dev/vdc"
+	statefulVolumeDeviceNoHandler = "/dev/vdb"
+)
 
 // sectorSizeBytes is Firecracker's block-device sector size. A drive backing file
 // must be a whole multiple of it or FC floors the exposed device to the nearest

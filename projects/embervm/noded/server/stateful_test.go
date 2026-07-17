@@ -176,22 +176,18 @@ func newStatefulTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeStatefu
 		},
 		Driver:         statefulVMDriverAdapter{fsd},
 		ServingNet:     fsn,
-		ServingDriver:  newFakeServingDriver(dir), // stateful boot resolves against servingImage inventory
+		ServingDriver:  newFakeServingDriver(dir), // required by the serving lane; stateful boot resolves against the base registry
 		StatefulDriver: fsd,
 		VolumeRoot:     volumeRoot,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	s.memHeadroom = func() uint64 { return 0 }
-	// Seed a built serving image "img-a" the same way a real BuildBase would
-	// have populated it; StartStateful resolves boot_image_ref against the
-	// SAME inventory a serving cold boot uses (D-R3.11.2).
-	s.servingImage.add(servingImageEntry{
-		baseKey:         "img-a",
-		workload:        "wl-state",
-		handlerPath:     "/disks/bases/img-a/handler.zip",
-		runtimeImageRef: "img-a",
-		sizeBytes:       2048,
-	})
+	// Seed a READY base "img-a" the way a real BuildBase would have. An image-lane
+	// stateful boot resolves boot_image_ref against the BASE registry (not the
+	// serving-image inventory: an opaque-L4 guest has no handler artifact), then
+	// cold-boots the runtime rootfs behind base.imageDigest ("img-a" is in cfg
+	// Images above) with no drive-2 handler.
+	s.bases.readyBuild("img-a", "wl-state", "img-a", "/shim/ready", 2048)
 	return s, fsn, fsd
 }
 
