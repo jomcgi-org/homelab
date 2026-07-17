@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
@@ -32,6 +33,23 @@ type statefulDriver interface {
 	// stateful bundle stamped with the given volume generation; does not resume
 	// (the caller Releases). Mirrors SnapshotServing plus the generation stamp.
 	SnapshotStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (substrate.SnapshotRef, error)
+	// CheckpointStateful is phase one of the interruptible bank (ADR embervm/008):
+	// it pauses a live stateful VM and writes its snapshot to a temp OUTSIDE the
+	// stateful/ bundle dir, leaving the VM PAUSED and resumable (no bundle
+	// published, no Release), and returns an opaque token for the resolve.
+	CheckpointStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (string, error)
+	// ResolveStatefulCommit publishes a checkpoint's temp as the workload's bundle
+	// (snapfile last) and DESTROYS the paused VM, returning the bundle ref. It
+	// consumes the token (single-resolve).
+	ResolveStatefulCommit(ctx context.Context, token string) (substrate.SnapshotRef, error)
+	// ResolveStatefulAbort deletes a checkpoint's temp and RESUMES the paused VM
+	// (same process image, hot). It consumes the token (single-resolve). The
+	// caller bumps the volume generation BEFORE calling this (bump, delete, resume).
+	ResolveStatefulAbort(ctx context.Context, token string) error
+	// GCStatefulCheckpoints sweeps orphaned interruptible-bank checkpoint temps on
+	// startup (a restart kills every paused checkpoint VM), returning the count
+	// removed. Idempotent.
+	GCStatefulCheckpoints() int
 	// RestoreStateful launches a fresh VM from a banked stateful bundle and
 	// resumes it, WITH the NIC captured at bank time. volumeDiskPath is the
 	// workload's volume file the caller intends this restored VM to hold (see
@@ -79,6 +97,16 @@ type statefulEntry struct {
 	// probe is the running TCP-connect health-probe loop for this VM.
 	probe *serving.ProbeHandle
 
+	// checkpointToken is set (under the registry lock) while an interruptible-bank
+	// CHECKPOINT has this VM PAUSED awaiting a ResolveStateful (ADR embervm/008);
+	// "" for a normally-serving VM. checkpointTimer arms noded's resolve-timeout
+	// auto-abort (a dead control plane must not pin a paused VM forever); it is
+	// Stopped when a resolve is claimed. Both are guarded by the registry mu (not
+	// the entry mu), so snapshot() can read the checkpoint state under the one lock
+	// it already holds.
+	checkpointToken string
+	checkpointTimer *time.Timer
+
 	mu       sync.Mutex // guards inFlight
 	inFlight bool
 }
@@ -124,6 +152,75 @@ func (r *statefulRegistry) beginStop(id string) (*statefulEntry, bool) {
 	return e, true
 }
 
+// clearInFlight releases the stop-serialization guard set by beginStop without
+// removing the entry, so a VM whose CHECKPOINT failed returns to serving (still
+// live, still probed) rather than being wrongly pinned as stop-in-flight.
+func (r *statefulRegistry) clearInFlight(id string) {
+	r.mu.Lock()
+	e := r.vms[id]
+	r.mu.Unlock()
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.inFlight = false
+	e.mu.Unlock()
+}
+
+// markCheckpointed records that a CHECKPOINT has paused this VM awaiting a
+// resolve (ADR embervm/008) and arms its resolve-timeout auto-abort timer. The
+// entry stays inFlight (beginStop set it) so it is neither bankable nor
+// checkpointable again until the resolve lands.
+func (r *statefulRegistry) markCheckpointed(id, token string, timer *time.Timer) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	if e == nil {
+		return false
+	}
+	e.checkpointToken = token
+	e.checkpointTimer = timer
+	return true
+}
+
+// claimResolve is the node's single-resolve gate: it returns the entry ONLY if it
+// is still checkpoint-pending with the given token, and atomically clears the
+// token and stops the timer so a concurrent resolve (the control plane vs the
+// auto-abort timer) loses the race. A COMMIT arriving after the timeout auto-abort
+// already claimed the resolve gets (nil, false), mapped to FAILED_PRECONDITION.
+func (r *statefulRegistry) claimResolve(id, token string) (*statefulEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	if e == nil || e.checkpointToken == "" || e.checkpointToken != token {
+		return nil, false
+	}
+	if e.checkpointTimer != nil {
+		e.checkpointTimer.Stop()
+		e.checkpointTimer = nil
+	}
+	e.checkpointToken = ""
+	return e, true
+}
+
+// resumeFromCheckpoint returns a checkpoint-aborted VM to serving: it updates the
+// generation to the post-abort bump and clears the stop-in-flight guard (the
+// token was already cleared by claimResolve). The probe kept running across the
+// pause, so no probe restart is needed.
+func (r *statefulRegistry) resumeFromCheckpoint(id string, newGeneration uint64) {
+	r.mu.Lock()
+	e := r.vms[id]
+	if e != nil {
+		e.generation = newGeneration
+	}
+	r.mu.Unlock()
+	if e != nil {
+		e.mu.Lock()
+		e.inFlight = false
+		e.mu.Unlock()
+	}
+}
+
 // remove deletes an id from the map and returns its entry (nil if absent).
 func (r *statefulRegistry) remove(id string) *statefulEntry {
 	r.mu.Lock()
@@ -158,6 +255,10 @@ type statefulView struct {
 	healthy         bool
 	lastProbeUnixMs int64
 	generation      uint64
+	// checkpointPending + checkpointToken report a VM PAUSED awaiting a resolve
+	// (ADR embervm/008) so a restarted control plane adopts and resolves it.
+	checkpointPending bool
+	checkpointToken   string
 }
 
 // snapshot returns a copy of every live stateful VM including its current
@@ -168,11 +269,13 @@ func (r *statefulRegistry) snapshot() []statefulView {
 	out := make([]statefulView, 0, len(r.vms))
 	for _, e := range r.vms {
 		v := statefulView{
-			vmID:       e.vmID,
-			workload:   e.workload,
-			ip:         e.ip.String(),
-			port:       e.port,
-			generation: e.generation,
+			vmID:              e.vmID,
+			workload:          e.workload,
+			ip:                e.ip.String(),
+			port:              e.port,
+			generation:        e.generation,
+			checkpointPending: e.checkpointToken != "",
+			checkpointToken:   e.checkpointToken,
 		}
 		if e.probe != nil {
 			res := e.probe.Result()

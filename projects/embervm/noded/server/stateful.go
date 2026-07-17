@@ -354,12 +354,22 @@ func (s *Server) waitStatefulReady(ctx context.Context, ip net.IP, port uint32, 
 	return lastErr // nosemgrep: no-bare-error-return
 }
 
+// defaultStatefulResolveTimeout is noded's deadline T for an unresolved
+// interruptible-bank checkpoint (ADR embervm/008 open question 2): long enough
+// that a healthy control plane always resolves well within it, short enough that a
+// DEAD control plane cannot pin a paused VM's live-VM cap slot and memory for more
+// than this. A tuning knob to refine alongside the flap guard.
+const defaultStatefulResolveTimeout = 30 * time.Second
+
 // StopStateful tears down a live stateful VM. BANK pauses it, writes a
 // stateful snapshot stamped with the CURRENT volume generation, evicts any
 // PRIOR bundle for the workload (at most one banked bundle per workload),
 // detaches the volume, destroys the VM, and returns {snapshot_ref, generation,
 // size_bytes}. DESTROY tears the VM down with no snapshot and detaches the
-// volume. Either mode releases the tap.
+// volume. CHECKPOINT is phase one of the interruptible bank (ADR embervm/008): it
+// PAUSES the VM and snapshots to a temp, leaving it paused and resumable, and
+// returns a checkpoint_token for a later ResolveStateful. Either terminal mode
+// releases the tap.
 func (s *Server) StopStateful(ctx context.Context, req *nodev1.StopStatefulRequest) (*nodev1.StopStatefulResponse, error) {
 	if s.servingNet == nil || s.statefulDriver == nil || s.volumes == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: stateful not configured")
@@ -370,8 +380,147 @@ func (s *Server) StopStateful(ctx context.Context, req *nodev1.StopStatefulReque
 		return s.stopStatefulBank(ctx, vmID)
 	case nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY:
 		return s.stopStatefulDestroy(vmID)
+	case nodev1.StopStatefulMode_STOP_STATEFUL_MODE_CHECKPOINT:
+		return s.stopStatefulCheckpoint(ctx, vmID)
 	default:
-		return nil, status.Error(codes.InvalidArgument, "noded: StopStateful mode must be BANK or DESTROY")
+		return nil, status.Error(codes.InvalidArgument, "noded: StopStateful mode must be BANK, DESTROY, or CHECKPOINT")
+	}
+}
+
+// stopStatefulCheckpoint is phase one of the interruptible bank (ADR embervm/008):
+// it CHECKPOINTs a live stateful VM (pause + snapshot to a rescan-invisible temp,
+// VM left paused) and arms noded's resolve-timeout auto-abort, returning the
+// checkpoint token. It reuses beginStop's stop-serialization guard, so a second
+// CHECKPOINT (or a BANK) of the same VM is FAILED_PRECONDITION. On a checkpoint
+// failure the driver leaves the VM live (resumed), so the stop guard is cleared
+// and the VM returns to serving rather than being pinned.
+func (s *Server) stopStatefulCheckpoint(ctx context.Context, vmID string) (*nodev1.StopStatefulResponse, error) {
+	e, ok := s.statefulVMs.beginStop(vmID)
+	if !ok {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful vm %q not checkpointable (unknown or a stop is already in flight)", vmID)
+	}
+	snapshotRef := newID("state")
+	token, err := s.statefulDriver.CheckpointStateful(ctx, e.handle, snapshotRef, e.generation)
+	if err != nil {
+		s.statefulVMs.clearInFlight(vmID)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: checkpoint stateful vm %q: %v", vmID, err)
+	}
+	// Arm the resolve-timeout auto-abort: a dead control plane must not leave the
+	// VM paused (burning a cap slot and its memory) with every connection parked.
+	timer := time.AfterFunc(s.statefulResolveTimeout, func() { s.autoAbortCheckpoint(vmID, token) })
+	s.statefulVMs.markCheckpointed(vmID, token, timer)
+	s.signalChange()
+	return &nodev1.StopStatefulResponse{CheckpointToken: token, Generation: e.generation}, nil
+}
+
+// ResolveStateful is phase two of the interruptible bank (ADR embervm/008): it
+// resolves a VM left paused by StopStateful(CHECKPOINT). COMMIT publishes the
+// checkpoint's temp as the workload's bundle and destroys the VM; ABORT bumps the
+// volume generation, deletes the temp, and resumes the VM (hot). claimResolve is
+// the single-resolve gate: exactly one of {this call, the resolve-timeout
+// auto-abort} wins, so a COMMIT arriving after the auto-abort is FAILED_PRECONDITION.
+func (s *Server) ResolveStateful(ctx context.Context, req *nodev1.ResolveStatefulRequest) (*nodev1.ResolveStatefulResponse, error) {
+	if s.servingNet == nil || s.statefulDriver == nil || s.volumes == nil {
+		return nil, status.Error(codes.Unimplemented, "noded: stateful not configured")
+	}
+	// Validate the mode BEFORE claiming the resolve, so an invalid mode never
+	// consumes the single-resolve token or strands the paused VM.
+	switch req.GetMode() {
+	case nodev1.ResolveMode_RESOLVE_MODE_COMMIT, nodev1.ResolveMode_RESOLVE_MODE_ABORT:
+	default:
+		return nil, status.Error(codes.InvalidArgument, "noded: ResolveStateful mode must be COMMIT or ABORT")
+	}
+	vmID := req.GetVmId()
+	token := req.GetCheckpointToken()
+	e, ok := s.statefulVMs.claimResolve(vmID, token)
+	if !ok {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: no in-flight checkpoint for vm %q with the given token (unknown or already resolved)", vmID)
+	}
+	if req.GetMode() == nodev1.ResolveMode_RESOLVE_MODE_COMMIT {
+		return s.commitCheckpoint(ctx, e, token)
+	}
+	return s.abortCheckpoint(ctx, e, token)
+}
+
+// commitCheckpoint publishes the checkpoint's temp as the workload's bundle and
+// tears the (already driver-destroyed) VM's tap + volume down, then records the
+// bundle (evicting any prior, D-R4 one-bundle-per-workload). The tail mirrors
+// stopStatefulBank's bundle bookkeeping exactly. The caller has already claimed
+// the resolve (token cleared, timer stopped).
+func (s *Server) commitCheckpoint(ctx context.Context, e *statefulEntry, token string) (*nodev1.ResolveStatefulResponse, error) {
+	ref, err := s.statefulDriver.ResolveStatefulCommit(ctx, token)
+	if err != nil {
+		// The commit tore the paused VM down (a commit is destructive); drop the
+		// entry and release its tap + volume so the workload cold-boots next.
+		s.statefulVMs.remove(e.vmID)
+		e.probe.Stop()
+		s.servingNet.ReleaseTap(ctx, e.ip)
+		s.volumes.Detach(e.workload)
+		s.signalChange()
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: commit checkpoint for vm %q: %v", e.vmID, err)
+	}
+	// The driver destroyed the VM at commit; stop the probe, drop the entry, and
+	// release the tap + detach the volume (the FC handle is already released).
+	e.probe.Stop()
+	s.statefulVMs.remove(e.vmID)
+	s.servingNet.ReleaseTap(ctx, e.ip)
+	s.volumes.Detach(e.workload)
+	if prior, ok := s.statefulBundles.byWorkload(e.workload); ok && prior.snapshotRef != ref.ID {
+		_ = s.statefulDriver.RemoveStatefulBundle(prior.snapshotRef)
+		s.statefulBundles.remove(prior.snapshotRef)
+	}
+	s.statefulBundles.add(statefulBundleEntry{
+		snapshotRef:     ref.ID,
+		workload:        e.workload,
+		generation:      e.generation,
+		sizeBytes:       ref.SizeBytes,
+		createdAtUnixMs: time.Now().UnixMilli(),
+	})
+	s.signalChange()
+	return &nodev1.ResolveStatefulResponse{SnapshotRef: ref.ID, Generation: e.generation, SizeBytes: uint64(ref.SizeBytes)}, nil
+}
+
+// abortCheckpoint returns a checkpointed VM to serving on the same process image.
+// Order (ADR embervm/008): bump the volume generation, THEN delete the temp +
+// resume (the driver does the latter two). A bump failure is not fatal:
+// delete-before-resume alone closes the crash leak (guarantee 3), so it logs and
+// proceeds on the current generation rather than wedging. If the resume itself
+// fails the driver destroyed the VM, so this degrades to a next-wake cold boot.
+// The caller has already claimed the resolve.
+func (s *Server) abortCheckpoint(ctx context.Context, e *statefulEntry, token string) (*nodev1.ResolveStatefulResponse, error) {
+	gen, bumpErr := s.volumes.BumpGeneration(e.workload)
+	if bumpErr != nil {
+		s.logger.Warn("noded: bump generation on checkpoint abort failed; proceeding (delete-before-resume still protects)", "workload", e.workload, "err", bumpErr)
+		gen = e.generation
+	}
+	if err := s.statefulDriver.ResolveStatefulAbort(ctx, token); err != nil {
+		// Resume failed; the driver tore the VM down (dead-handle discipline).
+		// Degrade to a next-wake cold boot: drop the entry, release tap + volume.
+		s.statefulVMs.remove(e.vmID)
+		e.probe.Stop()
+		s.servingNet.ReleaseTap(ctx, e.ip)
+		s.volumes.Detach(e.workload)
+		s.signalChange()
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: abort checkpoint for vm %q (resume failed, VM destroyed): %v", e.vmID, err)
+	}
+	// Resumed hot: record the bumped generation, clear the checkpoint + stop guard.
+	s.statefulVMs.resumeFromCheckpoint(e.vmID, gen)
+	s.signalChange()
+	return &nodev1.ResolveStatefulResponse{}, nil
+}
+
+// autoAbortCheckpoint is the resolve-timeout backstop (ADR embervm/008): if a
+// CHECKPOINT is left unresolved for statefulResolveTimeout, noded aborts it
+// itself (resume, discard temp) so a dead control plane cannot pin a paused VM.
+// It claims the resolve first, so it no-ops if the control plane already resolved.
+func (s *Server) autoAbortCheckpoint(vmID, token string) {
+	e, ok := s.statefulVMs.claimResolve(vmID, token)
+	if !ok {
+		return // already resolved by the control plane
+	}
+	s.logger.Warn("noded: interruptible-bank checkpoint resolve-timeout, auto-aborting", "vm_id", vmID, "workload", e.workload)
+	if _, err := s.abortCheckpoint(context.Background(), e, token); err != nil {
+		s.logger.Warn("noded: checkpoint auto-abort failed", "vm_id", vmID, "err", err)
 	}
 }
 

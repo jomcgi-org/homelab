@@ -196,6 +196,12 @@ type Server struct {
 	// newTCPProber builds the per-VM TCP-connect health prober from config
 	// (R4). Overridable in tests, mirroring newProber.
 	newTCPProber func() *serving.TCPProber
+	// statefulResolveTimeout is noded's own deadline T for an interruptible-bank
+	// CHECKPOINT left unresolved (ADR embervm/008): after it, noded auto-aborts
+	// (resume, discard temp) so a dead control plane cannot pin a paused VM's cap
+	// slot and memory forever. Defaulted in New from defaultStatefulResolveTimeout;
+	// tests shrink it to exercise the auto-abort without waiting.
+	statefulResolveTimeout time.Duration
 	// newGroupTCPProber builds the per-member TCP-connect health prober (R5).
 	// Overridable in tests, mirroring newTCPProber.
 	newGroupTCPProber func() *serving.TCPProber
@@ -356,6 +362,7 @@ func New(opts Options) *Server {
 		s.groupClock = &realGroupClock{}
 	}
 	s.memHeadroom = readMemHeadroomMib
+	s.statefulResolveTimeout = defaultStatefulResolveTimeout
 	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
 	// rescan). Only when serving is configured; task/session-only builds skip it.
@@ -1370,13 +1377,15 @@ func (s *Server) statefulVMsStatus() []*nodev1.StatefulVm {
 			ip, port = s.servingNet.Endpoint(net.ParseIP(e.ip), e.port)
 		}
 		out = append(out, &nodev1.StatefulVm{
-			VmId:            e.vmID,
-			Workload:        e.workload,
-			Ip:              ip,
-			Port:            port,
-			Healthy:         e.healthy,
-			Generation:      e.generation,
-			LastProbeUnixMs: e.lastProbeUnixMs,
+			VmId:              e.vmID,
+			Workload:          e.workload,
+			Ip:                ip,
+			Port:              port,
+			Healthy:           e.healthy,
+			Generation:        e.generation,
+			LastProbeUnixMs:   e.lastProbeUnixMs,
+			CheckpointPending: e.checkpointPending,
+			CheckpointToken:   e.checkpointToken,
 		})
 	}
 	return out
@@ -1871,6 +1880,13 @@ func (s *Server) ReconcileStatefulFromDisk() {
 		} else if err := os.Chmod(root, 0o700); err != nil {
 			s.logger.Warn("noded: chmod stateful dir 0700", "root", root, "err", err)
 		}
+	}
+	// Sweep any orphaned interruptible-bank checkpoint temps (ADR embervm/008): a
+	// restart killed every paused checkpoint VM, so its temp can never be resolved.
+	// Done before the bundle rescan so a stale temp is gone before anything reads
+	// the stateful tree.
+	if gc := s.statefulDriver.GCStatefulCheckpoints(); gc > 0 {
+		s.logger.Info("noded: swept orphaned stateful checkpoint temps", "count", gc)
 	}
 	bundles := s.statefulDriver.ScanStatefulBundles()
 	for _, b := range bundles {
