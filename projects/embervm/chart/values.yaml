@@ -456,6 +456,19 @@ workloads:
   scratchPostgres:
     rootfsPath: /disks/nvme-02/embervm-noded/scratch-postgres/rootfs.ext4
     harnessInit: /usr/local/bin/ember-postgres-init
+  # R5 scratch-k8s composite consumer (ADR embervm/001, plan Task 10). A composite
+  # group has TWO guest images (a k3s server + k3s agents), so it registers as TWO
+  # workload entries here, each with a matching top-level <name>.guestImage: the
+  # noded machinery ranges over `workloads` and bakes one base rootfs + one
+  # EMBERVM_NODED_IMAGES entry PER key. Both members share the same PID-1
+  # ember-k3s-init (the role is data: EMBER_GROUP_ROLE). The keys match the
+  # top-level scratchK8sServer / scratchK8sAgent guestImage blocks below.
+  scratchK8sServer:
+    rootfsPath: /disks/nvme-02/embervm-noded/scratch-k8s-server/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-k3s-init
+  scratchK8sAgent:
+    rootfsPath: /disks/nvme-02/embervm-noded/scratch-k8s-agent/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-k3s-init
 
 # The python sandbox guest image, Bazel-pinned (helm_chart images="sandbox.guestImage")
 # from the frozen fc-invoke sandbox guest's .info provider, so the guest contract
@@ -511,6 +524,45 @@ scratchPostgres:
     # 1Password item path (vaults/<vault>/items/<item>) whose POSTGRES_PASSWORD
     # field syncs into the <fullname>-scratch-postgres Secret. Empty leaves the
     # OnePasswordItem unrendered (set it to enable the secret sync).
+    itemPath: ""
+
+# R5 scratch-k8s composite consumer (ADR embervm/001, plan Task 10 / Fork 4), the
+# named consumer that justifies the composite rung: a scale-to-zero Kubernetes
+# environment for agent workflows. Two Bazel-pinned guest images (server + agent),
+# each a distinct FLAT top-level key (never nested) so the image pin does not
+# collide on YAML parse (D14a.6). The refs derive from these blocks and always
+# match: the rootfs-builder GUEST_IMAGE, the EMBERVM_NODED_IMAGES entries (keyed by
+# the scratchK8sServer / scratchK8sAgent `workloads` entries above), and the
+# Workload CR's per-member source.image.ref. Disabled by default: enabling it
+# requires the 1Password item (scratchK8s.onepassword.itemPath) so the stable
+# EMBER_GROUP_SECRET exists.
+scratchK8sServer:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/k3s/k3s-server
+    tag: latest
+scratchK8sAgent:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/k3s/k3s-agent
+    tag: latest
+
+# The scratch-k8s composite consumer knobs (the Workload CR + OnePasswordItem read
+# these). WARMTH-ONLY: the cluster's state (nodes, pods, sqlite/etcd) lives in the
+# group snapshot only and evaporates on roll (maxLifetimeSeconds), banked-TTL
+# expiry, and any fresh boot. The kubectl token is STABLE across all three because
+# spec.group.secretRef points at the stable EMBER_GROUP_SECRET secret this block's
+# OnePasswordItem syncs.
+scratchK8s:
+  enabled: false
+  # The node Envoy TCP listener port the group's entry (the server API 6443) is
+  # exposed on cluster-internally. Must fall in the composite range (5410-5419; see
+  # noded.compositeTcpPortRange) and be unique across composite workloads. 5410 is
+  # the first port of the range and the first production composite claim. Shared
+  # with the monolith kubeconfig wiring.
+  listenPort: 5410
+  onepassword:
+    # 1Password item path (vaults/<vault>/items/<item>) whose EMBER_GROUP_SECRET
+    # field syncs into the STABLE <fullname>-scratch-k8s Secret. Empty leaves the
+    # OnePasswordItem unrendered (set it to enable the secret sync + Workload CR).
     itemPath: ""
 
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each

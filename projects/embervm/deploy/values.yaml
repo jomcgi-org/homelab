@@ -85,3 +85,15 @@ scratchPostgres:
   enabled: true
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
+
+# EmberVM R5 scale-to-zero scratch-k8s composite consumer (ADR embervm/001, plan
+# Task 10): enabled with the k8s-homelab 1Password item whose EMBER_GROUP_SECRET
+# field syncs into this namespace's STABLE Secret. listenPort (5410) defaults from
+# the chart. Enabling renders the OnePasswordItem, the composite Workload CR, and
+# (via the scratchK8sServer / scratchK8sAgent workloads entries) the two base
+# rootfs builds. The kubectl token is stable across rolls/TTL/fresh-boot; the
+# cluster's state is warmth-only and evaporates on each of those events.
+scratchK8s:
+  enabled: true
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/scratch-k8s"
