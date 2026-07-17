@@ -40,7 +40,7 @@ export const marqueeItems = [
   "Postgres + pgvector",
   "Bazel + BuildBuddy",
   "ArgoCD GitOps",
-  "Linkerd",
+  "Cilium",
   "Cloudflare Tunnel",
   "SigNoz",
 ];
@@ -88,6 +88,47 @@ export const projects = [
       {
         label: "projects/firecracker",
         href: "https://github.com/jomcgi/homelab/tree/main/projects/firecracker",
+      },
+    ],
+  },
+  {
+    id: "embervm",
+    category: "agents",
+    title: "EmberVM",
+    oneLiner:
+      "A Firecracker microVM orchestrator: an Elixir control plane and a Go node daemon run one-shot tasks, bankable stateful sessions, and warm HTTP serving on the same substrate.",
+    motivation:
+      "fc-invoke proved the substrate but hardcoded one workload shape: a stateless invoke. EmberVM is the successor, built by forking the node daemon and putting a BEAM control plane in front of it. Semgrep scans already run on it, a public image renderer serves warm from it, and fc-invoke is frozen with the goose agent as its last tenant. The design goal: the control plane owns placement and policy but stays off every serving hit path.",
+    facts: [
+      {
+        k: "Workload classes",
+        v: "task (one-shot, vsock-only guest with no NIC), session (a stateful sandbox, banked to disk when idle and relit on the next invoke), and serving (a warm HTTP endpoint on a tap NIC).",
+      },
+      {
+        k: "Serving data path",
+        v: "The control plane publishes endpoints over xDS to a per-node Envoy; the node's kernel DNATs each connection into the VM's tap network. Requests never touch the control plane or the Kubernetes apiserver.",
+      },
+      {
+        k: "Quotas and metering",
+        v: "Fail-closed: a principal with quota 0 is hard-stopped at submit. Metering rides the operation itself, bills success and failure alike, and is queryable at /v1/usage.",
+      },
+      {
+        k: "Public exposure",
+        v: "One public route, scoped at three layers: the HTTPRoute pins host and path, the node Envoy exact-matches the internal authority, and the guest shim keeps its control endpoints unreachable. 120 requests/min at Envoy plus a 3600 vCPU-second daily quota.",
+      },
+      {
+        k: "State",
+        v: "A Postgres op-log, not etcd: a 30-day journal with 7-day terminal-task retention. The milestone log, including post-ship defect records, is DECISIONS.md at the repo root.",
+      },
+    ],
+    links: [
+      {
+        label: "projects/embervm",
+        href: "https://github.com/jomcgi/homelab/tree/main/projects/embervm",
+      },
+      {
+        label: "Rendered warm by an EmberVM serving microVM",
+        href: "/functions/hot-image-demo?title=EmberVM&subtitle=served+warm+from+a+microVM",
       },
     ],
   },

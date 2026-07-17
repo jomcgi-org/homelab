@@ -39,7 +39,7 @@
       </div>
       <div class="node gpu">
         <span class="nname">NODE-4</span>
-        <div class="nrole">16 cpu &middot; 64 gb &middot; rtx 4090 &middot; firecracker</div>
+        <div class="nrole">16 cpu &middot; 64 gb &middot; rtx 4090 &middot; microvms</div>
       </div>
       <div class="maps">
         <span class="lbl">Live maps</span>
@@ -87,7 +87,9 @@
           Tag <b>@Bosun</b> in a Discord thread and a <b>goose</b> agent wakes in its own
           microVM, runs a recipe, and replies with an artifact or a PR. Ambient chat,
           scheduled routines, and coding agents all dispatch through fc-invoke
-          (~{agentFirstModelCallMs}ms to first model call).
+          (~{agentFirstModelCallMs}ms to first model call). Its successor,
+          <b>EmberVM</b>, already runs the semgrep scans and warm HTTP serving;
+          fc-invoke is frozen and the goose agent is its last tenant.
         </p>
         <div class="clinks">
           <a class="more" href="/app/firecracker">how &rarr;</a>
@@ -123,8 +125,7 @@
         </div>
         <p>
           Five custom Bazel rulesets build every image dual-arch and pin digests into versioned
-          OCI Helm charts; ArgoCD reconciles the cluster from the repo. <b>280+ chart
-          versions</b> so far.
+          OCI Helm charts; ArgoCD reconciles the cluster from the repo.
         </p>
         <div class="clinks">
           <a class="more" href="/docs/contributing">the pipeline &rarr;</a>
