@@ -141,6 +141,12 @@ defmodule Embervm.TcpActivator do
       # connect_timeout_ms) -> {:ok, socket} | {:error, reason}.
       dial_fun: Keyword.get(opts, :dial_fun, &default_dial/3),
       connect_timeout_ms: Keyword.get(opts, :connect_timeout_ms, 5_000),
+      # The composite live-splice counter table (R5, Task 8): a composite splice is
+      # bracketed incr..decr on it so the GroupSweeper's idle predicate can see a
+      # session that began during a wake (invisible to the entry listener's Envoy
+      # cx_active counter). nil disables the bracket (a stateful-only or test run),
+      # a clean no-op via ActivatorSplices' own absent-table guard.
+      splices_table: Keyword.get(opts, :splices_table, Embervm.ActivatorSplices),
       listeners: %{}
     }
 
@@ -242,7 +248,7 @@ defmodule Embervm.TcpActivator do
       %{ip: ip, port: vm_port} when is_binary(ip) and ip != "" and is_integer(vm_port) ->
         # Straggler: the VM/group is already live (a race with the node Envoy's
         # fallback decision). Splice directly, no wake.
-        splice_to(csock, workload, ip, vm_port, ctx)
+        splice_to(csock, class, workload, ip, vm_port, ctx)
 
       _ ->
         wake_and_splice(csock, class, workload, ctx)
@@ -266,7 +272,7 @@ defmodule Embervm.TcpActivator do
 
     case manager_mod.wake(manager, workload, principal) do
       {:ok, %{ip: ip, port: vm_port}} ->
-        splice_to(csock, workload, ip, vm_port, ctx)
+        splice_to(csock, class, workload, ip, vm_port, ctx)
 
       {:error, reason} ->
         Logger.info("embervm tcp activator: wake denied/failed, closing", workload: workload, reason: inspect(reason))
@@ -277,7 +283,7 @@ defmodule Embervm.TcpActivator do
   defp wake_target(ctx, :stateful, workload), do: {ctx.manager, ctx.manager_mod, "system:stateful:#{workload}"}
   defp wake_target(ctx, :composite, workload), do: {ctx.group_manager, ctx.group_manager_mod, "system:group:#{workload}"}
 
-  defp splice_to(csock, workload, ip, vm_port, ctx) do
+  defp splice_to(csock, class, workload, ip, vm_port, ctx) do
     case ctx.dial_fun.(ip, vm_port, ctx.connect_timeout_ms) do
       {:ok, usock} ->
         # The `splice` span (Task 10): bounds the whole spliced connection's
@@ -288,16 +294,41 @@ defmodule Embervm.TcpActivator do
         # lightweight counters pump_both/2 already threads through its
         # accumulator (no extra syscalls: :gen_tcp.recv already returns the byte
         # count via byte_size/1 on data it already read).
-        Tracer.with_span "embervm.stateful.splice", %{attributes: %{"ember.workload" => workload}} do
-          {bytes_in, bytes_out} = pump_both(csock, usock)
-          Tracer.set_attributes(%{"ember.bytes_in" => bytes_in, "ember.bytes_out" => bytes_out})
-        end
+        #
+        # A COMPOSITE splice is bracketed incr..decr on the live-splice counter (R5,
+        # Task 8): a session spliced here never re-enters the entry listener's Envoy
+        # cx_active counter, so the GroupSweeper reads this count as its third idle
+        # clause. The `after` fires on a normal teardown AND a pump crash within this
+        # process (a linked-peer crash cascades here too), so a live splice decrements
+        # exactly once; a NET leak only ever reads busier-than-real (never fakes idle).
+        with_splice_bracket(class, workload, ctx, fn ->
+          Tracer.with_span "embervm.stateful.splice", %{attributes: %{"ember.workload" => workload}} do
+            {bytes_in, bytes_out} = pump_both(csock, usock)
+            Tracer.set_attributes(%{"ember.bytes_in" => bytes_in, "ember.bytes_out" => bytes_out})
+          end
+        end)
 
       {:error, reason} ->
         Logger.warning("embervm tcp activator: dial to woken VM failed", ip: ip, port: vm_port, reason: inspect(reason))
         :gen_tcp.close(csock)
     end
   end
+
+  # Bracket a COMPOSITE splice with incr..decr on the live-splice counter; a stateful
+  # splice runs the body unbracketed (Envoy's state-<port> cx_active already sees a
+  # stateful session, so there is nothing extra to track). The decrement is in an
+  # `after` so it fires on both a clean teardown and a crash in this handler process.
+  defp with_splice_bracket(:composite, workload, ctx, body) do
+    Embervm.ActivatorSplices.incr(ctx.splices_table, workload)
+
+    try do
+      body.()
+    after
+      Embervm.ActivatorSplices.decr(ctx.splices_table, workload)
+    end
+  end
+
+  defp with_splice_bracket(_class, _workload, _ctx, body), do: body.()
 
   defp default_dial(ip, port, connect_timeout_ms) do
     ip_charlist = String.to_charlist(ip)

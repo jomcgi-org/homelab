@@ -120,10 +120,25 @@ defmodule Embervm.GroupManagerTest do
       end
     end
 
+    bank_fail_member = Keyword.get(opts, :bank_fail_member)
+
     stop_group_member_fun = fn _ch, req ->
-      record(rec, {:stop_member, req.vm_id, req.mode})
+      record(rec, {:stop_member, req.vm_id, req.mode, req.set_id, req.member_name})
       if req.mode == :STOP_GROUP_MEMBER_MODE_DESTROY, do: release.(req.vm_id)
-      {:ok, %Embervm.Node.V1.StopGroupMemberResponse{}}
+
+      cond do
+        req.mode == :STOP_GROUP_MEMBER_MODE_BANK and req.member_name == bank_fail_member ->
+          {:error, :bank_boom}
+
+        req.mode == :STOP_GROUP_MEMBER_MODE_BANK ->
+          # BANK pauses+snapshots+destroys, returning the per-member bundle ref written
+          # under group/<set_id>/<member>/.
+          release.(req.vm_id)
+          {:ok, %Embervm.Node.V1.StopGroupMemberResponse{snapshot_ref: "snap-#{req.set_id}-#{req.member_name}", size_bytes: 4_096}}
+
+        true ->
+          {:ok, %Embervm.Node.V1.StopGroupMemberResponse{}}
+      end
     end
 
     evict_snapshot_fun = fn _ch, req ->
@@ -378,7 +393,7 @@ defmodule Embervm.GroupManagerTest do
     # taps+IPs were freed. Without this the fresh boot would collide on .10/.11
     # (:ip_in_use, modeled by the allocator fake) and the whole wake would fail.
     destroyed =
-      for {:stop_member, vm_id, :STOP_GROUP_MEMBER_MODE_DESTROY} <- events(ctx.rec), do: vm_id
+      for {:stop_member, vm_id, :STOP_GROUP_MEMBER_MODE_DESTROY, _set, _name} <- events(ctx.rec), do: vm_id
 
     assert "vm-leader" in destroyed
     assert "vm-worker-0" in destroyed
@@ -409,5 +424,60 @@ defmodule Embervm.GroupManagerTest do
     {:ok, inst} = GroupStore.get(ctx.store, "g-1")
     assert inst.state == :running
     assert inst.set_id == nil
+  end
+
+  # -- bank_group (R5 Task 8) -------------------------------------------------
+
+  test "bank_group banks the whole set under one set_id and records it atomically" do
+    ctx = start_group()
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+
+    # The sweeper moves running -> banking (unpublish + activator) BEFORE driving the
+    # bank; bank_group operates from :banking.
+    {:ok, _} = GroupStore.mark(ctx.store, "g-1", :bank)
+
+    assert {:ok, %{set_id: set_id, banked: 3, pause_spread_ms: spread}} = GroupManager.bank_group(ctx.mgr)
+    assert is_binary(set_id) and set_id != ""
+    assert spread >= 0
+
+    {:ok, inst} = GroupStore.get(ctx.store, "g-1")
+    assert inst.state == :banked
+    assert inst.set_id == set_id
+
+    # Every member banked under the SAME set_id (BANK mode), each stamped with its ref.
+    banks =
+      for {:stop_member, _vm, :STOP_GROUP_MEMBER_MODE_BANK, sid, name} <- events(ctx.rec), do: {sid, name}
+
+    assert Enum.map(banks, &elem(&1, 0)) |> Enum.uniq() == [set_id], "one shared set_id"
+    assert Enum.map(banks, &elem(&1, 1)) |> Enum.sort() == ["leader", "worker-0", "worker-1"]
+
+    members = GroupStore.members(ctx.store, "g-1")
+    assert Enum.all?(members, &(is_binary(&1.snapshot_ref) and &1.snapshot_ref != ""))
+    assert Enum.all?(members, &(&1.vm_id == nil)), "the VMs are gone after bank"
+
+    # ONE atomic group_banked op recorded the whole set.
+    ops = load_ops(ctx, "group_banked")
+    assert length(ops) == 1
+  end
+
+  test "bank_group ABORTS back to running when a member BANK fails (all-or-nothing)" do
+    ctx = start_group(bank_fail_member: "worker-1")
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+
+    {:ok, _} = GroupStore.mark(ctx.store, "g-1", :bank)
+
+    assert {:error, {:bank_partial, _}} = GroupManager.bank_group(ctx.mgr)
+
+    {:ok, inst} = GroupStore.get(ctx.store, "g-1")
+    assert inst.state == :running, "a failed member bank returns the group to running"
+    assert inst.set_id == nil
+
+    assert load_ops(ctx, "group_banked") == []
+  end
+
+  defp load_ops(ctx, kind) do
+    atom = String.to_existing_atom(kind)
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    Enum.filter(ops, &(&1.kind == atom))
   end
 end

@@ -200,6 +200,20 @@ defmodule Embervm.GroupStore do
     GenServer.call(store, {:set_member_health, instance_id, member_name, healthy?})
   end
 
+  @doc """
+  Touch a group instance's `last_active_at` (and `updated_at`) to `ts`, WITHOUT an
+  FSM transition or an op-log append (activity is a live node-Envoy stats fact, not a
+  durable lifecycle event). `Embervm.GroupSweeper` calls this on every tick a
+  workload's entry listener showed connection activity, so the banked-TTL and
+  idle-age baselines measure from the last real traffic. A no-op for an unknown
+  instance. Returns the updated instance or `:error`. Mirrors
+  `StatefulStore.touch_active/3`.
+  """
+  @spec touch_active(GenServer.server(), String.t(), integer()) :: {:ok, map()} | :error
+  def touch_active(store \\ __MODULE__, instance_id, ts) do
+    GenServer.call(store, {:touch_active, instance_id, ts})
+  end
+
   @doc "The instance's hot-set row, or `:error` if unknown."
   @spec get(GenServer.server(), String.t()) :: {:ok, map()} | :error
   def get(store \\ __MODULE__, instance_id) do
@@ -543,6 +557,18 @@ defmodule Embervm.GroupStore do
 
   def handle_call({:set_member_health, instance_id, member_name, healthy?}, _from, state) do
     do_set_member_health(state, instance_id, member_name, healthy?)
+  end
+
+  def handle_call({:touch_active, instance_id, ts}, _from, state) do
+    case fetch(state, instance_id) do
+      {:ok, instance} ->
+        updated = %{instance | last_active_at: ts, updated_at: ts}
+        :ets.insert(state.instances, {instance_id, updated})
+        {:reply, {:ok, updated}, state}
+
+      {:error, _} ->
+        {:reply, :error, state}
+    end
   end
 
   def handle_call({:get, instance_id}, _from, state) do
