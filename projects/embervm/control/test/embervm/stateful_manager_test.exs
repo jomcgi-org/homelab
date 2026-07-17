@@ -486,8 +486,13 @@ defmodule Embervm.StatefulManagerTest do
         %{snapshot_ref: "stateful/limbo", snapshot_generation: 1, snapshot_size_bytes: 10, vm_id: nil}
       )
 
+    # The node reports the bundle AND a matching volume (generation 1 == the bundle's
+    # stamped generation), so the pair is VALID and reconcile heals the limbo instance
+    # to banked rather than eager-evicting it as a broken pair. A banked instance
+    # always has a volume in production (data outlives the instance).
     stateful_node(ctx, "node-4",
-      stateful_bundles: [%{snapshot_ref: "stateful/limbo", workload: "wl-a", generation: 1, size_bytes: 10, created_at_unix_ms: 1}]
+      stateful_bundles: [%{snapshot_ref: "stateful/limbo", workload: "wl-a", generation: 1, size_bytes: 10, created_at_unix_ms: 1}],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 1, size_bytes: 100, allocated_bytes: 10}]
     )
 
     :ok = StatefulManager.reconcile(ctx.mgr)
