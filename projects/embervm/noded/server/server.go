@@ -197,6 +197,21 @@ type Server struct {
 	// (R4). Overridable in tests, mirroring newProber.
 	newTCPProber func() *serving.TCPProber
 
+	// groupNet owns the host composite-group networking (per-group bridges, member
+	// addressing, inter-group isolation, entry DNAT). nil disables the R5 group
+	// verbs: CreateGroupNetwork/DeleteGroupNetwork then return Unimplemented and
+	// NodeStatus.group_networks is empty. In production a *serving.GroupManager
+	// satisfies it.
+	groupNet groupNetwork
+	// groupRecords owns the durable on-disk group-network records (the adoption
+	// source of truth). nil (alongside a nil groupNet) disables the group verbs. In
+	// production the same *driver.Driver satisfies it.
+	groupRecords groupRecordStore
+	// groupMembers is the live composite-group member registry. Created empty in
+	// Task 4 (only read for member_count and the DeleteGroupNetwork attached-member
+	// refusal); Task 5's StartGroupMember fills it.
+	groupMembers *groupMemberRegistry
+
 	drainingMu sync.RWMutex
 	draining   bool
 
@@ -242,6 +257,14 @@ type Options struct {
 	// serving probe knobs but for opaque L4 TCP CONNECT instead of HTTP GET.
 	StatefulProbeInterval      time.Duration
 	StatefulUnhealthyThreshold int
+	// GroupNet and GroupRecords serve the R5 composite-group verbs
+	// (CreateGroupNetwork/DeleteGroupNetwork, and Task 5's member lifecycle). Both
+	// nil (the default) leaves the group verbs returning Unimplemented, so a Server
+	// built without group support still compiles and every other class is
+	// untouched. In production a *serving.GroupManager satisfies GroupNet and the
+	// same *driver.Driver satisfies GroupRecords.
+	GroupNet     groupNetwork
+	GroupRecords groupRecordStore
 }
 
 // New builds a Server. Driver and Transport must not be nil.
@@ -269,6 +292,9 @@ func New(opts Options) *Server {
 		statefulVMs:     newStatefulRegistry(),
 		statefulBundles: newStatefulBundleRegistry(),
 		statefulDriver:  opts.StatefulDriver,
+		groupNet:        opts.GroupNet,
+		groupRecords:    opts.GroupRecords,
+		groupMembers:    newGroupMemberRegistry(),
 		subs:            make(map[chan struct{}]struct{}),
 	}
 	// VolumeRoot may be set directly on Options (mirroring how cmd/main.go wires
@@ -1205,7 +1231,11 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	// serving (all four classes Claim through the same driver, so its LiveCount
 	// already sums them; naming the invariant here mirrors the session/serving
 	// comment above).
-	live := taskLive + len(sessionVMs) + len(servingVMs) + len(statefulVMs)
+	// Group member VMs count against the node live-VM total alongside every other
+	// class (all Claim through the same driver). Empty in Task 4; Task 5 fills the
+	// member registry.
+	groupMemberVMs := s.groupMemberVmsStatus()
+	live := taskLive + len(sessionVMs) + len(servingVMs) + len(statefulVMs) + len(groupMemberVMs)
 	snaps := s.sessionSnapshotsStatus()
 	freeBytes, usedBytes := s.snapshotDiskUsage()
 	return &nodev1.NodeStatus{
@@ -1227,6 +1257,10 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		StatefulVms:           statefulVMs,
 		StatefulBundles:       s.statefulBundlesStatus(),
 		Volumes:               s.volumesStatus(),
+		GroupNetworks:         s.groupNetworksStatus(),
+		GroupMemberVms:        groupMemberVMs,
+		// group_bundle_sets stays empty-but-present in Task 4; the group bank
+		// inventory (grouped by set dir) lands with Task 5's member bank.
 	}
 }
 

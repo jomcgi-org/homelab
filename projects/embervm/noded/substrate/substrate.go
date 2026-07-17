@@ -170,6 +170,30 @@ type StatefulBundleInfo struct {
 	CreatedAtUnixMs int64
 }
 
+// GroupNetworkRecord is one discovered on-disk group-network record (R5),
+// returned by the driver's startup rescan (ScanGroupNetworks) so the server
+// re-seeds its group-network inventory after a restart. The record is the DURABLE
+// truth for a group network: the bridge itself lives in noded's pod netns and
+// dies with the pod (D-R3.11.4), so the on-disk config.json under
+// group_networks/<group_instance_id>/ is what a restarted daemon (and, via
+// NodeStatus, the control plane) reconciles from. CreateGroupNetwork is idempotent
+// precisely so the control plane can re-issue it to rebuild the bridge a rescanned
+// record names.
+type GroupNetworkRecord struct {
+	// GroupInstanceID is the control-plane group-instance identity (the record dir
+	// name and the bridge idempotency key).
+	GroupInstanceID string `json:"groupInstanceId"`
+	// BridgeName is the daemon-derived bridge device name (deterministic from the
+	// group_instance_id), recorded so a rescan reports it without re-deriving.
+	BridgeName string `json:"bridgeName"`
+	// SubnetCIDR is the group's /24 within the composite supernet.
+	SubnetCIDR string `json:"subnetCidr"`
+	// GatewayIP is the bridge's .1 address on the /24 (the members' default route).
+	GatewayIP string `json:"gatewayIp"`
+	// CreatedAtUnixMs is when the group network was first created, for reporting.
+	CreatedAtUnixMs int64 `json:"createdAtUnixMs"`
+}
+
 // Substrate is the core the driver satisfies: acquire an isolated env, run work
 // in it, return/destroy it. Exec is unused by the FC-direct driver (work arrives
 // over vsock HTTP), but the interface keeps the driver honest about the seam.

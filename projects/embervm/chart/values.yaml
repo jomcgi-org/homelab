@@ -554,6 +554,15 @@ noded:
   # real concurrency; this only stops a runaway from exhausting the node.
   maxLiveVMs: 8
 
+  # R5 composite-group supernet: noded carves a per-group /24 out of this supernet
+  # for each composite-workload group and VALIDATES the control-plane-assigned group
+  # cidr is a /24 wholly within it (and non-overlapping with an existing group
+  # bridge). Distinct from the serving tap space (172.31/12, a daemon default) and
+  # verified against the cluster pod CIDR (10.0/8) before the live drill, so the
+  # three do not collide. The bridges live in noded's pod netns and die with the pod;
+  # the durable truth is the on-disk group_networks/<gid>/config.json record.
+  compositeSupernet: 10.101.0.0/16
+
   # Static bearer token gating the gRPC surface. Disabled here (daemon runs open +
   # warns; Cilium/Linkerd policy is the layer). A 1Password-provisioned secret is
   # wired in a later PR when the control plane dials the daemon (Task 11).

@@ -4,6 +4,7 @@ go_library(
     name = "serving",
     srcs = [
         "alloc.go",
+        "group.go",
         "net.go",
         "probe.go",
         "probe_tcp.go",
@@ -16,6 +17,7 @@ go_test(
     name = "serving_test",
     srcs = [
         "alloc_test.go",
+        "group_test.go",
         "net_test.go",
         "probe_test.go",
     ],

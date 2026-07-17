@@ -3,6 +3,8 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "server",
     srcs = [
+        "group.go",
+        "group_registry.go",
         "registry.go",
         "server.go",
         "serving.go",
@@ -28,6 +30,7 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "group_test.go",
         "server_test.go",
         "serving_test.go",
         "stateful_test.go",
@@ -35,6 +38,7 @@ go_test(
     embed = [":server"],
     deps = [
         "//projects/embervm/noded/config",
+        "//projects/embervm/noded/serving",
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/volume",
         "//projects/embervm/proto/embervm/node/v1:nodev1",

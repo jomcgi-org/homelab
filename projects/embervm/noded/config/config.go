@@ -154,6 +154,21 @@ type Config struct {
 	// serving HTTP-probe knobs. Default 5s / 3.
 	StatefulProbeInterval      time.Duration
 	StatefulUnhealthyThreshold int
+
+	// CompositeSupernet is the values-declared supernet the control plane carves a
+	// per-group /24 out of for each composite-workload group (R5). CreateGroupNetwork
+	// VALIDATES the control-plane-assigned cidr is a /24 wholly within this supernet
+	// (and non-overlapping with an existing group bridge). Default 10.101.0.0/16
+	// (distinct from the serving 172.31/12 space and the 10.0/8 pod CIDR is verified
+	// against the cluster before the live drill). A malformed supernet fails
+	// GroupManager construction loudly. Env EMBERVM_NODED_COMPOSITE_SUPERNET.
+	CompositeSupernet string
+	// GroupProbeInterval / GroupUnhealthyThreshold configure the TCP-connect
+	// health-probe loop for live group member VMs (R5), mirroring the stateful
+	// knobs. Carried now so Task 5's member lifecycle needs no config reshape;
+	// unused in Task 4. Default 5s / 3.
+	GroupProbeInterval      time.Duration
+	GroupUnhealthyThreshold int
 }
 
 // Load resolves configuration from the environment, applying defaults for all
@@ -190,6 +205,10 @@ func Load() (Config, error) {
 		VolumeRoot:                 os.Getenv("EMBERVM_NODED_VOLUME_ROOT"),
 		StatefulProbeInterval:      5 * time.Second,
 		StatefulUnhealthyThreshold: atoiDefault("EMBERVM_NODED_STATEFUL_UNHEALTHY_THRESHOLD", 3),
+
+		CompositeSupernet:       getenvDefault("EMBERVM_NODED_COMPOSITE_SUPERNET", "10.101.0.0/16"),
+		GroupProbeInterval:      5 * time.Second,
+		GroupUnhealthyThreshold: atoiDefault("EMBERVM_NODED_GROUP_UNHEALTHY_THRESHOLD", 3),
 	}
 
 	if c.Node == "" {
@@ -222,6 +241,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := parseDuration("EMBERVM_NODED_STATEFUL_PROBE_INTERVAL", &c.StatefulProbeInterval); err != nil {
+		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_GROUP_PROBE_INTERVAL", &c.GroupProbeInterval); err != nil {
 		return Config{}, err
 	}
 	if v := os.Getenv("EMBERVM_NODED_ARCHIVE_MAX_BYTES"); v != "" {
