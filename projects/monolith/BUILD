@@ -1088,6 +1088,21 @@ py_test(
     ],
 )
 
+# EmberVM R4 scratch-postgres DSN plumbing (D-R4.PR-11.1): asserts the DSN is
+# injected into the submitted run_python code (guest-side psycopg-connect),
+# repr-escaped, and reaches the POSTed payload; and that an unset DSN is a no-op.
+py_test(
+    name = "sandbox_scratch_postgres_test",
+    srcs = ["sandbox/scratch_postgres_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
 py_test(
     name = "integration_test",
     size = "medium",

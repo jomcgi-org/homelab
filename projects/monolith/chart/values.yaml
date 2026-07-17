@@ -802,6 +802,29 @@ sandbox:
   # `sandbox`. Empty falls back to the client default ("sandbox-session").
   sessionWorkload: "sandbox-session"
 
+# EmberVM R4 scratch-postgres consumer (ADR embervm/001, D-R4.PR-11.1). When
+# enabled the monolith exposes SCRATCH_POSTGRES_DSN so agent run_python sessions
+# can psycopg-connect to the scale-to-zero scratch Postgres. The datastore's
+# superuser password lives in 1Password (the SAME item the embervm chart syncs
+# into its own namespace); the monolith syncs it into ITS OWN namespace via
+# onepassword.itemPath so secretKeyRef stays in-namespace (a K8s Secret cannot be
+# read across namespaces). The DSN host is the embervm serving Service in the
+# embervm namespace at listenPort.
+scratchPostgres:
+  enabled: false
+  # The embervm serving Service listenPort the scratch-postgres workload is
+  # exposed on (must match the embervm chart's scratchPostgres.listenPort).
+  listenPort: 5400
+  # The embervm namespace the serving Service lives in (the DSN host is
+  # embervm-serving.<namespace>.svc).
+  embervmNamespace: embervm
+  onepassword:
+    # 1Password item path whose POSTGRES_PASSWORD field syncs into the
+    # <fullname>-scratch-postgres Secret in the MONOLITH namespace. Must be the
+    # same item the embervm chart points at, so both namespaces get the same
+    # password. Empty leaves the OnePasswordItem + DSN env unrendered.
+    itemPath: ""
+
 # FaaS zip-lane function registry (ADR 045 / embervm R1). s3ReadBase is the
 # in-cluster SeaweedFS S3 read host noded GETs function archives from; it must
 # match the CRD samples' codeUri host so storage.code_uri() and noded agree on
