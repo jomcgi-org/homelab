@@ -193,11 +193,15 @@ defmodule Embervm.StatefulManagerTest do
   end
 
   test "the parked-connection cap closes excess connections behind an in-flight wake" do
-    ctx = start_stack(start_sleep_ms: 200, park_cap: 2, wake_max: 1000)
+    # park_cap counts EVERY parked connection, INCLUDING the first caller (the wake
+    # owner is itself a real connection waiting for the endpoint). So a cap of 3
+    # admits the owner + 2 more; a fourth is denied.
+    ctx = start_stack(start_sleep_ms: 200, park_cap: 3, wake_max: 1000)
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4")
 
-    # First caller kicks the wake; two more park (at the cap); a fourth is denied.
+    # First caller kicks the wake; two more park (filling the cap of 3 with the
+    # owner); a fourth is denied.
     first = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
     # Give the first call time to register and become the in-flight wake owner.
     Process.sleep(20)
