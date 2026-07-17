@@ -48,6 +48,11 @@ defmodule Embervm.GroupManagerTest do
     {:ok, rec} = recorder()
 
     fail_member = Keyword.get(opts, :fail_member)
+    # A member whose RELIGHT StartGroupMember fails (Task 7): forces the all-or-
+    # nothing relight -> fresh fallback. relight_unverified_member instead returns a
+    # was_relight=false response (the clock-resync casualty, decision 7).
+    relight_fail_member = Keyword.get(opts, :relight_fail_member)
+    relight_unverified_member = Keyword.get(opts, :relight_unverified_member)
 
     create_group_network_fun = fn _ch, req ->
       record(rec, {:create_network, req.group_instance_id, req.cidr})
@@ -60,13 +65,29 @@ defmodule Embervm.GroupManagerTest do
     end
 
     start_group_member_fun = fn _ch, req ->
-      record(rec, {:start_member, req.member_name, req.member_index, req.ip, req.env})
+      relight? = req.mode == :START_GROUP_MEMBER_MODE_RELIGHT
+      record(rec, {:start_member, req.member_name, req.member_index, req.ip, req.env, req.mode})
 
-      if req.member_name == fail_member do
-        {:error, :boom}
-      else
-        {:ok, %StartGroupMemberResponse{vm_id: "vm-#{req.member_name}", ip: req.ip, was_relight: false}}
+      cond do
+        req.member_name == fail_member ->
+          {:error, :boom}
+
+        relight? and req.member_name == relight_fail_member ->
+          {:error, :relight_boom}
+
+        relight? and req.member_name == relight_unverified_member ->
+          # A resume the daemon could not verify (clock-resync out of bounds):
+          # was_relight=false on a RELIGHT-mode response.
+          {:ok, %StartGroupMemberResponse{vm_id: "vm-#{req.member_name}", ip: req.ip, was_relight: false}}
+
+        true ->
+          {:ok, %StartGroupMemberResponse{vm_id: "vm-#{req.member_name}", ip: req.ip, was_relight: relight?}}
       end
+    end
+
+    evict_snapshot_fun = fn _ch, req ->
+      record(rec, {:evict_snapshot, req.snapshot_ref})
+      {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
     end
 
     {:ok, secret_reads} = Agent.start_link(fn -> [] end)
@@ -94,6 +115,7 @@ defmodule Embervm.GroupManagerTest do
       create_group_network_fun: create_group_network_fun,
       delete_group_network_fun: delete_group_network_fun,
       start_group_member_fun: start_group_member_fun,
+      evict_snapshot_fun: evict_snapshot_fun,
       get_secret_fun: get_secret_fun,
       secret_fun: Keyword.get(opts, :secret_fun, fn -> "minted-secret" end),
       clock: fn -> 1_000 end
@@ -148,8 +170,8 @@ defmodule Embervm.GroupManagerTest do
 
     starts =
       events(ctx.rec)
-      |> Enum.filter(&match?({:start_member, _, _, _, _}, &1))
-      |> Enum.map(fn {:start_member, name, _idx, _ip, _env} -> name end)
+      |> Enum.filter(&match?({:start_member, _, _, _, _, _}, &1))
+      |> Enum.map(fn {:start_member, name, _idx, _ip, _env, _mode} -> name end)
 
     # leader (startOrder 0) must come before BOTH worker replicas (startOrder 1).
     leader_pos = Enum.find_index(starts, &(&1 == "leader"))
@@ -180,8 +202,8 @@ defmodule Embervm.GroupManagerTest do
     {:ok, _} = GroupManager.create_group(ctx.mgr)
 
     # The env the WORKER-0 member was started with.
-    {:start_member, "worker-0", _idx, _ip, env} =
-      events(ctx.rec) |> Enum.find(&match?({:start_member, "worker-0", _, _, _}, &1))
+    {:start_member, "worker-0", _idx, _ip, env, _mode} =
+      events(ctx.rec) |> Enum.find(&match?({:start_member, "worker-0", _, _, _, _}, &1))
 
     # Member identity.
     assert env["EMBER_GROUP_MEMBER"] == "worker-0"
@@ -198,8 +220,8 @@ defmodule Embervm.GroupManagerTest do
     assert env["EMBER_GROUP_SECRET"] == "minted-secret"
 
     # The leader carries its declared env untouched too.
-    {:start_member, "leader", _, _, leader_env} =
-      events(ctx.rec) |> Enum.find(&match?({:start_member, "leader", _, _, _}, &1))
+    {:start_member, "leader", _, _, leader_env, _mode} =
+      events(ctx.rec) |> Enum.find(&match?({:start_member, "leader", _, _, _, _}, &1))
 
     assert leader_env["FOO"] == "bar"
     assert leader_env["EMBER_GROUP_IP"] == "10.101.0.10"
@@ -220,8 +242,8 @@ defmodule Embervm.GroupManagerTest do
     ctx = start_group(entry: entry)
     {:ok, _} = GroupManager.create_group(ctx.mgr)
 
-    {:start_member, "leader", _, _, env} =
-      events(ctx.rec) |> Enum.find(&match?({:start_member, "leader", _, _, _}, &1))
+    {:start_member, "leader", _, _, env, _mode} =
+      events(ctx.rec) |> Enum.find(&match?({:start_member, "leader", _, _, _, _}, &1))
 
     # The secret came from the referenced K8s Secret's key, not a mint.
     assert env["EMBER_GROUP_SECRET"] == "from-k8s"
@@ -233,11 +255,99 @@ defmodule Embervm.GroupManagerTest do
     ctx = start_group(secret_fun: fn -> "fixed-mint" end)
     {:ok, _} = GroupManager.create_group(ctx.mgr)
 
-    {:start_member, "leader", _, _, env} =
-      events(ctx.rec) |> Enum.find(&match?({:start_member, "leader", _, _, _}, &1))
+    {:start_member, "leader", _, _, env, _mode} =
+      events(ctx.rec) |> Enum.find(&match?({:start_member, "leader", _, _, _, _}, &1))
 
     assert env["EMBER_GROUP_SECRET"] == "fixed-mint"
     # No K8s read happened.
     assert Agent.get(ctx.secret_reads, & &1) == []
+  end
+
+  # -- wake (relight / fresh fallback), R5 Task 7 ----------------------------
+
+  # Drive the created group to `banked` with a complete set (a snapshot_ref for every
+  # expanded member), so a wake_group relights it.
+  defp bank_complete(ctx) do
+    {:ok, _} = GroupStore.mark(ctx.store, "g-1", :bank)
+
+    members = [
+      %{name: "leader", snapshot_ref: "snap-leader"},
+      %{name: "worker-0", snapshot_ref: "snap-worker-0"},
+      %{name: "worker-1", snapshot_ref: "snap-worker-1"}
+    ]
+
+    {:ok, _} = GroupStore.bank_ready(ctx.store, "g-1", "set-1", members)
+    :ok
+  end
+
+  defp relight_events(ctx) do
+    events(ctx.rec)
+    |> Enum.filter(&match?({:start_member, _, _, _, _, :START_GROUP_MEMBER_MODE_RELIGHT}, &1))
+    |> Enum.map(fn {:start_member, name, _idx, _ip, _env, _mode} -> name end)
+  end
+
+  test "wake_group relights a complete banked set in role order and republishes the entry" do
+    ctx = start_group()
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+    :ok = bank_complete(ctx)
+
+    assert {:ok, endpoint, :relit} = GroupManager.wake_group(ctx.mgr)
+    assert endpoint == %{ip: "10.0.0.9", port: 30_010}
+
+    {:ok, inst} = GroupStore.get(ctx.store, "g-1")
+    assert inst.state == :running
+    assert inst.entry_port_published == 30_010
+
+    # Every member was RELIGHT-resumed (not fresh), in role order (leader before both
+    # workers), and the network was re-issued before the resumes.
+    relit = relight_events(ctx)
+    assert Enum.sort(relit) == ["leader", "worker-0", "worker-1"]
+    assert Enum.find_index(relit, &(&1 == "leader")) < Enum.find_index(relit, &(&1 == "worker-0"))
+
+    # The network was re-created on the wake (the bridge dies with the noded pod).
+    creates = Enum.count(events(ctx.rec), &match?({:create_network, "g-1", _}, &1))
+    assert creates >= 2
+  end
+
+  test "wake_group falls back to a FRESH boot (same call) when a member relight fails, evicting the set" do
+    ctx = start_group(relight_fail_member: "worker-1")
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+    :ok = bank_complete(ctx)
+
+    assert {:ok, endpoint, {:fresh, :relight_failed}} = GroupManager.wake_group(ctx.mgr)
+    assert endpoint == %{ip: "10.0.0.9", port: 30_010}
+
+    {:ok, inst} = GroupStore.get(ctx.store, "g-1")
+    assert inst.state == :running
+    # The set was evicted (set_id cleared) and each member's snapshot_ref cleared.
+    assert inst.set_id == nil
+    assert Enum.all?(GroupStore.members(ctx.store, "g-1"), &is_nil(&1.snapshot_ref))
+
+    # The banked snapshots were EvictSnapshot'd on the node.
+    evicted = for {:evict_snapshot, ref} <- events(ctx.rec), do: ref
+    assert Enum.sort(evicted) == ["snap-leader", "snap-worker-0", "snap-worker-1"]
+
+    # After the fallback, every member was FRESH-started (mode FRESH), and the group
+    # is whole again.
+    fresh =
+      events(ctx.rec)
+      |> Enum.filter(&match?({:start_member, _, _, _, _, :START_GROUP_MEMBER_MODE_FRESH}, &1))
+      |> Enum.map(fn {:start_member, name, _, _, _, _} -> name end)
+
+    # Fresh starts happen both at create AND at the fallback: the fallback set is the
+    # last three.
+    assert Enum.take(fresh, -3) |> Enum.sort() == ["leader", "worker-0", "worker-1"]
+  end
+
+  test "wake_group treats an UNVERIFIED relight (clock-resync) as a failure and fresh-boots" do
+    ctx = start_group(relight_unverified_member: "leader")
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+    :ok = bank_complete(ctx)
+
+    assert {:ok, _endpoint, {:fresh, :clock_resync_failed}} = GroupManager.wake_group(ctx.mgr)
+
+    {:ok, inst} = GroupStore.get(ctx.store, "g-1")
+    assert inst.state == :running
+    assert inst.set_id == nil
   end
 end

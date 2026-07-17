@@ -119,13 +119,23 @@ defmodule Embervm.TcpActivator do
   def init(opts) do
     state = %{
       port_range: Keyword.get(opts, :port_range, []),
-      # The stateful manager to call on a miss. Injectable for tests (a fake
+      # The stateful manager to call on a stateful miss. Injectable for tests (a fake
       # module/pid implementing wake/3).
       manager: Keyword.get(opts, :manager, Embervm.StatefulManager),
       manager_mod: Keyword.get(opts, :manager_mod, Embervm.StatefulManager),
       catalog_table: Keyword.get(opts, :catalog_table, Embervm.WorkloadCatalog.table()),
       store: Keyword.get(opts, :store, Embervm.StatefulStore),
       store_mod: Keyword.get(opts, :store_mod, Embervm.StatefulStore),
+      # The composite-group wake brain to call on a group miss (R5, Task 7): a
+      # connection accepted on a composite entry.listenPort resolves the workload by
+      # the SAME local-accept-port mechanism as stateful (decision 5), then wakes the
+      # GROUP (relight-or-create single-flighted there) instead of the stateful VM.
+      # Injectable for tests (a fake module implementing wake/3). group_store_mod is
+      # read purely for the straggler check (a group whose entry is already live).
+      group_manager: Keyword.get(opts, :group_manager, Embervm.GroupWakeManager),
+      group_manager_mod: Keyword.get(opts, :group_manager_mod, Embervm.GroupWakeManager),
+      group_store: Keyword.get(opts, :group_store, Embervm.GroupStore),
+      group_store_mod: Keyword.get(opts, :group_store_mod, Embervm.GroupStore),
       # The dial seam for the upstream (woken VM) connection, injectable for
       # tests. Production dials plain gen_tcp. Arity-3: (ip, port,
       # connect_timeout_ms) -> {:ok, socket} | {:error, reason}.
@@ -214,23 +224,28 @@ defmodule Embervm.TcpActivator do
   defp handle_connection(csock, port, ctx) do
     case workload_for_port(ctx, port) do
       nil ->
-        Logger.warning("embervm tcp activator: no stateful workload owns port #{port}; closing")
+        Logger.warning("embervm tcp activator: no stateful/composite workload owns port #{port}; closing")
         :gen_tcp.close(csock)
 
-      workload ->
-        route_connection(csock, workload, ctx)
+      {class, workload} ->
+        route_connection(csock, class, workload, ctx)
     end
   end
 
-  defp route_connection(csock, workload, ctx) do
-    case ctx.store_mod.published_endpoint(ctx.store, workload) do
+  # The straggler check + wake dispatch is CLASS-parameterized: a stateful listener
+  # reads StatefulStore + StatefulManager, a composite listener reads GroupStore +
+  # GroupWakeManager. Both resolve the workload by the LOCAL ACCEPT PORT (decision 5)
+  # and single-flight the wake in their respective manager; the splice below is
+  # identical (opaque L4 bytes either way).
+  defp route_connection(csock, class, workload, ctx) do
+    case live_endpoint(ctx, class, workload) do
       %{ip: ip, port: vm_port} when is_binary(ip) and ip != "" and is_integer(vm_port) ->
-        # Straggler: the VM is already live (a race with the node Envoy's
+        # Straggler: the VM/group is already live (a race with the node Envoy's
         # fallback decision). Splice directly, no wake.
         splice_to(csock, workload, ip, vm_port, ctx)
 
       _ ->
-        wake_and_splice(csock, workload, ctx)
+        wake_and_splice(csock, class, workload, ctx)
     end
   rescue
     e ->
@@ -238,10 +253,18 @@ defmodule Embervm.TcpActivator do
       :gen_tcp.close(csock)
   end
 
-  defp wake_and_splice(csock, workload, ctx) do
-    principal = "system:stateful:#{workload}"
+  defp live_endpoint(ctx, :stateful, workload) do
+    ctx.store_mod.published_endpoint(ctx.store, workload)
+  end
 
-    case ctx.manager_mod.wake(ctx.manager, workload, principal) do
+  defp live_endpoint(ctx, :composite, workload) do
+    ctx.group_store_mod.entry_endpoint(ctx.group_store, workload)
+  end
+
+  defp wake_and_splice(csock, class, workload, ctx) do
+    {manager, manager_mod, principal} = wake_target(ctx, class, workload)
+
+    case manager_mod.wake(manager, workload, principal) do
       {:ok, %{ip: ip, port: vm_port}} ->
         splice_to(csock, workload, ip, vm_port, ctx)
 
@@ -250,6 +273,9 @@ defmodule Embervm.TcpActivator do
         :gen_tcp.close(csock)
     end
   end
+
+  defp wake_target(ctx, :stateful, workload), do: {ctx.manager, ctx.manager_mod, "system:stateful:#{workload}"}
+  defp wake_target(ctx, :composite, workload), do: {ctx.group_manager, ctx.group_manager_mod, "system:group:#{workload}"}
 
   defp splice_to(csock, workload, ip, vm_port, ctx) do
     case ctx.dial_fun.(ip, vm_port, ctx.connect_timeout_ms) do
@@ -359,11 +385,18 @@ defmodule Embervm.TcpActivator do
 
   # -- workload resolution ---------------------------------------------------
 
+  # Resolve the workload (and its CLASS) that owns the local accept `port`: a
+  # stateful workload by its `stateful.listen_port`, or a composite group by its
+  # `group.entry.listen_port` (the R4 stateful range 5400-5409 and the R5 composite
+  # range 5410-5419 are disjoint, and each workload's listen port is unique across
+  # both classes by the WorkloadWatcher's validation, so at most one match). Returns
+  # `{:stateful, name}` | `{:composite, name}` | nil.
   defp workload_for_port(ctx, port) do
     Embervm.WorkloadCatalog.all_names(ctx.catalog_table)
-    |> Enum.find(fn name ->
+    |> Enum.find_value(fn name ->
       case Embervm.WorkloadCatalog.fetch(ctx.catalog_table, name) do
-        {:ok, %{class: "stateful", stateful: %{listen_port: ^port}}} -> true
+        {:ok, %{class: "stateful", stateful: %{listen_port: ^port}}} -> {:stateful, name}
+        {:ok, %{class: "composite", group: %{entry: %{listen_port: ^port}}}} -> {:composite, name}
         _ -> false
       end
     end)

@@ -295,6 +295,19 @@ defmodule Embervm.GroupStore do
     GenServer.call(store, {:evict_partial_sets, reported_sets})
   end
 
+  @doc """
+  Evict ONE instance's banked set through the durable path (a `group_set_evicted`
+  op, `reason`), clearing its `set_id` and each member row's `snapshot_ref` (the
+  warmth is gone). NOT an FSM transition (the instance's lifecycle move to
+  `fresh_booting` is a separate `mark/2`); this is the single-instance sibling of
+  `evict_partial_sets/2`, used by the wake path's relight -> fresh fallback so a
+  rebuild agrees the set is spent. A no-op for an unknown instance. Returns `:ok`.
+  """
+  @spec evict_set(GenServer.server(), String.t(), String.t()) :: :ok
+  def evict_set(store \\ __MODULE__, instance_id, reason) do
+    GenServer.call(store, {:evict_set, instance_id, reason})
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -635,6 +648,23 @@ defmodule Embervm.GroupStore do
     do_evict_partial_sets(state, reported_sets)
   end
 
+  def handle_call({:evict_set, instance_id, reason}, _from, state) do
+    case fetch(state, instance_id) do
+      {:ok, instance} ->
+        case append_set_evicted(state, instance, reason) do
+          {:ok, state} ->
+            state = clear_member_snapshots(state, instance_id)
+            {:reply, :ok, state}
+
+          {:error, _reason} ->
+            {:reply, :ok, state}
+        end
+
+      {:error, _} ->
+        {:reply, :ok, state}
+    end
+  end
+
   # -- create ----------------------------------------------------------------
 
   defp do_create(attrs, state) do
@@ -911,6 +941,19 @@ defmodule Embervm.GroupStore do
     state
   end
 
+  # Clear every member row's banked snapshot_ref (a set eviction: the warmth is
+  # gone). Leaves the member rows otherwise intact so the fresh boot re-records live
+  # facts over them via member_started.
+  defp clear_member_snapshots(state, instance_id) do
+    ts = state.clock.()
+
+    for {{^instance_id, _name} = key, member} <- member_entries(state, instance_id) do
+      :ets.insert(state.members, {key, %{member | snapshot_ref: nil, updated_at: ts}})
+    end
+
+    state
+  end
+
   # A member payload entry may carry atom or string keys (freshly-appended atom-keyed
   # op vs a value rebuilt from durable payload_json), so read either.
   defp member_field(m, key) when is_map(m), do: Map.get(m, key) || Map.get(m, Atom.to_string(key))
@@ -942,7 +985,7 @@ defmodule Embervm.GroupStore do
           # `banked` (the FSM has no evict edge off banked in R5: eviction of the
           # SET is a bundle-audit clear, not a lifecycle transition), so this is an
           # ETS field update paired with the durable group_set_evicted op.
-          case append_set_evicted(acc, instance) do
+          case append_set_evicted(acc, instance, "partial_set") do
             {:ok, acc} -> {[instance.instance_id | ids], acc}
             {:error, _reason} -> {ids, acc}
           end
@@ -954,8 +997,9 @@ defmodule Embervm.GroupStore do
 
   # Append group_set_evicted (durable) and clear the instance's set_id in ETS.
   # group_set_evicted is a bundle-audit clear, not an FSM transition (the instance
-  # stays banked); a rebuild replays the cleared set_id.
-  defp append_set_evicted(state, instance) do
+  # stays banked / is separately marked fresh_booting by the wake path); a rebuild
+  # replays the cleared set_id.
+  defp append_set_evicted(state, instance, reason) do
     ts = state.clock.()
 
     op = %Op{
@@ -965,7 +1009,7 @@ defmodule Embervm.GroupStore do
       workload: instance.workload,
       group_instance_id: instance.instance_id,
       ts: ts,
-      payload: %{reason: "partial_set"}
+      payload: %{reason: reason}
     }
 
     case Embervm.OpLog.SQLite.append(state.op_log, op) do

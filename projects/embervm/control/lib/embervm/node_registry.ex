@@ -68,6 +68,9 @@ defmodule Embervm.NodeRegistry do
   alias Embervm.NodeCapacity
 
   alias Embervm.Node.V1.{
+    GroupBundleSet,
+    GroupMemberVm,
+    GroupNetwork,
     NodeService,
     NodeStatus,
     ServingSnapshot,
@@ -441,9 +444,60 @@ defmodule Embervm.NodeRegistry do
       # (wire-compatible), which reads as "no stateful state on this node".
       stateful_vms: stateful_vms_from_status(s),
       stateful_bundles: stateful_bundles_from_status(s),
-      volumes: volumes_from_status(s)
+      volumes: volumes_from_status(s),
+      # Composite-group facts (R5, additive): the node's per-group bridges, LIVE
+      # member VMs (with the daemon's health verdict), and banked bundle-set
+      # inventory. These are the source of truth Embervm.GroupWakeManager's adoption
+      # reconcile heals its ETS residency + set-completeness view against on boot and
+      # every sweep, mirroring the stateful facts above. Empty when a daemon never
+      # sets them (wire-compatible), which reads as "no group state on this node".
+      group_networks: group_networks_from_status(s),
+      group_member_vms: group_member_vms_from_status(s),
+      group_bundle_sets: group_bundle_sets_from_status(s)
     }
   end
+
+  defp group_networks_from_status(%NodeStatus{group_networks: nets}) when is_list(nets) do
+    for %GroupNetwork{} = n <- nets do
+      %{
+        group_instance_id: n.group_instance_id,
+        cidr: n.cidr,
+        bridge: n.bridge,
+        member_count: n.member_count
+      }
+    end
+  end
+
+  defp group_networks_from_status(_s), do: []
+
+  defp group_member_vms_from_status(%NodeStatus{group_member_vms: vms}) when is_list(vms) do
+    for %GroupMemberVm{} = v <- vms do
+      %{
+        vm_id: v.vm_id,
+        group_instance_id: v.group_instance_id,
+        member_name: v.member_name,
+        ip: v.ip,
+        healthy: v.healthy,
+        last_probe_unix_ms: v.last_probe_unix_ms
+      }
+    end
+  end
+
+  defp group_member_vms_from_status(_s), do: []
+
+  defp group_bundle_sets_from_status(%NodeStatus{group_bundle_sets: sets}) when is_list(sets) do
+    for %GroupBundleSet{} = s <- sets do
+      %{
+        set_id: s.set_id,
+        group_instance_id: s.group_instance_id,
+        created_at_unix_ms: s.created_at_unix_ms,
+        members:
+          for(m <- s.members || [], do: %{member_name: m.member_name, snapshot_ref: m.snapshot_ref, size_bytes: m.size_bytes})
+      }
+    end
+  end
+
+  defp group_bundle_sets_from_status(_s), do: []
 
   defp serving_vms_from_status(%NodeStatus{serving_vms: vms}) when is_list(vms) do
     for %ServingVm{} = v <- vms do
