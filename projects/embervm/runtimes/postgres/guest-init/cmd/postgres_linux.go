@@ -117,6 +117,11 @@ func postgresCommand(ctx context.Context, pgdata string) *exec.Cmd {
 		"-D", pgdata,
 		"-p", strconv.Itoa(pgPort),
 		"-c", "listen_addresses=*",
+		// Put the unix socket on the writable tmpfs. The rootfs is read-only and
+		// the compiled default (/run/postgresql) does not exist there, so postgres
+		// would fail to create its socket; /tmp is a tmpfs and matches the PGHOST
+		// the bootstrap createdb connects on.
+		"-c", "unix_socket_directories=/tmp",
 		"-c", "fsync=on",
 		"-c", "shared_buffers=128MB",
 	)
@@ -127,10 +132,13 @@ func postgresCommand(ctx context.Context, pgdata string) *exec.Cmd {
 	return cmd
 }
 
-// runInitdb initializes PGDATA as the postgres user with scram-sha-256 auth and
-// the superuser password from `password`, delivered via a --pwfile so the
-// secret never appears in argv (visible in /proc). The pwfile lives on the
-// tmpfs and is removed immediately after.
+// runInitdb initializes PGDATA as the postgres user with the superuser password
+// from `password`, delivered via a --pwfile so the secret never appears in argv
+// (visible in /proc). The pwfile lives on the tmpfs and is removed immediately
+// after. TCP auth is scram (the network boundary); the local unix socket is
+// trust: the guest is a single-tenant, isolated microVM where the only local
+// callers are guest-init's own bootstrap (initdb/createdb), so a password on the
+// in-VM socket buys nothing and would only make the bootstrap createdb fail.
 func runInitdb(logger *slog.Logger, pgdata, password string) error {
 	pwfile := "/tmp/.pgpw"
 	if err := os.WriteFile(pwfile, []byte(password), 0o600); err != nil {
@@ -145,7 +153,7 @@ func runInitdb(logger *slog.Logger, pgdata, password string) error {
 		"-D", pgdata,
 		"-U", postgresUser,
 		"--auth-host=scram-sha-256",
-		"--auth-local=scram-sha-256",
+		"--auth-local=trust",
 		"--pwfile", pwfile,
 		"-E", "UTF8",
 	)
@@ -167,9 +175,9 @@ func runInitdb(logger *slog.Logger, pgdata, password string) error {
 func configurePostgres(pgdata string) error {
 	hba := filepath.Join(pgdata, "pg_hba.conf")
 	// Append: scram over TCP from anywhere (the tap NIC is only reachable from
-	// the node Envoy). initdb already wrote local + host scram lines for
-	// 127.0.0.1/::1; this widens host to all IPv4/IPv6 so the Envoy-forwarded
-	// connection (from the pod network) authenticates.
+	// the node Envoy). initdb already wrote a trust local line plus host scram
+	// lines for 127.0.0.1/::1; this widens host to all IPv4/IPv6 so the
+	// Envoy-forwarded connection (from the pod network) authenticates with scram.
 	rule := "\n# EmberVM scratch-postgres (R4): scram for cluster-internal TCP.\nhost all all 0.0.0.0/0 scram-sha-256\nhost all all ::/0 scram-sha-256\n"
 	f, err := os.OpenFile(hba, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -189,7 +197,8 @@ func ensureScratchDatabase(logger *slog.Logger) error {
 	cmd := exec.Command("createdb", "scratch")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// createdb connects over the local socket (peer/scram) as postgres.
+	// createdb connects over the trust local socket (in /tmp, matching the
+	// server's unix_socket_directories) as the postgres superuser, no password.
 	cmd.Env = append(os.Environ(), "PGHOST=/tmp", "PGPORT="+strconv.Itoa(pgPort))
 	dropToPostgres(cmd)
 	if err := cmd.Run(); err != nil {

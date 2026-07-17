@@ -51,9 +51,18 @@ environment:
   PGDATA: /data/pgdata
 
 paths:
-  # The postgres home + a place for the local socket; PGDATA itself lives on the
-  # mounted volume (guest-init creates /data/pgdata and chowns it to postgres).
+  # The postgres home; PGDATA itself lives on the mounted volume (guest-init
+  # creates /data/pgdata and chowns it to postgres).
   - path: /var/lib/postgresql
+    type: directory
+    uid: 70
+    gid: 70
+    permissions: 0o750
+  # The stateful volume mount point (CR volumeMountPath). guest-init mounts the
+  # writable volume here (unix.Mount), but the rootfs is read-only, so the mount
+  # directory MUST already exist in the image: mkdir on a read-only rootfs fails.
+  # Must match the CR's volumeMountPath and the PGDATA parent (/data/pgdata).
+  - path: /data
     type: directory
     uid: 70
     gid: 70
