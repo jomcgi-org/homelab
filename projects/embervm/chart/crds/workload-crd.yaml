@@ -477,6 +477,17 @@ spec:
                         connection retries (subject to the wake-rate limit).
                       minimum: 1
                       default: 60
+                    interruptibleBank:
+                      type: boolean
+                      default: false
+                      description: >-
+                        Opt in to the two-phase interruptible bank (ADR embervm/008):
+                        a wake arriving during a bank resumes the paused VM (hot)
+                        instead of cold booting, and a clean bank commits for a warm
+                        relight. Off (the default) is the atomic pause-snapshot-destroy
+                        bank, unchanged. Only honored for class stateful. NOTE: a
+                        boolean for a single alternative behavior; a future third bank
+                        strategy is expected to supersede this with a `bankMode` enum.
                     secretRef:
                       type: string
                       description: >-

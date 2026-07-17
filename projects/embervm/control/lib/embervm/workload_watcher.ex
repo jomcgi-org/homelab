@@ -813,7 +813,12 @@ defmodule Embervm.WorkloadWatcher do
     idle_bank_seconds: 300,
     max_lifetime_seconds: 86_400,
     banked_ttl_seconds: 604_800,
-    wake_timeout_seconds: 60
+    wake_timeout_seconds: 60,
+    # Opt in to the two-phase interruptible bank (ADR embervm/008). Off = the
+    # atomic pause-snapshot-destroy bank, unchanged. A boolean for a single
+    # alternative behavior; a future third bank strategy is expected to
+    # supersede this with a `bankMode` enum.
+    interruptible_bank: false
   }
   # The minimum idleBankSeconds; the CRD schema also enforces this, re-checked
   # here for the LIST/WATCH path. Floor lowered 30 -> 1 for the demo-postgres
@@ -926,6 +931,11 @@ defmodule Embervm.WorkloadWatcher do
       max_lifetime_seconds: Map.get(s, "maxLifetimeSeconds") || @stateful_defaults.max_lifetime_seconds,
       banked_ttl_seconds: Map.get(s, "bankedTtlSeconds") || @stateful_defaults.banked_ttl_seconds,
       wake_timeout_seconds: Map.get(s, "wakeTimeoutSeconds") || @stateful_defaults.wake_timeout_seconds,
+      # Boolean-|| is safe here ONLY because the default is false (false || false
+      # == false; true || false == true). If a future bankMode default flips to a
+      # truthy value this must switch to Map.get/3 with an explicit default to
+      # avoid the Elixir truthiness trap.
+      interruptible_bank: Map.get(s, "interruptibleBank") || @stateful_defaults.interruptible_bank,
       # secretRef (R4, D-R4.PR-7.1: MMDS-lite over boot-args): the NAME of a K8s
       # Secret in the workload's OWN namespace whose data keys/values become the
       # guest's first-boot process env (e.g. POSTGRES_PASSWORD). Optional; nil

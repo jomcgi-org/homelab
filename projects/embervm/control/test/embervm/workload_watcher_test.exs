@@ -666,6 +666,31 @@ defmodule Embervm.WorkloadWatcherTest do
     # secretRef is optional; omitted here, so it parses to nil (D-R4.PR-7.1: a
     # workload with no first-boot secrets to deliver never reads a Secret).
     assert entry.stateful.secret_ref == nil
+    assert entry.stateful.interruptible_bank == false
+  end
+
+  test "stateful class: interruptibleBank true is parsed onto the catalog entry (ADR 008)" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = put_in(stateful_cr(), ["spec", "stateful", "interruptibleBank"], true)
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "scratch-postgres")
+    assert entry.stateful.interruptible_bank == true
+  end
+
+  test "stateful class: explicit interruptibleBank false parses to false (ADR 008)" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = put_in(stateful_cr(), ["spec", "stateful", "interruptibleBank"], false)
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "scratch-postgres")
+    assert entry.stateful.interruptible_bank == false
   end
 
   test "stateful class missing spec.stateful is Ready=False/StatefulSpecMissing, not cataloged" do
