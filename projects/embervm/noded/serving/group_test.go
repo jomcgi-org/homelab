@@ -127,6 +127,19 @@ func TestNftGroupRulesetIsolation(t *testing.T) {
 		}
 	}
 
+	// Per-bridge ZERO-EGRESS denial (standing decision 4): each bridge drops every
+	// NEW packet leaving it to anywhere other than itself (other groups, serving, AND
+	// external/CNI). This is the primary egress denial; the cross-group and
+	// composite->serving drops below are redundant belt-and-braces.
+	for _, w := range []string{
+		"add rule inet embervm_group group_forward iifname \"emgAAAAAA\" oifname != \"emgAAAAAA\" ct state new drop",
+		"add rule inet embervm_group group_forward iifname \"emgBBBBBB\" oifname != \"emgBBBBBB\" ct state new drop",
+	} {
+		if !strings.Contains(rs, w) {
+			t.Errorf("group ruleset missing per-bridge zero-egress drop:\n  %q\nfull:\n%s", w, rs)
+		}
+	}
+
 	// composite<->composite BOTH directions.
 	for _, w := range []string{
 		"add rule inet embervm_group group_forward iifname \"emgAAAAAA\" oifname \"emgBBBBBB\" drop",
@@ -162,23 +175,28 @@ func TestNftGroupRulesetIsolation(t *testing.T) {
 }
 
 // TestNftGroupRulesetEntryDNAT asserts the entry-member DNAT lane renders (podIP)
-// and that a single group with no serving bridge configured omits the
-// composite->serving rule.
+// and that a LONE group (single bridge, no peer groups, no serving bridge) STILL
+// emits its own per-bridge zero-egress drop: the egress denial must not depend on
+// the presence of other bridges (standing decision 4). It also asserts the ONLY
+// drop is that per-bridge egress rule (no cross-group / composite->serving rules
+// when there is no peer group and no serving bridge).
 func TestNftGroupRulesetEntryDNAT(t *testing.T) {
 	entries := []groupEntry{{tapIP: "10.101.7.10", guestPort: 8080, vmPort: 41802}}
 	rs := nftGroupRuleset([]string{"emgAAAAAA"}, "", "10.42.0.9", entries)
 	for _, w := range []string{
 		"add chain inet embervm_group group_dnat { type nat hook prerouting priority dstnat; policy accept; }",
 		"add rule inet embervm_group group_dnat ip daddr 10.42.0.9 tcp dport 41802 dnat ip to 10.101.7.10:8080",
+		// The lone group's own egress denial: present even with no peers/serving.
+		"add rule inet embervm_group group_forward iifname \"emgAAAAAA\" oifname != \"emgAAAAAA\" ct state new drop",
 	} {
 		if !strings.Contains(rs, w) {
 			t.Errorf("group entry-DNAT ruleset missing:\n  %q\nfull:\n%s", w, rs)
 		}
 	}
-	// A single group has no other group to isolate against, and no serving bridge
-	// configured, so there must be NO drop rules at all here.
-	if strings.Contains(rs, "drop") {
-		t.Errorf("single-group, no-serving ruleset must have no drop rules:\n%s", rs)
+	// The per-bridge egress drop is the ONLY drop for a lone group (no cross-group
+	// pair, no composite->serving). Assert exactly one "drop" in the forward chain.
+	if n := strings.Count(rs, " drop\n"); n != 1 {
+		t.Errorf("lone group must emit exactly one drop (its own egress denial), got %d:\n%s", n, rs)
 	}
 }
 
