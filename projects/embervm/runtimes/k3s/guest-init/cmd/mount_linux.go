@@ -3,8 +3,12 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
@@ -60,4 +64,121 @@ func mount(logger *slog.Logger, source, target, fstype string, flags uintptr, da
 		return
 	}
 	logger.Info("mounted", "target", target, "fstype", fstype)
+}
+
+// mountStatefulVolume formats dev with ext4 if it has no existing filesystem
+// signature (a freshly created sparse volume on first boot), mounts it at
+// mountPath (k3s's data dir), and stages the baked airgap tarball into the
+// mounted tree so k3s auto-imports it. This is the one place that formats-if-
+// blank and mounts the volume (the host never mounts it). A mkfs/mount failure
+// is FATAL: a k3s guest that cannot reach its data dir must fail the boot loudly
+// rather than run against a missing/unmounted directory. Mirrors the postgres
+// runtime guest-init's mountVolumeDevice, plus the airgap-staging copy.
+func mountStatefulVolume(logger *slog.Logger, dev, mountPath string) error {
+	blank, err := deviceIsBlank(dev)
+	if err != nil {
+		return fmt.Errorf("probe volume device %s: %w", dev, err)
+	}
+	if blank {
+		logger.Info("stateful volume: no filesystem signature, formatting ext4", "device", dev)
+		if out, err := exec.Command("mkfs.ext4", "-q", dev).CombinedOutput(); err != nil {
+			return fmt.Errorf("mkfs.ext4 %s: %w: %s", dev, err, string(out))
+		}
+	}
+	if err := os.MkdirAll(mountPath, 0o700); err != nil {
+		return fmt.Errorf("mkdir volume mount path %s: %w", mountPath, err)
+	}
+	if err := unix.Mount(dev, mountPath, "ext4", 0, ""); err != nil {
+		return fmt.Errorf("mount %s at %s: %w", dev, mountPath, err)
+	}
+	logger.Info("stateful volume: mounted", "device", dev, "mount", mountPath)
+
+	// Stage the baked airgap tarball into the (now-mounted) data dir so k3s
+	// auto-imports it from <mount>/agent/images at startup. The tarball is baked
+	// at /opt/k3s-airgap (outside the mount, so the volume never hides it); copy
+	// it in only when absent (a relight/second cold boot already has it).
+	if err := stageAirgapImages(logger, mountPath); err != nil {
+		// Non-fatal: a k3s that cannot find the airgap set will try to pull and
+		// fail its own readiness loudly downstream (the honest place), but the
+		// mount itself succeeded so the boot proceeds and the failure is visible.
+		logger.Warn("stateful volume: staging airgap images failed", "err", err)
+	}
+	return nil
+}
+
+// stageAirgapImages copies the baked airgap tarball from the staging dir
+// (/opt/k3s-airgap, in the read-only rootfs) into <mount>/agent/images, where
+// k3s auto-imports it. It is idempotent: an already-present tarball (a later
+// cold boot against a populated volume) is left untouched. Absent staging dir
+// (an image built without the airgap layer) is a no-op.
+func stageAirgapImages(logger *slog.Logger, mountPath string) error {
+	const stageDir = "/opt/k3s-airgap"
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read airgap staging dir: %w", err)
+	}
+	destDir := filepath.Join(mountPath, "agent", "images")
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", destDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		dest := filepath.Join(destDir, e.Name())
+		if _, err := os.Stat(dest); err == nil {
+			continue // already staged (populated volume)
+		}
+		if err := copyFile(filepath.Join(stageDir, e.Name()), dest); err != nil {
+			return fmt.Errorf("copy airgap %s: %w", e.Name(), err)
+		}
+		logger.Info("stateful volume: staged airgap tarball", "name", e.Name(), "dest", dest)
+	}
+	return nil
+}
+
+// copyFile copies src to dst (0644), creating dst. Used only for the airgap
+// tarball staging; a plain byte copy is all that is needed.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close() //nolint:errcheck // read-only source
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// deviceIsBlank reports whether dev has NO existing filesystem signature (blkid
+// finds nothing), meaning a freshly created sparse volume that needs formatting.
+// blkid exits 2 with empty output for an unrecognised signature (the blank
+// case); any OTHER error is propagated so a real problem is not misread as
+// "blank, go ahead and mkfs". Mirrors the postgres runtime guest-init.
+func deviceIsBlank(dev string) (bool, error) {
+	out, err := exec.Command("blkid", "-o", "value", "-s", "TYPE", dev).CombinedOutput()
+	if err == nil {
+		return len(trimTrailingNewline(out)) == 0, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
+		return true, nil
+	}
+	return false, fmt.Errorf("blkid %s: %w: %s", dev, err, string(out))
+}
+
+// trimTrailingNewline strips a single trailing newline from blkid's output.
+func trimTrailingNewline(b []byte) []byte {
+	if n := len(b); n > 0 && b[n-1] == '\n' {
+		return b[:n-1]
+	}
+	return b
 }

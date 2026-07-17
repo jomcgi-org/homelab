@@ -27,6 +27,48 @@ const servingPortCmdlineKey = "ember.serving_port"
 // servingPortEnv is the env var name the serving-port boot-arg maps to.
 const servingPortEnv = "EMBER_SERVING_PORT"
 
+// volumeDevCmdlineKey / volumeMountCmdlineKey are the stateful-lane boot-arg
+// tokens (R4): `ember.volume_dev=<dev>` names the writable volume block device
+// (statefulVolumeDevice in the driver, /dev/vdc), `ember.volume_mount=<path>` the
+// guest mount path from the CR's volumeMountPath. A base build carries neither,
+// which is how this init distinguishes a base build (answer vsock ready only)
+// from a stateful cold boot (mount the volume, run k3s). Mirrors the postgres
+// runtime guest-init exactly.
+const (
+	volumeDevCmdlineKey   = "ember.volume_dev"
+	volumeMountCmdlineKey = "ember.volume_mount"
+)
+
+// statefulVolumeFromCmdline reads /proc/cmdline and returns the volume device and
+// mount path when the stateful boot-args are present, or ("", "") for a base
+// build (no volume boot-arg). A missing /proc/cmdline (host build) also returns
+// ("", ""), so a host build behaves like a base build. Mirrors the postgres
+// runtime guest-init.
+func statefulVolumeFromCmdline(logger *slog.Logger) (dev, mountPath string) {
+	raw, err := os.ReadFile(procCmdlinePath)
+	if err != nil {
+		return "", ""
+	}
+	dev = valueFromCmdline(string(raw), volumeDevCmdlineKey)
+	if dev == "" {
+		return "", ""
+	}
+	mountPath = valueFromCmdline(string(raw), volumeMountCmdlineKey)
+	if mountPath == "" {
+		// A volume device with no mount path is a malformed stateful boot; fall
+		// back to the k3s data dir so the datastore still has a home. The driver
+		// always emits both together, so this is defensive.
+		mountPath = k3sDataDir
+		logger.Warn("ember.volume_dev present but ember.volume_mount unset; defaulting", "mount", mountPath)
+	}
+	return dev, mountPath
+}
+
+// k3sDataDir is k3s's writable state root (server sqlite db, kubelet, containerd
+// state). The stateful lane's volume mounts here so the datastore is durable. It
+// is also the CR's volumeMountPath in the drill.
+const k3sDataDir = "/var/lib/rancher/k3s"
+
 // setMmdsEnv decodes every `ember.env.<KEY>=<base64url>` boot-arg into a process
 // env var named exactly <KEY>. A missing /proc/cmdline, no matching tokens, an
 // invalid KEY, or a value that fails base64url decode are each skipped

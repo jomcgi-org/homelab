@@ -66,6 +66,43 @@ func TestSetMmdsEnvFromFixtureFile(t *testing.T) {
 	}
 }
 
+func TestStatefulVolumeFromCmdline(t *testing.T) {
+	dir := t.TempDir()
+	orig := procCmdlinePath
+	defer func() { procCmdlinePath = orig }()
+
+	// Base build: no volume boot-arg -> ("", "").
+	base := filepath.Join(dir, "base")
+	if err := os.WriteFile(base, []byte("console=ttyS0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	procCmdlinePath = base
+	if dev, mp := statefulVolumeFromCmdline(discardLogger()); dev != "" || mp != "" {
+		t.Fatalf("base build should yield empty, got dev=%q mount=%q", dev, mp)
+	}
+
+	// Stateful cold boot: both tokens present.
+	cold := filepath.Join(dir, "cold")
+	if err := os.WriteFile(cold, []byte("ember.volume_dev=/dev/vdc ember.volume_mount=/var/lib/rancher/k3s"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	procCmdlinePath = cold
+	dev, mp := statefulVolumeFromCmdline(discardLogger())
+	if dev != "/dev/vdc" || mp != "/var/lib/rancher/k3s" {
+		t.Fatalf("cold boot: got dev=%q mount=%q, want /dev/vdc + /var/lib/rancher/k3s", dev, mp)
+	}
+
+	// Malformed: dev without mount defaults to the k3s data dir.
+	mal := filepath.Join(dir, "mal")
+	if err := os.WriteFile(mal, []byte("ember.volume_dev=/dev/vdc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	procCmdlinePath = mal
+	if dev, mp := statefulVolumeFromCmdline(discardLogger()); dev != "/dev/vdc" || mp != k3sDataDir {
+		t.Fatalf("malformed: got dev=%q mount=%q, want /dev/vdc + %s", dev, mp, k3sDataDir)
+	}
+}
+
 func TestIsValidEnvKeyName(t *testing.T) {
 	cases := map[string]bool{
 		"EMBER_GROUP_ROLE":   true,

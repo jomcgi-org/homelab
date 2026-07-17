@@ -28,10 +28,12 @@ Cluster bring-up pulls NOTHING. The `@k3s_archive` Bazel repo rule
 (`bazel/tools/http/k3s_archive.bzl`, wired in `MODULE.bazel`) bakes, per arch:
 
 - the static `k3s` binary at `/usr/local/bin/k3s`; and
-- the airgap image tarball at
-  `/var/lib/rancher/k3s/agent/images/k3s-airgap-images-<arch>.tar.zst`, which k3s
-  auto-imports at startup (compressed `.tar.zst` is imported directly, no
-  in-guest decompression step).
+- the airgap image tarball STAGED at `/opt/k3s-airgap/` (outside k3s's data dir,
+  which the stateful volume mounts over). The guest-init copies it into
+  `<volume-mount>/agent/images/` after mounting the volume, where k3s
+  auto-imports it at startup (compressed `.tar.zst` is imported directly, no
+  in-guest decompression step). Baking it under `/var/lib/rancher/k3s` directly
+  would be hidden by the volume mount.
 
 ### Pinned k3s version and artifact sizes
 
@@ -61,19 +63,27 @@ regardless.
 ## Injected facts to k3s flags (standing decision 13)
 
 The platform injects generic facts through the MMDS-lite boot-arg seam
-(`ember.env.<KEY>=<base64url>`, decoded by the init into the process env). For the
-Task 3 spike they arrive via the serving lane's `mmds_env`; under the group
-machinery (Task 4+) via the identical seam. The init maps:
+(`ember.env.<KEY>=<base64url>`, decoded by the init into the process env). Under
+the group machinery (Task 4+) they arrive via `StartGroupMember`'s FRESH env
+seam; on the stateful lane (the Task 3 spike's lane) via the CR's `secretRef`
+mapped to `mmds_env`. The init maps:
 
 | Injected fact                | k3s use                                                      |
 | ---------------------------- | ----------------------------------------------------------- |
-| `EMBER_GROUP_ROLE`           | selects `k3s server` vs `k3s agent`                         |
+| `EMBER_GROUP_ROLE`           | selects `k3s server` vs `k3s agent` (defaults to server)    |
 | `EMBER_GROUP_SECRET`         | `--token` (cluster token) + the static token-auth API entry |
 | `EMBER_GROUP_IP`             | `--node-ip` (and `--advertise-address` on the server)       |
 | `EMBER_PEER_SERVER`          | the agent's `--server https://<ip>:6443`                    |
 
-The server writes a static token-auth CSV (`/run/ember/token-auth.csv`, derived
-from `EMBER_GROUP_SECRET`) and passes it via
+**Factless boot (the Task 3 spike).** A bare boot with NO injected env defaults
+to a single `k3s server`: when `EMBER_GROUP_ROLE` is unset the init runs the
+server role, and when `EMBER_GROUP_SECRET` is unset k3s auto-generates its own
+cluster token (correct for a single-server cluster with no peers to join it). The
+peer map and shared secret are a MULTI-NODE concern (agents inherently require
+both), injected later via the group lane, not by the spike.
+
+When a secret IS present the server writes a static token-auth CSV
+(`/run/ember/token-auth.csv`, derived from `EMBER_GROUP_SECRET`) and passes it via
 `--kube-apiserver-arg=token-auth-file=...`, so the consumer's kubeconfig
 authenticates with the same secret as a bearer token (scratch-tier posture, plan
 Task 10). flannel uses the `host-gw` backend, which routes over the group's flat
@@ -110,15 +120,40 @@ them (`drill/README.md` has the exact `zcat /proc/config.gz | grep ...` command)
 any gap found is recorded with its fix path (a newer kata kernel or a custom
 kernel build), not solved here.
 
-## Boot integration
+## Boot integration (two boot classes off one rootfs)
 
 A raw Firecracker boot ignores the OCI `entrypoint` and boots
 `init=<HarnessInit>`, so the image ships a real PID 1: `ember-k3s-init`
 (`guest-init/cmd/`, layered at `/usr/local/bin/ember-k3s-init` by the image
-`BUILD`). On boot it mounts k3s's writable + pseudo filesystems (tmpfs over
-`/run`, `/var/log`, `/tmp`; `/proc`, `/sys`, cgroup2), decodes the
-`EMBER_GROUP_*` facts, starts the vsock guest control agent
-(`noded/guestagent`) on the frozen port 1024 for post-resume clock resync
-(standing decision 7), maps the facts to k3s flags, and supervises k3s. It is
+`BUILD`). Like the scratch-postgres guest-init it satisfies TWO boot classes off
+one rootfs, distinguished by the presence of the `ember.volume_dev` boot-arg:
+
+- **Base build** (no volume boot-arg): noded's `BuildBase` cold-boots the guest
+  and health-gates it on the frozen vsock readiness contract (`GET /shim/ready`
+  on `GuestHTTPPort` 1027). The init answers ready immediately (the warm base is
+  the OS + the baked k3s binary + airgap tarball, no k3s running yet) so the base
+  snapshot completes and the image becomes cold-bootable. This is DISTINCT from
+  the clock agent (port 1024): it is the readiness seam on the frozen
+  guest-contract port, mirroring scratch-postgres.
+
+- **Stateful cold boot** (volume boot-arg present): the init mounts the writable
+  volume at k3s's data dir, stages the baked airgap tarball into
+  `<mount>/agent/images`, decodes the `EMBER_GROUP_*` facts (empty for the
+  factless spike), starts the vsock guest control agent (`noded/guestagent`) on
+  port 1024 for post-resume clock resync (standing decision 7), maps the facts to
+  k3s flags, and supervises k3s. Runtime health is a TCP connect to the k3s port
+  over the tap NIC (not the vsock ready path).
+
+In both classes the init first mounts k3s's pseudo + volatile filesystems (tmpfs
+over `/run`, `/var/log`, `/tmp`; `/proc`, `/sys`, cgroup2). k3s runs via
 `fork+exec` (not `exec`-replace) because the clock-agent goroutine must live
-alongside k3s; this init is the supervisor.
+alongside it; this init is the supervisor.
+
+## Lane: stateful, not serving (verified against origin/main)
+
+The k3s guest boots on the **stateful lane** (the scratch-postgres precedent), not
+serving. The serving lane cold-boots a base-built handler ARTIFACT (drive 2, the
+zip lane) and has no env-injection seam, so it cannot boot a full k3s image; the
+stateful lane cold-boots a full non-shim image with a tap-NIC TCP health-gate and
+an `mmds_env` secret seam, which is exactly what k3s needs. See `drill/README.md`
+for the full rationale.

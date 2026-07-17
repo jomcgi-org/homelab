@@ -21,6 +21,8 @@ go_library(
         "main.go",
         "mount_linux.go",
         "mount_other.go",
+        "ready_linux.go",
+        "ready_other.go",
         "supervise.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/k3s/guest-init/cmd",
@@ -28,10 +30,14 @@ go_library(
     deps = select({
         "@rules_go//go/platform:android": [
             "//projects/embervm/noded/guestagent",
+            "//projects/firecracker/substrate/shim",
+            "//projects/firecracker/substrate/vsockproto",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
             "//projects/embervm/noded/guestagent",
+            "//projects/firecracker/substrate/shim",
+            "//projects/firecracker/substrate/vsockproto",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],
