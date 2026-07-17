@@ -164,9 +164,11 @@ spec:
               value: "{{ .Values.servingEnvoy.statefulTcpPortRange.start }}-{{ .Values.servingEnvoy.statefulTcpPortRange.end }}"
             # Composite (R5) group entry range + size cap: the values-declared
             # capacity the CRD watcher validates each composite workload's
-            # spec.group.entry.listenPort and expanded member count against. The
-            # watcher reads these from app env (falling back to the compile-time
-            # defaults 5410-5419 / 4 that match the chart defaults), so a no-chart
+            # spec.group.entry.listenPort and expanded member count against.
+            # Embervm.Application.start/2 parses these env vars into the
+            # :composite_listen_range / :max_group_size app-env keys the watcher
+            # reads, falling back to the compile-time defaults 5410-5419 / 4 (which
+            # match the chart defaults) when absent or malformed, so a no-chart
             # `mix test` run still validates against the same range.
             - name: EMBERVM_COMPOSITE_LISTEN_PORT_RANGE
               value: "{{ .Values.servingEnvoy.compositeTcpPortRange.start }}-{{ .Values.servingEnvoy.compositeTcpPortRange.end }}"

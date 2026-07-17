@@ -146,11 +146,12 @@ defmodule Embervm.WorkloadWatcher do
         Application.get_env(:embervm, :stateful_listen_range, @default_stateful_listen_range)
 
     # The values-declared composite entry listenPort range + expanded-member-count
-    # cap (R5), flowing in the same way stateful_listen_range does: a start_link opt
-    # (tests) or app env (the chart wires EMBERVM_COMPOSITE_LISTEN_PORT_RANGE /
-    # EMBERVM_MAX_GROUP_SIZE), falling back to the compile-time defaults that match
-    # the chart defaults. The watcher validates every composite workload's
-    # entry.listenPort against the range and its expanded member count against the cap.
+    # cap (R5): a start_link opt (tests) or the app-env keys Embervm.Application
+    # populates in start/2 from EMBERVM_COMPOSITE_LISTEN_PORT_RANGE /
+    # EMBERVM_MAX_GROUP_SIZE (the chart env), falling back to the compile-time
+    # defaults that match the chart defaults when the env is absent or malformed.
+    # The watcher validates every composite workload's entry.listenPort against the
+    # range and its expanded member count against the cap.
     composite_listen_range =
       Keyword.get(opts, :composite_listen_range) ||
         Application.get_env(:embervm, :composite_listen_range, @default_composite_listen_range)
@@ -1008,7 +1009,17 @@ defmodule Embervm.WorkloadWatcher do
     end
   end
 
-  defp member_replicas(m), do: Map.get(m, "replicas") || 1
+  # A member's replica count, clamped to at least 1. Guards the Elixir truthiness
+  # trap: `0 || 1` is `0` (0 is truthy), so a `replicas: 0` that slipped past CRD
+  # admission would under-count the expanded size here; an absent or non-positive
+  # value bills as one replica. Used by BOTH the size-cap sum and the expanded-name
+  # set so the two never disagree.
+  defp member_replicas(m) do
+    case Map.get(m, "replicas") do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 1
+    end
+  end
 
   # The valid entry targets: each declared member name, plus (for a member with
   # replicas > 1) each expanded `<name>-<index>` (0-based). A replicas-1 member is
