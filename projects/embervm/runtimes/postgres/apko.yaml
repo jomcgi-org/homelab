@@ -1,0 +1,62 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    # PostgreSQL 16 server + client (initdb, postgres, createdb, psql, pg_ctl).
+    # Wolfi ships versioned package names; 16 is the current stable line. If a
+    # future bump is needed, change here and re-run format to regenerate the lock.
+    # The binaries land under /usr/bin (symlinked from the versioned libexec dir);
+    # the guest-init PATH default (cmdline.go setDefaultEnv) also includes
+    # /usr/libexec/postgresql to cover the versioned layout.
+    - postgresql-16
+    - postgresql-16-client
+    # mkfs.ext4 / blkid for the stateful volume (guest-init mkfs-if-blank + mount).
+    - e2fsprogs
+
+archs:
+  - x86_64
+  - aarch64
+
+# The postgres account initdb/postgres run as (both REFUSE to run as root).
+# guest-init boots as root (PID 1) to mkfs + mount the volume, then drops every
+# Postgres child to this uid (postgres_linux.go dropToPostgres). uid 70 is the
+# Wolfi postgresql package's conventional postgres uid; the package itself
+# creates it, but declaring it here keeps the account stable and self-documenting.
+accounts:
+  groups:
+    - groupname: postgres
+      gid: 70
+  users:
+    - username: postgres
+      uid: 70
+      gid: 70
+  # Boot as root: PID-1 guest-init must mkfs/mount the volume before dropping to
+  # the postgres uid for initdb/postgres. A raw Firecracker boot ignores this
+  # run-as anyway (it boots init=<harnessInit>); it is here for any non-FC path.
+  run-as: 0
+
+environment:
+  HOME: /var/lib/postgresql
+  LANG: C
+  PGDATA: /data/pgdata
+
+paths:
+  # The postgres home + a place for the local socket; PGDATA itself lives on the
+  # mounted volume (guest-init creates /data/pgdata and chowns it to postgres).
+  - path: /var/lib/postgresql
+    type: directory
+    uid: 70
+    gid: 70
+    permissions: 0o750
+
+entrypoint:
+  # OCI entrypoint for any NON-Firecracker path (docker/crane). On a raw
+  # Firecracker boot the kernel ignores this and boots init=<harnessInit>; there
+  # PID 1 is /usr/local/bin/ember-postgres-init (layered by ../BUILD), which
+  # mounts the volume, decodes the mmds_env secrets, and bootstraps + launches
+  # Postgres. Both paths converge on the same init.
+  command: /usr/local/bin/ember-postgres-init
