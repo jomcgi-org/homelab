@@ -212,6 +212,18 @@ defmodule Embervm.StatefulSweeper do
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
       evict_snapshot_fun: Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
+      # status.stateful {state,generation,bundleGeneration,volumeBytes} writer
+      # (Task 10). Defaults to the K8s merge-patch on the workload status
+      # subresource, the same seam ServingSweeper.status_writer uses; tests inject
+      # a recorder. Disjoint status keys (stateful/statefulSummary) from
+      # status.serving/status.sessions and the watcher, so the merge-patch never
+      # clobbers another writer.
+      status_writer: Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3),
+      # workload -> last-written {state, generation, bundleGeneration,
+      # volumeBytes} tuple, so the sweep patches only a workload whose values
+      # changed (debounce: at most one API call per stateful workload per sweep,
+      # never per transition). Mirrors ServingSweeper.serving_status_written.
+      stateful_status_written: %{},
       bank_concurrency: Keyword.get(opts, :bank_concurrency, @default_bank_concurrency),
       bank_inflight: %{},
       lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, @default_lifetime_drain_max_ms),
@@ -293,7 +305,97 @@ defmodule Embervm.StatefulSweeper do
       |> sweep_lifetime(now)
       |> sweep_banked_ttl(now)
       |> eager_evict_broken_pairs()
+      |> write_stateful_status()
     end
+  end
+
+  # -- status.stateful (Task 10) ----------------------------------------------
+
+  # Write status.stateful {state, generation, bundleGeneration, volumeBytes} +
+  # statefulSummary for every stateful-class workload, DEBOUNCED: only patch a
+  # workload whose values changed since the last write. Runs on the sweep tick
+  # (not per transition), so the K8s API is touched at most once per stateful
+  # workload per sweep. Disjoint status keys (stateful/statefulSummary) from
+  # status.serving/status.sessions/the watcher, so the merge-patch never clobbers
+  # another writer. Mirrors ServingSweeper.write_serving_status/1 exactly.
+  defp write_stateful_status(state) do
+    stateful_workloads_with_ns(state)
+    |> Enum.reduce(state, fn %{workload: workload, namespace: namespace}, acc ->
+      fields = stateful_status_fields(acc, workload)
+      quad = {fields.state, fields.generation, fields.bundle_generation, fields.volume_bytes}
+
+      if Map.get(acc.stateful_status_written, workload) == quad do
+        acc
+      else
+        _ = patch_stateful_status(acc, namespace, workload, fields)
+        %{acc | stateful_status_written: Map.put(acc.stateful_status_written, workload, quad)}
+      end
+    end)
+  end
+
+  # Every cataloged stateful-class workload with its namespace, for the status
+  # write. A catalog with no stateful workloads yields [], a no-op on
+  # session/serving-only clusters. Mirrors ServingSweeper.serving_workloads_with_ns/1.
+  defp stateful_workloads_with_ns(state) do
+    for name <- WorkloadCatalog.all_names(state.catalog_table),
+        {:ok, %{class: "stateful", namespace: namespace}} <- [WorkloadCatalog.fetch(state.catalog_table, name)],
+        is_binary(namespace) do
+      %{workload: name, namespace: namespace}
+    end
+  end
+
+  # Reads the primary (non-terminal) instance's state + generation, the banked
+  # instance's snapshot_generation for bundleGeneration, and the volume's
+  # allocated_bytes for the watermark. Every field defaults to 0 (or "" for
+  # state) when absent (no instance, no banked bundle, no volume row yet) so the
+  # status-patch map below never carries a nil (the router's `:json.encode` nil
+  # trap: OTP renders Elixir nil as the STRING "nil"). A workload with no banked
+  # bundle reads bundleGeneration 0, which reads as a mismatch against a nonzero
+  # live generation; that is the correct signal (no valid warm pair to relight),
+  # not a false positive, since pair_valid?/1 (the actual wake-path decision)
+  # never consults this status projection.
+  defp stateful_status_fields(state, workload) do
+    instances = StatefulStore.list(state.store, workload)
+    primary = Enum.find(instances, &(not StatefulState.terminal?(&1.state)))
+    banked = Enum.find(instances, &(&1.state == :banked))
+    volume = StatefulStore.get_volume(state.store, workload)
+
+    %{
+      state: primary_state_string(primary),
+      generation: (primary && primary.generation) || 0,
+      bundle_generation: (banked && banked.snapshot_generation) || 0,
+      volume_bytes: (volume && volume.allocated_bytes) || 0
+    }
+  end
+
+  # The FSM state as the string the CRD's status.stateful.state documents, or ""
+  # when no instance exists yet (never nil, per the no-nil-in-status-patch rule).
+  defp primary_state_string(nil), do: ""
+  defp primary_state_string(%{state: fsm_state}), do: Atom.to_string(fsm_state)
+
+  defp patch_stateful_status(state, namespace, name, fields) do
+    status_map = %{
+      "stateful" => %{
+        "state" => fields.state,
+        "generation" => fields.generation,
+        "bundleGeneration" => fields.bundle_generation,
+        "volumeBytes" => fields.volume_bytes
+      },
+      "statefulSummary" => "#{fields.state} gen=#{fields.generation}/bundle=#{fields.bundle_generation}"
+    }
+
+    case state.status_writer.(namespace, name, status_map) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        # Visibility-only: a status-write failure must never crash the sweep.
+        Logger.warning("embervm stateful status patch failed for #{namespace}/#{name}: #{inspect(reason)}")
+    end
+  rescue
+    e -> Logger.warning("embervm stateful status patch raised for #{namespace}/#{name}: #{inspect(e)}")
+  catch
+    _, _ -> :ok
   end
 
   # -- stats scrape + activity -----------------------------------------------
@@ -615,7 +717,10 @@ defmodule Embervm.StatefulSweeper do
                  {:ok, %StopStatefulResponse{snapshot_ref: ref, size_bytes: size, generation: generation}}
                  when is_binary(ref) and ref != "" <-
                    stop_fun.(channel, bank_request(vm_id)) do
-              Tracer.set_attributes(%{"ember.snapshot_bytes" => size})
+              # generation only becomes known once the daemon replies (the pair-key
+              # baseline the bundle is stamped with), so it is set here rather than
+              # in the span's opening attributes, exactly like ember.snapshot_bytes.
+              Tracer.set_attributes(%{"ember.snapshot_bytes" => size, "ember.generation" => generation || 0})
               {:ok, ref, size, generation}
             else
               other -> {:error, other}
