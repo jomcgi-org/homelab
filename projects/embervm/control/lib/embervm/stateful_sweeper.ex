@@ -1201,10 +1201,32 @@ defmodule Embervm.StatefulSweeper do
     state
   end
 
-  # Resolve RPC ERROR (either mode): noded tore the paused VM down on a resolve
-  # failure, so the instance FAILS (checkpointed -> failed, durable
-  # stateful_failed). The workload returns to no-live-instance; the next
-  # connection cold-boots. Reset the abort counter (this lifecycle is over).
+  # Resolve rejected FAILED_PRECONDITION (gRPC status 9): noded already resolved
+  # this checkpoint ITSELF. Its resolve-timeout auto-abort fired first (we were
+  # slow, not dead) and lost us the single-resolve race. A noded auto-abort always
+  # RESUMES the VM hot (it never tears it down on the timeout path), so the VM is
+  # LIVE and serving on the node, NOT gone. Reconcile the instance to :serving
+  # exactly as a successful ABORT would (mark serving, republish, serve parked
+  # callers) rather than marking it :failed and orphaning a healthy live VM that
+  # adoption could never heal (adoption skips terminal instances). If noded had in
+  # fact torn the VM down (a resume failure, which noded reports as a DIFFERENT
+  # error, not FAILED_PRECONDITION), we would not land here.
+  defp apply_resolve(state, instance_id, node_id, vm_id, ip, port, workload, _mode, {:error, %GRPC.RPCError{status: 9}}) do
+    Logger.info(
+      "embervm stateful: resolve lost the single-resolve race (noded auto-aborted, VM resumed); reconciling to serving",
+      instance_id: instance_id,
+      workload: workload
+    )
+
+    apply_resolve(state, instance_id, node_id, vm_id, ip, port, workload, :abort, {:ok, %ResolveStatefulResponse{}})
+  end
+
+  # Resolve RPC ERROR (transport/timeout/raised, NOT the FAILED_PRECONDITION
+  # single-resolve race above): noded tore the paused VM down on a resolve failure
+  # (a commit whose publish failed, or an abort whose resume failed), so the
+  # instance FAILS (checkpointed -> failed, durable stateful_failed). The workload
+  # returns to no-live-instance; the next connection cold-boots. Reset the abort
+  # counter (this lifecycle is over).
   defp apply_resolve(state, instance_id, _node_id, _vm_id, _ip, _port, workload, mode, {:error, reason}) do
     Logger.warning("embervm stateful: checkpoint resolve failed, failing instance",
       instance_id: instance_id,

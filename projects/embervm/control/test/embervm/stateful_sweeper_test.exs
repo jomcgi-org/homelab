@@ -860,6 +860,40 @@ defmodule Embervm.StatefulSweeperTest do
     assert load_ops(ctx, "stateful_failed") != []
   end
 
+  test "a resolve rejected FAILED_PRECONDITION (noded auto-aborted first) reconciles to serving, not failed (ADR 008)" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, false)
+    # noded's resolve-timeout auto-abort won the single-resolve race: our late
+    # resolve is rejected FAILED_PRECONDITION (gRPC status 9). noded's auto-abort
+    # RESUMES the VM hot (never tears it down), so the instance must reconcile to
+    # :serving rather than :failed (which would orphan a healthy live VM).
+    :sys.replace_state(ctx.sweeper, fn s ->
+      %{
+        s
+        | resolve_stateful_fun: fn _ch, _req ->
+            {:error, %GRPC.RPCError{status: 9, message: "already resolved"}}
+          end
+      }
+    end)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    {:ok, instance} = StatefulStore.get(ctx.store, "sf-1")
+    assert instance.state == :serving
+    # No bundle committed and NOT failed: the VM is live and serving on the node.
+    assert load_ops(ctx, "stateful_banked") == []
+    assert load_ops(ctx, "stateful_failed") == []
+    # Parked callers were told :abort (served hot).
+    _ = :sys.get_state(ctx.fake_mgr)
+    assert {"wl-i", :abort} in resolved_notes(ctx)
+  end
+
   test "non-interruptible workload is unchanged: atomic BANK, never CHECKPOINT/ResolveStateful" do
     ctx = start_stack()
     # Default cfg: interruptible_bank absent (false).

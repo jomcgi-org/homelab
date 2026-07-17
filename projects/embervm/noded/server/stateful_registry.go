@@ -168,10 +168,12 @@ func (r *statefulRegistry) clearInFlight(id string) {
 }
 
 // markCheckpointed records that a CHECKPOINT has paused this VM awaiting a
-// resolve (ADR embervm/008) and arms its resolve-timeout auto-abort timer. The
-// entry stays inFlight (beginStop set it) so it is neither bankable nor
-// checkpointable again until the resolve lands.
-func (r *statefulRegistry) markCheckpointed(id, token string, timer *time.Timer) bool {
+// resolve (ADR embervm/008). The entry stays inFlight (beginStop set it) so it is
+// neither bankable nor checkpointable again until the resolve lands. The
+// resolve-timeout auto-abort timer is armed SEPARATELY (setCheckpointTimer) AFTER
+// this, so a timer that fires immediately always finds the token already set and
+// its auto-abort works rather than no-opping.
+func (r *statefulRegistry) markCheckpointed(id, token string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	e := r.vms[id]
@@ -179,8 +181,23 @@ func (r *statefulRegistry) markCheckpointed(id, token string, timer *time.Timer)
 		return false
 	}
 	e.checkpointToken = token
-	e.checkpointTimer = timer
 	return true
+}
+
+// setCheckpointTimer installs the resolve-timeout auto-abort timer on a
+// checkpoint-pending entry. Called right after markCheckpointed so the token is
+// already set when the timer can first fire. If the entry vanished or was already
+// resolved (token cleared by a racing claimResolve) between the two calls, the
+// timer is stopped and not installed, so it never fires on a resolved entry.
+func (r *statefulRegistry) setCheckpointTimer(id string, timer *time.Timer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	if e == nil || e.checkpointToken == "" {
+		timer.Stop()
+		return
+	}
+	e.checkpointTimer = timer
 }
 
 // claimResolve is the node's single-resolve gate: it returns the entry ONLY if it
