@@ -13,6 +13,8 @@ go_library(
     deps = [
         "//projects/embervm/proto/embervm/node/v1:nodev1",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
     ],
 )
 
