@@ -1762,3 +1762,55 @@ var (
 	_ sessionDriver = (*fakeDriver)(nil)
 	_ transport     = (*fakeTransport)(nil)
 )
+
+// TestReconcileBasesFromDiskRestoresRefAndGCsSuperseded proves the base
+// disk-reconcile restores each base's runtime image ref from the persisted
+// imageref file (so a stateful cold boot resolves the rootfs after a daemon
+// restart) and GCs bases whose ref is missing or no longer provisioned
+// (D-R3.11.3), so superseded snapshots neither accumulate on node NVMe nor get
+// advertised to the control plane as bootable.
+func TestReconcileBasesFromDiskRestoresRefAndGCsSuperseded(t *testing.T) {
+	dir := t.TempDir()
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: dir,
+			Images: map[string]config.Image{"img-current": {RootfsPath: "/rootfs/cur"}},
+		},
+	})
+
+	basesDir := filepath.Join(dir, "bases")
+	writeReconcileBase(t, basesDir, "wl-a__current", "img-current") // provisioned -> adopted
+	writeReconcileBase(t, basesDir, "wl-a__stale", "img-old")       // superseded ref -> GC'd
+	writeReconcileBase(t, basesDir, "wl-b__noref", "")              // no imageref -> GC'd
+
+	s.ReconcileBasesFromDisk()
+
+	got, ok := s.bases.get("wl-a__current")
+	if !ok || got.imageDigest != "img-current" || got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Fatalf("current base = %+v ok=%v; want adopted READY with imageDigest img-current", got, ok)
+	}
+	for _, gcKey := range []string{"wl-a__stale", "wl-b__noref"} {
+		if _, ok := s.bases.get(gcKey); ok {
+			t.Errorf("base %q should have been GC'd from the registry", gcKey)
+		}
+		if _, err := os.Stat(filepath.Join(basesDir, gcKey)); !os.IsNotExist(err) {
+			t.Errorf("base dir %q should have been removed from disk", gcKey)
+		}
+	}
+}
+
+func writeReconcileBase(t *testing.T, basesDir, baseKey, ref string) {
+	t.Helper()
+	d := filepath.Join(basesDir, baseKey)
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "snapfile"), []byte("snap"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ref != "" {
+		if err := os.WriteFile(filepath.Join(d, "imageref"), []byte(ref), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
