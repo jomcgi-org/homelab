@@ -429,6 +429,17 @@ workloads:
   runtimePython:
     rootfsPath: /disks/nvme-02/embervm-noded/runtime-python/rootfs.ext4
     harnessInit: /usr/local/bin/ember-runtime-guest-init
+  # R4 scratch-postgres stateful base (ADR embervm/001, D-R4.PR-11.1). Its PID-1
+  # ember-postgres-init mounts the writable volume, decodes POSTGRES_PASSWORD from
+  # the mmds_env boot-args, and runs initdb-if-empty then postgres. The key must
+  # match the top-level `scratchPostgres` block below (the deployment ranges over
+  # `workloads` and looks the guest image up by the same key). The initContainer
+  # + EMBERVM_NODED_IMAGES entry are only rendered when scratchPostgres.guestImage
+  # .repository is set, so gating the CR/secret on scratchPostgres.enabled keeps
+  # the base build wired whenever the image is pinned.
+  scratchPostgres:
+    rootfsPath: /disks/nvme-02/embervm-noded/scratch-postgres/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-postgres-init
 
 # The python sandbox guest image, Bazel-pinned (helm_chart images="sandbox.guestImage")
 # from the frozen fc-invoke sandbox guest's .info provider, so the guest contract
@@ -462,6 +473,29 @@ runtimePython:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/python
     tag: latest
+
+# R4 scratch-postgres stateful consumer (ADR embervm/001, D-R4.PR-11.1), the
+# named consumer that justifies the stateful rung. Bazel-pinned
+# (helm_chart images="scratchPostgres.guestImage") from the postgres runtime
+# image's .info provider. Distinct FLAT top-level key (never nested) so the image
+# pin does not collide on YAML parse (D14a.6). Three refs derive from here and
+# always match: the rootfs-builder GUEST_IMAGE, the EMBERVM_NODED_IMAGES entry,
+# and the Workload CR's source.image.ref. Disabled by default: enabling it
+# requires the 1Password item (onepassword.itemPath) so the first-boot
+# POSTGRES_PASSWORD exists.
+scratchPostgres:
+  enabled: false
+  # The node Envoy TCP listener port (must fall in the stateful 5400-5409 range;
+  # see the CRD's listenPort validation). Shared with the monolith DSN wiring.
+  listenPort: 5400
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/postgres
+    tag: latest
+  onepassword:
+    # 1Password item path (vaults/<vault>/items/<item>) whose POSTGRES_PASSWORD
+    # field syncs into the <fullname>-scratch-postgres Secret. Empty leaves the
+    # OnePasswordItem unrendered (set it to enable the secret sync).
+    itemPath: ""
 
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
 # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
