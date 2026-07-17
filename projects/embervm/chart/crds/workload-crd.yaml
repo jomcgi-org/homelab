@@ -7,12 +7,13 @@
 # bespoke API.
 #
 # v1 invariants held for later rungs (cheap now, expensive to retrofit):
-#   - spec.class is an enum reserving session|serving|stateful (R2/R3/R4); task,
-#     session, and serving are valid as of R3, stateful remains reserved.
+#   - spec.class is an enum: task|session|serving are valid as of R3, stateful as
+#     of R4, and composite as of R5 (the group class).
 #   - spec.source is a oneOf so the R1 zip/runtime-shim lane is a schema
 #     addition, not a reshape; only `image` is implemented.
-#   - spec.group (R5 composite groups) is deliberately RESERVED, not defined:
-#     when it lands it is a new optional block, so v1alpha1 CRs stay valid.
+#   - spec.group (R5 composite groups) is now DEFINED (it was reserved through
+#     R4): a new optional block required only for the composite class, so every
+#     pre-R5 v1alpha1 CR stays valid (the block is absent and forbidden for them).
 #   - status.snapshotRef carries no volumeGeneration in the task class (task VMs
 #     are single-use, no volumes); the R4 stateful class will pair a
 #     volumeGeneration with the snapshot. Recorded here so the field is expected.
@@ -58,6 +59,10 @@ spec:
           type: string
           description: Instance state and generation/bundle pairing (stateful class only).
           jsonPath: .status.statefulSummary
+        - name: Composite
+          type: string
+          description: Group state and live/degraded member counts (composite class only).
+          jsonPath: .status.groupSummary
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp
@@ -77,20 +82,26 @@ spec:
                 class:
                   type: string
                   description: >-
-                    Isolation/lifecycle class. task, session, serving, and
-                    stateful are valid as of R4. The stateful class is a
+                    Isolation/lifecycle class. task, session, serving, stateful,
+                    and composite are valid as of R5. The stateful class is a
                     scale-to-zero singleton datastore (one long-lived microVM
-                    owning one writable volume, reachable over opaque L4 TCP).
-                    concurrency is required by the watcher for task/session/serving
-                    but forbidden for stateful (singleton by construction), which
-                    is why it is no longer a schema-level required field; the
-                    watcher enforces the per-class requiredness via a status
-                    condition (the same pattern as the session/serving blocks).
+                    owning one writable volume, reachable over opaque L4 TCP). The
+                    composite class is the group class: a SET of member microVMs
+                    (each a role with one or more replicas) that live, bank,
+                    relight, and die as ONE unit, sharing a private subnet and
+                    reached through one declared entry member. concurrency is
+                    required by the watcher for task/session/serving but forbidden
+                    for stateful and composite (a composite's size is fixed by its
+                    member set, not a concurrency knob), which is why it is no
+                    longer a schema-level required field; the watcher enforces the
+                    per-class requiredness via a status condition (the same pattern
+                    as the session/serving/stateful blocks).
                   enum:
                     - task
                     - session
                     - serving
                     - stateful
+                    - composite
                 source:
                   type: object
                   description: >-
@@ -478,6 +489,205 @@ spec:
                         scratch tier only: the decoded value rides the guest
                         kernel command line for that one boot. Omit for a
                         workload with no first-boot secrets to deliver.
+                group:
+                  type: object
+                  description: >-
+                    Composite-group definition (R5). REQUIRED when spec.class is
+                    `composite` and forbidden otherwise; the watcher enforces that
+                    cross-field rule with a status condition (the OpenAPI schema
+                    cannot express class-conditional requiredness). A composite is
+                    a SET of member microVMs (each member a role with one or more
+                    replicas) that live, bank, relight, and die as ONE unit,
+                    sharing a private per-group subnet and reached through one
+                    declared entry member (ADR embervm/001). Warmth is banked/relit
+                    as a whole set atomically; a partial or unreadable set discards
+                    warmth and the whole group cold-boots (fresh boot). There is no
+                    maxInstances knob (the group size is fixed by the member set)
+                    and spec.concurrency is forbidden on this class.
+                  required:
+                    - members
+                    - entry
+                  properties:
+                    members:
+                      type: array
+                      description: >-
+                        The group's member roles. Each member expands to `replicas`
+                        VMs (an expanded member name is `<name>-<index>`, 0-based).
+                        Member names are DNS labels and unique across the block. The
+                        sum of replicas (the expanded member count) is capped by the
+                        chart's values-declared maxGroupSize (default 4); the watcher
+                        rejects an over-cap group with a status condition.
+                      minItems: 1
+                      items:
+                        type: object
+                        required:
+                          - name
+                          - source
+                          - healthPort
+                        properties:
+                          name:
+                            type: string
+                            description: >-
+                              DNS-label member name, unique within the group. The
+                              member's expanded replicas are named `<name>-<index>`.
+                            pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                            maxLength: 63
+                          role:
+                            type: string
+                            description: >-
+                              Free-form role label for the member (e.g. leader,
+                              worker), recorded for operator legibility; the control
+                              plane does not interpret it.
+                          startOrder:
+                            type: integer
+                            description: >-
+                              Relative boot order within the group (lower starts
+                              first). Members sharing a startOrder boot together.
+                            minimum: 0
+                            default: 0
+                          replicas:
+                            type: integer
+                            description: >-
+                              Number of VMs this member expands to (each named
+                              `<name>-<index>`). Counts against maxGroupSize.
+                            minimum: 1
+                            default: 1
+                          source:
+                            type: object
+                            description: >-
+                              Where this member's guest comes from. v1 supports the
+                              image lane only (a per-member OCI image), mirroring the
+                              top-level source.image contract.
+                            required:
+                              - image
+                            properties:
+                              image:
+                                type: object
+                                required:
+                                  - ref
+                                properties:
+                                  ref:
+                                    type: string
+                                    description: >-
+                                      OCI reference, digest-pinned or tag. A tag is
+                                      resolved to a digest at base-build time.
+                          resources:
+                            type: object
+                            description: >-
+                              Per-member VM sizing. Defaults to the top-level
+                              spec.resources when omitted (the watcher applies that).
+                            properties:
+                              vcpus:
+                                type: integer
+                                minimum: 1
+                                maximum: 8
+                              memMib:
+                                type: integer
+                                minimum: 128
+                                maximum: 16384
+                          healthPort:
+                            type: integer
+                            description: >-
+                              TCP port the daemon probes for this member's liveness
+                              (a TCP connect gates the member healthy). REQUIRED: the
+                              whole-group readiness edge (every member health-gated)
+                              cannot fire without it.
+                            minimum: 1
+                            maximum: 65535
+                          env:
+                            type: object
+                            description: >-
+                              Optional first-boot environment for this member's
+                              guest, a plain string map.
+                            additionalProperties:
+                              type: string
+                    entry:
+                      type: object
+                      description: >-
+                        The group's single ingress. `member` names the member (or an
+                        expanded replica name) whose `port` traffic reaches; the
+                        group is exposed cluster-internally on `listenPort`.
+                      required:
+                        - member
+                        - port
+                        - listenPort
+                      properties:
+                        member:
+                          type: string
+                          description: >-
+                            The entry member. Must name a declared member OR an
+                            expanded replica name (a member `agent` with replicas 2
+                            makes `agent`, `agent-0`, and `agent-1` all valid entry
+                            targets); the watcher rejects an entry naming no such
+                            member with a status condition.
+                        port:
+                          type: integer
+                          description: The port on the entry member traffic reaches.
+                          minimum: 1
+                          maximum: 65535
+                        listenPort:
+                          type: integer
+                          description: >-
+                            The node Envoy TCP listener port this group is exposed on
+                            cluster-internally. Must fall inside the chart's values-
+                            declared composite range (default 5410-5419) and be unique
+                            across composite workloads; the watcher rejects an out-of-
+                            range or duplicate port with a status condition.
+                          minimum: 1
+                          maximum: 65535
+                    secretRef:
+                      type: object
+                      description: >-
+                        Optional reference to a K8s Secret in this workload's OWN
+                        namespace supplying EMBER_GROUP_SECRET to every member. When
+                        set, the secret is STABLE across group instances (read from
+                        the Secret each boot); when omitted, EMBER_GROUP_SECRET is
+                        minted fresh per group instance. Cluster-internal scratch
+                        tier only.
+                      required:
+                        - name
+                        - key
+                      properties:
+                        name:
+                          type: string
+                          description: The Secret's name (same namespace as the workload).
+                        key:
+                          type: string
+                          description: The data key within the Secret to read.
+                    idleBankSeconds:
+                      type: integer
+                      description: >-
+                        Idle time (no in-flight/queued work across the whole group,
+                        per the idle-signal scrape) after which the WHOLE set is
+                        banked and its VMs released. A live connection is never
+                        severed regardless of this timer.
+                      minimum: 30
+                      default: 600
+                    maxLifetimeSeconds:
+                      type: integer
+                      description: >-
+                        Hard lifetime cap. The group rides its birth images until
+                        this expires; after it, convergence is destroy-and-fresh-boot
+                        of the whole set.
+                      minimum: 60
+                      default: 86400
+                    bankedTtlSeconds:
+                      type: integer
+                      description: >-
+                        How long a banked bundle SET may sit idle before it is
+                        garbage-collected off node disk. The set is GC'd as a unit
+                        (partial warmth is never retained).
+                      minimum: 0
+                      default: 604800
+                    wakeTimeoutSeconds:
+                      type: integer
+                      description: >-
+                        Deadline for a whole-group wake (relight or fresh boot) to
+                        reach readiness (every member health-gated). A wake that
+                        exceeds it marks the group failed and the next request
+                        retries.
+                      minimum: 1
+                      default: 120
                 invocation:
                   type: object
                   description: Task execution policy. All fields defaulted.
@@ -654,6 +864,61 @@ spec:
                     `stateful`, for the STATEFUL printer column (a printer column
                     cannot format an object). Written by the control plane
                     alongside `stateful`.
+                group:
+                  type: object
+                  description: >-
+                    Composite-group status written by the control plane (composite
+                    workloads only). Absent for other classes. Reports the whole-
+                    group lifecycle state, the live/degraded member counts, the
+                    banked bundle-set handle, and the group's private subnet. This
+                    status is WARMTH-ONLY: it reflects live execution state and
+                    EVAPORATES when the group is destroyed, expires (TTL), or fresh-
+                    boots (a discarded-warmth cold boot resets it); it is never a
+                    durable record (the op-log is the book of record). The member
+                    health it summarizes is CRASH-CONSISTENT PER VM only: each
+                    member's state is consistent within itself, never transactionally
+                    consistent across members (a bank snapshots each member VM
+                    independently, standing decisions 2 and 10).
+                  properties:
+                    state:
+                      type: string
+                      description: >-
+                        Whole-group lifecycle state (starting | running | degraded |
+                        banking | banked | relighting | fresh_booting | evicted |
+                        destroyed | failed), or absent when no instance exists yet.
+                        `degraded` means a member is unhealthy while the group stays
+                        up; the terminal `expired` state is reported as `destroyed`
+                        (expiry is a destroy with reason=expired).
+                    members:
+                      type: object
+                      description: >-
+                        Member health counts across the expanded set. Crash-
+                        consistent per VM only (never a cross-member transaction).
+                      properties:
+                        live:
+                          type: integer
+                          description: Members currently healthy.
+                        degraded:
+                          type: integer
+                          description: Members currently unhealthy while the group stays up.
+                    setId:
+                      type: string
+                      description: >-
+                        The banked bundle-SET handle (present only while banked). The
+                        whole set is one warmth unit: a partial or unreadable set is
+                        discarded and the group fresh-boots, so this is never a
+                        per-member handle.
+                    subnetCidr:
+                      type: string
+                      description: The group's private per-group subnet (the /29 its members share).
+                groupSummary:
+                  type: string
+                  description: >-
+                    Human-readable "state live/degraded" rendering of `group`, for
+                    the COMPOSITE printer column (a printer column cannot format an
+                    object). Written by the control plane alongside `group`. Warmth-
+                    only, exactly like `group` (it evaporates on destroy/TTL/fresh-
+                    boot).
                 conditions:
                   type: array
                   items:

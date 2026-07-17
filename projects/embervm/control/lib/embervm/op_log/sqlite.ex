@@ -78,6 +78,27 @@ defmodule Embervm.OpLog.SQLite do
     "relighting",
     "cold_booting"
   ]
+
+  # Composite-group instance lifecycle states (R5), mirroring the stateful
+  # retention discipline exactly. A non-terminal (live) group instance pins its
+  # ops against prefix compaction and is never pruned by the retention sweep; a
+  # terminal instance prunes past retention (ADR embervm/002). "degraded" is a
+  # LIVE state (a member fell unhealthy but the group is still up), like
+  # "serving". "fresh_booting" is the cold-boot path (a wake that discarded
+  # warmth), live like "starting". The `expired` terminal state is folded into
+  # "destroyed" (it rides group_destroyed{reason: expired}), so it is not a
+  # distinct state here. `group_members` rows are NOT swept independently: they
+  # live and die with their group instance (pruned when it is).
+  @group_terminal_states ["evicted", "destroyed", "failed"]
+  @group_live_states [
+    "starting",
+    "running",
+    "degraded",
+    "banking",
+    "banked",
+    "relighting",
+    "fresh_booting"
+  ]
   # Seven days in milliseconds: default age (from last update) at which a
   # terminal task is eligible for compaction. This is the TERMINAL-TASK retention
   # window and is DISTINCT from the ops-journal horizon below.
@@ -105,6 +126,7 @@ defmodule Embervm.OpLog.SQLite do
       session_id TEXT,
       serving_instance_id TEXT,
       stateful_instance_id TEXT,
+      group_instance_id TEXT,
       kind TEXT NOT NULL,
       payload_json TEXT NOT NULL DEFAULT '{}'
     )
@@ -272,6 +294,63 @@ defmodule Embervm.OpLog.SQLite do
       updated_at INTEGER NOT NULL
     )
     """,
+    # Composite-group instance projection (R5): the durable lifecycle + entry-
+    # endpoint + set row per group instance, write-through projected from the
+    # group_* ops (see project/2), mirroring stateful_instances above. A composite
+    # group is a set of member microVMs that live/bank/relight/die as ONE unit
+    # (ADR embervm/001). subnet_cidr is the group's private /29 (recorded by
+    # group_net_created); entry_member/entry_port are the declared entry target,
+    # and listen_port is the node-Envoy TCP listener the group is exposed on
+    # cluster-internally (the group identity on the wire). set_id is the banked
+    # bundle-set handle stamped by group_banked (the whole-set warmth key); it is
+    # cleared on a fresh boot or set eviction that discarded warmth. entry_member/
+    # entry_port/listen_port are schema from the first row (the group's identity);
+    # set_id and terminal_reason fill in on the relevant transitions. A non-terminal
+    # instance pins its ops against compaction and is never pruned by retention.
+    """
+    CREATE TABLE IF NOT EXISTS group_instances (
+      instance_id TEXT PRIMARY KEY,
+      tenant TEXT NOT NULL,
+      principal TEXT,
+      workload TEXT,
+      state TEXT NOT NULL,
+      node_id TEXT,
+      subnet_cidr TEXT,
+      entry_member TEXT,
+      entry_port INTEGER,
+      listen_port INTEGER,
+      set_id TEXT,
+      created_at INTEGER NOT NULL,
+      last_active_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      terminal_reason TEXT
+    )
+    """,
+    # Composite-group member projection (R5): one row per (group instance, member
+    # name), the per-member lifecycle/health/snapshot facts. This is the FIRST
+    # multi-row-per-instance projection (sessions/serving/stateful are one row per
+    # instance); the composite PK (instance_id, member_name) keys each member. vm_id/
+    # ip are the member VM's facts (reported at member start, cleared on bank);
+    # member_index is the expanded-replica ordinal (a member `agent` with replicas 2
+    # expands to agent-0, agent-1). snapshot_ref is the member's slice of the banked
+    # bundle set (stamped atomically for every member by ONE group_banked append).
+    # healthy tracks the per-VM health the group_degraded/group_running edges read.
+    # Member rows live and die with their group instance (retention prunes them when
+    # the instance is pruned).
+    """
+    CREATE TABLE IF NOT EXISTS group_members (
+      instance_id TEXT NOT NULL,
+      member_name TEXT NOT NULL,
+      member_index INTEGER,
+      vm_id TEXT,
+      ip TEXT,
+      state TEXT,
+      snapshot_ref TEXT,
+      healthy INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (instance_id, member_name)
+    )
+    """,
     # Durable single-row scalars for the op-log. Today it holds only the
     # ops-journal prefix marker (`compacted_through_seq`): the newest op seq that
     # has been prefix-compacted away, part of the durable OpLog contract so a
@@ -336,6 +415,16 @@ defmodule Embervm.OpLog.SQLite do
   @impl Embervm.OpLog
   def load_volumes(server \\ __MODULE__) do
     GenServer.call(server, :load_volumes)
+  end
+
+  @impl Embervm.OpLog
+  def load_group_instances(server \\ __MODULE__) do
+    GenServer.call(server, :load_group_instances)
+  end
+
+  @impl Embervm.OpLog
+  def load_group_members(server \\ __MODULE__) do
+    GenServer.call(server, :load_group_members)
   end
 
   @impl Embervm.OpLog
@@ -443,6 +532,14 @@ defmodule Embervm.OpLog.SQLite do
     {:reply, do_load_volumes(state.conn), state}
   end
 
+  def handle_call(:load_group_instances, _from, state) do
+    {:reply, do_load_group_instances(state.conn), state}
+  end
+
+  def handle_call(:load_group_members, _from, state) do
+    {:reply, do_load_group_members(state.conn), state}
+  end
+
   def handle_call({:load_result, task_id}, _from, state) do
     {:reply, do_load_result(state.conn, task_id), state}
   end
@@ -498,8 +595,8 @@ defmodule Embervm.OpLog.SQLite do
 
   defp insert_op(conn, %Op{} = op) do
     sql = """
-    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, kind, payload_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -513,6 +610,7 @@ defmodule Embervm.OpLog.SQLite do
              op.session_id,
              op.serving_instance_id,
              op.stateful_instance_id,
+             op.group_instance_id,
              Atom.to_string(op.kind),
              # An ETF {:blob, _}, not JSON, so a binary body persists byte-exact
              # (see encode_payload/1).
@@ -1106,6 +1204,225 @@ defmodule Embervm.OpLog.SQLite do
     project_usage_stateful(conn, op)
   end
 
+  # -- composite-group projection (R5) --------------------------------------
+  #
+  # The durable model: ONE `group_instances` row per group boot-lifecycle (created
+  # by group_created, retired by a terminal kind) plus N `group_members` rows (one
+  # per expanded member). A composite group lives/banks/relights/dies as ONE unit
+  # (ADR embervm/001), so group_banked stamps the ENTIRE member set atomically in a
+  # single append (decision 3), and a fresh boot / set eviction that discards warmth
+  # records its reason so every discarded-warmth event reconstructs from the log
+  # alone. Mirrors the stateful projection block above; the one structural novelty
+  # is the multi-row `group_members` write on member/bank transitions.
+
+  # group_created: a fresh group instance row (the whole-group boot). entry_member/
+  # entry_port/listen_port are the group's identity (from the validated CR); state
+  # is "starting" until every member is up and the group_running edge lands.
+  defp project(conn, %Op{kind: :group_created} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO group_instances
+      (instance_id, tenant, principal, workload, state, node_id, subnet_cidr,
+       entry_member, entry_port, listen_port, set_id,
+       created_at, last_active_at, updated_at, terminal_reason)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, NULL, ?, NULL)
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.group_instance_id,
+             op.tenant,
+             op.principal,
+             op.workload,
+             Map.get(payload, :state, "starting"),
+             Map.get(payload, :node_id),
+             Map.get(payload, :entry_member),
+             Map.get(payload, :entry_port),
+             Map.get(payload, :listen_port),
+             op.ts,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # group_net_created: the group's private /29 subnet is up. Records subnet_cidr
+  # (the group's own address space its members share); audit-plus-fact, no state
+  # change.
+  defp project(conn, %Op{kind: :group_net_created} = op, _seq) do
+    sql = "UPDATE group_instances SET subnet_cidr=?, updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(op.payload, :subnet_cidr),
+             op.ts,
+             op.group_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # group_net_deleted: the group's subnet is torn down (the group is going away).
+  # Audit-only for the subnet fact; the terminal kind clears the instance state.
+  # Clears subnet_cidr so a rebuild never shows a live subnet on a torn-down group.
+  defp project(conn, %Op{kind: :group_net_deleted} = op, _seq) do
+    sql = "UPDATE group_instances SET subnet_cidr=NULL, updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.group_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # group_member_started: one member VM came up. Upserts its `group_members` row
+  # (member_name, member_index, vm_id, ip), state "starting", not yet healthy.
+  # UPSERT so a relight/fresh-boot re-start of the same member overwrites its prior
+  # row (a member row lives with the group, its facts refresh on each boot).
+  defp project(conn, %Op{kind: :group_member_started} = op, _seq) do
+    upsert_group_member(conn, op, "starting", healthy: false, clear_snapshot: true)
+  end
+
+  # group_running: the whole-group readiness edge (every member health-gated). The
+  # group instance moves to "running"; every member row flips healthy. last_active_at
+  # advances (the group is live and serving).
+  defp project(conn, %Op{kind: :group_running} = op, _seq) do
+    with :ok <- set_group_state(conn, op, "running", last_active: true) do
+      mark_all_members_healthy(conn, op.group_instance_id, true, op.ts)
+    end
+  end
+
+  # group_published: the entry endpoint is live in the fan-out (who traffic reaches).
+  # Records the listen_port the entry is exposed on; keeps the group "running"
+  # (published is the entry-lifetime audit, not a lifecycle change).
+  defp project(conn, %Op{kind: :group_published} = op, _seq) do
+    sql = "UPDATE group_instances SET listen_port=COALESCE(?, listen_port), updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(op.payload, :listen_port),
+             op.ts,
+             op.group_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # group_unpublished: the entry endpoint left the fan-out (a drain precedes a
+  # bank). Audit-only for the endpoint; the VM set is not necessarily gone, so this
+  # does not move the instance to a terminal state (the terminal kinds below do).
+  defp project(conn, %Op{kind: :group_unpublished} = op, _seq) do
+    set_group_state(conn, op, "banking")
+  end
+
+  # group_banked: the whole set is snapshotted and destroyed, recorded ATOMICALLY
+  # in one append (decision 3). Stamps set_id on the instance and each member's
+  # snapshot_ref from payload.members (the bundle-set audit: every discarded-warmth
+  # event reconstructs from this one row + its member rows). Clears each member's
+  # vm_id/ip (the VMs are gone) and moves the instance to "banked".
+  defp project(conn, %Op{kind: :group_banked} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    UPDATE group_instances
+    SET state='banked', set_id=?, updated_at=?
+    WHERE instance_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.get(payload, :set_id),
+             op.ts,
+             op.group_instance_id
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt),
+         :ok <- bank_group_members(conn, op) do
+      :ok
+    end
+  end
+
+  # group_relit: a WARM wake resumed the banked set. Back to "starting" (not yet
+  # re-running) until the paired group_running edge lands with the fresh member
+  # endpoints; the members re-report via group_member_started, so this only moves
+  # the instance state and advances last_active_at.
+  defp project(conn, %Op{kind: :group_relit} = op, _seq) do
+    set_group_state(conn, op, "starting", last_active: true)
+  end
+
+  # group_fresh_booted: a wake that DISCARDED warmth and cold-booted the whole set
+  # (a NEW cold group boot). reason (no_set|partial_set|set_unreadable|
+  # clock_resync_failed|explicit) rides the payload so the discarded-warmth event is
+  # reconstructable from the log alone. Clears set_id (the warmth is spent) and
+  # returns to "starting"; members re-report fresh.
+  defp project(conn, %Op{kind: :group_fresh_booted} = op, _seq) do
+    sql = """
+    UPDATE group_instances
+    SET state='starting', set_id=NULL, updated_at=?
+    WHERE instance_id=?
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.group_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # group_set_evicted: the banked set is discarded (its warmth is stale/unreadable),
+  # the partner event to a later fresh boot. Records the reason and clears set_id so
+  # the next wake cold-boots. The instance stays live (banked -> starting is the
+  # relight/fresh path); this is the bundle-set audit, not a terminal transition.
+  defp project(conn, %Op{kind: :group_set_evicted} = op, _seq) do
+    sql = "UPDATE group_instances SET set_id=NULL, updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.group_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # group_degraded: a member fell unhealthy while the group stays up (crash-
+  # consistency is per-VM, never across members). Moves the instance to "degraded"
+  # (a LIVE state) and flips the named member's healthy flag off.
+  defp project(conn, %Op{kind: :group_degraded} = op, _seq) do
+    with :ok <- set_group_state(conn, op, "degraded") do
+      case Map.get(op.payload, :member_name) do
+        nil -> :ok
+        member -> set_member_health(conn, op.group_instance_id, member, false, op.ts)
+      end
+    end
+  end
+
+  defp project(conn, %Op{kind: :group_destroyed} = op, _seq),
+    do: terminate_group(conn, op, "destroyed")
+
+  defp project(conn, %Op{kind: :group_failed} = op, _seq),
+    do: terminate_group(conn, op, "failed")
+
+  # group_stats: per-member usage ONLY, no group_instances row to touch. A composite
+  # group bills every member's live-seconds (a 3-member group bills 3 VMs' worth),
+  # so group_instance_id is NULL on this kind by construction (workload-scoped, like
+  # stateful_stats) and the (principal, day) accrual stays a pure function of the op.
+  defp project(conn, %Op{kind: :group_stats} = op, _seq) do
+    project_usage_group(conn, op)
+  end
+
   # Audit-only kinds: no task/result projection.
   defp project(_conn, %Op{kind: kind}, _seq)
        when kind in [:denied, :base_built, :primed, :vm_destroyed, :quota_enforced, :drain] do
@@ -1208,6 +1525,167 @@ defmodule Embervm.OpLog.SQLite do
       :ok
     end
   end
+
+  # -- composite-group projection helpers (R5) ------------------------------
+
+  # Move a group instance to `state`, optionally advancing last_active_at (for the
+  # live-serving edges: group_running/group_relit). A no-op-shaped UPDATE keyed by
+  # instance_id, mirroring the serving/stateful state setters.
+  defp set_group_state(conn, %Op{} = op, state, opts \\ []) do
+    sql =
+      if Keyword.get(opts, :last_active, false) do
+        "UPDATE group_instances SET state=?, last_active_at=?, updated_at=? WHERE instance_id=?"
+      else
+        "UPDATE group_instances SET state=?, updated_at=? WHERE instance_id=?"
+      end
+
+    params =
+      if Keyword.get(opts, :last_active, false) do
+        [state, op.ts, op.ts, op.group_instance_id]
+      else
+        [state, op.ts, op.group_instance_id]
+      end
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, params),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # A terminal group-instance transition, mirroring terminate_stateful/3. The
+  # `expired` terminal state has no dedicated kind: it arrives as group_destroyed
+  # {reason: expired}, so the reason (defaulting to the state) carries it through.
+  defp terminate_group(conn, %Op{} = op, state) do
+    reason = to_string(Map.get(op.payload, :reason, state))
+    sql = "UPDATE group_instances SET state=?, terminal_reason=?, updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [state, reason, op.ts, op.group_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # UPSERT one `group_members` row from a group_member_started op. The composite PK
+  # (instance_id, member_name) means a re-start of the same member (relight/fresh
+  # boot re-reports it) overwrites its prior facts. clear_snapshot resets the banked
+  # slice on a fresh member boot (the warmth is spent). healthy starts false; the
+  # group_running edge flips it.
+  defp upsert_group_member(conn, %Op{} = op, state, opts) do
+    payload = op.payload
+    healthy = if Keyword.get(opts, :healthy, false), do: 1, else: 0
+    clear_snapshot = Keyword.get(opts, :clear_snapshot, false)
+
+    snapshot_set = if clear_snapshot, do: "NULL", else: "snapshot_ref"
+
+    sql = """
+    INSERT INTO group_members
+      (instance_id, member_name, member_index, vm_id, ip, state, snapshot_ref, healthy, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+    ON CONFLICT(instance_id, member_name) DO UPDATE SET
+      member_index = excluded.member_index,
+      vm_id = excluded.vm_id,
+      ip = excluded.ip,
+      state = excluded.state,
+      snapshot_ref = #{snapshot_set},
+      healthy = excluded.healthy,
+      updated_at = excluded.updated_at
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.group_instance_id,
+             Map.get(payload, :member_name),
+             Map.get(payload, :member_index),
+             Map.get(payload, :vm_id),
+             Map.get(payload, :ip),
+             state,
+             healthy,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # Flip every member row of a group to (un)healthy in one statement (the group_running
+  # readiness edge marks the whole set healthy).
+  defp mark_all_members_healthy(conn, instance_id, healthy, ts) do
+    flag = if healthy, do: 1, else: 0
+    sql = "UPDATE group_members SET healthy=?, updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [flag, ts, instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # Set one named member's health flag (group_degraded flips it off).
+  defp set_member_health(conn, instance_id, member_name, healthy, ts) do
+    flag = if healthy, do: 1, else: 0
+    sql = "UPDATE group_members SET healthy=?, updated_at=? WHERE instance_id=? AND member_name=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [flag, ts, instance_id, member_name]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # Stamp the banked bundle-set slice onto every member row ATOMICALLY (decision 3:
+  # the whole set is banked in ONE append). payload.members is a list of
+  # %{name, snapshot_ref} (atom or string keys, since the projection runs on the
+  # freshly-appended atom-keyed op); each member's snapshot_ref is recorded and its
+  # live VM facts (vm_id/ip) cleared (the VMs are gone). A member with no matching
+  # payload entry is left untouched. No-op when the payload carries no member list.
+  defp bank_group_members(conn, %Op{} = op) do
+    case Map.get(op.payload, :members) do
+      members when is_list(members) ->
+        Enum.reduce_while(members, :ok, fn member, :ok ->
+          name = member_field(member, :name)
+          snapshot_ref = member_field(member, :snapshot_ref)
+
+          sql = """
+          UPDATE group_members
+          SET snapshot_ref=?, vm_id=NULL, ip=NULL, state='banked', updated_at=?
+          WHERE instance_id=? AND member_name=?
+          """
+
+          result =
+            with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+                 :ok <- Sqlite3.bind(stmt, [snapshot_ref, op.ts, op.group_instance_id, name]),
+                 :done <- Sqlite3.step(conn, stmt),
+                 :ok <- Sqlite3.release(conn, stmt) do
+              :ok
+            end
+
+          case result do
+            :ok -> {:cont, :ok}
+            {:error, _} = err -> {:halt, err}
+          end
+        end)
+
+      _ ->
+        :ok
+    end
+  end
+
+  # A member payload entry may carry atom keys (the projection sees the freshly
+  # appended atom-keyed op) or string keys (a value rebuilt from the durable
+  # payload_json), so read either.
+  defp member_field(member, key) when is_map(member) do
+    Map.get(member, key) || Map.get(member, Atom.to_string(key))
+  end
+
+  defp member_field(_member, _key), do: nil
 
   defp update_task_state(conn, task_id, state, ts) do
     sql = "UPDATE tasks SET state=?, updated_at=? WHERE task_id=?"
@@ -1333,6 +1811,52 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  # group_stats usage: accrue LIVE-SECONDS PER MEMBER into vcpu_seconds/gb_seconds
+  # (the compute unit, unlike serving/stateful stats which count L4/L7 units into
+  # request_count). A composite group bills every member's live-seconds: a 3-member
+  # group bills 3 VMs' worth. The payload carries the per-member live-seconds for one
+  # VM plus `member_count` (from the R4 stats-sweep shape, generalized), and the
+  # projection multiplies, so the "3 VMs' worth" is explicit and replay-deterministic.
+  # task_count is left untouched (a group is not a task). Skips a principal-less op
+  # exactly as the serving/stateful paths do. No-op when the op carried no usage.
+  defp project_usage_group(_conn, %Op{principal: nil}), do: :ok
+
+  defp project_usage_group(conn, %Op{payload: payload} = op) do
+    case Map.get(payload, :usage) do
+      usage when is_map(usage) ->
+        member_count = Map.get(payload, :member_count, 1)
+        vcpu_seconds = to_float(Map.get(usage, :vcpu_seconds, 0)) * member_count
+        gb_seconds = to_float(Map.get(usage, :gb_seconds, 0)) * member_count
+
+        sql = """
+        INSERT INTO usage (principal, day, tenant, vcpu_seconds, gb_seconds, task_count, request_count, updated_at)
+        VALUES (?, ?, ?, ?, ?, 0, 0, ?)
+        ON CONFLICT(principal, day) DO UPDATE SET
+          vcpu_seconds = vcpu_seconds + excluded.vcpu_seconds,
+          gb_seconds = gb_seconds + excluded.gb_seconds,
+          updated_at = excluded.updated_at
+        """
+
+        with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+             :ok <-
+               Sqlite3.bind(stmt, [
+                 op.principal,
+                 div(op.ts, @day_ms),
+                 op.tenant,
+                 vcpu_seconds,
+                 gb_seconds,
+                 op.ts
+               ]),
+             :done <- Sqlite3.step(conn, stmt),
+             :ok <- Sqlite3.release(conn, stmt) do
+          :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
   defp to_float(n) when is_number(n), do: n * 1.0
   defp to_float(_), do: 0.0
 
@@ -1370,7 +1894,7 @@ defmodule Embervm.OpLog.SQLite do
       {:error, {:compacted, marker}}
     else
       sql = """
-      SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, kind, payload_json
+      SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_json
       FROM ops WHERE seq > ? ORDER BY seq ASC
       """
 
@@ -1396,6 +1920,7 @@ defmodule Embervm.OpLog.SQLite do
          session_id,
          serving_instance_id,
          stateful_instance_id,
+         group_instance_id,
          kind,
          payload_json
        ]} ->
@@ -1409,6 +1934,7 @@ defmodule Embervm.OpLog.SQLite do
           session_id: session_id,
           serving_instance_id: serving_instance_id,
           stateful_instance_id: stateful_instance_id,
+          group_instance_id: group_instance_id,
           kind: String.to_existing_atom(kind),
           payload: decode_payload(payload_json)
         }
@@ -1661,6 +2187,102 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  defp do_load_group_instances(conn) do
+    sql = """
+    SELECT instance_id, tenant, principal, workload, state, node_id, subnet_cidr,
+           entry_member, entry_port, listen_port, set_id,
+           created_at, last_active_at, updated_at, terminal_reason
+    FROM group_instances
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      instances = collect_group_instances(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, instances}
+    end
+  end
+
+  defp collect_group_instances(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row,
+       [
+         instance_id,
+         tenant,
+         principal,
+         workload,
+         state,
+         node_id,
+         subnet_cidr,
+         entry_member,
+         entry_port,
+         listen_port,
+         set_id,
+         created_at,
+         last_active_at,
+         updated_at,
+         terminal_reason
+       ]} ->
+        instance = %{
+          instance_id: instance_id,
+          tenant: tenant,
+          principal: principal,
+          workload: workload,
+          state: state,
+          node_id: node_id,
+          subnet_cidr: subnet_cidr,
+          entry_member: entry_member,
+          entry_port: entry_port,
+          listen_port: listen_port,
+          set_id: set_id,
+          created_at: created_at,
+          last_active_at: last_active_at,
+          updated_at: updated_at,
+          terminal_reason: terminal_reason
+        }
+
+        collect_group_instances(conn, stmt, [instance | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
+  defp do_load_group_members(conn) do
+    sql = """
+    SELECT instance_id, member_name, member_index, vm_id, ip, state, snapshot_ref, healthy, updated_at
+    FROM group_members
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      members = collect_group_members(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, members}
+    end
+  end
+
+  defp collect_group_members(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [instance_id, member_name, member_index, vm_id, ip, state, snapshot_ref, healthy, updated_at]} ->
+        member = %{
+          instance_id: instance_id,
+          member_name: member_name,
+          member_index: member_index,
+          vm_id: vm_id,
+          ip: ip,
+          state: state,
+          snapshot_ref: snapshot_ref,
+          # SQLite stores the flag as 0/1; surface it as a bool for the GroupStore.
+          healthy: healthy == 1,
+          updated_at: updated_at
+        }
+
+        collect_group_members(conn, stmt, [member | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
   defp do_load_result(conn, task_id) do
     sql = """
     SELECT status_code, body, size_bytes, truncated, created_at, expires_at, headers
@@ -1844,11 +2466,13 @@ defmodule Embervm.OpLog.SQLite do
            delete_terminal_serving_instances(conn, now_ms, state.retention_ms, batch),
          {:ok, stateful_instances_compacted} <-
            delete_terminal_stateful_instances(conn, now_ms, state.retention_ms, batch),
+         {:ok, group_instances_compacted} <-
+           delete_terminal_group_instances(conn, now_ms, state.retention_ms, batch),
          {:ok, ops_compacted, marker} <- compact_ops(conn, now_ms, state.journal_horizon_ms, batch) do
       done =
         results_deleted < batch and tasks_compacted < batch and sessions_compacted < batch and
           serving_instances_compacted < batch and stateful_instances_compacted < batch and
-          ops_compacted < batch
+          group_instances_compacted < batch and ops_compacted < batch
 
       {:ok,
        %{
@@ -1857,6 +2481,7 @@ defmodule Embervm.OpLog.SQLite do
          sessions_compacted: sessions_compacted,
          serving_instances_compacted: serving_instances_compacted,
          stateful_instances_compacted: stateful_instances_compacted,
+         group_instances_compacted: group_instances_compacted,
          ops_compacted: ops_compacted,
          compacted_through: marker,
          done: done
@@ -1934,6 +2559,43 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  # Prune terminal group-instance projection rows past retention, mirroring
+  # delete_terminal_stateful_instances/4. A non-terminal group is never pruned, and
+  # its ops stay pinned by blocker_seq. `group_members` has no FK cascade (it keys on
+  # instance_id but does not REFERENCE group_instances), so this deletes the pruned
+  # instances' member rows in the same batch: member rows live and die with their
+  # group instance, so an orphaned member row must never survive its instance.
+  defp delete_terminal_group_instances(conn, now_ms, retention_ms, batch) do
+    cutoff = now_ms - retention_ms
+    placeholders = @group_terminal_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+
+    # Members of the instances about to be pruned, deleted FIRST so the member rows
+    # never outlive the instance row (the selection is the same terminal+aged set).
+    member_sql = """
+    DELETE FROM group_members WHERE instance_id IN (
+      SELECT instance_id FROM group_instances WHERE state IN (#{placeholders}) AND updated_at < ? LIMIT ?
+    )
+    """
+
+    instance_sql = """
+    DELETE FROM group_instances WHERE rowid IN (
+      SELECT rowid FROM group_instances WHERE state IN (#{placeholders}) AND updated_at < ? LIMIT ?
+    )
+    """
+
+    with {:ok, mstmt} <- Sqlite3.prepare(conn, member_sql),
+         :ok <- Sqlite3.bind(mstmt, @group_terminal_states ++ [cutoff, batch]),
+         :done <- Sqlite3.step(conn, mstmt),
+         :ok <- Sqlite3.release(conn, mstmt),
+         {:ok, stmt} <- Sqlite3.prepare(conn, instance_sql),
+         :ok <- Sqlite3.bind(stmt, @group_terminal_states ++ [cutoff, batch]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt),
+         {:ok, changed} <- Sqlite3.changes(conn) do
+      {:ok, changed}
+    end
+  end
+
   # Bounded DELETE via the portable rowid-subquery form: Exqlite's bundled SQLite
   # is not built with SQLITE_ENABLE_UPDATE_DELETE_LIMIT, so `DELETE ... LIMIT` is
   # unavailable; `DELETE ... WHERE rowid IN (SELECT rowid ... LIMIT ?)` bounds the
@@ -2000,19 +2662,22 @@ defmodule Embervm.OpLog.SQLite do
 
   # The smallest seq that must NOT be compacted: the first op that is either newer
   # than the horizon (ts >= cutoff), owned by a live (non-terminal) task, owned
-  # by a live (non-terminal) session, OR owned by a live (non-terminal) serving
-  # instance. The session clause is the R2 never-compact-a-live-session rule; the
-  # serving clause is its R3 mirror: a non-terminal serving instance pins its ops
-  # exactly as a live task or session does, so its lineage/lifecycle history
-  # stays replayable until it terminates. A serving_stats op carries no
-  # serving_instance_id (it is workload-scoped, see D-R3.2.1), so it is pinned
-  # only by the ts >= cutoff clause like any other audit-only op, never by this
-  # clause. NULL means no op is blocked, so the whole log is eligible.
+  # by a live (non-terminal) session, owned by a live (non-terminal) serving
+  # instance, owned by a live (non-terminal) stateful instance, OR owned by a live
+  # (non-terminal) group instance. The session clause is the R2 never-compact-a-
+  # live-session rule; the serving/stateful/group clauses are its R3/R4/R5 mirrors:
+  # a non-terminal instance pins its ops exactly as a live task or session does, so
+  # its lineage/lifecycle history stays replayable until it terminates. A
+  # serving_stats/stateful_stats/group_stats op carries no instance id (it is
+  # workload-scoped), so it is pinned only by the ts >= cutoff clause like any other
+  # audit-only op, never by this clause. NULL means no op is blocked, so the whole
+  # log is eligible.
   defp blocker_seq(conn, cutoff) do
     live_placeholders = @live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
     session_live_placeholders = @session_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
     serving_live_placeholders = @serving_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
     stateful_live_placeholders = @stateful_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
+    group_live_placeholders = @group_live_states |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
 
     sql = """
     SELECT MIN(seq) FROM ops
@@ -2025,6 +2690,9 @@ defmodule Embervm.OpLog.SQLite do
        OR stateful_instance_id IN (
             SELECT instance_id FROM stateful_instances WHERE state IN (#{stateful_live_placeholders})
           )
+       OR group_instance_id IN (
+            SELECT instance_id FROM group_instances WHERE state IN (#{group_live_placeholders})
+          )
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -2032,7 +2700,9 @@ defmodule Embervm.OpLog.SQLite do
            Sqlite3.bind(
              stmt,
              [cutoff] ++
-               @live_states ++ @session_live_states ++ @serving_live_states ++ @stateful_live_states
+               @live_states ++
+               @session_live_states ++
+               @serving_live_states ++ @stateful_live_states ++ @group_live_states
            ) do
       result =
         case Sqlite3.step(conn, stmt) do
@@ -2160,7 +2830,8 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
-         :ok <- migrate_ops_stateful_instance_id(conn) do
+         :ok <- migrate_ops_stateful_instance_id(conn),
+         :ok <- migrate_ops_group_instance_id(conn) do
       :ok
     end
   end
@@ -2245,6 +2916,29 @@ defmodule Embervm.OpLog.SQLite do
       Sqlite3.execute(
         conn,
         "CREATE INDEX IF NOT EXISTS ops_stateful_instance_id_idx ON ops(stateful_instance_id)"
+      )
+    end
+  end
+
+  # R5: the additive nullable `ops.group_instance_id` column plus its index,
+  # mirroring migrate_ops_stateful_instance_id/1 exactly. A fresh DB already built
+  # the column from the CREATE TABLE (and skips the ALTER), so this only fires on a
+  # DB created before R5; the guard is the same D-R1.2.1/R2/R3/R4 ALTER-after-DDL
+  # precedent. `group_instances` and `group_members` are whole new tables, so
+  # `CREATE TABLE IF NOT EXISTS` in @ddl handles both cases; no ALTER is needed for
+  # them.
+  defp migrate_ops_group_instance_id(conn) do
+    with {:ok, cols} <- table_columns(conn, "ops"),
+         :ok <-
+           add_column_if_missing(
+             conn,
+             cols,
+             "group_instance_id",
+             "ALTER TABLE ops ADD COLUMN group_instance_id TEXT"
+           ) do
+      Sqlite3.execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ops_group_instance_id_idx ON ops(group_instance_id)"
       )
     end
   end

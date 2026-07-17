@@ -181,6 +181,22 @@ servingEnvoy:
   statefulTcpPortRange:
     start: 5400
     end: 5409
+  # The R5 composite-group entry TCP listenerPort range, the group analogue of
+  # statefulTcpPortRange. Also CAPACITY (static GitOps config declaring which ports
+  # exist). The CRD watcher validates each composite workload's
+  # spec.group.entry.listenPort falls inside [start, end] and is unique across
+  # composite workloads; the control plane then publishes one dynamic tcp_proxy
+  # listener per composite group on its assigned port. Reachable cluster-internally
+  # only (ClusterIP), never at the edge. Distinct from statefulTcpPortRange so the
+  # two classes never collide on a port.
+  compositeTcpPortRange:
+    start: 5410
+    end: 5419
+  # Hard cap on a composite group's EXPANDED member count (sum of member replicas).
+  # The CRD watcher rejects a group whose members exceed this with a status
+  # condition. A capacity guardrail: a group is a set of live microVMs, so an
+  # unbounded member count is an unbounded resource claim.
+  maxGroupSize: 4
   # node-4 pinning: serving runs where Firecracker serving VMs run. A dedicated
   # serving label (not the noded homelab.io/firecracker label) so the two tiers can
   # diverge later; v1 both land on node-4.

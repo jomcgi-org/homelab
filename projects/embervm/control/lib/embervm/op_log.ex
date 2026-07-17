@@ -33,6 +33,7 @@ defmodule Embervm.OpLog do
               session_id: nil,
               serving_instance_id: nil,
               stateful_instance_id: nil,
+              group_instance_id: nil,
               ts: nil,
               payload: %{}
 
@@ -58,6 +59,13 @@ defmodule Embervm.OpLog do
             # `stateful_instances` projection row. volume_* ops leave it nil (they
             # own a `volumes` row keyed by workload, not an instance).
             stateful_instance_id: String.t() | nil,
+            # Set on group_* ops (nil on every other op); the durable
+            # `ops.group_instance_id` column (R5), added additively the same way
+            # stateful_instance_id was in R4. A group op owns its `group_instances`
+            # projection row (one per group) and, via the member refs it carries,
+            # its `group_members` rows. group_stats leaves it nil (it is
+            # workload-scoped, like serving_stats/stateful_stats).
+            group_instance_id: String.t() | nil,
             ts: integer(),
             payload: map()
           }
@@ -136,7 +144,44 @@ defmodule Embervm.OpLog do
     :stateful_evicted,
     :stateful_destroyed,
     :stateful_failed,
-    :stateful_stats
+    :stateful_stats,
+    # Composite-group lifecycle (R5). Additive to the closed enum, mirroring the R4
+    # stateful kinds: a composite group is a set of member microVMs that live, bank,
+    # relight, and die as ONE unit (ADR embervm/001) and project into the
+    # `group_instances` (one row per group) and `group_members` (one row per member)
+    # tables (see Embervm.OpLog.SQLite). group_net_created/group_net_deleted are the
+    # per-group private subnet audit (the group's own /29 the members share).
+    # group_member_started records each member VM coming up; group_running is the
+    # whole-group readiness edge (every member health-gated). group_published/
+    # group_unpublished are the entry-endpoint-lifetime audit (who traffic reaches),
+    # distinct from the member/group VM-lifecycle kinds. group_banked records the
+    # ENTIRE member set atomically in one append (decision 3's atomicity): the bundle
+    # set is one durable fact, never a member at a time. group_relit is a warm wake
+    # of the whole set; group_fresh_booted is a cold boot that discarded warmth,
+    # carrying a reason (no_set|partial_set|set_unreadable|clock_resync_failed|
+    # explicit) so every discarded-warmth event reconstructs from the log alone.
+    # group_set_evicted carries the reason and the member refs it discarded (the
+    # partner event to a later fresh boot). group_degraded records a member falling
+    # unhealthy while the group stays up (crash-consistency is per-VM, never across
+    # members). The terminal `expired` state has NO dedicated kind: it rides
+    # group_destroyed{reason: expired} (write-through discipline: expiry is a destroy
+    # with a reason). group_stats rides the R4 stats-sweep shape but bills PER MEMBER
+    # (a 3-member group bills 3 VMs' worth), upserted in the op's own transaction.
+    :group_created,
+    :group_net_created,
+    :group_net_deleted,
+    :group_member_started,
+    :group_running,
+    :group_published,
+    :group_unpublished,
+    :group_banked,
+    :group_relit,
+    :group_fresh_booted,
+    :group_set_evicted,
+    :group_degraded,
+    :group_destroyed,
+    :group_failed,
+    :group_stats
   ]
 
   @spec kinds() :: [atom()]
@@ -176,6 +221,17 @@ defmodule Embervm.OpLog do
   # its pair-validity view from on boot. A volume row lives until volume_deleted,
   # outliving every instance by design. A projection read, never the raw ops log.
   @callback load_volumes(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every group-instance row from the durable `group_instances` projection
+  # (R5), for the future GroupStore's boot/adoption rebuild, exactly mirroring
+  # load_stateful_instances/1. One row per composite group. A projection read,
+  # never the raw ops log.
+  @callback load_group_instances(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every group-member row from the durable `group_members` projection (R5):
+  # one row per (group instance, member name), the per-member lifecycle/health the
+  # GroupStore rebuilds its member view from on boot. A member row lives with its
+  # group instance (pruned when the group instance is). A projection read, never
+  # the raw ops log.
+  @callback load_group_members(server()) :: {:ok, [map()]} | {:error, term()}
   # Reads one task's stored result from the durable `results` projection, or
   # {:ok, nil} when there is none (never ran, or the TTL sweeper reaped it).
   # This is the result-store read the submit API (Task 8) serves `GET
@@ -222,6 +278,7 @@ defmodule Embervm.OpLog do
                  sessions_compacted: non_neg_integer(),
                  serving_instances_compacted: non_neg_integer(),
                  stateful_instances_compacted: non_neg_integer(),
+                 group_instances_compacted: non_neg_integer(),
                  ops_compacted: non_neg_integer(),
                  compacted_through: non_neg_integer(),
                  done: boolean()

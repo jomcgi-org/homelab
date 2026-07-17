@@ -67,6 +67,16 @@ defmodule Embervm.WorkloadWatcher do
   # :stateful_listen_range app env or a start_link opt so the chart value flows
   # in and tests can inject a narrow range.
   @default_stateful_listen_range 5400..5409
+  # The default composite-group entry TCP listenPort range, matching the chart's
+  # values default (compositeTcpPortRange 5410-5419, R5). Overridable via the
+  # :composite_listen_range app env or a start_link opt, exactly like the stateful
+  # range; distinct from it so the two classes never collide on a port.
+  @default_composite_listen_range 5410..5419
+  # The default cap on a composite group's EXPANDED member count (sum of replicas),
+  # matching the chart's values default (maxGroupSize 4, R5). Overridable via the
+  # :max_group_size app env or a start_link opt. A capacity guardrail: a group is a
+  # set of live microVMs, so an unbounded member count is an unbounded resource claim.
+  @default_max_group_size 4
   # A healthy watch lives for the apiserver's full `timeoutSeconds` (~5 min);
   # a watch that ends far sooner is a signal of trouble, not a normal cycle. So
   # only a watch that stayed open at least this long earns an IMMEDIATE
@@ -135,11 +145,27 @@ defmodule Embervm.WorkloadWatcher do
       Keyword.get(opts, :stateful_listen_range) ||
         Application.get_env(:embervm, :stateful_listen_range, @default_stateful_listen_range)
 
+    # The values-declared composite entry listenPort range + expanded-member-count
+    # cap (R5), flowing in the same way stateful_listen_range does: a start_link opt
+    # (tests) or app env (the chart wires EMBERVM_COMPOSITE_LISTEN_PORT_RANGE /
+    # EMBERVM_MAX_GROUP_SIZE), falling back to the compile-time defaults that match
+    # the chart defaults. The watcher validates every composite workload's
+    # entry.listenPort against the range and its expanded member count against the cap.
+    composite_listen_range =
+      Keyword.get(opts, :composite_listen_range) ||
+        Application.get_env(:embervm, :composite_listen_range, @default_composite_listen_range)
+
+    max_group_size =
+      Keyword.get(opts, :max_group_size) ||
+        Application.get_env(:embervm, :max_group_size, @default_max_group_size)
+
     WorkloadCatalog.create(table)
 
     state = %{
       table: table,
       stateful_listen_range: stateful_listen_range,
+      composite_listen_range: composite_listen_range,
+      max_group_size: max_group_size,
       lister: lister,
       watcher_fun: watcher_fun,
       status_writer: status_writer,
@@ -438,9 +464,20 @@ defmodule Embervm.WorkloadWatcher do
       spec = Map.get(cr, "spec") || %{}
 
       case validate(state, name, spec) do
-        {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg} ->
+        {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg, group_cfg} ->
           entry =
-            catalog_entry(name, namespace, spec, class, floor, cap, session_cfg, serving_cfg, stateful_cfg)
+            catalog_entry(
+              name,
+              namespace,
+              spec,
+              class,
+              floor,
+              cap,
+              session_cfg,
+              serving_cfg,
+              stateful_cfg,
+              group_cfg
+            )
 
           WorkloadCatalog.upsert(state.table, name, entry)
 
@@ -570,23 +607,24 @@ defmodule Embervm.WorkloadWatcher do
 
   # -- validation ----------------------------------------------------------
 
-  # Returns {:ok, class, floor, cap, session_cfg, serving_cfg} with just the
-  # pieces catalog_entry needs (session_cfg/serving_cfg are nil except for
-  # their own class), or {:error, reason_code, message} for a status
-  # condition. The CRD schema (workload-crd.yaml) enforces shape (required
-  # fields, enums, min/max) at admission; what's left for the watcher is the
-  # cross-field/semantic rules the OpenAPI schema cannot express (class
-  # allow-list beyond the enum, the oneOf source lane, cap >= floor, the
-  # class-conditional session/serving blocks, the serving cap/maxInstances
-  # alias guard, and cross-CR duplicate-host rejection).
+  # Returns {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg,
+  # group_cfg} with just the pieces catalog_entry needs (each *_cfg is nil except
+  # for its own class), or {:error, reason_code, message} for a status condition.
+  # The CRD schema (workload-crd.yaml) enforces shape (required fields, enums,
+  # min/max) at admission; what's left for the watcher is the cross-field/semantic
+  # rules the OpenAPI schema cannot express (class allow-list beyond the enum, the
+  # oneOf source lane, cap >= floor, the class-conditional session/serving/stateful/
+  # group blocks, the serving cap/maxInstances alias guard, cross-CR duplicate-host/
+  # port rejection, and the composite member/entry/size cross-field checks).
   defp validate(state, name, spec) do
     with {:ok, class} <- validate_class(spec),
          :ok <- validate_source(spec),
          {:ok, floor, cap} <- validate_concurrency(spec, class),
          {:ok, session_cfg} <- validate_session(spec, class),
          {:ok, serving_cfg} <- validate_serving(state, name, spec, class, cap),
-         {:ok, stateful_cfg} <- validate_stateful(state, name, spec, class) do
-      {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg}
+         {:ok, stateful_cfg} <- validate_stateful(state, name, spec, class),
+         {:ok, group_cfg} <- validate_group(state, name, spec, class) do
+      {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg, group_cfg}
     end
   end
 
@@ -594,10 +632,11 @@ defmodule Embervm.WorkloadWatcher do
   defp validate_class(%{"class" => "session"}), do: {:ok, "session"}
   defp validate_class(%{"class" => "serving"}), do: {:ok, "serving"}
   defp validate_class(%{"class" => "stateful"}), do: {:ok, "stateful"}
+  defp validate_class(%{"class" => "composite"}), do: {:ok, "composite"}
 
   defp validate_class(spec) do
     {:error, "ClassUnsupported",
-     "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task, session, serving, and stateful are valid in v1alpha1"}
+     "class #{inspect(Map.get(spec, "class"))} is reserved for a later rung; only task, session, serving, stateful, and composite are valid in v1alpha1"}
   end
 
   # The session block is REQUIRED for the session class and FORBIDDEN for the
@@ -612,7 +651,7 @@ defmodule Embervm.WorkloadWatcher do
     invoke_queue_cap: 4
   }
 
-  defp validate_session(spec, class) when class in ["task", "serving", "stateful"] do
+  defp validate_session(spec, class) when class in ["task", "serving", "stateful", "composite"] do
     case Map.get(spec, "session") do
       nil -> {:ok, nil}
       _ -> {:error, "SessionSpecUnexpected", "spec.session is only valid for class session, not #{class}"}
@@ -667,7 +706,8 @@ defmodule Embervm.WorkloadWatcher do
     banked_ttl_seconds: 86_400
   }
 
-  defp validate_serving(_state, _name, spec, class, _cap) when class in ["task", "session", "stateful"] do
+  defp validate_serving(_state, _name, spec, class, _cap)
+       when class in ["task", "session", "stateful", "composite"] do
     case Map.get(spec, "serving") do
       nil -> {:ok, nil}
       _ -> {:error, "ServingSpecUnexpected", "spec.serving is only valid for class serving, not #{class}"}
@@ -778,7 +818,8 @@ defmodule Embervm.WorkloadWatcher do
   # the CRD schema also enforces this, re-checked here for the LIST/WATCH path.
   @stateful_min_idle_bank_seconds 30
 
-  defp validate_stateful(_state, _name, spec, class) when class in ["task", "session", "serving"] do
+  defp validate_stateful(_state, _name, spec, class)
+       when class in ["task", "session", "serving", "composite"] do
     case Map.get(spec, "stateful") do
       nil -> {:ok, nil}
       _ -> {:error, "StatefulSpecUnexpected", "spec.stateful is only valid for class stateful, not #{class}"}
@@ -889,6 +930,219 @@ defmodule Embervm.WorkloadWatcher do
     }
   end
 
+  # The group block is REQUIRED for the composite class and FORBIDDEN for every
+  # other class (the class-conditional requiredness the OpenAPI schema cannot
+  # express), mirroring validate_stateful/4. The composite-only cross-field rules
+  # beyond presence: member names are unique DNS labels, the expanded member count
+  # (sum of replicas) is within maxGroupSize, entry.member names a declared member
+  # or an expanded replica name, entry.listenPort falls inside the values-declared
+  # composite range AND is unique across live composite workloads (one port, one
+  # group, checked against the LIVE catalog like the stateful port rule).
+  @group_defaults %{
+    idle_bank_seconds: 600,
+    max_lifetime_seconds: 86_400,
+    banked_ttl_seconds: 604_800,
+    wake_timeout_seconds: 120
+  }
+  # The minimum idleBankSeconds (a too-eager bank thrashes wake/bank); the CRD
+  # schema also enforces this, re-checked here for the LIST/WATCH path.
+  @group_min_idle_bank_seconds 30
+
+  defp validate_group(_state, _name, spec, class)
+       when class in ["task", "session", "serving", "stateful"] do
+    case Map.get(spec, "group") do
+      nil -> {:ok, nil}
+      _ -> {:error, "GroupSpecUnexpected", "spec.group is only valid for class composite, not #{class}"}
+    end
+  end
+
+  defp validate_group(state, name, spec, "composite") do
+    case Map.get(spec, "group") do
+      g when is_map(g) ->
+        with {:ok, member_names} <- validate_group_members(g, state.max_group_size),
+             :ok <- validate_group_entry(g, member_names),
+             :ok <- validate_group_listen_port(state, name, g),
+             :ok <- validate_group_idle_bank(g) do
+          {:ok, parse_group(g)}
+        end
+
+      _ ->
+        {:error, "GroupSpecMissing", "class composite requires a spec.group block"}
+    end
+  end
+
+  # Member names must be present, unique DNS labels; the expanded member count (sum
+  # of replicas) must not exceed maxGroupSize. Returns the EXPANDED name set (every
+  # `<name>` plus, when replicas > 1, each `<name>-<index>`) so entry validation can
+  # accept an expanded replica name as the entry target.
+  defp validate_group_members(g, max_group_size) do
+    members = Map.get(g, "members")
+
+    cond do
+      not (is_list(members) and members != []) ->
+        {:error, "InvalidGroupSpec", "spec.group.members must be a non-empty list"}
+
+      not Enum.all?(members, &is_map/1) ->
+        {:error, "InvalidGroupSpec", "each spec.group.members entry must be an object"}
+
+      true ->
+        names = Enum.map(members, &Map.get(&1, "name"))
+
+        cond do
+          Enum.any?(names, &(not (is_binary(&1) and &1 != ""))) ->
+            {:error, "InvalidGroupSpec", "each spec.group.members entry requires a name"}
+
+          length(Enum.uniq(names)) != length(names) ->
+            {:error, "GroupMemberNameConflict", "spec.group.members names must be unique"}
+
+          true ->
+            expanded_count = Enum.reduce(members, 0, fn m, acc -> acc + member_replicas(m) end)
+
+            if expanded_count > max_group_size do
+              {:error, "GroupSizeExceeded",
+               "spec.group expanded member count #{expanded_count} exceeds the configured maxGroupSize #{max_group_size}"}
+            else
+              {:ok, expanded_member_names(members)}
+            end
+        end
+    end
+  end
+
+  defp member_replicas(m), do: Map.get(m, "replicas") || 1
+
+  # The valid entry targets: each declared member name, plus (for a member with
+  # replicas > 1) each expanded `<name>-<index>` (0-based). A replicas-1 member is
+  # addressable by its bare name only (there is no `-0` form), matching the CRD doc.
+  defp expanded_member_names(members) do
+    Enum.flat_map(members, fn m ->
+      name = Map.get(m, "name")
+      replicas = member_replicas(m)
+
+      if replicas > 1 do
+        [name | Enum.map(0..(replicas - 1), fn i -> "#{name}-#{i}" end)]
+      else
+        [name]
+      end
+    end)
+  end
+
+  # entry.member must name a declared member or an expanded replica name; entry.port
+  # is required (the CRD enforces its range, re-checked as an integer here).
+  defp validate_group_entry(g, member_names) do
+    entry = Map.get(g, "entry") || %{}
+    member = Map.get(entry, "member")
+    port = Map.get(entry, "port")
+
+    cond do
+      not (is_binary(member) and member != "") ->
+        {:error, "InvalidGroupSpec", "spec.group.entry.member is required"}
+
+      member not in member_names ->
+        {:error, "GroupEntryMemberUnknown",
+         "spec.group.entry.member #{inspect(member)} names no declared member or expanded replica"}
+
+      not is_integer(port) ->
+        {:error, "InvalidGroupSpec", "spec.group.entry.port is required and must be an integer"}
+
+      true ->
+        :ok
+    end
+  end
+
+  # entry.listenPort must be inside the values-declared composite range AND unique
+  # across every other live composite workload, mirroring the stateful listenPort
+  # rule. Out-of-range names the configured range; a duplicate names the conflict.
+  defp validate_group_listen_port(state, name, g) do
+    listen_port = get_in(g, ["entry", "listenPort"])
+    range = state.composite_listen_range
+
+    cond do
+      not is_integer(listen_port) ->
+        {:error, "InvalidGroupSpec", "spec.group.entry.listenPort is required and must be an integer"}
+
+      listen_port not in range ->
+        {:error, "GroupListenPortOutOfRange",
+         "spec.group.entry.listenPort #{listen_port} is outside the configured composite range #{Enum.min(range)}-#{Enum.max(range)}"}
+
+      true ->
+        case group_listen_port_conflict(state, name, listen_port) do
+          nil -> :ok
+          other ->
+            {:error, "GroupListenPortConflict",
+             "spec.group.entry.listenPort #{listen_port} is already owned by workload #{inspect(other)}"}
+        end
+    end
+  end
+
+  defp group_listen_port_conflict(state, name, listen_port) do
+    state.table
+    |> WorkloadCatalog.all_names()
+    |> Enum.reject(&(&1 == name))
+    |> Enum.find(fn other_name ->
+      case WorkloadCatalog.fetch(state.table, other_name) do
+        {:ok, %{class: "composite", group: %{entry: %{listen_port: ^listen_port}}}} -> true
+        _ -> false
+      end
+    end)
+  end
+
+  defp validate_group_idle_bank(g) do
+    case Map.get(g, "idleBankSeconds") do
+      nil ->
+        :ok
+
+      idle when is_integer(idle) and idle >= @group_min_idle_bank_seconds ->
+        :ok
+
+      idle ->
+        {:error, "InvalidGroupSpec",
+         "spec.group.idleBankSeconds #{inspect(idle)} must be >= #{@group_min_idle_bank_seconds}"}
+    end
+  end
+
+  # Parse the validated group block into the catalog shape. Members carry their
+  # per-member source/resources/health/env; entry carries the ingress; the timers
+  # apply their CRD-documented defaults here (no silent dependency on apiserver
+  # defaulting). secretRef is nil when absent (EMBER_GROUP_SECRET is minted per
+  # instance then).
+  defp parse_group(g) do
+    entry = Map.get(g, "entry") || %{}
+
+    %{
+      members: Enum.map(Map.get(g, "members") || [], &parse_group_member/1),
+      entry: %{
+        member: Map.get(entry, "member"),
+        port: Map.get(entry, "port"),
+        listen_port: Map.get(entry, "listenPort")
+      },
+      secret_ref: parse_group_secret_ref(Map.get(g, "secretRef")),
+      idle_bank_seconds: Map.get(g, "idleBankSeconds") || @group_defaults.idle_bank_seconds,
+      max_lifetime_seconds: Map.get(g, "maxLifetimeSeconds") || @group_defaults.max_lifetime_seconds,
+      banked_ttl_seconds: Map.get(g, "bankedTtlSeconds") || @group_defaults.banked_ttl_seconds,
+      wake_timeout_seconds: Map.get(g, "wakeTimeoutSeconds") || @group_defaults.wake_timeout_seconds
+    }
+  end
+
+  defp parse_group_member(m) do
+    %{
+      name: Map.get(m, "name"),
+      role: Map.get(m, "role"),
+      start_order: Map.get(m, "startOrder") || 0,
+      replicas: member_replicas(m),
+      image_ref: get_in(m, ["source", "image", "ref"]),
+      vcpus: get_in(m, ["resources", "vcpus"]),
+      mem_mib: get_in(m, ["resources", "memMib"]),
+      health_port: Map.get(m, "healthPort"),
+      env: Map.get(m, "env") || %{}
+    }
+  end
+
+  defp parse_group_secret_ref(nil), do: nil
+
+  defp parse_group_secret_ref(ref) when is_map(ref) do
+    %{name: Map.get(ref, "name"), key: Map.get(ref, "key")}
+  end
+
   # The CRD schema enforces the structural oneOf (exactly one of image|zip) at
   # admission, but a CR observed via LIST/WATCH is trusted only as far as this
   # code re-checks it: enforce the same mutual exclusion here (both set, or
@@ -946,6 +1200,18 @@ defmodule Embervm.WorkloadWatcher do
     end
   end
 
+  # The composite class's size is fixed by its member set (sum of replicas), not a
+  # concurrency knob, so spec.concurrency is condition-rejected exactly like the
+  # stateful class. The internal floor/cap are fixed at scale-to-zero group (0, 1
+  # group instance) so the catalog entry keeps a uniform shape without a concurrency
+  # block; the expanded member count is bounded separately by maxGroupSize.
+  defp validate_concurrency(spec, "composite") do
+    case Map.get(spec, "concurrency") do
+      nil -> {:ok, 0, 1}
+      _ -> {:error, "ConcurrencyUnexpected", "spec.concurrency is not valid for class composite (group size is fixed by the member set)"}
+    end
+  end
+
   defp validate_concurrency(spec, _class) do
     cap = get_in(spec, ["concurrency", "cap"])
     floor = get_in(spec, ["concurrency", "floor"]) || 0
@@ -966,7 +1232,18 @@ defmodule Embervm.WorkloadWatcher do
   # reflects whatever the apiserver already defaulted at admission;
   # re-defaulting here just means this code has no silent dependency on that
   # having happened.
-  defp catalog_entry(name, namespace, spec, class, floor, cap, session_cfg, serving_cfg, stateful_cfg) do
+  defp catalog_entry(
+         name,
+         namespace,
+         spec,
+         class,
+         floor,
+         cap,
+         session_cfg,
+         serving_cfg,
+         stateful_cfg,
+         group_cfg
+       ) do
     resources = Map.get(spec, "resources") || %{}
     invocation = Map.get(spec, "invocation") || %{}
     source = parse_source(spec)
@@ -980,6 +1257,11 @@ defmodule Embervm.WorkloadWatcher do
       # port, volume sizing, and the idle/lifetime/ttl knobs from the catalog
       # exactly as SessionStore/EndpointPublisher read their class config.
       stateful: stateful_cfg,
+      # Composite-class group config (nil except for the composite class), carried
+      # so the future GroupStore/GroupManager read the member set, entry, secretRef,
+      # and the idle/lifetime/ttl knobs from the catalog exactly as StatefulStore
+      # reads its class config.
+      group: group_cfg,
       # Session-class lifecycle config (nil for the task class), carried so the
       # SessionManager/SessionStore (later PRs) read idle-bank/lifetime/caps from
       # the catalog exactly as the dispatcher reads task caps.

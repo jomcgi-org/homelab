@@ -802,6 +802,313 @@ defmodule Embervm.WorkloadWatcherTest do
     assert {:ok, _entry} = WorkloadCatalog.fetch(table, "semgrep")
   end
 
+  # -- composite class (R5) ---------------------------------------------------
+
+  # A valid composite CR: an image source (the group base seed), the required
+  # spec.group block (a leader member + a 2-replica worker member, entry on the
+  # leader), and NO concurrency block (group size is fixed by the member set).
+  defp composite_cr(overrides \\ %{}) do
+    base = %{
+      "metadata" => %{"name" => "demo-group", "namespace" => "embervm", "generation" => 1},
+      "spec" => %{
+        "class" => "composite",
+        "source" => %{"image" => %{"ref" => "demo-group", "port" => 1027}},
+        "resources" => %{"vcpus" => 1, "memMib" => 512},
+        "group" => %{
+          "members" => [
+            %{
+              "name" => "leader",
+              "role" => "leader",
+              "startOrder" => 0,
+              "source" => %{"image" => %{"ref" => "demo-leader"}},
+              "healthPort" => 8080
+            },
+            %{
+              "name" => "worker",
+              "role" => "worker",
+              "startOrder" => 1,
+              "replicas" => 2,
+              "source" => %{"image" => %{"ref" => "demo-worker"}},
+              "healthPort" => 8080
+            }
+          ],
+          # entry.listenPort must fall inside the default composite range 5410..5419.
+          "entry" => %{"member" => "leader", "port" => 8080, "listenPort" => 5410},
+          "idleBankSeconds" => 600,
+          "maxLifetimeSeconds" => 86_400,
+          "bankedTtlSeconds" => 604_800,
+          "wakeTimeoutSeconds" => 120
+        }
+      }
+    }
+
+    deep_merge(base, overrides)
+  end
+
+  test "composite class: a valid composite CR is cataloged with class and group config, group floor/cap" do
+    table = unique_table()
+    agent = start_recorder()
+    lister = fn -> {:ok, [composite_cr()]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "demo-group")
+    assert entry.class == "composite"
+    # No concurrency block: internal floor/cap 0/1 (scale-to-zero group).
+    assert entry.floor == 0
+    assert entry.cap == 1
+    assert length(entry.group.members) == 2
+    assert Enum.map(entry.group.members, & &1.name) == ["leader", "worker"]
+    worker = Enum.find(entry.group.members, &(&1.name == "worker"))
+    assert worker.replicas == 2
+    assert worker.start_order == 1
+    assert worker.image_ref == "demo-worker"
+    assert worker.health_port == 8080
+    assert entry.group.entry.member == "leader"
+    assert entry.group.entry.port == 8080
+    assert entry.group.entry.listen_port == 5410
+    assert entry.group.idle_bank_seconds == 600
+    assert entry.group.max_lifetime_seconds == 86_400
+    assert entry.group.banked_ttl_seconds == 604_800
+    assert entry.group.wake_timeout_seconds == 120
+    assert entry.group.secret_ref == nil
+
+    assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
+    assert status_map["observedGeneration"] == 1
+    refute Map.has_key?(status_map, "conditions")
+  end
+
+  test "composite class: group block timer defaults apply when omitted" do
+    table = unique_table()
+    agent = start_recorder()
+
+    cr =
+      put_in(composite_cr(), ["spec", "group"], %{
+        "members" => [
+          %{"name" => "solo", "source" => %{"image" => %{"ref" => "solo"}}, "healthPort" => 9000}
+        ],
+        "entry" => %{"member" => "solo", "port" => 9000, "listenPort" => 5411}
+      })
+
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "demo-group")
+    assert entry.group.idle_bank_seconds == 600
+    assert entry.group.max_lifetime_seconds == 86_400
+    assert entry.group.banked_ttl_seconds == 604_800
+    assert entry.group.wake_timeout_seconds == 120
+    # A replicas-omitted member defaults to 1.
+    assert Enum.at(entry.group.members, 0).replicas == 1
+  end
+
+  test "composite class with a stable secretRef parses name/key" do
+    table = unique_table()
+    agent = start_recorder()
+
+    cr =
+      put_in(composite_cr(), ["spec", "group", "secretRef"], %{
+        "name" => "group-secret",
+        "key" => "token"
+      })
+
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "demo-group")
+    assert entry.group.secret_ref == %{name: "group-secret", key: "token"}
+  end
+
+  test "composite class missing spec.group is Ready=False/GroupSpecMissing, not cataloged" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = composite_cr()
+    cr = Map.update!(cr, "spec", &Map.delete(&1, "group"))
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "demo-group") == :error
+
+    assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "GroupSpecMissing"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "composite class carrying a spec.concurrency block is Ready=False/ConcurrencyUnexpected" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = composite_cr(%{"spec" => %{"concurrency" => %{"cap" => 2}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "demo-group") == :error
+
+    assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "ConcurrencyUnexpected"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "composite class carrying a spec.stateful block is Ready=False/StatefulSpecUnexpected" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = composite_cr(%{"spec" => %{"stateful" => %{"port" => 5432, "listenPort" => 5401, "volumeSizeGiB" => 1}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "demo-group") == :error
+
+    assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "StatefulSpecUnexpected"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "a stateful CR carrying a spec.group block is Ready=False/GroupSpecUnexpected (symmetric cross-rejection)" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = stateful_cr(%{"spec" => %{"group" => %{"members" => [], "entry" => %{}}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "scratch-postgres") == :error
+
+    assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "GroupSpecUnexpected"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "composite class: duplicate member names are Ready=False/GroupMemberNameConflict" do
+    table = unique_table()
+    agent = start_recorder()
+
+    cr =
+      put_in(composite_cr(), ["spec", "group", "members"], [
+        %{"name" => "dup", "source" => %{"image" => %{"ref" => "a"}}, "healthPort" => 8080},
+        %{"name" => "dup", "source" => %{"image" => %{"ref" => "b"}}, "healthPort" => 8080}
+      ])
+
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "demo-group") == :error
+
+    assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "GroupMemberNameConflict"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "composite class: an entry naming a missing member is Ready=False/GroupEntryMemberUnknown" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = put_in(composite_cr(), ["spec", "group", "entry", "member"], "ghost")
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "demo-group") == :error
+
+    assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "GroupEntryMemberUnknown"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
+  test "composite class: an entry naming an expanded replica name is accepted" do
+    table = unique_table()
+    agent = start_recorder()
+    # `worker` has replicas 2, so `worker-1` is a valid entry target.
+    cr = put_in(composite_cr(), ["spec", "group", "entry", "member"], "worker-1")
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "demo-group")
+    assert entry.group.entry.member == "worker-1"
+  end
+
+  test "composite class: a listenPort outside the configured composite range is Ready=False/GroupListenPortOutOfRange" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = put_in(composite_cr(), ["spec", "group", "entry", "listenPort"], 9999)
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table, composite_listen_range: 5410..5419)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "demo-group") == :error
+
+    assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
+
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "GroupListenPortOutOfRange"}] =
+             status_map["conditions"]
+
+    assert Process.alive?(watcher)
+  end
+
+  test "composite class: two groups on the same listenPort, the second is Ready=False/GroupListenPortConflict" do
+    table = unique_table()
+    agent = start_recorder()
+
+    first = composite_cr()
+    second = composite_cr(%{"metadata" => %{"name" => "demo-group-2"}})
+    lister = fn -> {:ok, [first, second]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    # One of the two wins (LIST order sets the tiebreak); the other is rejected.
+    cataloged = [
+      WorkloadCatalog.fetch(table, "demo-group"),
+      WorkloadCatalog.fetch(table, "demo-group-2")
+    ]
+
+    assert Enum.count(cataloged, &match?({:ok, _}, &1)) == 1
+
+    conflict =
+      recorded_calls(agent)
+      |> Enum.map(fn {_ns, _n, status} -> status end)
+      |> Enum.filter(&match?(%{"conditions" => [%{"reason" => "GroupListenPortConflict"}]}, &1))
+
+    assert conflict != []
+    assert Process.alive?(watcher)
+  end
+
+  test "composite class: an over-cap expanded member count is Ready=False/GroupSizeExceeded" do
+    table = unique_table()
+    agent = start_recorder()
+    # leader(1) + worker(replicas 4) = 5 expanded members, over a maxGroupSize of 4.
+    cr = put_in(composite_cr(), ["spec", "group", "members"], [
+      %{"name" => "leader", "source" => %{"image" => %{"ref" => "l"}}, "healthPort" => 8080},
+      %{"name" => "worker", "replicas" => 4, "source" => %{"image" => %{"ref" => "w"}}, "healthPort" => 8080}
+    ])
+
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table, max_group_size: 4)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "demo-group") == :error
+
+    assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "GroupSizeExceeded"}] = status_map["conditions"]
+    assert Process.alive?(watcher)
+  end
+
   # -- zip-lane source (R1, ADR embervm/002) --------------------------------
 
   # A zip-lane CR: source.zip replaces source.image. The base drops the image
