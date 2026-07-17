@@ -356,7 +356,10 @@ defmodule Embervm.StatefulSweeper do
   # never consults this status projection.
   defp stateful_status_fields(state, workload) do
     instances = StatefulStore.list(state.store, workload)
-    primary = Enum.find(instances, &(not StatefulState.terminal?(&1.state)))
+    # The status `state`/`generation` reflect the LIVE instance only. `:banked` is
+    # non-terminal but holds no live VM, so a banked-only workload reads state ""
+    # and generation 0; its banked-ness is carried by bundleGeneration instead.
+    primary = Enum.find(instances, &(not StatefulState.terminal?(&1.state) and &1.state != :banked))
     banked = Enum.find(instances, &(&1.state == :banked))
     volume = StatefulStore.get_volume(state.store, workload)
 
