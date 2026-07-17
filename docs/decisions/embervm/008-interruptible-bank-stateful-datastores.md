@@ -263,6 +263,17 @@ report `primed_vm_ids`). Three cases:
   GC'd on startup, so the next wake is a crash-path cold boot. That is legitimately
   outside "steady state" and needs no special handling beyond the temp GC.
 
+Two invariants keep the resolve-timeout and adoption from racing into a double
+resolve. First, **a checkpoint accepts exactly one resolve**: a control-plane
+COMMIT that arrives after noded's timeout auto-abort is rejected. The
+delete-before-resume ordering already makes the dangerous outcome impossible (the
+temp is gone, so a late commit has nothing to publish and errors), but the node
+enforces single-resolve explicitly rather than relying on that side effect.
+Second, **a commit that publishes the bundle then crashes before destroy is still
+safe**: adoption's default abort-resume bumps the generation to G+1, so the
+already-published G-stamped bundle is refused by pairing rather than relit, and the
+next clean bank re-publishes at G+1.
+
 ---
 
 ## Alternatives Considered
@@ -312,7 +323,6 @@ requirement, not only a correctness one. It does not widen the trust boundary
 
 | Risk                                                                 | Likelihood | Impact | Mitigation                                                                                                                                     |
 | -------------------------------------------------------------------- | ---------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Abort/resume path leaves a VM stranded paused (resume fails)         | Low        | Medium | The driver already tears down a VM whose `Resume` fails (dead-handle path); on failure fall back to the committed-destroy path so the next wake cold-boots (degraded, not wedged). |
 | Two-phase bank widens a race the atomic bank did not have            | Medium     | High   | Extend the ADR-006 TLA+ bank-relight pilot spec with the new `checkpointed` state and abort/commit edges (this is in-scope follow-up spec work, not existing coverage); gate behind the opt-in flag so unproven paths never touch default workloads. |
 | A resumed VM's snapshot is relit (the abort-path crash leak)         | Low        | High   | Three layered guarantees: the temp is invisible to `ScanStatefulBundles` + startup-GC'd; the abort bumps the generation before resume so a survivor is refused by pairing; delete precedes resume so a survivor implies no resume happened. A BDD test asserts a resumed VM never yields a relightable bundle. |
 | VM stranded paused awaiting resolve (control-plane restart or death) | Medium     | Medium | noded reports checkpoint-pending VMs in inventory (adoption resolves them, default abort); noded carries a resolve timeout that auto-aborts after T so a dead control plane cannot pin a paused VM's cap slot and memory. |
