@@ -1,0 +1,79 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    # k3s is a single static binary that embeds containerd, runc, and the CNI
+    # plugins, so the rootfs is deliberately thin. The extra tools below are the
+    # ones k3s shells out to that it does NOT embed:
+    # - iptables (nft mode): flannel host-gw + kube-proxy program the dataplane
+    #   through iptables/nft; k3s prefers the nft backend, present in this pkg.
+    - iptables
+    # - conntrack-tools: kube-proxy reconciles conntrack entries on service
+    #   changes; without it kube-proxy logs errors and stale flows persist.
+    - conntrack-tools
+    # - coreutils: k3s/containerd invoke a few GNU utilities (mount helpers,
+    #   `nsenter` for CNI) beyond busybox's applets.
+    - coreutils
+    # - e2fsprogs + util-linux: mount/blkid style helpers containerd's snapshotter
+    #   and the kubelet expect on the host.
+    - util-linux
+
+archs:
+  - x86_64
+  - aarch64
+
+# k3s (containerd, CNI, iptables, cgroup mounts, kubelet) requires ROOT inside
+# the guest. This deviates from the repo's uid 65532 non-root convention, and it
+# is DELIBERATE and documented (see README.md): the microVM boundary is the
+# isolation statement (task-class posture), not an in-guest uid. A raw Firecracker
+# boot ignores this run-as anyway (it boots init=<harnessInit>); it is here for
+# any non-FC (docker/crane) path and to state the posture explicitly.
+accounts:
+  run-as: 0
+
+environment:
+  HOME: /root
+  KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  PATH: /usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+paths:
+  # k3s's writable state tree. The rootfs is read-only and snapshot-shared, so
+  # these directories MUST exist in the image (mkdir on a read-only rootfs fails);
+  # the guest-init layers tmpfs over the volatile children (/run, /var/log). The
+  # baked airgap tarball lands under agent/images (../../BUILD via the k3s_archive
+  # layer), which k3s imports at startup.
+  - path: /var/lib/rancher/k3s
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o700
+  - path: /etc/rancher/k3s
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o700
+  - path: /run
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o755
+  - path: /var/log
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o755
+
+entrypoint:
+  # OCI entrypoint for any NON-Firecracker path (docker/crane). On a raw
+  # Firecracker boot the kernel ignores this and boots init=<harnessInit>; there
+  # PID 1 is /usr/local/bin/ember-k3s-init (layered by ../../BUILD), which mounts
+  # k3s's filesystems, decodes the EMBER_GROUP_* facts, starts the vsock clock
+  # agent, and supervises `k3s agent` (role from EMBER_GROUP_ROLE). Both paths
+  # converge on the same init. The server and agent images share this apko config
+  # and the same init binary; the role is data (EMBER_GROUP_ROLE), and the airgap
+  # set is identical (one tarball serves both server and agent nodes).
+  command: /usr/local/bin/ember-k3s-init

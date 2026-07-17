@@ -526,7 +526,15 @@ apko.translate_lock(
     name = "embervm_xds_lock",
     lock = "//projects/embervm/xds/image:apko.lock.json",
 )
-use_repo(apko, "embervm_lock", "embervm_noded_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_xds_lock", "fc_invoke_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock", "whatsapp_lock")
+apko.translate_lock(
+    name = "embervm_runtime_k3s_server_lock",
+    lock = "//projects/embervm/runtimes/k3s/k3s-server:apko.lock.json",
+)
+apko.translate_lock(
+    name = "embervm_runtime_k3s_agent_lock",
+    lock = "//projects/embervm/runtimes/k3s/k3s-agent:apko.lock.json",
+)
+use_repo(apko, "embervm_lock", "embervm_noded_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_xds_lock", "fc_invoke_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock", "whatsapp_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
@@ -554,6 +562,27 @@ kata_firecracker_archive(
     amd64_url = "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-amd64.tar.zst",
     arm64_sha256 = "8736c054d9223974735394f822000823baef509e1c33405ec798240fa9b6e4b5",
     arm64_url = "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-arm64.tar.zst",
+)
+
+# k3s binary + airgap image tarball, vendored per arch for the EmberVM composite
+# (R5) k3s guest images (standing decision 12: zero-egress k8s via baked airgap
+# images, not a registry cache). v1.30.6+k3s1 is a stable line with arm64+amd64
+# releases and first-class .tar.zst airgap support (auto-imported at startup).
+# Checksums are the upstream release sha256sum-<arch>.txt values, verified
+# 2026-07-17. The airgap tarball import at first boot sets the memory
+# high-water mark (fc-base sizing coupling); see runtimes/k3s READMEs.
+k3s_archive = use_repo_rule("//bazel/tools/http:k3s_archive.bzl", "k3s_archive")
+
+k3s_archive(
+    name = "k3s_archive",
+    amd64_airgap_sha256 = "3b82db1352631b3d4a5054570a1411de1023067da4c67b665687d0c86c97b709",
+    amd64_airgap_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-airgap-images-amd64.tar.zst",
+    amd64_binary_sha256 = "66f96a9a9ec631a4b69b08884d38f8ad8124907666323e9215993693d8853c66",
+    amd64_binary_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s",
+    arm64_airgap_sha256 = "5077b9e9dc4d2a69aafa6f12daed27af4ef2ac6a2d2efa902728dc21c0c38c40",
+    arm64_airgap_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-airgap-images-arm64.tar.zst",
+    arm64_binary_sha256 = "d6a4aac2945bf7a757b87a56f41b49c500ed5d4ccc2b42284ebfbd3cd1a25162",
+    arm64_binary_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-arm64",
 )
 
 # Download multiarch binaries (raw binary files)
