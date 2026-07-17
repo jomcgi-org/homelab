@@ -801,3 +801,172 @@ func TestDriverScanGroupBundleSets(t *testing.T) {
 		t.Errorf("set-2 members = %v want [leader]", bySet["set-2"])
 	}
 }
+
+// ---- interruptible-bank checkpoint/resolve (ADR embervm/008) -----------------
+
+// statefulCheckpointHandle boots a live VM the checkpoint tests pause. Claim gives
+// a handle whose fake client answers Pause/CreateSnapshot/Resume over the socket,
+// which is all CheckpointStateful and the resolves need.
+func statefulCheckpointHandle(t *testing.T, d *Driver) substrate.Handle {
+	t.Helper()
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "st-ckpt"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	return h
+}
+
+// TestDriverCheckpointCommit is the COMMIT half of the two-phase bank: a
+// checkpoint pauses (VM stays live, no bundle yet, temp written OUTSIDE stateful/)
+// and the commit publishes the temp as the bundle (snapfile+memfile+gen) and
+// destroys the VM.
+func TestDriverCheckpointCommit(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+	h := statefulCheckpointHandle(t, d)
+
+	token, err := d.CheckpointStateful(ctx, h, "state-commit", 7)
+	if err != nil {
+		t.Fatalf("CheckpointStateful: %v", err)
+	}
+	if token == "" {
+		t.Fatal("checkpoint should return a non-empty token")
+	}
+	// The VM is PAUSED, not destroyed, so it still counts as live.
+	if d.LiveCount() != 1 {
+		t.Fatalf("LiveCount after checkpoint = %d, want 1 (VM paused, not destroyed)", d.LiveCount())
+	}
+	// No bundle published yet, and the temp is OUTSIDE stateful/ (rescan-invisible).
+	if _, err := os.Stat(d.statefulSnapfile("state-commit")); !os.IsNotExist(err) {
+		t.Fatalf("no bundle snapfile should exist before commit, stat err=%v", err)
+	}
+	if len(d.ScanStatefulBundles()) != 0 {
+		t.Fatalf("ScanStatefulBundles must not see the checkpoint temp; got %d bundles", len(d.ScanStatefulBundles()))
+	}
+
+	ref, err := d.ResolveStatefulCommit(ctx, token)
+	if err != nil {
+		t.Fatalf("ResolveStatefulCommit: %v", err)
+	}
+	if ref.ID != "state-commit" || ref.Node != "node-4" || ref.Arch != "amd64" {
+		t.Fatalf("unexpected committed ref: %+v", ref)
+	}
+	if ref.SizeBytes == 0 {
+		t.Fatal("committed bundle SizeBytes should reflect the on-disk bundle")
+	}
+	for _, p := range []string{d.statefulSnapfile("state-commit"), d.statefulMemfile("state-commit"), d.statefulGenfile("state-commit")} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("committed bundle file %s missing: %v", p, err)
+		}
+	}
+	gen, _ := os.ReadFile(d.statefulGenfile("state-commit"))
+	if string(gen) != "7" {
+		t.Fatalf("gen sidecar = %q, want 7", string(gen))
+	}
+	// The VM was destroyed at commit, and the temp is gone.
+	if d.LiveCount() != 0 {
+		t.Fatalf("LiveCount after commit = %d, want 0 (VM destroyed)", d.LiveCount())
+	}
+	if _, err := os.Stat(d.checkpointTmpDir(token)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint temp should be gone after commit, stat err=%v", err)
+	}
+}
+
+// TestDriverCheckpointAbort is the ABORT half: the paused VM is resumed (stays
+// live, same process image) and NO bundle is published; the temp is deleted.
+func TestDriverCheckpointAbort(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+	h := statefulCheckpointHandle(t, d)
+
+	token, err := d.CheckpointStateful(ctx, h, "state-abort", 4)
+	if err != nil {
+		t.Fatalf("CheckpointStateful: %v", err)
+	}
+	if err := d.ResolveStatefulAbort(ctx, token); err != nil {
+		t.Fatalf("ResolveStatefulAbort: %v", err)
+	}
+	// Resumed, so still live; no bundle recorded; temp gone.
+	if d.LiveCount() != 1 {
+		t.Fatalf("LiveCount after abort = %d, want 1 (VM resumed)", d.LiveCount())
+	}
+	if _, err := os.Stat(d.statefulSnapfile("state-abort")); !os.IsNotExist(err) {
+		t.Fatalf("abort must publish no bundle, stat err=%v", err)
+	}
+	if _, err := os.Stat(d.checkpointTmpDir(token)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint temp should be gone after abort, stat err=%v", err)
+	}
+}
+
+// TestDriverResolveUnknownTokenErrors: a resolve of an unknown or already-resolved
+// token errors (the driver half of single-resolve).
+func TestDriverResolveUnknownTokenErrors(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+	if _, err := d.ResolveStatefulCommit(ctx, "ckpt-nope"); err == nil {
+		t.Fatal("commit of an unknown token should error")
+	}
+	if err := d.ResolveStatefulAbort(ctx, "ckpt-nope"); err == nil {
+		t.Fatal("abort of an unknown token should error")
+	}
+	// A second resolve of a consumed token also errors.
+	h := statefulCheckpointHandle(t, d)
+	token, err := d.CheckpointStateful(ctx, h, "state-once", 1)
+	if err != nil {
+		t.Fatalf("CheckpointStateful: %v", err)
+	}
+	if err := d.ResolveStatefulAbort(ctx, token); err != nil {
+		t.Fatalf("first abort: %v", err)
+	}
+	if err := d.ResolveStatefulAbort(ctx, token); err == nil {
+		t.Fatal("second resolve of a consumed token should error (single-resolve)")
+	}
+}
+
+// TestDriverGCStatefulCheckpoints sweeps orphaned temps (the noded-restart path),
+// and an abort followed by a fresh checkpoint+commit still yields a valid bundle
+// (no leaked temp state).
+func TestDriverGCStatefulCheckpointsAndReuse(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+
+	// An orphaned temp (a checkpoint whose noded died) is swept on start.
+	h := statefulCheckpointHandle(t, d)
+	token, err := d.CheckpointStateful(ctx, h, "state-orphan", 2)
+	if err != nil {
+		t.Fatalf("CheckpointStateful: %v", err)
+	}
+	if _, err := os.Stat(d.checkpointTmpDir(token)); err != nil {
+		t.Fatalf("temp should exist post-checkpoint: %v", err)
+	}
+	if n := d.GCStatefulCheckpoints(); n != 1 {
+		t.Fatalf("GCStatefulCheckpoints removed %d, want 1", n)
+	}
+	if _, err := os.Stat(d.checkpointTmpDir(token)); !os.IsNotExist(err) {
+		t.Fatalf("temp should be swept by GC, stat err=%v", err)
+	}
+	if n := d.GCStatefulCheckpoints(); n != 0 {
+		t.Fatalf("GCStatefulCheckpoints on a clean dir removed %d, want 0", n)
+	}
+
+	// Abort, then a fresh checkpoint+commit still banks a valid bundle.
+	h2 := statefulCheckpointHandle(t, d)
+	tok2, err := d.CheckpointStateful(ctx, h2, "state-reuse", 5)
+	if err != nil {
+		t.Fatalf("CheckpointStateful reuse: %v", err)
+	}
+	if err := d.ResolveStatefulAbort(ctx, tok2); err != nil {
+		t.Fatalf("abort reuse: %v", err)
+	}
+	tok3, err := d.CheckpointStateful(ctx, h2, "state-reuse", 6)
+	if err != nil {
+		t.Fatalf("second CheckpointStateful reuse: %v", err)
+	}
+	ref, err := d.ResolveStatefulCommit(ctx, tok3)
+	if err != nil {
+		t.Fatalf("commit reuse: %v", err)
+	}
+	if ref.ID != "state-reuse" || ref.SizeBytes == 0 {
+		t.Fatalf("reuse commit produced an invalid bundle: %+v", ref)
+	}
+}

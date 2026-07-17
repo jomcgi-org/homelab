@@ -133,6 +133,21 @@ type Driver struct {
 
 	mu   sync.Mutex
 	live map[string]*instance // handle ID -> instance
+	// checkpoints holds in-flight interruptible-bank checkpoints (ADR embervm/008),
+	// keyed by the opaque token CheckpointStateful returns: a PAUSED-but-not-
+	// destroyed VM plus its temp snapshot, awaiting a commit or abort. Guarded by mu.
+	checkpoints map[string]*statefulCheckpoint
+}
+
+// statefulCheckpoint is one paused-awaiting-resolve stateful VM (ADR embervm/008):
+// its live handle, the bundle ref a commit will publish under, the volume
+// generation stamped at pause time, and the temp dir (OUTSIDE stateful/) holding
+// the not-yet-published snapfile + memfile.
+type statefulCheckpoint struct {
+	handle      substrate.Handle
+	snapshotRef string
+	generation  uint64
+	tmpDir      string
 }
 
 type instance struct {
@@ -155,10 +170,11 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI)
 		newClient = func(sock string) fcAPI { return fcclient.New(sock) }
 	}
 	d := &Driver{
-		cfg:       cfg.withDefaults(),
-		launcher:  launcher,
-		newClient: newClient,
-		live:      make(map[string]*instance),
+		cfg:         cfg.withDefaults(),
+		launcher:    launcher,
+		newClient:   newClient,
+		live:        make(map[string]*instance),
+		checkpoints: make(map[string]*statefulCheckpoint),
 	}
 	if cfg.BaseRootfsPath != "" {
 		if cfg.Provisioner == "devmapper" {
@@ -1352,6 +1368,180 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 		Arch:      d.cfg.Arch,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
+}
+
+// ---- interruptible-bank checkpoint/resolve (ADR embervm/008) ----------------
+//
+// The two-phase, abortable bank splits SnapshotStateful's pause-snapshot-destroy
+// into a CHECKPOINT (pause + snapshot to a temp OUTSIDE stateful/, VM left paused)
+// and a RESOLVE that either COMMITs (publish the temp as the bundle, destroy) or
+// ABORTs (delete the temp, resume). The atomic SnapshotStateful above is UNCHANGED
+// and remains the default; these are used only for a workload that opted in.
+
+// CheckpointsDir holds in-flight interruptible-bank checkpoint temps, a SIBLING of
+// stateful/ (not a child), so ScanStatefulBundles (which globs stateful/*/snapfile)
+// can NEVER mistake a temp for a committed bundle (ADR embervm/008, guarantee 1).
+// GCStatefulCheckpoints sweeps it on start. Callers own its 0700 daemon-ownership.
+func (d *Driver) CheckpointsDir() string {
+	return filepath.Join(d.cfg.SnapshotRoot, "stateful-checkpoints")
+}
+
+func (d *Driver) checkpointTmpDir(token string) string {
+	return filepath.Join(d.CheckpointsDir(), token)
+}
+
+// CheckpointStateful is phase one of the interruptible bank (ADR embervm/008): it
+// PAUSES a live stateful VM and writes its snapshot to a temp dir OUTSIDE the
+// stateful/ bundle dir (invisible to ScanStatefulBundles), leaving the VM PAUSED
+// and resumable. It publishes NO bundle and does NOT Release. The returned opaque
+// token is passed to ResolveStatefulCommit (publish the temp as the bundle,
+// destroy) or ResolveStatefulAbort (delete the temp, resume). On a pause/snapshot
+// failure the VM is resumed best-effort and the temp removed, so a FAILED
+// checkpoint leaves the VM live rather than stranded paused.
+func (d *Driver) CheckpointStateful(ctx context.Context, h substrate.Handle, snapshotRef string, generation uint64) (string, error) {
+	if snapshotRef == "" {
+		return "", fmt.Errorf("driver: CheckpointStateful requires a snapshot_ref")
+	}
+	inst := d.get(h.ID)
+	if inst == nil {
+		return "", fmt.Errorf("driver: checkpoint-stateful of unknown handle %q", h.ID)
+	}
+	token := newID("ckpt")
+	tmpDir := d.checkpointTmpDir(token)
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		return "", fmt.Errorf("driver: mkdir checkpoint temp: %w", err)
+	}
+	snapPath := filepath.Join(tmpDir, "snapfile")
+	memPath := filepath.Join(tmpDir, "memfile")
+	if err := inst.client.Pause(ctx); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("driver: pause stateful for checkpoint: %w", err)
+	}
+	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapPath, MemFilePath: memPath}); err != nil {
+		// The VM is paused; resume it so a checkpoint FAILURE leaves it live
+		// (mirrors serving's resume-on-snapshot-failure), then discard the temp.
+		_ = inst.client.Resume(ctx)
+		_ = os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("driver: create checkpoint snapshot: %w", err)
+	}
+	d.mu.Lock()
+	d.checkpoints[token] = &statefulCheckpoint{handle: h, snapshotRef: snapshotRef, generation: generation, tmpDir: tmpDir}
+	d.mu.Unlock()
+	return token, nil
+}
+
+// takeCheckpoint atomically fetches and REMOVES a checkpoint by token. Removing on
+// lookup is the driver's half of single-resolve (ADR embervm/008): a second
+// resolve of the same token finds nothing and errors.
+func (d *Driver) takeCheckpoint(token string) (*statefulCheckpoint, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	cp, ok := d.checkpoints[token]
+	if ok {
+		delete(d.checkpoints, token)
+	}
+	return cp, ok
+}
+
+// ResolveStatefulCommit is phase two (COMMIT) of the interruptible bank: it
+// publishes the checkpoint's temp snapshot as the workload's bundle (memfile, the
+// generation sidecar, then the snapfile LAST per the completeness discipline),
+// Releases (destroys) the paused VM, and returns the bundle ref. It consumes the
+// token (single-resolve). A commit is destructive: on any publish failure the
+// paused VM is torn down and any half-published bundle dir removed, so a failed
+// commit never leaves a paused handle or a partial bundle behind.
+func (d *Driver) ResolveStatefulCommit(ctx context.Context, token string) (substrate.SnapshotRef, error) {
+	cp, ok := d.takeCheckpoint(token)
+	if !ok {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: ResolveStatefulCommit of unknown checkpoint token %q", token)
+	}
+	ref := cp.snapshotRef
+	committed := false
+	defer func() {
+		if !committed {
+			_ = d.Release(ctx, cp.handle)
+			_ = os.RemoveAll(cp.tmpDir)
+			_ = d.RemoveStatefulBundle(ref)
+		}
+	}()
+	if err := os.MkdirAll(d.statefulDir(ref), 0o700); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir stateful bundle: %w", err)
+	}
+	snapPath := d.statefulSnapfile(ref)
+	memPath := d.statefulMemfile(ref)
+	// Publish memfile first, then the generation sidecar, then the snapfile LAST,
+	// so a crash mid-publish leaves NO snapfile and the rescan skips the dir
+	// (identical to SnapshotStateful's publish-last discipline).
+	if err := os.Rename(filepath.Join(cp.tmpDir, "memfile"), memPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish stateful memfile: %w", err)
+	}
+	if err := os.WriteFile(d.statefulGenfile(ref), []byte(strconv.FormatUint(cp.generation, 10)), 0o600); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: write stateful generation sidecar: %w", err)
+	}
+	if err := os.Rename(filepath.Join(cp.tmpDir, "snapfile"), snapPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish stateful snapfile: %w", err)
+	}
+	committed = true
+	_ = os.RemoveAll(cp.tmpDir)
+	// The bundle is published; tear the now-banked VM down best-effort (a Release
+	// error here does not invalidate the bundle, mirroring the reap discipline).
+	_ = d.Release(ctx, cp.handle)
+	return substrate.SnapshotRef{
+		ID:        ref,
+		Node:      d.cfg.Node,
+		Arch:      d.cfg.Arch,
+		SizeBytes: bundleSize(snapPath, memPath),
+	}, nil
+}
+
+// ResolveStatefulAbort is phase two (ABORT) of the interruptible bank: it DELETES
+// the checkpoint's temp snapshot and RESUMES the paused VM, returning it to
+// serving on the SAME process image (genuinely hot, no relight). It consumes the
+// token (single-resolve). The generation bump the ADR requires BEFORE this resume
+// is the CALLER's (the server bumps the volume ledger before invoking abort), so
+// the on-disk order is bump, delete temp, resume (guarantees 2 and 3): a temp that
+// survives a crash then implies the resume was never issued, and any post-resume
+// write is witnessed by the bumped generation. If Resume fails the VM is torn down
+// (the dead-handle discipline) and the error surfaced so the caller falls back to
+// a committed-destroy on the next cycle rather than wedging on a stranded VM.
+func (d *Driver) ResolveStatefulAbort(ctx context.Context, token string) error {
+	cp, ok := d.takeCheckpoint(token)
+	if !ok {
+		return fmt.Errorf("driver: ResolveStatefulAbort of unknown checkpoint token %q", token)
+	}
+	// Delete the temp BEFORE resuming (guarantee 3): a surviving temp after a crash
+	// then implies the resume was never issued, so the volume is still
+	// snapshot-consistent.
+	_ = os.RemoveAll(cp.tmpDir)
+	inst := d.get(cp.handle.ID)
+	if inst == nil {
+		return fmt.Errorf("driver: ResolveStatefulAbort: paused instance %q for token %q is gone", cp.handle.ID, token)
+	}
+	if err := inst.client.Resume(ctx); err != nil {
+		_ = d.Release(ctx, cp.handle)
+		return fmt.Errorf("driver: resume on abort: %w", err)
+	}
+	return nil
+}
+
+// GCStatefulCheckpoints removes every orphaned interruptible-bank checkpoint temp
+// on startup (ADR embervm/008): a noded restart kills every paused checkpoint VM,
+// so its temp can never be resolved and is swept both for correctness (guarantee
+// 1's rescan-invisibility is only meaningful if orphans do not accumulate) and as
+// data-at-rest hygiene (a temp holds guest memory, possibly a first-boot secret).
+// Returns the count removed. Idempotent; an absent dir is a no-op.
+func (d *Driver) GCStatefulCheckpoints() int {
+	entries, err := os.ReadDir(d.CheckpointsDir())
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(d.CheckpointsDir(), e.Name())); err == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 // RestoreStateful launches a fresh Firecracker process and loads a banked
