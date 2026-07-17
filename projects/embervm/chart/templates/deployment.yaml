@@ -218,6 +218,20 @@ spec:
               value: "http://{{ include "embervm.serving.fullname" . }}:{{ .Values.servingEnvoy.statsPort }}"
             {{- end }}
             {{- end }}
+            {{- if .Values.statefulSweeper.sweepIntervalMs }}
+            # StatefulSweeper tick override (default 30000ms). The demo-postgres
+            # exhibit needs a ~1s tick so idle banking is visibly prompt; banking
+            # per workload stays gated by each CR's own idleBankSeconds.
+            - name: EMBERVM_STATEFUL_SWEEP_INTERVAL_MS
+              value: {{ .Values.statefulSweeper.sweepIntervalMs | quote }}
+            {{- end }}
+            {{- if .Values.statefulSweeper.wakeMax }}
+            # Per-workload wake-rate cap override (default 10/min): with a ~1s
+            # idle bank every demo query is a wake, so the default cap would turn
+            # an eager visitor's clicks into refusals inside a minute.
+            - name: EMBERVM_STATEFUL_WAKE_MAX
+              value: {{ .Values.statefulSweeper.wakeMax | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

@@ -815,6 +815,11 @@ scratchPostgres:
   # The embervm serving Service listenPort the scratch-postgres workload is
   # exposed on (must match the embervm chart's scratchPostgres.listenPort).
   listenPort: 5400
+  # The demo-postgres workload's listenPort (must match the embervm chart's
+  # demoPostgres.listenPort). Non-empty renders DEMO_POSTGRES_DSN for the
+  # firecracker demos page's sleep/wake exhibit; empty leaves it unrendered.
+  # Same serving Service and password as scratch-postgres, different workload.
+  demoListenPort: ""
   # The embervm namespace the serving Service lives in (the DSN host is
   # <servingService>.<embervmNamespace>.svc).
   embervmNamespace: embervm

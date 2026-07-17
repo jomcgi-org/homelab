@@ -1,12 +1,14 @@
 <script>
   // /demos/firecracker (private tier): a full-page, Grimoire-style tabbed
-  // tool for the three firecracker-backed projects (Python sandbox, Semgrep
-  // diff scan, Goose agent). Each tab renders its own RunPanel full-page,
+  // tool for the firecracker-backed projects (Python sandbox, Semgrep diff
+  // scan, Goose agent, and the demo-postgres sleep/wake exhibit, which
+  // renders its own PostgresPanel). Each other tab renders RunPanel full-page,
   // no modal: a modal close used to break mid-run because the dialog kept
   // its own escape/backdrop-click lifecycle independent of an in-flight
   // request, so we dropped the modal entirely in favor of a plain tabbed
   // page (mirrors the Grimoire app topbar in
   // src/routes/public/app/grimoire/+layout.svelte).
+  import PostgresPanel from "$lib/private/components/demos/PostgresPanel.svelte";
   import RunPanel from "$lib/private/components/demos/RunPanel.svelte";
   import "$lib/private/demos/theme.css";
 
@@ -70,6 +72,15 @@ def handle():
       tagline: "Kicks off an async agent task and polls it to completion.",
       sample: { task: GOOSE_TASK_SAMPLE },
     },
+    {
+      key: "postgres",
+      label: "Postgres",
+      tagline:
+        "A scale-to-zero Postgres microVM: it falls asleep about a second after your last query and wakes on the next connection, data intact.",
+      // No sample: this tab renders its own panel (status poll + timed
+      // queries), not the shared RunPanel run/trace flow.
+      sample: null,
+    },
   ];
 
   let activeKey = $state("python");
@@ -104,7 +115,11 @@ def handle():
       <p class="demos-tagline">{activeProject.tagline}</p>
     </div>
     {#key activeProject.key}
-      <RunPanel project={activeProject} />
+      {#if activeProject.key === "postgres"}
+        <PostgresPanel />
+      {:else}
+        <RunPanel project={activeProject} />
+      {/if}
     {/key}
   </main>
 </div>

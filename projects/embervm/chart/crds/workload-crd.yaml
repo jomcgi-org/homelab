@@ -442,8 +442,11 @@ spec:
                         delta across the window, per the Task 9 TCP idle scrape)
                         after which the instance is banked and its VM released. A
                         live connection is never severed regardless of this timer
-                        (decision 7).
-                      minimum: 30
+                        (decision 7). Sub-30 values are an informed opt-in for
+                        exhibits like demo-postgres (each bank writes a snapshot
+                        bundle, so a short window under active traffic is
+                        deliberate wake/bank churn).
+                      minimum: 1
                       default: 300
                     maxLifetimeSeconds:
                       type: integer

@@ -208,3 +208,179 @@ def test_trace_includes_correlated_goose_spans(monkeypatch):
     assert body["complete"] is False
     assert body["spans"] == []
     assert body["correlated"][0]["span_id"] == "g1"
+
+
+# ---------------------------------------------------------------------------
+# Demo-postgres (stateful sleep/wake exhibit)
+# ---------------------------------------------------------------------------
+
+
+def _pg_status_payload(**overrides):
+    base = {
+        "workload": "demo-postgres",
+        "state": "banked",
+        "generation": 7,
+        "bundle_generation": 7,
+        "pair_valid": True,
+        "volume_bytes": 123456,
+        "instance": {
+            "healthy": True,
+            "last_active_at": "2026-07-17T10:00:00Z",
+            "created_at": "2026-07-17T09:00:00Z",
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+def test_postgres_status_unconfigured(monkeypatch):
+    monkeypatch.delenv("DEMO_POSTGRES_DSN", raising=False)
+
+    resp = _client().get("/api/demos/firecracker/postgres/status")
+    assert resp.status_code == 200
+    assert resp.json() == {"configured": False}
+
+
+def test_postgres_status_shapes_control_plane_payload(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload()
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+
+    resp = _client().get("/api/demos/firecracker/postgres/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["configured"] is True
+    assert body["state"] == "banked"
+    assert body["generation"] == 7
+    assert body["bundle_generation"] == 7
+    assert body["pair_valid"] is True
+    assert body["healthy"] is True
+    assert body["last_active_at"] == "2026-07-17T10:00:00Z"
+
+
+def test_postgres_status_error_is_in_band(monkeypatch):
+    """A flaky control-plane poll must not 5xx: the frontend polls sub-second."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+
+    resp = _client().get("/api/demos/firecracker/postgres/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["configured"] is True
+    assert "boom" in body["error"]
+
+
+def test_postgres_query_unconfigured_is_503(monkeypatch):
+    monkeypatch.delenv("DEMO_POSTGRES_DSN", raising=False)
+
+    resp = _client().post("/api/demos/firecracker/postgres/query", json={})
+    assert resp.status_code == 503
+
+
+def test_postgres_query_returns_timings_and_classification(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(state="banked", pair_valid=True)
+
+    def fake_roundtrip(dsn, note):
+        assert dsn == "postgresql://x"
+        assert note == "my note"
+        return {
+            "connect_ms": 850.0,
+            "query_ms": 12.0,
+            "inserted_id": 42,
+            "rows": [{"id": 42, "note": "my note"}],
+            "total_rows": 42,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(fc, "_demo_pg_roundtrip", fake_roundtrip)
+
+    resp = _client().post(
+        "/api/demos/firecracker/postgres/query", json={"note": "my note"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["error"] is None
+    assert body["connect_ms"] == 850.0
+    assert body["query_ms"] == 12.0
+    assert body["classification"] == "relight"
+    assert body["phase_before"] == "banked"
+    assert body["generation"] == 7
+    assert body["rows"][0]["id"] == 42
+    assert body["total_ms"] >= 0
+
+
+def test_postgres_query_connect_failure_is_in_band(monkeypatch):
+    """A refused connect (wake-rate limit / failed wake) reports, not 5xxs."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(state="serving")
+
+    def fake_roundtrip(dsn, note):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(fc, "_demo_pg_roundtrip", fake_roundtrip)
+
+    resp = _client().post("/api/demos/firecracker/postgres/query", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "connection refused" in body["error"]
+    assert body["classification"] == "warm"
+
+
+def test_classify_wake_paths():
+    assert fc._classify_wake(None) == "unknown"
+    assert fc._classify_wake({"state": "serving"}) == "warm"
+    assert fc._classify_wake({"state": "banked", "pair_valid": True}) == "relight"
+    assert fc._classify_wake({"state": "banked", "pair_valid": False}) == "cold"
+    assert fc._classify_wake({"state": None}) == "cold"
+    assert fc._classify_wake({"state": "relighting"}) == "transitional"
+
+
+def test_postgres_reset_proxies_destroy(monkeypatch):
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+    monkeypatch.setattr(fc, "auth_headers", lambda: {"Authorization": "Bearer t"})
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"workload": "demo-postgres", "destroyed": 1, "evicted": 1}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def delete(self, url, headers=None):
+            assert url == "http://embervm/v1/stateful/demo-postgres/instance"
+            assert headers == {"Authorization": "Bearer t"}
+            return FakeResponse()
+
+    monkeypatch.setattr(fc.httpx, "AsyncClient", FakeAsyncClient)
+
+    resp = _client().post("/api/demos/firecracker/postgres/reset")
+    assert resp.status_code == 200
+    assert resp.json() == {"destroyed": 1, "evicted": 1}

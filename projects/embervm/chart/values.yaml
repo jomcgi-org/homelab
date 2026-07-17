@@ -565,6 +565,37 @@ scratchK8s:
     # OnePasswordItem unrendered (set it to enable the secret sync + Workload CR).
     itemPath: ""
 
+# Demo-postgres: a SECOND stateful Postgres workload backing the private
+# firecracker demos page (sleep/wake theater). Same guest image, Secret, and
+# machinery as scratchPostgres, but with an aggressively short idle window so a
+# visitor can watch the VM bank itself seconds after their query and pay a
+# visible relight on the next one. Deliberately its own workload: scratch-
+# postgres serves real consumers (Loom, sandbox sessions) whose write cadence
+# the 120s idle window was tuned around; pointing the demo knobs at it would
+# thrash those tenants with a bank/wake cycle per background commit. Requires
+# scratchPostgres.enabled (it reuses that guest image pin and Secret).
+demoPostgres:
+  enabled: false
+  # Node Envoy TCP listener port (stateful 5400-5409 range, unique across
+  # stateful workloads; scratch-postgres holds 5400).
+  listenPort: 5401
+  # Bank almost immediately once idle. The effective floor is the stateful
+  # sweeper tick (statefulSweeper.sweepIntervalMs), not this value.
+  idleBankSeconds: 1
+  # Toy dataset: a handful of demo rows, not a real datastore.
+  volumeSizeGiB: 2
+
+# StatefulSweeper cadence + wake-rate overrides (control-plane env). Empty uses
+# the app defaults (30s tick, 10 wakes/min/workload). The demo page wants a ~1s
+# tick so idle banking is visibly prompt, and a higher wake cap so a click-happy
+# visitor gets wakes instead of refusals. Both knobs are control-plane-wide
+# across stateful workloads, but banking itself stays gated by each workload's
+# own idleBankSeconds, so a faster tick only sharpens the granularity for
+# everyone (scratch-postgres still waits its full 120s idle window).
+statefulSweeper:
+  sweepIntervalMs: ""
+  wakeMax: ""
+
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
 # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
 # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
