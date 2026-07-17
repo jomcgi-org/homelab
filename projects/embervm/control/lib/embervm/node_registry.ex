@@ -536,7 +536,13 @@ defmodule Embervm.NodeRegistry do
         port: v.port,
         healthy: v.healthy,
         generation: v.generation,
-        last_probe_unix_ms: v.last_probe_unix_ms
+        last_probe_unix_ms: v.last_probe_unix_ms,
+        # Interruptible-bank checkpoint facts (ADR embervm/008): true + the token
+        # when the VM is PAUSED awaiting a ResolveStateful, so the StatefulManager's
+        # adoption resolves a stranded checkpoint (default abort) after a
+        # control-plane restart.
+        checkpoint_pending: v.checkpoint_pending,
+        checkpoint_token: v.checkpoint_token
       }
     end
   end

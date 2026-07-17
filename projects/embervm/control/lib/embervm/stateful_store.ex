@@ -195,6 +195,19 @@ defmodule Embervm.StatefulStore do
   end
 
   @doc """
+  Like `mark/2` (a TRANSIENT ETS-only FSM edge, no op-log append) but also merges
+  `updates` into the ETS row after the state move, exactly as `unpublish/3` does.
+  The interruptible-bank checkpoint uses this to stamp the `checkpoint_token` and
+  `vm_id` onto the row when marking `banking -> checkpointed`, so adoption and the
+  resolve step can read them from ETS without a durable op (the checkpoint outcome
+  is persisted only later by the `:commit` transition or an `:abort` republish).
+  """
+  @spec mark_with(GenServer.server(), String.t(), atom(), map()) :: {:ok, map()} | {:error, term()}
+  def mark_with(store \\ __MODULE__, instance_id, event, updates) do
+    GenServer.call(store, {:mark_with, instance_id, event, updates})
+  end
+
+  @doc """
   Flips an instance's `healthy` flag from the node's probe fact (health ejection),
   WITHOUT an FSM transition or an op-log append: health is a lossy node fact, not
   durable lifecycle state. A no-op for an unknown instance. Returns the updated
@@ -514,6 +527,10 @@ defmodule Embervm.StatefulStore do
 
   def handle_call({:mark, instance_id, event}, _from, state) do
     do_mark_with_updates(state, instance_id, event, %{})
+  end
+
+  def handle_call({:mark_with, instance_id, event, updates}, _from, state) do
+    do_mark_with_updates(state, instance_id, event, updates)
   end
 
   def handle_call({:set_health, instance_id, healthy?}, _from, state) do
@@ -1000,7 +1017,7 @@ defmodule Embervm.StatefulStore do
 
   defp bucket_of(nil), do: nil
   defp bucket_of(:banked), do: :banked
-  defp bucket_of(state) when state in [:starting, :serving, :banking, :relighting, :cold_booting], do: :live
+  defp bucket_of(state) when state in [:starting, :serving, :banking, :checkpointed, :relighting, :cold_booting], do: :live
   defp bucket_of(_terminal), do: nil
 
   defp inc_bucket(counts, nil), do: counts

@@ -202,6 +202,19 @@ defmodule Embervm.StatefulManager do
   end
 
   @doc """
+  Whether any connection is currently parked (in-flight wake) for `workload`. The
+  interruptible-bank sweeper (ADR embervm/008) reads this the instant its
+  CHECKPOINT completes to decide COMMIT vs ABORT: a parked connection means a
+  client is waiting for this workload NOW, so aborting (resume hot) serves it
+  faster than committing (bank then relight). A pure ETS-view read of
+  `state.waking`.
+  """
+  @spec parked?(GenServer.server(), String.t()) :: boolean()
+  def parked?(server \\ __MODULE__, workload) do
+    GenServer.call(server, {:parked?, workload})
+  end
+
+  @doc """
   Runs one adoption reconcile synchronously (the boot continue + the periodic
   sweep run the same code) and returns after it completes. Reconciles the
   StatefulStore projection against every node's reported stateful inventory
@@ -307,6 +320,10 @@ defmodule Embervm.StatefulManager do
     handle_wake(state, workload, principal, from)
   end
 
+  def handle_call({:parked?, workload}, _from, state) do
+    {:reply, Map.has_key?(state.waking, workload), state}
+  end
+
   def handle_call(:reconcile, _from, state) do
     {:reply, :ok, do_reconcile(state)}
   end
@@ -334,6 +351,42 @@ defmodule Embervm.StatefulManager do
     {:noreply, state}
   end
 
+  # The sweeper resolved an interruptible-bank checkpoint (ADR embervm/008) and
+  # tells us the outcome so any connection parked during the checkpointed window
+  # (see park_during_checkpoint/4) is served.
+  #
+  #   :abort -> the sweeper resumed the SAME paused VM hot and republished it, so
+  #     the instance is :serving with its endpoint intact. Reply every parked
+  #     caller with that live endpoint directly (no wake needed) and clear the
+  #     waiting list. Reading published_endpoint/2 is the same source a straggler
+  #     resolves from, so the abort path replies exactly as a hot hit would.
+  #   :commit -> the temp snapshot was published as the bundle and the VM
+  #     destroyed, so the instance is :banked. Start a normal wake (start_wake/1),
+  #     which plans a relight off the just-committed bundle and replies to the
+  #     already-parked callers on completion via the existing finish_wake path.
+  @impl true
+  def handle_cast({:checkpoint_resolved, workload, :abort}, state) do
+    case StatefulStore.published_endpoint(state.store, workload) do
+      %{ip: ip, port: port} when is_binary(ip) and ip != "" and is_integer(port) ->
+        {waiters, state} = pop_waiters(state, workload)
+        {_trace, state} = pop_wake_trace(state, workload)
+        reply_all(waiters, {:ok, %{ip: ip, port: port}})
+        {:noreply, state}
+
+      _ ->
+        # The abort left no live endpoint (should not happen: an aborted
+        # checkpoint republishes). Fall back to a fresh wake so the parked
+        # callers are not stranded.
+        {:noreply, resolve_parked_via_wake(state, workload)}
+    end
+  end
+
+  def handle_cast({:checkpoint_resolved, workload, :commit}, state) do
+    {:noreply, resolve_parked_via_wake(state, workload)}
+  end
+
+  def handle_cast(_msg, state), do: {:noreply, state}
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   # -- wake handling -----------------------------------------------------------
@@ -356,6 +409,18 @@ defmodule Embervm.StatefulManager do
       not stateful_workload?(state, workload) ->
         {:reply, {:error, {:unknown_workload}}, state}
 
+      # The workload's live instance is mid interruptible-bank checkpoint (ADR
+      # embervm/008): the VM is PAUSED awaiting the sweeper's resolve, NOT gone.
+      # Never cold-boot behind it (that would race a second live VM against the
+      # singleton gate); PARK the caller and let the sweeper's
+      # {:checkpoint_resolved, workload, outcome} cast serve it (hot on abort, or
+      # a fresh relight wake on commit). Parking here reuses the same waking cap
+      # and reply machinery as a normal wake, so the sweeper's resolve resolves
+      # every parked caller in one shot. The first park also seeds the tracing
+      # bundle so an eventual relight (on commit) still emits its wake spans.
+      checkpointed?(state, workload) ->
+        park_during_checkpoint(state, workload, principal, from)
+
       # Already a wake in flight for this workload: park behind it
       # (single-flight), subject to the parked-connection cap. Does NOT consult
       # the wake-rate limit (the wake was already counted by the first miss).
@@ -372,6 +437,56 @@ defmodule Embervm.StatefulManager do
       true ->
         audit_denial(state, principal, workload, :wake_rate)
         {:reply, {:error, {:wake_rate, "per-workload wake-rate limit exceeded"}}, state}
+    end
+  end
+
+  # Whether the workload's single live instance is currently :checkpointed (a
+  # paused interruptible-bank checkpoint awaiting resolve). A bounded store read;
+  # the singleton invariant means at most one live instance per workload.
+  defp checkpointed?(state, workload) do
+    StatefulStore.list(state.store, workload)
+    |> Enum.any?(&(&1.state == :checkpointed))
+  end
+
+  # Park a caller behind an in-flight checkpoint resolve. Respects park_cap
+  # (audited denial + close on overflow), and seeds the tracing bundle on the
+  # FIRST parker (so a commit -> relight still emits its wake spans) without
+  # re-seeding a later one. Never kicks a wake worker: the sweeper's
+  # {:checkpoint_resolved} cast is what resolves these callers.
+  defp park_during_checkpoint(state, workload, principal, from) do
+    waiters = Map.get(state.waking, workload, [])
+
+    if length(waiters) >= state.park_cap do
+      audit_denial(state, principal, workload, :park_full)
+      {:reply, {:error, {:park_full, "parked-connection cap exceeded for workload"}}, state}
+    else
+      state =
+        if waiters == [] do
+          # First parker: seed both the waiting list and a fresh tracing bundle
+          # (park_start), exactly like park_new_wake but WITHOUT kicking a wake.
+          %{
+            state
+            | waking: Map.put(state.waking, workload, [{from, principal}]),
+              wake_traces: Map.put(state.wake_traces, workload, %{park_start: :opentelemetry.timestamp()})
+          }
+        else
+          %{state | waking: Map.put(state.waking, workload, waiters ++ [{from, principal}])}
+        end
+
+      {:noreply, state}
+    end
+  end
+
+  # Serve parked callers by kicking a normal wake (the commit path, and the
+  # abort fallback when no live endpoint was found): only if callers are actually
+  # parked, so a resolve with nothing waiting never boots spuriously. start_wake
+  # plans the relight/cold off the resolved instance and finish_wake replies to
+  # the parked callers already sitting in state.waking.
+  defp resolve_parked_via_wake(state, workload) do
+    if Map.has_key?(state.waking, workload) and Map.get(state.waking, workload) != [] do
+      start_wake(state, workload)
+    else
+      state
     end
   end
 
@@ -1227,6 +1342,21 @@ defmodule Embervm.StatefulManager do
       Map.has_key?(state.waking, instance.workload) ->
         state
 
+      # A stranded interruptible-bank checkpoint (ADR embervm/008): the store
+      # shows the instance :checkpointed (or a :banking it never finished
+      # resolving) and the node still reports its VM as checkpoint_pending. A
+      # control-plane restart can strand this across the sweeper's resolve. The
+      # SAFE DEFAULT is ABORT: mark the paused VM back to :serving and republish
+      # (the caller wanted it hot, not banked; a commit needs a parked
+      # connection this reconcile cannot observe, and noded auto-aborts on its
+      # own timeout anyway, so this is belt-and-suspenders). If the node no
+      # longer reports the VM at all the checkpoint vanished with a noded
+      # restart, so we fall through to the live-VM / bundle / vanished logic
+      # below rather than resurrecting a gone VM.
+      instance.state in [:checkpointed, :banking] and
+          is_binary(instance.vm_id) and checkpoint_pending?(live_vms, instance.vm_id) ->
+        adopt_abort_stranded_checkpoint(state, instance, live_vms)
+
       is_binary(instance.vm_id) and Map.has_key?(live_vms, instance.vm_id) ->
         {node_id, vm} = Map.fetch!(live_vms, instance.vm_id)
         adopt_live(state, instance, node_id, vm)
@@ -1241,6 +1371,41 @@ defmodule Embervm.StatefulManager do
       true ->
         state
     end
+  end
+
+  # Whether the node reports the instance's VM as an interruptible-bank
+  # checkpoint awaiting resolve (checkpoint_pending, ADR embervm/008). False when
+  # the VM is not reported at all or the field is absent/false.
+  defp checkpoint_pending?(live_vms, vm_id) do
+    case Map.get(live_vms, vm_id) do
+      {_node_id, vm} -> Map.get(vm, :checkpoint_pending, false) == true
+      _ -> false
+    end
+  end
+
+  # Resolve a stranded checkpoint the SAFE way (ABORT): return the paused VM to
+  # :serving and rebind its endpoint from node truth, then let the caller's
+  # publish re-derive the fan-out. Uses the FSM-legal event for the instance's
+  # current state (:checkpointed -> :abort, :banking -> :bank_abort; both land on
+  # :serving). ETS-only (no durable op): the projection was already at/before
+  # serving, so no new op is owed, mirroring the sweeper's abort path.
+  defp adopt_abort_stranded_checkpoint(state, instance, live_vms) do
+    {node_id, vm} = Map.fetch!(live_vms, instance.vm_id)
+    event = if instance.state == :checkpointed, do: :abort, else: :bank_abort
+    _ = StatefulStore.mark(state.store, instance.instance_id, event)
+
+    StatefulStore.adopt_endpoint(state.store, instance.instance_id, node_id, instance.vm_id, %{
+      ip: Map.get(vm, :ip),
+      port: Map.get(vm, :port),
+      healthy: Map.get(vm, :healthy, true)
+    })
+
+    Logger.info("embervm stateful: aborted stranded checkpoint on adoption",
+      instance_id: instance.instance_id,
+      workload: instance.workload
+    )
+
+    state
   end
 
   defp adopt_live(state, instance, node_id, vm) do

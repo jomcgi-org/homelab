@@ -140,15 +140,32 @@ defmodule Embervm.StatefulSweeper do
 
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, StatefulManager, StatefulState, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.Op
 
   alias Embervm.Node.V1.{
     EvictSnapshotRequest,
+    ResolveStatefulRequest,
+    ResolveStatefulResponse,
     StopStatefulRequest,
     StopStatefulResponse,
     Trace
   }
+
+  # Interruptible bank (ADR embervm/008): after this many CONSECUTIVE aborts of a
+  # workload's checkpoint (a client keeps racing back in the moment we pause), the
+  # next cycle FORCES a commit regardless of a parked connection, so a hot-looping
+  # client cannot pin the VM live forever and defeat the economics. Reset to 0 the
+  # moment the workload settles to banked.
+  @default_flap_abort_threshold 20
+
+  # The unpublish -> node-Envoy propagation settle bound (ms) an interruptible
+  # bank waits after dropping the endpoint before it pauses the VM with a
+  # CHECKPOINT, so a connection the fan-out was still routing at unpublish time
+  # has drained to the activator rather than being severed mid-pause. Waited
+  # inside the spawned bank worker (never blocking the GenServer); 0-able so tests
+  # run instantly.
+  @default_propagation_settle_ms 200
 
   # Per-node concurrent-bank cap (banking writes GiBs; serialize per node), the
   # exact ServingSweeper default and rationale.
@@ -211,6 +228,10 @@ defmodule Embervm.StatefulSweeper do
       # the real NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
+      # ResolveStateful seam (ADR embervm/008): (channel, %ResolveStatefulRequest{})
+      # -> {:ok, %ResolveStatefulResponse{}} | {:error, _}. Injected for tests;
+      # production dials the real NodeService stub.
+      resolve_stateful_fun: Keyword.get(opts, :resolve_stateful_fun, &default_resolve_stateful/2),
       evict_snapshot_fun: Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
       # status.stateful {state,generation,bundleGeneration,volumeBytes} writer
       # (Task 10). Defaults to the K8s merge-patch on the workload status
@@ -226,6 +247,22 @@ defmodule Embervm.StatefulSweeper do
       stateful_status_written: %{},
       bank_concurrency: Keyword.get(opts, :bank_concurrency, @default_bank_concurrency),
       bank_inflight: %{},
+      # -- interruptible bank (ADR embervm/008) ------------------------------
+      # The StatefulManager ref, so the sweeper can ask parked?/2 (commit-vs-abort
+      # input) and cast {:checkpoint_resolved, ...} to it on resolve.
+      manager: Keyword.get(opts, :manager, Embervm.StatefulManager),
+      # workload -> boolean: whether a connection is parked for it RIGHT NOW.
+      # Defaults to StatefulManager.parked?/2 against the manager ref; tests inject
+      # a fun (or a fake) to drive the commit/abort fork deterministically.
+      parked_fun:
+        Keyword.get(opts, :parked_fun, fn wl ->
+          StatefulManager.parked?(Keyword.get(opts, :manager, Embervm.StatefulManager), wl)
+        end),
+      # workload -> consecutive-abort count, for the flap guard (force-commit after
+      # the threshold so a hot-looping client cannot pin the VM live forever).
+      checkpoint_aborts: %{},
+      flap_abort_threshold: Keyword.get(opts, :flap_abort_threshold, @default_flap_abort_threshold),
+      propagation_settle_ms: Keyword.get(opts, :propagation_settle_ms, @default_propagation_settle_ms),
       lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, @default_lifetime_drain_max_ms),
       # workload -> the wall-clock ms the workload was first observed idle
       # (cx_active == 0 AND cx_total delta == 0) this run, so idleBankSeconds is
@@ -282,6 +319,18 @@ defmodule Embervm.StatefulSweeper do
   # spawn_bank_worker/2's comment); needed to restore it on a failed bank.
   def handle_info({:bank_done, instance_id, node_id, vm_id, ip, port, workload, outcome}, state) do
     {:noreply, finish_bank(state, instance_id, node_id, vm_id, ip, port, workload, outcome)}
+  end
+
+  # The CHECKPOINT phase finished (ADR embervm/008): mark :checkpoint_ready and
+  # fork commit-vs-abort (all serialized here), then spawn the resolve worker.
+  def handle_info({:checkpoint_done, instance_id, node_id, vm_id, ip, port, workload, outcome}, state) do
+    {:noreply, finish_checkpoint(state, instance_id, node_id, vm_id, ip, port, workload, outcome)}
+  end
+
+  # The ResolveStateful RPC finished: complete the durable transition, notify the
+  # manager, and release the per-node bank slot + banking bookkeeping.
+  def handle_info({:resolve_done, instance_id, node_id, vm_id, ip, port, workload, mode, outcome}, state) do
+    {:noreply, finish_resolve(state, instance_id, node_id, vm_id, ip, port, workload, mode, outcome)}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -602,7 +651,7 @@ defmodule Embervm.StatefulSweeper do
     state = refresh_current_stats(state, instance.node_id)
 
     if connection_raced_in?(state, instance) do
-      abort_bank(state, instance, :recheck_active)
+      abort_bank(state, instance, recheck_abort_reason(state, instance))
     else
       if bank_at_cap?(state, instance.node_id) do
         # Deferred: abort back to serving and let the next tick's idle
@@ -634,16 +683,51 @@ defmodule Embervm.StatefulSweeper do
   end
 
   # True when the instance's node's FRESHEST reading (post-recheck-rescrape)
-  # reports cx_active > 0 for its listener. No fresh reading for the node
-  # (never scraped, or every scrape this tick failed) fails OPEN toward
-  # proceeding with the bank (see recheck_and_bank/2's doc).
+  # reports cx_active > 0 for its listener, i.e. a connection raced in and the
+  # bank must abort. When there is NO fresh reading for the node (never scraped,
+  # or every scrape this tick failed) the direction depends on the workload:
+  #
+  #   * a DEFAULT (atomic-bank) workload FAILS OPEN toward proceeding (returns
+  #     false): the atomic BANK destroys the VM, and the idle confirmation that
+  #     got us here already required cx_active == 0 on the last successful scrape,
+  #     so the narrow undetected race is accepted for warmth (unchanged behavior).
+  #   * an INTERRUPTIBLE workload (ADR embervm/008) FAILS CLOSED (returns true, so
+  #     the bank aborts this cycle with reason :recheck_scrape_failed): a
+  #     checkpoint PAUSES a live VM, and pausing under an unobserved connection is
+  #     exactly the risk the two-phase design refuses to take on missing evidence.
   defp connection_raced_in?(state, instance) do
     with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
          {:ok, cfg} <- stateful_cfg(state, instance.workload),
          {:ok, %{active: active}} <- Map.fetch(entry, stat_prefix(cfg.listen_port)) do
       active > 0
     else
-      _ -> false
+      _ -> interruptible?(state, instance.workload)
+    end
+  end
+
+  # The abort reason for a recheck that decided to abort: an actual fresh reading
+  # of cx_active > 0 is a genuine race (:recheck_active); a missing reading that
+  # aborted only because the workload is interruptible (fail-closed) is
+  # :recheck_scrape_failed, the distinct observable the ADR names.
+  defp recheck_abort_reason(state, instance) do
+    has_fresh_reading? =
+      with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
+           {:ok, cfg} <- stateful_cfg(state, instance.workload),
+           {:ok, _} <- Map.fetch(entry, stat_prefix(cfg.listen_port)) do
+        true
+      else
+        _ -> false
+      end
+
+    if has_fresh_reading?, do: :recheck_active, else: :recheck_scrape_failed
+  end
+
+  # Whether the workload is opted in to the two-phase interruptible bank. A
+  # missing/malformed cfg reads false (the safe default: the atomic path).
+  defp interruptible?(state, workload) do
+    case stateful_cfg(state, workload) do
+      {:ok, cfg} -> Map.get(cfg, :interruptible_bank, false) == true
+      :error -> false
     end
   end
 
@@ -694,7 +778,21 @@ defmodule Embervm.StatefulSweeper do
   # ServingStore.unpublish/3 which leaves them intact): a failed bank needs
   # this to restore the still-alive VM's endpoint fact via adopt_endpoint, and
   # StatefulStore.get/2 by then would only return the nil'd-out row.
+  #
+  # Branches on the workload's interruptible_bank opt-in (ADR embervm/008): the
+  # DEFAULT path is the unchanged atomic StopStateful(BANK) worker; an
+  # interruptible workload runs the two-phase CHECKPOINT worker instead (settle,
+  # then StopStateful(CHECKPOINT), reporting {:checkpoint_done}). Both keep the
+  # per-node bank slot until their terminal report releases it.
   defp spawn_bank_worker(state, instance) do
+    if interruptible?(state, instance.workload) do
+      spawn_checkpoint_worker(state, instance)
+    else
+      spawn_atomic_bank_worker(state, instance)
+    end
+  end
+
+  defp spawn_atomic_bank_worker(state, instance) do
     owner = self()
     channel_fun = state.channel_fun
     stop_fun = state.stop_stateful_fun
@@ -741,6 +839,63 @@ defmodule Embervm.StatefulSweeper do
 
   defp bank_request(vm_id) do
     %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_BANK}
+  end
+
+  # -- interruptible bank: CHECKPOINT worker (ADR embervm/008) -----------------
+
+  # The two-phase bank's first phase, off the GenServer: wait out the
+  # propagation-settle bound (so a connection the fan-out was still routing at
+  # unpublish has drained to the activator), then StopStateful(CHECKPOINT) to
+  # PAUSE the VM and get back a checkpoint_token. Reports {:checkpoint_done, ...,
+  # outcome}; the serialized process marks :checkpoint_ready and forks
+  # commit/abort. Never touches ETS or the store from here (that stays on the
+  # owner process). settle_ms 0 (tests) makes this run instantly.
+  defp spawn_checkpoint_worker(state, instance) do
+    owner = self()
+    channel_fun = state.channel_fun
+    stop_fun = state.stop_stateful_fun
+    settle_ms = state.propagation_settle_ms
+    instance_id = instance.instance_id
+    workload = instance.workload
+    node_id = instance.node_id
+    vm_id = instance.vm_id
+    ip = instance.ip
+    port = instance.port
+
+    spawn(fn ->
+      outcome =
+        Tracer.with_span "embervm.stateful.checkpoint",
+                         %{
+                           attributes: %{
+                             "ember.workload" => workload,
+                             "ember.instance_id" => instance_id,
+                             "ember.node_id" => node_id
+                           }
+                         } do
+          if is_integer(settle_ms) and settle_ms > 0, do: Process.sleep(settle_ms)
+
+          try do
+            with {:ok, channel} <- safe_channel(channel_fun, node_id),
+                 {:ok, %StopStatefulResponse{checkpoint_token: token, generation: generation}}
+                 when is_binary(token) and token != "" <-
+                   stop_fun.(channel, checkpoint_request(vm_id)) do
+              {:ok, token, generation}
+            else
+              other -> {:error, other}
+            end
+          rescue
+            e -> {:error, {:checkpoint_raised, e}}
+          catch
+            kind, reason -> {:error, {:checkpoint_raised, {kind, reason}}}
+          end
+        end
+
+      send(owner, {:checkpoint_done, instance_id, node_id, vm_id, ip, port, workload, outcome})
+    end)
+  end
+
+  defp checkpoint_request(vm_id) do
+    %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_CHECKPOINT}
   end
 
   # The StopStateful(BANK) completed: release the node slot + banking
@@ -819,6 +974,291 @@ defmodule Embervm.StatefulSweeper do
     end
 
     state
+  end
+
+  # -- interruptible bank: finish CHECKPOINT + resolve (ADR embervm/008) -------
+
+  # The CHECKPOINT completed. On success: mark :checkpoint_ready (banking ->
+  # checkpointed, ETS-only, stamping checkpoint_token + vm_id so adoption/resolve
+  # can read them), decide COMMIT vs ABORT, and spawn the resolve worker (the
+  # per-node bank slot + banking entry stay held until finish_resolve). On a
+  # CHECKPOINT RPC failure: noded left the VM live and nothing entered
+  # checkpointed, so this is exactly the atomic bank-failure recovery (bank_abort
+  # back to serving, republish, release the slot).
+  defp finish_checkpoint(state, instance_id, node_id, vm_id, ip, port, workload, {:ok, token, generation}) do
+    case StatefulStore.get(state.store, instance_id) do
+      {:ok, %{state: :banking}} ->
+        _ =
+          StatefulStore.mark_with(state.store, instance_id, :checkpoint_ready, %{
+            checkpoint_token: token,
+            checkpoint_generation: generation,
+            vm_id: vm_id
+          })
+
+        {mode, state} = decide_resolve(state, workload)
+        spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode)
+        state
+
+      # Terminal mid-checkpoint (a forced destroy raced it) or gone: release the
+      # slot and do not resurrect. The paused VM is noded's to reap (it
+      # auto-aborts on its own timeout).
+      _ ->
+        release_bank_slot(state, node_id, instance_id)
+    end
+  end
+
+  defp finish_checkpoint(state, instance_id, node_id, vm_id, ip, port, workload, {:error, reason}) do
+    Logger.warning("embervm stateful: checkpoint failed, returning to fan-out",
+      instance_id: instance_id,
+      workload: workload,
+      reason: inspect(reason)
+    )
+
+    state = release_bank_slot(state, node_id, instance_id)
+
+    # Nothing entered :checkpointed; the VM is still live in :banking. Recover
+    # exactly like a failed atomic bank: bank_abort back to serving + restore the
+    # endpoint (unpublish nil'd ip/port when the bank began).
+    case StatefulStore.get(state.store, instance_id) do
+      {:ok, %{state: :banking}} ->
+        _ = StatefulStore.mark(state.store, instance_id, :bank_abort)
+
+        if republishable_endpoint?(ip, port) do
+          _ =
+            StatefulStore.adopt_endpoint(state.store, instance_id, node_id, vm_id, %{
+              ip: ip,
+              port: port,
+              healthy: true
+            })
+
+          Embervm.EndpointPublisher.publish(state.publisher)
+        end
+
+        state
+
+      _ ->
+        state
+    end
+  end
+
+  # COMMIT vs ABORT for a just-checkpointed workload. The flap guard fires FIRST:
+  # once consecutive aborts reach the threshold, force a commit (regardless of a
+  # parked connection) and reset the counter, so a hot-looping client cannot pin
+  # the VM live forever. Otherwise: a parked connection means a client wants it
+  # hot NOW, so ABORT (resume); no parked connection means COMMIT (bank it). The
+  # returned state carries any counter change.
+  defp decide_resolve(state, workload) do
+    aborts = Map.get(state.checkpoint_aborts, workload, 0)
+
+    cond do
+      aborts >= state.flap_abort_threshold ->
+        Tracer.with_span "embervm.stateful.checkpoint_flap_guard",
+                         %{attributes: %{"ember.workload" => workload, "ember.checkpoint_aborts" => aborts}} do
+          :ok
+        end
+
+        Logger.info("embervm stateful: checkpoint flap guard fired, forcing commit",
+          workload: workload,
+          consecutive_aborts: aborts
+        )
+
+        {:commit, reset_checkpoint_aborts(state, workload)}
+
+      parked?(state, workload) ->
+        {:abort, state}
+
+      true ->
+        {:commit, state}
+    end
+  end
+
+  defp parked?(state, workload) do
+    state.parked_fun.(workload)
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  # The resolve worker: ResolveStateful(vm_id, token, mode) off the GenServer (it
+  # can take seconds: a commit publishes the bundle, an abort resumes the VM).
+  # Reports {:resolve_done, ..., mode, outcome}; finish_resolve completes the
+  # durable transition on the owner process.
+  defp spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode) do
+    owner = self()
+    channel_fun = state.channel_fun
+    resolve_fun = state.resolve_stateful_fun
+
+    spawn(fn ->
+      outcome =
+        Tracer.with_span "embervm.stateful.resolve",
+                         %{
+                           attributes: %{
+                             "ember.workload" => workload,
+                             "ember.instance_id" => instance_id,
+                             "ember.resolve_mode" => Atom.to_string(mode)
+                           }
+                         } do
+          try do
+            with {:ok, channel} <- safe_channel(channel_fun, node_id),
+                 {:ok, %ResolveStatefulResponse{} = resp} <-
+                   resolve_fun.(channel, resolve_request(vm_id, token, mode)) do
+              {:ok, resp}
+            else
+              other -> {:error, other}
+            end
+          rescue
+            e -> {:error, {:resolve_raised, e}}
+          catch
+            kind, reason -> {:error, {:resolve_raised, {kind, reason}}}
+          end
+        end
+
+      send(owner, {:resolve_done, instance_id, node_id, vm_id, ip, port, workload, mode, outcome})
+    end)
+  end
+
+  defp resolve_request(vm_id, token, mode) do
+    %ResolveStatefulRequest{
+      trace: %Trace{},
+      vm_id: vm_id,
+      checkpoint_token: token,
+      mode: resolve_mode(:commit == mode)
+    }
+  end
+
+  defp resolve_mode(true), do: :RESOLVE_MODE_COMMIT
+  defp resolve_mode(false), do: :RESOLVE_MODE_ABORT
+
+  # The resolve RPC completed: release the slot + banking entry, then apply the
+  # outcome. A terminal instance mid-resolve (forced destroy raced) is left alone.
+  defp finish_resolve(state, instance_id, node_id, vm_id, ip, port, workload, mode, outcome) do
+    state = release_bank_slot(state, node_id, instance_id)
+
+    case StatefulStore.get(state.store, instance_id) do
+      {:ok, %{state: st}} when st in [:evicted, :destroyed, :failed] ->
+        state
+
+      {:ok, _instance} ->
+        apply_resolve(state, instance_id, node_id, vm_id, ip, port, workload, mode, outcome)
+
+      :error ->
+        state
+    end
+  end
+
+  # COMMIT success: the temp snapshot is now the workload's bundle. Transition
+  # :commit (checkpointed -> banked) durably with a stateful_banked op carrying
+  # the bundle fact, exactly the atomic bank's success payload shape. Reset the
+  # abort counter (settled to banked) and notify the manager so parked callers
+  # relight off the fresh bundle.
+  defp apply_resolve(state, instance_id, node_id, _vm_id, _ip, _port, workload, :commit, {:ok, %ResolveStatefulResponse{snapshot_ref: ref, generation: generation, size_bytes: size}}) do
+    _ =
+      StatefulStore.transition(
+        state.store,
+        instance_id,
+        :commit,
+        :stateful_banked,
+        %{snapshot_ref: ref, size_bytes: size, generation: generation},
+        %{snapshot_ref: ref, snapshot_size_bytes: size, snapshot_generation: generation, node_id: node_id, vm_id: nil}
+      )
+
+    state = reset_checkpoint_aborts(state, workload)
+    notify_checkpoint_resolved(state, workload, :commit)
+
+    Logger.info("embervm stateful checkpoint committed",
+      instance_id: instance_id,
+      workload: workload,
+      node_id: node_id,
+      snapshot_bytes: size
+    )
+
+    state
+  end
+
+  # ABORT success: noded resumed the SAME paused VM hot. Transition :abort
+  # (checkpointed -> serving, ETS-only mark: the durable projection was already
+  # serving-or-published, so no new op is owed) + restore the endpoint and
+  # republish. Increment the consecutive-abort counter (flap guard input) and
+  # notify the manager so parked callers get the hot endpoint.
+  defp apply_resolve(state, instance_id, node_id, vm_id, ip, port, workload, :abort, {:ok, %ResolveStatefulResponse{}}) do
+    _ = StatefulStore.mark(state.store, instance_id, :abort)
+
+    if republishable_endpoint?(ip, port) do
+      _ =
+        StatefulStore.adopt_endpoint(state.store, instance_id, node_id, vm_id, %{
+          ip: ip,
+          port: port,
+          healthy: true
+        })
+    end
+
+    Embervm.EndpointPublisher.publish(state.publisher)
+
+    state = incr_checkpoint_aborts(state, workload)
+
+    Tracer.with_span "embervm.stateful.checkpoint_abort",
+                     %{attributes: %{"ember.workload" => workload, "ember.reason" => "parked_connection"}} do
+      :ok
+    end
+
+    notify_checkpoint_resolved(state, workload, :abort)
+
+    Logger.info("embervm stateful checkpoint aborted, resumed hot",
+      instance_id: instance_id,
+      workload: workload,
+      node_id: node_id
+    )
+
+    state
+  end
+
+  # Resolve RPC ERROR (either mode): noded tore the paused VM down on a resolve
+  # failure, so the instance FAILS (checkpointed -> failed, durable
+  # stateful_failed). The workload returns to no-live-instance; the next
+  # connection cold-boots. Reset the abort counter (this lifecycle is over).
+  defp apply_resolve(state, instance_id, _node_id, _vm_id, _ip, _port, workload, mode, {:error, reason}) do
+    Logger.warning("embervm stateful: checkpoint resolve failed, failing instance",
+      instance_id: instance_id,
+      workload: workload,
+      mode: mode,
+      reason: inspect(reason)
+    )
+
+    _ =
+      StatefulStore.transition(
+        state.store,
+        instance_id,
+        :fail,
+        :stateful_failed,
+        %{reason: "resolve_failed"},
+        %{}
+      )
+
+    reset_checkpoint_aborts(state, workload)
+  end
+
+  defp release_bank_slot(state, node_id, instance_id) do
+    state
+    |> decr_bank_inflight(node_id)
+    |> Map.update!(:banking, &Map.delete(&1, instance_id))
+  end
+
+  defp notify_checkpoint_resolved(state, workload, outcome) do
+    GenServer.cast(state.manager, {:checkpoint_resolved, workload, outcome})
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp incr_checkpoint_aborts(state, workload) do
+    %{state | checkpoint_aborts: Map.update(state.checkpoint_aborts, workload, 1, &(&1 + 1))}
+  end
+
+  defp reset_checkpoint_aborts(state, workload) do
+    %{state | checkpoint_aborts: Map.put(state.checkpoint_aborts, workload, 0)}
   end
 
   # -- max-lifetime expiry -----------------------------------------------------
@@ -1123,6 +1563,10 @@ defmodule Embervm.StatefulSweeper do
 
   defp default_evict_snapshot(channel, req) do
     Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+  end
+
+  defp default_resolve_stateful(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.resolve_stateful(channel, req)
   end
 
   # Production scrape: GET /stats?format=json over the shared Finch pool, parse
