@@ -80,6 +80,8 @@ defmodule Embervm.GroupManager do
   require Logger
   import Bitwise
 
+  require OpenTelemetry.Tracer, as: Tracer
+
   alias Embervm.{GroupState, GroupStore, NodeCapacity, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
@@ -296,7 +298,16 @@ defmodule Embervm.GroupManager do
     # instance is recorded is torn down to failed.
     case GroupStore.create(state.store, create_attrs) do
       {:ok, _instance} ->
-        do_create_sequence(state, subnet_cidr, plan, secret, group)
+        # The `create` root span (Task 9): a ROOT span around the whole ordered
+        # create sequence (network + role-ordered member starts + publish). A raw TCP
+        # accept carries no caller trace to nest under, so this is a root, the same
+        # shape as the stateful wake/forced_roll roots. Per-member CHILD spans nest
+        # under it via the captured OTel ctx attached inside each spawned Task (see
+        # start_order_parallel), so member starts appear as children in the waterfall.
+        Tracer.with_span "embervm.group.create",
+                         %{attributes: %{"ember.workload" => state.workload, "ember.instance_id" => state.instance_id, "ember.members" => length(plan)}} do
+          do_create_sequence(state, subnet_cidr, plan, secret, group)
+        end
 
       {:error, reason} ->
         {{:error, reason}, state}
@@ -329,13 +340,20 @@ defmodule Embervm.GroupManager do
   # and only proceed to the next order once every member of the current order
   # succeeded. Order N never starts before all order N-1 members are healthy.
   defp start_members_ordered(state, plan, secret, subnet_cidr) do
+    # Capture the current OTel ctx HERE (on the manager process, inside the `create`
+    # root span) so each spawned member Task can attach it and nest its per-member
+    # child span under the root across the process boundary (Task.async does NOT
+    # propagate OTel context automatically; a child span opened without this attach is
+    # a silent orphan). Mirrors Dispatcher's otel_ctx capture across spawn_monitor.
+    otel_ctx = OpenTelemetry.Ctx.get_current()
+
     orders =
       plan
       |> Enum.group_by(& &1.start_order)
       |> Enum.sort_by(fn {order, _} -> order end)
 
     Enum.reduce_while(orders, :ok, fn {_order, members}, :ok ->
-      case start_order_parallel(state, members, plan, secret, subnet_cidr) do
+      case start_order_parallel(state, members, plan, secret, subnet_cidr, otel_ctx) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
@@ -347,10 +365,13 @@ defmodule Embervm.GroupManager do
   # body is wrapped so a raised/exited member start becomes an {:error, _} result
   # rather than a task exit that would take the GroupManager process down mid-create
   # (the create is atomic: a failure must reach teardown_failed, not crash the owner).
-  defp start_order_parallel(state, members, plan, secret, subnet_cidr) do
+  defp start_order_parallel(state, members, plan, secret, subnet_cidr, otel_ctx) do
     members
     |> Enum.map(fn member ->
       Task.async(fn ->
+        # Attach the captured ctx so this member's child span nests under `create`.
+        _ = OpenTelemetry.Ctx.attach(otel_ctx)
+
         try do
           start_one_member(state, member, plan, secret, subnet_cidr)
         rescue
@@ -364,7 +385,22 @@ defmodule Embervm.GroupManager do
     |> Enum.find(:ok, &match?({:error, _}, &1))
   end
 
+  # A per-member CHILD span (Task 9): `ember.member` (the expanded member name),
+  # `ember.was_relight` (false for a FRESH start), and `ember.clock_delta_ms` (the
+  # clock-resync delta). A FRESH member start does no clock resync, and the daemon's
+  # StartGroupMemberResponse echoes no clock delta (only {vm_id, ip, was_relight}), so
+  # clock_delta_ms is the -1 "not reported" sentinel here (a concrete integer, never
+  # nil, per the OTel-needs-a-typed-value rule). The clock-resync signal lives on the
+  # RELIGHT path (resume_one_member), where `ember.was_relight=false` on a relight IS
+  # the clock-resync-failed derivation the Task 11 gate reads.
   defp start_one_member(state, member, plan, secret, subnet_cidr) do
+    Tracer.with_span "embervm.group.member_start",
+                     %{attributes: member_span_attrs(member.expanded_name, false, -1)} do
+      do_start_one_member(state, member, plan, secret, subnet_cidr)
+    end
+  end
+
+  defp do_start_one_member(state, member, plan, secret, subnet_cidr) do
     req = %StartGroupMemberRequest{
       trace: %Trace{workload: state.workload},
       mode: :START_GROUP_MEMBER_MODE_FRESH,
@@ -487,6 +523,19 @@ defmodule Embervm.GroupManager do
   end
 
   defp attempt_relight(state, instance, subnet_cidr, secret, group, plan) do
+    # The `relight` root span (Task 9): a ROOT span around the whole-set resume
+    # sequence (re-network + role-ordered RELIGHT member starts + publish). Per-member
+    # `member_relight` child spans nest under it via the captured ctx. A fresh fallback
+    # opens its OWN `fresh_boot` root span (fallback_fresh), so a relight that fell
+    # back reads as two sibling roots in the trace, honestly showing the discarded
+    # relight then the fresh recovery.
+    Tracer.with_span "embervm.group.relight",
+                     %{attributes: %{"ember.workload" => state.workload, "ember.instance_id" => instance.instance_id, "ember.members" => length(plan)}} do
+      do_attempt_relight(state, instance, subnet_cidr, secret, group, plan)
+    end
+  end
+
+  defp do_attempt_relight(state, instance, subnet_cidr, secret, group, plan) do
     # banked -> relighting (ETS-only mark; a crash mid-relight heals from adoption).
     case GroupStore.mark(state.store, instance.instance_id, :relight) do
       {:ok, _} ->
@@ -532,6 +581,20 @@ defmodule Embervm.GroupManager do
   # connection across the fallback. group_fresh_booted{reason} records the discarded
   # warmth.
   defp fallback_fresh(state, instance, subnet_cidr, secret, group, plan, reason) do
+    # The `fresh_boot` root span (Task 9): a ROOT span around the relight-fallback
+    # fresh sequence (destroy stragglers + evict set + role-ordered FRESH member
+    # starts + publish). `ember.reason` carries the discarded-warmth reason
+    # (clock_resync_failed | partial_set | relight_failed | ...), the honest signal
+    # the fresh_boot{...} alerts key on. Per-member `member_start` child spans nest
+    # under it. A sibling of the `relight` root, so the trace shows both the discarded
+    # relight and the fresh recovery.
+    Tracer.with_span "embervm.group.fresh_boot",
+                     %{attributes: %{"ember.workload" => state.workload, "ember.instance_id" => instance.instance_id, "ember.reason" => fresh_reason_string(reason)}} do
+      do_fallback_fresh(state, instance, subnet_cidr, secret, group, plan, reason)
+    end
+  end
+
+  defp do_fallback_fresh(state, instance, subnet_cidr, secret, group, plan, reason) do
     fresh_reason = fresh_reason_string(reason)
     # Free tap+IP for any member that DID resume before the relight aborted, so the
     # fresh re-pin does not collide on an occupied tap. Drains from the instance's
@@ -589,23 +652,30 @@ defmodule Embervm.GroupManager do
   # brain should already have fresh-booted, but guard it here as a relight failure
   # so a stale set never resumes half-warm.
   defp resume_members_ordered(state, plan) do
+    # Capture the OTel ctx on the manager process (inside the `relight` root span) so
+    # each spawned resume Task attaches it and its per-member child span nests under
+    # the root, exactly as start_members_ordered does for a fresh create.
+    otel_ctx = OpenTelemetry.Ctx.get_current()
+
     orders =
       plan
       |> Enum.group_by(& &1.start_order)
       |> Enum.sort_by(fn {order, _} -> order end)
 
     Enum.reduce_while(orders, :ok, fn {_order, members}, :ok ->
-      case resume_order_parallel(state, members) do
+      case resume_order_parallel(state, members, otel_ctx) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp resume_order_parallel(state, members) do
+  defp resume_order_parallel(state, members, otel_ctx) do
     members
     |> Enum.map(fn member ->
       Task.async(fn ->
+        _ = OpenTelemetry.Ctx.attach(otel_ctx)
+
         try do
           resume_one_member(state, member)
         rescue
@@ -619,7 +689,21 @@ defmodule Embervm.GroupManager do
     |> Enum.find(:ok, &match?({:error, _}, &1))
   end
 
+  # A per-member RELIGHT child span (Task 9): `ember.member`, `ember.was_relight`
+  # (the daemon's verified-relight verdict, the clock-resync signal), and
+  # `ember.clock_delta_ms` (-1 "not reported": the daemon echoes only the boolean
+  # verdict, not the measured delta). `ember.was_relight=false` on this span IS the
+  # clock-resync-failed derivation the Task 11 gate reads (a relight the daemon could
+  # not verify within its one-second clock bound). The span attribute is set from the
+  # RPC reply inside do_resume_one_member so it reflects the actual verdict.
   defp resume_one_member(state, member) do
+    Tracer.with_span "embervm.group.member_relight",
+                     %{attributes: member_span_attrs(member.expanded_name, true, -1)} do
+      do_resume_one_member(state, member)
+    end
+  end
+
+  defp do_resume_one_member(state, member) do
     case member.snapshot_ref do
       ref when is_binary(ref) and ref != "" ->
         req = %StartGroupMemberRequest{
@@ -646,13 +730,16 @@ defmodule Embervm.GroupManager do
           # its pinned tap+IP, so RECORD it live first (so the fresh-fallback drain
           # destroys it and frees the tap) THEN treat it as a relight failure so the
           # whole set falls back to fresh. We never accept a half-resumed member as
-          # part of a live relit set, but we must not leak its tap either.
+          # part of a live relit set, but we must not leak its tap either. Stamp the
+          # span's was_relight=false so the trace records the clock-resync-failed member.
           {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip, was_relight: false}}
           when is_binary(vm_id) and vm_id != "" ->
+            Tracer.set_attributes(%{"ember.was_relight" => false})
             _ = record_member_live(state, member, vm_id, ip)
             {:error, {:member_relight_unverified, member.expanded_name}}
 
           {:ok, %StartGroupMemberResponse{was_relight: false}} ->
+            Tracer.set_attributes(%{"ember.was_relight" => false})
             {:error, {:member_relight_unverified, member.expanded_name}}
 
           other ->
@@ -761,15 +848,24 @@ defmodule Embervm.GroupManager do
   end
 
   defp attempt_bank(state, instance, members) do
-    set_id = mint_set_id(state, instance)
-    {results, pause_spread_ms} = bank_members_parallel(state, members, set_id)
+    # The `bank` root span (Task 9): a ROOT span around the whole-set bank. Per-member
+    # `member_bank` child spans nest under it (via the captured ctx). `ember.pause_spread_ms`
+    # (the decision-10 honesty number: the wall-clock span between the first and last
+    # member's BANK completing) is set once the parallel bank returns, so the closure
+    # gate can read the pause spread from the trace alone. `ember.members` is the set size.
+    Tracer.with_span "embervm.group.bank",
+                     %{attributes: %{"ember.workload" => state.workload, "ember.instance_id" => instance.instance_id, "ember.members" => length(members)}} do
+      set_id = mint_set_id(state, instance)
+      {results, pause_spread_ms} = bank_members_parallel(state, members, set_id)
+      Tracer.set_attributes(%{"ember.pause_spread_ms" => pause_spread_ms})
 
-    failed = Enum.filter(results, &match?({:error, _}, &1))
+      failed = Enum.filter(results, &match?({:error, _}, &1))
 
-    if failed == [] do
-      finish_bank(state, instance, set_id, results, pause_spread_ms)
-    else
-      abort_bank(state, instance, failed)
+      if failed == [] do
+        finish_bank(state, instance, set_id, results, pause_spread_ms)
+      else
+        abort_bank(state, instance, failed)
+      end
     end
   end
 
@@ -781,12 +877,18 @@ defmodule Embervm.GroupManager do
   # closure gate reads. Each task body is wrapped so a raised/exited BANK becomes an
   # {:error, _} result rather than taking the GroupManager down mid-bank.
   defp bank_members_parallel(state, members, set_id) do
+    # Capture the OTel ctx on the manager process (inside the `bank` root span) so each
+    # spawned bank Task attaches it and its per-member `member_bank` child span nests
+    # under the root, exactly as the start/resume loops do.
+    otel_ctx = OpenTelemetry.Ctx.get_current()
     started = state.clock.()
 
     results =
       members
       |> Enum.map(fn member ->
         Task.async(fn ->
+          _ = OpenTelemetry.Ctx.attach(otel_ctx)
+
           try do
             bank_one_member(state, member, set_id)
           rescue
@@ -802,7 +904,17 @@ defmodule Embervm.GroupManager do
     {results, pause_spread_ms}
   end
 
+  # A per-member BANK child span (Task 9): `ember.member`. was_relight/clock_delta are
+  # not meaningful for a bank (a bank pauses+snapshots+destroys, no resume), so this
+  # carries only the member identity, bounding the StopGroupMember(BANK) RPC so a slow
+  # member snapshot is visible in the pause-spread waterfall.
   defp bank_one_member(state, member, set_id) do
+    Tracer.with_span "embervm.group.member_bank", %{attributes: %{"ember.member" => member.member_name}} do
+      do_bank_one_member(state, member, set_id)
+    end
+  end
+
+  defp do_bank_one_member(state, member, set_id) do
     req = %StopGroupMemberRequest{
       trace: %Trace{workload: state.workload},
       vm_id: member.vm_id,
@@ -1333,6 +1445,21 @@ defmodule Embervm.GroupManager do
   defp failure_reason_string(reason), do: inspect(reason)
 
   defp default_clock, do: System.system_time(:millisecond)
+
+  # -- span attributes (Task 9) ----------------------------------------------
+
+  # The per-member span attribute map: `ember.member` (expanded member name),
+  # `ember.was_relight` (the resume verdict; false for a fresh start), and
+  # `ember.clock_delta_ms` (the clock-resync delta in ms, or the -1 "not reported"
+  # sentinel when the daemon echoes only the boolean verdict). All three are concrete
+  # typed values (never nil), per the OTel Elixir SDK's per-key typing requirement.
+  defp member_span_attrs(member_name, was_relight, clock_delta_ms) do
+    %{
+      "ember.member" => member_name,
+      "ember.was_relight" => was_relight,
+      "ember.clock_delta_ms" => clock_delta_ms
+    }
+  end
 
   # -- convenience for catalog resolution (used by the supervisor) -----------
 

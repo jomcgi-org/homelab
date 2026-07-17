@@ -302,7 +302,12 @@ defmodule Embervm.TcpActivator do
         # process (a linked-peer crash cascades here too), so a live splice decrements
         # exactly once; a NET leak only ever reads busier-than-real (never fakes idle).
         with_splice_bracket(class, workload, ctx, fn ->
-          Tracer.with_span "embervm.stateful.splice", %{attributes: %{"ember.workload" => workload}} do
+          # `ember.group` is true for a composite splice (Task 9): the activator spans
+          # gain the composite marker so a group entry-member splice is distinguishable
+          # from a stateful one in the SigNoz trace view (both share the splice span
+          # name, since the byte-pump mechanism is identical).
+          Tracer.with_span "embervm.stateful.splice",
+                           %{attributes: %{"ember.workload" => workload, "ember.group" => class == :composite}} do
             {bytes_in, bytes_out} = pump_both(csock, usock)
             Tracer.set_attributes(%{"ember.bytes_in" => bytes_in, "ember.bytes_out" => bytes_out})
           end
