@@ -106,6 +106,19 @@ defmodule Embervm.StatefulSweeperTest do
         sweep_interval_ms: 0
       ]
 
+    # The status.stateful writer seam (Task 10): records every {namespace, name,
+    # status_map} the sweep patches, so a test asserts the debounce (one write
+    # per changed workload per sweep, none when unchanged). Mirrors
+    # ServingSweeperTest's status_writer seam.
+    {:ok, status_calls} = Agent.start_link(fn -> [] end)
+
+    status_writer = fn namespace, name, status_map ->
+      Agent.update(status_calls, &[{namespace, name, status_map} | &1])
+      :ok
+    end
+
+    sweeper_opts = Keyword.put(sweeper_opts, :status_writer, status_writer)
+
     {:ok, sweeper} = StatefulSweeper.start_link(sweeper_opts)
 
     %{
@@ -119,13 +132,15 @@ defmodule Embervm.StatefulSweeperTest do
       scrape_agent: scrape_agent,
       stop_calls: stop_calls,
       bank_fail: bank_fail,
-      evict_calls: evict_calls
+      evict_calls: evict_calls,
+      status_calls: status_calls
     }
   end
 
   defp set_scrape(ctx, reading), do: Agent.update(ctx.scrape_agent, fn _ -> reading end)
   defp stop_calls(ctx), do: Agent.get(ctx.stop_calls, &Enum.reverse(&1))
   defp evict_calls(ctx), do: Agent.get(ctx.evict_calls, &Enum.reverse(&1))
+  defp status_writes(ctx), do: Agent.get(ctx.status_calls, &Enum.reverse(&1))
 
   # Flush the sweeper's mailbox: a plain :sys call is processed AFTER every
   # message already queued, so anything sent (e.g. a spawned bank worker's
@@ -688,6 +703,132 @@ defmodule Embervm.StatefulSweeperTest do
   test "parse_stats rejects an unparseable or non-stats body (fail-open upstream)" do
     assert {:error, _} = StatefulSweeper.parse_stats("not json")
     assert {:error, :unparseable_stats} = StatefulSweeper.parse_stats(Jason.encode!(%{"nope" => 1}))
+  end
+
+  # -- status.stateful {state,generation,bundleGeneration,volumeBytes} writer (Task 10) --
+
+  test "the sweep writes status.stateful {state,generation,bundleGeneration,volumeBytes} + statefulSummary" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a", 5400)
+    stateful_node(ctx, "node-4")
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-4",
+        generation: 3,
+        size_bytes: 1_073_741_824,
+        allocated_bytes: 555_000
+      })
+
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+
+    # A no-op scrape (no prior reading) so the sweep runs without banking anything.
+    set_scrape(ctx, reading("state-5400", 0, 0))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    assert [{"embervm", "wl-a", status_map}] = status_writes(ctx)
+
+    assert status_map["stateful"] == %{
+             "state" => "serving",
+             "generation" => 0,
+             # No banked bundle exists yet: bundleGeneration reads 0 (never nil).
+             "bundleGeneration" => 0,
+             "volumeBytes" => 555_000
+           }
+
+    assert status_map["statefulSummary"] == "serving gen=0/bundle=0"
+  end
+
+  test "status.stateful reports the banked bundle's snapshot_generation as bundleGeneration" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a", 5400)
+    stateful_node(ctx, "node-4")
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-4",
+        generation: 2,
+        size_bytes: 1_073_741_824,
+        allocated_bytes: 42
+      })
+
+    banked_instance(ctx, "sf-1", "wl-a", "vm-1", 2)
+
+    set_scrape(ctx, reading("state-5400", 0, 0))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    assert [{"embervm", "wl-a", status_map}] = status_writes(ctx)
+
+    assert status_map["stateful"] == %{
+             # No live (non-terminal) instance: state reads "" (never nil).
+             "state" => "",
+             "generation" => 0,
+             "bundleGeneration" => 2,
+             "volumeBytes" => 42
+           }
+  end
+
+  test "the status write is DEBOUNCED: no re-write when the quad is unchanged" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a", 5400)
+    stateful_node(ctx, "node-4")
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-4",
+        generation: 1,
+        size_bytes: 1_073_741_824,
+        allocated_bytes: 10
+      })
+
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+    set_scrape(ctx, reading("state-5400", 0, 0))
+
+    # First sweep writes; two further sweeps with identical values write nothing more.
+    StatefulSweeper.sweep(ctx.sweeper)
+    StatefulSweeper.sweep(ctx.sweeper)
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    assert length(status_writes(ctx)) == 1
+  end
+
+  test "a quad CHANGE re-writes status.stateful" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a", 5400)
+    stateful_node(ctx, "node-4")
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-4",
+        generation: 1,
+        size_bytes: 1_073_741_824,
+        allocated_bytes: 10
+      })
+
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+    set_scrape(ctx, reading("state-5400", 0, 0))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    # The volume's allocated_bytes grows (the daemon's next NodeStatus report):
+    # volumeBytes changes, so the next sweep writes again.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{allocated_bytes: 20})
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    writes = status_writes(ctx)
+    assert length(writes) == 2
+    assert List.last(writes) |> elem(2) |> get_in(["stateful", "volumeBytes"]) == 20
+  end
+
+  test "a status-writer error never crashes the sweep (visibility-only)" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a", 5400)
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+    set_scrape(ctx, reading("state-5400", 0, 0))
+
+    :sys.replace_state(ctx.sweeper, fn s -> %{s | status_writer: fn _ns, _n, _m -> raise "boom" end} end)
+
+    assert :ok = StatefulSweeper.sweep(ctx.sweeper)
   end
 
   # -- helpers --------------------------------------------------------------
