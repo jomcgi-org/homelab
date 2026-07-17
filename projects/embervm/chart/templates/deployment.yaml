@@ -41,6 +41,16 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
+            {{- if .Values.servingEnvoy.enabled }}
+            # The stateful (R4) TCP activator binds this range on the pod so the
+            # node Envoy can reach the wake-on-connect fallback at podIP:<listenPort>
+            # (DECISIONS.md D-R4.PR-4.1). Same range the node Envoy exposes.
+            {{- $r := .Values.servingEnvoy.statefulTcpPortRange }}
+            {{- range $p := untilStep (int $r.start) (int (add (int $r.end) 1)) 1 }}
+            - name: state-{{ $p }}
+              containerPort: {{ $p }}
+            {{- end }}
+            {{- end }}
           env:
             - name: EMBERVM_HTTP_PORT
               value: {{ .Values.service.port | quote }}
@@ -138,6 +148,21 @@ spec:
                   fieldPath: status.podIP
             - name: EMBERVM_SERVING_ACTIVATOR_PORT
               value: {{ .Values.service.port | quote }}
+            {{- if .Values.servingEnvoy.enabled }}
+            # Stateful (R4) activator (DECISIONS.md D-R4.PR-4.1): THIS pod binds the
+            # stateful TCP port range and resolves a wake-on-connect miss to the
+            # workload by the LOCAL accept port. The publisher renders {this podIP,
+            # workload.listenPort} as the empty-cluster fallback, so the node Envoy's
+            # tcp_proxy dials the activator here on exactly the port it resolves the
+            # workload from. Unset (servingEnvoy disabled) -> the activator binds
+            # nothing and cold stateful workloads simply cannot wake (a safe no-op).
+            - name: EMBERVM_STATEFUL_ACTIVATOR_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE
+              value: "{{ .Values.servingEnvoy.statefulTcpPortRange.start }}-{{ .Values.servingEnvoy.statefulTcpPortRange.end }}"
+            {{- end }}
             {{- if .Values.servingEnvoy.enabled }}
             # The node Envoy stats base URL (R3, Task 9): the ServingSweeper GETs
             # {this}/stats?format=json to read per-cluster upstream_rq_total (the idle
