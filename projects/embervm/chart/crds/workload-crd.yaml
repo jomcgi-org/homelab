@@ -463,6 +463,21 @@ spec:
                         connection retries (subject to the wake-rate limit).
                       minimum: 1
                       default: 60
+                    secretRef:
+                      type: string
+                      description: >-
+                        Optional name of a K8s Secret in this workload's OWN
+                        namespace whose data keys/values become the guest's
+                        first-boot process environment (e.g. POSTGRES_PASSWORD
+                        for a scratch Postgres). Delivered via the MMDS-lite
+                        boot-args seam (R4, D-R4.PR-7.1): the control plane
+                        reads the secret and passes it as StartStateful's
+                        mmds_env ONLY on a FRESH/COLD wake, never on RELIGHT (a
+                        relight resumes the running VM; the secret was already
+                        consumed at first boot). Cluster-internal, low-stakes
+                        scratch tier only: the decoded value rides the guest
+                        kernel command line for that one boot. Omit for a
+                        workload with no first-boot secrets to deliver.
                 invocation:
                   type: object
                   description: Task execution policy. All fields defaulted.
