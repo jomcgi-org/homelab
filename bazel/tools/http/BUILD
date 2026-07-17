@@ -17,6 +17,12 @@ bzl_library(
 )
 
 bzl_library(
+    name = "k3s_archive",
+    srcs = ["k3s_archive.bzl"],
+    visibility = ["//visibility:public"],
+)
+
+bzl_library(
     name = "kata_firecracker_archive",
     srcs = ["kata_firecracker_archive.bzl"],
     visibility = ["//visibility:public"],
