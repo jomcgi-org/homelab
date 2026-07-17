@@ -70,8 +70,10 @@ defmodule Embervm.EndpointPublisherTest do
         repush_ms: Keyword.get(opts, :repush_ms, 0),
         activator_endpoint: Keyword.get(opts, :activator_endpoint, %{ip: "10.1.1.1", port: 7000}),
         # nil by default so a stateful test opts into the L4 activator explicitly (the
-        # "cold + no activator => emit nothing" case is the default).
-        activator_tcp_endpoint: Keyword.get(opts, :activator_tcp_endpoint, nil)
+        # "cold + no activator => emit nothing" case is the default). A single IP,
+        # NOT an {ip, port} pair (Task 8, D-R4.PR-4.1): each stateful workload's
+        # fallback port is derived from its OWN catalog listen_port.
+        activator_ip: Keyword.get(opts, :activator_ip, nil)
       ]
 
     {:ok, pub} = EndpointPublisher.start_link(pub_opts)
@@ -387,11 +389,13 @@ defmodule Embervm.EndpointPublisherTest do
     assert cluster.endpoints == [%{ip: "10.99.0.7", port: 6000}]
   end
 
-  test "a stateful workload with no live instance uses the activator TCP endpoint when configured" do
-    ctx = start_stack(activator_tcp_endpoint: %{ip: "10.2.2.2", port: 7100})
+  test "a stateful workload with no live instance falls back to {activator_ip, its own listen_port}" do
+    ctx = start_stack(activator_ip: "10.2.2.2")
     stateful_workload(ctx, "wl-s", 9100)
     serving_node(ctx, "node-4")
-    # No live instance started: the cluster falls back to the activator TCP endpoint.
+    # No live instance started: the cluster falls back to the activator, dialed on
+    # THIS workload's own listen_port (Task 8, D-R4.PR-4.1: the activator resolves
+    # the workload by accept port, so the fallback cannot share one fixed port).
 
     :ok = EndpointPublisher.flush(ctx.pub)
 
@@ -399,11 +403,27 @@ defmodule Embervm.EndpointPublisherTest do
     assert desired.listeners == [%{name: "state-9100", port: 9100, cluster: "state|wl-s"}]
 
     cluster = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
-    assert cluster.endpoints == [%{ip: "10.2.2.2", port: 7100}]
+    assert cluster.endpoints == [%{ip: "10.2.2.2", port: 9100}]
   end
 
-  test "a cold stateful workload with NO activator emits no listener and no cluster" do
-    # activator_tcp_endpoint defaults to nil: a cold, un-wakeable workload.
+  test "a second stateful workload falls back to the SAME activator_ip but its OWN listen_port" do
+    ctx = start_stack(activator_ip: "10.2.2.2")
+    stateful_workload(ctx, "wl-s", 9100)
+    stateful_workload(ctx, "wl-t", 9101)
+    serving_node(ctx, "node-4")
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    assert [{"node-4", desired}] = last_puts(ctx)
+
+    cluster_s = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
+    cluster_t = Enum.find(desired.clusters, &(&1.name == "state|wl-t"))
+    assert cluster_s.endpoints == [%{ip: "10.2.2.2", port: 9100}]
+    assert cluster_t.endpoints == [%{ip: "10.2.2.2", port: 9101}]
+  end
+
+  test "a cold stateful workload with NO activator_ip emits no listener and no cluster" do
+    # activator_ip defaults to nil: a cold, un-wakeable workload.
     ctx = start_stack()
     stateful_workload(ctx, "wl-s", 9100)
     serving_node(ctx, "node-4")

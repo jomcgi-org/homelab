@@ -74,6 +74,9 @@ defmodule Embervm.NodeRegistry do
     ServingVm,
     SessionSnapshot,
     SessionVm,
+    StatefulBundle,
+    StatefulVm,
+    Volume,
     WatchNodeRequest,
     WorkloadCapacity
   }
@@ -428,7 +431,17 @@ defmodule Embervm.NodeRegistry do
       # pushes it no snapshot.
       serving_vms: serving_vms_from_status(s),
       serving_snapshots: serving_snapshots_from_status(s),
-      serving_subnet_cidr: s.serving_subnet_cidr
+      serving_subnet_cidr: s.serving_subnet_cidr,
+      # Stateful facts (R4, additive): the node's LIVE stateful VMs, BANKED
+      # bundle inventory, and the per-workload volume ledger (generation +
+      # allocated bytes). These are the source of truth
+      # Embervm.StatefulManager's adoption reconcile heals its ETS residency +
+      # pair-validity view against on boot and every sweep, mirroring the
+      # serving facts above. Empty when a daemon never sets them
+      # (wire-compatible), which reads as "no stateful state on this node".
+      stateful_vms: stateful_vms_from_status(s),
+      stateful_bundles: stateful_bundles_from_status(s),
+      volumes: volumes_from_status(s)
     }
   end
 
@@ -459,6 +472,50 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp serving_snapshots_from_status(_s), do: []
+
+  defp stateful_vms_from_status(%NodeStatus{stateful_vms: vms}) when is_list(vms) do
+    for %StatefulVm{} = v <- vms do
+      %{
+        vm_id: v.vm_id,
+        workload: v.workload,
+        ip: v.ip,
+        port: v.port,
+        healthy: v.healthy,
+        generation: v.generation,
+        last_probe_unix_ms: v.last_probe_unix_ms
+      }
+    end
+  end
+
+  defp stateful_vms_from_status(_s), do: []
+
+  defp stateful_bundles_from_status(%NodeStatus{stateful_bundles: bundles}) when is_list(bundles) do
+    for %StatefulBundle{} = b <- bundles do
+      %{
+        snapshot_ref: b.snapshot_ref,
+        workload: b.workload,
+        generation: b.generation,
+        size_bytes: b.size_bytes,
+        created_at_unix_ms: b.created_at_unix_ms
+      }
+    end
+  end
+
+  defp stateful_bundles_from_status(_s), do: []
+
+  defp volumes_from_status(%NodeStatus{volumes: vols}) when is_list(vols) do
+    for %Volume{} = v <- vols do
+      %{
+        workload: v.workload,
+        generation: v.generation,
+        size_bytes: v.size_bytes,
+        allocated_bytes: v.allocated_bytes,
+        attached: v.attached
+      }
+    end
+  end
+
+  defp volumes_from_status(_s), do: []
 
   defp session_vms_from_status(%NodeStatus{session_vms: vms}) when is_list(vms) do
     for %SessionVm{} = v <- vms do
