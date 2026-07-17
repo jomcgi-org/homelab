@@ -78,6 +78,64 @@ defmodule Embervm.GroupManager.Supervisor do
     end
   end
 
+  @doc """
+  Wakes the EXISTING banked instance `instance_id` of `workload` synchronously (R5,
+  Task 7): spawns (or reuses) the GroupManager child bound to that instance and
+  drives its `wake_group/1` (relight, or relight -> fresh fallback in the SAME call).
+  Returns `{:ok, %{ip, port}, outcome}` (`outcome` :relit or `{:fresh, reason}`) or
+  `{:error, reason}`. A second concurrent wake for the same workload finds the
+  registry key taken and reuses the SAME child (single-instance-per-workload at the
+  process level; the wake brain single-flights above this, so only one wake worker
+  ever calls in per burst). On a wake failure the child is retired so a retry spawns
+  fresh; a successful wake keeps the process (a later bank/relight has an owner).
+  """
+  @spec wake_group(String.t(), String.t(), keyword()) :: {:ok, map(), atom() | tuple()} | {:error, term()}
+  def wake_group(workload, instance_id, opts \\ []) do
+    defaults = Application.get_env(:embervm, :group_manager_defaults, [])
+    opts = Keyword.merge(defaults, opts)
+
+    catalog_table = Keyword.get(opts, :catalog_table, WorkloadCatalog.table())
+    capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
+
+    with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
+         {:ok, node_id} <- anchor_node(capacity_table),
+         {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, opts) do
+      result = GroupManager.wake_group(pid)
+
+      case result do
+        {:ok, _endpoint, _outcome} ->
+          result
+
+        {:error, _reason} ->
+          _ = DynamicSupervisor.terminate_child(@dyn_sup, pid)
+          result
+      end
+    end
+  end
+
+  @doc """
+  Adoption (R5, Task 7): (re)spawn the GroupManager child for a live-adopted instance
+  so a later bank/relight has an owner, WITHOUT driving any lifecycle. Idempotent: a
+  child already registered under the workload is left as-is. Returns `:ok`. Never
+  touches a VM (the reconcile already forced the store state from node truth).
+  """
+  @spec adopt_group(String.t(), String.t(), keyword()) :: :ok
+  def adopt_group(workload, instance_id, opts \\ []) do
+    defaults = Application.get_env(:embervm, :group_manager_defaults, [])
+    opts = Keyword.merge(defaults, opts)
+
+    catalog_table = Keyword.get(opts, :catalog_table, WorkloadCatalog.table())
+    capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
+
+    with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
+         {:ok, node_id} <- anchor_node(capacity_table) do
+      _ = start_or_get_child(workload, instance_id, entry, node_id, opts)
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
   @doc "The live GroupManager pid for a workload, or nil."
   @spec whereis(String.t()) :: pid() | nil
   def whereis(workload) do
@@ -91,7 +149,31 @@ defmodule Embervm.GroupManager.Supervisor do
 
   defp start_child(workload, entry, node_id, opts) do
     instance_id = mint_instance_id(opts)
+    do_start_child(workload, instance_id, entry, node_id, opts)
+  end
 
+  # Start a child bound to a SPECIFIC (already-existing) instance_id, or return the
+  # child already registered under the workload (the wake/adopt path: the banked
+  # instance already exists, and a registered owner is reused). A registered pid for
+  # a DIFFERENT instance_id is still returned (one live process per workload; the
+  # registry key is the workload, and the class is a group-level singleton).
+  defp start_or_get_child(workload, instance_id, entry, node_id, opts) do
+    case do_start_child(workload, instance_id, entry, node_id, opts) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, :already_live} ->
+        case whereis(workload) do
+          nil -> {:error, :already_live}
+          pid -> {:ok, pid}
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp do_start_child(workload, instance_id, entry, node_id, opts) do
     child_opts =
       [
         instance_id: instance_id,
@@ -132,6 +214,7 @@ defmodule Embervm.GroupManager.Supervisor do
       :delete_group_network_fun,
       :start_group_member_fun,
       :stop_group_member_fun,
+      :evict_snapshot_fun,
       :get_secret_fun,
       :secret_fun,
       :clock

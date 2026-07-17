@@ -209,14 +209,38 @@ defmodule Embervm.Application do
       # republishes exactly the same endpoint without touching any VM. With no
       # stateful node wired, a wake denies :no_capacity.
       {Embervm.StatefulManager, stateful_manager_opts()},
-      # The L4 TCP activator (R4, Task 8): binds the values-declared stateful
-      # port range and dispatches an accepted connection to StatefulManager.wake/2
-      # (single-flighted there), then splices bytes bidirectionally between the
-      # client and the woken VM. Placed AFTER StatefulManager (it calls wake/2)
-      # and LAST among the stateful children: it is the front door, nothing
-      # depends on it being up. With an empty port range (the default; the chart
-      # wires EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE) it binds nothing, a clean
-      # no-op, exactly like PoolManager priming nothing with no base ready.
+      # The composite-group supervisor (R5): the DynamicSupervisor + Registry owning
+      # one Embervm.GroupManager process per LIVE group instance. The GroupWakeManager
+      # calls create_group/2 + wake_group/3 here on a wake-on-connect miss. Placed
+      # AFTER GroupStore + EndpointPublisher (a GroupManager mutates the store and asks
+      # the publisher to re-push) and BEFORE the GroupWakeManager + TcpActivator that
+      # drive it. The per-group config (supernet, port_base, pod_ip, node funs) is
+      # threaded via the :defaults opt from the chart env; with no composite supernet
+      # wired a create denies (a clean no-op).
+      {Embervm.GroupManager.Supervisor, group_manager_supervisor_opts()},
+      # The composite-group wake brain (R5, Task 7): the group counterpart of
+      # StatefulManager. It is the fallback endpoint of an empty group|<workload>
+      # cluster (a TCP connection the node Envoy routes to the TcpActivator on a
+      # composite entry.listenPort IS a group miss, resolved by the LOCAL ACCEPT
+      # PORT, decision 5), single-flights the wake (relight a complete banked set, or
+      # fresh-boot / create when the set is partial or absent, decision 8), publishes
+      # the entry endpoint via the EndpointPublisher, and resolves the parked
+      # connection so the activator splices bytes to the entry member. Placed AFTER
+      # GroupStore + EndpointPublisher + GroupManager.Supervisor (it drives them) and
+      # BEFORE TcpActivator (which calls wake/3). Its adoption reconcile runs on boot
+      # + timer, reconciling live members / bundle sets / networks from node facts so
+      # a control-plane restart republishes exactly the same entry endpoint without
+      # touching any VM. With no composite node wired, a wake denies :no_capacity.
+      {Embervm.GroupWakeManager, group_wake_manager_opts()},
+      # The L4 TCP activator (R4, Task 8; R5 composite): binds the values-declared
+      # stateful (5400-5409) AND composite (5410-5419) port ranges and dispatches an
+      # accepted connection to StatefulManager.wake/3 or GroupWakeManager.wake/3
+      # (single-flighted there) by the accept port's class, then splices bytes
+      # bidirectionally between the client and the woken VM/group entry. Placed AFTER
+      # StatefulManager + GroupWakeManager (it calls their wake/3) and LAST among the
+      # wake children: it is the front door, nothing depends on it being up. With an
+      # empty port range (the default; the chart wires the ranges) it binds nothing, a
+      # clean no-op.
       {Embervm.TcpActivator, tcp_activator_opts()},
       # The stateful lifecycle-economics sweeper (R4, Task 9): the L4 idle-to-bank /
       # max-lifetime / banked-TTL loop, the counterpart to Embervm.ServingSweeper. It
@@ -229,14 +253,6 @@ defmodule Embervm.Application do
       # wake path). With no stats_base wired (reuses EMBERVM_SERVING_STATS_BASE) every
       # tick fails open and banks nothing, mirroring ServingSweeper's no-op default.
       {Embervm.StatefulSweeper, stateful_sweeper_opts()},
-      # The composite-group supervisor (R5): the DynamicSupervisor + Registry owning
-      # one Embervm.GroupManager process per LIVE group instance. Task 7's activator
-      # calls create_group/2 here on a wake-on-connect miss. Placed AFTER GroupStore +
-      # EndpointPublisher (a GroupManager mutates the store and asks the publisher to
-      # re-push). The per-group config (supernet, port_base, pod_ip, node funs) is
-      # threaded via the :defaults opt from the chart env; with no composite supernet
-      # wired a create denies (a clean no-op).
-      {Embervm.GroupManager.Supervisor, group_manager_supervisor_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -627,8 +643,36 @@ defmodule Embervm.Application do
   # (no point binding ports nothing is dialed on, and it keeps a plain
   # `mix test` / no-chart-values run from claiming a fixed port range on the
   # workstation or a shared CI executor).
+  # The activator binds BOTH the R4 stateful range (5400-5409) and the R5 composite
+  # range (5410-5419); a connection accepted on a port resolves the workload AND its
+  # class by the local accept port (decision 5) and routes to the stateful or group
+  # wake brain accordingly. The composite range binds only when the activator ip is
+  # wired (same gate as stateful: no point binding ports nothing dials on), and reads
+  # the SAME EMBERVM_COMPOSITE_LISTEN_PORT_RANGE the watcher + publisher use so the
+  # bound listeners match the rendered group-<listenPort> listeners.
   defp tcp_activator_opts do
-    [port_range: stateful_activator_port_range(), activator_ip: stateful_activator_ip()]
+    [
+      port_range: stateful_activator_port_range() ++ composite_activator_port_range(),
+      activator_ip: stateful_activator_ip()
+    ]
+  end
+
+  @default_composite_activator_port_start 5410
+  @default_composite_activator_port_end 5419
+
+  # The composite entry-listener ports the activator binds. Gated on the activator ip
+  # (a no-ip run binds nothing, so a plain `mix test` never claims fixed ports),
+  # reading EMBERVM_COMPOSITE_LISTEN_PORT_RANGE (the same value the watcher +
+  # publisher key on); unset defaults to 5410-5419.
+  defp composite_activator_port_range do
+    if stateful_activator_ip() do
+      case composite_listen_range_env() do
+        nil -> Enum.to_list(@default_composite_activator_port_start..@default_composite_activator_port_end)
+        range -> Enum.to_list(range)
+      end
+    else
+      []
+    end
   end
 
   @default_stateful_activator_port_start 5400
@@ -729,6 +773,31 @@ defmodule Embervm.Application do
         pod_ip: trimmed_env("EMBERVM_POD_IP") |> nil_if_empty()
       ]
     ]
+  end
+
+  # GroupWakeManager (R5, Task 7) config: the adoption reconcile cadence + the
+  # wake-rate/parked-cap knobs, mirroring StatefulManager. Defaults keep the
+  # reconcile timer ON in production; the module defaults the caps (10/min wake, 16
+  # parked). The reconcile reuses the stateful reconcile cadence env by default so a
+  # restart's group endpoint re-derivation lands on the same tempo.
+  defp group_wake_manager_opts do
+    [reconcile_interval_ms: group_reconcile_interval_ms()] ++ group_wake_opts()
+  end
+
+  defp group_reconcile_interval_ms do
+    case trimmed_env("EMBERVM_GROUP_RECONCILE_INTERVAL_MS") do
+      "" -> 10_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  defp group_wake_opts do
+    [
+      wake_max: int_env_or_nil("EMBERVM_GROUP_WAKE_MAX"),
+      wake_window_ms: int_env_or_nil("EMBERVM_GROUP_WAKE_WINDOW_MS"),
+      park_cap: int_env_or_nil("EMBERVM_GROUP_PARK_CAP")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
 
   # The composite supernet the CP allocates per-group /24s from. Shared source of

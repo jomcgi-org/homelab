@@ -86,6 +86,7 @@ defmodule Embervm.GroupManager do
     CreateGroupNetworkRequest,
     CreateGroupNetworkResponse,
     DeleteGroupNetworkRequest,
+    EvictSnapshotRequest,
     StartGroupMemberRequest,
     StartGroupMemberResponse,
     ResourceSpec,
@@ -116,6 +117,31 @@ defmodule Embervm.GroupManager do
   @spec create_group(GenServer.server()) :: {:ok, map()} | {:error, term()}
   def create_group(server) do
     GenServer.call(server, :create_group, :infinity)
+  end
+
+  @doc """
+  Wakes a BANKED group instance in one single-flighted call (R5, Task 7): the
+  relight-or-fresh sequence off `banked`. Re-issues CreateGroupNetwork (the bridge
+  dies with the noded pod), then RESUMES every member in role order (RELIGHT
+  StartGroupMember from its banked `snapshot_ref`). If ANY member relight fails
+  (including the clock-resync FAILED_PRECONDITION noded returns as a member start
+  failure, decision 7), it ABORTS the relight, evicts the whole set (durable
+  `group_set_evicted`), and falls back to a full FRESH boot INSIDE THE SAME CALL
+  (role-ordered fresh member starts on the same subnet), so the parked connection
+  is held across the fallback (the caller blocks on this one `:infinity` call the
+  whole time). Publishes the entry endpoint and moves the group to `running`.
+
+  Returns `{:ok, %{ip, port}, outcome}` where `outcome` is `:relit` (a clean whole-
+  set relight) or `{:fresh, reason}` (the relight aborted and a fresh boot recovered,
+  `reason` one of `:partial_set | :set_unreadable | :relight_failed | ...`), or
+  `{:error, reason}` when even the fresh fallback failed (the group is torn to
+  `failed`). Blocks until the group is running or failed. The instance MUST already
+  exist in the store (the wake brain created/located it); this never creates the
+  singleton row (that is `create_group/1`).
+  """
+  @spec wake_group(GenServer.server()) :: {:ok, map(), atom() | tuple()} | {:error, term()}
+  def wake_group(server) do
+    GenServer.call(server, :wake_group, :infinity)
   end
 
   @doc "The group instance's current entry endpoint (or nil), for tests + straggler resolution."
@@ -152,6 +178,8 @@ defmodule Embervm.GroupManager do
         Keyword.get(opts, :start_group_member_fun, &default_start_group_member/2),
       stop_group_member_fun:
         Keyword.get(opts, :stop_group_member_fun, &default_stop_group_member/2),
+      evict_snapshot_fun:
+        Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
       get_secret_fun: Keyword.get(opts, :get_secret_fun, &Embervm.K8s.get_secret/2),
       secret_fun: Keyword.get(opts, :secret_fun, &mint_secret/0),
       clock: Keyword.get(opts, :clock, &default_clock/0)
@@ -163,6 +191,11 @@ defmodule Embervm.GroupManager do
   @impl true
   def handle_call(:create_group, _from, state) do
     {reply, state} = do_create_group(state)
+    {:reply, reply, state}
+  end
+
+  def handle_call(:wake_group, _from, state) do
+    {reply, state} = do_wake_group(state)
     {:reply, reply, state}
   end
 
@@ -368,6 +401,258 @@ defmodule Embervm.GroupManager do
     _ = delete_network(state)
     Embervm.EndpointPublisher.publish(state.publisher)
     Logger.warning("embervm group create failed, torn down", workload: state.workload, reason: inspect(reason))
+    :ok
+  end
+
+  # -- wake sequence (relight-or-fresh off banked, R5 Task 7) ----------------
+
+  # The single-flighted wake of a BANKED instance: re-issue the group network,
+  # RELIGHT every member in role order, publish. Any member relight failure aborts
+  # the relight, evicts the set, and falls back to a FRESH boot in the SAME call
+  # (the parked caller is held across the fallback). The instance already exists in
+  # the store (the wake brain located/created the banked row); this drives its
+  # banked -> relighting -> creating -> running (or banked -> fresh_booting ->
+  # creating -> running) sequence.
+  defp do_wake_group(state) do
+    with {:ok, instance} <- fetch_instance(state),
+         :banked <- instance.state do
+      entry_cfg = state.entry
+      group = Map.fetch!(entry_cfg, :group)
+      subnet_cidr = instance.subnet_cidr
+      secret = instance_secret(state, entry_cfg, group, instance)
+
+      # The relight plan is anchored to the STORED member rows (their pinned ips +
+      # banked snapshot_refs), enriched with the catalog member config (role,
+      # start_order, health_port, resources, image_ref) so the role ordering + the
+      # fresh-fallback env compose exactly match a create.
+      plan = wake_plan(state, group, subnet_cidr, instance)
+
+      attempt_relight(state, instance, subnet_cidr, secret, group, plan)
+    else
+      {:error, _reason} = error ->
+        {error, state}
+
+      other_state when is_atom(other_state) ->
+        # Not banked (a race: adopted live, destroyed, or already relighting). The
+        # wake brain re-reads the store and resolves the straggler; return the live
+        # endpoint if running, else an error the caller retries.
+        {wake_race_reply(state), state}
+    end
+  end
+
+  defp attempt_relight(state, instance, subnet_cidr, secret, group, plan) do
+    # banked -> relighting (ETS-only mark; a crash mid-relight heals from adoption).
+    case GroupStore.mark(state.store, instance.instance_id, :relight) do
+      {:ok, _} ->
+        with {:ok, _net} <- create_network(state, subnet_cidr),
+             :ok <- resume_members_ordered(state, plan) do
+          # relighting -> creating (durable group_relit), then publish -> running.
+          case GroupStore.transition(state.store, instance.instance_id, :relight_ready, :group_relit, %{}, %{}) do
+            {:ok, _} ->
+              case finish_wake_publish(state, plan, group) do
+                {{:ok, endpoint}, state} -> {{:ok, endpoint, :relit}, state}
+                {{:error, reason}, state} -> {{:error, reason}, state}
+              end
+
+            {:error, reason} ->
+              # The durable relit edge failed: abort back to banked and fall back to
+              # fresh (the set is intact, but we cannot record the relight).
+              _ = GroupStore.mark(state.store, instance.instance_id, :relight_abort)
+              fallback_fresh(state, instance, subnet_cidr, secret, group, {:relit_record_failed, reason})
+          end
+        else
+          {:error, reason} ->
+            # A member relight failed (start error, or the clock-resync
+            # FAILED_PRECONDITION, decision 7): abort back to banked, then evict the
+            # whole set and fresh-boot in the same call. relight_abort is ETS-only.
+            _ = GroupStore.mark(state.store, instance.instance_id, :relight_abort)
+            fallback_fresh(state, instance, subnet_cidr, secret, group, {:relight_failed, reason})
+        end
+
+      {:error, reason} ->
+        {{:error, {:relight_mark, reason}}, state}
+    end
+  end
+
+  # The all-or-nothing fallback: evict the banked set (durable group_set_evicted,
+  # per-ref EvictSnapshot best-effort), transition banked -> fresh_booting ->
+  # creating, then run the SAME role-ordered fresh member starts a create does,
+  # re-issuing the network first (it may already be up from the relight attempt;
+  # CreateGroupNetwork is idempotent daemon-side). The parked caller is still
+  # blocked on the one wake_group call, so this holds the connection across the
+  # fallback. group_fresh_booted{reason} records why the warmth was discarded.
+  defp fallback_fresh(state, instance, subnet_cidr, secret, group, reason) do
+    fresh_reason = fresh_reason_string(reason)
+    _ = evict_set(state, instance)
+
+    with {:ok, _} <- GroupStore.mark(state.store, instance.instance_id, :fresh_boot) |> ok_or(),
+         {:ok, _} <-
+           GroupStore.transition(
+             state.store,
+             instance.instance_id,
+             :fresh_ready,
+             :group_fresh_booted,
+             %{reason: fresh_reason},
+             %{}
+           ),
+         {:ok, _net} <- create_network(state, subnet_cidr),
+         plan = member_plan(group, subnet_cidr),
+         :ok <- start_members_ordered(state, plan, secret, subnet_cidr) do
+      case finish_wake_publish(state, plan, group) do
+        {{:ok, endpoint}, state} ->
+          Logger.info("embervm group fresh-booted (relight fallback)",
+            workload: state.workload,
+            instance_id: instance.instance_id,
+            reason: fresh_reason
+          )
+
+          {{:ok, endpoint, {:fresh, fresh_reason_atom(reason)}}, state}
+
+        {{:error, publish_reason}, state} ->
+          {{:error, publish_reason}, state}
+      end
+    else
+      {:error, fresh_error} ->
+        teardown_failed(state, {:fresh_fallback_failed, fresh_error})
+        {{:error, {:fresh_fallback_failed, fresh_error}}, state}
+    end
+  rescue
+    e ->
+      teardown_failed(state, {:fresh_fallback_crashed, e})
+      {{:error, {:fresh_fallback_crashed, e}}, state}
+  end
+
+  # RELIGHT every member in role order (all of one startOrder in parallel, gated,
+  # then the next), exactly the create ordering but RELIGHT mode from each member's
+  # banked snapshot_ref. Any member start failure short-circuits (aborting the
+  # whole relight). A member with NO banked snapshot_ref is a partial set the wake
+  # brain should already have fresh-booted, but guard it here as a relight failure
+  # so a stale set never resumes half-warm.
+  defp resume_members_ordered(state, plan) do
+    orders =
+      plan
+      |> Enum.group_by(& &1.start_order)
+      |> Enum.sort_by(fn {order, _} -> order end)
+
+    Enum.reduce_while(orders, :ok, fn {_order, members}, :ok ->
+      case resume_order_parallel(state, members) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp resume_order_parallel(state, members) do
+    members
+    |> Enum.map(fn member ->
+      Task.async(fn ->
+        try do
+          resume_one_member(state, member)
+        rescue
+          e -> {:error, {:member_relight_crashed, member.expanded_name, e}}
+        catch
+          kind, reason -> {:error, {:member_relight_crashed, member.expanded_name, {kind, reason}}}
+        end
+      end)
+    end)
+    |> Enum.map(&Task.await(&1, :infinity))
+    |> Enum.find(:ok, &match?({:error, _}, &1))
+  end
+
+  defp resume_one_member(state, member) do
+    case member.snapshot_ref do
+      ref when is_binary(ref) and ref != "" ->
+        req = %StartGroupMemberRequest{
+          trace: %Trace{workload: state.workload},
+          mode: :START_GROUP_MEMBER_MODE_RELIGHT,
+          group_instance_id: state.instance_id,
+          member_name: member.expanded_name,
+          member_index: member.index,
+          ip: member.ip,
+          source: "",
+          snapshot_ref: ref,
+          health_port: member.health_port || 0,
+          resources: %ResourceSpec{vcpus: member.vcpus || 1, mem_mib: member.mem_mib || 512},
+          env: %{}
+        }
+
+        case safe_start_group_member(state, req) do
+          {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip, was_relight: true}}
+          when is_binary(vm_id) and vm_id != "" ->
+            record_member_live(state, member, vm_id, ip)
+
+          # A RELIGHT that the daemon could not verify (clock-resync out of bounds,
+          # decision 7, surfaces as was_relight=false or a FAILED_PRECONDITION): treat
+          # it as a relight failure so the whole set falls back to fresh. We never
+          # accept a half-resumed member.
+          {:ok, %StartGroupMemberResponse{was_relight: false}} ->
+            {:error, {:member_relight_unverified, member.expanded_name}}
+
+          other ->
+            {:error, {:member_relight_failed, member.expanded_name, other}}
+        end
+
+      _ ->
+        {:error, {:member_snapshot_missing, member.expanded_name}}
+    end
+  end
+
+  defp record_member_live(state, member, vm_id, ip) do
+    case GroupStore.member_started(state.store, state.instance_id, %{
+           member_name: member.expanded_name,
+           member_index: member.index,
+           vm_id: vm_id,
+           ip: ip
+         }) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:member_record_failed, member.expanded_name, reason}}
+    end
+  end
+
+  # Publish the entry endpoint + move to running (creating -> running), the SAME
+  # finish step create uses, but never tears down on a publish failure inside a wake
+  # (the caller decides). Shared by the relight and fresh-fallback tails.
+  defp finish_wake_publish(state, plan, group) do
+    entry_member = Enum.find(plan, &(&1.expanded_name == group.entry.member))
+
+    case entry_member do
+      nil ->
+        teardown_failed(state, {:entry_member_not_in_plan, group.entry.member})
+        {{:error, {:entry_member_not_in_plan, group.entry.member}}, state}
+
+      %{ip: entry_ip} ->
+        case entry_vm_port(state, entry_ip) do
+          {:ok, vm_port} ->
+            pod_ip = state.pod_ip || entry_ip
+
+            case GroupStore.publish(state.store, state.instance_id, pod_ip, vm_port) do
+              {:ok, _} ->
+                Embervm.EndpointPublisher.publish(state.publisher)
+                Logger.info("embervm group woken", workload: state.workload, instance_id: state.instance_id)
+                {{:ok, %{ip: pod_ip, port: vm_port}}, state}
+
+              {:error, reason} ->
+                {{:error, {:publish_failed, reason}}, state}
+            end
+
+          {:error, reason} ->
+            {{:error, {:entry_port_derivation, reason}}, state}
+        end
+    end
+  end
+
+  # Evict the banked set durably (group_set_evicted clears set_id + each member's
+  # snapshot_ref, no FSM edge; the fresh_booting move is the mark/2 in
+  # fallback_fresh) so a rebuild agrees the warmth is gone, and best-effort
+  # EvictSnapshot each member's bundle on the node (the snapshots must not leak).
+  defp evict_set(state, instance) do
+    members = GroupStore.members(state.store, instance.instance_id)
+    _ = GroupStore.evict_set(state.store, instance.instance_id, "relight_fallback")
+
+    for %{snapshot_ref: ref} <- members, is_binary(ref) and ref != "" do
+      _ = evict_snapshot(state, ref)
+    end
+
     :ok
   end
 
@@ -656,6 +941,93 @@ defmodule Embervm.GroupManager do
   defp default_stop_group_member(channel, req) do
     Embervm.Node.V1.NodeService.Stub.stop_group_member(channel, req)
   end
+
+  defp default_evict_snapshot(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+  end
+
+  # Best-effort EvictSnapshot of one member's banked bundle (group bundles reuse the
+  # R2 EvictSnapshot unchanged). Never raises into the wake: a failed evict leaves a
+  # stale snapshot on disk (the daemon's own bundle GC reclaims it later), which must
+  # not fail the fresh-fallback boot the caller is parked on.
+  defp evict_snapshot(state, snapshot_ref) do
+    req = %EvictSnapshotRequest{trace: %Trace{workload: state.workload}, snapshot_ref: snapshot_ref}
+
+    with {:ok, channel} <- safe_channel(state, state.node_id) do
+      try do
+        state.evict_snapshot_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  # -- wake helpers ----------------------------------------------------------
+
+  defp fetch_instance(state) do
+    case GroupStore.get(state.store, state.instance_id) do
+      {:ok, instance} -> {:ok, instance}
+      :error -> {:error, {:instance_not_found, state.instance_id}}
+    end
+  end
+
+  # The wake plan: the member address plan (deterministic, catalog-derived) merged
+  # with each member's STORED live facts (its banked snapshot_ref, needed for the
+  # RELIGHT source). The pinned ip comes from the deterministic plan (lockstep with
+  # noded), NOT the stored ip, so a relight re-pins the same address a fresh boot
+  # would (the bank cleared the live ip anyway).
+  defp wake_plan(state, group, subnet_cidr, instance) do
+    stored = GroupStore.members(state.store, instance.instance_id)
+    by_name = Map.new(stored, fn m -> {m.member_name, m} end)
+
+    member_plan(group, subnet_cidr)
+    |> Enum.map(fn member ->
+      snapshot_ref =
+        case Map.get(by_name, member.expanded_name) do
+          %{snapshot_ref: ref} -> ref
+          _ -> nil
+        end
+
+      Map.put(member, :snapshot_ref, snapshot_ref)
+    end)
+  end
+
+  # The group secret on a wake: a relight/fresh-boot re-derives the SAME secret the
+  # birth boot recorded (from secretRef, or the minted value on the create op). The
+  # store does not surface the secret on the instance view, so re-resolve it exactly
+  # as create did (a secretRef read is stable; a minted secret is only re-minted on a
+  # fresh boot, which is acceptable: a fresh boot is a NEW first boot of the members,
+  # and the members re-read their birth env fresh anyway).
+  defp instance_secret(state, entry_cfg, group, _instance) do
+    resolve_secret(state, entry_cfg, group)
+  end
+
+  # A wake that found the instance no longer banked (a race with adoption/destroy):
+  # return the live endpoint if it is running, else an error the wake brain surfaces
+  # to the parked caller (which reconnects).
+  defp wake_race_reply(state) do
+    case GroupStore.get(state.store, state.instance_id) do
+      {:ok, %{state: :running, entry_ip: ip, entry_port_published: port}}
+      when is_binary(ip) and is_integer(port) ->
+        {:ok, %{ip: ip, port: port}, :straggler}
+
+      _ ->
+        {:error, :not_banked}
+    end
+  end
+
+  defp fresh_reason_atom({:relight_failed, {:member_relight_unverified, _}}), do: :clock_resync_failed
+  defp fresh_reason_atom({:relight_failed, {:member_snapshot_missing, _}}), do: :partial_set
+  defp fresh_reason_atom({:relight_failed, _}), do: :relight_failed
+  defp fresh_reason_atom({:relit_record_failed, _}), do: :relit_record_failed
+  defp fresh_reason_atom(reason) when is_atom(reason), do: reason
+  defp fresh_reason_atom(_), do: :relight_failed
+
+  defp fresh_reason_string(reason), do: reason |> fresh_reason_atom() |> Atom.to_string()
 
   # -- misc ------------------------------------------------------------------
 
