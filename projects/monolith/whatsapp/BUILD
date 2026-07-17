@@ -18,13 +18,13 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/monolith/whatsapp",
     visibility = ["//visibility:public"],
     deps = [
-        "@com_github_jackc_pgx_v5//stdlib:go_default_library",
-        "@fi_mau_go_whatsmeow//:go_default_library",
-        "@fi_mau_go_whatsmeow//proto/waE2E:go_default_library",
-        "@fi_mau_go_whatsmeow//store/sqlstore:go_default_library",
-        "@fi_mau_go_whatsmeow//types:go_default_library",
-        "@fi_mau_go_whatsmeow//types/events:go_default_library",
-        "@fi_mau_go_whatsmeow//util/log:go_default_library",
+        "@com_github_jackc_pgx_v5//stdlib",
+        "@fi_mau_go_whatsmeow//:whatsmeow",
+        "@fi_mau_go_whatsmeow//proto/waE2E",
+        "@fi_mau_go_whatsmeow//store/sqlstore",
+        "@fi_mau_go_whatsmeow//types",
+        "@fi_mau_go_whatsmeow//types/events",
+        "@fi_mau_go_whatsmeow//util/log",
     ],
 )
 
@@ -38,11 +38,11 @@ go_test(
     ],
     embed = [":whatsapp"],
     deps = [
-        "@fi_mau_go_whatsmeow//:go_default_library",
-        "@fi_mau_go_whatsmeow//proto/waCommon:go_default_library",
-        "@fi_mau_go_whatsmeow//proto/waE2E:go_default_library",
-        "@fi_mau_go_whatsmeow//types:go_default_library",
-        "@fi_mau_go_whatsmeow//types/events:go_default_library",
+        "@fi_mau_go_whatsmeow//:whatsmeow",
+        "@fi_mau_go_whatsmeow//proto/waCommon",
+        "@fi_mau_go_whatsmeow//proto/waE2E",
+        "@fi_mau_go_whatsmeow//types",
+        "@fi_mau_go_whatsmeow//types/events",
     ],
 )
 

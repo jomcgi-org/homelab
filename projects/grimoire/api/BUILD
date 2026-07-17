@@ -17,10 +17,10 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/grimoire/api",
     visibility = ["//visibility:private"],
     deps = [
-        "@com_google_cloud_go_firestore//:go_default_library",
-        "@org_golang_google_api//iterator:go_default_library",
-        "@org_golang_google_grpc//codes:go_default_library",
-        "@org_golang_google_grpc//status:go_default_library",
+        "@com_google_cloud_go_firestore//:firestore",
+        "@org_golang_google_api//iterator",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
     ],
 )
 

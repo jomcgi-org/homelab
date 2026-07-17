@@ -19,10 +19,10 @@ go_library(
         "//projects/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
-            "@org_golang_x_sys//unix:go_default_library",
+            "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
-            "@org_golang_x_sys//unix:go_default_library",
+            "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],
     }),
