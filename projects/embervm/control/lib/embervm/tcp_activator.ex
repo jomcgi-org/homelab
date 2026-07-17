@@ -99,6 +99,10 @@ defmodule Embervm.TcpActivator do
   use GenServer
   require Logger
 
+  # Tracer.with_span/set_attributes are OpenTelemetry.Tracer MACROS, so the module
+  # must be required even though it is called fully-qualified via the alias.
+  require OpenTelemetry.Tracer, as: Tracer
+
   # -- Client API --------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -210,7 +214,7 @@ defmodule Embervm.TcpActivator do
       %{ip: ip, port: vm_port} when is_binary(ip) and ip != "" and is_integer(vm_port) ->
         # Straggler: the VM is already live (a race with the node Envoy's
         # fallback decision). Splice directly, no wake.
-        splice_to(csock, ip, vm_port, ctx)
+        splice_to(csock, workload, ip, vm_port, ctx)
 
       _ ->
         wake_and_splice(csock, workload, ctx)
@@ -226,7 +230,7 @@ defmodule Embervm.TcpActivator do
 
     case ctx.manager_mod.wake(ctx.manager, workload, principal) do
       {:ok, %{ip: ip, port: vm_port}} ->
-        splice_to(csock, ip, vm_port, ctx)
+        splice_to(csock, workload, ip, vm_port, ctx)
 
       {:error, reason} ->
         Logger.info("embervm tcp activator: wake denied/failed, closing", workload: workload, reason: inspect(reason))
@@ -234,10 +238,21 @@ defmodule Embervm.TcpActivator do
     end
   end
 
-  defp splice_to(csock, ip, vm_port, ctx) do
+  defp splice_to(csock, workload, ip, vm_port, ctx) do
     case ctx.dial_fun.(ip, vm_port, ctx.connect_timeout_ms) do
       {:ok, usock} ->
-        pump_both(csock, usock)
+        # The `splice` span (Task 10): bounds the whole spliced connection's
+        # lifetime (client-to-VM byte pump, both directions) so a stuck or very
+        # long-lived stateful connection is visible in SigNoz. A ROOT span (a raw
+        # TCP accept carries no caller trace to nest under, same shape as the
+        # manager's park/wake spans). ember.bytes_in/ember.bytes_out are the
+        # lightweight counters pump_both/2 already threads through its
+        # accumulator (no extra syscalls: :gen_tcp.recv already returns the byte
+        # count via byte_size/1 on data it already read).
+        Tracer.with_span "embervm.stateful.splice", %{attributes: %{"ember.workload" => workload}} do
+          {bytes_in, bytes_out} = pump_both(csock, usock)
+          Tracer.set_attributes(%{"ember.bytes_in" => bytes_in, "ember.bytes_out" => bytes_out})
+        end
 
       {:error, reason} ->
         Logger.warning("embervm tcp activator: dial to woken VM failed", ip: ip, port: vm_port, reason: inspect(reason))
@@ -260,28 +275,35 @@ defmodule Embervm.TcpActivator do
   # OTHER socket's write-half shut down first (half-close propagation) so any
   # still-in-flight bytes already queued in the other direction are not
   # truncated by an immediate full close.
+  #
+  # Returns `{bytes_in, bytes_out}` (client->upstream, upstream->client) for the
+  # `splice` span's byte counters (Task 10): each direction's pump/2 already
+  # accumulates the count it read, so this costs no extra syscall.
   defp pump_both(csock, usock) do
     parent = self()
 
     {:ok, peer} =
       Task.start_link(fn ->
-        pump(usock, csock)
-        send(parent, {:peer_done, self()})
+        bytes_out = pump(usock, csock, 0)
+        send(parent, {:peer_done, self(), bytes_out})
       end)
 
-    pump(csock, usock)
+    bytes_in = pump(csock, usock, 0)
 
     # Wait briefly for the peer to notice the shutdown and finish its own
     # drain; it is linked so a crash here would already have propagated, this
     # is just to avoid leaking the peer task if it is still draining.
-    receive do
-      {:peer_done, ^peer} -> :ok
-    after
-      5_000 -> :ok
-    end
+    bytes_out =
+      receive do
+        {:peer_done, ^peer, n} -> n
+      after
+        5_000 -> 0
+      end
 
     :gen_tcp.close(csock)
     :gen_tcp.close(usock)
+
+    {bytes_in, bytes_out}
   end
 
   # A dumb byte pump: read from `from_sock`, write to `to_sock`, repeat, until
@@ -290,23 +312,27 @@ defmodule Embervm.TcpActivator do
   # On EOF/error, shuts down `to_sock`'s WRITE half (half-close propagation: the
   # peer sees "no more bytes coming this way" without losing its own still-open
   # read direction) rather than a hard close, which the caller (pump_both) does
-  # once both directions have finished.
-  defp pump(from_sock, to_sock) do
+  # once both directions have finished. `acc` is the running byte count,
+  # returned when the direction closes (the splice span's ember.bytes_in/out).
+  defp pump(from_sock, to_sock, acc) do
     case :gen_tcp.recv(from_sock, 0, :infinity) do
       {:ok, data} ->
         case :gen_tcp.send(to_sock, data) do
           :ok ->
-            pump(from_sock, to_sock)
+            pump(from_sock, to_sock, acc + byte_size(data))
 
           {:error, _reason} ->
             safe_shutdown(from_sock, :read)
+            acc
         end
 
       {:error, :closed} ->
         safe_shutdown(to_sock, :write)
+        acc
 
       {:error, _reason} ->
         safe_shutdown(to_sock, :write)
+        acc
     end
   end
 
