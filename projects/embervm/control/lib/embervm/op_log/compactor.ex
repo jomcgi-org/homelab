@@ -66,6 +66,7 @@ defmodule Embervm.OpLog.Compactor do
       sessions_compacted: 0,
       serving_instances_compacted: 0,
       stateful_instances_compacted: 0,
+      group_instances_compacted: 0,
       ops_compacted: 0,
       compacted_through: 0
     }
@@ -84,6 +85,8 @@ defmodule Embervm.OpLog.Compactor do
             totals.serving_instances_compacted + batch.serving_instances_compacted,
           stateful_instances_compacted:
             totals.stateful_instances_compacted + batch.stateful_instances_compacted,
+          group_instances_compacted:
+            totals.group_instances_compacted + batch.group_instances_compacted,
           ops_compacted: totals.ops_compacted + batch.ops_compacted,
           # The marker is monotonic and reported per batch; the last batch's value
           # is the authoritative post-sweep marker.
@@ -116,6 +119,7 @@ defmodule Embervm.OpLog.Compactor do
           sessions_compacted: totals.sessions_compacted,
           serving_instances_compacted: totals.serving_instances_compacted,
           stateful_instances_compacted: totals.stateful_instances_compacted,
+          group_instances_compacted: totals.group_instances_compacted,
           ops_compacted: totals.ops_compacted,
           compacted_through: totals.compacted_through,
           db_size_bytes: db_size

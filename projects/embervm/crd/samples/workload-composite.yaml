@@ -1,0 +1,80 @@
+# Sample composite-class Workload (R5, ADR embervm/001). A composite workload is a
+# GROUP: a set of member microVMs (each a role with one or more replicas) that
+# live, bank, relight, and die as ONE unit, sharing a private per-group subnet and
+# reached through one declared entry member. The headline invariants are the ADR
+# 001 whole-set warmth rule (the bundle set banks and relights atomically; a
+# partial or unreadable set discards warmth and the whole group fresh-boots) and
+# crash-consistency PER VM only (a bank snapshots each member independently, never
+# a cross-member transaction). There is no maxInstances knob (the group size is
+# fixed by the member set) and spec.concurrency is forbidden on this class. This is
+# the definition surface only; a composite INSTANCE, its members, and its banked
+# bundle set are execution state in the op-log, never Kubernetes objects. Living
+# documentation of the composite surface, mirroring workload-stateful.yaml. Not a
+# production deploy (those live under projects/embervm/deploy/).
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: demo-group
+  namespace: embervm
+spec:
+  class: composite
+  # The top-level source is the group's base-build seed (each member also declares
+  # its own source below). The image lane, exactly as every other class.
+  source:
+    image:
+      ref: ghcr.io/jomcgi/homelab/projects/embervm/guests/demo-group:latest
+      port: 1027
+      readyPath: /shim/ready
+      invokePath: /invoke
+  resources:
+    vcpus: 1
+    memMib: 512
+  # No concurrency block: a composite's size is fixed by its member set (sum of
+  # replicas), so spec.concurrency is forbidden by the watcher.
+  group:
+    members:
+      # The leader member: one VM, boots first (startOrder 0).
+      - name: leader
+        role: leader
+        startOrder: 0
+        replicas: 1
+        source:
+          image:
+            ref: ghcr.io/jomcgi/homelab/projects/embervm/guests/demo-leader:latest
+        resources:
+          vcpus: 1
+          memMib: 512
+        # TCP health gate: the member is healthy once a connect to this port
+        # succeeds. Required (the whole-group readiness edge needs it).
+        healthPort: 8080
+      # The worker member: two VMs (worker-0, worker-1), boot after the leader.
+      - name: worker
+        role: worker
+        startOrder: 1
+        replicas: 2
+        source:
+          image:
+            ref: ghcr.io/jomcgi/homelab/projects/embervm/guests/demo-worker:latest
+        resources:
+          vcpus: 1
+          memMib: 512
+        healthPort: 8080
+    # The group's single ingress: traffic reaches the leader member's port 8080,
+    # exposed cluster-internally on the node Envoy at listenPort 5410 (inside the
+    # values-declared composite range 5410-5419, unique across composite workloads).
+    entry:
+      member: leader
+      port: 8080
+      listenPort: 5410
+    # Bank the WHOLE set after 10 minutes idle; a live connection is never severed
+    # regardless of this timer.
+    idleBankSeconds: 600
+    # Version-convergence bound: the group rides its birth images until this
+    # expires; convergence is then destroy-and-fresh-boot of the whole set.
+    maxLifetimeSeconds: 86400
+    # A banked bundle SET untouched this long is GC'd off node disk as a unit
+    # (partial warmth is never retained).
+    bankedTtlSeconds: 604800
+    # Whole-group wake deadline (relight or fresh boot), generous because a fresh
+    # boot cold-starts every member.
+    wakeTimeoutSeconds: 120

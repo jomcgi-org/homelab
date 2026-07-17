@@ -162,6 +162,16 @@ spec:
                   fieldPath: status.podIP
             - name: EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE
               value: "{{ .Values.servingEnvoy.statefulTcpPortRange.start }}-{{ .Values.servingEnvoy.statefulTcpPortRange.end }}"
+            # Composite (R5) group entry range + size cap: the values-declared
+            # capacity the CRD watcher validates each composite workload's
+            # spec.group.entry.listenPort and expanded member count against. The
+            # watcher reads these from app env (falling back to the compile-time
+            # defaults 5410-5419 / 4 that match the chart defaults), so a no-chart
+            # `mix test` run still validates against the same range.
+            - name: EMBERVM_COMPOSITE_LISTEN_PORT_RANGE
+              value: "{{ .Values.servingEnvoy.compositeTcpPortRange.start }}-{{ .Values.servingEnvoy.compositeTcpPortRange.end }}"
+            - name: EMBERVM_MAX_GROUP_SIZE
+              value: {{ .Values.servingEnvoy.maxGroupSize | quote }}
             {{- end }}
             {{- if .Values.servingEnvoy.enabled }}
             # The node Envoy stats base URL (R3, Task 9): the ServingSweeper GETs
