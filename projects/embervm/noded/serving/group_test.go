@@ -464,3 +464,88 @@ func TestGroupManagerCreateRollsBackOnBridgeFailure(t *testing.T) {
 		t.Error("group must not be held after a failed create")
 	}
 }
+
+// TestEnsureMemberTapPinsWorldAndRecreatesIdentically asserts EnsureMemberTap
+// creates + attaches the member tap on the group bridge with the deterministic tap
+// name and MAC, verifies the derived IP matches the request, and that a second call
+// (a relight after ReleaseMember) recreates the SAME tap/MAC/IP: the pinned-world
+// reconstruction the D-R3.4.1 pin requires on the group bridge.
+func TestEnsureMemberTapPinsWorldAndRecreatesIdentically(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewGroupManager(fr, "10.101.0.0/16", "", "", 40000)
+	if err != nil {
+		t.Fatalf("NewGroupManager: %v", err)
+	}
+	if _, _, err := m.CreateGroupNetwork(context.Background(), "grp-A", "10.101.1.0/24"); err != nil {
+		t.Fatalf("CreateGroupNetwork: %v", err)
+	}
+	wantIP := net.ParseIP("10.101.1.10") // index 0 -> .10
+	tap, mac, err := m.EnsureMemberTap(context.Background(), "grp-A", "worker-0", 0, wantIP)
+	if err != nil {
+		t.Fatalf("EnsureMemberTap: %v", err)
+	}
+	if tap != groupTapName("grp-A", "worker-0") || mac != groupMemberMAC("grp-A", "worker-0") {
+		t.Errorf("tap/mac not the deterministic derivation: tap=%q mac=%q", tap, mac)
+	}
+	// The tap must have been created and attached to the group bridge.
+	bridge := groupBridgeName("grp-A")
+	var sawAdd, sawMaster bool
+	for _, c := range fr.argvStrings() {
+		if c == "ip tuntap add dev "+tap+" mode tap" {
+			sawAdd = true
+		}
+		if c == "ip link set "+tap+" master "+bridge {
+			sawMaster = true
+		}
+	}
+	if !sawAdd || !sawMaster {
+		t.Errorf("member tap not created+attached to the group bridge; calls: %v", fr.argvStrings())
+	}
+
+	// Release (as a bank would) then re-pin (as a relight would): identical world.
+	m.RemoveMemberTap(context.Background(), "grp-A", tap, wantIP)
+	tap2, mac2, err := m.EnsureMemberTap(context.Background(), "grp-A", "worker-0", 0, wantIP)
+	if err != nil {
+		t.Fatalf("EnsureMemberTap (relight): %v", err)
+	}
+	if tap2 != tap || mac2 != mac {
+		t.Errorf("relight recreated a DIFFERENT world: tap %q->%q mac %q->%q", tap, tap2, mac, mac2)
+	}
+}
+
+// TestEnsureMemberTapRejectsMismatchedIP asserts a request IP that disagrees with
+// the deterministic derivation fails loudly (never boots on a different IP).
+func TestEnsureMemberTapRejectsMismatchedIP(t *testing.T) {
+	m, err := NewGroupManager(&fakeRunner{}, "10.101.0.0/16", "", "", 40000)
+	if err != nil {
+		t.Fatalf("NewGroupManager: %v", err)
+	}
+	if _, _, err := m.CreateGroupNetwork(context.Background(), "grp-A", "10.101.1.0/24"); err != nil {
+		t.Fatalf("CreateGroupNetwork: %v", err)
+	}
+	// index 0 derives .10, but the request claims .99: a mismatch must fail.
+	if _, _, err := m.EnsureMemberTap(context.Background(), "grp-A", "worker-0", 0, net.ParseIP("10.101.1.99")); err == nil {
+		t.Fatal("a request IP that disagrees with the derivation must fail")
+	}
+}
+
+// TestEnsureMemberTapRollsBackOnTapFailure asserts a tap-create failure releases the
+// reserved IP so a retry (or a different member) can still use the address space.
+func TestEnsureMemberTapRollsBackOnTapFailure(t *testing.T) {
+	fr := &fakeRunner{failOn: map[string]error{"ip tuntap": errors.New("boom")}}
+	m, err := NewGroupManager(fr, "10.101.0.0/16", "", "", 40000)
+	if err != nil {
+		t.Fatalf("NewGroupManager: %v", err)
+	}
+	if _, _, err := m.CreateGroupNetwork(context.Background(), "grp-A", "10.101.1.0/24"); err != nil {
+		t.Fatalf("CreateGroupNetwork: %v", err)
+	}
+	if _, _, err := m.EnsureMemberTap(context.Background(), "grp-A", "worker-0", 0, net.ParseIP("10.101.1.10")); err == nil {
+		t.Fatal("tap create failure should surface")
+	}
+	// The IP must be free again: a retry succeeds (failOn cleared).
+	fr.failOn = nil
+	if _, _, err := m.EnsureMemberTap(context.Background(), "grp-A", "worker-0", 0, net.ParseIP("10.101.1.10")); err != nil {
+		t.Fatalf("retry after rollback should succeed: %v", err)
+	}
+}

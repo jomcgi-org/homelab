@@ -4,6 +4,7 @@ go_library(
     name = "server",
     srcs = [
         "group.go",
+        "group_member.go",
         "group_registry.go",
         "registry.go",
         "server.go",
@@ -16,6 +17,7 @@ go_library(
     visibility = ["//projects/embervm/noded:__subpackages__"],
     deps = [
         "//projects/embervm/noded/config",
+        "//projects/embervm/noded/groupclock",
         "//projects/embervm/noded/serving",
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/volume",
@@ -30,6 +32,7 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "group_member_test.go",
         "group_test.go",
         "server_test.go",
         "serving_test.go",

@@ -144,6 +144,14 @@ func run(logger *slog.Logger) error {
 		// a sibling of the bases/sessions/serving/stateful bundle dirs).
 		GroupNet:     groupNet,
 		GroupRecords: restoreDriver,
+		// The same restore driver serves the R5 member lifecycle (ClaimGroupMember
+		// cold boot on the group bridge + SnapshotGroupMember/RestoreGroupMember under
+		// group/<set_id>/<member>/). The member RELIGHT clock resync defaults to the
+		// real vsock-backed groupclock (port-1024 length-prefixed JSON); no explicit
+		// GroupClock is set here.
+		GroupDriver:             restoreDriver,
+		GroupProbeInterval:      cfg.StatefulProbeInterval,
+		GroupUnhealthyThreshold: cfg.StatefulUnhealthyThreshold,
 	})
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.
@@ -164,6 +172,11 @@ func run(logger *slog.Logger) error {
 	// the prior pod; the durable records survive and the control plane re-issues
 	// CreateGroupNetwork to rebuild each bridge, Task 7).
 	srv.ReconcileGroupNetworksFromDisk()
+	// Report node-local BANKED group member bundles left by a prior incarnation,
+	// grouped by set dir, so the control plane reconciles banked-group inventory from
+	// node truth (live members died with the prior pod; the on-disk bundle sets
+	// survive and the control plane resolves each group to relightable-or-fresh).
+	srv.ReconcileGroupBundlesFromDisk()
 	// Create the serving bridge and install the ingress-only nftables posture before
 	// serving any StartServing. Idempotent across restarts (existing bridge tolerated).
 	if err := servingNet.EnsureNetwork(ctx); err != nil {

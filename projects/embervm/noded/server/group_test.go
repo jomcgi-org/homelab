@@ -22,17 +22,28 @@ import (
 // and records the create/delete calls so a handler test can assert idempotency and
 // the attached-member refusal without real bridges.
 type fakeGroupNet struct {
-	mu         sync.Mutex
-	groups     map[string]string // id -> cidr
-	createErr  error
-	createN    int
-	deleteN    int
-	ensureN    int
-	adoptCalls []string
+	mu           sync.Mutex
+	groups       map[string]string // id -> cidr
+	createErr    error
+	createN      int
+	deleteN      int
+	ensureN      int
+	adoptCalls   []string
+	taps         map[string]bool // member -> tap created
+	removedTaps  []string
+	ensureTapErr error
+	ensureCalls  []ensureTapCall
+}
+
+// ensureTapCall records one EnsureMemberTap invocation for pinned-world assertions.
+type ensureTapCall struct {
+	member string
+	index  uint32
+	wantIP string
 }
 
 func newFakeGroupNet() *fakeGroupNet {
-	return &fakeGroupNet{groups: map[string]string{}}
+	return &fakeGroupNet{groups: map[string]string{}, taps: map[string]bool{}}
 }
 
 func (f *fakeGroupNet) EnsureNetwork(context.Context) error {
@@ -98,8 +109,32 @@ func (f *fakeGroupNet) List() []serving.GroupNetworkInfo {
 }
 
 func (f *fakeGroupNet) MemberAddressingFor(id, member string, index uint32) (string, string, net.IP, error) {
-	return "emgt-" + member, "02:00:00:00:00:01", net.ParseIP("10.101.1.10"), nil
+	return "emgt-" + member, "02:00:00:00:00:01", net.ParseIP("127.0.0.1"), nil
 }
+
+// EnsureMemberTap hands out the loopback IP as the "pinned" address (so the server's
+// real TCP health-gate reaches the test's local endpoint) and records the pin call
+// so a test can assert the pinned-world reconstruction on relight (same member +
+// index re-pinned). ensureTapErr, when set, makes it fail (the pin-failure path).
+func (f *fakeGroupNet) EnsureMemberTap(_ context.Context, id, member string, index uint32, wantIP net.IP) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ensureTapErr != nil {
+		return "", "", f.ensureTapErr
+	}
+	f.taps[member] = true
+	f.ensureCalls = append(f.ensureCalls, ensureTapCall{member: member, index: index, wantIP: wantIP.String()})
+	return "emgt-" + member, "02:00:00:00:00:01", nil
+}
+
+func (f *fakeGroupNet) RemoveMemberTap(_ context.Context, id, tap string, ip net.IP) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedTaps = append(f.removedTaps, tap)
+}
+
+func (f *fakeGroupNet) GatewayIP(id string) net.IP { return net.IPv4(10, 101, 1, 1) }
+func (f *fakeGroupNet) PrefixLen(id string) int    { return 24 }
 
 func (f *fakeGroupNet) EntryEndpoint(ip net.IP, port uint32) (string, uint32) {
 	return ip.String(), port

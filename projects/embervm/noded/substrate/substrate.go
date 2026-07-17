@@ -194,6 +194,39 @@ type GroupNetworkRecord struct {
 	CreatedAtUnixMs int64 `json:"createdAtUnixMs"`
 }
 
+// GroupBundleMemberInfo is one member's banked snapshot discovered within a group
+// bundle set on disk (R5), returned by the driver's startup rescan
+// (ScanGroupBundleSets). The member subdir name is the member_name; the ref is the
+// opaque per-member bundle handle (group/<set_id>/<member_name>). A member bundle
+// carries NO sidecar: the member IP is DETERMINISTIC from the group + member +
+// index (Task 4's addressing), so a relight re-derives it rather than reading it
+// back, and there is no generation ledger for a member the way a stateful volume
+// has one.
+type GroupBundleMemberInfo struct {
+	// MemberName is the member subdir name within the set dir.
+	MemberName string
+	// SnapshotRef is the opaque per-member bundle handle (group/<set_id>/<member>).
+	SnapshotRef string
+	// SizeBytes is the member bundle's on-disk size (snapfile + memfile).
+	SizeBytes int64
+}
+
+// GroupBundleSetInfo is the per-member banked snapshots the driver's startup rescan
+// (ScanGroupBundleSets) found grouped under one set directory (group/<set_id>/), so
+// the server re-seeds its banked-group inventory after a restart and reports it in
+// NodeStatus.group_bundle_sets. The daemon reports refs GROUPED BY the set dir it
+// wrote them under; it makes NO completeness judgment (whether the set has every
+// member it needs to relight is the control plane's to decide, exactly as the proto
+// contract states).
+type GroupBundleSetInfo struct {
+	// SetID is the opaque set directory name (group/<set_id>/).
+	SetID string
+	// Members are the per-member bundles found under the set dir.
+	Members []GroupBundleMemberInfo
+	// CreatedAtUnixMs is the set dir's on-disk modification time, for reporting.
+	CreatedAtUnixMs int64
+}
+
 // Substrate is the core the driver satisfies: acquire an isolated env, run work
 // in it, return/destroy it. Exec is unused by the FC-direct driver (work arrives
 // over vsock HTTP), but the interface keeps the driver honest about the seam.

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"sort"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -176,10 +177,99 @@ func (s *Server) groupNetworksStatus() []*nodev1.GroupNetwork {
 	return out
 }
 
+// ReconcileGroupBundlesFromDisk scans the group/ bundle dir (via the driver's
+// ScanGroupBundleSets) and re-seeds the banked-group-bundle inventory so a restarted
+// daemon reports what banked group warmth survives, GROUPED BY set. A daemon restart
+// kills every LIVE member (they died with the pod, the standing single-node
+// availability posture); only the on-disk bundle sets survive, and the control plane
+// resolves each group to relightable (a complete set) or fresh-bootable from these
+// reports (the daemon makes NO completeness judgment). A member bundle carries no
+// group_instance_id on disk (the set dir names only the set_id + member), so the
+// group binding is left empty for the control plane to rebind by adoption.
+func (s *Server) ReconcileGroupBundlesFromDisk() {
+	if s.groupDriver == nil {
+		return
+	}
+	root := s.groupDriver.GroupSetsDir()
+	if root != "" {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			s.logger.Warn("noded: create group bundle dir", "root", root, "err", err)
+		} else if err := os.Chmod(root, 0o700); err != nil {
+			s.logger.Warn("noded: chmod group bundle dir 0700", "root", root, "err", err)
+		}
+	}
+	sets := s.groupDriver.ScanGroupBundleSets()
+	seeded := 0
+	for _, set := range sets {
+		for _, m := range set.Members {
+			s.groupBundles.add(groupBundleEntry{
+				setID:           set.SetID,
+				memberName:      m.MemberName,
+				snapshotRef:     m.SnapshotRef,
+				sizeBytes:       m.SizeBytes,
+				createdAtUnixMs: set.CreatedAtUnixMs,
+			})
+			seeded++
+		}
+	}
+	if seeded > 0 {
+		s.logger.Info("noded: reconciled existing group bundle sets", "sets", len(sets), "members", seeded)
+		s.signalChange()
+	}
+}
+
+// groupBundleSetsStatus projects the banked-group-bundle inventory into
+// NodeStatus.group_bundle_sets, grouping the per-member bundles by their set_id. The
+// daemon reports refs grouped by the set dir it wrote them under and makes NO
+// completeness judgment (whether a set has every member it needs to relight is the
+// control plane's to decide).
+func (s *Server) groupBundleSetsStatus() []*nodev1.GroupBundleSet {
+	if s.groupBundles == nil {
+		return nil
+	}
+	entries := s.groupBundles.snapshot()
+	// Group by set_id, preserving each set's group binding + created time.
+	type setAgg struct {
+		groupInstanceID string
+		createdAtUnixMs int64
+		members         []*nodev1.GroupBundleMember
+	}
+	bySet := make(map[string]*setAgg)
+	for _, e := range entries {
+		agg, ok := bySet[e.setID]
+		if !ok {
+			agg = &setAgg{}
+			bySet[e.setID] = agg
+		}
+		if e.groupInstanceID != "" {
+			agg.groupInstanceID = e.groupInstanceID
+		}
+		if e.createdAtUnixMs > agg.createdAtUnixMs {
+			agg.createdAtUnixMs = e.createdAtUnixMs
+		}
+		agg.members = append(agg.members, &nodev1.GroupBundleMember{
+			MemberName:  e.memberName,
+			SnapshotRef: e.snapshotRef,
+			SizeBytes:   uint64(e.sizeBytes),
+		})
+	}
+	out := make([]*nodev1.GroupBundleSet, 0, len(bySet))
+	for setID, agg := range bySet {
+		sort.Slice(agg.members, func(i, j int) bool { return agg.members[i].GetMemberName() < agg.members[j].GetMemberName() })
+		out = append(out, &nodev1.GroupBundleSet{
+			SetId:           setID,
+			GroupInstanceId: agg.groupInstanceID,
+			Members:         agg.members,
+			CreatedAtUnixMs: agg.createdAtUnixMs,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GetSetId() < out[j].GetSetId() })
+	return out
+}
+
 // groupMemberVmsStatus projects the live group-member registry into
-// NodeStatus.group_member_vms. Empty in Task 4 (no live members yet); Task 5's
-// StartGroupMember fills the registry and this reports each member's group
-// identity and TCP-connect health verdict.
+// NodeStatus.group_member_vms, reporting each member's group identity and TCP-connect
+// health verdict.
 func (s *Server) groupMemberVmsStatus() []*nodev1.GroupMemberVm {
 	if s.groupMembers == nil {
 		return nil

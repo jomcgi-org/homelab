@@ -30,4 +30,12 @@ const (
 	// guest's shim HTTP server over vsock. This is the frozen guest contract port
 	// (ADR 030); the transport dials it via the Firecracker CONNECT handshake.
 	GuestHTTPPort uint32 = 1027
+	// GroupClockAgentPort is the dedicated vsock port a composite-group member
+	// guest's control agent listens on for the R5 sync_clock handshake (PR-1's
+	// GROUP_GUEST_AGENT_VSOCK_PORT). It is a length-prefixed JSON request/response
+	// channel (4-byte big-endian length + JSON), DISTINCT from the task-delivery
+	// HTTP port (1027) and the egress port (1025); the daemon dials it ONLY on a
+	// RELIGHT resume to re-set the resumed guest's wall clock. This constant is the
+	// host mirror of the frozen guest contract and must match it exactly.
+	GroupClockAgentPort uint32 = 1024
 )

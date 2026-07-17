@@ -603,6 +603,66 @@ func (m *GroupManager) ReleaseMember(groupInstanceID string, ip net.IP) {
 	g.alloc.release(ip)
 }
 
+// EnsureMemberTap pins a member's NIC world on the group bridge: it derives the
+// deterministic (tap, mac, ip) for (member_name, member_index), verifies the derived
+// IP matches the control-plane-supplied wantIP (a mismatch means the control plane
+// and the daemon disagree on the pinned address, which must fail LOUDLY rather than
+// silently boot on a different IP), reserves the IP in the group allocator, and
+// creates + attaches the tap device to the group bridge. It is used by BOTH the
+// FRESH boot and the RELIGHT resume: for a relight it recreates the SAME tap name,
+// MAC, and IP the member had at bank time (the D-R3.4.1 pin applied to the group
+// bridge), because the resumed guest keeps its baked eth0 and a snapshot restore
+// never re-runs kernel init. On any tap-create failure the partial tap and the
+// reserved IP are rolled back so a failed StartGroupMember leaks neither. It returns
+// the (tap, mac) so the caller can build the NIC spec; the IP is wantIP unchanged.
+func (m *GroupManager) EnsureMemberTap(ctx context.Context, groupInstanceID, memberName string, memberIndex uint32, wantIP net.IP) (tap, mac string, err error) {
+	m.mu.Lock()
+	g, ok := m.groups[groupInstanceID]
+	bridge := ""
+	if ok {
+		bridge = g.bridge
+	}
+	m.mu.Unlock()
+	if !ok {
+		return "", "", fmt.Errorf("serving: group %q not found", groupInstanceID)
+	}
+	derivedIP, err := groupMemberIP(g.cidr, memberIndex)
+	if err != nil {
+		return "", "", err
+	}
+	if wantIP != nil && !derivedIP.Equal(wantIP) {
+		return "", "", fmt.Errorf("serving: group %q member %q index %d derives IP %v but the request pinned %v", groupInstanceID, memberName, memberIndex, derivedIP, wantIP)
+	}
+	if rerr := g.alloc.reserve(derivedIP); rerr != nil {
+		return "", "", rerr
+	}
+	tap = groupTapName(groupInstanceID, memberName)
+	mac = groupMemberMAC(groupInstanceID, memberName)
+	for _, argv := range tapSetupArgs(tap, bridge) {
+		if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
+			// Roll back: delete whatever tap fragment exists, release the IP.
+			_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
+			g.alloc.release(derivedIP)
+			return "", "", rerr
+		}
+	}
+	return tap, mac, nil
+}
+
+// RemoveMemberTap deletes a member's tap device and releases its pinned IP back to
+// the group allocator (idempotent at the ip layer: deleting an absent tap is
+// tolerated). It is the symmetric teardown for EnsureMemberTap, called on a member
+// bank, destroy, or a failed start's rollback. It takes the derived tap name and the
+// pinned IP directly (the caller already holds both from the start path), so it never
+// needs to re-derive or look the group up beyond the allocator release.
+func (m *GroupManager) RemoveMemberTap(ctx context.Context, groupInstanceID, tap string, ip net.IP) {
+	if _, err := m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...); err != nil {
+		// A missing tap is fine (already gone); keep teardown best-effort.
+		_ = err
+	}
+	m.ReleaseMember(groupInstanceID, ip)
+}
+
 // GatewayIP returns a group's gateway IP (the .1 of its /24), for composing a
 // member's default route. Nil if the group is not held.
 func (m *GroupManager) GatewayIP(groupInstanceID string) net.IP {

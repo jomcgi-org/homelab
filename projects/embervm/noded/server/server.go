@@ -196,6 +196,9 @@ type Server struct {
 	// newTCPProber builds the per-VM TCP-connect health prober from config
 	// (R4). Overridable in tests, mirroring newProber.
 	newTCPProber func() *serving.TCPProber
+	// newGroupTCPProber builds the per-member TCP-connect health prober (R5).
+	// Overridable in tests, mirroring newTCPProber.
+	newGroupTCPProber func() *serving.TCPProber
 
 	// groupNet owns the host composite-group networking (per-group bridges, member
 	// addressing, inter-group isolation, entry DNAT). nil disables the R5 group
@@ -207,10 +210,23 @@ type Server struct {
 	// source of truth). nil (alongside a nil groupNet) disables the group verbs. In
 	// production the same *driver.Driver satisfies it.
 	groupRecords groupRecordStore
-	// groupMembers is the live composite-group member registry. Created empty in
-	// Task 4 (only read for member_count and the DeleteGroupNetwork attached-member
-	// refusal); Task 5's StartGroupMember fills it.
+	// groupMembers is the live composite-group member registry, filled by
+	// StartGroupMember and drained by StopGroupMember. It counts against the node
+	// live-VM cap (via the shared driver's LiveCount) and is EXCLUDED from
+	// primed_vm_ids and every other class registry.
 	groupMembers *groupMemberRegistry
+	// groupDriver serves the R5 member-class driver mechanics (cold boot with a NIC
+	// on the group bridge, bank/relight under group/<set_id>/<member>/). nil
+	// (alongside a nil groupNet) disables the member verbs, which then return
+	// Unimplemented. In production the same *driver.Driver satisfies it.
+	groupDriver groupMemberDriver
+	// groupBundles is the banked-group-bundle inventory, seeded from disk on start
+	// (ScanGroupBundleSets) and updated on a member bank; reported grouped by set_id.
+	groupBundles *groupBundleRegistry
+	// groupClock is the host-side clock-resync seam a member RELIGHT uses over the
+	// port-1024 length-prefixed JSON agent channel. nil falls back to the real
+	// groupclock.Resync; overridable in tests.
+	groupClock groupClock
 
 	drainingMu sync.RWMutex
 	draining   bool
@@ -265,6 +281,18 @@ type Options struct {
 	// same *driver.Driver satisfies GroupRecords.
 	GroupNet     groupNetwork
 	GroupRecords groupRecordStore
+	// GroupDriver serves the R5 member lifecycle (StartGroupMember/StopGroupMember).
+	// nil (the default) leaves the member verbs returning Unimplemented, so a Server
+	// built without group support still compiles. In production the same
+	// *driver.Driver satisfies GroupDriver.
+	GroupDriver groupMemberDriver
+	// GroupClock is the host-side member clock-resync seam. nil uses the real
+	// groupclock.Resync over a VsockDialer; tests inject a fake.
+	GroupClock groupClock
+	// GroupProbeInterval / GroupUnhealthyThreshold configure the per-member TCP
+	// health probe loop (defaults applied when zero), mirroring the stateful knobs.
+	GroupProbeInterval      time.Duration
+	GroupUnhealthyThreshold int
 }
 
 // New builds a Server. Driver and Transport must not be nil.
@@ -295,6 +323,9 @@ func New(opts Options) *Server {
 		groupNet:        opts.GroupNet,
 		groupRecords:    opts.GroupRecords,
 		groupMembers:    newGroupMemberRegistry(),
+		groupDriver:     opts.GroupDriver,
+		groupBundles:    newGroupBundleRegistry(),
+		groupClock:      opts.GroupClock,
 		subs:            make(map[chan struct{}]struct{}),
 	}
 	// VolumeRoot may be set directly on Options (mirroring how cmd/main.go wires
@@ -315,6 +346,15 @@ func New(opts Options) *Server {
 	statefulProbeInterval := opts.StatefulProbeInterval
 	statefulProbeThreshold := opts.StatefulUnhealthyThreshold
 	s.newTCPProber = func() *serving.TCPProber { return serving.NewTCPProber(statefulProbeInterval, statefulProbeThreshold) }
+	groupProbeInterval := opts.GroupProbeInterval
+	groupProbeThreshold := opts.GroupUnhealthyThreshold
+	s.newGroupTCPProber = func() *serving.TCPProber { return serving.NewTCPProber(groupProbeInterval, groupProbeThreshold) }
+	// The R5 member RELIGHT clock resync defaults to the real vsock-backed groupclock
+	// (port-1024 length-prefixed JSON, host-wall-clock source) unless a test injects a
+	// fake. A member relight FAILS when the read-back is more than one second off.
+	if s.groupClock == nil {
+		s.groupClock = &realGroupClock{}
+	}
 	s.memHeadroom = readMemHeadroomMib
 	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
@@ -1259,8 +1299,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		Volumes:               s.volumesStatus(),
 		GroupNetworks:         s.groupNetworksStatus(),
 		GroupMemberVms:        groupMemberVMs,
-		// group_bundle_sets stays empty-but-present in Task 4; the group bank
-		// inventory (grouped by set dir) lands with Task 5's member bank.
+		GroupBundleSets:       s.groupBundleSetsStatus(),
 	}
 }
 
