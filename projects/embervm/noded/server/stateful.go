@@ -407,8 +407,13 @@ func (s *Server) stopStatefulCheckpoint(ctx context.Context, vmID string) (*node
 	}
 	// Arm the resolve-timeout auto-abort: a dead control plane must not leave the
 	// VM paused (burning a cap slot and its memory) with every connection parked.
+	// Store the token FIRST, then arm the auto-abort timer: a timer that fires
+	// immediately (a very short resolve timeout) then always finds the token set,
+	// so its auto-abort works instead of no-opping and leaving the checkpoint
+	// without a backstop.
+	s.statefulVMs.markCheckpointed(vmID, token)
 	timer := time.AfterFunc(s.statefulResolveTimeout, func() { s.autoAbortCheckpoint(vmID, token) })
-	s.statefulVMs.markCheckpointed(vmID, token, timer)
+	s.statefulVMs.setCheckpointTimer(vmID, timer)
 	s.signalChange()
 	return &nodev1.StopStatefulResponse{CheckpointToken: token, Generation: e.generation}, nil
 }
