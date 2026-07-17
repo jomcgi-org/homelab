@@ -75,3 +75,13 @@ tracing:
 # runaway backstop, not any pool floor.
 noded:
   maxLiveVMs: 16
+
+# EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
+# enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
+# into this namespace's Secret. listenPort (5400) + embervmNamespace default from
+# the chart. Enabling renders the OnePasswordItem and (embervm) the Workload CR /
+# (monolith) the SCRATCH_POSTGRES_DSN env for run_python sessions.
+scratchPostgres:
+  enabled: true
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/scratch-postgres"
