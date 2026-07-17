@@ -1,0 +1,63 @@
+# projects/platform/cilium/templates/hubble-ca-issuer.yaml
+#
+# cert-manager CA chain that signs Hubble's mTLS certificates when the upstream
+# chart runs with hubble.tls.auto.method=certmanager (see ../values.yaml).
+#
+# Why this exists: with method=helm the upstream chart calls genCA/genSignedCert
+# at TEMPLATE time, so every `helm template` / `helm diff` mints a fresh random
+# ca.key and leaf certs. That is pure render churn (ArgoCD preserved the live
+# certs via ignoreDifferences on /data), but it made every diff noisy. Switching
+# to cert-manager moves cert generation to RUNTIME: the chart now renders only
+# deterministic Certificate CRs, and cert-manager owns the actual Secrets. No
+# random bytes render, so the diff is stable and the ignoreDifferences hack is
+# gone (see ../application.yaml).
+#
+# The three resources are the standard cert-manager CA pattern. Hubble's server
+# cert and the relay client cert must chain to the SAME CA (relay validates the
+# server cert, the agent validates the relay client cert), so the issuer Cilium
+# references must be a CA issuer, not a bare self-signed one:
+#   1. a self-signed Issuer that can bootstrap the CA cert,
+#   2. a CA Certificate (isCA) it signs, stored in cilium-hubble-ca,
+#   3. a CA Issuer backed by that secret, which the Hubble leaf Certificates use.
+#
+# Namespace is the release namespace (kube-system), matching where the upstream
+# chart renders its Hubble Certificates (include "cilium.namespace").
+{{- if eq .Values.cilium.hubble.tls.auto.method "certmanager" }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cilium-hubble-selfsigned
+  namespace: {{ .Release.Namespace }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cilium-hubble-ca
+  namespace: {{ .Release.Namespace }}
+spec:
+  isCA: true
+  commonName: cilium-hubble-ca
+  secretName: cilium-hubble-ca
+  # 10 years: the CA outlives the leaf certs, which cert-manager rotates on their
+  # own (certValidityDuration) shorter schedule.
+  duration: 87600h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: cilium-hubble-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cilium-hubble-ca-issuer
+  namespace: {{ .Release.Namespace }}
+spec:
+  ca:
+    secretName: cilium-hubble-ca
+{{- end }}

@@ -41,6 +41,27 @@ cilium:
     enabled: true
     relay:
       enabled: true
+    # Generate Hubble's mTLS certs with cert-manager instead of Helm. With the
+    # default method=helm the chart calls genCA/genSignedCert at template time,
+    # so every `helm template` / `helm diff` produced a fresh random CA and leaf
+    # certs (noise in every diff, previously masked at sync time by
+    # ignoreDifferences on the secret /data in ../application.yaml). cert-manager
+    # renders only deterministic Certificate CRs and owns the Secrets at runtime,
+    # so the diff is stable and cert-manager also auto-rotates the leaf certs
+    # (helm mode never rotated them). The CA chain the ref points at is defined
+    # in templates/hubble-ca-issuer.yaml. NOTE: bootstrap/cilium-helmchart.yaml
+    # deliberately stays on method=helm; cert-manager is not installed yet at a
+    # cold cluster bootstrap, so a Certificate CR there would fail to apply and,
+    # with failurePolicy=abort, leave the cluster with no CNI. ArgoCD converges
+    # the adopted release to cert-manager after bootstrap.
+    tls:
+      auto:
+        enabled: true
+        method: certmanager
+        certManagerIssuerRef:
+          group: cert-manager.io
+          kind: Issuer
+          name: cilium-hubble-ca-issuer
     # UI off; SigNoz remains the dashboard. Keep flow buffer modest.
     # httpV2 emits nothing until an L7 CiliumNetworkPolicy redirects a surface
     # through Envoy (ADR networking/003 #2); it is inert until Task A1 lands the
