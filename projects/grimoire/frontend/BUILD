@@ -1,5 +1,3 @@
-load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
-
 "Grimoire frontend - Vite-based React + TypeScript app"
 
 load("@aspect_rules_js//js:defs.bzl", "js_library", "js_run_binary")
@@ -58,23 +56,4 @@ apko_nginx_frontend(
     contents = "@grimoire_frontend_lock//:contents",
     dist = ":build",
     repository = "ghcr.io/jomcgi/homelab/projects/grimoire/frontend",
-)
-
-ts_project(
-    name = "frontend",
-    srcs = ["vite.config.ts"],
-    no_emit = True,
-    preserve_jsx = False,
-    tsconfig = ":tsconfig",
-    deps = [
-        ":node_modules/@vitejs/plugin-react",
-        ":node_modules/vite",
-        "//:node_modules/@types/node",
-    ],
-)
-
-ts_config(
-    name = "tsconfig",
-    src = "tsconfig.json",
-    visibility = [":__subpackages__"],
 )

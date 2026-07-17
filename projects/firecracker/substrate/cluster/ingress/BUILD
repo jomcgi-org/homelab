@@ -7,11 +7,11 @@ go_library(
     visibility = ["//projects/firecracker/substrate:__subpackages__"],
     deps = [
         "//projects/firecracker/substrate/substrate",
-        "@io_opentelemetry_go_otel//:go_default_library",
-        "@io_opentelemetry_go_otel//attribute:go_default_library",
-        "@io_opentelemetry_go_otel//codes:go_default_library",
-        "@io_opentelemetry_go_otel//propagation:go_default_library",
-        "@io_opentelemetry_go_otel_trace//:go_default_library",
+        "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel//codes",
+        "@io_opentelemetry_go_otel//propagation",
+        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
 

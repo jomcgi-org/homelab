@@ -10,14 +10,14 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/auth",
     visibility = ["//projects/firecracker/substrate:__subpackages__"],
     deps = [
-        "@io_k8s_api//authentication/v1:go_default_library",
-        "@io_k8s_apimachinery//pkg/apis/meta/v1:go_default_library",
-        "@io_k8s_client_go//kubernetes:go_default_library",
-        "@io_k8s_client_go//rest:go_default_library",
-        "@io_opentelemetry_go_otel//:go_default_library",
-        "@io_opentelemetry_go_otel//codes:go_default_library",
-        "@io_opentelemetry_go_otel//propagation:go_default_library",
-        "@org_golang_x_sync//singleflight:go_default_library",
+        "@io_k8s_api//authentication/v1:authentication",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_client_go//kubernetes",
+        "@io_k8s_client_go//rest",
+        "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//codes",
+        "@io_opentelemetry_go_otel//propagation",
+        "@org_golang_x_sync//singleflight",
     ],
 )
 
