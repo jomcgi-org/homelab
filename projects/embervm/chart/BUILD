@@ -29,6 +29,9 @@ helm_chart(
         # R1 zip lane (ADR embervm/002): the runtime-python base image the zip
         # lane layers an adopter's archive onto. Distinct top-level key (D14a.6).
         "runtimePython.guestImage": "//projects/embervm/runtimes/python:image.info",
+        # R4 stateful consumer (D-R4.PR-11.1): the scratch-postgres base image.
+        # Distinct FLAT top-level key (D14a.6), digest-pinned from its .info.
+        "scratchPostgres.guestImage": "//projects/embervm/runtimes/postgres:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],
