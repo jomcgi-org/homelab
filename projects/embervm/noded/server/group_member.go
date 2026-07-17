@@ -285,11 +285,12 @@ func (s *Server) stopGroupMemberDestroy(ctx context.Context, vmID string) (*node
 		}
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member %q stop already in flight", vmID)
 	}
-	if removed := s.groupMembers.remove(vmID); removed != nil {
-		removed.probe.Stop()
-		s.reapGroupMember(removed.handle, removed.groupInstanceID, removed.tap, removed.ip)
-		s.signalChange()
-	}
+	// beginStop returned the entry marked in-flight; drop it from the registry and
+	// reap it (the entry is the authoritative handle/tap/ip to tear down).
+	s.groupMembers.remove(vmID)
+	e.probe.Stop()
+	s.reapGroupMember(e.handle, e.groupInstanceID, e.tap, e.ip)
+	s.signalChange()
 	return &nodev1.StopGroupMemberResponse{}, nil
 }
 
