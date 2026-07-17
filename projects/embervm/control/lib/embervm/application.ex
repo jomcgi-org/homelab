@@ -165,6 +165,13 @@ defmodule Embervm.Application do
       # the publisher (which re-derives the fan-out from the rebuilt projection). Like
       # ServingStore it depends only on the op-log (started far earlier).
       {Embervm.StatefulStore, []},
+      # Composite-group hot set (R5): the L4 composite counterpart of StatefulStore,
+      # placed BEFORE the EndpointPublisher, which reads its `entry_endpoint/2` for
+      # every composite workload's L4 cluster on its boot publish. Under :rest_for_one
+      # a GroupStore restart bounces the publisher (which re-derives the fan-out from
+      # the rebuilt `group_instances` + `group_members` projection). Depends only on
+      # the op-log (started far earlier).
+      {Embervm.GroupStore, []},
       {Embervm.EndpointPublisher, endpoint_publisher_opts()},
       # The activator (R3, Task 8): the serving miss brain. It is the fallback
       # endpoint of an empty serve|<workload> cluster (a request the node Envoy
@@ -222,6 +229,14 @@ defmodule Embervm.Application do
       # wake path). With no stats_base wired (reuses EMBERVM_SERVING_STATS_BASE) every
       # tick fails open and banks nothing, mirroring ServingSweeper's no-op default.
       {Embervm.StatefulSweeper, stateful_sweeper_opts()},
+      # The composite-group supervisor (R5): the DynamicSupervisor + Registry owning
+      # one Embervm.GroupManager process per LIVE group instance. Task 7's activator
+      # calls create_group/2 here on a wake-on-connect miss. Placed AFTER GroupStore +
+      # EndpointPublisher (a GroupManager mutates the store and asks the publisher to
+      # re-push). The per-group config (supernet, port_base, pod_ip, node funs) is
+      # threaded via the :defaults opt from the chart env; with no composite supernet
+      # wired a create denies (a clean no-op).
+      {Embervm.GroupManager.Supervisor, group_manager_supervisor_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -696,6 +711,55 @@ defmodule Embervm.Application do
         end
     end
   end
+
+  # GroupManager.Supervisor (R5) config: the per-group defaults threaded into every
+  # Embervm.GroupManager the supervisor spawns. The composite supernet + port base are
+  # wired from the chart env and MUST be the SAME shared values that feed noded's
+  # CompositeSupernet + ServingPortBase (one chart value rendered into both pods), so
+  # the CP's subnet allocation and entry-DNAT-port re-derivation stay in lockstep with
+  # the daemon. pod_ip is the control-plane pod IP (the entry endpoint is published as
+  # {pod IP, vmPort}, the D-R3.11.4 lane). With no supernet wired the defaults carry
+  # the compile-time fallback (matching the chart defaults) so a no-chart `mix test`
+  # run still allocates from a sane /16.
+  defp group_manager_supervisor_opts do
+    [
+      defaults: [
+        supernet: composite_supernet_env(),
+        port_base: composite_port_base_env(),
+        pod_ip: trimmed_env("EMBERVM_POD_IP") |> nil_if_empty()
+      ]
+    ]
+  end
+
+  # The composite supernet the CP allocates per-group /24s from. Shared source of
+  # truth with noded (chart value noded.compositeSupernet rendered into BOTH pods).
+  # Defaults to the chart default 10.101.0.0/16 when unset so a no-chart run allocates
+  # from a sane /16.
+  defp composite_supernet_env do
+    case trimmed_env("EMBERVM_COMPOSITE_SUPERNET") do
+      "" -> "10.101.0.0/16"
+      raw -> raw
+    end
+  end
+
+  # The DNAT port base the CP re-derives the entry vmPort from. Shared source of truth
+  # with noded's ServingPortBase (chart value rendered into both pods). Defaults to
+  # 30000 (noded's own compile-time ServingPortBase default) when unset.
+  defp composite_port_base_env do
+    case trimmed_env("EMBERVM_COMPOSITE_PORT_BASE") do
+      "" ->
+        30_000
+
+      raw ->
+        case Integer.parse(raw) do
+          {base, ""} when base > 0 -> base
+          _ -> 30_000
+        end
+    end
+  end
+
+  defp nil_if_empty(""), do: nil
+  defp nil_if_empty(value), do: value
 
   # Parse EMBERVM_MAX_GROUP_SIZE into a positive integer, or nil when unset/malformed
   # (so the watcher default fires).

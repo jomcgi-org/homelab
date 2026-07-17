@@ -134,6 +134,13 @@ spec:
             # is a daemon config knob (defaulted in config.go, overridable here).
             - name: EMBERVM_NODED_COMPOSITE_SUPERNET
               value: {{ .Values.noded.compositeSupernet | quote }}
+            # The DNAT port base for the deterministic per-VM/entry port space
+            # (vmPort = base + hostOffset). Rendered from the SAME noded.servingPortBase
+            # value the control plane's EMBERVM_COMPOSITE_PORT_BASE renders from, so the
+            # CP's entry-endpoint port re-derivation stays in lockstep with the daemon's
+            # PortForIP. noded defaults this to 30000 when unset (config.go).
+            - name: EMBERVM_NODED_SERVING_PORT_BASE
+              value: {{ .Values.noded.servingPortBase | quote }}
             # Per-invoke FC bundle snapshots and the fixed vsock dir the snapshot
             # embeds both derive from nvmeRoot so the scratch disk is one knob.
             - name: EMBERVM_NODED_SNAPSHOT_ROOT

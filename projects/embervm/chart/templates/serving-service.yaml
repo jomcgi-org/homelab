@@ -36,4 +36,15 @@ spec:
       port: {{ $p }}
       targetPort: state-{{ $p }}
     {{- end }}
+    # The R5 composite-group entry TCP port range: one Service port per port in the
+    # values-declared range, each forwarding to the matching group-<port> container
+    # port on the node Envoy. A cluster pod connects to <serving-service>:<listenPort>
+    # and the node Envoy's dynamic tcp_proxy listener routes to the group's entry VM
+    # (or the composite activator on a miss). ClusterIP only, no edge exposure.
+    {{- $gr := .Values.servingEnvoy.compositeTcpPortRange }}
+    {{- range $p := untilStep (int $gr.start) (int (add (int $gr.end) 1)) 1 }}
+    - name: group-{{ $p }}
+      port: {{ $p }}
+      targetPort: group-{{ $p }}
+    {{- end }}
 {{- end }}

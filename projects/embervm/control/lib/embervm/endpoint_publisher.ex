@@ -91,7 +91,7 @@ defmodule Embervm.EndpointPublisher do
   # must be required even though it is called fully-qualified via the alias.
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{NodeCapacity, ServingStore, StatefulStore, WorkloadCatalog}
+  alias Embervm.{GroupStore, NodeCapacity, ServingStore, StatefulStore, WorkloadCatalog}
 
   # Debounce window: coalesce a burst of fact changes into one PUT.
   @default_debounce_ms 50
@@ -120,6 +120,17 @@ defmodule Embervm.EndpointPublisher do
   # unique across stateful workloads by the WorkloadWatcher's validation), so two
   # stateful workloads never collide on a listener name either.
   @stateful_listener_prefix "state-"
+
+  # The cluster name for a COMPOSITE group's single L4 entry endpoint (R5). The
+  # `group|` prefix namespaces group clusters from serving (`serve|`) and stateful
+  # (`state|`) ones so a workload named the same in more than one class never
+  # collides on a cluster name; it is an opaque Envoy cluster name, never parsed.
+  @group_cluster_prefix "group|"
+  # The listener name prefix for a composite group's L4 TCP entry listener. The name
+  # is `group-<listen_port>` (the entry.listenPort disambiguates, unique across
+  # composite workloads by the WorkloadWatcher's validation), so two groups never
+  # collide on a listener name either.
+  @group_listener_prefix "group-"
 
   # -- Client API ------------------------------------------------------------
 
@@ -173,22 +184,34 @@ defmodule Embervm.EndpointPublisher do
     # fallback. A workload with NEITHER a live instance NOR a configured activator
     # emits nothing (see stateful_render/1), so a cold, un-wakeable stateful
     # workload contributes no empty-endpoints cluster the sidecar's validate rejects.
-    {stateful_clusters, listeners} = stateful_render(ctx)
+    {stateful_clusters, stateful_listeners} = stateful_render(ctx)
+
+    # Composite (L4) workloads (R5): for each composite-class workload, a listener +
+    # a cluster whose single endpoint is the live ENTRY member (GroupStore.entry_endpoint/2)
+    # OR the activator TCP fallback (banked OR no instance at all, for the LIFE of the
+    # CR, decision 8). Same cold-and-no-activator omission as stateful, so a group with
+    # no live entry and no activator contributes no empty-endpoints cluster. The
+    # rendered wire is byte-identical to R4 when there are no composite workloads (the
+    # clusters/listeners lists are empty), preserving the no-composite regression.
+    {group_clusters, group_listeners} = group_render(ctx)
+
+    listeners = stateful_listeners ++ group_listeners
 
     base = %{
       version: version,
-      # Serving clusters first, then stateful ones: the serving-only slice
-      # (stateful_clusters == []) is byte-identical to the pre-R4 document.
-      clusters: serving_clusters ++ stateful_clusters,
+      # Serving clusters first, then stateful, then composite: the serving-only slice
+      # (stateful + group clusters == []) is byte-identical to the pre-R4 document,
+      # and the serving+stateful slice (group clusters == []) is byte-identical to R4.
+      clusters: serving_clusters ++ stateful_clusters ++ group_clusters,
       routes: routes
     }
 
     # Only add the `listeners` key when there is at least one L4 listener to emit.
-    # A serving-only node (no stateful workloads, or none wakeable) therefore emits
-    # the EXACT map it emitted before R4, no `listeners` key at all. (The JSON
-    # encoder does not honour Go's struct-tag omitempty, so emitting `listeners: []`
-    # WOULD change the wire bytes; the Go struct's omitempty means the absent key
-    # decodes to a nil slice, which is what the serving-only path needs.)
+    # A serving-only node (no stateful/composite workloads, or none wakeable)
+    # therefore emits the EXACT map it emitted before R4, no `listeners` key at all.
+    # (The JSON encoder does not honour Go's struct-tag omitempty, so emitting
+    # `listeners: []` WOULD change the wire bytes; the Go struct's omitempty means the
+    # absent key decodes to a nil slice, which is what the serving-only path needs.)
     if listeners == [] do
       base
     else
@@ -206,6 +229,10 @@ defmodule Embervm.EndpointPublisher do
       # published_endpoint/1 (the single live endpoint or nil). Injected in tests;
       # production supervises the singleton Embervm.StatefulStore.
       stateful_store: Keyword.get(opts, :stateful_store, StatefulStore),
+      # The composite (L4) group hot-set store, read purely for composite workloads'
+      # entry_endpoint/2 (the single live entry endpoint or nil). Injected in tests;
+      # production supervises the singleton Embervm.GroupStore.
+      group_store: Keyword.get(opts, :group_store, GroupStore),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       # The PUT seam: (node_id, desired_map) -> :ok | {:error, reason}. Production
@@ -402,6 +429,7 @@ defmodule Embervm.EndpointPublisher do
     %{
       store: state.store,
       stateful_store: state.stateful_store,
+      group_store: state.group_store,
       catalog_table: state.catalog_table,
       activator_endpoint: state.activator_endpoint,
       activator_ip: state.activator_ip,
@@ -603,6 +631,82 @@ defmodule Embervm.EndpointPublisher do
        do: %{ip: ip, port: listen_port}
 
   defp activator_tcp_endpoint(_ctx, _listen_port), do: nil
+
+  # -- composite (L4) projection (R5) ----------------------------------------
+
+  # Render the L4 listeners + clusters for every composite-class catalog workload.
+  # Returns {clusters, listeners}. For each composite workload the endpoint is the
+  # single live ENTRY member (GroupStore.entry_endpoint/2) OR the activator TCP
+  # fallback at the group's entry.listenPort (banked OR no instance at all, decision
+  # 8: the activator is the fallback for the LIFE of the CR); a workload with NEITHER
+  # (cold AND no activator configured) emits nothing, so the sidecar never receives an
+  # empty-endpoints cluster. Both lists are catalog-ordered (the workloads are sorted),
+  # so the render is deterministic across rebuilds. Byte-identical to the R4 shape when
+  # there are no composite workloads (both lists empty).
+  defp group_render(ctx) do
+    group_catalog_entries(ctx.catalog_table)
+    |> Enum.reduce({[], []}, fn {workload, cfg}, {clusters, listeners} ->
+      case group_endpoint(ctx, workload, cfg.listen_port) do
+        nil ->
+          Logger.debug(
+            "embervm endpoint publisher: composite workload #{workload} has no running entry " <>
+              "and no activator_ip configured; emitting no listener/cluster (cannot wake yet)"
+          )
+
+          {clusters, listeners}
+
+        endpoint ->
+          cluster = %{
+            name: @group_cluster_prefix <> workload,
+            endpoints: [%{ip: endpoint.ip, port: endpoint.port}],
+            connect_timeout_ms: ctx.connect_timeout_ms
+          }
+
+          listen_port = cfg.listen_port
+
+          listener = %{
+            name: @group_listener_prefix <> Integer.to_string(listen_port),
+            port: listen_port,
+            cluster: @group_cluster_prefix <> workload
+          }
+
+          {clusters ++ [cluster], listeners ++ [listener]}
+      end
+    end)
+  end
+
+  # Every composite-class workload in the catalog paired with its entry config (for
+  # the entry listenPort), catalog-ordered by name so the render is deterministic. A
+  # composite entry with no entry.listenPort is skipped (it cannot form a listener);
+  # the WorkloadWatcher rejects such a spec, so this is defence-in-depth.
+  defp group_catalog_entries(catalog_table) do
+    WorkloadCatalog.all_names(catalog_table)
+    |> Enum.sort()
+    |> Enum.flat_map(fn name ->
+      case WorkloadCatalog.fetch(catalog_table, name) do
+        {:ok, %{class: "composite", group: %{entry: %{listen_port: lp} = entry}}} when is_integer(lp) ->
+          [{name, entry}]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  # The endpoint the composite workload's L4 cluster should carry: the single live
+  # entry member if the group is running-and-entry-healthy, else the activator's
+  # fallback endpoint AT THIS WORKLOAD'S OWN entry.listenPort (the activator resolves
+  # the workload from the local accept port), else nil (cold and no activator_ip =>
+  # skipped upstream).
+  defp group_endpoint(ctx, workload, listen_port) do
+    case GroupStore.entry_endpoint(ctx.group_store, workload) do
+      %{ip: ip, port: port} when is_binary(ip) and ip != "" and is_integer(port) ->
+        %{ip: ip, port: port}
+
+      _ ->
+        activator_tcp_endpoint(ctx, listen_port)
+    end
+  end
 
   # -- version ---------------------------------------------------------------
 

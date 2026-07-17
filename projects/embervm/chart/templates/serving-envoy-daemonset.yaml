@@ -97,6 +97,16 @@ spec:
             - name: state-{{ $p }}
               containerPort: {{ $p }}
             {{- end }}
+            # The R5 composite-group entry TCP port range: one container port per port
+            # in the values-declared range, so a dynamic LDS tcp_proxy listener the
+            # control plane publishes for a composite group on any of them is reachable
+            # through the pod. Named group-<port> for discovery; the serving Service
+            # exposes the same range. Mirrors the stateful range above.
+            {{- $gr := .Values.servingEnvoy.compositeTcpPortRange }}
+            {{- range $p := untilStep (int $gr.start) (int (add (int $gr.end) 1)) 1 }}
+            - name: group-{{ $p }}
+              containerPort: {{ $p }}
+            {{- end }}
           readinessProbe:
             # Probe the data listener, not the admin /ready. Admin binds loopback
             # (127.0.0.1) for security, but a kubelet httpGet probe dials from the
