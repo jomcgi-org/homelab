@@ -438,6 +438,40 @@ func TestBootArgsForServingNIC(t *testing.T) {
 	}
 }
 
+// TestBootArgsForStatefulVolumeDevice covers the R4 image-lane fix: the writable
+// volume's device letter follows the ACTUAL drive attach order. Without a handler
+// drive (an image-lane, opaque-L4 stateful guest like Postgres) the volume is
+// drive 2 and lands on /dev/vdb; with a handler drive present the handler is drive
+// 2 (/dev/vdb) and the volume shifts to drive 3 (/dev/vdc). A fixed device would
+// signal a nonexistent block device on the handler-less path and guest-init would
+// mount nothing.
+func TestBootArgsForStatefulVolumeDevice(t *testing.T) {
+	d := New(Config{KernelBootArgs: "console=ttyS0"}, &fakeLauncher{}, nil)
+
+	// No handler drive: volume is drive 2 -> /dev/vdb.
+	noHandler := d.bootArgsFor(coldBootSpec{
+		volumeDiskPath: "/disks/vol/scratch-postgres.img",
+		volumeMount:    "/data",
+	})
+	if !strings.Contains(noHandler, "ember.volume_dev=/dev/vdb ember.volume_mount=/data") {
+		t.Fatalf("bootArgsFor(volume, no handler) = %q, want ember.volume_dev=/dev/vdb", noHandler)
+	}
+	if strings.Contains(noHandler, "ember.handler_disk") {
+		t.Fatalf("bootArgsFor(volume, no handler) = %q, want no handler tokens", noHandler)
+	}
+
+	// With a handler drive: handler is drive 2 (/dev/vdb), volume shifts to /dev/vdc.
+	withHandler := d.bootArgsFor(coldBootSpec{
+		handlerDiskPath: "/disks/bases/wl/handler.zip",
+		handlerZipBytes: 2048,
+		volumeDiskPath:  "/disks/vol/scratch-postgres.img",
+		volumeMount:     "/data",
+	})
+	if !strings.Contains(withHandler, "ember.volume_dev=/dev/vdc ember.volume_mount=/data") {
+		t.Fatalf("bootArgsFor(volume, with handler) = %q, want ember.volume_dev=/dev/vdc", withHandler)
+	}
+}
+
 // TestBootArgsForMmdsEnv covers the R4 D-R4.PR-7.1 MMDS-lite seam: mmdsEnv
 // entries are rendered as sorted, base64url-encoded ember.env.<KEY>= tokens; an
 // invalid key is skipped; an empty/nil map emits nothing (so RELIGHT, which
