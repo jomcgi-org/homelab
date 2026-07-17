@@ -459,7 +459,7 @@ defmodule Embervm.GroupManager do
               # The durable relit edge failed: abort back to banked and fall back to
               # fresh (the set is intact, but we cannot record the relight).
               _ = GroupStore.mark(state.store, instance.instance_id, :relight_abort)
-              fallback_fresh(state, instance, subnet_cidr, secret, group, {:relit_record_failed, reason})
+              fallback_fresh(state, instance, subnet_cidr, secret, group, plan, {:relit_record_failed, reason})
           end
         else
           {:error, reason} ->
@@ -467,7 +467,7 @@ defmodule Embervm.GroupManager do
             # FAILED_PRECONDITION, decision 7): abort back to banked, then evict the
             # whole set and fresh-boot in the same call. relight_abort is ETS-only.
             _ = GroupStore.mark(state.store, instance.instance_id, :relight_abort)
-            fallback_fresh(state, instance, subnet_cidr, secret, group, {:relight_failed, reason})
+            fallback_fresh(state, instance, subnet_cidr, secret, group, plan, {:relight_failed, reason})
         end
 
       {:error, reason} ->
@@ -486,13 +486,19 @@ defmodule Embervm.GroupManager do
   # parked caller is still blocked on the one wake_group call, so this holds the
   # connection across the fallback. group_fresh_booted{reason} records the discarded
   # warmth.
-  defp fallback_fresh(state, instance, subnet_cidr, secret, group, reason) do
+  defp fallback_fresh(state, instance, subnet_cidr, secret, group, plan, reason) do
     fresh_reason = fresh_reason_string(reason)
     # Free tap+IP for any member that DID resume before the relight aborted, so the
     # fresh re-pin does not collide on an occupied tap. Drains from the instance's
     # stored live member rows (member_started recorded each resumed member).
     _ = destroy_live_members(state)
-    _ = evict_set(state, instance)
+    # Evict the WHOLE banked set (all-or-nothing, decision 3): the per-member bundle
+    # refs come from the `plan` captured at wake start (wake_plan read the banked rows
+    # BEFORE any relight cleared them), NOT the current live rows, which the resume /
+    # destroy path has since mutated. Passing the plan is what makes the eviction
+    # complete: every member's bundle is EvictSnapshot'd, not just the one that never
+    # relit and so still carries its ref in the live rows.
+    _ = evict_set(state, instance, plan)
 
     with {:ok, _} <- GroupStore.mark(state.store, instance.instance_id, :fresh_boot),
          {:ok, _} <-
@@ -657,15 +663,18 @@ defmodule Embervm.GroupManager do
     end
   end
 
-  # Evict the banked set durably (group_set_evicted clears set_id + each member's
-  # snapshot_ref, no FSM edge; the fresh_booting move is the mark/2 in
-  # fallback_fresh) so a rebuild agrees the warmth is gone, and best-effort
-  # EvictSnapshot each member's bundle on the node (the snapshots must not leak).
-  defp evict_set(state, instance) do
-    members = GroupStore.members(state.store, instance.instance_id)
+  # Evict the WHOLE banked set (all-or-nothing, decision 3): durably (group_set_evicted
+  # clears set_id + every member's snapshot_ref in the store, no FSM edge; the
+  # fresh_booting move is the mark/2 in fallback_fresh) so a rebuild agrees the warmth
+  # is gone, AND best-effort EvictSnapshot every member's bundle on the node so no
+  # orphan snapshot leaks. The per-member refs come from `plan` (captured at wake
+  # start, before relight cleared the live rows' snapshot_refs), so the eviction is
+  # complete regardless of which members relit or were destroyed. A member with no
+  # captured ref (never banked) is simply skipped.
+  defp evict_set(state, instance, plan) do
     _ = GroupStore.evict_set(state.store, instance.instance_id, "relight_fallback")
 
-    for %{snapshot_ref: ref} <- members, is_binary(ref) and ref != "" do
+    for %{snapshot_ref: ref} <- plan, is_binary(ref) and ref != "" do
       _ = evict_snapshot(state, ref)
     end
 
