@@ -137,6 +137,22 @@ defmodule Embervm.Router do
     handle_get_stateful(conn, name)
   end
 
+  # DELETE /v1/stateful/:name/instance (management auth): destroy the live
+  # instance AND evict the banked bundle, so the next connection cold-boots the
+  # current image against the still-intact volume. Returns the counts destroyed
+  # + evicted (each 0 or 1, the class is a singleton).
+  delete "/v1/stateful/:name/instance" do
+    handle_destroy_stateful_instance(conn, name)
+  end
+
+  # DELETE /v1/stateful/:name/volume (management auth): the ONLY destructive
+  # data verb. REFUSED (409) while any non-terminal instance exists for the
+  # workload; a CR deletion never reaches this, deletion is always this
+  # explicit act.
+  delete "/v1/stateful/:name/volume" do
+    handle_delete_stateful_volume(conn, name)
+  end
+
   # The activator fallback (R3, Task 8): the catch-all is the front-end the node
   # Envoy routes a MISS to (the fallback endpoint of an empty serve|<workload>
   # cluster). It is identified by the `x-ember-workload` request header the serving
@@ -954,6 +970,40 @@ defmodule Embervm.Router do
 
   defp stateful_store, do: Application.get_env(:embervm, :stateful_store_mod, Embervm.StatefulStore)
   defp stateful_store_server, do: Application.get_env(:embervm, :stateful_store, Embervm.StatefulStore)
+
+  # DELETE /v1/stateful/:name/instance handler (management auth): destroy the
+  # live instance + evict the banked bundle via Embervm.StatefulManager. A
+  # workload with no instances destroys/evicts zero (200), never a 404 (mirrors
+  # the serving forced-roll's "rolling nothing is still success" shape).
+  defp handle_destroy_stateful_instance(conn, workload) do
+    %{destroyed: destroyed, evicted: evicted} =
+      stateful_manager().destroy_instance(stateful_manager_server(), workload)
+
+    send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+  end
+
+  # DELETE /v1/stateful/:name/volume handler (management auth): the ONLY
+  # destructive data verb. 409 while any non-terminal instance exists (the
+  # manager's refusal reason); otherwise 200 with deleted: true.
+  defp handle_delete_stateful_volume(conn, workload) do
+    case stateful_manager().delete_volume(stateful_manager_server(), workload) do
+      {:ok, %{deleted: true}} ->
+        send_json(conn, 200, %{workload: workload, deleted: true})
+
+      {:error, :instance_exists} ->
+        send_json(conn, 409, %{
+          error: "an instance still exists for this workload; destroy it first",
+          workload: workload,
+          retryable: false
+        })
+
+      {:error, reason} ->
+        send_json(conn, 500, %{error: "volume delete failed", reason: inspect(reason), workload: workload, retryable: true})
+    end
+  end
+
+  defp stateful_manager, do: Application.get_env(:embervm, :stateful_manager_mod, Embervm.StatefulManager)
+  defp stateful_manager_server, do: Application.get_env(:embervm, :stateful_manager, Embervm.StatefulManager)
 
   defp serving_sweeper, do: Application.get_env(:embervm, :serving_sweeper_mod, Embervm.ServingSweeper)
   defp serving_sweeper_server, do: Application.get_env(:embervm, :serving_sweeper, Embervm.ServingSweeper)

@@ -179,6 +179,31 @@ defmodule Embervm.Application do
       # and BEFORE the Router (whose forced-roll handler calls it). With no serving node
       # wired (no stats_base) every tick fails open and banks nothing.
       {Embervm.ServingSweeper, serving_sweeper_opts()},
+      # The stateful wake brain (R4, Task 8): the L4 counterpart of ServingManager,
+      # and the rung's headline verb. It is the fallback endpoint of an empty
+      # state|<workload> cluster (an inbound TCP connection the node Envoy routes
+      # to Embervm.TcpActivator IS a miss for that workload, resolved by the
+      # LOCAL ACCEPT PORT, decision 5), single-flights the wake (StartStateful
+      # relight or cold/fresh boot on the volume), publishes the fresh endpoint
+      # via the EndpointPublisher, and resolves the parked connection so the
+      # activator splices bytes to the VM. Placed AFTER StatefulStore +
+      # EndpointPublisher (it mutates the store and asks the publisher to
+      # re-push) and BEFORE TcpActivator (which calls it) and the Router (whose
+      # DELETE /v1/stateful/:name/instance + /volume handlers call it). Its
+      # adoption reconcile runs on boot + timer, reconciling live stateful VMs /
+      # banked bundles / volume facts from node facts so a control-plane restart
+      # republishes exactly the same endpoint without touching any VM. With no
+      # stateful node wired, a wake denies :no_capacity.
+      {Embervm.StatefulManager, stateful_manager_opts()},
+      # The L4 TCP activator (R4, Task 8): binds the values-declared stateful
+      # port range and dispatches an accepted connection to StatefulManager.wake/2
+      # (single-flighted there), then splices bytes bidirectionally between the
+      # client and the woken VM. Placed AFTER StatefulManager (it calls wake/2)
+      # and LAST among the stateful children: it is the front door, nothing
+      # depends on it being up. With an empty port range (the default; the chart
+      # wires EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE) it binds nothing, a clean
+      # no-op, exactly like PoolManager priming nothing with no base ready.
+      {Embervm.TcpActivator, tcp_activator_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -393,7 +418,7 @@ defmodule Embervm.Application do
   defp endpoint_publisher_opts do
     [
       activator_endpoint: activator_endpoint(),
-      activator_tcp_endpoint: activator_tcp_endpoint()
+      activator_ip: stateful_activator_ip()
     ] ++ repush_opt()
   end
 
@@ -411,22 +436,22 @@ defmodule Embervm.Application do
     end
   end
 
-  # The STATEFUL activator's L4 (raw TCP) endpoint the node Envoy's stateful
-  # listener falls back to when a stateful workload has no live instance (the
-  # wake-on-connect fallback), from EMBERVM_STATEFUL_ACTIVATOR_IP +
-  # EMBERVM_STATEFUL_ACTIVATOR_TCP_PORT (a later task wires the chart values). Unset
-  # (either empty) -> nil, which makes a cold stateful workload emit NO listener/
-  # cluster at all (it cannot be woken yet), so the sidecar never sees an
-  # empty-endpoints cluster. Distinct from activator_endpoint (the L7 serving
-  # fallback over HTTP).
-  defp activator_tcp_endpoint do
-    ip = trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_IP")
-    port = trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_TCP_PORT")
-
-    if ip != "" and port != "" do
-      %{ip: ip, port: String.to_integer(port)}
-    else
-      nil
+  # The STATEFUL activator's IP (Task 8, D-R4.PR-4.1), from
+  # EMBERVM_STATEFUL_ACTIVATOR_IP (the pod's own routable IP, wired via the
+  # chart's downward API, matching how EMBERVM_SERVING_ACTIVATOR_IP is wired for
+  # the L7 activator). This is a SINGLE ip, not an {ip, port} pair: the L4
+  # activator resolves the workload from the LOCAL ACCEPT PORT it is dialed on
+  # (there is no header at L4, decision 5), so EndpointPublisher derives each
+  # stateful workload's OWN fallback port from its catalog listen_port, never a
+  # single shared port. Unset -> nil, which makes a cold stateful workload emit
+  # NO listener/cluster at all (it cannot be woken yet), so the sidecar never
+  # sees an empty-endpoints cluster. Distinct from activator_endpoint (the L7
+  # serving fallback over HTTP, one fixed {ip, port} because the HTTP activator
+  # resolves the workload from the injected x-ember-workload header instead).
+  defp stateful_activator_ip do
+    case trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_IP") do
+      "" -> nil
+      ip -> ip
     end
   end
 
@@ -501,6 +526,88 @@ defmodule Embervm.Application do
     case trimmed_env("EMBERVM_SERVING_STATS_BASE") do
       "" -> nil
       raw -> raw
+    end
+  end
+
+  # StatefulManager (R4, Task 8) config: the adoption reconcile cadence + the
+  # wake-rate/parked-cap knobs. Defaults keep the reconcile timer ON in
+  # production; the module defaults the caps (10/min wake, 16 parked), an order
+  # of magnitude below serving's because a stateful workload is a
+  # singleton-owned sandbox, not multi-tenant fan-in.
+  defp stateful_manager_opts do
+    [reconcile_interval_ms: stateful_reconcile_interval_ms()] ++ stateful_wake_opts()
+  end
+
+  # Stateful adoption reconcile cadence (EMBERVM_STATEFUL_RECONCILE_INTERVAL_MS);
+  # default 10s, matching the serving/session reconcile tempo so a restart's
+  # endpoint re-derivation lands fast.
+  defp stateful_reconcile_interval_ms do
+    case trimmed_env("EMBERVM_STATEFUL_RECONCILE_INTERVAL_MS") do
+      "" -> 10_000
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  # Stateful wake-rate + parked cap (EMBERVM_STATEFUL_WAKE_MAX / _WINDOW_MS /
+  # _PARK_CAP); unset uses the StatefulManager module defaults. A wake_max of 0
+  # disables the wake-rate limit.
+  defp stateful_wake_opts do
+    [
+      wake_max: int_env_or_nil("EMBERVM_STATEFUL_WAKE_MAX"),
+      wake_window_ms: int_env_or_nil("EMBERVM_STATEFUL_WAKE_WINDOW_MS"),
+      park_cap: int_env_or_nil("EMBERVM_STATEFUL_PARK_CAP")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  # TcpActivator (R4, Task 8) config: the values-declared stateful TCP port
+  # range it binds (mirroring the chart's servingEnvoy.statefulTcpPortRange,
+  # default 5400-5409) and the activator's own advertised ip (fed straight into
+  # EndpointPublisher's activator_ip option too, see endpoint_publisher_opts/0).
+  # An empty range binds NOTHING: a control plane with no stateful activator ip
+  # configured runs with no L4 listener, exactly the "cannot wake yet" no-op
+  # EndpointPublisher's stateful_render already handles for a nil activator_ip
+  # (no point binding ports nothing is dialed on, and it keeps a plain
+  # `mix test` / no-chart-values run from claiming a fixed port range on the
+  # workstation or a shared CI executor).
+  defp tcp_activator_opts do
+    [port_range: stateful_activator_port_range(), activator_ip: stateful_activator_ip()]
+  end
+
+  @default_stateful_activator_port_start 5400
+  @default_stateful_activator_port_end 5409
+
+  # Only binds a range when EMBERVM_STATEFUL_ACTIVATOR_IP is actually
+  # configured (an operator who wired the ip gets the sane 5400-5409 default
+  # unless they also override the range); with no activator_ip configured this
+  # returns [] (no listener), so an ordinary `mix test` / no-chart-values run
+  # never claims fixed ports. EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE is a
+  # "start-end" pair (e.g. "5400-5409"); EMBERVM_STATEFUL_ACTIVATOR_PORT_START/
+  # _END are the split form the chart may render instead.
+  defp stateful_activator_port_range do
+    if stateful_activator_ip() do
+      case trimmed_env("EMBERVM_STATEFUL_ACTIVATOR_PORT_RANGE") do
+        "" ->
+          start_port = int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_START") || @default_stateful_activator_port_start
+          end_port = int_env_or_nil("EMBERVM_STATEFUL_ACTIVATOR_PORT_END") || @default_stateful_activator_port_end
+          Enum.to_list(start_port..end_port)
+
+        raw ->
+          case String.split(raw, "-", parts: 2) do
+            [s, e] ->
+              with {start_port, ""} <- Integer.parse(String.trim(s)),
+                   {end_port, ""} <- Integer.parse(String.trim(e)) do
+                Enum.to_list(start_port..end_port)
+              else
+                _ -> []
+              end
+
+            _ ->
+              []
+          end
+      end
+    else
+      []
     end
   end
 

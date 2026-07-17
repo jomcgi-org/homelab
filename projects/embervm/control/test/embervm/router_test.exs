@@ -170,6 +170,21 @@ defmodule Embervm.RouterTest do
     def fetch(_table, _name), do: :error
   end
 
+  # The router resolves the stateful manager from :stateful_manager_mod for the
+  # DELETE /v1/stateful/:name/instance + /volume handlers, mirroring
+  # FakeServingManager for the forced-roll handler. wl-live destroys/evicts
+  # cleanly; wl-blocked's delete_volume refuses with :instance_exists (409);
+  # wl-boom's delete_volume raises a generic store error (500).
+  defmodule FakeStatefulManager do
+    def destroy_instance(_srv, "wl-live"), do: %{destroyed: 1, evicted: 0}
+    def destroy_instance(_srv, "wl-empty"), do: %{destroyed: 0, evicted: 0}
+    def destroy_instance(_srv, _wl), do: %{destroyed: 0, evicted: 1}
+
+    def delete_volume(_srv, "wl-blocked"), do: {:error, :instance_exists}
+    def delete_volume(_srv, "wl-boom"), do: {:error, {:store, :disk_full}}
+    def delete_volume(_srv, _wl), do: {:ok, %{deleted: true}}
+  end
+
   setup do
     Application.put_env(:embervm, :authenticator, FakeAuth)
 
@@ -185,6 +200,7 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :test_guest_port)
       Application.delete_env(:embervm, :stateful_store_mod)
       Application.delete_env(:embervm, :workload_catalog_mod)
+      Application.delete_env(:embervm, :stateful_manager_mod)
     end)
 
     :ok
@@ -193,6 +209,10 @@ defmodule Embervm.RouterTest do
   defp with_stateful_fakes do
     Application.put_env(:embervm, :stateful_store_mod, FakeStatefulStore)
     Application.put_env(:embervm, :workload_catalog_mod, FakeCatalog)
+  end
+
+  defp with_stateful_manager_fake do
+    Application.put_env(:embervm, :stateful_manager_mod, FakeStatefulManager)
   end
 
   defp with_serving_fake do
@@ -770,5 +790,67 @@ defmodule Embervm.RouterTest do
   test "GET /v1/stateful/:name needs management auth" do
     with_stateful_fakes()
     assert req(:get, "/v1/stateful/wl-live").status == 401
+  end
+
+  # -- DELETE /v1/stateful/:name/instance (R4) -------------------------------
+
+  test "DELETE /v1/stateful/:name/instance destroys the live instance and evicts the bundle" do
+    with_stateful_manager_fake()
+
+    resp = req(:delete, "/v1/stateful/wl-live/instance", auth("good"))
+    assert resp.status == 200
+    body = json(resp.body)
+    assert body["workload"] == "wl-live"
+    assert body["destroyed"] == 1
+    assert body["evicted"] == 0
+  end
+
+  test "DELETE /v1/stateful/:name/instance on an empty workload rolls zero, not a 404" do
+    with_stateful_manager_fake()
+
+    resp = req(:delete, "/v1/stateful/wl-empty/instance", auth("good"))
+    assert resp.status == 200
+    body = json(resp.body)
+    assert body["destroyed"] == 0
+    assert body["evicted"] == 0
+  end
+
+  test "DELETE /v1/stateful/:name/instance needs management auth" do
+    with_stateful_manager_fake()
+    assert req(:delete, "/v1/stateful/wl-live/instance").status == 401
+  end
+
+  # -- DELETE /v1/stateful/:name/volume (R4) ---------------------------------
+
+  test "DELETE /v1/stateful/:name/volume deletes a clean workload's volume" do
+    with_stateful_manager_fake()
+
+    resp = req(:delete, "/v1/stateful/wl-clean/volume", auth("good"))
+    assert resp.status == 200
+    body = json(resp.body)
+    assert body["workload"] == "wl-clean"
+    assert body["deleted"] == true
+  end
+
+  test "DELETE /v1/stateful/:name/volume is REFUSED (409) while an instance exists" do
+    with_stateful_manager_fake()
+
+    resp = req(:delete, "/v1/stateful/wl-blocked/volume", auth("good"))
+    assert resp.status == 409
+    body = json(resp.body)
+    assert body["workload"] == "wl-blocked"
+    refute body["retryable"]
+  end
+
+  test "DELETE /v1/stateful/:name/volume surfaces a store failure as 500" do
+    with_stateful_manager_fake()
+
+    resp = req(:delete, "/v1/stateful/wl-boom/volume", auth("good"))
+    assert resp.status == 500
+  end
+
+  test "DELETE /v1/stateful/:name/volume needs management auth" do
+    with_stateful_manager_fake()
+    assert req(:delete, "/v1/stateful/wl-clean/volume").status == 401
   end
 end
