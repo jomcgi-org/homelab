@@ -13,7 +13,7 @@ go_library(
     deps = [
         "//bazel/tools/hf2oci/pkg/copy",
         "//bazel/tools/hf2oci/pkg/hf",
-        "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_cobra//:go_default_library",
     ],
 )
 
@@ -28,8 +28,8 @@ go_test(
     embed = [":cmd"],
     deps = [
         "//bazel/tools/hf2oci/pkg/copy",
-        "@com_github_spf13_cobra//:cobra",
-        "@com_github_stretchr_testify//assert",
-        "@com_github_stretchr_testify//require",
+        "@com_github_spf13_cobra//:go_default_library",
+        "@com_github_stretchr_testify//assert:go_default_library",
+        "@com_github_stretchr_testify//require:go_default_library",
     ],
 )

@@ -7,7 +7,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//projects/embervm/xds/server",
-        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//:go_default_library",
     ],
 )
 

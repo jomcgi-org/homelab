@@ -15,7 +15,7 @@ go_library(
     deps = [
         "//projects/firecracker/substrate/node/fcvm/fcclient",
         "//projects/firecracker/substrate/substrate",
-        "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//:go_default_library",
     ],
 )
 

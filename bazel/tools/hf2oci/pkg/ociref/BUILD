@@ -14,6 +14,6 @@ go_test(
     embed = [":ociref"],
     deps = [
         "//bazel/tools/hf2oci/pkg/hf",
-        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//assert:go_default_library",
     ],
 )

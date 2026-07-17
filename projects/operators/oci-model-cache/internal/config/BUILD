@@ -12,7 +12,7 @@ go_test(
     srcs = ["config_test.go"],
     embed = [":config"],
     deps = [
-        "@com_github_stretchr_testify//assert",
-        "@com_github_stretchr_testify//require",
+        "@com_github_stretchr_testify//assert:go_default_library",
+        "@com_github_stretchr_testify//require:go_default_library",
     ],
 )
