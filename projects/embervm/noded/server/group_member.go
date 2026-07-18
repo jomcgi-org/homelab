@@ -328,17 +328,22 @@ func (s *Server) groupMemberMAC(groupInstanceID, memberName string, memberIndex 
 }
 
 // resolveGroupMemberBoot resolves a FRESH member source to its bootable rootfs +
-// harness init, exactly like the stateful cold-boot source resolution: the source
-// names a built base (a NIC cold boot cannot resume a vsock-only base memory
-// snapshot, D-R3.4.2), whose imageDigest resolves to a provisioned runtime image.
+// harness init. Unlike the stateful cold-boot path (which resumes a built base
+// snapshot and so keys the base registry), a composite member FRESH is a plain
+// rootfs cold boot (plan Task 6: "FRESH cold-boots the image rootfs"; a NIC cold
+// boot never resumes a vsock-only base memory snapshot, D-R3.4.2). So the source
+// names a provisioned runtime image directly, not a built base: the control plane
+// sends member.image_ref as the source, the per-member rootfs is staged on the
+// node by the noded init-container base builder, and s.cfg.Images is the node-side
+// image identity table (image_ref -> {rootfsPath, harnessInit}). Resolving through
+// s.bases here (keyed by baseKeyFor(workload, image_ref, revision), never the raw
+// image_ref) could never match the source the control plane sends, so every
+// composite member start failed with "not a ready base"; a composite cluster could
+// not boot at all until this resolved the image directly.
 func (s *Server) resolveGroupMemberBoot(source string) (rootfsPath, harnessInit string, err error) {
-	base, ok := s.bases.get(source)
-	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
-		return "", "", status.Errorf(codes.FailedPrecondition, "noded: group member source %q is not a ready base on this node", source)
-	}
-	img, ok := s.cfg.Images[base.imageDigest]
+	img, ok := s.cfg.Images[source]
 	if !ok {
-		return "", "", status.Errorf(codes.FailedPrecondition, "noded: runtime image %q for source %q not provisioned on this node", base.imageDigest, source)
+		return "", "", status.Errorf(codes.FailedPrecondition, "noded: group member source %q is not a provisioned image on this node", source)
 	}
 	harnessInit = img.HarnessInit
 	if harnessInit == "" {

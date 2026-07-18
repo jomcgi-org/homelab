@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strconv"
@@ -147,12 +148,15 @@ func (c *fakeGroupClock) Resync(_ context.Context, uds string) error {
 	defer c.mu.Unlock()
 	c.calls++
 	c.lastUDS = uds
-	return c.err
+	if c.err != nil {
+		return fmt.Errorf("fake group clock resync: %w", c.err)
+	}
+	return nil
 }
 
 // newGroupMemberTestServer wires a Server with the full group member lifecycle
-// (network + member driver + clock), a ready base "src-a" the FRESH source resolves
-// against, and short ready timeouts.
+// (network + member driver + clock), a provisioned image "src-a" the FRESH source
+// resolves against, and short ready timeouts.
 func newGroupMemberTestServer(t *testing.T) (*Server, *fakeGroupNet, *fakeGroupMemberDriver, *fakeGroupClock) {
 	t.Helper()
 	dir := t.TempDir()
@@ -165,7 +169,7 @@ func newGroupMemberTestServer(t *testing.T) (*Server, *fakeGroupNet, *fakeGroupM
 			Arch: "amd64", Node: "node-4", MaxLiveVMs: 8, SnapshotRoot: dir,
 			BootReadyTimeout:    2 * time.Second,
 			RestoreReadyTimeout: 2 * time.Second,
-			Images:              map[string]config.Image{"img-a": {RootfsPath: "/rootfs/a"}},
+			Images:              map[string]config.Image{"src-a": {RootfsPath: "/rootfs/a"}},
 		},
 		Driver:       groupMemberVMDriverAdapter{gmd},
 		Transport:    &fakeTransport{},
@@ -176,9 +180,9 @@ func newGroupMemberTestServer(t *testing.T) (*Server, *fakeGroupNet, *fakeGroupM
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	s.memHeadroom = func() uint64 { return 0 }
-	// A ready base "src-a" the FRESH source resolves to (image-lane: source names a
-	// base whose imageDigest is a provisioned runtime image, exactly like stateful).
-	s.bases.readyBuild("src-a", "wl-grp", "img-a", "/shim/ready", 2048)
+	// A composite member FRESH is a plain rootfs cold boot: the source names a
+	// PROVISIONED IMAGE directly (the control plane sends member.image_ref), not a
+	// built base snapshot. "src-a" is provisioned above in Config.Images.
 	// Stand up the group network so StartGroupMember's existence check passes.
 	if _, err := s.CreateGroupNetwork(context.Background(), &nodev1.CreateGroupNetworkRequest{
 		GroupInstanceId: "grp-A", Cidr: "10.101.1.0/24",
@@ -269,6 +273,30 @@ func TestStartGroupMemberFreshHealthGateFailure(t *testing.T) {
 	}
 	if len(s.nodeStatus().GetGroupMemberVms()) != 0 {
 		t.Error("no member should be published on a health-gate failure")
+	}
+}
+
+// TestStartGroupMemberFreshUnprovisionedImageFails proves a FRESH source that is not
+// a provisioned image on this node is rejected with FailedPrecondition (no VM start,
+// no tap). This is the regression guard for the composite-boot outage: the control
+// plane sends member.image_ref as the source and it must resolve directly against
+// Config.Images. An image absent from that table (a provisioning gap, or a source
+// that is a base key rather than an image_ref) fails here rather than silently.
+func TestStartGroupMemberFreshUnprovisionedImageFails(t *testing.T) {
+	s, gn, gmd, _ := newGroupMemberTestServer(t)
+	_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
+		GroupInstanceId: "grp-A", MemberName: "worker-0", MemberIndex: 0,
+		Ip: "127.0.0.1", Source: "not-provisioned", HealthPort: 1,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unprovisioned FRESH source: got %v want FailedPrecondition", err)
+	}
+	if gmd.claims != 0 {
+		t.Errorf("no VM should be claimed for an unresolvable source (claims=%d)", gmd.claims)
+	}
+	if len(gn.taps) != 0 {
+		t.Error("no tap should be pinned for an unresolvable source")
 	}
 }
 
