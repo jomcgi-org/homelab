@@ -149,8 +149,9 @@ def status_cache_state_changed_at() -> float | None:
 # since a queued visitor has no way to know they are waiting.
 # ---------------------------------------------------------------------------
 
+_QUERY_SEMAPHORE_SIZE = int(os.environ.get("EMBER_DEMO_MAX_CONCURRENT", "4"))
 _query_semaphore = asyncio.Semaphore(
-    int(os.environ.get("EMBER_DEMO_MAX_CONCURRENT", "4"))
+    _QUERY_SEMAPHORE_SIZE
 )
 
 
