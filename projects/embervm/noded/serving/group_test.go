@@ -325,6 +325,37 @@ func TestGroupManagerCreateRebuildsBridgeAfterAdopt(t *testing.T) {
 	}
 }
 
+// TestGroupManagerCreateToleratesExistingBridgeAddress is the regression for the
+// bug the bridge-rebuild fix exposed: an idempotent re-issue re-runs the bridge
+// setup, and on an already-addressed bridge `ip addr add` returns "Address already
+// assigned". That must be tolerated as the desired end-state (not treated as a hard
+// failure that tears the bridge back down). Mirrors the casualty-adoption path: a
+// record is re-seeded on boot, then a wake re-issues CreateGroupNetwork.
+func TestGroupManagerCreateToleratesExistingBridgeAddress(t *testing.T) {
+	fr := &fakeRunner{failOn: map[string]error{
+		"ip addr": errors.New("exit status 2: Error: ipv4: Address already assigned."),
+	}}
+	m, err := NewGroupManager(fr, "10.101.0.0/16", "", "", 40000)
+	if err != nil {
+		t.Fatalf("NewGroupManager: %v", err)
+	}
+	// Boot rescan seeds the record without the device.
+	if err := m.AdoptGroupNetwork("grp-A", "10.101.1.0/24", 0); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	// The re-issue ensures the bridge; the addr add reports already-assigned, which
+	// must be tolerated so the create succeeds.
+	if _, _, err := m.CreateGroupNetwork(context.Background(), "grp-A", "10.101.1.0/24"); err != nil {
+		t.Fatalf("re-issue must tolerate an already-assigned gateway addr, got: %v", err)
+	}
+	// It must NOT have torn the bridge down on the tolerated addr error.
+	for _, c := range fr.calls {
+		if strings.HasPrefix(strings.Join(c, " "), "ip link del ") {
+			t.Errorf("re-issue tore the bridge down on an already-assigned addr: %v", c)
+		}
+	}
+}
+
 // TestGroupManagerDeleteAndBridgeCommands asserts a create issues the bridge
 // setup and a delete issues the bridge teardown, and that delete is idempotent.
 func TestGroupManagerDeleteAndBridgeCommands(t *testing.T) {

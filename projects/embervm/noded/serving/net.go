@@ -450,7 +450,15 @@ func isAlreadyExists(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "file exists") || strings.Contains(s, "already exists")
+	// "file exists" / "already exists": a duplicate `ip link add` (bridge or tap).
+	// "already assigned": a duplicate `ip addr add` on a device that already holds
+	// the address (iproute2 prints "Error: ipv4: Address already assigned."), which
+	// is the desired end-state when an idempotent bridge re-issue re-runs the setup
+	// against an already-addressed bridge. Tolerating it keeps ensureBridgeDevice
+	// idempotent instead of tearing a healthy bridge back down.
+	return strings.Contains(s, "file exists") ||
+		strings.Contains(s, "already exists") ||
+		strings.Contains(s, "already assigned")
 }
 
 // TapNameForIP derives the deterministic tap device name from a VM IP: "emtap" plus
