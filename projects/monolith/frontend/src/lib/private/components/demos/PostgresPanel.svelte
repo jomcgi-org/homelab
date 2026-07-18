@@ -216,6 +216,18 @@
     return { mmss: `${mm}:${ss}`, clockLabel };
   });
 
+  // Who-woke-it inference: client-side only, no backend signal for this.
+  // prevState is the state seen on the previous poll (plain let, mutated
+  // inside pollStatus, never read reactively so it can't trigger an effect
+  // loop). lastOwnActivityAt is the wall-clock time our own last runQuery
+  // finished; likewise a plain let. othersWoke is the one piece that needs
+  // to be $state, since it must persist across polls and render.
+  let prevState = null;
+  let lastOwnActivityAt = 0;
+  let othersWoke = $state(false);
+
+  const WAKING_STATES = new Set(["relighting", "cold_booting", "starting", "serving"]);
+
   async function pollStatus() {
     try {
       const resp = await fetch(`${API}/status`);
@@ -237,9 +249,15 @@
           : 0;
       if (body.state === "banked") {
         startSavingsTimer();
+        othersWoke = false;
       } else {
         stopSavingsTimer();
       }
+      const wasAsleep = prevState == null || prevState === "banked";
+      if (wasAsleep && WAKING_STATES.has(body.state) && !running) {
+        othersWoke = true;
+      }
+      prevState = body.state;
     } catch (err) {
       statusError = String(err);
     }
@@ -269,6 +287,7 @@
     if (running) return;
     running = true;
     runError = "";
+    othersWoke = false;
     startStopwatch();
     try {
       const result = await fetchWithBackoff(() => attemptQuery(mode));
@@ -289,6 +308,7 @@
       flashConnectPulse();
     } finally {
       running = false;
+      lastOwnActivityAt = Date.now();
       cancelPendingRetry();
       stopStopwatch();
     }
@@ -470,6 +490,22 @@
       ? "Dozing off any moment."
       : null,
   );
+
+  // Who-woke-it narration: with multiple visitors on the same demo, the
+  // panel otherwise can't say whether the VM is awake because of you or
+  // someone else. othersWoke covers the transition (set in pollStatus);
+  // the second branch covers the ongoing case, an in-flight visit that
+  // keeps last_active_at fresh without any activity of our own.
+  let othersHint = $derived(
+    othersWoke
+      ? "Another visitor just woke it."
+      : status?.state === "serving" &&
+          !running &&
+          Date.now() - lastOwnActivityAt > 5000 &&
+          idleSeconds < 1.5
+        ? "Another visitor is using it right now."
+        : null,
+  );
 </script>
 
 <section class="pg-panel">
@@ -486,7 +522,7 @@
           {asleepWake}.
         </p>
       {:else}
-        <p class="state-sentence">{dozeHint ?? stateView.sentence}</p>
+        <p class="state-sentence">{dozeHint ?? othersHint ?? stateView.sentence}</p>
       {/if}
       <dl class="state-facts">
         <div>
