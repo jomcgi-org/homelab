@@ -44,6 +44,12 @@ Today a noded pod restart destroys every live VM and group bridge. Add a drain p
 pre-stop (or control-plane-orchestrated pre-roll) banks everything bankable, then the new
 noded relights or adopts on start.
 
+**Availability contract (v1): spot-instance semantics with a 2-minute preemption bound.**
+A roll gives every workload up to 2 minutes of drain notice to checkpoint/bank. The R6
+invariant is "state is always durable and a routine roll never loses data", not "rolls are
+seamless". A higher-availability tier (live migration, overlapping generations) is
+recorded as a future rung, not v1.
+
 - Stateful workloads bank via the ADR 008 interruptible-bank machinery.
 - Composite groups bank as a unit (all-members-or-none, the existing bundle-set contract).
 - Sessions bank via the R2 bank path.
