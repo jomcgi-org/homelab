@@ -19,6 +19,7 @@ import chat.module
 import cluster.module
 import demos.module
 import dr_jobs.module
+import ember_public.module
 import faas.module
 import grimoire.module
 import hikes.module
@@ -50,6 +51,7 @@ ALL_MODULES: tuple[Module, ...] = (
     artifact.module.MODULE,
     faas.module.MODULE,
     demos.module.MODULE,
+    ember_public.module.MODULE,
     # MCP-only domains (no HTTP routes of their own). Placed here, before
     # semgrep_scan, so MCP tool registration order matches the historical
     # app/main.py import order (knowledge, agent, cluster, semgrep_scan,

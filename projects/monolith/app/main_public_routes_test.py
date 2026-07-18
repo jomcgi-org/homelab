@@ -60,6 +60,7 @@ REQUIRED_PATHS = [
     "/api/knowledge/public/graph",
     "/api/knowledge/public/notes/{note_id}",
     "/api/home/observability/stats",
+    "/api/ember/postgres/status",
 ]
 
 # Prefixes for the wholly-public domains; at least one route per prefix must
@@ -152,6 +153,10 @@ ALLOWED_PREFIXES = (
     # register_public). The router filters visibility=public, so a private
     # function 404s here (faas/invoke_router_public_test.py asserts it).
     "/functions",
+    # Ember public tier (docs/plans/2026-07-18-ember-public-pages.md): the
+    # scale-to-zero demo-postgres exhibit, Turnstile-gated when public,
+    # mounted identically on the private tier's demos panel.
+    "/api/ember",
     "/healthz",
     # Deep health probe (DB reachable + public_reader can query). Reached via the
     # frontend /health same-origin proxy; not a private surface.

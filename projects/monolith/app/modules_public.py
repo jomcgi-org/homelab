@@ -14,6 +14,7 @@ import artifact.module
 import campsites.module
 import chat_public.module
 import dr_jobs.module
+import ember_public.module
 import faas.module
 import grimoire.module
 import grimoire_chat.module
@@ -41,4 +42,5 @@ PUBLIC_MODULES: tuple[Module, ...] = (
     grimoire.module.MODULE,
     grimoire_chat.module.MODULE,
     faas.module.MODULE,
+    ember_public.module.MODULE,
 )

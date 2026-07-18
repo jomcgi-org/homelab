@@ -9,10 +9,11 @@ waterfall:
 - ``POST /goose``   submits a goosecracker agent run (async, returns immediately).
 - ``GET  /goose/{thread_id}`` polls the agent run ledger for that run's state.
 - ``GET  /trace/{trace_id}``  returns the SigNoz spans for a captured trace.
-- ``GET  /postgres/status``  the demo-postgres stateful lifecycle (sleep indicator).
-- ``POST /postgres/query``   timed connect (the wake) + insert or aggregate against demo-postgres.
 - ``POST /postgres/reset``   destroy the live VM + evict its snapshot (force cold boot).
-- ``POST /postgres/session`` mint a session cookie for ledger attribution (Turnstile-gated when public).
+
+The demo-postgres status/query/session endpoints moved to ``ember_public``
+(mounted at ``/api/ember/postgres`` on both tiers); this module keeps only the
+destructive reset verb, which stays private-only (griefing-sensitive).
 
 Each POST wraps its invocation in a fresh ROOT span, detached from any inbound
 trace context, via ``context=Context()``. Browser-initiated requests arrive
@@ -29,20 +30,11 @@ owns no fc-invoke or ClickHouse client of its own.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
-import os
-import random
-import secrets
-from datetime import datetime, timezone
-from time import perf_counter
-from typing import Literal
 from uuid import uuid4
 
-import httpx
-import psycopg
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException
 from opentelemetry import trace
 from opentelemetry.context import Context
 from pydantic import BaseModel
@@ -53,11 +45,10 @@ import demos.loadtest as loadtest
 import goosecracker.api as goosecracker
 from app.db import get_engine
 from demos.loadtest_corpus import load_corpus
-from demos.models import DemoPgSavings
+from ember_public.core import EMBERVM_URL, destroy_demo_pg_instance
 from home.observability.traces import fetch_correlated_spans, fetch_trace_spans
-from sandbox.client import EMBERVM_URL, run_python_in_sandbox
+from sandbox.client import run_python_in_sandbox
 from semgrep_scan.client import scan_files
-from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -558,395 +549,14 @@ async def get_load_test_scan(run_id: str, scan_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Demo-postgres (embervm R4 stateful sleep/wake exhibit).
+# Demo-postgres reset (embervm R4 stateful sleep/wake exhibit).
 #
-# A dedicated stateful Postgres workload (NOT the scratch-postgres real tenants
-# use) tuned to bank ~a sweeper tick after its last connection closes. The
-# demo's three verbs map straight onto the embervm surfaces:
-#   status -> GET  {EMBERVM_URL}/v1/stateful/demo-postgres (management introspection;
-#             an HTTP read of the control plane, so POLLING NEVER WAKES THE VM)
-#   query  -> a short-lived psycopg connect to DEMO_POSTGRES_DSN; the TCP
-#             activator wakes the VM on a miss, so connect wall time IS the wake
-#   reset  -> DELETE {EMBERVM_URL}/v1/stateful/demo-postgres/instance (destroys
-#             the live VM AND evicts the banked bundle; the volume survives, so
-#             the next connect cold-boots against retained data)
+# Status/query/session moved to ember_public (mounted at /api/ember/postgres
+# on both tiers); this destructive, griefing-sensitive verb stays private-only:
+#   reset -> DELETE {EMBERVM_URL}/v1/stateful/demo-postgres/instance (destroys
+#            the live VM AND evicts the banked bundle; the volume survives, so
+#            the next connect cold-boots against retained data)
 # ---------------------------------------------------------------------------
-
-_DEMO_PG_WORKLOAD = "demo-postgres"
-# The workload's wakeTimeoutSeconds is 60 (cold boots include WAL recovery and,
-# on first boot, mkfs + initdb); the client timeout must outlast it so a cold
-# wake surfaces as a slow-but-successful connect, not a client-side timeout.
-_DEMO_PG_CONNECT_TIMEOUT_S = 75
-_DEMO_PG_HISTORY_ROWS = 15
-
-
-def _demo_pg_dsn() -> str:
-    """Read at call time (not import) so tests can patch the environment."""
-    return os.environ.get("DEMO_POSTGRES_DSN", "")
-
-
-def _demo_pg_turnstile_secret() -> str:
-    """Read at call time so tests can patch the environment."""
-    return os.environ.get("TURNSTILE_SECRET_KEY", "")
-
-
-_DEMO_PG_SESSION_COOKIE = "demo_pg_session"
-
-
-def _demo_pg_session_salt() -> str:
-    """Derived from the DSN so the salt is stable across replicas and restarts
-    without a new secret. Never returned to clients."""
-    return hashlib.sha256(
-        ("demo-pg-session-salt:" + _demo_pg_dsn()).encode()
-    ).hexdigest()
-
-
-def _demo_pg_session_tag(cookie_value: str) -> str | None:
-    """Hash the session cookie into an opaque per-visitor tag for attribution.
-    Returns None when there is no cookie to tag."""
-    if not cookie_value:
-        return None
-    salt = _demo_pg_session_salt()
-    return hashlib.sha256((salt + ":" + cookie_value).encode()).hexdigest()[:16]
-
-
-async def _fetch_demo_pg_status() -> dict:
-    """GET the control plane's stateful introspection for the demo workload."""
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            f"{EMBERVM_URL}/v1/stateful/{_DEMO_PG_WORKLOAD}",
-            headers=auth_headers(),
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-
-def _shape_pg_status(status: dict) -> dict:
-    """Reduce the control-plane payload to what the sleep indicator renders."""
-    instance = status.get("instance") or {}
-    return {
-        "state": status.get("state"),
-        "generation": status.get("generation"),
-        "bundle_generation": status.get("bundle_generation"),
-        "pair_valid": status.get("pair_valid"),
-        "volume_bytes": status.get("volume_bytes"),
-        "healthy": instance.get("healthy"),
-        "last_active_at": instance.get("last_active_at"),
-        "created_at": instance.get("created_at"),
-    }
-
-
-# All-time "memory saved while asleep" counter (every visitor, not just this
-# session). Accrual is lazy on the status poll: the demo VM can only wake when
-# something connects, so two consecutive samples that are both state ==
-# "banked" with the SAME generation prove the VM slept the entire gap between
-# the samples, and that whole gap is credited at 512 MiB per second. Any other
-# transition (a generation change, or either sample not banked) credits
-# nothing, so the counter is a conservative undercount, never an overcount.
-_DEMO_PG_SAVINGS_MIB_PER_S = 512.0
-# Below this gap, skip the write entirely: the status endpoint is polled
-# sub-second, and a banked VM's state/generation do not change between polls,
-# so without a throttle every poll would issue an UPDATE for zero new credit.
-_DEMO_PG_SAVINGS_WRITE_THROTTLE_S = 5.0
-
-
-def _as_utc(dt: datetime) -> datetime:
-    """SQLite test fixtures round-trip TIMESTAMPTZ as naive; Postgres is tz-aware."""
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
-def _record_demo_pg_savings_core(
-    session: Session, *, state: str | None, generation: int | None, now: datetime
-) -> float:
-    """Credit elapsed sleep time into the single all-time row. Sync; to_thread.
-
-    Loads (or creates) the id=1 row, credits it per the banked-to-banked
-    same-generation rule above, and persists the new sample unless the sample
-    is an unchanged-state, unchanged-generation, sub-throttle-window repeat (in
-    which case nothing is written and the current total is simply returned).
-    """
-    row = session.get(DemoPgSavings, 1)
-    if row is None:
-        row = DemoPgSavings(id=1, total_mib_seconds=0.0)
-        session.add(row)
-
-    unchanged = state == row.last_state and generation == row.last_generation
-    if unchanged and row.last_sample_at is not None:
-        gap_s = (now - _as_utc(row.last_sample_at)).total_seconds()
-        if 0 <= gap_s < _DEMO_PG_SAVINGS_WRITE_THROTTLE_S:
-            return row.total_mib_seconds
-
-    if (
-        row.last_sample_at is not None
-        and row.last_state == "banked"
-        and state == "banked"
-        and generation == row.last_generation
-    ):
-        elapsed_s = (now - _as_utc(row.last_sample_at)).total_seconds()
-        row.total_mib_seconds += max(0.0, elapsed_s) * _DEMO_PG_SAVINGS_MIB_PER_S
-
-    row.last_sample_at = now
-    row.last_state = state
-    row.last_generation = generation
-    session.commit()
-    return row.total_mib_seconds
-
-
-def _record_demo_pg_savings_sync(state: str | None, generation: int | None) -> float:
-    """Opens its own Session; never receives a session from the caller's thread."""
-    with Session(get_engine()) as session:
-        return _record_demo_pg_savings_core(
-            session, state=state, generation=generation, now=datetime.now(timezone.utc)
-        )
-
-
-async def _record_demo_pg_savings(
-    state: str | None, generation: int | None
-) -> float | None:
-    """Best-effort: a missing table (pre-migration) must not break status polls."""
-    try:
-        return await asyncio.to_thread(_record_demo_pg_savings_sync, state, generation)
-    except Exception as exc:  # noqa: BLE001 - accrual is best-effort, never fatal
-        logger.warning("demo-postgres savings accrual failed: %s", exc)
-        return None
-
-
-def _classify_wake(before: dict | None) -> str:
-    """Predict this query's boot path from the PRE-query lifecycle state.
-
-    The StartStateful response's was_relight never reaches the management API,
-    so the demo classifies from what the workload looked like the instant
-    before the connect: a serving instance answers warm, a banked bundle whose
-    stamped generation still pairs with the volume relights, a broken pair or
-    no instance at all cold-boots. A mid-transition snapshot (banking,
-    relighting, ...) is reported as such rather than guessed at.
-    """
-    if before is None:
-        return "unknown"
-    state = before.get("state")
-    if state == "serving":
-        return "warm"
-    if state == "banked":
-        return "relight" if before.get("pair_valid") else "cold"
-    if not state:
-        return "cold"
-    return "transitional"
-
-
-# The fixed menu keeps the demo zero-typing: an insert picks a random line item
-# server-side. Prices are illustrative; the aggregate query is the point.
-_DEMO_PG_MENU = [
-    ("flat white", 3.50),
-    ("mechanical keyboard", 89.00),
-    ("rubber duck", 1.20),
-    ("gpu", 1999.00),
-    ("ergonomic chair", 349.00),
-    ("sticker pack", 4.75),
-]
-
-_DEMO_PG_DDL = (
-    "CREATE TABLE IF NOT EXISTS demo_orders ("
-    "  id bigserial PRIMARY KEY,"
-    "  item text NOT NULL,"
-    "  qty int NOT NULL,"
-    "  unit_price numeric(8,2) NOT NULL,"
-    "  written_at timestamptz NOT NULL DEFAULT now(),"
-    "  postmaster_start timestamptz NOT NULL,"
-    "  session_tag text)"
-)
-
-# The prod table predates session_tag; this idempotent ALTER backfills it on
-# every roundtrip so existing deployments pick up the column without a
-# separate migration step.
-_DEMO_PG_ADD_SESSION_TAG = (
-    "ALTER TABLE demo_orders ADD COLUMN IF NOT EXISTS session_tag text"
-)
-
-# The ledger is a rolling one-hour window: this sweep runs lazily on the
-# first query past the hour (the VM may be asleep at the stroke of the hour,
-# and nothing can observe the data until a query wakes it anyway).
-_DEMO_PG_SWEEP = "DELETE FROM demo_orders WHERE written_at < date_trunc('hour', now())"
-
-_DEMO_PG_INSERT = (
-    "INSERT INTO demo_orders (item, qty, unit_price, postmaster_start, session_tag) "
-    "VALUES (%s, %s, %s, pg_postmaster_start_time(), %s) RETURNING id"
-)
-
-_DEMO_PG_RECENT = (
-    "SELECT id, item, qty, unit_price, written_at, postmaster_start, session_tag "
-    "FROM demo_orders ORDER BY id DESC LIMIT %s"
-)
-
-_DEMO_PG_AGGREGATE = (
-    "SELECT item, sum(qty) AS units, sum(qty * unit_price) AS revenue "
-    "FROM demo_orders GROUP BY item ORDER BY revenue DESC"
-)
-
-_DEMO_PG_TOTALS = (
-    "SELECT count(*), coalesce(sum(qty * unit_price), 0), "
-    "pg_postmaster_start_time() FROM demo_orders"
-)
-
-
-def _demo_pg_orders_roundtrip(dsn: str, mode: str, session_tag: str | None) -> dict:
-    """Connect, run the mode's statements, and time each one. Sync; to_thread.
-
-    connect_ms is the wake (the activator parks the TCP connect while the VM
-    relights or cold-boots); each executed statement is returned verbatim with
-    its own wall time so the UI can show the SQL that just ran. The connection
-    is short-lived by design: an open connection pins the VM awake.
-
-    insert    - DDL-if-missing, sweep the ledger to its rolling one-hour
-                window, append a random menu line item, then read the
-                recent rows, the aggregate breakdown, and the totals.
-    aggregate - read-only: the same reads without writing anything, proving a
-                wake needs no write.
-    """
-    started = perf_counter()
-    conn = psycopg.connect(dsn, connect_timeout=_DEMO_PG_CONNECT_TIMEOUT_S)
-    connect_ms = (perf_counter() - started) * 1000
-
-    statements: list[dict] = []
-
-    def run(cur, sql: str, params=None):
-        stmt_started = perf_counter()
-        cur.execute(sql, params)
-        statements.append({"sql": sql, "ms": (perf_counter() - stmt_started) * 1000})
-
-    inserted = None
-    query_started = perf_counter()
-    # psycopg3: the connection context commits on clean exit AND closes.
-    with conn, conn.cursor() as cur:
-        run(cur, _DEMO_PG_DDL)
-        run(cur, _DEMO_PG_ADD_SESSION_TAG)
-        run(cur, _DEMO_PG_SWEEP)
-        if mode == "insert":
-            item, unit_price = random.choice(_DEMO_PG_MENU)
-            qty = random.randint(1, 5)
-            run(cur, _DEMO_PG_INSERT, (item, qty, unit_price, session_tag))
-            inserted = {
-                "id": cur.fetchone()[0],
-                "item": item,
-                "qty": qty,
-                "unit_price": unit_price,
-            }
-        run(cur, _DEMO_PG_RECENT, (_DEMO_PG_HISTORY_ROWS,))
-        rows = [
-            {
-                "id": r[0],
-                "item": r[1],
-                "qty": r[2],
-                "unit_price": float(r[3]),
-                "written_at": r[4].isoformat(),
-                "postmaster_start": r[5].isoformat(),
-                "yours": bool(session_tag and r[6] == session_tag),
-            }
-            for r in cur.fetchall()
-        ]
-        run(cur, _DEMO_PG_AGGREGATE)
-        breakdown = [
-            {"item": r[0], "units": int(r[1]), "revenue": float(r[2])}
-            for r in cur.fetchall()
-        ]
-        run(cur, _DEMO_PG_TOTALS)
-        total_orders, total_revenue, postmaster_start = cur.fetchone()
-    query_ms = (perf_counter() - query_started) * 1000
-
-    return {
-        "connect_ms": connect_ms,
-        "query_ms": query_ms,
-        "mode": mode,
-        "statements": statements,
-        "inserted": inserted,
-        "rows": rows,
-        "breakdown": breakdown,
-        "total_orders": total_orders,
-        "total_revenue": float(total_revenue),
-        "postmaster_start": postmaster_start.isoformat(),
-    }
-
-
-class PostgresQueryRequest(BaseModel):
-    mode: Literal["insert", "aggregate"] = "insert"
-
-
-class PostgresSessionRequest(BaseModel):
-    turnstile_token: str = ""
-
-
-@router.get("/postgres/status")
-async def postgres_status() -> dict:
-    """The demo-postgres lifecycle snapshot driving the sleep indicator.
-
-    A management-API read only: the frontend polls this sub-second while the
-    exhibit is on screen, and because no TCP connection ever reaches the
-    workload's listener the poll cannot keep the VM awake or wake it. Errors
-    come back in-band (not as 5xx) so one flaky poll doesn't redline the UI.
-    """
-    if not EMBERVM_URL or not _demo_pg_dsn():
-        return {"configured": False}
-    try:
-        status = await _fetch_demo_pg_status()
-    except Exception as exc:  # noqa: BLE001 - poll errors are data, not faults
-        logger.warning("demo-postgres status poll failed: %s", exc)
-        return {"configured": True, "error": str(exc)}
-    shaped = _shape_pg_status(status)
-    total = await _record_demo_pg_savings(shaped["state"], shaped["generation"])
-    if total is not None:
-        return {"configured": True, **shaped, "total_saved_mib_s": total}
-    return {"configured": True, **shaped}
-
-
-@router.post("/postgres/query")
-async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
-    """Timed roundtrip against demo-postgres: the wake IS the connect time.
-
-    Captures the lifecycle state just before connecting to classify what this
-    connect is about to pay for (warm / relight / cold), then measures the
-    connect and the SQL work separately. A failed connect is returned in-band
-    (mirroring the python demo's error shape): the likeliest causes are the
-    wake-rate limiter refusing a burst and a wake genuinely failing, both of
-    which the visitor recovers from by waiting a beat and retrying.
-    """
-    dsn = _demo_pg_dsn()
-    if not dsn:
-        raise HTTPException(
-            status_code=503, detail="DEMO_POSTGRES_DSN is not configured"
-        )
-
-    session_tag = _demo_pg_session_tag(request.cookies.get(_DEMO_PG_SESSION_COOKIE, ""))
-
-    before = None
-    if EMBERVM_URL:
-        try:
-            before = await _fetch_demo_pg_status()
-        except Exception as exc:  # noqa: BLE001 - classification is best-effort
-            logger.warning("demo-postgres pre-query status failed: %s", exc)
-            before = None
-
-    started = perf_counter()
-    try:
-        result = await asyncio.to_thread(
-            _demo_pg_orders_roundtrip, dsn, body.mode, session_tag
-        )
-    except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
-        logger.warning("demo-postgres query roundtrip failed: %s", exc)
-        return {
-            "error": str(exc),
-            "mode": body.mode,
-            "classification": _classify_wake(before),
-            "phase_before": (before or {}).get("state"),
-            "total_ms": (perf_counter() - started) * 1000,
-        }
-
-    return {
-        **result,
-        "total_ms": (perf_counter() - started) * 1000,
-        "classification": _classify_wake(before),
-        "phase_before": (before or {}).get("state"),
-        "generation": (before or {}).get("generation"),
-        "error": None,
-    }
 
 
 @router.post("/postgres/reset")
@@ -960,62 +570,8 @@ async def postgres_reset() -> dict:
     """
     if not EMBERVM_URL:
         raise HTTPException(status_code=503, detail="EMBERVM_URL is not configured")
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.delete(
-            f"{EMBERVM_URL}/v1/stateful/{_DEMO_PG_WORKLOAD}/instance",
-            headers=auth_headers(),
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    data = await destroy_demo_pg_instance()
     return {
         "destroyed": data.get("destroyed", 0),
         "evicted": data.get("evicted", 0),
     }
-
-
-async def _verify_turnstile(token: str) -> bool:
-    """Server-side verification against Cloudflare's siteverify endpoint."""
-    if not token:
-        return False
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-            data={"secret": _demo_pg_turnstile_secret(), "response": token},
-        )
-        resp.raise_for_status()
-        return bool(resp.json().get("success"))
-
-
-@router.post("/postgres/session")
-async def postgres_session(
-    body: PostgresSessionRequest, request: Request, response: Response
-) -> dict:
-    """Mint a session cookie for ledger attribution, gated by Turnstile when
-    the demo is public.
-
-    Private tier (behind Cloudflare Access) leaves TURNSTILE_SECRET_KEY unset,
-    so it mints without verification. Once a public page sits in front of
-    this endpoint, setting the env turns on server-side Turnstile
-    verification so anonymous visitors can't mint sessions without solving
-    the challenge.
-    """
-    existing = request.cookies.get(_DEMO_PG_SESSION_COOKIE, "")
-    if existing:
-        return {"ok": True, "existing": True}
-
-    secret = _demo_pg_turnstile_secret()
-    if secret:
-        verified = await _verify_turnstile(body.turnstile_token)
-        if not verified:
-            raise HTTPException(status_code=403, detail="turnstile verification failed")
-
-    response.set_cookie(
-        _DEMO_PG_SESSION_COOKIE,
-        secrets.token_hex(16),
-        httponly=True,
-        samesite="lax",
-        secure=True,
-        max_age=3600,
-        path="/api/demos/firecracker/postgres",
-    )
-    return {"ok": True, "existing": False}
