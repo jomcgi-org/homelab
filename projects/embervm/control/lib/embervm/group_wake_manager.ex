@@ -433,11 +433,17 @@ defmodule Embervm.GroupWakeManager do
     # The group instance_id IS the group_instance_id the node keys its bundle sets by
     # (GroupStore rows carry no separate group_instance_id column; the instance id is
     # that identity, mirroring how do_reconcile indexes sets by group_instance_id).
+    # OPTIMISTIC restore-on-miss (R6, Task 8, option b): the CP tracks no remote
+    # inventory, so on a TRUE local miss (the node no longer reports the set's member
+    # bundles) with a reachable store it ATTEMPTS the restore; the daemon fails closed
+    # (FAILED_PRECONDITION) if no store copy exists and the delegated relight then
+    # evicts + fresh-boots as it does today. store_reachable == false never blocks the
+    # wake, it only withholds the restore (fail-open warmth, standing decision 7).
     with {:ok, %{node_id: node_id, set_id: set_id}}
          when is_binary(node_id) and is_binary(set_id) and set_id != "" <-
            GroupStore.get(state.store, instance_id),
          false <- set_local?(state, node_id, instance_id),
-         true <- set_restorable?(state, node_id, instance_id) do
+         true <- store_reachable?(state, node_id) do
       restore_set(state, node_id, workload, set_id)
       :ok
     else
@@ -447,9 +453,9 @@ defmodule Embervm.GroupWakeManager do
 
   # Whether the anchor node still reports this group's bundle SET with member
   # bundles present on LOCAL disk (a reported set whose members list is non-empty).
-  # True -> the local set is present, no restore needed. A set reported with an
-  # empty member list is a store-only marker (exported but locally gone), which is
-  # exactly the restore-on-miss case, so it reads as NOT local here.
+  # True -> the local set is present, no restore needed. A locally-absent set (no
+  # reported set for the group, or one reported with an empty member list) reads as
+  # NOT local, the restore-on-miss case.
   defp set_local?(state, node_id, group_instance_id) do
     case NodeCapacity.fetch(state.capacity_table, node_id) do
       {:ok, fact} ->
@@ -464,21 +470,13 @@ defmodule Embervm.GroupWakeManager do
     end
   end
 
-  # Whether a locally-missing set can be restored: the store is reachable AND the
-  # store holds the WHOLE set (its exported flag is set). exported is a per-set
-  # atomicity fact (a partially exported set is not exported), so this is the
-  # complete-set gate. store_reachable == false never blocks the local-state wake;
-  # it only withholds the restore (fail-open warmth).
-  defp set_restorable?(state, node_id, group_instance_id) do
+  # The anchor node's latest object-store reachability verdict (R6). Absent/false
+  # reads as NOT reachable, so no restore is attempted (the wake degrades to the
+  # delegated relight's fresh-fallback); never blocks the local-state wake.
+  defp store_reachable?(state, node_id) do
     case NodeCapacity.fetch(state.capacity_table, node_id) do
-      {:ok, fact} ->
-        Map.get(fact, :store_reachable, false) == true and
-          fact
-          |> Map.get(:group_bundle_sets, [])
-          |> Enum.any?(&(&1.group_instance_id == group_instance_id and Map.get(&1, :exported, false) == true))
-
-      :error ->
-        false
+      {:ok, fact} -> Map.get(fact, :store_reachable, false) == true
+      :error -> false
     end
   end
 
