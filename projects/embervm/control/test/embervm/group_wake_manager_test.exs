@@ -171,6 +171,7 @@ defmodule Embervm.GroupWakeManagerTest do
         pod_ip: "10.0.0.9",
         clock: clock,
         channel_fun: fn _node -> {:ok, :ch} end,
+        op_log: op_log,
         reconcile_interval_ms: 0
       ] ++ Keyword.take(opts, [:wake_bound_ms, :mono_clock, :restore_artifact_fun])
 

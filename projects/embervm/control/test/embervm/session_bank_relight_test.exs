@@ -93,6 +93,7 @@ defmodule Embervm.SessionBankRelightTest do
         registry: registry,
         capacity_table: cap_table,
         catalog_table: cat_table,
+        op_log: op_log,
         clock: clock,
         channel_fun: fn _node -> {:ok, :ch} end,
         claim_fun: fn _d, _n, _w -> {:ok, "vm-#{suffix}-#{System.unique_integer([:positive])}"} end,
