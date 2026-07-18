@@ -326,7 +326,7 @@
         <div class="es-hero-inner" in:fade={{ duration: 260 }}>
           {#if heroKind === "cold"}
             <span class="es-hero-value">{gbHours(totalSavedMibS)}</span>
-            <span class="es-hero-caption">saved by scaling to zero</span>
+            <span class="es-hero-caption">saved all-time by scaling to zero</span>
           {:else if heroKind === "waking"}
             <span class="es-hero-value">{ms(running ? stopwatchMs : null)}</span>
             <span class="es-hero-caption">waking up</span>
