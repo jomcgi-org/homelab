@@ -125,7 +125,11 @@ defmodule Embervm.GroupWakeManagerTest do
 
     WorkloadCatalog.upsert(cat_table, "grp-a", %{
       class: "composite",
-      group: %{entry: %{member: "leader", port: 8080, listen_port: 5410}}
+      group:
+        Map.merge(
+          %{entry: %{member: "leader", port: 8080, listen_port: 5410}},
+          Keyword.get(opts, :group_extra, %{})
+        )
     })
 
     sup_state =
@@ -150,8 +154,8 @@ defmodule Embervm.GroupWakeManagerTest do
     # fixed id (:fake_supervisor) but registered under the module name the fake resolves.
     _ = start_supervised!(%{id: :fake_supervisor, start: {Agent, :start_link, [fn -> sup_state end, [name: FakeSupervisor]]}})
 
-    {:ok, mgr} =
-      GroupWakeManager.start_link(
+    mgr_opts =
+      [
         name: nil,
         store: store,
         publisher: pub,
@@ -167,7 +171,9 @@ defmodule Embervm.GroupWakeManagerTest do
         pod_ip: "10.0.0.9",
         clock: clock,
         reconcile_interval_ms: 0
-      )
+      ] ++ Keyword.take(opts, [:wake_bound_ms, :mono_clock])
+
+    {:ok, mgr} = GroupWakeManager.start_link(mgr_opts)
 
     %{mgr: mgr, store: store, pub: pub, cap_table: cap_table, cat_table: cat_table, op_log: op_log}
   end
@@ -450,5 +456,68 @@ defmodule Embervm.GroupWakeManagerTest do
     assert {:ok, %{ip: "10.0.0.9", port: 30_010}} = GroupWakeManager.wake(ctx.mgr, "grp-a", "system:group:grp-a")
     {_c, wakes, _} = sup_counts()
     assert wakes == 0
+  end
+
+  # -- wake-worker bound + adoption self-recovery (Task 10) ------------------
+
+  test "a never-ready member fails the group wake at the bound, releasing single-flight" do
+    # The fake wake_group blocks for 3s (a wedged member boot that never opens its
+    # port, the R5 `:infinity`-chain symptom); the wake WORKER is bounded to 40ms, so
+    # {:wake_timeout} fails the wake before the worker ever reports. The parked caller
+    # gets a wake_failed error (NOT a forever-hang), and single-flight releases so a
+    # later connection can retry.
+    ctx = start_stack(instance_id: "g-1", latency_ms: 3_000, fail: true, wake_bound_ms: 40)
+    _ = seed_banked(ctx, "g-1")
+
+    assert {:error, {:wake_failed, :wake_timeout}} =
+             GroupWakeManager.wake(ctx.mgr, "grp-a", "system:group:grp-a")
+
+    # Single-flight released: the banked instance is still re-wakeable (the fake never
+    # published, so it stayed :banked), and a reconcile leaves it banked (re-wakeable),
+    # not skipped forever.
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+    {:ok, inst} = GroupStore.get(ctx.store, "g-1")
+    assert inst.state == :banked
+  end
+
+  test "adoption recovers a workload stuck waking past 2 * wakeTimeoutSeconds" do
+    # Directly exercise the adoption self-recovery: an in-flight wake whose worker
+    # never reports and whose {:wake_timeout} timer is (modeled as) lost. wake_bound_ms
+    # is set huge so the timer never fires within the test; the injected mono_clock
+    # jumps past 2 * wakeTimeoutSeconds (1s here) between the wake stamp and the
+    # reconcile, so wake_stuck? trips and adoption recovers the workload instead of
+    # skipping it. The parked caller is erred out of its :infinity wait.
+    {:ok, mono} = Agent.start_link(fn -> 0 end)
+    mono_clock = fn -> Agent.get(mono, & &1) end
+
+    ctx =
+      start_stack(
+        instance_id: "g-1",
+        latency_ms: 3_000,
+        fail: true,
+        wake_bound_ms: 10 * 60_000,
+        mono_clock: mono_clock,
+        group_extra: %{wake_timeout_seconds: 1}
+      )
+
+    _ = seed_banked(ctx, "g-1")
+
+    # Kick a wake that hangs (worker blocked in the fake for 60s). It stamps
+    # wake_started at mono 0 and parks the caller.
+    caller = Task.async(fn -> GroupWakeManager.wake(ctx.mgr, "grp-a", "system:group:grp-a") end)
+    # Let the wake register as in-flight before advancing the clock.
+    Process.sleep(50)
+
+    # Advance mono past 2 * wakeTimeoutSeconds (2 * 1s = 2000ms).
+    Agent.update(mono, fn _ -> 5_000 end)
+
+    # The reconcile now sees the wake as stuck and recovers it (erra the caller,
+    # releases single-flight, leaves the instance re-wakeable).
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    assert {:error, {:wake_failed, :wake_stuck}} = Task.await(caller, 5_000)
+
+    {:ok, inst} = GroupStore.get(ctx.store, "g-1")
+    assert inst.state == :banked
   end
 end

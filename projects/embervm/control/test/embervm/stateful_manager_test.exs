@@ -85,7 +85,7 @@ defmodule Embervm.StatefulManagerTest do
         get_secret_fun: get_secret_fun,
         reconcile_interval_ms: 0,
         id_fun: id_seq(suffix)
-      ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap])
+      ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap, :wake_bound_ms, :mono_clock, :wake_timeout_margin_ms])
 
     {:ok, mgr} = StatefulManager.start_link(mgr_opts)
 
@@ -918,5 +918,84 @@ defmodule Embervm.StatefulManagerTest do
     assert %{destroyed: 1, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
     assert {:ok, %{deleted: true}} = StatefulManager.delete_volume(ctx.mgr, "wl-a")
     assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+  end
+
+  # -- wake-worker bound + adoption self-recovery (Task 10) --------------------
+
+  test "a wedged wake worker fails at the bound, releasing single-flight, and adoption heals back to banked" do
+    # A relight whose StartStateful never returns (the guest never opens its port,
+    # the R5 `:infinity`-chain symptom): the fake sleeps 3s, but the wake WORKER is
+    # bounded to 40ms, so {:wake_timeout} fails the wake before the worker reports.
+    # The parked caller gets a wake_failed error (NOT a forever-hang). The instance is
+    # stranded in :relighting; the next reconcile heals it back to :banked (the node
+    # still reports the bundle + matching volume), so it is re-wakeable.
+    hang_fun = fn _ch, _req ->
+      Process.sleep(3_000)
+      {:error, :never_ready}
+    end
+
+    ctx = start_stack(start_stateful_fun: hang_fun, wake_bound_ms: 40)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4",
+      stateful_bundles: [%{snapshot_ref: "stateful/stf-banked", workload: "wl-a", generation: 3, size_bytes: 10, created_at_unix_ms: 1}],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10}]
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+    assert StatefulStore.pair_valid?(ctx.store, "wl-a")
+
+    assert {:error, {:wake_failed, {:wake_timeout, "wl-a"}}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    # Single-flight released + the stranded relight heals back to banked (re-wakeable).
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, healed} = StatefulStore.get(ctx.store, "stf-banked")
+    assert healed.state == :banked
+    assert StatefulStore.pair_valid?(ctx.store, "wl-a")
+  end
+
+  test "adoption recovers a workload stuck waking past 2 * wakeTimeoutSeconds" do
+    # Directly exercise the adoption self-recovery: an in-flight wake whose worker
+    # never reports and whose {:wake_timeout} timer is (modeled as) lost. wake_bound_ms
+    # is huge so the timer never fires within the test; the injected mono_clock jumps
+    # past 2 * wakeTimeoutSeconds (60s here, so 120s) between the wake stamp and the
+    # reconcile, so wake_stuck? trips and adoption recovers the workload instead of
+    # skipping it. The parked caller is erred out of its :infinity wait.
+    {:ok, mono} = Agent.start_link(fn -> 0 end)
+    mono_clock = fn -> Agent.get(mono, & &1) end
+
+    hang_fun = fn _ch, _req ->
+      Process.sleep(3_000)
+      {:error, :never_ready}
+    end
+
+    ctx =
+      start_stack(
+        start_stateful_fun: hang_fun,
+        wake_bound_ms: 10 * 60_000,
+        mono_clock: mono_clock
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4",
+      stateful_bundles: [%{snapshot_ref: "stateful/stf-banked", workload: "wl-a", generation: 3, size_bytes: 10, created_at_unix_ms: 1}],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10}]
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+
+    caller = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    # Let the wake register as in-flight (mark :relighting, stamp wake_started at 0).
+    Process.sleep(50)
+
+    # Advance mono past 2 * wakeTimeoutSeconds (2 * 60s = 120_000ms).
+    Agent.update(mono, fn _ -> 200_000 end)
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    assert {:error, {:wake_failed, :wake_stuck}} = Task.await(caller, 5_000)
+
+    {:ok, healed} = StatefulStore.get(ctx.store, "stf-banked")
+    assert healed.state == :banked
   end
 end
