@@ -34,16 +34,35 @@ is real demand for virtual control planes or hard multi-tenancy, for example
 external tenants who need an isolated control-plane view. Absent that demand, the
 facade is not built.
 
-### The ladder gains three rungs
+### The ladder gains four rungs
+
+_(Amended 2026-07-18, same day: the original three-rung extension gained R7
+Distribution, and Consumers/Packaging moved down to R8/R9. R6 makes state portable
+and durable; a distinct rung is needed to make the fleet actually use that
+portability.)_
 
 - **R6 Continuity.** Deploys and node-daemon rolls interrupt nothing they do not
   have to. The first consumer is every live workload already running: scratch-postgres,
   scratch-k8s, and serving. The v1 invariant is that a routine noded or control-plane
-  roll never cold-boots a stateful workload and never destroys a banked group.
-- **R7 Consumers.** The agent-thread tier runs on EmberVM sessions, which retires the
+  roll never cold-boots a stateful workload and never destroys a banked group. R6
+  makes state portable and durable where the architecture permits: portability is
+  bounded by ISA/CPU compatibility (a Firecracker snapshot restores only on a
+  matching CPU key; the current fleet has one AMD Firecracker node, and the Intel
+  control-plane nodes are not microVM hosts) and by volume anchoring (a live
+  stateful workload's writes since its last bank commit exist only on its node's
+  volume). Within those bounds, every banked artifact is durable off node and
+  movable as a copy.
+- **R7 Distribution.** Redistribute and pre-warm workloads across many nodes where
+  necessary: placement policy over the R6 export/restore verbs (a placement move is
+  a copy, never a rebuild), demand-driven warming (restore an artifact onto a node
+  before the request that needs it), and multi-node endpoint fan-out for the serving
+  class. This rung resolves ADR 003's open placement-policy question and carries an
+  explicit hardware prerequisite: at least one additional Firecracker-capable node,
+  since distribution across a fleet of one is vacuous.
+- **R8 Consumers.** The agent-thread tier runs on EmberVM sessions, which retires the
   bespoke fc-agentd controller. The durability work in R6 makes session state
   node-loss-tolerant first, which is the property that tier was missing.
-- **R8 Packaging.** EmberVM becomes a standalone, open-sourceable artifact: a clean
+- **R9 Packaging.** EmberVM becomes a standalone, open-sourceable artifact: a clean
   repo boundary and a quickstart that boots on one machine.
 
 ### The availability contract: bounded preemption, not seamless rolls
