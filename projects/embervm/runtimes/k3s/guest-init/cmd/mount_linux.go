@@ -55,24 +55,37 @@ func mountGuestFilesystems(logger *slog.Logger) {
 	}
 }
 
-// mountCompositeDataDir gives a WARMTH-ONLY composite member (R5, no volume) its
-// writable k3s data dir. The stateful lane mounts a block-device volume at
-// k3sDataDir; a composite member has none, and the rootfs is read-only, so
-// k3s's self-extract + datastore + containerd unpack have nowhere to write (k3s
-// dies "extracting data: no such file or directory"). This mounts a tmpfs there
-// instead and stages the baked airgap tarball into it, exactly as
-// mountStatefulVolume does after its block mount. The k3s datastore + unpacked
-// images therefore live in RAM (counting against the member's mem_mib) and are
-// lost on fresh/destroy, which IS the R5 warmth-only contract. No explicit size
-// is set, so the tmpfs defaults to 50% of guest RAM and auto-scales with the
-// member's mem_mib (server larger than agent). A tmpfs mount failure is FATAL: a
-// member that cannot get a writable data dir must fail the boot loudly rather
-// than crash obscurely inside k3s.
+// mountCompositeDataDir gives a WARMTH-ONLY composite member (R5, no volume) the
+// writable filesystems k3s needs. The stateful lane mounts a block-device volume
+// at k3sDataDir; a composite member has none, and the rootfs is read-only, so
+// EVERY path k3s (and its embedded kubelet + CNI) writes needs a tmpfs. It is not
+// just the data dir: k3s also writes the kubeconfig under /etc/rancher/k3s (and,
+// on an agent, the node password under /etc/rancher/node), kubelet state under
+// /var/lib/kubelet, and CNI IPAM state under /var/lib/cni (the k3s read-only-root
+// writable contract, docs.k3s.io/advanced; /run + /var/log are already tmpfs from
+// mountGuestFilesystems). The first k3s attempt to write any uncovered path fatals
+// on the read-only rootfs. All of it lives in RAM (counting against the member's
+// mem_mib) and is lost on fresh/destroy, which IS the R5 warmth-only contract. No
+// explicit size, so each tmpfs defaults to 50% of guest RAM and auto-scales with
+// mem_mib. A tmpfs mount failure is FATAL: a member that cannot get its writable
+// dirs must fail the boot loudly rather than crash obscurely inside k3s.
 func mountCompositeDataDir(logger *slog.Logger) error {
-	if err := unix.Mount("tmpfs", k3sDataDir, "tmpfs", 0, "mode=0700"); err != nil {
-		return fmt.Errorf("mount tmpfs at %s: %w", k3sDataDir, err)
+	for _, dir := range compositeWritableDirs {
+		if err := unix.Mount("tmpfs", dir, "tmpfs", 0, "mode=0700"); err != nil {
+			return fmt.Errorf("mount tmpfs at %s: %w", dir, err)
+		}
 	}
-	logger.Info("composite member: k3s data dir on tmpfs (warmth-only, no volume)", "mount", k3sDataDir)
+	logger.Info("composite member: writable tmpfs mounts for k3s (warmth-only, no volume)", "dirs", compositeWritableDirs)
+
+	// k3s writes the kubeconfig under /etc/rancher/k3s and (on an agent) the node
+	// password under /etc/rancher/node. Recreate both on the now-fresh /etc/rancher
+	// tmpfs so those writes land (k3s MkdirAll's them itself, but be explicit and
+	// fail-soft so a surprising permission issue surfaces here, not deep in k3s).
+	for _, dir := range []string{"/etc/rancher/k3s", "/etc/rancher/node"} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			logger.Warn("composite member: mkdir on /etc/rancher tmpfs failed", "dir", dir, "err", err)
+		}
+	}
 
 	// Stage the baked airgap tarball from /opt/k3s-airgap (outside the tree, so the
 	// tmpfs did not hide it) into <k3sDataDir>/agent/images so k3s auto-imports it.
@@ -82,6 +95,19 @@ func mountCompositeDataDir(logger *slog.Logger) error {
 		logger.Warn("composite member: staging airgap images failed", "err", err)
 	}
 	return nil
+}
+
+// compositeWritableDirs is the set of paths a warmth-only composite k3s member
+// (no volume, read-only rootfs) must have writable, beyond the /run + /var/log
+// tmpfs mountGuestFilesystems already provides. Each is baked as an empty dir in
+// the k3s images' apko `paths` so a tmpfs has a mountpoint on the RO rootfs.
+// k3sDataDir is first so the airgap staging that follows the mounts writes into
+// the mounted data dir.
+var compositeWritableDirs = []string{
+	k3sDataDir,         // /var/lib/rancher/k3s: server db, containerd, kubelet, self-extract
+	"/etc/rancher",     // k3s.yaml kubeconfig + the agent's /etc/rancher/node/password
+	"/var/lib/kubelet", // kubelet's own state dir (k3s does not relocate it under the data dir)
+	"/var/lib/cni",     // CNI IPAM allocation state (/var/lib/cni/networks/...)
 }
 
 // mount is a thin logged wrapper over unix.Mount so each call site reads as one
