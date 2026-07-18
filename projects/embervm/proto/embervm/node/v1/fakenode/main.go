@@ -253,10 +253,21 @@ func (*fakeServer) StartGroupMember(_ context.Context, req *nodev1.StartGroupMem
 			VmId: "vm:" + ref, Ip: req.GetIp(), WasRelight: true,
 		}, nil
 	}
-	// FRESH: cold boot from the source, echo the pinned ip.
-	return &nodev1.StartGroupMemberResponse{
+	// FRESH: cold boot from the source, echo the pinned ip. The R6 request fields
+	// derive response content so the client can assert they crossed the wire:
+	// ready_budget_seconds folds into vm_id ("@<n>s") and a non-zero
+	// entry_guest_port yields the daemon-side endpoint projection fields.
+	resp := &nodev1.StartGroupMemberResponse{
 		VmId: "vm:" + req.GetSource(), Ip: req.GetIp(), WasRelight: false,
-	}, nil
+	}
+	if b := req.GetReadyBudgetSeconds(); b > 0 {
+		resp.VmId = fmt.Sprintf("%s@%ds", resp.VmId, b)
+	}
+	if p := req.GetEntryGuestPort(); p > 0 {
+		resp.EndpointIp = "fakenode-pod"
+		resp.EndpointPort = 30000 + p
+	}
+	return resp, nil
 }
 
 // StopGroupMember returns a per-member bundle ref under the caller-supplied set

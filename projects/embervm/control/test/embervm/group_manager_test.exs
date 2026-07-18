@@ -56,6 +56,11 @@ defmodule Embervm.GroupManagerTest do
     # was_relight=false response (the clock-resync casualty, decision 7).
     relight_fail_member = Keyword.get(opts, :relight_fail_member)
     relight_unverified_member = Keyword.get(opts, :relight_unverified_member)
+    # A scripted daemon endpoint projection {ip, port} the fake attaches to the
+    # ENTRY member's response (the F-fix lane: the CP must publish the DAEMON's
+    # reported endpoint, not its own pod IP). nil models a pre-R6/DNAT-disabled
+    # daemon that reports none.
+    daemon_endpoint = Keyword.get(opts, :daemon_endpoint)
 
     create_group_network_fun = fn _ch, req ->
       record(rec, {:create_network, req.group_instance_id, req.cidr})
@@ -100,6 +105,9 @@ defmodule Embervm.GroupManagerTest do
       # assertions, which all filter/find by that tag) so a test can assert only the
       # entry member carries a non-zero entry_guest_port.
       record(rec, {:start_member_entry, req.member_name, req.entry_guest_port})
+      # Additive record of the forwarded readiness budget (the G-fix lane: the
+      # daemon gate must share the workload's wake policy).
+      record(rec, {:start_member_budget, req.member_name, req.ready_budget_seconds})
       vm_id = "vm-#{req.member_name}"
 
       cond do
@@ -124,8 +132,22 @@ defmodule Embervm.GroupManagerTest do
 
         true ->
           case reserve.(req.ip, vm_id) do
-            :ok -> {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: req.ip, was_relight: relight?}}
-            :error -> {:error, :ip_in_use}
+            :ok ->
+              resp = %StartGroupMemberResponse{vm_id: vm_id, ip: req.ip, was_relight: relight?}
+
+              resp =
+                case {daemon_endpoint, req.entry_guest_port} do
+                  {{ep_ip, ep_port}, p} when is_integer(p) and p > 0 ->
+                    %{resp | endpoint_ip: ep_ip, endpoint_port: ep_port}
+
+                  _ ->
+                    resp
+                end
+
+              {:ok, resp}
+
+            :error ->
+              {:error, :ip_in_use}
           end
       end
     end
@@ -245,6 +267,47 @@ defmodule Embervm.GroupManagerTest do
     assert entry_ports["leader"] == 8080
     assert entry_ports["worker-0"] == 0
     assert entry_ports["worker-1"] == 0
+  end
+
+  test "create publishes the DAEMON-reported entry endpoint over the CP-local derivation" do
+    # The daemon reports its own projection ({noded pod IP, vmPort}): that is where
+    # the entry DNAT lives, so THAT is what must be published. The CP-local
+    # {pod_ip: 10.0.0.9, 30010} derivation (asserted by the round-trip test above
+    # when no daemon endpoint is reported) is only the fallback.
+    ctx = start_group(daemon_endpoint: {"10.42.1.95", 36_443})
+
+    assert {:ok, endpoint} = GroupManager.create_group(ctx.mgr)
+    assert endpoint == %{ip: "10.42.1.95", port: 36_443}
+
+    {:ok, inst} = GroupStore.get(ctx.store, "g-1")
+    assert inst.entry_ip == "10.42.1.95"
+    assert inst.entry_port_published == 36_443
+  end
+
+  test "the workload wake budget is forwarded as every member's ready budget" do
+    entry = default_entry()
+    entry = %{entry | group: Map.put(entry.group, :wake_timeout_seconds, 180)}
+    ctx = start_group(entry: entry)
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+
+    budgets =
+      events(ctx.rec)
+      |> Enum.filter(&match?({:start_member_budget, _, _}, &1))
+      |> Map.new(fn {:start_member_budget, name, secs} -> {name, secs} end)
+
+    assert budgets == %{"leader" => 180, "worker-0" => 180, "worker-1" => 180}
+  end
+
+  test "no wake budget in the catalog forwards 0 (daemon default)" do
+    ctx = start_group()
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+
+    budgets =
+      events(ctx.rec)
+      |> Enum.filter(&match?({:start_member_budget, _, _}, &1))
+      |> Enum.map(fn {:start_member_budget, _, secs} -> secs end)
+
+    assert budgets == [0, 0, 0]
   end
 
   test "ordered-start property: order N never starts before every order N-1 member" do

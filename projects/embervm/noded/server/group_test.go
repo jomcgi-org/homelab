@@ -35,6 +35,10 @@ type fakeGroupNet struct {
 	ensureCalls  []ensureTapCall
 	entryDNATs   []entryDNATCall // recorded EnsureEntryDNAT calls
 	entryDNATErr error
+	// podIP, when set, makes EntryEndpoint return the DNAT projection
+	// (podIP, 30000+port) instead of the tap fallback, mirroring the real
+	// GroupManager with a configured pod IP.
+	podIP string
 }
 
 // entryDNATCall records one EnsureEntryDNAT invocation for assertions.
@@ -146,6 +150,11 @@ func (f *fakeGroupNet) GatewayIP(id string) net.IP { return net.IPv4(10, 101, 1,
 func (f *fakeGroupNet) PrefixLen(id string) int    { return 24 }
 
 func (f *fakeGroupNet) EntryEndpoint(ip net.IP, port uint32) (string, uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.podIP != "" {
+		return f.podIP, 30000 + port
+	}
 	return ip.String(), port
 }
 
