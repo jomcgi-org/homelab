@@ -379,16 +379,41 @@ func (m *GroupManager) validateGroupCIDR(cidr string) (*net.IPNet, error) {
 	return ipnet, nil
 }
 
+// ensureBridgeDeviceLocked (re)creates the group's bridge device idempotently: each
+// setup command tolerates an already-present device ("file exists"), so a healthy
+// bridge is a no-op and a missing one is rebuilt. On a hard (non-exists) failure it
+// tears the partial bridge back down so a failed setup leaks no half-bridge, and
+// returns the error. Shared by the full create path and the idempotent re-issue so
+// both self-heal a bridge that outlived its record. Callers must hold m.mu.
+func (m *GroupManager) ensureBridgeDeviceLocked(ctx context.Context, bridge, gatewayIP string, prefixLen int) error {
+	for _, argv := range groupBridgeSetupArgs(bridge, gatewayIP, prefixLen) {
+		if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
+			if isAlreadyExists(rerr) {
+				continue
+			}
+			_, _ = m.runner.Run(ctx, "ip", groupBridgeTeardownArgs(bridge)[1:]...)
+			return rerr
+		}
+	}
+	return nil
+}
+
 // CreateGroupNetwork validates cidr (a /24 within the supernet, non-overlapping
 // with an existing group bridge), creates the per-group bridge, and installs the
 // inter-group isolation + entry-DNAT scaffolding by regenerating the whole
 // embervm_group table. It is IDEMPOTENT per group_instance_id: a re-issue for a
 // group that already exists with the SAME cidr returns the existing
-// (bridge, gateway) without touching the bridge (so the control plane can safely
-// re-issue before a relight or an adoption-time rebind). A re-issue with a
-// DIFFERENT cidr, or a cidr that overlaps a DIFFERENT group's /24, is refused
-// (overlapErr, which the caller maps to FAILED_PRECONDITION). It returns the
-// bridge name and the group gateway IP.
+// (bridge, gateway) and ENSURES the kernel bridge device is present, rebuilding it
+// if it is missing. This matters because the in-memory record can outlive the
+// device: the bridge dies with the pod while AdoptGroupNetwork re-seeds the record
+// without it on the next boot, so the control plane's re-issue-before-relight (and
+// adoption-time rebind) is exactly how a missing bridge is rebuilt. Trusting the
+// record instead of the device is the bug that left EnsureMemberTap pinning a tap
+// to a nonexistent bridge ("Device does not exist"). The rebuild is idempotent (a
+// healthy bridge is a no-op) and preserves the existing record's IP allocator. A
+// re-issue with a DIFFERENT cidr, or a cidr that overlaps a DIFFERENT group's /24,
+// is refused (overlapErr, which the caller maps to FAILED_PRECONDITION). It returns
+// the bridge name and the group gateway IP.
 func (m *GroupManager) CreateGroupNetwork(ctx context.Context, groupInstanceID, cidr string) (bridge, gatewayIP string, err error) {
 	if groupInstanceID == "" {
 		return "", "", fmt.Errorf("serving: group_instance_id required")
@@ -401,11 +426,23 @@ func (m *GroupManager) CreateGroupNetwork(ctx context.Context, groupInstanceID, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Idempotency: an existing group with the SAME /24 is a no-op hit. A different
-	// /24 for the same id is a conflict (the control plane must delete first).
+	// Idempotency: an existing group with the SAME /24 is a hit. A different /24 for
+	// the same id is a conflict (the control plane must delete first).
 	if existing, ok := m.groups[groupInstanceID]; ok {
 		if existing.cidr.String() != ipnet.String() {
 			return "", "", fmt.Errorf("serving: group %q already exists with cidr %v, cannot recreate as %v", groupInstanceID, existing.cidr, ipnet)
+		}
+		// The record can outlive the kernel bridge (it died with the pod and was
+		// re-seeded by AdoptGroupNetwork without the device, or a prior create's
+		// device was removed while the map entry survived). So ENSURE the bridge
+		// exists rather than trust the record; the rebuild is idempotent (a healthy
+		// bridge is a no-op) and keeps the existing record's IP allocator intact.
+		if berr := m.ensureBridgeDeviceLocked(ctx, existing.bridge, existing.gatewayIP.String(), existing.prefixLen); berr != nil {
+			return "", "", berr
+		}
+		// Regenerate the ruleset so the (possibly just-rebuilt) bridge is covered.
+		if aerr := m.applyRulesetLocked(ctx); aerr != nil {
+			return "", "", aerr
 		}
 		return existing.bridge, existing.gatewayIP.String(), nil
 	}
@@ -425,17 +462,8 @@ func (m *GroupManager) CreateGroupNetwork(ctx context.Context, groupInstanceID, 
 	prefixLen, _ := ipnet.Mask.Size()
 	bridgeName := groupBridgeName(groupInstanceID)
 
-	// Create the bridge idempotently (tolerate an already-present device on a
-	// re-entry after a partial prior create).
-	for _, argv := range groupBridgeSetupArgs(bridgeName, gwIP.String(), prefixLen) {
-		if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
-			if isAlreadyExists(rerr) {
-				continue
-			}
-			// Roll back the bridge fragment so a failed create leaks no half-bridge.
-			_, _ = m.runner.Run(ctx, "ip", groupBridgeTeardownArgs(bridgeName)[1:]...)
-			return "", "", rerr
-		}
+	if berr := m.ensureBridgeDeviceLocked(ctx, bridgeName, gwIP.String(), prefixLen); berr != nil {
+		return "", "", berr
 	}
 
 	g := &groupNet{
