@@ -1,0 +1,46 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    # Bazel's cc toolchain autodetection (@local_config_cc, generated during the
+    # LOADING phase of the warming cquery) probes a real compiler. Without one,
+    # analysis of Abseil's cc_* targets fails toolchain resolution and the warming
+    # run exits non-zero, which (correctly) fails the base build. gcc + glibc-dev +
+    # binutils are baked so the probe succeeds inside the zero-egress guest (there
+    # is no network to fetch a toolchain from).
+    - gcc
+    - glibc-dev
+    - binutils
+    # bazel and its helpers shell out to a handful of GNU coreutils beyond
+    # busybox's applets (e.g. during the toolchain probe and label output).
+    - coreutils
+
+archs:
+  - x86_64
+  - aarch64
+
+# The bazel server + guest-init run as ROOT inside the guest. This deviates from
+# the repo's uid 65532 non-root convention, and it is DELIBERATE: guest-init is
+# PID 1 and mounts /proc and a tmpfs over /tmp, which need root, and the microVM
+# boundary is the isolation statement (task-class posture), not an in-guest uid
+# (the k3s runtime sets the same precedent, see its apko.yaml). A raw Firecracker
+# boot ignores this run-as anyway (it boots init=<harnessInit>); it is here for
+# any non-FC (docker/crane) path and to state the posture explicitly.
+accounts:
+  run-as: 0
+
+environment:
+  PATH: /usr/local/bin:/usr/bin:/bin
+
+entrypoint:
+  # OCI entrypoint for any NON-Firecracker path (docker/crane). On a raw
+  # Firecracker boot the kernel ignores this and boots init=<harnessInit>; there
+  # PID 1 is /usr/local/bin/ember-bazel-init (layered by BUILD), which mounts the
+  # guest filesystems, runs the warming cquery, flips ready only after the warming
+  # client exits, and serves POST /query over vsock. Both paths converge on the
+  # same init.
+  command: /usr/local/bin/ember-bazel-init
