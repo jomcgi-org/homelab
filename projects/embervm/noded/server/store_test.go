@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
 // fakeStore is an in-memory artifactStore for the R6 server tests: it records
@@ -153,20 +155,71 @@ func sameStringMap(a, b map[string]string) bool {
 	return true
 }
 
+// diskScanStatefulDriver is a stateful-driver stub whose ScanStatefulBundles
+// globs the REAL on-disk stateful/ dir exactly as the production *driver.Driver
+// does (keyed by dir name == snapshot_ref, gen read from the sidecar). It embeds
+// fakeStatefulDriver for the rest of the interface so a store test can exercise
+// the faithful restore -> ReconcileStatefulFromDisk -> re-register path a real
+// daemon takes, rather than the in-memory banked-map scan the base fake does.
+type diskScanStatefulDriver struct {
+	*fakeStatefulDriver
+	statefulRoot string
+}
+
+func newDiskScanStatefulDriver(snapshotRoot string) *diskScanStatefulDriver {
+	root := filepath.Join(snapshotRoot, "stateful")
+	f := newFakeStatefulDriver(snapshotRoot)
+	f.statefulDir = root
+	return &diskScanStatefulDriver{fakeStatefulDriver: f, statefulRoot: root}
+}
+
+func (d *diskScanStatefulDriver) StatefulDir() string { return d.statefulRoot }
+
+// ScanStatefulBundles reads the on-disk stateful/ dir (mirroring the real
+// driver): a bundle is any subdir holding a snapfile, keyed by the dir name, its
+// generation read from the gen sidecar. This is what makes a restored bundle dir
+// visible to ReconcileStatefulFromDisk exactly as a startup rescan would.
+func (d *diskScanStatefulDriver) ScanStatefulBundles() []substrate.StatefulBundleInfo {
+	entries, err := os.ReadDir(d.statefulRoot)
+	if err != nil {
+		return nil
+	}
+	var out []substrate.StatefulBundleInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		ref := e.Name()
+		if _, serr := os.Stat(filepath.Join(d.statefulRoot, ref, "snapfile")); serr != nil {
+			continue
+		}
+		var gen uint64
+		if raw, rerr := os.ReadFile(filepath.Join(d.statefulRoot, ref, "gen")); rerr == nil {
+			if n, perr := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64); perr == nil {
+				gen = n
+			}
+		}
+		out = append(out, substrate.StatefulBundleInfo{SnapshotRef: ref, Generation: gen, SizeBytes: 4096})
+	}
+	return out
+}
+
 // newStoreTestServer builds a Server with the fake store wired and a real
 // on-disk SnapshotRoot/VolumeRoot temp layout, so artifact enumeration reads
-// genuine files. No driver networking is needed: the R6 handlers and export
-// queue read the disk directly.
+// genuine files. A disk-scanning stateful driver is wired so the RestoreArtifact
+// re-registration path (ReconcileStatefulFromDisk -> ScanStatefulBundles) sees a
+// restored bundle dir exactly as a startup disk rescan would, matching prod.
 func newStoreTestServer(t *testing.T, fs *fakeStore) *Server {
 	t.Helper()
 	root := t.TempDir()
 	volRoot := t.TempDir()
 	s := New(Options{
-		Config:    config.Config{Arch: "amd64", Node: "node-4", SnapshotRoot: root, VolumeRoot: volRoot},
-		Driver:    &fakeDriver{},
-		Transport: &fakeTransport{},
-		Store:     fs,
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:         config.Config{Arch: "amd64", Node: "node-4", SnapshotRoot: root, VolumeRoot: volRoot},
+		Driver:         &fakeDriver{},
+		StatefulDriver: newDiskScanStatefulDriver(root),
+		Transport:      &fakeTransport{},
+		Store:          fs,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	s.memHeadroom = func() uint64 { return 0 }
 	return s
