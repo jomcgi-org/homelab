@@ -40,25 +40,31 @@
   </header>
 
   <main class="ember-page">
-    <header class="ember-hero">
-      <h1>
-        A database that <span class="frost-word">sleeps</span> when nobody's
-        asking.
-      </h1>
-      <p class="lede">
-        This Postgres microVM banks itself to disk about a second after its
-        last connection closes, so it costs nothing while idle. The next query
-        <span class="ember-word">wakes it</span>, usually in well under a
-        second, against the exact data it left behind.
-      </p>
-    </header>
+    <!-- The fold: claim on the left, live proof on the right, console
+         controls directly below. A visitor on a ~900px window sees the state,
+         the headline number, and both buttons without scrolling; the prose
+         explainers live below the fold. -->
+    <div class="fold">
+      <header class="ember-hero">
+        <h1>
+          A database that <span class="frost-word">sleeps</span> when nobody's
+          asking.
+        </h1>
+        <p class="lede">
+          Banks itself to disk a second after the last connection closes, then
+          costs nothing. The next query
+          <span class="ember-word">wakes it</span> in under a second, on the
+          exact data it left behind.
+        </p>
+      </header>
 
-    <EmberStage
-      vmState={consoleStatus?.state}
-      totalSavedMibS={consoleStatus?.total_saved_mib_s}
-      stopwatchMs={consoleStopwatchMs}
-      running={consoleRunning}
-    />
+      <EmberStage
+        vmState={consoleStatus?.state}
+        totalSavedMibS={consoleStatus?.total_saved_mib_s}
+        stopwatchMs={consoleStopwatchMs}
+        running={consoleRunning}
+      />
+    </div>
 
     <EmberConsole
       turnstileSiteKey={data.turnstileSiteKey}
@@ -72,31 +78,29 @@
     <section class="explainer">
       <h2>What "banking" means</h2>
       <p>
-        Banking is a pause-to-disk, not a shutdown: the VM's live memory and CPU
-        state are snapshotted and the process is torn down, leaving nothing
-        running and nothing billed while it waits. A snapshot is a much faster
-        thing to resume than a fresh boot is to perform, which is why most wakes
-        land under a second instead of paying a full cold start.
+        A pause-to-disk, not a shutdown: live memory and CPU state are
+        snapshotted and the process is torn down. Nothing runs and nothing is
+        billed while it waits. Resuming a snapshot is far faster than a fresh
+        boot, which is why most wakes land under a second instead of paying a
+        full cold start.
       </p>
     </section>
 
     <section class="explainer">
-      <h2>Why the data survives, and what the wake number means</h2>
+      <h2>Why the data survives</h2>
       <p>
-        The orders table lives on a separate data volume from the snapshot, so
-        destroying the VM (or losing the snapshot entirely) never touches the
-        rows already written. A fresh cold boot against that same volume is
-        slower than resuming from a snapshot, but it recovers every row, which
-        is the actual point of the exhibit: the compute is disposable, the data
-        is not. The "wake + connect" number on the console is the wall-clock
-        time from the first TCP packet to a usable connection, whichever path
-        the VM had to take to get there.
+        The orders table lives on a separate volume from the snapshot, so
+        destroying the VM never touches rows already written. A cold boot
+        against that volume is slower than a snapshot resume but recovers
+        every row: the compute is disposable, the data is not. "Wake +
+        connect" on the console is wall-clock time from the first TCP packet
+        to a usable connection, whichever path the wake took.
       </p>
     </section>
 
     <footer class="ember-foot">
       <p>
-        The freeze-and-restore trick underneath this demo has its own story:
+        The freeze and restore underneath this demo:
         <a href="/ember/firecracker">boot once, restore forever</a>.
       </p>
     </footer>
@@ -113,7 +117,7 @@
     justify-content: space-between;
     align-items: center;
     gap: 16px;
-    padding: 16px 28px;
+    padding: 14px 28px;
     font-family: var(--em-mono);
     font-size: 12.5px;
     color: var(--em-muted);
@@ -156,25 +160,31 @@
   .ember-page {
     max-width: 1100px;
     margin: 0 auto;
-    padding: 40px 24px 96px;
+    padding: 12px 24px 80px;
     display: flex;
     flex-direction: column;
-    gap: 40px;
+    gap: 24px;
+  }
+
+  .fold {
+    display: grid;
+    grid-template-columns: minmax(300px, 380px) 1fr;
+    gap: 24px;
+    align-items: center;
   }
 
   .ember-hero {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    max-width: 780px;
+    gap: 10px;
   }
 
   .ember-hero h1 {
     margin: 0;
-    font-size: clamp(34px, 4.8vw, 56px);
+    font-size: clamp(26px, 2.8vw, 36px);
     font-weight: 800;
-    letter-spacing: -0.03em;
-    line-height: 1.05;
+    letter-spacing: -0.025em;
+    line-height: 1.08;
     color: var(--em-ink);
     text-wrap: balance;
   }
@@ -190,22 +200,22 @@
 
   .lede {
     margin: 0;
-    font-size: clamp(16px, 1.4vw, 19px);
-    line-height: 1.6;
+    font-size: 15px;
+    line-height: 1.55;
     color: var(--em-muted);
-    max-width: 58ch;
+    max-width: 44ch;
   }
 
   .explainer {
     max-width: 720px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 
   .explainer h2 {
     margin: 0;
-    font-size: clamp(21px, 2vw, 26px);
+    font-size: clamp(19px, 1.8vw, 23px);
     font-weight: 750;
     letter-spacing: -0.02em;
     color: var(--em-ink);
@@ -214,14 +224,14 @@
 
   .explainer p {
     margin: 0;
-    font-size: 15.5px;
-    line-height: 1.65;
+    font-size: 15px;
+    line-height: 1.6;
     color: var(--em-muted);
   }
 
   .ember-foot {
     border-top: 1px solid var(--em-line);
-    padding-top: 24px;
+    padding-top: 20px;
     max-width: 720px;
   }
 
@@ -235,5 +245,30 @@
     color: var(--em-ember-deep);
     text-decoration: underline;
     text-underline-offset: 3px;
+  }
+
+  @media (max-width: 900px) {
+    .topbar {
+      padding: 12px 16px;
+    }
+
+    .ember-page {
+      padding: 8px 16px 64px;
+      gap: 18px;
+    }
+
+    .fold {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    .ember-hero h1 {
+      font-size: clamp(24px, 6.4vw, 30px);
+    }
+
+    .lede {
+      font-size: 14px;
+      max-width: none;
+    }
   }
 </style>
