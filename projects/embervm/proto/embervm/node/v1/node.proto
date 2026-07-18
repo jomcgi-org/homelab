@@ -382,6 +382,50 @@ service NodeService {
   // set membership. BANK refuses FAILED_PRECONDITION if a stop of the same vm_id
   // is already in flight (the daemon backstop; the control plane serializes too).
   rpc StopGroupMember(StopGroupMemberRequest) returns (StopGroupMemberResponse);
+
+  // -- Continuity verbs (R6) --------------------------------------------------
+  //
+  // These three verbs are the off-node durability vocabulary, ADDITIVE to every
+  // contract above (all task, session, serving, stateful, and group RPCs are
+  // byte-for-byte unchanged). They move a banked artifact between node disk and a
+  // configurable S3-API object store so a node (or its NVMe) can be lost without
+  // losing data. An artifact is named by a typed ArtifactRef {kind, workload,
+  // ref}: bases, session/serving/stateful bundles, group bundle SETS, and raw
+  // volumes are the kinds. Every verb is idempotent per ref and CP-driven; the
+  // daemon is a dumb executor that copies bytes and never decides WHEN to move
+  // them. Export happens only against a crash-consistent banked artifact (never a
+  // live VM) as async write-back after a bank commit; restore is the wake-path
+  // fallback when local disk misses; evict refuses while the artifact is still
+  // referenced, mirroring the local eviction rules (ADR embervm/003 generalized
+  // from ExportBase/RestoreBase/EvictBase to every artifact kind).
+
+  // ExportArtifact copies one banked artifact's files, then its meta.json
+  // completeness marker LAST, to the object store under the Fork-3 key scheme
+  // (<kind>/<workload>/<ref>/<file>). Idempotent: a Head that finds the same
+  // checksum short-circuits without re-uploading. Runs only against a down,
+  // crash-consistent artifact (post-bank-commit); NEVER against a live VM.
+  // FAILED_PRECONDITION if the local artifact is absent; the response reports
+  // bytes moved and whether the upload was skipped as already-present.
+  rpc ExportArtifact(ExportArtifactRequest) returns (ExportArtifactResponse);
+
+  // RestoreArtifact is the inverse: fetch meta.json first, verify every listed
+  // file is present with a matching SHA-256, then stream the files into the
+  // correct on-disk directory for the kind and re-register via the same reconcile
+  // helpers a rescan uses. Idempotent: a restore of an artifact already present
+  // locally with a matching checksum is a no-op. FAILED_PRECONDITION if the store
+  // copy is absent, incomplete (no meta.json), or checksum-mismatched (a corrupt
+  // restore surfaces loudly; the local state is never overwritten with bad bytes).
+  rpc RestoreArtifact(RestoreArtifactRequest) returns (RestoreArtifactResponse);
+
+  // EvictArtifact(remote=true) deletes an artifact's store keys, meta.json FIRST
+  // so a partially-deleted artifact is invisible (mirrors the write ordering).
+  // EvictArtifact(remote=false) is an alias for the existing local EvictSnapshot
+  // path over the typed ref, kept so the CP has one eviction verb across kinds.
+  // Refuses FAILED_PRECONDITION for a VOLUME whose generation still pairs with any
+  // bundle (local or remote): the store is never the only copy of a volume
+  // generation a banked bundle needs (standing decision 8). Idempotent on an
+  // already-absent artifact (the desired end-state already holds).
+  rpc EvictArtifact(EvictArtifactRequest) returns (EvictArtifactResponse);
 }
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
@@ -1055,6 +1099,11 @@ message SessionSnapshot {
   string workload = 3;
   uint64 size_bytes = 4;
   int64 created_at_unix_ms = 5;
+  // exported is true when this bundle's store copy is present and current (its
+  // meta.json completeness marker matches the local checksum). The control plane
+  // reads it to know a wake could restore-on-miss and that a roll that exits now
+  // loses nothing (R6, additive; false on a pre-R6 daemon).
+  bool exported = 6;
 }
 
 // ServingVm is one LIVE serving VM the node currently holds, reported so a
@@ -1086,6 +1135,8 @@ message ServingSnapshot {
   string workload = 2;
   uint64 size_bytes = 3;
   int64 created_at_unix_ms = 4;
+  // exported: see SessionSnapshot.exported (R6, additive).
+  bool exported = 5;
 }
 
 // StatefulVm is one LIVE stateful VM the node currently holds, reported so a
@@ -1127,6 +1178,8 @@ message StatefulBundle {
   uint64 generation = 3;
   uint64 size_bytes = 4;
   int64 created_at_unix_ms = 5;
+  // exported: see SessionSnapshot.exported (R6, additive).
+  bool exported = 6;
 }
 
 // Volume is one workload's raw volume file on node NVMe, the durable data that
@@ -1141,6 +1194,12 @@ message Volume {
   uint64 size_bytes = 3;
   uint64 allocated_bytes = 4;
   bool attached = 5;
+  // exported_generation is the volume generation whose (vol.img, gen) pair the
+  // store currently holds, 0 if no store copy exists. The control plane skips a
+  // re-export when it equals generation and knows a disk-loss restore recovers to
+  // this generation (R6, additive). A separate field from a bool because the
+  // exported generation can lag the live generation.
+  uint64 exported_generation = 6;
 }
 
 // GroupNetwork is one per-group bridge the node currently holds, reported so a
@@ -1188,6 +1247,89 @@ message GroupBundleSet {
   string group_instance_id = 2;
   repeated GroupBundleMember members = 3;
   int64 created_at_unix_ms = 4;
+  // exported is true when the WHOLE set's store copy is present and current
+  // (every member's meta.json matches). A set is the export unit: a partially
+  // exported set is not exported (R6, additive; the completeness judgment for
+  // relight stays in the control plane, but export atomicity is per set).
+  bool exported = 5;
+}
+
+// ---- Continuity artifacts (R6) ---------------------------------------------
+
+// ArtifactKind is the closed set of banked-artifact kinds the continuity verbs
+// move off node. Every kind is exported/restored/evicted through the same
+// ArtifactRef vocabulary; the daemon dispatches on kind to the right on-disk
+// directory and enumeration helper. BASE generalizes ADR 003's ExportBase.
+enum ArtifactKind {
+  ARTIFACT_KIND_UNSPECIFIED = 0;
+  ARTIFACT_KIND_BASE = 1;
+  ARTIFACT_KIND_SESSION = 2;
+  ARTIFACT_KIND_SERVING = 3;
+  ARTIFACT_KIND_STATEFUL = 4;
+  ARTIFACT_KIND_GROUP_SET = 5;
+  ARTIFACT_KIND_VOLUME = 6;
+}
+
+// ArtifactRef names exactly one banked artifact for the continuity verbs. kind
+// selects the on-disk layout and store key prefix; workload namespaces the store
+// keys (no artifact is ever restored into another workload's lineage); ref is the
+// opaque per-artifact identifier (snapshot_ref for bundles, set_id for a group
+// set, and the workload itself for a singleton VOLUME, whose ref MAY be empty).
+// The store key scheme is <kind>/<workload>/<ref>/<file> (Fork 3), mirroring the
+// on-disk layout so restore is a pure copy and store GC audits against a local
+// scan.
+message ArtifactRef {
+  ArtifactKind kind = 1;
+  string workload = 2;
+  string ref = 3;
+}
+
+// ExportArtifactRequest asks the daemon to write-back one banked artifact to the
+// object store. trace threads correlation as every RPC does.
+message ExportArtifactRequest {
+  ArtifactRef artifact = 1;
+  Trace trace = 2;
+}
+
+// ExportArtifactResponse reports the outcome. bytes_moved is 0 when skipped=true
+// (the store already held the same checksum). generation echoes the exported
+// volume generation for a VOLUME artifact (0 for non-volume kinds), the pairing
+// fact the control plane records against the remote copy.
+message ExportArtifactResponse {
+  uint64 bytes_moved = 1;
+  bool skipped = 2;
+  uint64 generation = 3;
+}
+
+// RestoreArtifactRequest asks the daemon to fetch one artifact from the store
+// back onto local disk and re-register it.
+message RestoreArtifactRequest {
+  ArtifactRef artifact = 1;
+  Trace trace = 2;
+}
+
+// RestoreArtifactResponse reports the outcome. bytes_moved is 0 when the artifact
+// was already present locally with a matching checksum (idempotent no-op).
+// generation echoes the restored volume generation for a VOLUME (0 otherwise).
+message RestoreArtifactResponse {
+  uint64 bytes_moved = 1;
+  bool skipped = 2;
+  uint64 generation = 3;
+}
+
+// EvictArtifactRequest asks the daemon to delete one artifact. remote=true
+// evicts the store copy; remote=false evicts the local copy over the typed ref
+// (the EvictSnapshot path). Both are idempotent on an already-absent artifact.
+message EvictArtifactRequest {
+  ArtifactRef artifact = 1;
+  bool remote = 2;
+  Trace trace = 3;
+}
+
+// EvictArtifactResponse reports the outcome. bytes_freed is best-effort (0 when
+// the artifact was already absent).
+message EvictArtifactResponse {
+  uint64 bytes_freed = 1;
 }
 
 // NodeStatus is the whole capacity fact set: per-workload primed slots and base
@@ -1283,4 +1425,20 @@ message NodeStatus {
   // group_bundle_sets is the banked-group-bundle inventory scanned from the
   // group/ prefix of the bundle dir, refs grouped by set directory.
   repeated GroupBundleSet group_bundle_sets = 21;
+
+  // -- Continuity facts (R6, additive) ----------------------------------------
+  // These two node-level fields drive the bounded-preemption drain and the
+  // restore-on-miss wake planner. Both are optional and wire-compatible with a
+  // daemon that never sets them (0 / false = the pre-R6 behavior).
+
+  // drain_deadline_unix_ms is the wall-clock instant the daemon will stop holding
+  // shutdown and reap whatever remains. 0 when not draining. On the draining edge
+  // the control plane reads this to bound its force-bank pass (bank everything
+  // before deadline - safety_margin). Set together with draining=true on SIGTERM.
+  int64 drain_deadline_unix_ms = 22;
+  // store_reachable is the daemon's latest object-store reachability verdict from
+  // its probe loop. false never blocks a local-state wake (fail-open warmth); the
+  // control plane only consults it to decide whether a restore-on-miss can be
+  // planned at all. Unset (false) on a daemon with no store configured.
+  bool store_reachable = 23;
 }

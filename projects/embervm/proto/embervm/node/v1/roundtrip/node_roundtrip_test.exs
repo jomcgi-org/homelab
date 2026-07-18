@@ -15,6 +15,7 @@ defmodule Embervm.NodeRoundtripTest do
   use ExUnit.Case, async: false
 
   alias Embervm.Node.V1.{
+    ArtifactRef,
     AssignRequest,
     BankRequest,
     BuildBaseRequest,
@@ -22,7 +23,9 @@ defmodule Embervm.NodeRoundtripTest do
     DeleteGroupNetworkRequest,
     DeleteVolumeRequest,
     DestroyRequest,
+    EvictArtifactRequest,
     EvictSnapshotRequest,
+    ExportArtifactRequest,
     FreshSource,
     GetNodeStatusRequest,
     GuestRequest,
@@ -33,6 +36,7 @@ defmodule Embervm.NodeRoundtripTest do
     RelightSource,
     ResolveStatefulRequest,
     ResourceSpec,
+    RestoreArtifactRequest,
     SessionAssignRequest,
     StartGroupMemberRequest,
     StartServingRequest,
@@ -519,6 +523,86 @@ defmodule Embervm.NodeRoundtripTest do
 
     assert ns.snapshot_disk_free_bytes == 9_000_000_000
     assert ns.snapshot_disk_used_bytes == 1_000_000_000
+  end
+
+  test "continuity verbs round-trip across the wire (R6 additive contract)", %{channel: ch} do
+    # ExportArtifact: first export of a stateful bundle records the store key and
+    # reports bytes moved (derived from workload+ref length), not skipped.
+    stateful = %ArtifactRef{
+      kind: :ARTIFACT_KIND_STATEFUL,
+      workload: "scratch-postgres",
+      ref: "stateful/scratch-postgres"
+    }
+
+    {:ok, exp} =
+      NodeService.Stub.export_artifact(ch, %ExportArtifactRequest{
+        artifact: stateful,
+        trace: %Trace{workload: "scratch-postgres"}
+      })
+
+    assert exp.skipped == false
+    assert exp.bytes_moved > 0
+    assert exp.generation == 0
+
+    # A repeat export of the same key short-circuits skipped=true, no bytes moved.
+    {:ok, again} =
+      NodeService.Stub.export_artifact(ch, %ExportArtifactRequest{artifact: stateful})
+
+    assert again.skipped == true
+    assert again.bytes_moved == 0
+
+    # A VOLUME export echoes the volume generation so the pairing fact crosses.
+    volume = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: "scratch-postgres", ref: ""}
+    {:ok, vol_exp} = NodeService.Stub.export_artifact(ch, %ExportArtifactRequest{artifact: volume})
+    assert vol_exp.generation == 5
+
+    # RestoreArtifact: the bundle is present in the store, so restore succeeds.
+    {:ok, res} =
+      NodeService.Stub.restore_artifact(ch, %RestoreArtifactRequest{artifact: stateful})
+
+    assert res.bytes_moved > 0
+
+    # RestoreArtifact of an absent key surfaces FAILED_PRECONDITION (never silent).
+    absent = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: "nope", ref: "sessions/none"}
+
+    {:error, missing} =
+      NodeService.Stub.restore_artifact(ch, %RestoreArtifactRequest{artifact: absent})
+
+    assert missing.status == GRPC.Status.failed_precondition()
+
+    # EvictArtifact(remote=true): removes the store copy, reports bytes freed.
+    {:ok, ev} =
+      NodeService.Stub.evict_artifact(ch, %EvictArtifactRequest{artifact: stateful, remote: true})
+
+    assert ev.bytes_freed > 0
+
+    # After eviction, a restore of the same key fails (the copy is gone).
+    {:error, gone} =
+      NodeService.Stub.restore_artifact(ch, %RestoreArtifactRequest{artifact: stateful})
+
+    assert gone.status == GRPC.Status.failed_precondition()
+
+    # EvictArtifact is idempotent on an already-absent artifact.
+    {:ok, noop} =
+      NodeService.Stub.evict_artifact(ch, %EvictArtifactRequest{artifact: stateful, remote: true})
+
+    assert noop.bytes_freed == 0
+  end
+
+  test "NodeStatus reports continuity facts (R6 additive fields)", %{channel: ch} do
+    {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
+
+    assert ns.drain_deadline_unix_ms == 1_700_000_009_000
+    assert ns.store_reachable == true
+
+    assert [bundle] = ns.stateful_bundles
+    assert bundle.exported == true
+
+    assert [vol] = ns.volumes
+    assert vol.exported_generation == 5
+
+    assert [set] = ns.group_bundle_sets
+    assert set.exported == true
   end
 
   test "WatchNode server-streams heartbeats in order", %{channel: ch} do
