@@ -9,6 +9,13 @@ import (
 // Role env facts (standing decision 13). The platform injects only generic
 // facts; this image owns the k3s knowledge. The k3s images' init maps them here.
 const (
+	// memberEnv names this member's expanded name (e.g. "server", "agent-0"). The
+	// platform sets it for EVERY composite member (server and agent) and never for
+	// a base build or the stateful-postgres lane, so its presence is the reliable
+	// marker of an R5 composite member runtime boot. It is preferred over roleEnv
+	// as the discriminator because the CR's role field can be empty (roleEnv then
+	// defaults to server in k3sArgv), whereas the expanded name is always set.
+	memberEnv = "EMBER_GROUP_MEMBER"
 	// roleEnv names the member's role: "server" or "agent".
 	roleEnv = "EMBER_GROUP_ROLE"
 	// secretEnv is the per-group shared secret. It becomes K3S_TOKEN (server and

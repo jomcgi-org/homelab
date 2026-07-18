@@ -65,9 +65,49 @@ func statefulVolumeFromCmdline(logger *slog.Logger) (dev, mountPath string) {
 }
 
 // k3sDataDir is k3s's writable state root (server sqlite db, kubelet, containerd
-// state). The stateful lane's volume mounts here so the datastore is durable. It
-// is also the CR's volumeMountPath in the drill.
+// state). The stateful lane's volume mounts here so the datastore is durable; a
+// composite member (warmth-only, no volume) runs k3s here on the ephemeral
+// writable rootfs subtree (mountGuestFilesystems makes it writable), losing state
+// on fresh/destroy by design. It is also the CR's volumeMountPath in the drill.
 const k3sDataDir = "/var/lib/rancher/k3s"
+
+// bootClass is the guest boot lane this VM was started in. ONE k3s rootfs serves
+// three: a base build (snapshot bake, no k3s), a stateful cold boot (postgres
+// precedent, volume-backed k3s), and an R5 composite member (warmth-only,
+// volume-less k3s). Deciding it purely from the volume boot-arg was correct until
+// R5: a composite member is a real k3s boot that carries NO volume (a standing R5
+// warmth-only decision), so volume-presence alone misclassifies every member as a
+// base build and k3s never runs. classifyBoot adds the composite lane.
+type bootClass int
+
+const (
+	// bootBaseBuild: no volume and no composite facts. Answer the vsock ready
+	// contract only; run no k3s. noded's BuildBase snapshots then reaps the VM.
+	bootBaseBuild bootClass = iota
+	// bootStateful: a writable volume boot-arg is present (the scratch-postgres
+	// lane). Mount the volume at k3s's data dir, then run k3s.
+	bootStateful
+	// bootComposite: an R5 composite group member (EMBER_GROUP_MEMBER injected),
+	// warmth-only with no volume. Run k3s directly on the ephemeral writable rootfs
+	// subtree; there is no volume to mount.
+	bootComposite
+)
+
+// classifyBoot decides the boot lane from the resolved volume device (dev, "" when
+// absent) and an env lookup (env, os.Getenv in production, after setMmdsEnv has
+// decoded the boot-args). A volume is unambiguously the stateful lane. Absent a
+// volume, an injected EMBER_GROUP_MEMBER fact marks a composite member that MUST
+// still run k3s; only a boot with neither signal is a base build. Pure over its
+// inputs so it is table-testable without a microVM.
+func classifyBoot(dev string, env func(string) string) bootClass {
+	if dev != "" {
+		return bootStateful
+	}
+	if env(memberEnv) != "" {
+		return bootComposite
+	}
+	return bootBaseBuild
+}
 
 // setMmdsEnv decodes every `ember.env.<KEY>=<base64url>` boot-arg into a process
 // env var named exactly <KEY>. A missing /proc/cmdline, no matching tokens, an
