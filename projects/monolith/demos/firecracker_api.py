@@ -12,6 +12,7 @@ waterfall:
 - ``GET  /postgres/status``  the demo-postgres stateful lifecycle (sleep indicator).
 - ``POST /postgres/query``   timed connect (the wake) + insert or aggregate against demo-postgres.
 - ``POST /postgres/reset``   destroy the live VM + evict its snapshot (force cold boot).
+- ``POST /postgres/session`` mint a session cookie for ledger attribution (Turnstile-gated when public).
 
 Each POST wraps its invocation in a fresh ROOT span, detached from any inbound
 trace context, via ``context=Context()``. Browser-initiated requests arrive
@@ -28,17 +29,19 @@ owns no fc-invoke or ClickHouse client of its own.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import random
+import secrets
 from time import perf_counter
 from typing import Literal
 from uuid import uuid4
 
 import httpx
 import psycopg
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 from opentelemetry import trace
 from opentelemetry.context import Context
 from pydantic import BaseModel
@@ -580,6 +583,31 @@ def _demo_pg_dsn() -> str:
     return os.environ.get("DEMO_POSTGRES_DSN", "")
 
 
+def _demo_pg_turnstile_secret() -> str:
+    """Read at call time so tests can patch the environment."""
+    return os.environ.get("TURNSTILE_SECRET_KEY", "")
+
+
+_DEMO_PG_SESSION_COOKIE = "demo_pg_session"
+
+
+def _demo_pg_session_salt() -> str:
+    """Derived from the DSN so the salt is stable across replicas and restarts
+    without a new secret. Never returned to clients."""
+    return hashlib.sha256(
+        ("demo-pg-session-salt:" + _demo_pg_dsn()).encode()
+    ).hexdigest()
+
+
+def _demo_pg_session_tag(cookie_value: str) -> str | None:
+    """Hash the session cookie into an opaque per-visitor tag for attribution.
+    Returns None when there is no cookie to tag."""
+    if not cookie_value:
+        return None
+    salt = _demo_pg_session_salt()
+    return hashlib.sha256((salt + ":" + cookie_value).encode()).hexdigest()[:16]
+
+
 async def _fetch_demo_pg_status() -> dict:
     """GET the control plane's stateful introspection for the demo workload."""
     async with httpx.AsyncClient(timeout=10) as client:
@@ -646,16 +674,29 @@ _DEMO_PG_DDL = (
     "  qty int NOT NULL,"
     "  unit_price numeric(8,2) NOT NULL,"
     "  written_at timestamptz NOT NULL DEFAULT now(),"
-    "  postmaster_start timestamptz NOT NULL)"
+    "  postmaster_start timestamptz NOT NULL,"
+    "  session_tag text)"
 )
 
+# The prod table predates session_tag; this idempotent ALTER backfills it on
+# every roundtrip so existing deployments pick up the column without a
+# separate migration step.
+_DEMO_PG_ADD_SESSION_TAG = (
+    "ALTER TABLE demo_orders ADD COLUMN IF NOT EXISTS session_tag text"
+)
+
+# The ledger is a rolling one-hour window: this sweep runs lazily on the
+# first query past the hour (the VM may be asleep at the stroke of the hour,
+# and nothing can observe the data until a query wakes it anyway).
+_DEMO_PG_SWEEP = "DELETE FROM demo_orders WHERE written_at < date_trunc('hour', now())"
+
 _DEMO_PG_INSERT = (
-    "INSERT INTO demo_orders (item, qty, unit_price, postmaster_start) "
-    "VALUES (%s, %s, %s, pg_postmaster_start_time()) RETURNING id"
+    "INSERT INTO demo_orders (item, qty, unit_price, postmaster_start, session_tag) "
+    "VALUES (%s, %s, %s, pg_postmaster_start_time(), %s) RETURNING id"
 )
 
 _DEMO_PG_RECENT = (
-    "SELECT id, item, qty, unit_price, written_at, postmaster_start "
+    "SELECT id, item, qty, unit_price, written_at, postmaster_start, session_tag "
     "FROM demo_orders ORDER BY id DESC LIMIT %s"
 )
 
@@ -670,7 +711,7 @@ _DEMO_PG_TOTALS = (
 )
 
 
-def _demo_pg_orders_roundtrip(dsn: str, mode: str) -> dict:
+def _demo_pg_orders_roundtrip(dsn: str, mode: str, session_tag: str | None) -> dict:
     """Connect, run the mode's statements, and time each one. Sync; to_thread.
 
     connect_ms is the wake (the activator parks the TCP connect while the VM
@@ -678,7 +719,8 @@ def _demo_pg_orders_roundtrip(dsn: str, mode: str) -> dict:
     its own wall time so the UI can show the SQL that just ran. The connection
     is short-lived by design: an open connection pins the VM awake.
 
-    insert    - DDL-if-missing, append a random menu line item, then read the
+    insert    - DDL-if-missing, sweep the ledger to its rolling one-hour
+                window, append a random menu line item, then read the
                 recent rows, the aggregate breakdown, and the totals.
     aggregate - read-only: the same reads without writing anything, proving a
                 wake needs no write.
@@ -699,10 +741,12 @@ def _demo_pg_orders_roundtrip(dsn: str, mode: str) -> dict:
     # psycopg3: the connection context commits on clean exit AND closes.
     with conn, conn.cursor() as cur:
         run(cur, _DEMO_PG_DDL)
+        run(cur, _DEMO_PG_ADD_SESSION_TAG)
+        run(cur, _DEMO_PG_SWEEP)
         if mode == "insert":
             item, unit_price = random.choice(_DEMO_PG_MENU)
             qty = random.randint(1, 5)
-            run(cur, _DEMO_PG_INSERT, (item, qty, unit_price))
+            run(cur, _DEMO_PG_INSERT, (item, qty, unit_price, session_tag))
             inserted = {
                 "id": cur.fetchone()[0],
                 "item": item,
@@ -718,6 +762,7 @@ def _demo_pg_orders_roundtrip(dsn: str, mode: str) -> dict:
                 "unit_price": float(r[3]),
                 "written_at": r[4].isoformat(),
                 "postmaster_start": r[5].isoformat(),
+                "yours": bool(session_tag and r[6] == session_tag),
             }
             for r in cur.fetchall()
         ]
@@ -748,6 +793,10 @@ class PostgresQueryRequest(BaseModel):
     mode: Literal["insert", "aggregate"] = "insert"
 
 
+class PostgresSessionRequest(BaseModel):
+    turnstile_token: str = ""
+
+
 @router.get("/postgres/status")
 async def postgres_status() -> dict:
     """The demo-postgres lifecycle snapshot driving the sleep indicator.
@@ -768,7 +817,7 @@ async def postgres_status() -> dict:
 
 
 @router.post("/postgres/query")
-async def postgres_query(body: PostgresQueryRequest) -> dict:
+async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
     """Timed roundtrip against demo-postgres: the wake IS the connect time.
 
     Captures the lifecycle state just before connecting to classify what this
@@ -784,6 +833,8 @@ async def postgres_query(body: PostgresQueryRequest) -> dict:
             status_code=503, detail="DEMO_POSTGRES_DSN is not configured"
         )
 
+    session_tag = _demo_pg_session_tag(request.cookies.get(_DEMO_PG_SESSION_COOKIE, ""))
+
     before = None
     if EMBERVM_URL:
         try:
@@ -794,7 +845,9 @@ async def postgres_query(body: PostgresQueryRequest) -> dict:
 
     started = perf_counter()
     try:
-        result = await asyncio.to_thread(_demo_pg_orders_roundtrip, dsn, body.mode)
+        result = await asyncio.to_thread(
+            _demo_pg_orders_roundtrip, dsn, body.mode, session_tag
+        )
     except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
         logger.warning("demo-postgres query roundtrip failed: %s", exc)
         return {
@@ -839,30 +892,49 @@ async def postgres_reset() -> dict:
     }
 
 
-def _demo_pg_truncate(dsn: str) -> dict:
-    """TRUNCATE demo_orders. Sync; via to_thread. Wakes the VM like any connect."""
-    started = perf_counter()
-    conn = psycopg.connect(dsn, connect_timeout=_DEMO_PG_CONNECT_TIMEOUT_S)
-    connect_ms = (perf_counter() - started) * 1000
-    with conn, conn.cursor() as cur:
-        cur.execute(_DEMO_PG_DDL)
-        cur.execute("TRUNCATE demo_orders")
-    return {"truncated": True, "connect_ms": connect_ms}
-
-
-@router.post("/postgres/truncate")
-async def postgres_truncate() -> dict:
-    """Clear the ledger. The data dies, the VM lives: the mirror image of reset
-    (which destroys the VM and keeps the data). Private tier only, like the
-    rest of this router. Errors come back in-band, mirroring the query shape.
-    """
-    dsn = _demo_pg_dsn()
-    if not dsn:
-        raise HTTPException(
-            status_code=503, detail="DEMO_POSTGRES_DSN is not configured"
+async def _verify_turnstile(token: str) -> bool:
+    """Server-side verification against Cloudflare's siteverify endpoint."""
+    if not token:
+        return False
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data={"secret": _demo_pg_turnstile_secret(), "response": token},
         )
-    try:
-        return await asyncio.to_thread(_demo_pg_truncate, dsn)
-    except Exception as exc:  # noqa: BLE001 - surface connect failures in-band
-        logger.warning("demo-postgres truncate failed: %s", exc)
-        return {"truncated": False, "error": str(exc)}
+        resp.raise_for_status()
+        return bool(resp.json().get("success"))
+
+
+@router.post("/postgres/session")
+async def postgres_session(
+    body: PostgresSessionRequest, request: Request, response: Response
+) -> dict:
+    """Mint a session cookie for ledger attribution, gated by Turnstile when
+    the demo is public.
+
+    Private tier (behind Cloudflare Access) leaves TURNSTILE_SECRET_KEY unset,
+    so it mints without verification. Once a public page sits in front of
+    this endpoint, setting the env turns on server-side Turnstile
+    verification so anonymous visitors can't mint sessions without solving
+    the challenge.
+    """
+    existing = request.cookies.get(_DEMO_PG_SESSION_COOKIE, "")
+    if existing:
+        return {"ok": True, "existing": True}
+
+    secret = _demo_pg_turnstile_secret()
+    if secret:
+        verified = await _verify_turnstile(body.turnstile_token)
+        if not verified:
+            raise HTTPException(status_code=403, detail="turnstile verification failed")
+
+    response.set_cookie(
+        _DEMO_PG_SESSION_COOKIE,
+        secrets.token_hex(16),
+        httponly=True,
+        samesite="lax",
+        secure=True,
+        max_age=3600,
+        path="/api/demos/firecracker/postgres",
+    )
+    return {"ok": True, "existing": False}
