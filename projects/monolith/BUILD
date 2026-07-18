@@ -5,6 +5,7 @@
 # gazelle:exclude cluster
 # gazelle:exclude app
 # gazelle:exclude demos
+# gazelle:exclude ember_public
 # gazelle:exclude e2e
 # gazelle:exclude framework
 # gazelle:exclude knowledge
@@ -72,6 +73,7 @@ _BACKEND_SRCS = glob(
         "chat_public/**/*.py",
         "cluster/**/*.py",
         "demos/**/*.py",
+        "ember_public/**/*.py",
         "goosecracker/**/*.py",
         "knowledge/**/*.py",
         "home/**/*.py",
@@ -261,6 +263,7 @@ py_library(
             "chat_public/**/*.py",
             "cluster/**/*.py",
             "demos/**/*.py",
+            "ember_public/**/*.py",
             "goosecracker/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
@@ -528,6 +531,10 @@ py_library(
             # workload.py) plus the guest function code (functions/**) are pruned
             # below; main_public_imports_test enforces they stay out of the closure.
             "faas/**/*.py",
+            # Ember public tier (docs/plans/2026-07-18-ember-public-pages.md Task 1):
+            # the demo-postgres core, public-safe by construction (never imports
+            # demos/sandbox.client; EMBERVM_URL read directly from the environment).
+            "ember_public/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -595,6 +602,7 @@ py_venv_binary(
             # workload.py) plus the guest function code (functions/**) are pruned
             # below; main_public_imports_test enforces they stay out of the closure.
             "faas/**/*.py",
+            "ember_public/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -5048,6 +5056,23 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+# Hand-registered (ember_public is gazelle-excluded): mounts the demo-postgres
+# router standalone plus asserts it against the composed public app (proving
+# both the route and the demos-absence guarantee).
+py_test(
+    name = "ember_public_router_test",
+    srcs = ["ember_public/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )
 
