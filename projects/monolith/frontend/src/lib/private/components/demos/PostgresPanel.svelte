@@ -447,6 +447,46 @@
     return v < 1024 ? `${Math.round(v)} MiB·s` : `${(v / 1024).toFixed(1)} GiB·s`;
   }
 
+  // Compact number formatting shared by the aggregate headline and the
+  // all-time savings line: exact below 1000, one decimal below 100 of the
+  // unit above that (1.2K, 12K, 1.2M, 12M, 1.2B), no decimal above 100 of
+  // the unit.
+  function humanize(n) {
+    const abs = Math.abs(n);
+    if (abs < 1000) return `${Math.round(n)}`;
+    const units = [
+      { value: 1e9, suffix: "B" },
+      { value: 1e6, suffix: "M" },
+      { value: 1e3, suffix: "K" },
+    ];
+    for (const { value, suffix } of units) {
+      if (abs >= value) {
+        const scaled = n / value;
+        const decimals = Math.abs(scaled) < 100 ? 1 : 0;
+        return `${scaled.toFixed(decimals)}${suffix}`;
+      }
+    }
+    return `${Math.round(n)}`;
+  }
+
+  function moneyHeadline(v) {
+    const total = v ?? 0;
+    return total >= 10000 ? `£${humanize(total)}` : money(total);
+  }
+
+  function countHeadline(v) {
+    const total = v ?? 0;
+    return total >= 10000 ? humanize(total) : `${total}`;
+  }
+
+  // All-time "memory saved while asleep" across every visitor, in GB-hours.
+  function gbHours(mibSeconds) {
+    if (mibSeconds == null) return "–";
+    const gbh = mibSeconds / 1024 / 3600;
+    if (gbh < 10) return `${gbh.toFixed(1)} GB·h`;
+    return `${humanize(gbh)} GB·h`;
+  }
+
   function barPct(run, part) {
     const total = (run.connect_ms ?? 0) + (run.query_ms ?? 0);
     if (!total) return 0;
@@ -543,6 +583,11 @@
         <span class="savings-value">{mibSeconds(savedMibSeconds)}</span>
       </p>
       <p class="savings-caption">assuming the 512 MiB VM stayed running</p>
+      <p class="alltime-savings">
+        all visitors, all time: <span class="alltime-savings-value"
+          >{gbHours(status?.total_saved_mib_s)}</span
+        > saved while asleep
+      </p>
       {#if statusError}
         <p class="soft-error">status: {statusError}</p>
       {/if}
@@ -681,8 +726,8 @@
             <tfoot>
               <tr class="summary-total">
                 <td>Σ total</td>
-                <td class="col-numeric">{lastRun?.total_orders != null ? (lastRun.breakdown ?? []).reduce((n, b) => n + b.units, 0) : "–"} units</td>
-                <td class="col-numeric">{money(lastRun?.total_revenue)}</td>
+                <td class="col-numeric">{lastRun?.total_orders != null ? countHeadline((lastRun.breakdown ?? []).reduce((n, b) => n + b.units, 0)) : "–"} units</td>
+                <td class="col-numeric">{moneyHeadline(lastRun?.total_revenue)}</td>
               </tr>
             </tfoot>
           </table>
@@ -891,6 +936,20 @@
     margin: -8px 0 0;
     font-size: 11px;
     color: var(--text-faint);
+  }
+
+  .alltime-savings {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-faint);
+  }
+
+  .alltime-savings-value {
+    display: inline-block;
+    min-width: 6ch;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--text-dim);
   }
 
   .soft-error {

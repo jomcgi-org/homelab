@@ -35,6 +35,7 @@ import logging
 import os
 import random
 import secrets
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Literal
 from uuid import uuid4
@@ -52,6 +53,7 @@ import demos.loadtest as loadtest
 import goosecracker.api as goosecracker
 from app.db import get_engine
 from demos.loadtest_corpus import load_corpus
+from demos.models import DemoPgSavings
 from home.observability.traces import fetch_correlated_spans, fetch_trace_spans
 from sandbox.client import EMBERVM_URL, run_python_in_sandbox
 from semgrep_scan.client import scan_files
@@ -634,6 +636,81 @@ def _shape_pg_status(status: dict) -> dict:
     }
 
 
+# All-time "memory saved while asleep" counter (every visitor, not just this
+# session). Accrual is lazy on the status poll: the demo VM can only wake when
+# something connects, so two consecutive samples that are both state ==
+# "banked" with the SAME generation prove the VM slept the entire gap between
+# the samples, and that whole gap is credited at 512 MiB per second. Any other
+# transition (a generation change, or either sample not banked) credits
+# nothing, so the counter is a conservative undercount, never an overcount.
+_DEMO_PG_SAVINGS_MIB_PER_S = 512.0
+# Below this gap, skip the write entirely: the status endpoint is polled
+# sub-second, and a banked VM's state/generation do not change between polls,
+# so without a throttle every poll would issue an UPDATE for zero new credit.
+_DEMO_PG_SAVINGS_WRITE_THROTTLE_S = 5.0
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """SQLite test fixtures round-trip TIMESTAMPTZ as naive; Postgres is tz-aware."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _record_demo_pg_savings_core(
+    session: Session, *, state: str | None, generation: int | None, now: datetime
+) -> float:
+    """Credit elapsed sleep time into the single all-time row. Sync; to_thread.
+
+    Loads (or creates) the id=1 row, credits it per the banked-to-banked
+    same-generation rule above, and persists the new sample unless the sample
+    is an unchanged-state, unchanged-generation, sub-throttle-window repeat (in
+    which case nothing is written and the current total is simply returned).
+    """
+    row = session.get(DemoPgSavings, 1)
+    if row is None:
+        row = DemoPgSavings(id=1, total_mib_seconds=0.0)
+        session.add(row)
+
+    unchanged = state == row.last_state and generation == row.last_generation
+    if unchanged and row.last_sample_at is not None:
+        gap_s = (now - _as_utc(row.last_sample_at)).total_seconds()
+        if 0 <= gap_s < _DEMO_PG_SAVINGS_WRITE_THROTTLE_S:
+            return row.total_mib_seconds
+
+    if (
+        row.last_sample_at is not None
+        and row.last_state == "banked"
+        and state == "banked"
+        and generation == row.last_generation
+    ):
+        elapsed_s = (now - _as_utc(row.last_sample_at)).total_seconds()
+        row.total_mib_seconds += max(0.0, elapsed_s) * _DEMO_PG_SAVINGS_MIB_PER_S
+
+    row.last_sample_at = now
+    row.last_state = state
+    row.last_generation = generation
+    session.commit()
+    return row.total_mib_seconds
+
+
+def _record_demo_pg_savings_sync(state: str | None, generation: int | None) -> float:
+    """Opens its own Session; never receives a session from the caller's thread."""
+    with Session(get_engine()) as session:
+        return _record_demo_pg_savings_core(
+            session, state=state, generation=generation, now=datetime.now(timezone.utc)
+        )
+
+
+async def _record_demo_pg_savings(
+    state: str | None, generation: int | None
+) -> float | None:
+    """Best-effort: a missing table (pre-migration) must not break status polls."""
+    try:
+        return await asyncio.to_thread(_record_demo_pg_savings_sync, state, generation)
+    except Exception as exc:  # noqa: BLE001 - accrual is best-effort, never fatal
+        logger.warning("demo-postgres savings accrual failed: %s", exc)
+        return None
+
+
 def _classify_wake(before: dict | None) -> str:
     """Predict this query's boot path from the PRE-query lifecycle state.
 
@@ -813,7 +890,11 @@ async def postgres_status() -> dict:
     except Exception as exc:  # noqa: BLE001 - poll errors are data, not faults
         logger.warning("demo-postgres status poll failed: %s", exc)
         return {"configured": True, "error": str(exc)}
-    return {"configured": True, **_shape_pg_status(status)}
+    shaped = _shape_pg_status(status)
+    total = await _record_demo_pg_savings(shaped["state"], shaped["generation"])
+    if total is not None:
+        return {"configured": True, **shaped, "total_saved_mib_s": total}
+    return {"configured": True, **shaped}
 
 
 @router.post("/postgres/query")

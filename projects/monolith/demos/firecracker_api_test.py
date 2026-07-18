@@ -12,11 +12,16 @@ trace_id is always present on the POST endpoints, and that the trace endpoint's
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
 import demos.firecracker_api as fc
+from demos.models import DemoPgSavings  # noqa: F401  (registers the table)
 
 _HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
@@ -499,7 +504,8 @@ def test_postgres_session_requires_token_when_turnstile_configured(monkeypatch):
 
     resp = _client().post("/api/demos/firecracker/postgres/session", json={})
     assert resp.status_code == 403
-    assert resp.json()["detail"] == "turnstile verification failed"
+    body = resp.json()
+    assert body["detail"] == "turnstile verification failed"
 
 
 def test_postgres_session_verifies_token_with_turnstile(monkeypatch):
@@ -602,3 +608,128 @@ def test_postgres_query_passes_session_tag_from_cookie(monkeypatch):
     assert isinstance(tag, str)
     assert len(tag) == 16
     assert re.fullmatch(r"[0-9a-f]{16}", tag)
+
+
+# ---------------------------------------------------------------------------
+# All-time sleep-savings counter (demo_pg_savings)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _savings_db():
+    """In-memory SQLite with demo_pg_savings created, mirroring sandbox/session_test.py."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        yield session
+
+
+def test_savings_first_sample_creates_row_with_no_credit(_savings_db):
+    now = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
+    total = fc._record_demo_pg_savings_core(
+        _savings_db, state="banked", generation=7, now=now
+    )
+    assert total == 0.0
+
+
+def test_savings_banked_to_banked_same_generation_credits_elapsed(_savings_db):
+    t0 = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
+    fc._record_demo_pg_savings_core(_savings_db, state="banked", generation=7, now=t0)
+
+    t1 = t0 + timedelta(seconds=10)
+    total = fc._record_demo_pg_savings_core(
+        _savings_db, state="banked", generation=7, now=t1
+    )
+    assert total == 10 * 512.0
+
+
+def test_savings_banked_to_banked_generation_change_credits_nothing(_savings_db):
+    t0 = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
+    fc._record_demo_pg_savings_core(_savings_db, state="banked", generation=7, now=t0)
+
+    t1 = t0 + timedelta(seconds=10)
+    total = fc._record_demo_pg_savings_core(
+        _savings_db, state="banked", generation=8, now=t1
+    )
+    assert total == 0.0
+
+
+def test_savings_serving_to_banked_credits_nothing(_savings_db):
+    t0 = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
+    fc._record_demo_pg_savings_core(_savings_db, state="serving", generation=7, now=t0)
+
+    t1 = t0 + timedelta(seconds=10)
+    total = fc._record_demo_pg_savings_core(
+        _savings_db, state="banked", generation=7, now=t1
+    )
+    assert total == 0.0
+
+
+def test_savings_sub_throttle_unchanged_sample_does_not_move_last_sample_at(
+    _savings_db,
+):
+    t0 = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
+    fc._record_demo_pg_savings_core(_savings_db, state="banked", generation=7, now=t0)
+
+    t1 = t0 + timedelta(seconds=2)
+    fc._record_demo_pg_savings_core(_savings_db, state="banked", generation=7, now=t1)
+
+    row = _savings_db.get(fc.DemoPgSavings, 1)
+    last_sample_at = row.last_sample_at
+    last_sample_at = (
+        last_sample_at
+        if last_sample_at.tzinfo
+        else last_sample_at.replace(tzinfo=timezone.utc)
+    )
+    assert last_sample_at == t0
+    assert row.total_mib_seconds == 0.0
+
+    # Past the throttle window, the deferred gap (t0 -> t2) is credited in full.
+    t2 = t0 + timedelta(seconds=6)
+    total = fc._record_demo_pg_savings_core(
+        _savings_db, state="banked", generation=7, now=t2
+    )
+    assert total == 6 * 512.0
+
+
+def test_postgres_status_includes_total_saved_mib_s(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload()
+
+    async def fake_record(state, generation):
+        assert state == "banked"
+        assert generation == 7
+        return 1234.0
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(fc, "_record_demo_pg_savings", fake_record)
+
+    resp = _client().get("/api/demos/firecracker/postgres/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_saved_mib_s"] == 1234.0
+
+
+def test_postgres_status_omits_total_saved_mib_s_when_none(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload()
+
+    async def fake_record(state, generation):
+        return None
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(fc, "_record_demo_pg_savings", fake_record)
+
+    resp = _client().get("/api/demos/firecracker/postgres/status")
+    assert resp.status_code == 200
+    assert "total_saved_mib_s" not in resp.json()
