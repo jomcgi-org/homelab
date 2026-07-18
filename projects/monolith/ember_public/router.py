@@ -28,6 +28,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
+from chat_public import turnstile
 from chat_public.turnstile import siteverify
 from ember_public import core
 
@@ -54,11 +55,14 @@ async def postgres_status() -> dict:
     exhibit is on screen, and because no TCP connection ever reaches the
     workload's listener the poll cannot keep the VM awake or wake it. Errors
     come back in-band (not as 5xx) so one flaky poll doesn't redline the UI.
+
+    Reads through the 500ms single-flight cache (core.cached_demo_pg_status)
+    so a burst of concurrent pollers shares one control-plane read.
     """
     if not core.EMBERVM_URL or not core.demo_pg_dsn():
         return {"configured": False}
     try:
-        status = await core.fetch_demo_pg_status()
+        status = await core.cached_demo_pg_status()
     except Exception as exc:  # noqa: BLE001 - poll errors are data, not faults
         logger.warning("demo-postgres status poll failed: %s", exc)
         return {"configured": True, "error": str(exc)}
@@ -79,6 +83,15 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
     (mirroring the python demo's error shape): the likeliest causes are the
     wake-rate limiter refusing a burst and a wake genuinely failing, both of
     which the visitor recovers from by waiting a beat and retrying.
+
+    Three in-band gates guard the roundtrip, each returned as its own error
+    shape so the frontend's in-band backoff can distinguish them:
+    - a session is required for inserts once Turnstile is configured (public
+      tier); the private tier, which leaves TURNSTILE_SECRET_KEY unset, still
+      allows sessionless inserts.
+    - one insert per session per 5 seconds (core.check_and_record_insert).
+    - a global semaphore around the roundtrip (core.try_acquire_query_slot),
+      exhausted under a concurrent burst.
     """
     dsn = core.demo_pg_dsn()
     if not dsn:
@@ -90,29 +103,58 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
         request.cookies.get(_DEMO_PG_SESSION_COOKIE, "")
     )
 
+    if body.mode == "insert":
+        if session_tag is None:
+            if turnstile.SECRET_KEY:
+                return {
+                    "error": "solve the challenge first",
+                    "session_required": True,
+                    "mode": body.mode,
+                }
+        elif not core.check_and_record_insert(session_tag):
+            return {
+                "error": "one order per five seconds",
+                "rate_limited": True,
+                "mode": body.mode,
+            }
+
     before = None
     if core.EMBERVM_URL:
         try:
-            before = await core.fetch_demo_pg_status()
+            before = await core.cached_demo_pg_status()
         except Exception as exc:  # noqa: BLE001 - classification is best-effort
             logger.warning("demo-postgres pre-query status failed: %s", exc)
             before = None
 
-    started = perf_counter()
-    try:
-        result = await asyncio.to_thread(
-            core.demo_pg_orders_roundtrip, dsn, body.mode, session_tag
-        )
-    except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
-        logger.warning("demo-postgres query roundtrip failed: %s", exc)
+    if not core.try_acquire_query_slot():
         return {
-            "error": str(exc),
+            "error": "busy, one moment",
+            "busy": True,
             "mode": body.mode,
             "classification": core.classify_wake(before),
             "phase_before": (before or {}).get("state"),
-            "total_ms": (perf_counter() - started) * 1000,
         }
 
+    started = perf_counter()
+    try:
+        try:
+            result = await asyncio.to_thread(
+                core.demo_pg_orders_roundtrip, dsn, body.mode, session_tag
+            )
+        except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
+            logger.warning("demo-postgres query roundtrip failed: %s", exc)
+            core.record_query_outcome(ok=False, connect_ms=None)
+            return {
+                "error": str(exc),
+                "mode": body.mode,
+                "classification": core.classify_wake(before),
+                "phase_before": (before or {}).get("state"),
+                "total_ms": (perf_counter() - started) * 1000,
+            }
+    finally:
+        core.release_query_slot()
+
+    core.record_query_outcome(ok=True, connect_ms=result["connect_ms"])
     return {
         **result,
         "total_ms": (perf_counter() - started) * 1000,

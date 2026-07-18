@@ -27,7 +27,7 @@ import logging
 import os
 import random
 from datetime import datetime, timezone
-from time import perf_counter
+from time import monotonic, perf_counter
 
 import httpx
 import psycopg
@@ -86,6 +86,145 @@ async def fetch_demo_pg_status() -> dict:
         )
         resp.raise_for_status()
         return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Status cache: a 500ms single-flight window in front of fetch_demo_pg_status.
+#
+# The frontend polls /status sub-second; without this every concurrent poller
+# would issue its own control-plane read. One async lock means the first
+# caller past the TTL does the real fetch and every concurrent/near-concurrent
+# caller shares that one result instead of piling on the control plane.
+#
+# state_changed_at (monotonic) is bumped whenever the observed state differs
+# from the previous observation. Task 4's health check consumes it to detect a
+# transitional state (relighting/cold_booting/...) stuck past its timeout; no
+# health logic lives here, this module only records the timestamp.
+# ---------------------------------------------------------------------------
+
+_STATUS_CACHE_TTL_S = 0.5
+_status_cache_lock = asyncio.Lock()
+_status_cache: dict = {
+    "at": None,
+    "payload": None,
+    "state": None,
+    "state_changed_at": None,
+}
+
+
+async def cached_demo_pg_status() -> dict:
+    """Single-flight, TTL-cached read through fetch_demo_pg_status.
+
+    Concurrent callers within the TTL window share one upstream fetch. Also
+    used by the /status endpoint and (later) the health check, so both read
+    the exact same snapshot rather than racing separate control-plane calls.
+    """
+    async with _status_cache_lock:
+        now = monotonic()
+        cached_at = _status_cache["at"]
+        if cached_at is not None and (now - cached_at) < _STATUS_CACHE_TTL_S:
+            return _status_cache["payload"]
+
+        payload = await fetch_demo_pg_status()
+        state = payload.get("state")
+        if state != _status_cache["state"]:
+            _status_cache["state_changed_at"] = now
+            _status_cache["state"] = state
+        _status_cache["at"] = now
+        _status_cache["payload"] = payload
+        return payload
+
+
+def status_cache_state_changed_at() -> float | None:
+    """Monotonic timestamp of the most recent observed state change, if any."""
+    return _status_cache["state_changed_at"]
+
+
+# ---------------------------------------------------------------------------
+# Global query semaphore: caps concurrent roundtrips against demo-postgres so
+# a burst of visitors cannot pile connections onto a VM that just woke (or
+# stampede the activator while it is relighting). Non-blocking acquire: an
+# exhausted semaphore returns an in-band busy response rather than queuing,
+# since a queued visitor has no way to know they are waiting.
+# ---------------------------------------------------------------------------
+
+_query_semaphore = asyncio.Semaphore(
+    int(os.environ.get("EMBER_DEMO_MAX_CONCURRENT", "4"))
+)
+
+
+def try_acquire_query_slot() -> bool:
+    """Non-blocking acquire. Caller MUST release_query_slot() iff this is True.
+
+    asyncio.Semaphore has no native nowait variant, so this checks locked()
+    first (true once the internal counter hits zero) before acquiring; the
+    acquire itself is synchronous and cannot actually block once locked() is
+    False, so this never yields to the event loop.
+    """
+    if _query_semaphore.locked():
+        return False
+    _query_semaphore._value -= 1
+    return True
+
+
+def release_query_slot() -> None:
+    _query_semaphore.release()
+
+
+# ---------------------------------------------------------------------------
+# Per-session insert bucket: one insert per session_tag per 5 seconds. Keyed
+# on the opaque session tag (not IP), bounded by pruning stale entries on
+# every access so long-running processes never grow this dict unbounded.
+# ---------------------------------------------------------------------------
+
+_INSERT_BUCKET_WINDOW_S = 5.0
+_INSERT_BUCKET_PRUNE_AGE_S = 3600.0
+_insert_bucket: dict[str, float] = {}
+
+
+def _prune_insert_bucket(now: float) -> None:
+    stale = [
+        tag
+        for tag, last in _insert_bucket.items()
+        if (now - last) > _INSERT_BUCKET_PRUNE_AGE_S
+    ]
+    for tag in stale:
+        del _insert_bucket[tag]
+
+
+def check_and_record_insert(session_tag: str) -> bool:
+    """True if this insert is allowed; records the attempt either way.
+
+    Returns False (rejected) when the same session_tag inserted within the
+    last _INSERT_BUCKET_WINDOW_S seconds, without updating its timestamp (a
+    rejected attempt must not reset the visitor's own window).
+    """
+    now = monotonic()
+    _prune_insert_bucket(now)
+    last = _insert_bucket.get(session_tag)
+    if last is not None and (now - last) < _INSERT_BUCKET_WINDOW_S:
+        return False
+    _insert_bucket[session_tag] = now
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Most recent query outcome, module-level. Task 4's health check consumes
+# this to detect a failed or slow wake with no newer success; no health logic
+# lives here, this module only records the observation.
+# ---------------------------------------------------------------------------
+
+_last_query_outcome: dict = {"at_monotonic": None, "ok": None, "connect_ms": None}
+
+
+def record_query_outcome(*, ok: bool, connect_ms: float | None) -> None:
+    _last_query_outcome["at_monotonic"] = monotonic()
+    _last_query_outcome["ok"] = ok
+    _last_query_outcome["connect_ms"] = connect_ms
+
+
+def last_query_outcome() -> dict:
+    return dict(_last_query_outcome)
 
 
 def shape_pg_status(status: dict) -> dict:
