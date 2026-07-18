@@ -150,9 +150,7 @@ def status_cache_state_changed_at() -> float | None:
 # ---------------------------------------------------------------------------
 
 _QUERY_SEMAPHORE_SIZE = int(os.environ.get("EMBER_DEMO_MAX_CONCURRENT", "4"))
-_query_semaphore = asyncio.Semaphore(
-    _QUERY_SEMAPHORE_SIZE
-)
+_query_semaphore = asyncio.Semaphore(_QUERY_SEMAPHORE_SIZE)
 
 
 def try_acquire_query_slot() -> bool:
