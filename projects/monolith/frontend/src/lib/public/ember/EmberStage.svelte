@@ -467,6 +467,7 @@
     letter-spacing: 0.1em;
     color: var(--es-ink);
     background: var(--es-panel);
+    border: 1px solid var(--es-border);
     box-shadow: var(--em-shadow-soft);
     padding: 4px 12px;
     border-radius: 999px;
@@ -484,7 +485,8 @@
     font-weight: 600;
     letter-spacing: 0.04em;
     color: var(--es-ink);
-    background: color-mix(in srgb, var(--es-panel) 88%, transparent);
+    background: var(--es-panel);
+    border: 1px solid var(--es-border);
     box-shadow: var(--em-shadow-soft);
     padding: 4px 11px;
     border-radius: 999px;
