@@ -33,6 +33,7 @@
     },
     { "id": "grimoire-world", "path": "/app/grimoire/world" },
     { "id": "grimoire-chat", "path": "/app/grimoire/chat" },
+    { "id": "ember", "path": "/ember" },
     { "id": "firecracker", "path": "/ember/firecracker" },
     {
       "id": "ember-postgres",
