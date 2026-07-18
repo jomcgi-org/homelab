@@ -45,7 +45,7 @@ func storeKey(a *nodev1.ArtifactRef) string {
 	return fmt.Sprintf("%d/%s/%s", a.GetKind(), a.GetWorkload(), a.GetRef())
 }
 
-func (fakeServer) BuildBase(_ context.Context, req *nodev1.BuildBaseRequest) (*nodev1.BuildBaseResponse, error) {
+func (*fakeServer) BuildBase(_ context.Context, req *nodev1.BuildBaseRequest) (*nodev1.BuildBaseResponse, error) {
 	// Echo image_ref into snapshot_ref so the client can prove the request field
 	// arrived, and reflect the requested memory shape back.
 	return &nodev1.BuildBaseResponse{
@@ -57,11 +57,11 @@ func (fakeServer) BuildBase(_ context.Context, req *nodev1.BuildBaseRequest) (*n
 	}, nil
 }
 
-func (fakeServer) Prime(_ context.Context, req *nodev1.PrimeRequest) (*nodev1.PrimeResponse, error) {
+func (*fakeServer) Prime(_ context.Context, req *nodev1.PrimeRequest) (*nodev1.PrimeResponse, error) {
 	return &nodev1.PrimeResponse{VmId: "vm:" + req.GetSnapshotRef()}, nil
 }
 
-func (fakeServer) Assign(_ context.Context, req *nodev1.AssignRequest) (*nodev1.AssignResponse, error) {
+func (*fakeServer) Assign(_ context.Context, req *nodev1.AssignRequest) (*nodev1.AssignResponse, error) {
 	// Echo the guest request body and path back so the client can assert the full
 	// HTTP-semantics payload survived the round trip.
 	return &nodev1.AssignResponse{
@@ -74,7 +74,7 @@ func (fakeServer) Assign(_ context.Context, req *nodev1.AssignRequest) (*nodev1.
 	}, nil
 }
 
-func (fakeServer) Destroy(_ context.Context, _ *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
+func (*fakeServer) Destroy(_ context.Context, _ *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
 	return &nodev1.DestroyResponse{}, nil
 }
 
@@ -82,7 +82,7 @@ func (fakeServer) Destroy(_ context.Context, _ *nodev1.DestroyRequest) (*nodev1.
 // deliver-without-destroy by echoing the session_id it was handed into a
 // response header the client asserts on (the VM "survives", so the session id
 // is still meaningful). suspect is left false (a clean round trip).
-func (fakeServer) SessionAssign(_ context.Context, req *nodev1.SessionAssignRequest) (*nodev1.SessionAssignResponse, error) {
+func (*fakeServer) SessionAssign(_ context.Context, req *nodev1.SessionAssignRequest) (*nodev1.SessionAssignResponse, error) {
 	return &nodev1.SessionAssignResponse{
 		Response: &nodev1.GuestResponse{
 			StatusCode: 200,
@@ -99,7 +99,7 @@ func (fakeServer) SessionAssign(_ context.Context, req *nodev1.SessionAssignRequ
 
 // Bank derives a snapshot_ref from the session_id so the client can prove the
 // request field crossed the wire, and returns a fixed size.
-func (fakeServer) Bank(_ context.Context, req *nodev1.BankRequest) (*nodev1.BankResponse, error) {
+func (*fakeServer) Bank(_ context.Context, req *nodev1.BankRequest) (*nodev1.BankResponse, error) {
 	return &nodev1.BankResponse{
 		SnapshotRef: "sessions/" + req.GetSessionId(),
 		SizeBytes:   2048,
@@ -108,19 +108,19 @@ func (fakeServer) Bank(_ context.Context, req *nodev1.BankRequest) (*nodev1.Bank
 
 // Relight derives a vm_id from the snapshot_ref so the client can prove the
 // restore request crossed the wire intact.
-func (fakeServer) Relight(_ context.Context, req *nodev1.RelightRequest) (*nodev1.RelightResponse, error) {
+func (*fakeServer) Relight(_ context.Context, req *nodev1.RelightRequest) (*nodev1.RelightResponse, error) {
 	return &nodev1.RelightResponse{VmId: "vm:" + req.GetSnapshotRef()}, nil
 }
 
 // EvictSnapshot is idempotent and returns an empty response for any ref.
-func (fakeServer) EvictSnapshot(_ context.Context, _ *nodev1.EvictSnapshotRequest) (*nodev1.EvictSnapshotResponse, error) {
+func (*fakeServer) EvictSnapshot(_ context.Context, _ *nodev1.EvictSnapshotRequest) (*nodev1.EvictSnapshotResponse, error) {
 	return &nodev1.EvictSnapshotResponse{}, nil
 }
 
 // StartServing derives vm_id and ip from whichever source ref was set (fresh or
 // relight) so the client can prove both oneof branches cross the wire, and
 // echoes the requested port back.
-func (fakeServer) StartServing(_ context.Context, req *nodev1.StartServingRequest) (*nodev1.StartServingResponse, error) {
+func (*fakeServer) StartServing(_ context.Context, req *nodev1.StartServingRequest) (*nodev1.StartServingResponse, error) {
 	ref := req.GetFresh().GetServingImageRef()
 	if ref == "" {
 		ref = req.GetRelight().GetSnapshotRef()
@@ -134,7 +134,7 @@ func (fakeServer) StartServing(_ context.Context, req *nodev1.StartServingReques
 
 // StopServing returns a snapshot_ref/size_bytes for BANK, and zero values for
 // DESTROY, so the client can assert both mode branches.
-func (fakeServer) StopServing(_ context.Context, req *nodev1.StopServingRequest) (*nodev1.StopServingResponse, error) {
+func (*fakeServer) StopServing(_ context.Context, req *nodev1.StopServingRequest) (*nodev1.StopServingResponse, error) {
 	if req.GetMode() == nodev1.StopServingMode_STOP_SERVING_MODE_BANK {
 		return &nodev1.StopServingResponse{
 			SnapshotRef: "serving/" + req.GetVmId(),
@@ -150,7 +150,7 @@ func (fakeServer) StopServing(_ context.Context, req *nodev1.StopServingRequest)
 // fallback, "noledger" -> ledger_unreadable, otherwise a warm relight), which is
 // how the round-trip test exercises each pairing branch against a stateless fake.
 // FRESH/COLD cold-boot from boot_image_ref and report a bumped generation.
-func (fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulRequest) (*nodev1.StartStatefulResponse, error) {
+func (*fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulRequest) (*nodev1.StartStatefulResponse, error) {
 	if req.GetMode() == nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT {
 		ref := req.GetRelightSnapshotRef()
 		switch {
@@ -181,7 +181,7 @@ func (fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulRequ
 // StopStateful returns a bundle ref, stamped generation, and size for BANK, a
 // checkpoint token plus the paused generation for CHECKPOINT, and zero values for
 // DESTROY, so the client can assert every mode branch.
-func (fakeServer) StopStateful(_ context.Context, req *nodev1.StopStatefulRequest) (*nodev1.StopStatefulResponse, error) {
+func (*fakeServer) StopStateful(_ context.Context, req *nodev1.StopStatefulRequest) (*nodev1.StopStatefulResponse, error) {
 	switch req.GetMode() {
 	case nodev1.StopStatefulMode_STOP_STATEFUL_MODE_BANK:
 		return &nodev1.StopStatefulResponse{
@@ -202,7 +202,7 @@ func (fakeServer) StopStateful(_ context.Context, req *nodev1.StopStatefulReques
 // ResolveStateful returns the published bundle for COMMIT (deriving the ref from
 // the token so the client proves it crossed the wire) and an empty response for
 // ABORT, so the client can assert both resolve branches (ADR embervm/008).
-func (fakeServer) ResolveStateful(_ context.Context, req *nodev1.ResolveStatefulRequest) (*nodev1.ResolveStatefulResponse, error) {
+func (*fakeServer) ResolveStateful(_ context.Context, req *nodev1.ResolveStatefulRequest) (*nodev1.ResolveStatefulResponse, error) {
 	if req.GetMode() == nodev1.ResolveMode_RESOLVE_MODE_COMMIT {
 		return &nodev1.ResolveStatefulResponse{
 			SnapshotRef: "stateful/" + req.GetCheckpointToken(),
@@ -214,7 +214,7 @@ func (fakeServer) ResolveStateful(_ context.Context, req *nodev1.ResolveStateful
 }
 
 // DeleteVolume is idempotent and returns an empty response for any workload.
-func (fakeServer) DeleteVolume(_ context.Context, _ *nodev1.DeleteVolumeRequest) (*nodev1.DeleteVolumeResponse, error) {
+func (*fakeServer) DeleteVolume(_ context.Context, _ *nodev1.DeleteVolumeRequest) (*nodev1.DeleteVolumeResponse, error) {
 	return &nodev1.DeleteVolumeResponse{}, nil
 }
 
@@ -222,7 +222,7 @@ func (fakeServer) DeleteVolume(_ context.Context, _ *nodev1.DeleteVolumeRequest)
 // the client can prove the fields crossed the wire, and scripts the CIDR-overlap
 // refusal off the cidr content ("overlap" -> FAILED_PRECONDITION), which is how
 // the round-trip test exercises the create-refusal branch against a stateless fake.
-func (fakeServer) CreateGroupNetwork(_ context.Context, req *nodev1.CreateGroupNetworkRequest) (*nodev1.CreateGroupNetworkResponse, error) {
+func (*fakeServer) CreateGroupNetwork(_ context.Context, req *nodev1.CreateGroupNetworkRequest) (*nodev1.CreateGroupNetworkResponse, error) {
 	if strings.Contains(req.GetCidr(), "overlap") {
 		return nil, status.Errorf(codes.FailedPrecondition, "cidr %q overlaps an existing group bridge", req.GetCidr())
 	}
@@ -233,7 +233,7 @@ func (fakeServer) CreateGroupNetwork(_ context.Context, req *nodev1.CreateGroupN
 }
 
 // DeleteGroupNetwork is idempotent and returns an empty response for any group.
-func (fakeServer) DeleteGroupNetwork(_ context.Context, _ *nodev1.DeleteGroupNetworkRequest) (*nodev1.DeleteGroupNetworkResponse, error) {
+func (*fakeServer) DeleteGroupNetwork(_ context.Context, _ *nodev1.DeleteGroupNetworkRequest) (*nodev1.DeleteGroupNetworkResponse, error) {
 	return &nodev1.DeleteGroupNetworkResponse{}, nil
 }
 
@@ -243,7 +243,7 @@ func (fakeServer) DeleteGroupNetwork(_ context.Context, _ *nodev1.DeleteGroupNet
 // detail, otherwise a verified warm relight), which is how the round-trip test
 // exercises the resync-failure branch against a stateless fake. FRESH cold-boots
 // from source and echoes the pinned ip.
-func (fakeServer) StartGroupMember(_ context.Context, req *nodev1.StartGroupMemberRequest) (*nodev1.StartGroupMemberResponse, error) {
+func (*fakeServer) StartGroupMember(_ context.Context, req *nodev1.StartGroupMemberRequest) (*nodev1.StartGroupMemberResponse, error) {
 	if req.GetMode() == nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT {
 		ref := req.GetSnapshotRef()
 		if strings.Contains(ref, "clockfail") {
@@ -262,7 +262,7 @@ func (fakeServer) StartGroupMember(_ context.Context, req *nodev1.StartGroupMemb
 // StopGroupMember returns a per-member bundle ref under the caller-supplied set
 // dir and a size for BANK, and zero values for DESTROY, so the client can assert
 // both mode branches and that set_id/member_name crossed the wire.
-func (fakeServer) StopGroupMember(_ context.Context, req *nodev1.StopGroupMemberRequest) (*nodev1.StopGroupMemberResponse, error) {
+func (*fakeServer) StopGroupMember(_ context.Context, req *nodev1.StopGroupMemberRequest) (*nodev1.StopGroupMemberResponse, error) {
 	if req.GetMode() == nodev1.StopGroupMemberMode_STOP_GROUP_MEMBER_MODE_BANK {
 		return &nodev1.StopGroupMemberResponse{
 			SnapshotRef: "group/" + req.GetSetId() + "/" + req.GetMemberName(),
@@ -476,7 +476,7 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 	}, nil
 }
 
-func (fakeServer) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStreamingServer[nodev1.NodeStatus]) error {
+func (*fakeServer) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStreamingServer[nodev1.NodeStatus]) error {
 	// Stream a fixed number of heartbeats with an incrementing live_vms counter so
 	// the client can assert both the count and the ordering, then complete.
 	for i := uint32(0); i < watchNodeHeartbeats; i++ {
