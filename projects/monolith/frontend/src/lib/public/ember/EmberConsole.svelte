@@ -19,8 +19,15 @@
   // /api fetches: the public tier's rule 2 (public-tier-checklist.md).
   import { onMount } from "svelte";
 
-  /** @type {{ turnstileSiteKey?: string, initialStatus?: object|null, initialSavings?: object|null }} */
-  let { turnstileSiteKey = "", initialStatus = null, initialSavings = null } = $props();
+  /** @type {{ turnstileSiteKey?: string, initialStatus?: object|null, initialSavings?: object|null, status?: object|null, running?: boolean, stopwatchMs?: number }} */
+  let {
+    turnstileSiteKey = "",
+    initialStatus = null,
+    initialSavings = null,
+    status = $bindable(null),
+    running = $bindable(false),
+    stopwatchMs = $bindable(0),
+  } = $props();
 
   const API = "/ember/postgres/api";
   const POLL_MS = 700;
@@ -54,15 +61,12 @@
   // chip aren't blank before the client's own poll lands a moment later. A
   // savings-only seed (status missing) is merged onto the status shape so
   // total_saved_mib_s still renders while state waits for the first poll.
-  let status = $state(
-    initialStatus?.configured
-      ? { ...initialStatus, total_saved_mib_s: initialSavings?.total_saved_mib_s ?? initialStatus.total_saved_mib_s }
-      : initialSavings
-        ? { total_saved_mib_s: initialSavings.total_saved_mib_s }
-        : null,
-  );
+  status = initialStatus?.configured
+    ? { ...initialStatus, total_saved_mib_s: initialSavings?.total_saved_mib_s ?? initialStatus.total_saved_mib_s }
+    : initialSavings
+      ? { total_saved_mib_s: initialSavings.total_saved_mib_s }
+      : null;
   let statusError = $state("");
-  let running = $state(false);
   let lastRun = $state(null);
   let runError = $state("");
 
@@ -77,8 +81,9 @@
 
   // Live wake stopwatch: ticks via requestAnimationFrame while a query is in
   // flight, so the visitor watches the wake happen instead of just seeing the
-  // final number appear.
-  let stopwatchMs = $state(0);
+  // final number appear. stopwatchMs/running/status are bindable props (see
+  // $props above) so the page can lift them into EmberStage without a second
+  // poll loop.
   let stopwatchRaf = null;
   let stopwatchStart = 0;
   let connectPulse = $state(false);

@@ -1,0 +1,368 @@
+<script>
+  // Live hot/cold RAM cell grid for /ember/postgres, driven by the console's
+  // real lifecycle state instead of scroll position. Same discipline as
+  // fcstory/FcScrollStory.svelte: a grid of plain (non-reactive) cell divs,
+  // per-cell jittered thresholds built once from Math.random() in onMount,
+  // and a single rAF loop that writes className/style directly to element
+  // refs so 60fps updates never touch Svelte's reactivity proxy. Palette hex
+  // values live in ./ember-stage.css as CSS custom properties (bare hex in a
+  // .svelte <style> block is semgrep-blocked).
+  import { onMount } from "svelte";
+  import "./ember-stage.css";
+
+  /** @type {{ state?: string|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean }} */
+  let { state = null, totalSavedMibS = null, stopwatchMs = 0, running = false } = $props();
+
+  const WAKING = new Set(["relighting", "cold_booting", "starting"]);
+
+  // Visual sweep durations, not measurements: the wake sweep aims at the
+  // typical connect time so the ragged edge crosses the grid roughly as the
+  // real wake happens; the bank sweep is a flat, deliberately quick cool-down.
+  const WAKE_SWEEP_MS = 1500;
+  const BANK_SWEEP_MS = 1500;
+  // How fast the eased warmth `w` chases `target`. Small = tracks closely
+  // (the sweeps above already own the pacing), just enough easing to avoid a
+  // visible snap on state flips (banked -> serving with no run in between).
+  const EASE_PER_MS = 0.012;
+
+  const STATE_WORD = {
+    banked: "Asleep",
+    banking: "Falling asleep",
+    relighting: "Waking",
+    cold_booting: "Waking",
+    starting: "Waking",
+    serving: "Awake",
+  };
+
+  let reduced = $state(false);
+
+  // ── Plain (non-reactive) per-frame refs ──
+  let gridEl;
+  let cells = [];
+  let raf = null;
+  let lastFrameAt = 0;
+  let w = 0; // current eased warmth [0,1]
+
+  // Sweep bookkeeping: reset once per state transition (tracked via
+  // prevFrameState), read every frame.
+  let prevFrameState = null;
+  let sweepStartAt = 0;
+  let sweepFromW = 0;
+
+  function buildCells() {
+    // Grid sized from the container, same technique as FcScrollStory's
+    // buildCells: ncols/nrows from clientWidth/clientHeight, each cell gets a
+    // stable jittered threshold so the sweep tracks time but the edge is
+    // ragged. Math.random() only ever runs here, from onMount/resize, never
+    // at module/SSR eval time.
+    if (!gridEl) return;
+    const rw = gridEl.clientWidth;
+    const rh = gridEl.clientHeight;
+    const ncols = Math.max(16, Math.round(rw / 20));
+    const nrows = Math.max(6, Math.round(rh / 20));
+    gridEl.style.gridTemplateColumns = `repeat(${ncols},1fr)`;
+    gridEl.style.gridTemplateRows = `repeat(${nrows},1fr)`;
+    gridEl.innerHTML = "";
+    cells = [];
+    for (let i = 0; i < ncols * nrows; i++) {
+      const col = i % ncols;
+      const d = document.createElement("div");
+      d.className = "es-cell";
+      const hotHue = 16 + Math.random() * 9;
+      const hotSat = 72 + Math.random() * 12;
+      const hotLight = 46 + Math.random() * 14;
+      const coldHue = 208 + Math.random() * 12;
+      const coldSat = 46 + Math.random() * 14;
+      const coldLight = 64 + Math.random() * 12;
+      d.style.setProperty("--hot", `hsl(${hotHue} ${hotSat}% ${hotLight}%)`);
+      d.style.setProperty("--cold", `hsl(${coldHue} ${coldSat}% ${coldLight}%)`);
+      gridEl.appendChild(d);
+      cells.push({
+        el: d,
+        th: (col + 0.2 + Math.random() * 2.6) / (ncols + 2.6),
+        hot: false,
+      });
+    }
+  }
+
+  let flickerTickAt = 0;
+
+  function targetFor(now) {
+    if (state === "banked" || state == null) return 0;
+    if (state === "serving") return 1;
+    if (WAKING.has(state)) {
+      const frac = Math.min(1, (now - sweepStartAt) / WAKE_SWEEP_MS);
+      return sweepFromW + (1 - sweepFromW) * frac;
+    }
+    if (state === "banking") {
+      const frac = Math.min(1, (now - sweepStartAt) / BANK_SWEEP_MS);
+      return sweepFromW * (1 - frac);
+    }
+    return w; // unknown state: hold
+  }
+
+  function frame(now) {
+    const dt = lastFrameAt ? now - lastFrameAt : 16;
+    lastFrameAt = now;
+
+    if (state !== prevFrameState) {
+      // Entered a new state this frame: (re)start the sweep clock from the
+      // current eased warmth, so a mid-sweep state flip (e.g. banking
+      // interrupted by a new request) never snaps.
+      prevFrameState = state;
+      sweepStartAt = now;
+      sweepFromW = w;
+    }
+    const target = targetFor(now);
+    const k = 1 - Math.exp(-EASE_PER_MS * dt);
+    w = w + (target - w) * k;
+
+    for (const c of cells) {
+      const hot = w > c.th;
+      if (hot !== c.hot) {
+        c.hot = hot;
+        c.el.className = "es-cell" + (hot ? " es-hot" : "");
+      }
+    }
+
+    if (state === "serving") {
+      // Subtle per-cell flicker: a handful of hot cells get a brief opacity
+      // wobble, staggered by picking a new random subset roughly every
+      // 250ms rather than every frame.
+      if (now - flickerTickAt > 250) {
+        flickerTickAt = now;
+        for (const c of cells) c.el.style.removeProperty("--flicker");
+        const hotCells = cells.filter((c) => c.hot);
+        const n = Math.min(hotCells.length, Math.max(1, Math.round(hotCells.length * 0.04)));
+        for (let i = 0; i < n; i++) {
+          const c = hotCells[Math.floor(Math.random() * hotCells.length)];
+          if (c) c.el.style.setProperty("--flicker", "1");
+        }
+      }
+    }
+
+    raf = requestAnimationFrame(frame);
+  }
+
+  let lastGridW = 0;
+  function measure() {
+    const gw = gridEl ? gridEl.clientWidth : 0;
+    if (gw !== lastGridW) {
+      lastGridW = gw;
+      buildCells();
+    }
+  }
+
+  let resizing = false;
+  function onResize() {
+    if (resizing) return;
+    resizing = true;
+    requestAnimationFrame(() => {
+      measure();
+      resizing = false;
+    });
+  }
+
+  onMount(() => {
+    reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) return; // CSS + the static overlay below cover this case
+
+    window.addEventListener("resize", onResize, { passive: true });
+    requestAnimationFrame(() => {
+      measure();
+      lastFrameAt = 0;
+      raf = requestAnimationFrame(frame);
+    });
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (raf != null) cancelAnimationFrame(raf);
+    };
+  });
+
+  // ── Reduced-motion static fallback: two-state cell fill, no rAF loop ──
+  let staticHot = $derived(state === "serving" || WAKING.has(state ?? ""));
+
+  function ms(v) {
+    if (v == null) return "–";
+    return v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`;
+  }
+
+  function humanize(n) {
+    const abs = Math.abs(n);
+    if (abs < 1000) return `${Math.round(n)}`;
+    const units = [
+      { value: 1e9, suffix: "B" },
+      { value: 1e6, suffix: "M" },
+      { value: 1e3, suffix: "K" },
+    ];
+    for (const { value, suffix } of units) {
+      if (abs >= value) {
+        const scaled = n / value;
+        const decimals = Math.abs(scaled) < 100 ? 1 : 0;
+        return `${scaled.toFixed(decimals)}${suffix}`;
+      }
+    }
+    return `${Math.round(n)}`;
+  }
+
+  function gbHours(mibSeconds) {
+    if (mibSeconds == null) return "–";
+    const gbh = mibSeconds / 1024 / 3600;
+    if (gbh < 10) return `${gbh.toFixed(1)} GB·h`;
+    return `${humanize(gbh)} GB·h`;
+  }
+
+  let stateWord = $derived(STATE_WORD[state ?? ""] ?? "Asleep");
+
+  let heroKind = $derived(
+    state === "serving" ? "serving" : state != null && WAKING.has(state) ? "waking" : "cold",
+  );
+</script>
+
+<div class="ember-stage">
+  <div class="es-grid" bind:this={gridEl} aria-hidden="true"></div>
+  {#if reduced}
+    <div class="es-grid es-static" class:es-static-hot={staticHot} aria-hidden="true"></div>
+  {/if}
+
+  <div class="es-overlay">
+    <span class="es-state-word">{stateWord}</span>
+    <div class="es-hero">
+      {#if heroKind === "cold"}
+        <span class="es-hero-value">{gbHours(totalSavedMibS)}</span>
+        <span class="es-hero-caption">saved by sleeping, all visitors, all time</span>
+      {:else if heroKind === "waking"}
+        <span class="es-hero-value">{ms(running ? stopwatchMs : null)}</span>
+        <span class="es-hero-caption">waking up</span>
+      {:else}
+        <span class="es-hero-value">answering</span>
+        <span class="es-hero-caption">answering in single-digit milliseconds</span>
+      {/if}
+    </div>
+  </div>
+</div>
+
+<style>
+  .ember-stage {
+    position: relative;
+    width: 100%;
+    height: 280px;
+    border-radius: var(--radius, 8px);
+    border: 2px solid var(--es-border);
+    background: var(--es-panel);
+    overflow: hidden;
+  }
+
+  .es-grid {
+    position: absolute;
+    inset: 8px;
+    display: grid;
+    gap: 2px;
+    background: var(--es-grid-bg);
+    border-radius: 4px;
+  }
+
+  .es-grid :global(.es-cell) {
+    border-radius: 1.5px;
+    background: var(--es-cell-idle-bg);
+    opacity: 1;
+  }
+
+  .es-grid :global(.es-cell.es-hot) {
+    background: var(--hot);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .es-grid :global(.es-cell) {
+      transition: background-color 0.35s ease;
+    }
+    .es-grid :global(.es-cell[style*="--flicker"]) {
+      animation: es-flicker 0.6s ease-in-out;
+    }
+    @keyframes es-flicker {
+      0%,
+      100% {
+        opacity: 1;
+        filter: brightness(1);
+      }
+      50% {
+        opacity: 0.75;
+        filter: brightness(1.25);
+      }
+    }
+  }
+
+  /* Reduced-motion fallback: a second, static grid painted with a plain
+     two-state (cold/hot) fill using the same cell tokens, no per-cell
+     randomness and no rAF loop. Only one of the two .es-grid elements is
+     visible at a time (see the media query below). */
+  .es-static :global(.es-cell) {
+    background: var(--es-cell-idle-bg);
+  }
+  .es-static.es-static-hot :global(.es-cell) {
+    background: var(--es-static-hot);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .es-grid:not(.es-static) {
+      display: none;
+    }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .es-static {
+      display: none;
+    }
+  }
+
+  .es-overlay {
+    position: relative;
+    z-index: 1;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 20px;
+    pointer-events: none;
+    text-align: center;
+  }
+
+  .es-state-word {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--es-muted);
+    background: color-mix(in srgb, var(--es-panel) 78%, transparent);
+    padding: 4px 12px;
+    border-radius: 999px;
+  }
+
+  .es-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    min-height: 64px;
+    justify-content: center;
+  }
+
+  .es-hero-value {
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--es-ink);
+    background: color-mix(in srgb, var(--es-panel) 78%, transparent);
+    padding: 2px 14px;
+    border-radius: 8px;
+  }
+
+  .es-hero-caption {
+    font-size: 13px;
+    color: var(--es-muted);
+    background: color-mix(in srgb, var(--es-panel) 78%, transparent);
+    padding: 2px 10px;
+    border-radius: 6px;
+  }
+</style>
