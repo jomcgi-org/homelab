@@ -28,6 +28,9 @@ func TestK3sArgv(t *testing.T) {
 			want: []string{
 				"/usr/local/bin/k3s", "server",
 				"--flannel-backend=host-gw",
+				"--cluster-cidr=10.52.0.0/16",
+				"--service-cidr=10.53.0.0/16",
+				"--cluster-dns=10.53.0.10",
 				"--token", "s3cr3t",
 				"--kube-apiserver-arg=token-auth-file=/run/ember/token-auth.csv",
 				"--node-ip", "10.101.0.10",
@@ -43,6 +46,9 @@ func TestK3sArgv(t *testing.T) {
 			want: []string{
 				"/usr/local/bin/k3s", "server",
 				"--flannel-backend=host-gw",
+				"--cluster-cidr=10.52.0.0/16",
+				"--service-cidr=10.53.0.0/16",
+				"--cluster-dns=10.53.0.10",
 			},
 		},
 		{
@@ -54,6 +60,9 @@ func TestK3sArgv(t *testing.T) {
 			want: []string{
 				"/usr/local/bin/k3s", "server",
 				"--flannel-backend=host-gw",
+				"--cluster-cidr=10.52.0.0/16",
+				"--service-cidr=10.53.0.0/16",
+				"--cluster-dns=10.53.0.10",
 				"--node-ip", "10.101.0.10",
 				"--advertise-address", "10.101.0.10",
 			},
