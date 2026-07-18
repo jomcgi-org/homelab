@@ -665,7 +665,7 @@ def test_semaphore_exhausted_returns_in_band_busy(monkeypatch):
 
     # Exhaust every slot up front (mirrors an in-flight burst) without
     # releasing, then confirm the next request is refused in-band.
-    max_concurrent = core._query_semaphore._initial_value
+    max_concurrent = core._QUERY_SEMAPHORE_SIZE
     acquired = [core.try_acquire_query_slot() for _ in range(max_concurrent)]
     assert all(acquired)
 
@@ -705,7 +705,7 @@ def test_semaphore_slot_released_after_roundtrip_allows_next_request(monkeypatch
         assert resp.status_code == 200
         assert resp.json().get("busy") is not True
 
-    assert core._query_semaphore._value == core._query_semaphore._initial_value
+    assert core._query_semaphore._value == core._QUERY_SEMAPHORE_SIZE
 
 
 def test_insert_bucket_rejects_second_insert_within_five_seconds(monkeypatch):
@@ -1023,7 +1023,7 @@ def test_savings_accrual_uses_writer_engine_not_default(monkeypatch):
     fake_engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
-    SQLModel.metadata.create_all(fake_engine)
+    SQLModel.metadata.create_all(fake_engine, tables=[DemoPgSavings.__table__])
 
     def fake_get_savings_engine():
         calls["n"] += 1
