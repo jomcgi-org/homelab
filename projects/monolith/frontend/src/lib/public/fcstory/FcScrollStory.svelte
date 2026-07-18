@@ -347,7 +347,7 @@
     <span
       ><a class="brand" href="/" bind:this={brandEl}
         ><strong>jomcgi.dev</strong></a
-      > / firecracker</span
+      > / ember / firecracker</span
     >
   </header>
 

@@ -7,12 +7,12 @@
  */
 
 .ember-stage {
-  --es-panel: var(--paper, #ffffff);
-  --es-border: var(--ink, #1a1a1a);
+  --es-panel: var(--em-panel, #ffffff);
+  --es-border: var(--em-line, #e3dfd5);
   --es-grid-bg: #eeebe3;
   --es-cell-idle-bg: #e6e2d7;
-  --es-ink: var(--ink, #1a1a1a);
-  --es-muted: var(--ink-3, #6b6658);
+  --es-ink: var(--em-ink, #20222a);
+  --es-muted: var(--em-muted, #525965);
 
   /* Cold (banked) cell hue range: same blue family fcstory uses for its
    * frost tones. */

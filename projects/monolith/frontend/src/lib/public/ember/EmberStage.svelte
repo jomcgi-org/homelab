@@ -248,9 +248,10 @@
     position: relative;
     width: 100%;
     height: 280px;
-    border-radius: var(--radius, 8px);
-    border: 2px solid var(--es-border);
+    border-radius: 14px;
+    border: 1px solid var(--es-border);
     background: var(--es-panel);
+    box-shadow: var(--em-shadow-soft);
     overflow: hidden;
   }
 
@@ -329,8 +330,9 @@
   }
 
   .es-state-word {
-    font-size: 13px;
-    font-weight: 700;
+    font-family: var(--em-mono, ui-monospace, monospace);
+    font-size: 12.5px;
+    font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.1em;
     color: var(--es-muted);
@@ -349,7 +351,9 @@
   }
 
   .es-hero-value {
+    font-family: var(--em-mono, ui-monospace, monospace);
     font-size: clamp(28px, 4vw, 44px);
+    letter-spacing: -0.02em;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     color: var(--es-ink);
