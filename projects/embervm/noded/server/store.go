@@ -203,7 +203,7 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	}
 	s.exported.mark(prefix, generation)
 	s.signalChange()
-	return &nodev1.ExportArtifactResponse{BytesMoved: moved, Skipped: skipped, Generation: generation}, nil
+	return &nodev1.ExportArtifactResponse{BytesMoved: uint64(moved), Skipped: skipped, Generation: generation}, nil
 }
 
 // RestoreArtifact fetches an artifact from the store back onto local disk into
@@ -245,7 +245,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	s.reregisterRestored(ref)
 	s.exported.mark(prefix, generation)
 	s.signalChange()
-	return &nodev1.RestoreArtifactResponse{BytesMoved: moved, Generation: generation}, nil
+	return &nodev1.RestoreArtifactResponse{BytesMoved: uint64(moved), Generation: generation}, nil
 }
 
 // EvictArtifact deletes an artifact. remote=true evicts the store copy
