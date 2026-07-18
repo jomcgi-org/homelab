@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from time import perf_counter
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException

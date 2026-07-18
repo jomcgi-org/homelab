@@ -51,7 +51,7 @@ def _reset_ember_public_module_state():
         core._savings_cache.update(
             {"at": None, "total_saved_mib_s": None, "as_of": None}
         )
-        while core._query_semaphore._value < core._query_semaphore._initial_value:
+        while core._query_semaphore._value < core._QUERY_SEMAPHORE_SIZE:
             core._query_semaphore.release()
 
     _reset()

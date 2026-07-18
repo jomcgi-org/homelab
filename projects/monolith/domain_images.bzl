@@ -54,6 +54,7 @@ MONOLITH_DOMAINS = [
     "artifact",
     "faas",
     "demos",
+    "ember_public",
     "agent",
     "cluster",
     "semgrep_scan",
