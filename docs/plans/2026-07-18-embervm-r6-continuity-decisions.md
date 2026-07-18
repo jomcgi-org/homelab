@@ -98,3 +98,72 @@ This is the durable answer to "why is it built this way" for the R6 code.
   which is a closure gate (deferred with the other live gates). A single automated
   multi-process node-down/up integration test was judged low marginal value against that
   existing coverage.
+
+## PR-4 (noded object store client + verbs)
+
+- **The `store.Store` interface carries artifact-level Export/Restore/DeleteArtifact/
+  Present helpers, not just raw object ops.** meta.json is written last as the
+  completeness marker and read first on restore/presence, so a partially uploaded
+  artifact is invisible. SHA-256 is recorded in meta and verified on restore (a corrupt
+  restore surfaces loudly, never overwrites local with bad bytes).
+- **The server depends on a small `artifactStore` interface, not the concrete
+  `*store.Store`.** Tests inject an in-memory fake so no test touches the network, and a
+  Server built without a store still compiles: a nil store leaves the verbs refusing
+  FAILED_PRECONDITION and every export a no-op.
+- **Export is an async, fire-and-forget bounded worker pool.** An enqueue that would block
+  (queue full) is dropped, not awaited (standing decision 7: the export queue never stalls
+  the bank path or the drain deadline); a startup reconcile sweep re-enqueues any artifact
+  whose store copy is missing or stale, covering a roll that exited before exports finished.
+- **`store.Export`/`Restore` return `int64` bytesMoved; the proto responses are `uint64`.**
+  A cast is required at the verb return sites. CI's nogo type-check caught the missing cast
+  (Push/local build could not, since the proto is Bazel-only codegen).
+
+## PR-5 (CP restore-on-miss + remote GC)
+
+- **Restore-on-miss for BUNDLES/SETS is optimistic; for VOLUMES it is fail-closed.** The
+  `exported` flag lives on the local bundle fact, which vanishes once the local bundle is
+  gone, so on a true local miss the CP cannot read it. For bundle/set (pure warmth,
+  fail-open) the wake attempts RestoreArtifact whenever `store_reachable`, and noded
+  refuses gracefully (FAILED_PRECONDITION) when no copy exists, degrading to cold boot with
+  a logged reason. A VOLUME restore is a data action (standing decision 8), so it stays
+  gated on the durable `exported_generation` and never blindly restores.
+- **`store_reachable == false` never blocks a local-state wake.** Only a true local miss
+  consults the store; an unreachable store there degrades straight to cold.
+- **Two latent placement-gate bugs were fixed (serving/session).** Both
+  `ServingPlacement`/`SessionPlacement.node_for_relight` gate on the node reporting the
+  snapshot, so a truly-missing bundle would never reach the restore branch and the
+  post-restore CP ETS fact is not yet refreshed. Fixed by anchoring a snapshot-lost
+  serving instance to its node as a restore candidate, and relighting a session against the
+  restore target node directly, both bypassing the stale placement gate only on the restore
+  path (the normal relight path is byte-identical).
+- **Every node RPC goes through an injectable `_fun` seam** (`restore_artifact_fun`,
+  `evict_artifact_fun`), defaulting to the real Stub, so the managers/sweepers are testable
+  without a network, matching the existing stop/resolve/bank seams.
+
+## PR-6 (wake-worker timeouts + adoption recovery)
+
+- **The timeout bound goes on the wake WORKER, never the parked caller.** The parked
+  caller's `:infinity` GenServer.call stays (callers wait as long as they choose); a
+  `{:wake_timeout, workload}` timer at `wakeTimeoutSeconds * 1000 + margin` (margin 15s)
+  fails a wedged wake through the existing `finish_wake` failure path, releasing
+  single-flight and erring the waiters, so a stuck boot no longer pins `waking` forever.
+- **Adoption recovers a workload stuck `waking` past `2 * wakeTimeoutSeconds`** instead of
+  skipping it forever; the timer is the primary release and this is the backstop.
+
+## PR-7 (observability + closure)
+
+- **The noded Go artifact-export span was skipped.** noded has no Go OpenTelemetry tracer
+  wired, and inventing that dependency for one span was not worth it; export visibility
+  comes from the structured logs and the export-backlog alert instead. The CP spans
+  (`embervm.node_drain`, `embervm.artifact_restore`) use the existing `Tracer.with_span`
+  macro idiom.
+- **The four continuity alerts ship dry-run (`disabled: true`, placeholder metrics).** No
+  op-log/log to metrics bridge exists yet, so an enabled alert would query a non-existent
+  metric; a disabled placeholder is the honest posture (no fake-but-passing query firing
+  silently), matching the existing embervm alert convention. They are promoted during the
+  live closure drills.
+- **R6 Continuity is `Shipped 2026-07-18 (gates live-pending)`, matching R4/R5.** All R6
+  code (Tasks 2-11) is implemented, reviewed, and CI-green across the seven PRs; the
+  live-drill gates (2-10) and the entry-criteria gate (1) are deferred behind the
+  unresolved R5 gate-1 entry-path EOF (standing decision 11), exactly as R4 and R5 shipped
+  their code with gates live-pending. The rung is code-complete, not live-signed-off.
