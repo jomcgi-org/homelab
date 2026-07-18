@@ -6,6 +6,7 @@ demos/module.py.
 """
 
 import ember_public as _domain
+from ember_public.health import demo_postgres_health
 
 from framework import Module as _Module
 
@@ -14,4 +15,5 @@ MODULE = _Module(
     name="ember_public",
     register=_domain.register,
     register_public=_domain.register_public,
+    register_health={"demo_postgres": demo_postgres_health},
 )

@@ -12,6 +12,9 @@ import dataclasses
 
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy.pool import StaticPool
+from sqlmodel import create_engine
 
 from framework import (
     PRIVATE_PROFILE,
@@ -122,6 +125,79 @@ def test_public_tier_mounts_register_public_only():
     assert "/api/m/ping" not in paths
     assert "/healthz" in paths
     assert "/api/health" in paths  # deep health on the public tier
+
+
+@pytest.fixture
+def _sqlite_engine(monkeypatch):
+    """Point app.db.get_engine at an in-memory sqlite DB so /api/health's
+    SELECT 1 baseline succeeds without a real Postgres."""
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    monkeypatch.setattr("app.db.get_engine", lambda: engine)
+    return engine
+
+
+def test_public_tier_health_has_no_components_when_no_module_registers_health(
+    _sqlite_engine,
+):
+    app = build_app(PUBLIC_PROFILE, [_routed_module("m", "m")])
+    resp = TestClient(app).get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_public_tier_health_folds_in_module_components(_sqlite_engine):
+    async def healthy_check():
+        return {"ok": True, "detail": "all good"}
+
+    module = Module(
+        name="m",
+        register_public=lambda app: None,
+        register_health={"widget": healthy_check},
+    )
+    app = build_app(PUBLIC_PROFILE, [module])
+    resp = TestClient(app).get("/api/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["components"] == {"widget": {"ok": True, "detail": "all good"}}
+
+
+def test_public_tier_health_503s_when_a_component_is_not_ok(_sqlite_engine):
+    async def unhealthy_check():
+        return {"ok": False, "detail": "widget is broken"}
+
+    module = Module(
+        name="m",
+        register_public=lambda app: None,
+        register_health={"widget": unhealthy_check},
+    )
+    app = build_app(PUBLIC_PROFILE, [module])
+    resp = TestClient(app).get("/api/health")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["status"] == "unhealthy"
+    assert body["components"]["widget"]["ok"] is False
+
+
+def test_public_tier_health_crashing_component_reports_not_ok_not_500(
+    _sqlite_engine,
+):
+    async def crashing_check():
+        raise RuntimeError("kaboom")
+
+    module = Module(
+        name="m",
+        register_public=lambda app: None,
+        register_health={"widget": crashing_check},
+    )
+    app = build_app(PUBLIC_PROFILE, [module])
+    resp = TestClient(app).get("/api/health")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["components"]["widget"]["ok"] is False
+    assert "kaboom" in body["components"]["widget"]["detail"]
 
 
 def test_public_tier_has_no_lifespan_side_effects_or_mcp():
