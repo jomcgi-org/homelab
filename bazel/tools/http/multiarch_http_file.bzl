@@ -98,22 +98,43 @@ alias(
 
     repository_ctx.file("BUILD.bazel", build_content)
 
-    # Download the binaries
+    # Download the binaries. With extract_path set the URL is an archive
+    # (e.g. a GitHub release .tar.gz); it is extracted and the binary at
+    # extract_path inside it becomes the per-arch binary. Without it the URL
+    # is the raw binary, downloaded directly (the original behavior).
+    extract_path = repository_ctx.attr.extract_path
+
     if repository_ctx.attr.amd64_url:
-        repository_ctx.download(
-            url = repository_ctx.attr.amd64_url,
-            output = "amd64_binary",
-            sha256 = repository_ctx.attr.amd64_sha256,
-            executable = True,
-        )
+        if extract_path:
+            repository_ctx.download_and_extract(
+                url = repository_ctx.attr.amd64_url,
+                output = "amd64_extract",
+                sha256 = repository_ctx.attr.amd64_sha256,
+            )
+            repository_ctx.symlink("amd64_extract/" + extract_path, "amd64_binary")
+        else:
+            repository_ctx.download(
+                url = repository_ctx.attr.amd64_url,
+                output = "amd64_binary",
+                sha256 = repository_ctx.attr.amd64_sha256,
+                executable = True,
+            )
 
     if repository_ctx.attr.arm64_url:
-        repository_ctx.download(
-            url = repository_ctx.attr.arm64_url,
-            output = "arm64_binary",
-            sha256 = repository_ctx.attr.arm64_sha256,
-            executable = True,
-        )
+        if extract_path:
+            repository_ctx.download_and_extract(
+                url = repository_ctx.attr.arm64_url,
+                output = "arm64_extract",
+                sha256 = repository_ctx.attr.arm64_sha256,
+            )
+            repository_ctx.symlink("arm64_extract/" + extract_path, "arm64_binary")
+        else:
+            repository_ctx.download(
+                url = repository_ctx.attr.arm64_url,
+                output = "arm64_binary",
+                sha256 = repository_ctx.attr.arm64_sha256,
+                executable = True,
+            )
 
 multiarch_http_file = repository_rule(
     implementation = _multiarch_http_file_impl,
@@ -137,6 +158,11 @@ multiarch_http_file = repository_rule(
         "package_dir": attr.string(
             default = "/usr/local/bin",
             doc = "Directory to place the binary in the image",
+        ),
+        "extract_path": attr.string(
+            doc = "When set, the URLs are archives; extract and use the file at " +
+                  "this path inside the archive as the binary (e.g. 'k9s' for a " +
+                  "GitHub release tar.gz with the binary at its root).",
         ),
     },
     doc = """Download multiarch binaries from HTTP and create platform-specific tars.

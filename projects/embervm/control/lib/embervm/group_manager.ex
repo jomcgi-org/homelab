@@ -675,6 +675,16 @@ defmodule Embervm.GroupManager do
 
   defp do_fallback_fresh(state, instance, subnet_cidr, secret, group, plan, reason) do
     fresh_reason = fresh_reason_string(reason)
+
+    # Loud and COMPLETE on purpose: this is warmth being thrown away, and the
+    # flattened fresh_reason drops the inner member error (which member, which
+    # RPC error / clock delta). The R6 Gate-5 debugging started from a log that
+    # said only "relight_failed" with the actual cause visible nowhere.
+    Logger.warning("embervm group relight discarded, falling back to fresh boot",
+      workload: state.workload,
+      instance_id: instance.instance_id,
+      reason: inspect(reason, limit: 50, printable_limit: 2048)
+    )
     # Free tap+IP for any member that DID resume before the relight aborted, so the
     # fresh re-pin does not collide on an occupied tap. Drains from the instance's
     # stored live member rows (member_started recorded each resumed member).
