@@ -849,6 +849,10 @@
 </section>
 
 <style>
+  /* Styled in the /ember mini-site language (lib/public/ember/ember.css, the
+     fcstory palette): white panels on the warm ground, 1px hairlines, soft
+     layered shadows, ember/frost accents, mono micro-labels. The page wraps
+     this component in .ember-site, which provides every var(--em-*) below. */
   .pg-panel {
     display: grid;
     grid-template-columns: 380px 1fr;
@@ -881,9 +885,10 @@
   }
 
   .state-block {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: var(--radius);
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 14px;
+    box-shadow: var(--em-shadow-soft);
     padding: 18px 20px;
     min-height: 212px;
     display: flex;
@@ -894,40 +899,45 @@
   .state-chip {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 16px;
+    gap: 9px;
+    padding: 6px 14px;
     border-radius: 999px;
-    border: 2px solid var(--ink);
-    font-weight: 700;
-    font-size: 15px;
+    border: 1px solid var(--em-line);
+    background: var(--em-ground);
+    font-family: var(--em-mono);
+    font-weight: 600;
+    font-size: 12.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--em-ink);
     align-self: flex-start;
   }
 
   .state-dot {
-    width: 10px;
-    height: 10px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
-    background: var(--ink-3);
+    background: var(--em-faint);
   }
 
   .tone-awake .state-dot {
-    background: var(--teal);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--teal) 20%, transparent);
+    background: var(--em-ember);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--em-ember) 18%, transparent);
   }
 
   .tone-drowsy .state-dot,
   .tone-waking .state-dot {
-    background: var(--accent);
+    background: var(--em-amber);
     animation: pulse 0.9s ease-in-out infinite;
   }
 
   .tone-asleep .state-dot {
-    background: var(--blue);
-    opacity: 0.45;
+    background: var(--em-frost);
+    opacity: 0.55;
   }
 
   .tone-asleep .state-label {
-    color: var(--ink-3);
+    color: var(--em-muted);
   }
 
   @keyframes pulse {
@@ -944,51 +954,53 @@
 
   .state-sentence {
     margin: 0;
-    color: var(--ink);
+    color: var(--em-ink);
     font-size: 15px;
-    line-height: 1.45;
+    line-height: 1.5;
     min-height: 2.9em;
   }
 
   .state-sentence strong {
-    font-weight: 700;
+    font-weight: 650;
   }
 
   .state-facts {
     display: flex;
     gap: 18px;
     margin: 0;
-    opacity: 0.7;
   }
 
   .state-facts dt {
-    font-size: 11px;
+    font-family: var(--em-mono);
+    font-size: 10.5px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--ink-3);
+    color: var(--em-faint);
   }
 
   .state-facts dd {
     margin: 2px 0 0;
+    font-family: var(--em-mono);
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
     font-weight: 600;
+    color: var(--em-muted);
   }
 
   .savings-line {
     margin: 0;
     font-size: 13px;
-    color: var(--ink-3);
-    opacity: 0.6;
+    color: var(--em-faint);
   }
 
   .savings-line.savings-active {
-    color: var(--ink);
-    opacity: 1;
+    color: var(--em-ink);
   }
 
   .savings-value {
     display: inline-block;
     min-width: 8ch;
+    font-family: var(--em-mono);
     font-variant-numeric: tabular-nums;
     font-weight: 700;
   }
@@ -996,33 +1008,35 @@
   .savings-caption {
     margin: -8px 0 0;
     font-size: 11px;
-    color: var(--ink-3);
+    color: var(--em-faint);
   }
 
   .alltime-savings {
     margin: 0;
     font-size: 11px;
-    color: var(--ink-3);
+    color: var(--em-faint);
   }
 
   .alltime-savings-value {
     display: inline-block;
     min-width: 6ch;
+    font-family: var(--em-mono);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
-    color: var(--ink-2);
+    color: var(--em-muted);
   }
 
   .soft-error {
     margin: 0;
-    color: var(--coral);
+    color: var(--em-ember-deep);
     font-size: 12px;
   }
 
   .turnstile-slot {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: var(--radius);
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 14px;
+    box-shadow: var(--em-shadow-soft);
     padding: 14px 18px;
     display: flex;
     flex-direction: column;
@@ -1031,8 +1045,8 @@
 
   .turnstile-hint {
     margin: 0;
-    font-size: 12px;
-    color: var(--ink-3);
+    font-size: 12.5px;
+    color: var(--em-muted);
   }
 
   .controls {
@@ -1043,46 +1057,62 @@
 
   .run-btn,
   .aggregate-btn {
-    padding: 10px 18px;
-    border-radius: var(--radius);
-    border: 2px solid var(--ink);
+    padding: 11px 18px;
+    border-radius: 10px;
+    font-family: inherit;
     font-weight: 600;
     font-size: 14px;
     cursor: pointer;
     min-width: 100%;
     box-sizing: border-box;
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .run-btn {
-    background: var(--accent);
-    color: var(--ink);
+    background: var(--em-ember);
+    border: 1px solid var(--em-ember-deep);
+    color: var(--em-on-color);
+    box-shadow: var(--em-shadow-soft);
+  }
+
+  .run-btn:hover:not(:disabled) {
+    background: var(--em-ember-deep);
   }
 
   .aggregate-btn {
-    background: var(--paper);
-    color: var(--ink);
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    color: var(--em-ink);
+  }
+
+  .aggregate-btn:hover:not(:disabled) {
+    border-color: var(--em-faint);
   }
 
   .run-btn:disabled,
   .aggregate-btn:disabled {
-    opacity: 0.6;
+    opacity: 0.55;
     cursor: default;
   }
 
   .run-error {
     margin: 0;
-    color: var(--coral);
+    color: var(--em-ember-deep);
     font-size: 13px;
   }
 
   .run-error-hint {
-    color: var(--ink-2);
+    color: var(--em-muted);
   }
 
   .last-run {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: var(--radius);
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 14px;
+    box-shadow: var(--em-shadow-soft);
     padding: 18px 20px;
   }
 
@@ -1097,24 +1127,28 @@
   }
 
   .last-run-value {
+    font-family: var(--em-mono);
     font-size: 30px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
     line-height: 1.1;
+    color: var(--em-ink);
   }
 
   .last-run-label {
-    font-size: 12px;
+    font-family: var(--em-mono);
+    font-size: 10.5px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--ink-3);
-    margin-top: 4px;
+    color: var(--em-faint);
+    margin-top: 5px;
   }
 
   .last-run-narration {
     margin: 10px 0 0;
     font-size: 13px;
-    color: var(--ink-2);
+    color: var(--em-muted);
     min-height: 1.4em;
   }
 
@@ -1124,21 +1158,22 @@
     border-radius: 4px;
     overflow: hidden;
     margin-top: 12px;
-    background: var(--bg-elev);
+    background: var(--em-track);
   }
 
   .bar-connect {
-    background: var(--accent);
+    background: var(--em-ember);
   }
 
   .bar-query {
-    background: var(--teal);
+    background: var(--em-frost);
   }
 
   .tiers {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: var(--radius);
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 14px;
+    box-shadow: var(--em-shadow-soft);
     padding: 14px 18px;
     display: flex;
     align-items: center;
@@ -1152,60 +1187,65 @@
   }
 
   .tier-value {
-    font-size: 20px;
+    font-family: var(--em-mono);
+    font-size: 19px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
+    color: var(--em-ink);
   }
 
   .tier-label {
-    font-size: 11px;
+    font-family: var(--em-mono);
+    font-size: 10.5px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--ink-3);
+    color: var(--em-faint);
   }
 
   .tier-arrow {
-    color: var(--ink-3);
+    color: var(--em-line);
     font-size: 18px;
   }
 
   .tiers-caption {
     margin: 0 0 0 auto;
     font-size: 12px;
-    color: var(--ink-3);
+    color: var(--em-faint);
   }
 
   .formula-bar {
     margin: 0;
     padding: 6px 4px;
-    font-family: var(--mono);
+    font-family: var(--em-mono);
     font-size: 12px;
-    color: var(--ink-3);
+    color: var(--em-muted);
   }
 
   .reset-countdown {
     margin: 0;
     padding: 0 4px;
     font-size: 12px;
-    color: var(--ink-3);
+    color: var(--em-faint);
   }
 
   .reset-countdown-value {
     display: inline-block;
     min-width: 5ch;
+    font-family: var(--em-mono);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
-    color: var(--ink-2);
+    color: var(--em-muted);
   }
 
   .reset-countdown-clock {
-    color: var(--ink-3);
+    color: var(--em-faint);
   }
 
   .result-card {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: var(--radius);
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 14px;
+    box-shadow: var(--em-shadow);
     padding: 18px 20px;
     min-height: 420px;
   }
@@ -1235,13 +1275,13 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    font-family: var(--mono);
+    font-family: var(--em-mono);
   }
 
   .result-table th {
     text-align: left;
     padding: 4px 10px 8px 0;
-    border-bottom: 1px solid var(--rule);
+    border-bottom: 1px solid var(--em-line);
     vertical-align: bottom;
   }
 
@@ -1253,7 +1293,7 @@
     display: block;
     font-size: 12px;
     text-transform: lowercase;
-    color: var(--ink);
+    color: var(--em-ink);
     font-weight: 700;
   }
 
@@ -1262,14 +1302,15 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--ink-3);
+    color: var(--em-faint);
     font-weight: 400;
   }
 
   .result-table td {
     padding: 6px 10px 6px 0;
-    border-bottom: 1px solid var(--rule);
+    border-bottom: 1px solid var(--em-line-soft);
     font-variant-numeric: tabular-nums;
+    color: var(--em-ink);
   }
 
   .result-table td.col-numeric {
@@ -1284,8 +1325,8 @@
     display: inline-block;
     padding: 1px 8px;
     border-radius: 999px;
-    background: color-mix(in srgb, var(--accent) 40%, transparent);
-    color: var(--ink);
+    background: color-mix(in srgb, var(--em-ember-dim) 55%, transparent);
+    color: var(--em-ember-deep);
     font-size: 11px;
     font-weight: 700;
     text-transform: lowercase;
@@ -1293,23 +1334,23 @@
 
   .visitor-label {
     font-size: 11px;
-    color: var(--ink-3);
+    color: var(--em-faint);
     text-transform: lowercase;
   }
 
   .epoch-band td {
     padding: 6px 10px;
-    font-family: var(--sans);
+    font-family: var(--em-sans);
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--ink-2);
-    background: var(--bg-elev);
-    border-bottom: 1px solid var(--rule);
+    color: var(--em-muted);
+    background: var(--em-line-soft);
+    border-bottom: 1px solid var(--em-line);
   }
 
   .epoch-band.epoch-current td {
-    background: color-mix(in srgb, var(--accent) 25%, var(--bg-elev));
+    background: color-mix(in srgb, var(--em-ember-dim) 40%, var(--em-line-soft));
   }
 
   .summary-row td:first-child {
@@ -1319,7 +1360,7 @@
   .summary-bar {
     position: absolute;
     inset: 2px 0;
-    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    background: color-mix(in srgb, var(--em-ember-dim) 45%, transparent);
     border-radius: 3px;
     z-index: 0;
   }
@@ -1333,7 +1374,7 @@
 
   .summary-total td {
     border-bottom: none;
-    border-top: 2px solid var(--rule-2);
+    border-top: 2px solid var(--em-line);
     font-weight: 700;
     padding-top: 10px;
   }
@@ -1341,14 +1382,14 @@
   .result-footer {
     margin: 10px 0 0;
     font-size: 12px;
-    font-family: var(--mono);
-    color: var(--ink-3);
+    font-family: var(--em-mono);
+    color: var(--em-faint);
   }
 
   .result-note {
     margin: 12px 0 0;
     font-size: 12px;
-    color: var(--ink-2);
+    color: var(--em-muted);
   }
 
   @media (prefers-reduced-motion: no-preference) {
@@ -1360,11 +1401,11 @@
     @keyframes connect-pulse {
       0% {
         transform: scale(1.25);
-        color: var(--teal);
+        color: var(--em-ember);
       }
       100% {
         transform: scale(1);
-        color: var(--ink);
+        color: var(--em-ink);
       }
     }
 
@@ -1374,7 +1415,7 @@
 
     @keyframes row-new-fade {
       0% {
-        background: color-mix(in srgb, var(--accent) 45%, transparent);
+        background: color-mix(in srgb, var(--em-ember-dim) 60%, transparent);
       }
       100% {
         background: transparent;
