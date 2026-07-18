@@ -14,7 +14,7 @@
 
 ## Standing decisions (do not relitigate)
 
-1. **R6 Facade (etcd shim, virtual control planes, hard multi-tenancy) is deferred.** ADR embervm/009 demotes it from "Future ADR" to "Recorded" with a revival trigger (real demand for virtual control planes or external tenants). The ladder gains R6 Continuity, R7 Consumers, R8 Packaging.
+1. **R6 Facade (etcd shim, virtual control planes, hard multi-tenancy) is deferred.** ADR embervm/009 demotes it from "Future ADR" to "Recorded" with a revival trigger (real demand for virtual control planes or external tenants). The ladder gains R6 Continuity, R7 Distribution, R8 Consumers, R9 Packaging (four rungs after the same-day amendment).
 2. **Availability contract v1 is spot-instance semantics with a 2-minute preemption bound.** A roll gives workloads up to 120 seconds of drain notice. The invariant is "state is always durable and a routine roll never loses data", not "rolls are seamless". This deliberately softens R4's "a long-lived connection is never severed" to "never severed except by preemption, with a 2-minute bound"; ADR 009 records the change. A higher-availability tier (live migration, overlapping noded generations) is future work, not v1.
 3. **The control plane drives the drain; noded only holds the door.** noded has no op-log and no lifecycle authority. On SIGTERM it sets `draining`, publishes a deadline, and waits for its live-VM registry to empty (or the deadline); the CP observes `draining` on the existing WatchNode stream and runs the force-bank pass. This preserves the ADR 001 rule: the control plane acts exactly when a lifecycle action is needed.
 4. **Force-bank overrides the idle predicate and the parked-connection abort.** During drain, stateful checkpoints resolve to COMMIT even if a connection is parked (spot semantics; the parked caller re-wakes against the new noded). The flap guard does not apply to drain-initiated banks.
@@ -277,7 +277,9 @@
 
 ## R7 planning seed
 
-R7 Consumers: migrate the goosecracker agent-thread tier (fc-agentd, ADRs agents/022/028) onto EmberVM sessions; retire the bespoke controller. The R6 durability verbs make session state node-loss-tolerant first, which is the property that tier was missing.
+R7 Distribution (per the amended ADR 009): placement policy over the R6 export/restore verbs, demand-driven artifact warming, multi-node endpoint fan-out for serving; hardware prerequisite is a second Firecracker-capable node. This resolves ADR 003's open placement-policy question.
+
+R8 Consumers: migrate the goosecracker agent-thread tier (fc-agentd, ADRs agents/022/028) onto EmberVM sessions; retire the bespoke controller. The R6 durability verbs make session state node-loss-tolerant first, which is the property that tier was missing.
 
 ## Closure: live-drill gates
 
