@@ -204,8 +204,27 @@
       fontFamily: "var(--font-mono, monospace)",
       fontSize: 13,
       theme: {
-        background: "#101418",
-        foreground: "#d8dee6",
+        background: "#f7f8fa",
+        foreground: "#1a1f28",
+        cursor: "#33507a",
+        cursorAccent: "#f7f8fa",
+        selectionBackground: "#c9d8ee",
+        black: "#1a1f28",
+        red: "#a4372e",
+        green: "#1e6a3c",
+        yellow: "#8a5a00",
+        blue: "#33507a",
+        magenta: "#6b4a7a",
+        cyan: "#1a6a72",
+        white: "#e8ebef",
+        brightBlack: "#656e7c",
+        brightRed: "#c04a3f",
+        brightGreen: "#2a8a50",
+        brightYellow: "#a87200",
+        brightBlue: "#4a6a9a",
+        brightMagenta: "#8a62a0",
+        brightCyan: "#2a8a94",
+        brightWhite: "#ffffff",
       },
     });
     fitAddon = new FitAddon();
@@ -514,7 +533,7 @@
 
   .terminal-card {
     position: relative;
-    background: #101418;
+    background: #f7f8fa;
     border: 1px solid var(--line);
     border-radius: 10px;
     min-height: 420px;
@@ -538,7 +557,7 @@
     max-width: 32em;
     font-size: 14px;
     line-height: 1.5;
-    color: #aab3bf;
+    color: var(--text-faint, #656e7c);
   }
 
   .connect-btn,
@@ -561,7 +580,7 @@
 
   .session-error {
     margin: 0;
-    color: #e0776b;
+    color: var(--danger, #a4372e);
     font-size: 13px;
     max-width: 32em;
   }
@@ -570,7 +589,7 @@
     padding: 16px 20px;
     font-family: var(--font-mono, monospace);
     font-size: 13px;
-    color: #9fe3b0;
+    color: #1e6a3c;
     overflow-y: auto;
     max-height: 420px;
   }
