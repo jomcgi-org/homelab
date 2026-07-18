@@ -62,8 +62,11 @@ spec:
       # The server member: one VM, boots first (startOrder 0). k3s server with the
       # sqlite datastore, flannel host-gw, EMBER_GROUP_SECRET as the cluster token
       # AND the static token-auth API entry. Health gates on a TCP connect to 6443.
-      # 2 vCPU / 2048 MiB per the Task 3 spike memory floor (airgap import high-
-      # water mark) with headroom.
+      # 2 vCPU / 4096 MiB: warmth-only members have NO volume, so k3s's data dir is
+      # a tmpfs (guest-init mountCompositeDataDir), meaning the unpacked airgap +
+      # containerd content + sqlite live in RAM alongside the apiserver/etcd. The
+      # old 2048 floor was sized for the base build (k3s NOT running); a running
+      # server needs ~2x. node-4 has ample RAM (ADR 002 rule 4 arithmetic holds).
       - name: server
         role: server
         startOrder: 0
@@ -73,12 +76,15 @@ spec:
             ref: "{{ .Values.scratchK8sServer.guestImage.repository }}:{{ .Values.scratchK8sServer.guestImage.tag }}"
         resources:
           vcpus: 2
-          memMib: 2048
+          memMib: 4096
         healthPort: 6443
       # The agent members: two VMs (agent-0, agent-1), boot after the server
       # (startOrder 1). k3s agent joining https://$EMBER_PEER_SERVER:6443 with the
       # shared token. Health gates on a TCP connect to the kubelet on 10250. 1 vCPU
-      # / 1024 MiB each (a worker node's steady footprint is well under the server).
+      # / 3072 MiB each: like the server, an agent is warmth-only (no volume), so
+      # its containerd unpacks the airgap images into a tmpfs data dir (RAM). Its
+      # steady footprint is under the server's (no apiserver/etcd), but the airgap
+      # unpack is the same, so the old 1024 base-build floor is far too small.
       - name: agent
         role: agent
         startOrder: 1
@@ -88,7 +94,7 @@ spec:
             ref: "{{ .Values.scratchK8sAgent.guestImage.repository }}:{{ .Values.scratchK8sAgent.guestImage.tag }}"
         resources:
           vcpus: 1
-          memMib: 1024
+          memMib: 3072
         healthPort: 10250
     # The group's single ingress: traffic reaches the server member's API on 6443,
     # exposed cluster-internally on the node Envoy at listenPort 5410 (the first
