@@ -210,6 +210,11 @@ defmodule Embervm.GroupManager do
       # Daemon group-verb seams (injected for tests; production dials the real
       # NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      # Drop the shared node channel when a group verb reveals its transport is dead
+      # (a noded rollout), so the next safe_channel/2 re-dials instead of every member
+      # start failing on a dead ConnectionProcess until the control plane restarts
+      # (D-R2.7.2). Injected for tests.
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       create_group_network_fun:
         Keyword.get(opts, :create_group_network_fun, &default_create_group_network/2),
       delete_group_network_fun:
@@ -923,12 +928,12 @@ defmodule Embervm.GroupManager do
       member_name: member.member_name
     }
 
-    with {:ok, channel} <- safe_channel(state, state.node_id),
-         {:ok, %StopGroupMemberResponse{snapshot_ref: ref}} when is_binary(ref) and ref != "" <-
-           state.stop_group_member_fun.(channel, req) do
-      {:ok, %{name: member.member_name, snapshot_ref: ref}}
-    else
-      other -> {:error, {:member_bank_failed, member.member_name, other}}
+    case over_channel(state, state.node_id, &state.stop_group_member_fun.(&1, req)) do
+      {:ok, %StopGroupMemberResponse{snapshot_ref: ref}} when is_binary(ref) and ref != "" ->
+        {:ok, %{name: member.member_name, snapshot_ref: ref}}
+
+      other ->
+        {:error, {:member_bank_failed, member.member_name, other}}
     end
   rescue
     e -> {:error, {:member_bank_raised, member.member_name, e}}
@@ -1250,11 +1255,9 @@ defmodule Embervm.GroupManager do
       cidr: cidr
     }
 
-    with {:ok, channel} <- safe_channel(state, state.node_id) do
-      case state.create_group_network_fun.(channel, req) do
-        {:ok, %CreateGroupNetworkResponse{} = resp} -> {:ok, resp}
-        other -> {:error, {:create_network_failed, other}}
-      end
+    case over_channel(state, state.node_id, &state.create_group_network_fun.(&1, req)) do
+      {:ok, %CreateGroupNetworkResponse{} = resp} -> {:ok, resp}
+      other -> {:error, {:create_network_failed, other}}
     end
   rescue
     e -> {:error, {:create_network_raised, e}}
@@ -1277,9 +1280,7 @@ defmodule Embervm.GroupManager do
   end
 
   defp safe_start_group_member(state, req) do
-    with {:ok, channel} <- safe_channel(state, state.node_id) do
-      state.start_group_member_fun.(channel, req)
-    end
+    over_channel(state, state.node_id, &state.start_group_member_fun.(&1, req))
   rescue
     e -> {:error, {:start_group_member_raised, e}}
   catch
@@ -1292,6 +1293,27 @@ defmodule Embervm.GroupManager do
     e -> {:error, {:channel_raised, e}}
   catch
     kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  # Acquire the node's shared channel and run a group verb over it, invalidating that
+  # channel (so the next safe_channel/2 re-dials) when the call reveals the transport
+  # is dead: a transport_dead? error return, or an :exit from the Mint ConnectionProcess
+  # dying (its crash on an in-flight stream RST during a noded rollout surfaces here as
+  # an exit). A server-returned gRPC status rode a HEALTHY channel and never invalidates
+  # it (Embervm.NodeChannel.transport_dead?/1, D-R2.7.2). Returns the verb's raw result,
+  # {:error, {:exit, reason}} on an exit, or the safe_channel error if no channel.
+  defp over_channel(state, node_id, call_fun) do
+    with {:ok, channel} <- safe_channel(state, node_id) do
+      try do
+        result = call_fun.(channel)
+        if Embervm.NodeChannel.transport_dead?(result), do: state.invalidate_fun.(node_id, channel)
+        result
+      catch
+        :exit, reason ->
+          state.invalidate_fun.(node_id, channel)
+          {:error, {:exit, reason}}
+      end
+    end
   end
 
   defp default_create_group_network(channel, req) do

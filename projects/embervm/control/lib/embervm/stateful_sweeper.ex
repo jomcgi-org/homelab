@@ -227,6 +227,10 @@ defmodule Embervm.StatefulSweeper do
       # The daemon stateful-verb seams (injected for tests; production dials
       # the real NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      # Drop the shared node channel when a verb reveals its transport is dead (a
+      # noded rollout), so the next safe_channel/2 re-dials instead of hammering a
+      # dead ConnectionProcess forever (D-R2.7.2). Injected for tests.
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
       # ResolveStateful seam (ADR embervm/008): (channel, %ResolveStatefulRequest{})
       # -> {:ok, %ResolveStatefulResponse{}} | {:error, _}. Injected for tests;
@@ -783,6 +787,7 @@ defmodule Embervm.StatefulSweeper do
   defp spawn_atomic_bank_worker(state, instance) do
     owner = self()
     channel_fun = state.channel_fun
+    invalidate_fun = state.invalidate_fun
     stop_fun = state.stop_stateful_fun
     instance_id = instance.instance_id
     workload = instance.workload
@@ -802,17 +807,17 @@ defmodule Embervm.StatefulSweeper do
                            }
                          } do
           try do
-            with {:ok, channel} <- safe_channel(channel_fun, node_id),
-                 {:ok, %StopStatefulResponse{snapshot_ref: ref, size_bytes: size, generation: generation}}
-                 when is_binary(ref) and ref != "" <-
-                   stop_fun.(channel, bank_request(vm_id)) do
-              # generation only becomes known once the daemon replies (the pair-key
-              # baseline the bundle is stamped with), so it is set here rather than
-              # in the span's opening attributes, exactly like ember.snapshot_bytes.
-              Tracer.set_attributes(%{"ember.snapshot_bytes" => size, "ember.generation" => generation || 0})
-              {:ok, ref, size, generation}
-            else
-              other -> {:error, other}
+            case over_channel(channel_fun, invalidate_fun, node_id, &stop_fun.(&1, bank_request(vm_id))) do
+              {:ok, %StopStatefulResponse{snapshot_ref: ref, size_bytes: size, generation: generation}}
+              when is_binary(ref) and ref != "" ->
+                # generation only becomes known once the daemon replies (the pair-key
+                # baseline the bundle is stamped with), so it is set here rather than
+                # in the span's opening attributes, exactly like ember.snapshot_bytes.
+                Tracer.set_attributes(%{"ember.snapshot_bytes" => size, "ember.generation" => generation || 0})
+                {:ok, ref, size, generation}
+
+              other ->
+                {:error, other}
             end
           rescue
             e -> {:error, {:bank_raised, e}}
@@ -841,6 +846,7 @@ defmodule Embervm.StatefulSweeper do
   defp spawn_checkpoint_worker(state, instance) do
     owner = self()
     channel_fun = state.channel_fun
+    invalidate_fun = state.invalidate_fun
     stop_fun = state.stop_stateful_fun
     settle_ms = state.propagation_settle_ms
     instance_id = instance.instance_id
@@ -863,13 +869,13 @@ defmodule Embervm.StatefulSweeper do
           if is_integer(settle_ms) and settle_ms > 0, do: Process.sleep(settle_ms)
 
           try do
-            with {:ok, channel} <- safe_channel(channel_fun, node_id),
-                 {:ok, %StopStatefulResponse{checkpoint_token: token, generation: generation}}
-                 when is_binary(token) and token != "" <-
-                   stop_fun.(channel, checkpoint_request(vm_id)) do
-              {:ok, token, generation}
-            else
-              other -> {:error, other}
+            case over_channel(channel_fun, invalidate_fun, node_id, &stop_fun.(&1, checkpoint_request(vm_id))) do
+              {:ok, %StopStatefulResponse{checkpoint_token: token, generation: generation}}
+              when is_binary(token) and token != "" ->
+                {:ok, token, generation}
+
+              other ->
+                {:error, other}
             end
           rescue
             e -> {:error, {:checkpoint_raised, e}}
@@ -1075,6 +1081,7 @@ defmodule Embervm.StatefulSweeper do
   defp spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode) do
     owner = self()
     channel_fun = state.channel_fun
+    invalidate_fun = state.invalidate_fun
     resolve_fun = state.resolve_stateful_fun
 
     spawn(fn ->
@@ -1088,12 +1095,12 @@ defmodule Embervm.StatefulSweeper do
                            }
                          } do
           try do
-            with {:ok, channel} <- safe_channel(channel_fun, node_id),
-                 {:ok, %ResolveStatefulResponse{} = resp} <-
-                   resolve_fun.(channel, resolve_request(vm_id, token, mode)) do
-              {:ok, resp}
-            else
-              other -> {:error, other}
+            case over_channel(channel_fun, invalidate_fun, node_id, &resolve_fun.(&1, resolve_request(vm_id, token, mode))) do
+              {:ok, %ResolveStatefulResponse{} = resp} ->
+                {:ok, resp}
+
+              other ->
+                {:error, other}
             end
           rescue
             e -> {:error, {:resolve_raised, e}}
@@ -1577,6 +1584,28 @@ defmodule Embervm.StatefulSweeper do
     e -> {:error, {:channel_raised, e}}
   catch
     kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  # Acquire the node's shared channel and run a stateful verb over it, invalidating
+  # that channel (so the next safe_channel/2 re-dials) when the call reveals the
+  # transport is dead: a transport_dead? error return, or an :exit from the Mint
+  # ConnectionProcess dying (its crash on an in-flight stream RST during a noded
+  # rollout surfaces here as an exit). A server-returned gRPC status rode a HEALTHY
+  # channel and never invalidates it (Embervm.NodeChannel.transport_dead?/1, D-R2.7.2).
+  # Returns the verb's raw result ({:ok, _} | {:error, _}), {:error, {:exit, reason}}
+  # on an exit, or the safe_channel error if no channel could be obtained.
+  defp over_channel(channel_fun, invalidate_fun, node_id, call_fun) do
+    with {:ok, channel} <- safe_channel(channel_fun, node_id) do
+      try do
+        result = call_fun.(channel)
+        if Embervm.NodeChannel.transport_dead?(result), do: invalidate_fun.(node_id, channel)
+        result
+      catch
+        :exit, reason ->
+          invalidate_fun.(node_id, channel)
+          {:error, {:exit, reason}}
+      end
+    end
   end
 
   defp default_stop_stateful(channel, req) do

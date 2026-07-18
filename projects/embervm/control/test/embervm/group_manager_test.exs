@@ -48,6 +48,9 @@ defmodule Embervm.GroupManagerTest do
     {:ok, rec} = recorder()
 
     fail_member = Keyword.get(opts, :fail_member)
+    # A member whose start returns a transport-dead error (a wrapped "connection is
+    # closed", the shape a noded rollout surfaces), for the channel-invalidation test.
+    transport_dead_member = Keyword.get(opts, :transport_dead_member)
     # A member whose RELIGHT StartGroupMember fails (Task 7): forces the all-or-
     # nothing relight -> fresh fallback. relight_unverified_member instead returns a
     # was_relight=false response (the clock-resync casualty, decision 7).
@@ -96,6 +99,9 @@ defmodule Embervm.GroupManagerTest do
       vm_id = "vm-#{req.member_name}"
 
       cond do
+        req.member_name == transport_dead_member ->
+          {:error, %GRPC.RPCError{status: 2, message: "the connection is closed"}}
+
         req.member_name == fail_member ->
           {:error, :boom}
 
@@ -168,6 +174,7 @@ defmodule Embervm.GroupManagerTest do
       port_base: 30_000,
       pod_ip: "10.0.0.9",
       channel_fun: fn _node -> {:ok, :ch} end,
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _n, _c -> :ok end),
       create_group_network_fun: create_group_network_fun,
       delete_group_network_fun: delete_group_network_fun,
       start_group_member_fun: start_group_member_fun,
@@ -252,6 +259,40 @@ defmodule Embervm.GroupManagerTest do
 
     # The group network was torn down (no half-group leaks).
     assert Enum.any?(events(ctx.rec), &match?({:delete_network, "g-1"}, &1))
+  end
+
+  test "a transport-dead member start invalidates the shared channel so the next wake re-dials" do
+    test_pid = self()
+
+    ctx =
+      start_group(
+        transport_dead_member: "worker-0",
+        invalidate_fun: fn node_id, chan -> send(test_pid, {:invalidated, node_id, chan}) end
+      )
+
+    assert {:error, _reason} = GroupManager.create_group(ctx.mgr)
+
+    # The dead shared channel was dropped (node "node-4", channel :ch), so the next
+    # safe_channel/2 re-dials instead of every member start wedging on a dead
+    # ConnectionProcess until the control plane restarts (D-R2.7.2).
+    assert_receive {:invalidated, "node-4", :ch}, 1_000
+  end
+
+  test "a server-status member start failure leaves the shared channel up (no needless invalidate)" do
+    test_pid = self()
+
+    ctx =
+      start_group(
+        fail_member: "worker-0",
+        invalidate_fun: fn node_id, chan -> send(test_pid, {:invalidated, node_id, chan}) end
+      )
+
+    assert {:error, _reason} = GroupManager.create_group(ctx.mgr)
+
+    # :boom is a plain application error that rode a HEALTHY channel; it must NOT tear
+    # the shared channel down (D-R2.7.2), else a legit member rejection would needlessly
+    # redial for every other consumer of the node.
+    refute_receive {:invalidated, _, _}, 300
   end
 
   test "EMBER_GROUP_* env: member/role/ip/peer-map/secret keys, casing + .10+i addressing" do
