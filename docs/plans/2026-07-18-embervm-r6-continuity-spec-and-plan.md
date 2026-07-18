@@ -283,15 +283,17 @@ R8 Consumers: migrate the goosecracker agent-thread tier (fc-agentd, ADRs agents
 
 ## Closure: live-drill gates
 
+All R6 CODE is implemented, reviewed, and CI-green across PRs 1-7 (Tasks 2 through 11): the drain protocol and force-bank pass, the noded object-store client, the ExportArtifact/RestoreArtifact/EvictArtifact verb family with async export-after-commit, restore-on-miss wake planning, remote retention/GC, the wake-worker timeouts and adoption self-recovery, and the observability spans plus the four dry-run alerts. The live-drill gates below (gate 1's entry criteria and every drill gate 2-10) remain DEFERRED behind the R5 gate-1 entry-path EOF, exactly as standing decision 11 requires: continuity drills are unprovable while the baseline composite drill cannot pass. This is the same posture under which R4 and R5 shipped ("Shipped <date> (gates live-pending)" in ADR 001): the code is landed and the live gates are recorded as pending the drillable-system entry criteria, not fabricated as passed.
+
 | # | Gate | Evidence to record | Result |
 | --- | --- | --- | --- |
-| 1 | Entry criteria: R5 gate-1 entry path passes (kubectl via 5410) | drill log | TODO |
-| 2 | noded roll with live scratch-postgres: banked within window, relit on next wake, zero data loss (row written pre-roll survives) | op-log + psql | TODO |
-| 3 | noded roll with live scratch-k8s group: set banked as a unit, relit, nodes Ready | op-log + kubectl | TODO |
-| 4 | Full-node drain wall time under 120s with all classes live | drain span | TODO |
-| 5 | Parked wake during drain resolves after roll without client error beyond retry | drill log | TODO |
-| 6 | Local bundle + volume deleted, wake restores from store at correct generation | op-log + span | TODO |
-| 7 | Store unreachable: local wakes unaffected, alert fires, exports resume on recovery | alert + logs | TODO |
-| 8 | CP pod roll mid-drain: no wedge, adoption converges | logs | TODO |
-| 9 | Wedged member boot: wake fails at bound, workload recovers to banked without CP restart | logs | TODO |
-| 10 | 48h soak: no export backlog growth, no park_full, no channel wedges | SigNoz | TODO |
+| 1 | Entry criteria: R5 gate-1 entry path passes (kubectl via 5410) | drill log | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 2 | noded roll with live scratch-postgres: banked within window, relit on next wake, zero data loss (row written pre-roll survives) | op-log + psql | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 3 | noded roll with live scratch-k8s group: set banked as a unit, relit, nodes Ready | op-log + kubectl | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 4 | Full-node drain wall time under 120s with all classes live | drain span | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 5 | Parked wake during drain resolves after roll without client error beyond retry | drill log | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 6 | Local bundle + volume deleted, wake restores from store at correct generation | op-log + span | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 7 | Store unreachable: local wakes unaffected, alert fires, exports resume on recovery | alert + logs | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 8 | CP pod roll mid-drain: no wedge, adoption converges | logs | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 9 | Wedged member boot: wake fails at bound, workload recovers to banked without CP restart | logs | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |
+| 10 | 48h soak: no export backlog growth, no park_full, no channel wedges | SigNoz | DEFERRED (live gate, entry criteria: R5 gate-1 EOF unresolved; see standing decision 11) |

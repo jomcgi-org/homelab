@@ -29,6 +29,10 @@ defmodule Embervm.DrainCoordinator do
 
   require Logger
 
+  # Tracer.with_span/set_attributes are OpenTelemetry.Tracer MACROS, so the module
+  # is required (not aliased as a runtime dep). Matches the manager/sweeper idiom.
+  require OpenTelemetry.Tracer, as: Tracer
+
   alias Embervm.OpLog.Op
 
   @default_safety_margin_ms 15_000
@@ -74,31 +78,51 @@ defmodule Embervm.DrainCoordinator do
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp handle_drain(state, node_id, deadline_ms) do
-    Logger.info("embervm drain: node draining, force-banking all classes",
-      node_id: node_id,
-      deadline_ms: deadline_ms
-    )
+    # The `node_drain` ROOT span (Task 11): a timer-driven fan-out with no caller
+    # trace, so a root, mirroring the forced_roll span shape. Bounds the whole
+    # force-bank dispatch and carries the per-class banked counts as attributes so
+    # a drain that under-banks a class is visible in SigNoz (Task 11 alert reads
+    # the same counts off the op-log).
+    Tracer.with_span "embervm.node_drain",
+                     %{
+                       attributes: %{
+                         "ember.node_id" => node_id,
+                         "ember.drain_deadline_ms" => deadline_ms
+                       }
+                     } do
+      Logger.info("embervm drain: node draining, force-banking all classes",
+        node_id: node_id,
+        deadline_ms: deadline_ms
+      )
 
-    append_op(state, :node_drain_started, %{
-      node_id: node_id,
-      deadline_ms: deadline_ms,
-      safety_margin_ms: state.safety_margin_ms
-    })
+      append_op(state, :node_drain_started, %{
+        node_id: node_id,
+        deadline_ms: deadline_ms,
+        safety_margin_ms: state.safety_margin_ms
+      })
 
-    # Stateful and group first (the two classes the R6 invariant names), then
-    # sessions and serving. Each call is prompt (starts async workers, returns a
-    # count); the ordering only affects which class's workers are enqueued first.
-    counts = %{
-      stateful: drain_class(state, :stateful, node_id),
-      group: drain_class(state, :group, node_id),
-      session: drain_class(state, :session, node_id),
-      serving: drain_class(state, :serving, node_id)
-    }
+      # Stateful and group first (the two classes the R6 invariant names), then
+      # sessions and serving. Each call is prompt (starts async workers, returns a
+      # count); the ordering only affects which class's workers are enqueued first.
+      counts = %{
+        stateful: drain_class(state, :stateful, node_id),
+        group: drain_class(state, :group, node_id),
+        session: drain_class(state, :session, node_id),
+        serving: drain_class(state, :serving, node_id)
+      }
 
-    Logger.info("embervm drain: force-bank dispatched", Keyword.new(Map.put(counts, :node_id, node_id)))
+      Tracer.set_attributes(%{
+        "ember.stateful_banked" => counts.stateful,
+        "ember.group_banked" => counts.group,
+        "ember.session_banked" => counts.session,
+        "ember.serving_banked" => counts.serving
+      })
 
-    append_op(state, :node_drain_finished, Map.put(counts, :node_id, node_id))
-    :ok
+      Logger.info("embervm drain: force-bank dispatched", Keyword.new(Map.put(counts, :node_id, node_id)))
+
+      append_op(state, :node_drain_finished, Map.put(counts, :node_id, node_id))
+      :ok
+    end
   end
 
   # Best-effort per class: a sweeper that is down or raises must not wedge the drain
