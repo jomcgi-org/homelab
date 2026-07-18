@@ -13,8 +13,12 @@
   --em-line: #e3dfd5;
   --em-line-soft: #ece8df;
   --em-ink: #20222a;
-  --em-muted: #525965;
-  --em-faint: #7d838e;
+  /* One tier darker than fcstory's #525965/#7d838e: on the warm ground the
+   * originals read grey-on-beige (the muted look Joe also vetoed on the
+   * homepage); secondary text stays secondary through size and weight, not
+   * washout. */
+  --em-muted: #3d434e;
+  --em-faint: #646b76;
   --em-ember: #e05c26;
   --em-ember-deep: #b7461a;
   --em-ember-dim: #f0c4ae;
