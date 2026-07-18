@@ -764,14 +764,19 @@ defmodule Embervm.StatefulManager do
           case anchor_node(state, volume) do
             {:ok, node_id} ->
               # Local banked bundle present on the anchor node -> relight it (the
-              # existing warm path). Local bundle GONE (disk lost) but its store copy
-              # is recoverable (the volume's exported_generation matches the bundle's
-              # snapshot_generation) and the store is reachable -> restore the bundle
-              # first, then relight (R6 restore-on-miss). An unreachable store or a
-              # missing store copy falls through to the existing relight attempt,
-              # which the daemon degrades to a cold boot (fail-open warmth).
+              # existing warm path). Local bundle GONE from disk (a TRUE local miss)
+              # AND the anchor node's store is reachable -> attempt an OPTIMISTIC
+              # restore first, then relight (R6 restore-on-miss, option b). The CP
+              # does not track remote inventory: it attempts the restore whenever the
+              # local copy is missing and the store is reachable, and the daemon fails
+              # closed (FAILED_PRECONDITION) if no store copy exists, which degrades
+              # to the relight's own cold-boot fallback. store_reachable == false
+              # never blocks the wake, it only withholds the restore (fail-open
+              # warmth, standing decision 7). Generation pairing is unchanged: a
+              # restored bundle still only relights against its matching volume
+              # generation, enforced by the daemon at RELIGHT time.
               if bundle_local?(state, node_id, instance.snapshot_ref) or
-                   not bundle_restorable?(state, node_id, instance, volume) do
+                   not store_reachable?(state, node_id) do
                 {:relight, instance, node_id, instance.snapshot_ref}
               else
                 {:restore_then_relight, instance, node_id, instance.snapshot_ref}
@@ -848,20 +853,6 @@ defmodule Embervm.StatefulManager do
   end
 
   defp bundle_local?(_state, _node_id, _ref), do: false
-
-  # Whether a locally-missing bundle can be restored from the store: the store is
-  # reachable AND the volume's exported_generation equals the bundle's stamped
-  # snapshot_generation (the store holds a matching (bundle, volume-gen) pair). The
-  # generation match keeps restore generation-safe: a restored bundle still only
-  # relights against its matching volume generation (pairing rules unchanged).
-  # store_reachable == false NEVER blocks the local-state wake here, it only
-  # withholds the restore so the wake degrades to the existing relight/cold path
-  # (fail-open warmth, standing decision 7).
-  defp bundle_restorable?(state, node_id, instance, volume) do
-    store_reachable?(state, node_id) and
-      is_integer(instance.snapshot_generation) and
-      exported_generation(volume) == instance.snapshot_generation
-  end
 
   # Whether a missing/broken-pair volume can be restored: the store is reachable
   # and a (vol.img, gen) pair is exported (exported_generation > 0). The node the

@@ -266,11 +266,11 @@ defmodule Embervm.GroupWakeManagerTest do
     ctx = start_stack(instance_id: "g-restore", restore_artifact_fun: restore_fun)
     _ = seed_banked(ctx, "g-restore", "set-r")
 
-    # The node reports the set as a STORE-ONLY marker: exported=true but no local
-    # member bundles (empty members list), i.e. the local disk lost the set. The
-    # store is reachable, so the wake restores the whole GROUP_SET then relights.
+    # The node reports NO local bundle set for this group (a true local miss: the
+    # disk lost it) but a reachable store. Optimistic restore-on-miss then restores
+    # the whole GROUP_SET before the delegated relight.
     seed_node(ctx, %{
-      group_bundle_sets: [%{set_id: "set-r", group_instance_id: "g-restore", members: [], exported: true}],
+      group_bundle_sets: [],
       store_reachable: true
     })
 
@@ -294,7 +294,7 @@ defmodule Embervm.GroupWakeManagerTest do
     _ = seed_banked(ctx, "g-nostore", "set-n")
 
     seed_node(ctx, %{
-      group_bundle_sets: [%{set_id: "set-n", group_instance_id: "g-nostore", members: [], exported: true}],
+      group_bundle_sets: [],
       store_reachable: false
     })
 
