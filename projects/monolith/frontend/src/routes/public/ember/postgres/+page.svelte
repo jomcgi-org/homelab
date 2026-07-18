@@ -36,7 +36,7 @@
       ><a class="brand" href="/"><strong>jomcgi.dev</strong></a> / ember /
       postgres</span
     >
-    <a class="topbar-cross" href="/ember/firecracker">how the freeze works</a>
+    <a class="topbar-cross" href="/ember/firecracker">how does firecracker work?</a>
   </header>
 
   <main class="ember-page">
@@ -74,17 +74,6 @@
       bind:running={consoleRunning}
       bind:stopwatchMs={consoleStopwatchMs}
     />
-
-    <section class="explainer">
-      <h2>What "banking" means</h2>
-      <p>
-        A pause-to-disk, not a shutdown: live memory and CPU state are
-        snapshotted and the process is torn down. Nothing runs and nothing is
-        billed while it waits. Resuming a snapshot is far faster than a fresh
-        boot, which is why most wakes land under a second instead of paying a
-        full cold start.
-      </p>
-    </section>
 
     <section class="explainer">
       <h2>Why the data survives</h2>
@@ -168,8 +157,8 @@
 
   .fold {
     display: grid;
-    grid-template-columns: minmax(300px, 380px) 1fr;
-    gap: 24px;
+    grid-template-columns: 340px 1fr;
+    gap: 16px;
     align-items: center;
   }
 

@@ -104,13 +104,21 @@
   }
 
   function targetFor(now, state) {
-    if (state === "banked" || state === "checkpointed" || state == null) return 0;
     if (state === "serving") return 1;
     if (WAKING.has(state)) {
       const frac = Math.min(1, (now - sweepStartAt) / WAKE_SWEEP_MS);
       return sweepFromW + (1 - sweepFromW) * frac;
     }
-    if (state === "banking") {
+    if (
+      state === "banking" ||
+      state === "banked" ||
+      state === "checkpointed" ||
+      state == null
+    ) {
+      // Cool-down is always the deliberate 1.5s sweep, even when the poll
+      // jumps straight from serving to banked and skips the brief banking
+      // state: sweepFromW was captured at the transition, so the grid
+      // visibly banks warm -> cold instead of near-snapping to 0.
       const frac = Math.min(1, (now - sweepStartAt) / BANK_SWEEP_MS);
       return sweepFromW * (1 - frac);
     }
