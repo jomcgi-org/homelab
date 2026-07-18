@@ -1,0 +1,22 @@
+/*
+ * /ember landing-only tokens. The base palette lives in
+ * lib/public/ember/ember.css; hex values must stay in .css files
+ * (semgrep: svelte-hardcoded-color-in-style), so the landing page's
+ * extra colors are defined here and referenced as var(--eml-*).
+ */
+.ember-site {
+  /* stronger rule color for section-leading borders */
+  --eml-line-strong: #c9c3b4;
+
+  /* status-dot temperature gradients */
+  --eml-dot-cold-hi: #dcebf8;
+  --eml-dot-cold-lo: #2c6096;
+  --eml-dot-wake-hi: #ffe9c2;
+  --eml-dot-warm-hi: #ffd9a6;
+
+  /* diagram edge-label ambers (readable dark amber on paper) */
+  --eml-amber-deep: #a06a10;
+
+  /* warm panel for the diagram card */
+  --eml-panel-warm: #fffdf9;
+}

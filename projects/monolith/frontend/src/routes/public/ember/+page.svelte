@@ -1,13 +1,25 @@
 <script>
-  // /ember: the landing page for the Ember mini-site. Minimalist by design:
-  // one claim, one lede, two cards. The Postgres card carries a live state
-  // line seeded by the SSR load (cached reads, never wakes the VM); the page
-  // itself never polls. Visual language is the shared ember token sheet
-  // (lib/public/ember/ember.css), same as /ember/postgres and
-  // /ember/firecracker.
+  // /ember: the landing page for the Ember mini-site, set as a typeset
+  // README: one column, ruled lists, an SVG architecture diagram, checkbox
+  // roadmap. Copy voice follows the project README (blunt mechanism
+  // sentences, no rhetoric). Visual language is the shared ember token
+  // sheet (lib/public/ember/ember.css) plus landing-only tokens in
+  // ./landing.css; hex never appears in this <style> block.
+  //
+  // The status dot is read-only: SSR seeds it, a slow poll keeps it honest,
+  // and the wake action stays on /ember/postgres where its Turnstile gate
+  // and rate limits live.
+  import { onMount } from "svelte";
   import "$lib/public/ember/ember.css";
+  import "./landing.css";
 
   let { data } = $props();
+
+  // Same status endpoint the Postgres exhibit polls (cached control-plane
+  // read; cannot wake the VM). Slow cadence: the landing page only needs
+  // the dot to be honest, so one read every 15s is plenty.
+  const STATUS_URL = "/ember/postgres/api/status";
+  const POLL_MS = 15_000;
 
   // Same vocabulary as EmberStage's STATE_WORD so the landing page and the
   // demo never disagree about what the VM is doing.
@@ -21,8 +33,15 @@
     serving: "awake",
   };
 
-  let stateWord = $derived(STATE_WORD[data.status?.state ?? ""] ?? null);
-  let awake = $derived(stateWord === "awake" || stateWord === "waking");
+  let status = $state(data.status);
+  let stateWord = $derived(STATE_WORD[status?.state ?? ""] ?? null);
+  let dotClass = $derived(
+    stateWord === "awake"
+      ? "live"
+      : stateWord === "waking" || stateWord === "falling asleep"
+        ? "waking"
+        : "cold",
+  );
 
   // Mirrors EmberStage.gbHours: raw MiB·s from the backend, shown as GB·h.
   function gbHours(mibSeconds) {
@@ -35,15 +54,97 @@
   }
 
   let savedLine = $derived(
-    gbHours(data.savings?.total_saved_mib_s ?? data.status?.total_saved_mib_s),
+    gbHours(data.savings?.total_saved_mib_s ?? status?.total_saved_mib_s),
   );
+
+  // Headline numbers count up from zero on load; skipped under reduced
+  // motion (which also keeps visual-regression captures deterministic).
+  let bestWake = $state(78);
+  let vmRestore = $state(22);
+
+  onMount(() => {
+    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduced) {
+      const t0 = performance.now();
+      const dur = 900;
+      bestWake = 0;
+      vmRestore = 0;
+      const tick = (t) => {
+        const p = Math.min(1, (t - t0) / dur);
+        const ease = 1 - Math.pow(1 - p, 3);
+        bestWake = Math.round(78 * ease);
+        vmRestore = Math.round(22 * ease);
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+
+    const poll = setInterval(async () => {
+      if (document.hidden) return;
+      try {
+        const res = await fetch(STATUS_URL);
+        if (res.ok) status = await res.json();
+      } catch {
+        // keep the last known state; the dot degrades gracefully
+      }
+    }, POLL_MS);
+    return () => clearInterval(poll);
+  });
+
+  const MILESTONES = [
+    {
+      done: true,
+      name: "R0 tasks",
+      desc: "Dispatch, fair round-robin pooling, metering and quotas, tracing. Untrusted code runs and is billed.",
+    },
+    {
+      done: true,
+      name: "R1 functions",
+      desc: "Function registry and zip-lane hydration over vsock. The first public function goes live.",
+    },
+    {
+      done: true,
+      name: "R2 sessions",
+      desc: "Bank/relight, and primed-VM adoption across control-plane restarts.",
+    },
+    {
+      done: true,
+      name: "R3 serving",
+      desc: "xDS endpoint publishing, per-node Envoy, the DNAT data path. The control plane leaves the hot path.",
+    },
+    {
+      done: true,
+      name: "R4 stateful",
+      desc: "Postgres as a session: a database that sleeps as a snapshot and wakes on connect. The live demo above.",
+    },
+    {
+      done: true,
+      name: "R5 composite",
+      desc: "A scratch Kubernetes cluster as one composite workload: control plane and workers wake together on the first kubectl.",
+    },
+    {
+      done: true,
+      name: "R6 continuity",
+      desc: "Snapshots and built boot images are recorded to S3: sessions restore after preemption, and a new node pulls ready images instead of rebuilding them. Workloads outlive the machine they ran on.",
+    },
+    {
+      done: true,
+      name: "R7 agents",
+      desc: "AI agents as first-class consumers: each agent session gets its own microVM sandbox, banked between turns.",
+    },
+    {
+      done: false,
+      name: "R8 packaging",
+      desc: "Extract the orchestrator from this cluster and open-source it.",
+    },
+  ];
 </script>
 
 <svelte:head>
-  <title>Ember · scale to zero · jomcgi.dev</title>
+  <title>Ember · a workload orchestrator on Firecracker microVMs</title>
   <meta
     name="description"
-    content="Ember runs real services on Firecracker microVMs that freeze to disk when idle and restore in tens of milliseconds. A live Postgres you can wake, and an explainer of how the freeze works."
+    content="A workload orchestrator that runs untrusted code in hardware-isolated Firecracker microVMs. Services sleep as snapshots and wake on demand, disk to memory in 78 ms. Includes a live Postgres you can wake yourself."
   />
 </svelte:head>
 
@@ -52,207 +153,419 @@
     <span
       ><a class="brand" href="/"><strong>jomcgi.dev</strong></a> / ember</span
     >
+    {#if savedLine}
+      <span class="saved"
+        >compute not spent while asleep · <b>{savedLine}</b></span
+      >
+    {/if}
   </header>
 
-  <main class="ember-page">
+  <main class="doc">
     <header class="masthead">
-      <h1><span class="ember-word">Ember</span></h1>
+      <h1><span class="word">Ember</span></h1>
       <p class="lede">
-        Services that scale to zero. When nobody is using one, the whole
-        microVM is snapshotted to disk: 0 vCPU, 0 MiB of RAM. The next request
-        restores it, memory intact, in tens of milliseconds.
+        A workload orchestrator that runs untrusted code in hardware-isolated
+        <b>Firecracker microVMs</b>, built from scratch on this cluster: an
+        Elixir/OTP control plane scheduling onto a Go node daemon that drives
+        Firecracker directly. Services sleep as snapshots and wake on demand,
+        <b>disk to memory in 78&nbsp;ms</b>.
+      </p>
+      <p class="live">
+        <span class="dot {dotClass}"></span>
+        <span class="live-text">
+          {#if stateWord === "awake"}
+            the demo Postgres is <b>awake</b> right now.
+            <a href="/ember/postgres">open the console</a>
+          {:else if stateWord === "waking" || stateWord === "falling asleep"}
+            the demo Postgres is <b>{stateWord}</b>.
+            <a href="/ember/postgres">watch it on the live demo</a>
+          {:else}
+            the demo Postgres is <b>asleep</b> right now.
+            <a href="/ember/postgres">wake it yourself on the live demo</a>
+          {/if}
+        </span>
+      </p>
+      <p class="stats">
+        <span>four cluster nodes</span>
+        <span class="sep">·</span>
+        <span><b>{bestWake} ms</b> best wake</span>
+        <span class="sep">·</span>
+        <span><b>~{vmRestore} ms</b> VM restore</span>
+        <span class="sep">·</span>
+        <span>numbers are live</span>
       </p>
     </header>
 
-    <div class="cards">
-      <a class="card" href="/ember/postgres">
-        <span class="kicker">live demo</span>
-        <h2>Ember Postgres</h2>
-        <p>
-          A real Postgres that sleeps between visitors. Run a query against
-          the sleeping database and time the wake: 78&nbsp;ms at best so far.
-        </p>
-        {#if stateWord}
-          <p class="live">
-            <span class="dot" class:awake></span>
-            <span
-              >{stateWord} right now{savedLine
-                ? ` · ${savedLine} of RAM-time saved`
-                : ""}</span
+    <section>
+      <h2 class="h2" id="classes">
+        <a class="anchor" href="#classes">Three kinds of workload</a>
+      </h2>
+      <p class="body">
+        Everything Ember runs is declared as a Kubernetes custom resource in
+        one of three classes. The classes differ in exactly one dimension:
+        <b>how much of the machine the guest is allowed to touch</b>.
+      </p>
+      <dl class="classes">
+        <div class="class">
+          <dt>task<small>run once</small></dt>
+          <dd>
+            One-shot execution in a fresh or snapshot-restored VM.
+            <b>No network device at all</b>: the guest speaks only vsock to
+            the daemon, then the VM is destroyed.
+          </dd>
+        </div>
+        <div class="class">
+          <dt>session<small>sleep &amp; wake</small></dt>
+          <dd>
+            A stateful sandbox that survives across invocations. Idle
+            sessions are <b>banked</b> (snapshotted to disk) and
+            <b>relit</b> (restored) on the next call, with memory, processes
+            and open files intact. Banked snapshots are offloaded to S3; a
+            session survives the node it slept on.
+          </dd>
+        </div>
+        <div class="class">
+          <dt>serving<small>always answering</small></dt>
+          <dd>
+            A warm HTTP endpoint. The guest answers TCP over a tap NIC and a
+            per-node Envoy routes to it.
+            <b>The control plane programs that Envoy and stays off the
+              request path</b
+            >.
+          </dd>
+        </div>
+      </dl>
+    </section>
+
+    <section>
+      <h2 class="h2" id="uses">
+        <a class="anchor" href="#uses">What that lets you run</a>
+      </h2>
+      <p class="body">
+        All four run on this cluster today. The design assumption behind each
+        of them: <b>the guest is hostile</b>.
+      </p>
+      <dl class="classes">
+        <div class="class">
+          <dt>an agent's sandbox<small>session</small></dt>
+          <dd>
+            Each AI agent gets its own machine to make a mess in: shell,
+            filesystem, packages. Banked between turns, relit
+            mid-conversation, <b>destroyed without ceremony</b>.
+          </dd>
+        </div>
+        <div class="class">
+          <dt>a database nobody queries at 3am<small>session</small></dt>
+          <dd>
+            Postgres banked to disk the moment it goes idle, woken by the
+            next connection. <b>Zero compute while asleep.</b>
+            <a class="sig" href="/ember/postgres">see it live →</a>
+          </dd>
+        </div>
+        <div class="class">
+          <dt>a Kubernetes cluster on demand<small>composite</small></dt>
+          <dd>
+            A scratch cluster (control plane and workers) as one composite
+            workload. The first <code>kubectl</code> wakes
+            <b>the whole thing together</b>.
+          </dd>
+        </div>
+        <div class="class">
+          <dt>a public function, served warm<small>serving</small></dt>
+          <dd>
+            An image renderer answering real internet traffic from a warm
+            microVM, <b>rate-limited and quota-capped</b> so untrusted
+            traffic cannot spend more than it is allowed to.
+          </dd>
+        </div>
+      </dl>
+    </section>
+
+    <section>
+      <h2 class="h2" id="arch">
+        <a class="anchor" href="#arch">Architecture</a>
+      </h2>
+      <div class="arch">
+        <svg
+          viewBox="0 0 720 300"
+          role="img"
+          aria-label="Ember architecture: callers reach the Elixir control plane, which dispatches over gRPC to the Go node daemon driving Firecracker VMs; serving traffic bypasses the control plane entirely via a node-local Envoy programmed over xDS. Snapshots and boot images are banked to S3."
+        >
+          <defs>
+            <marker
+              id="arrow-ember"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
             >
-          </p>
-        {/if}
-        <span class="go" aria-hidden="true">wake it →</span>
-      </a>
+              <path class="mk mk-control" d="M1,1 L7,4 L1,7" />
+            </marker>
+            <marker
+              id="arrow-frost"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+            >
+              <path class="mk mk-data" d="M1,1 L7,4 L1,7" />
+            </marker>
+            <marker
+              id="arrow-amber"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+            >
+              <path class="mk mk-xds" d="M1,1 L7,4 L1,7" />
+            </marker>
+            <marker
+              id="arrow-slate"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+            >
+              <path class="mk mk-bank" d="M1,1 L7,4 L1,7" />
+            </marker>
+          </defs>
 
-      <a class="card" href="/ember/firecracker">
-        <span class="kicker">how it works</span>
-        <h2>Boot once, restore forever</h2>
-        <p>
-          The mechanism behind the demo: a Firecracker microVM is booted and
-          frozen once, then every request restores it in about 22&nbsp;ms.
-        </p>
-        <p class="live">a scroll-through of one real request</p>
-        <span class="go" aria-hidden="true">walk through it →</span>
-      </a>
-    </div>
+          <rect class="lane" x="150" y="18" width="230" height="264" rx="10" />
+          <text x="162" y="38" class="lane-label"
+            >CONTROL PLANE · ELIXIR/OTP</text
+          >
+          <rect class="lane" x="420" y="18" width="286" height="264" rx="10" />
+          <text x="432" y="38" class="lane-label">EACH NODE (×4)</text>
 
-    <section class="section">
-      <h2 class="section-kicker">why this exists</h2>
-      <p class="section-body">
-        Ember is a microVM orchestrator built from scratch for this cluster:
-        an Elixir control plane driving Firecracker microVMs through a Go node
-        daemon. RAM is the scarce resource on a single bare-metal node, and
-        most services here are idle most of the day. Ember snapshots an idle
-        service to disk and hands its CPU and memory back, so the cluster
-        runs more services than it could hold resident. The Postgres demo
-        above is one workload class of five, running in production.
+          <rect x="14" y="74" width="100" height="44" rx="8" class="box" />
+          <text x="64" y="93" text-anchor="middle" class="node-label"
+            >caller</text
+          >
+          <text x="64" y="107" text-anchor="middle" class="node-sub"
+            >task / session</text
+          >
+
+          <rect x="14" y="196" width="100" height="44" rx="8" class="box" />
+          <text x="64" y="215" text-anchor="middle" class="node-label"
+            >edge</text
+          >
+          <text x="64" y="229" text-anchor="middle" class="node-sub"
+            >HTTPRoute</text
+          >
+
+          <rect x="170" y="66" width="120" height="46" rx="8" class="box" />
+          <text x="230" y="86" text-anchor="middle" class="node-label"
+            >HTTP API</text
+          >
+          <text x="230" y="101" text-anchor="middle" class="node-sub"
+            >/v1/workloads</text
+          >
+
+          <rect x="170" y="130" width="120" height="42" rx="8" class="box" />
+          <text x="230" y="149" text-anchor="middle" class="node-label"
+            >op-log</text
+          >
+          <text x="230" y="163" text-anchor="middle" class="node-sub"
+            >Postgres</text
+          >
+
+          <rect x="170" y="192" width="120" height="42" rx="8" class="box" />
+          <text x="230" y="211" text-anchor="middle" class="node-label"
+            >xDS publisher</text
+          >
+          <text x="230" y="225" text-anchor="middle" class="node-sub"
+            >programs Envoy</text
+          >
+
+          <rect x="436" y="60" width="130" height="46" rx="8" class="box" />
+          <text x="501" y="80" text-anchor="middle" class="node-label"
+            >noded</text
+          >
+          <text x="501" y="95" text-anchor="middle" class="node-sub"
+            >Go daemon</text
+          >
+
+          <rect x="622" y="60" width="72" height="46" rx="8" class="box" />
+          <text x="658" y="80" text-anchor="middle" class="node-label">VM</text>
+          <text x="658" y="95" text-anchor="middle" class="node-sub"
+            >vsock only</text
+          >
+
+          <rect x="436" y="136" width="130" height="40" rx="8" class="box" />
+          <text x="501" y="154" text-anchor="middle" class="node-label">S3</text>
+          <text x="501" y="168" text-anchor="middle" class="node-sub"
+            >snapshots + images</text
+          >
+          <path class="path-bank" d="M494,106 L494,132" />
+          <path class="path-bank" d="M508,132 L508,106" />
+          <text x="548" y="124" text-anchor="middle" class="edge-label el-bank"
+            >bank</text
+          >
+
+          <rect x="436" y="196" width="130" height="46" rx="8" class="box" />
+          <text x="501" y="216" text-anchor="middle" class="node-label"
+            >node Envoy</text
+          >
+          <text x="501" y="231" text-anchor="middle" class="node-sub"
+            >exact-match</text
+          >
+
+          <rect x="622" y="196" width="72" height="46" rx="8" class="box" />
+          <text x="658" y="216" text-anchor="middle" class="node-label">VM</text>
+          <text x="658" y="231" text-anchor="middle" class="node-sub"
+            >tap NIC</text
+          >
+
+          <path class="path-control" d="M114,92 L166,90" />
+          <path class="path-control" d="M290,86 L432,83" />
+          <text
+            x="360"
+            y="75"
+            text-anchor="middle"
+            class="edge-label el-control">gRPC</text
+          >
+          <path class="path-control" d="M566,83 L618,83" />
+          <text
+            x="592"
+            y="76"
+            text-anchor="middle"
+            class="edge-label el-control">vsock</text
+          >
+
+          <path
+            class="path-data"
+            d="M114,222 C 140,222 138,262 170,262 L 350,262 C 400,262 396,222 432,222"
+          />
+          <text x="260" y="277" text-anchor="middle" class="edge-label el-data"
+            >bypasses the control plane</text
+          >
+          <path class="path-data" d="M566,219 L618,219" />
+          <text x="592" y="212" text-anchor="middle" class="edge-label el-data"
+            >DNAT</text
+          >
+
+          <path class="path-xds" d="M290,213 C 340,213 380,208 432,207" />
+          <text x="360" y="199" text-anchor="middle" class="edge-label el-xds"
+            >xDS</text
+          >
+        </svg>
+        <div class="legend">
+          <span
+            ><i class="swatch sw-control"></i> control path (tasks &amp;
+            sessions)</span
+          >
+          <span><i class="swatch sw-data"></i> serving data path</span>
+          <span
+            ><i class="swatch sw-xds"></i> configuration, ahead of time</span
+          >
+        </div>
+      </div>
+      <p class="arch-punch">
+        <b>Serving requests never touch the control plane.</b> The edge routes
+        to a node-local Envoy the control plane has already programmed, and
+        the kernel DNATs the connection into the VM. The control plane can
+        restart mid-request; serving traffic notices nothing.
       </p>
     </section>
 
-    <section class="section">
-      <h2 class="section-kicker">architecture</h2>
-      <div
-        class="arch"
-        role="img"
-        aria-label="Architecture: a warm request goes from the edge straight to the microVM. On a miss, the Elixir control plane tells the Go node daemon to restore the VM's snapshot, then the request proceeds."
+    <section>
+      <h2 class="h2" id="iso"><a class="anchor" href="#iso">Isolation</a></h2>
+      <div class="iso">
+        <p><b>No VM and no snapshot lineage ever crosses a principal.</b></p>
+        <p>
+          The task class has <b>no network device at all</b>. The guest can
+          reach exactly one thing: the daemon, over vsock.
+        </p>
+        <p>
+          <b>Quotas fail closed.</b> A principal with quota 0 is hard-stopped
+          at submit.
+        </p>
+        <p>
+          Metering rides the operation itself; <b
+            >a crash cannot lose usage</b
+          >. Every task is billed on success and on failure.
+        </p>
+        <p>
+          The one public route is scoped at <b>three independent layers</b>:
+          the edge pins host and path, Envoy exact-matches the internal
+          authority, and the guest shim reserves its own control prefix.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="h2" id="live-exhibits">
+        <a class="anchor" href="#live-exhibits">See it run</a>
+      </h2>
+      <p class="body">
+        Two exhibits run on the live system, through the same wake path
+        production uses.
+      </p>
+      <div class="doors">
+        <a class="door" href="/ember/postgres">
+          <span class="k">live demo</span>
+          <h3>A Postgres that sleeps</h3>
+          <p>
+            A real database banked to disk. Click connect, watch the
+            stopwatch: snapshot restore, disk to answering queries, best wake
+            78&nbsp;ms.
+          </p>
+          <span class="go">ember/postgres</span>
+        </a>
+        <a class="door" href="/ember/firecracker">
+          <span class="k">explainer</span>
+          <h3>How Firecracker resumes a VM</h3>
+          <p>
+            What a microVM snapshot actually contains, and how a full machine
+            (kernel, memory, device state) comes back in ~22&nbsp;ms.
+          </p>
+          <span class="go">ember/firecracker</span>
+        </a>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="h2" id="roadmap">
+        <a class="anchor" href="#roadmap">Roadmap</a>
+      </h2>
+      <div class="roadmap">
+        {#each MILESTONES as m (m.name)}
+          <div class="milestone">
+            <span class="cb" class:todo={!m.done}
+              >{m.done ? "[x]" : "[ ]"}</span
+            >
+            <span class="rname">{m.name}</span>
+            <p class="rdesc">{m.desc}</p>
+          </div>
+        {/each}
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span
+        >Elixir/OTP control plane · Go node daemon · Firecracker microVMs ·
+        running on this cluster</span
       >
-        <div class="lane">
-          <span class="anode">request</span>
-          <span class="arrow">→</span>
-          <span class="anode">edge</span>
-          <span class="arrow warm">→ warm →</span>
-          <span class="anode vm">microVM</span>
-        </div>
-        <p class="lane-note">
-          A warm request goes straight to the VM. The control plane is not on
-          the path.
-        </p>
-        <div class="lane">
-          <span class="arrow miss">on a miss:</span>
-          <span class="anode cp">control plane · Elixir</span>
-          <span class="arrow">→</span>
-          <span class="anode">node daemon · Go</span>
-          <span class="arrow">→ restore →</span>
-          <span class="anode vm">microVM</span>
-        </div>
-        <p class="lane-note">
-          A request for a sleeping service triggers one wake: restore the
-          snapshot, hand over the connection, step back off the path.
-        </p>
-      </div>
-    </section>
-
-    <section class="section">
-      <h2 class="section-kicker">principles</h2>
-      <div class="principles">
-        <div class="principle">
-          <h3>Idle is free</h3>
-          <p>
-            An idle service holds 0 vCPU and 0 MiB of RAM. Its only cost is
-            the snapshot on disk.
-          </p>
-        </div>
-        <div class="principle">
-          <h3>Restore, don't reboot</h3>
-          <p>
-            A wake resumes the VM from its snapshot with page cache, open
-            state, and a warmed-up process. Cold boot is the recovery path,
-            not the normal one.
-          </p>
-        </div>
-        <div class="principle">
-          <h3>Live numbers</h3>
-          <p>
-            Every figure on these pages is measured on this cluster, on the
-            request that renders it.
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <section class="section">
-      <h2 class="section-kicker">roadmap</h2>
-      <ol class="roadmap">
-        <li class="done">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Functions</span>
-          <span class="rm-desc"
-            >upload a zip, invoke over HTTP; every invocation runs in its own
-            hardware-isolated microVM</span
-          >
-        </li>
-        <li class="done">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Sessions</span>
-          <span class="rm-desc"
-            >agent sandboxes that suspend mid-conversation and resume with
-            their state intact</span
-          >
-        </li>
-        <li class="done">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Serving</span>
-          <span class="rm-desc"
-            >warm HTTP with the control plane off the hot path; a request only
-            meets it on a wake</span
-          >
-        </li>
-        <li class="done">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Stateful</span>
-          <span class="rm-desc"
-            >databases: data on a durable volume, warmth in the snapshot. The
-            demo above</span
-          >
-        </li>
-        <li class="done">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Composite</span>
-          <span class="rm-desc"
-            >groups that sleep as one unit: a three-node Kubernetes cluster
-            that wakes on kubectl connect</span
-          >
-        </li>
-        <li class="done">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Continuity</span>
-          <span class="rm-desc"
-            >a routine deploy or daemon restart never cold-boots a database
-            and never destroys sleeping state</span
-          >
-        </li>
-        <li class="done">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Agents</span>
-          <span class="rm-desc"
-            >the agent platform's long-lived threads run on Ember
-            sessions</span
-          >
-        </li>
-        <li class="next">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Packaging</span>
-          <span class="rm-desc"
-            >a standalone open-source release that boots on one machine</span
-          >
-        </li>
-      </ol>
-    </section>
-
+      <a href="/">jomcgi.dev</a>
+    </footer>
   </main>
 </div>
 
 <style>
   .ember-site {
     min-height: 100dvh;
-    display: flex;
-    flex-direction: column;
   }
 
+  /* ---------- topbar ---------- */
   .topbar {
     display: flex;
-    align-items: center;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
     padding: 14px 28px;
     font-family: var(--em-mono);
     font-size: 12.5px;
@@ -280,373 +593,646 @@
     outline-offset: 3px;
   }
 
-  .ember-page {
-    width: 100%;
-    max-width: 880px;
-    margin: 0 auto;
-    padding: 6vh 24px 48px;
-    display: flex;
-    flex-direction: column;
-    gap: 28px;
+  .saved {
+    color: var(--em-faint);
   }
 
+  .saved b {
+    color: var(--em-ember-deep);
+    font-weight: 600;
+  }
+
+  /* ---------- document frame ---------- */
+  .doc {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 24px 24px 90px;
+  }
+
+  /* ---------- masthead ---------- */
   .masthead {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    padding: 40px 0 8px;
   }
 
   .masthead h1 {
-    margin: 0;
-    font-size: clamp(40px, 6vw, 56px);
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    line-height: 1;
+    margin: 0 0 10px;
+    font-size: clamp(44px, 7vw, 76px);
+    font-weight: 850;
+    letter-spacing: -0.035em;
+    line-height: 0.95;
+    color: var(--em-ink);
   }
 
-  .ember-word {
-    background: linear-gradient(
-      100deg,
-      var(--em-ember-deep),
-      var(--em-ember) 55%,
-      var(--em-amber)
-    );
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
+  .masthead .word {
+    color: var(--em-ember);
   }
 
   .lede {
     margin: 0;
-    max-width: 56ch;
-    font-size: 16px;
+    font-size: clamp(17px, 2.1vw, 21px);
+    line-height: 1.5;
+    color: var(--em-ink);
+  }
+
+  .lede b {
+    font-weight: 650;
+  }
+
+  .live {
+    margin: 18px 0 0;
+    font-family: var(--em-mono);
+    font-size: 13px;
+    color: var(--em-muted);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: none;
+    transition:
+      background 0.6s ease,
+      box-shadow 0.6s ease;
+  }
+
+  .dot.cold {
+    background: radial-gradient(
+      circle at 35% 35%,
+      var(--eml-dot-cold-hi),
+      var(--em-frost) 70%,
+      var(--eml-dot-cold-lo)
+    );
+    box-shadow: 0 0 7px 1px rgba(61, 126, 194, 0.4);
+    animation: breathe-cold 4.2s ease-in-out infinite;
+  }
+
+  .dot.waking {
+    background: radial-gradient(
+      circle at 35% 35%,
+      var(--eml-dot-wake-hi),
+      var(--em-amber) 65%,
+      var(--em-ember)
+    );
+    box-shadow: 0 0 10px 2px rgba(242, 176, 78, 0.55);
+    animation: breathe-warm 0.9s ease-in-out infinite;
+  }
+
+  .dot.live {
+    background: radial-gradient(
+      circle at 35% 35%,
+      var(--eml-dot-warm-hi),
+      var(--em-ember) 65%,
+      var(--em-ember-deep)
+    );
+    box-shadow: 0 0 8px 1px rgba(224, 66, 26, 0.55);
+    animation: breathe-warm 3.2s ease-in-out infinite;
+  }
+
+  @keyframes breathe-cold {
+    0%,
+    100% {
+      box-shadow: 0 0 4px 0 rgba(61, 126, 194, 0.25);
+    }
+    50% {
+      box-shadow: 0 0 10px 2px rgba(61, 126, 194, 0.45);
+    }
+  }
+
+  @keyframes breathe-warm {
+    0%,
+    100% {
+      box-shadow: 0 0 5px 0 rgba(224, 66, 26, 0.35);
+    }
+    50% {
+      box-shadow: 0 0 12px 3px rgba(224, 66, 26, 0.6);
+    }
+  }
+
+  .live a {
+    color: var(--em-ember-deep);
+    text-decoration: none;
+    border-bottom: 1px solid var(--em-ember-dim);
+  }
+
+  .live a:hover {
+    border-bottom-color: var(--em-ember-deep);
+  }
+
+  .live a:focus-visible,
+  .sig:focus-visible,
+  .anchor:focus-visible,
+  .door:focus-visible,
+  .foot a:focus-visible {
+    outline: 2px solid var(--em-ember-deep);
+    outline-offset: 3px;
+  }
+
+  .stats {
+    margin: 16px 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 12px;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
     line-height: 1.6;
+    color: var(--em-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stats b {
+    color: var(--em-ember-deep);
+    font-weight: 600;
+  }
+
+  .stats .sep {
+    color: var(--eml-line-strong);
+  }
+
+  /* ---------- section headings, README style ---------- */
+  .h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin: 64px 0 18px;
+    font-size: 24px;
+    font-weight: 750;
+    letter-spacing: -0.015em;
+    color: var(--em-ink);
+  }
+
+  .h2::before {
+    content: "##";
+    font-family: var(--em-mono);
+    font-size: 16px;
+    font-weight: 400;
+    color: var(--em-ember);
+    transform: translateY(-2px);
+  }
+
+  .anchor {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .body {
+    margin: 0 0 14px;
+    font-size: 15.5px;
+    line-height: 1.55;
     color: var(--em-muted);
   }
 
-  .cards {
+  .body b {
+    color: var(--em-ink);
+    font-weight: 600;
+  }
+
+  .classes code,
+  .rdesc code {
+    font-family: var(--em-mono);
+    font-size: 0.88em;
+    background: var(--em-track);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--em-ink);
+  }
+
+  /* ---------- ruled definition lists (classes + use cases) ---------- */
+  .classes {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--eml-line-strong);
+    margin: 0;
+  }
+
+  .class {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 18px;
+    padding: 16px 4px;
+    border-bottom: 1px solid var(--em-line);
+  }
+
+  .class dt {
+    font-family: var(--em-mono);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.45;
+    color: var(--em-ember-deep);
+    margin: 0;
+  }
+
+  .class dt small {
+    display: block;
+    font-weight: 400;
+    color: var(--em-faint);
+    font-size: 11px;
+    margin-top: 5px;
+  }
+
+  .class dd {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--em-muted);
+  }
+
+  .class dd b {
+    color: var(--em-ink);
+    font-weight: 600;
+  }
+
+  .sig {
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    color: var(--em-ember-deep);
+    text-decoration: none;
+    border-bottom: 1px solid var(--em-ember-dim);
+    margin-left: 6px;
+    white-space: nowrap;
+  }
+
+  .sig:hover {
+    border-bottom-color: var(--em-ember-deep);
+  }
+
+  /* ---------- architecture ---------- */
+  .arch {
+    background: var(--eml-panel-warm);
+    border: 1px solid var(--em-line);
+    border-radius: 12px;
+    box-shadow: var(--em-shadow-soft);
+    padding: 22px 22px 16px;
+    overflow-x: auto;
+  }
+
+  .arch svg {
+    display: block;
+    min-width: 620px;
+    width: 100%;
+    height: auto;
+  }
+
+  .arch .lane {
+    fill: none;
+    stroke: var(--eml-line-strong);
+    stroke-dasharray: 3 4;
+  }
+
+  .arch .box {
+    fill: var(--em-ground);
+    stroke: var(--eml-line-strong);
+  }
+
+  .arch .lane-label {
+    font-family: var(--em-mono);
+    font-size: 11px;
+    fill: var(--em-faint);
+    letter-spacing: 0.06em;
+  }
+
+  .arch .node-label {
+    font-family: var(--em-sans);
+    font-size: 13px;
+    font-weight: 600;
+    fill: var(--em-ink);
+  }
+
+  .arch .node-sub {
+    font-family: var(--em-mono);
+    font-size: 10.5px;
+    fill: var(--em-faint);
+  }
+
+  .arch .mk {
+    fill: none;
+    stroke-width: 1.6;
+  }
+
+  .arch .mk-control {
+    stroke: var(--em-ember);
+  }
+
+  .arch .mk-data {
+    stroke: var(--em-frost);
+  }
+
+  .arch .mk-xds {
+    stroke: var(--em-amber);
+  }
+
+  .arch .mk-bank {
+    stroke: var(--eml-line-strong);
+  }
+
+  .arch .path-control {
+    stroke: var(--em-ember);
+    stroke-width: 2;
+    fill: none;
+    marker-end: url(#arrow-ember);
+  }
+
+  .arch .path-data {
+    stroke: var(--em-frost);
+    stroke-width: 2;
+    fill: none;
+    marker-end: url(#arrow-frost);
+  }
+
+  .arch .path-xds {
+    stroke: var(--em-amber);
+    stroke-width: 1.6;
+    stroke-dasharray: 5 4;
+    fill: none;
+    marker-end: url(#arrow-amber);
+  }
+
+  .arch .path-bank {
+    stroke: var(--eml-line-strong);
+    stroke-width: 1.6;
+    stroke-dasharray: 4 4;
+    fill: none;
+    marker-end: url(#arrow-slate);
+  }
+
+  .arch .edge-label {
+    font-family: var(--em-mono);
+    font-size: 10.5px;
+  }
+
+  .arch .el-control {
+    fill: var(--em-ember-deep);
+  }
+
+  .arch .el-data {
+    fill: var(--em-frost);
+  }
+
+  .arch .el-xds {
+    fill: var(--eml-amber-deep);
+  }
+
+  .arch .el-bank {
+    fill: var(--em-faint);
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin-top: 12px;
+    font-family: var(--em-mono);
+    font-size: 11.5px;
+    color: var(--em-muted);
+  }
+
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .swatch {
+    width: 18px;
+    height: 0;
+    border-top: 2px solid;
+    display: inline-block;
+  }
+
+  .sw-control {
+    border-color: var(--em-ember);
+  }
+
+  .sw-data {
+    border-color: var(--em-frost);
+  }
+
+  .sw-xds {
+    border-color: var(--em-amber);
+    border-top-style: dashed;
+  }
+
+  .arch-punch {
+    margin: 14px 2px 0;
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--em-muted);
+  }
+
+  .arch-punch b {
+    color: var(--em-ink);
+  }
+
+  /* ---------- isolation ---------- */
+  .iso {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--eml-line-strong);
+  }
+
+  .iso p {
+    margin: 0;
+    padding: 13px 4px;
+    border-bottom: 1px solid var(--em-line);
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--em-muted);
+  }
+
+  .iso p b {
+    color: var(--em-ink);
+    font-weight: 650;
+  }
+
+  /* ---------- doors ---------- */
+  .doors {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 16px;
   }
 
-  .card {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 22px 22px 20px;
-    background: var(--em-panel);
+  .door {
+    display: block;
+    text-decoration: none;
+    background: var(--eml-panel-warm);
     border: 1px solid var(--em-line);
     border-radius: 12px;
+    padding: 20px 22px 18px;
     box-shadow: var(--em-shadow-soft);
-    text-decoration: none;
-    color: var(--em-ink);
     transition:
-      border-color 200ms ease,
-      box-shadow 200ms ease,
-      transform 200ms ease;
+      border-color 0.18s ease,
+      box-shadow 0.18s ease,
+      transform 0.18s ease;
   }
 
-  .card:hover {
+  .door:hover {
     border-color: var(--em-ember-dim);
     box-shadow: var(--em-shadow);
     transform: translateY(-2px);
   }
 
-  .card:focus-visible {
-    outline: 2px solid var(--em-ember-deep);
-    outline-offset: 3px;
-  }
-
-  .kicker {
+  .door .k {
     font-family: var(--em-mono);
-    font-size: 11.5px;
-    text-transform: uppercase;
+    font-size: 11px;
     letter-spacing: 0.08em;
-    color: var(--em-ember-deep);
+    color: var(--em-faint);
+    text-transform: uppercase;
   }
 
-  .card h2 {
-    margin: 0;
-    font-size: 20px;
+  .door h3 {
+    margin: 6px 0;
+    font-size: 19px;
     font-weight: 700;
+    color: var(--em-ink);
     letter-spacing: -0.01em;
   }
 
-  .card p {
+  .door:hover h3 {
+    color: var(--em-ember-deep);
+  }
+
+  .door p {
     margin: 0;
     font-size: 14px;
-    line-height: 1.55;
-    color: var(--em-muted);
-  }
-
-  .live {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: auto;
-    padding-top: 10px;
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    color: var(--em-faint);
-  }
-
-  .dot {
-    flex: none;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--em-frost);
-    animation: breathe 3.2s ease-in-out infinite;
-  }
-
-  .dot.awake {
-    background: var(--em-ember);
-    animation-duration: 1.4s;
-  }
-
-  @keyframes breathe {
-    0%,
-    100% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    50% {
-      opacity: 0.45;
-      transform: scale(0.8);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .dot {
-      animation: none;
-    }
-    .card,
-    .card:hover {
-      transition: none;
-      transform: none;
-    }
-  }
-
-  .go {
-    position: absolute;
-    right: 20px;
-    bottom: 18px;
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    color: var(--em-ember-deep);
-    opacity: 0;
-    transform: translateX(-4px);
-    transition:
-      opacity 200ms ease,
-      transform 200ms ease;
-  }
-
-  .card:hover .go,
-  .card:focus-visible .go {
-    opacity: 1;
-    transform: translateX(0);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .go {
-      transition: none;
-      transform: none;
-    }
-  }
-
-  .section {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding-top: 8px;
-    border-top: 1px solid var(--em-line-soft);
-  }
-
-  .section-kicker {
-    margin: 0;
-    font-family: var(--em-mono);
-    font-size: 11.5px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--em-ember-deep);
-  }
-
-  .section-body {
-    margin: 0;
-    max-width: 64ch;
-    font-size: 14.5px;
-    line-height: 1.6;
-    color: var(--em-muted);
-  }
-
-  .arch {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .lane {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-  }
-
-  .anode {
-    padding: 5px 10px;
-    background: var(--em-panel);
-    border: 1px solid var(--em-line);
-    border-radius: 6px;
-    color: var(--em-ink);
-    white-space: nowrap;
-  }
-
-  .anode.vm {
-    border-color: var(--em-ember-dim);
-    box-shadow: var(--em-shadow-soft);
-  }
-
-  .anode.cp {
-    border-color: var(--em-frost-dim);
-  }
-
-  .arrow {
-    color: var(--em-faint);
-    white-space: nowrap;
-  }
-
-  .arrow.warm {
-    color: var(--em-ember-deep);
-  }
-
-  .arrow.miss {
-    color: var(--em-frost);
-  }
-
-  .lane-note {
-    margin: 0 0 8px;
-    font-size: 13px;
     line-height: 1.5;
     color: var(--em-muted);
-    max-width: 64ch;
   }
 
-  .principles {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
+  .door .go {
+    display: inline-block;
+    margin-top: 12px;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    color: var(--em-ember-deep);
   }
 
-  .principle {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+  .door .go::after {
+    content: " →";
+    transition: transform 0.18s ease;
+    display: inline-block;
   }
 
-  .principle h3 {
-    margin: 0;
-    font-size: 14.5px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    color: var(--em-ink);
+  .door:hover .go::after {
+    transform: translateX(4px);
   }
 
-  .principle p {
-    margin: 0;
-    font-size: 13.5px;
-    line-height: 1.55;
-    color: var(--em-muted);
-  }
-
+  /* ---------- roadmap ---------- */
   .roadmap {
-    margin: 0;
-    padding: 0;
-    list-style: none;
     display: flex;
     flex-direction: column;
   }
 
-  .roadmap li {
+  .milestone {
     display: grid;
-    grid-template-columns: 14px 170px 1fr;
+    grid-template-columns: 26px 110px minmax(0, 1fr);
+    gap: 14px;
     align-items: baseline;
-    gap: 12px;
-    padding: 8px 0;
+    padding: 11px 4px;
+    border-bottom: 1px solid var(--em-line);
   }
 
-  .roadmap li + li {
-    border-top: 1px solid var(--em-line-soft);
+  .milestone:first-child {
+    border-top: 1px solid var(--eml-line-strong);
   }
 
-  .mark {
-    align-self: center;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
-
-  .done .mark {
-    background: var(--em-ember);
-  }
-
-  .next .mark {
-    background: transparent;
-    border: 1.5px solid var(--em-faint);
-  }
-
-  .rm-name {
+  .cb {
+    font-family: var(--em-mono);
     font-size: 14px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
+    line-height: 1.4;
+    color: var(--em-ember-deep);
+    font-weight: 600;
+  }
+
+  .cb.todo {
+    color: var(--em-faint);
+    font-weight: 400;
+  }
+
+  .rname {
+    font-family: var(--em-mono);
+    font-size: 13px;
     color: var(--em-ink);
+    font-weight: 600;
   }
 
-  .next .rm-name {
-    color: var(--em-muted);
-  }
-
-  .rm-desc {
-    font-size: 13.5px;
+  .rdesc {
+    font-size: 14.5px;
     line-height: 1.5;
     color: var(--em-muted);
+    margin: 0;
   }
 
-  @media (max-width: 720px) {
+  /* ---------- footer ---------- */
+  .foot {
+    margin-top: 70px;
+    padding-top: 18px;
+    border-top: 2px solid var(--em-ember-deep);
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    color: var(--em-faint);
+  }
+
+  .foot a {
+    color: var(--em-muted);
+    text-decoration: none;
+    border-bottom: 1px solid var(--eml-line-strong);
+  }
+
+  .foot a:hover {
+    color: var(--em-ember-deep);
+    border-bottom-color: var(--em-ember-dim);
+  }
+
+  /* ---------- responsive ---------- */
+  @media (max-width: 900px) {
     .topbar {
       padding: 12px 16px;
     }
 
-    .ember-page {
-      padding: 4vh 16px 40px;
-      gap: 22px;
+    .doc {
+      padding: 16px 16px 60px;
     }
+  }
 
-    .cards {
+  @media (max-width: 700px) {
+    .doors {
       grid-template-columns: 1fr;
     }
+  }
 
-    .go {
-      opacity: 1;
-      transform: none;
-    }
-
-    .principles {
+  @media (max-width: 640px) {
+    .class {
       grid-template-columns: 1fr;
-      gap: 14px;
+      gap: 4px;
     }
 
-    .roadmap li {
-      grid-template-columns: 14px 1fr;
-      row-gap: 2px;
+    .milestone {
+      grid-template-columns: 26px minmax(0, 1fr);
     }
 
-    .rm-desc {
+    .milestone .rdesc {
       grid-column: 2;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot,
+    .door,
+    .door .go::after {
+      transition: none;
+    }
+
+    .dot.cold,
+    .dot.waking,
+    .dot.live {
+      animation: none;
     }
   }
 </style>
