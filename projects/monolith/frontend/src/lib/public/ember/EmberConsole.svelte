@@ -395,7 +395,7 @@
       label: "Awake",
       tone: "awake",
       sentence:
-        "Awake. Queries answer instantly; it falls back asleep about a second after the last one.",
+        "Answering in single-digit milliseconds. Asleep again about a second after the last query.",
     },
     banking: {
       label: "Falling asleep",
@@ -403,6 +403,7 @@
       sentence: "Saving itself to disk...",
     },
     banked: { label: "Asleep", tone: "asleep", sentence: "" },
+    checkpointed: { label: "Asleep", tone: "asleep", sentence: "" },
     relighting: {
       label: "Waking (from snapshot)",
       tone: "waking",
@@ -538,7 +539,11 @@
       : "some",
   );
 
-  let asleepWake = $derived(tiers.relight != null ? ms(tiers.relight) : "under 100 ms");
+  // Full phrase, not a bare value: composing "in about" with the "under
+  // 100 ms" fallback used to render "in about under 100 ms".
+  let asleepWakePhrase = $derived(
+    tiers.relight != null ? `in about ${ms(tiers.relight)}` : "in under a second",
+  );
 
   // Dozing narration while serving-but-idle: an approach, not a countdown.
   let dozeHint = $derived(
@@ -621,11 +626,10 @@
         <span class="state-dot" aria-hidden="true"></span>
         <span class="state-label">{stateView.label}</span>
       </div>
-      {#if stateView.tone === "asleep" && status?.state === "banked"}
+      {#if stateView.tone === "asleep" && (status?.state === "banked" || status?.state === "checkpointed")}
         <p class="state-sentence">
-          <strong>Asleep, costing nothing.</strong> 0 CPU, 0 memory. Your {asleepMib}
-          of data is safe on disk. The next query wakes the database in about
-          {asleepWake}.
+          <strong>Asleep, costing nothing.</strong> 0 CPU, 0 memory, {asleepMib}
+          safe on disk. The next query wakes it {asleepWakePhrase}.
         </p>
       {:else}
         <p class="state-sentence">{dozeHint ?? othersHint ?? stateView.sentence}</p>
@@ -855,9 +859,9 @@
      this component in .ember-site, which provides every var(--em-*) below. */
   .pg-panel {
     display: grid;
-    grid-template-columns: 380px 1fr;
+    grid-template-columns: 340px 1fr;
     align-items: start;
-    gap: 20px;
+    gap: 16px;
     max-width: 1100px;
   }
 
@@ -866,15 +870,19 @@
       grid-template-columns: 1fr;
     }
 
-    .right-col {
-      order: -1;
+    .state-block {
+      min-height: 0;
+    }
+
+    .result-card {
+      min-height: 200px;
     }
   }
 
   .left-col {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
   }
 
   .right-col {
@@ -889,8 +897,8 @@
     border: 1px solid var(--em-line);
     border-radius: 14px;
     box-shadow: var(--em-shadow-soft);
-    padding: 18px 20px;
-    min-height: 212px;
+    padding: 14px 16px;
+    min-height: 168px;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -1037,7 +1045,7 @@
     border: 1px solid var(--em-line);
     border-radius: 14px;
     box-shadow: var(--em-shadow-soft);
-    padding: 14px 18px;
+    padding: 12px 16px;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -1113,7 +1121,7 @@
     border: 1px solid var(--em-line);
     border-radius: 14px;
     box-shadow: var(--em-shadow-soft);
-    padding: 18px 20px;
+    padding: 14px 16px;
   }
 
   .last-run-numbers {
@@ -1128,7 +1136,7 @@
 
   .last-run-value {
     font-family: var(--em-mono);
-    font-size: 30px;
+    font-size: 26px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
@@ -1174,7 +1182,7 @@
     border: 1px solid var(--em-line);
     border-radius: 14px;
     box-shadow: var(--em-shadow-soft);
-    padding: 14px 18px;
+    padding: 12px 16px;
     display: flex;
     align-items: center;
     gap: 14px;
@@ -1246,8 +1254,8 @@
     border: 1px solid var(--em-line);
     border-radius: 14px;
     box-shadow: var(--em-shadow);
-    padding: 18px 20px;
-    min-height: 420px;
+    padding: 14px 16px;
+    min-height: 300px;
   }
 
   .result-view {

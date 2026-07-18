@@ -27,6 +27,7 @@
 
   const STATE_WORD = {
     banked: "Asleep",
+    checkpointed: "Asleep",
     banking: "Falling asleep",
     relighting: "Waking",
     cold_booting: "Waking",
@@ -87,14 +88,29 @@
 
   let flickerTickAt = 0;
 
-  function targetFor(now) {
-    if (vmState === "banked" || vmState == null) return 0;
-    if (vmState === "serving") return 1;
-    if (WAKING.has(vmState)) {
+  // Optimistic wake: the moment a query is in flight against a cold VM, treat
+  // the state as waking instead of waiting for the control plane -> status
+  // cache -> poll chain to report it (~1-2s of dead air after the click). The
+  // click IS the wake signal; if the run is refused (rate limiter, busy), the
+  // console flips running off, the effective state falls back to banked, and
+  // the eased warmth drifts back down without a snap.
+  const COLD_STATES = new Set(["banked", "checkpointed"]);
+
+  function effectiveState() {
+    if (running && (vmState == null || COLD_STATES.has(vmState))) {
+      return "relighting";
+    }
+    return vmState;
+  }
+
+  function targetFor(now, state) {
+    if (state === "banked" || state === "checkpointed" || state == null) return 0;
+    if (state === "serving") return 1;
+    if (WAKING.has(state)) {
       const frac = Math.min(1, (now - sweepStartAt) / WAKE_SWEEP_MS);
       return sweepFromW + (1 - sweepFromW) * frac;
     }
-    if (vmState === "banking") {
+    if (state === "banking") {
       const frac = Math.min(1, (now - sweepStartAt) / BANK_SWEEP_MS);
       return sweepFromW * (1 - frac);
     }
@@ -105,15 +121,17 @@
     const dt = lastFrameAt ? now - lastFrameAt : 16;
     lastFrameAt = now;
 
-    if (vmState !== prevFrameState) {
-      // Entered a new state this frame: (re)start the sweep clock from the
-      // current eased warmth, so a mid-sweep state flip (e.g. banking
-      // interrupted by a new request) never snaps.
-      prevFrameState = vmState;
+    const state = effectiveState();
+    if (state !== prevFrameState) {
+      // Entered a new (effective) state this frame: (re)start the sweep clock
+      // from the current eased warmth, so a mid-sweep state flip (e.g. banking
+      // interrupted by a new request, or an optimistic wake refused) never
+      // snaps.
+      prevFrameState = state;
       sweepStartAt = now;
       sweepFromW = w;
     }
-    const target = targetFor(now);
+    const target = targetFor(now, state);
     const k = 1 - Math.exp(-EASE_PER_MS * dt);
     w = w + (target - w) * k;
 
@@ -180,8 +198,16 @@
     };
   });
 
+  // Reactive mirror of effectiveState() for the derived display bits below
+  // (the rAF loop reads effectiveState() directly each frame instead).
+  let optimisticWaking = $derived(
+    running && (vmState == null || COLD_STATES.has(vmState)),
+  );
+
   // ── Reduced-motion static fallback: two-state cell fill, no rAF loop ──
-  let staticHot = $derived(vmState === "serving" || WAKING.has(vmState ?? ""));
+  let staticHot = $derived(
+    vmState === "serving" || WAKING.has(vmState ?? "") || optimisticWaking,
+  );
 
   function ms(v) {
     if (v == null) return "–";
@@ -213,10 +239,16 @@
     return `${humanize(gbh)} GB·h`;
   }
 
-  let stateWord = $derived(STATE_WORD[vmState ?? ""] ?? "Asleep");
+  let stateWord = $derived(
+    optimisticWaking ? "Waking" : (STATE_WORD[vmState ?? ""] ?? "Asleep"),
+  );
 
   let heroKind = $derived(
-    vmState === "serving" ? "serving" : vmState != null && WAKING.has(vmState) ? "waking" : "cold",
+    vmState === "serving"
+      ? "serving"
+      : optimisticWaking || (vmState != null && WAKING.has(vmState))
+        ? "waking"
+        : "cold",
   );
 </script>
 
@@ -236,8 +268,8 @@
         <span class="es-hero-value">{ms(running ? stopwatchMs : null)}</span>
         <span class="es-hero-caption">waking up</span>
       {:else}
-        <span class="es-hero-value">answering</span>
-        <span class="es-hero-caption">answering in single-digit milliseconds</span>
+        <span class="es-hero-value">awake</span>
+        <span class="es-hero-caption">single-digit millisecond answers</span>
       {/if}
     </div>
   </div>
@@ -247,7 +279,7 @@
   .ember-stage {
     position: relative;
     width: 100%;
-    height: 280px;
+    height: clamp(150px, 24vh, 230px);
     border-radius: 14px;
     border: 1px solid var(--es-border);
     background: var(--es-panel);
@@ -352,7 +384,7 @@
 
   .es-hero-value {
     font-family: var(--em-mono, ui-monospace, monospace);
-    font-size: clamp(28px, 4vw, 44px);
+    font-size: clamp(24px, 3.4vw, 38px);
     letter-spacing: -0.02em;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
