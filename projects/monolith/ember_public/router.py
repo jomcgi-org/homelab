@@ -48,7 +48,7 @@ class PostgresSessionRequest(BaseModel):
 
 
 @router.get("/status")
-async def postgres_status() -> dict:
+async def postgres_status(request: Request) -> dict:
     """The demo-postgres lifecycle snapshot driving the sleep indicator.
 
     A management-API read only: the frontend polls this sub-second while the
@@ -58,19 +58,35 @@ async def postgres_status() -> dict:
 
     Reads through the 500ms single-flight cache (core.cached_demo_pg_status)
     so a burst of concurrent pollers shares one control-plane read.
+
+    The optional ``p`` query param is the caller's ephemeral per-page client id
+    (not the insert session cookie, which the status proxy never forwards). We
+    stamp it into the presence tracker and return ``present``, the live count
+    of visitors watching, so the shared VM's warmth reads as a crowd rather
+    than a ghost wake. Presence is computed per-request (outside the status
+    cache), so concurrent pollers each record their own id.
     """
     if not core.EMBERVM_URL or not core.demo_pg_dsn():
         return {"configured": False}
+    client_id = request.query_params.get("p", "")
+    if client_id:
+        core.record_presence(client_id)
+    present = core.present_count()
     try:
         status = await core.cached_demo_pg_status()
     except Exception as exc:  # noqa: BLE001 - poll errors are data, not faults
         logger.warning("demo-postgres status poll failed: %s", exc)
-        return {"configured": True, "error": str(exc)}
+        return {"configured": True, "present": present, "error": str(exc)}
     shaped = core.shape_pg_status(status)
     total = await core.record_demo_pg_savings(shaped["state"], shaped["generation"])
     if total is not None:
-        return {"configured": True, **shaped, "total_saved_mib_s": total}
-    return {"configured": True, **shaped}
+        return {
+            "configured": True,
+            "present": present,
+            **shaped,
+            "total_saved_mib_s": total,
+        }
+    return {"configured": True, "present": present, **shaped}
 
 
 @router.post("/query")
