@@ -59,9 +59,8 @@
       <h1><span class="ember-word">Ember</span></h1>
       <p class="lede">
         Services that scale to zero. When nobody is using one, the whole
-        microVM is frozen to disk: 0 vCPU, 0 MiB of RAM. The first request
-        restores it from the snapshot in tens of milliseconds, warm state and
-        all.
+        microVM is snapshotted to disk: 0 vCPU, 0 MiB of RAM. The next request
+        restores it, memory intact, in tens of milliseconds.
       </p>
     </header>
 
@@ -70,8 +69,8 @@
         <span class="kicker">live demo</span>
         <h2>Ember Postgres</h2>
         <p>
-          A real Postgres that sleeps between visitors. Run a query and watch
-          it wake: the fastest relight measured so far is 78&nbsp;ms.
+          A real Postgres that sleeps between visitors. Run a query against
+          the sleeping database and time the wake: 78&nbsp;ms at best so far.
         </p>
         {#if stateWord}
           <p class="live">
@@ -94,45 +93,79 @@
           frozen once, then every request restores it in about 22&nbsp;ms.
         </p>
         <p class="live">a scroll-through of one real request</p>
-        <span class="go" aria-hidden="true">see the freeze →</span>
+        <span class="go" aria-hidden="true">walk through it →</span>
       </a>
     </div>
 
     <section class="section">
       <h2 class="section-kicker">why this exists</h2>
       <p class="section-body">
-        A homelab has one machine's worth of RAM and a dozen ideas' worth of
-        services. The usual answer is to run fewer things. Ember is the other
-        answer: an orchestrator built from scratch for this cluster, an Elixir
-        control plane driving Firecracker microVMs through a Go node daemon,
-        where anything idle is frozen whole to disk. The Postgres above is not
-        a mockup of the idea; it is one rung of the roadmap, live.
+        Ember is a microVM orchestrator built from scratch for this cluster:
+        an Elixir control plane driving Firecracker microVMs through a Go node
+        daemon. RAM is the scarce resource on a single bare-metal node, and
+        most services here are idle most of the day. Ember snapshots an idle
+        service to disk and hands its CPU and memory back, so the cluster
+        runs more services than it could hold resident. The Postgres demo
+        above is one workload class of five, running in production.
       </p>
+    </section>
+
+    <section class="section">
+      <h2 class="section-kicker">architecture</h2>
+      <div
+        class="arch"
+        role="img"
+        aria-label="Architecture: a warm request goes from the edge straight to the microVM. On a miss, the Elixir control plane tells the Go node daemon to restore the VM's snapshot, then the request proceeds."
+      >
+        <div class="lane">
+          <span class="anode">request</span>
+          <span class="arrow">→</span>
+          <span class="anode">edge</span>
+          <span class="arrow warm">→ warm →</span>
+          <span class="anode vm">microVM</span>
+        </div>
+        <p class="lane-note">
+          A warm request goes straight to the VM. The control plane is not on
+          the path.
+        </p>
+        <div class="lane">
+          <span class="arrow miss">on a miss:</span>
+          <span class="anode cp">control plane · Elixir</span>
+          <span class="arrow">→</span>
+          <span class="anode">node daemon · Go</span>
+          <span class="arrow">→ restore →</span>
+          <span class="anode vm">microVM</span>
+        </div>
+        <p class="lane-note">
+          A request for a sleeping service triggers one wake: restore the
+          snapshot, hand over the connection, step back off the path.
+        </p>
+      </div>
     </section>
 
     <section class="section">
       <h2 class="section-kicker">principles</h2>
       <div class="principles">
         <div class="principle">
-          <h3>Idle costs nothing</h3>
+          <h3>Idle is free</h3>
           <p>
-            Not running means 0 vCPU and 0 MiB of RAM, not a small reservation
-            kept warm just in case.
+            An idle service holds 0 vCPU and 0 MiB of RAM. Its only cost is
+            the snapshot on disk.
           </p>
         </div>
         <div class="principle">
-          <h3>Warmth survives sleep</h3>
+          <h3>Restore, don't reboot</h3>
           <p>
-            A wake restores the whole VM from its snapshot: page cache, open
-            state, warmed-up process. A cold boot is the fallback, not the
-            design.
+            A wake resumes the VM from its snapshot with page cache, open
+            state, and a warmed-up process. Cold boot is the recovery path,
+            not the normal one.
           </p>
         </div>
         <div class="principle">
-          <h3>Measured, not claimed</h3>
+          <h3>Live numbers</h3>
           <p>
-            Every number on these pages is a live reading from the cluster
-            serving them.
+            Every figure on these pages is measured on this cluster, on the
+            request that renders it.
           </p>
         </div>
       </div>
@@ -145,15 +178,16 @@
           <span class="mark" aria-hidden="true"></span>
           <span class="rm-name">Functions</span>
           <span class="rm-desc"
-            >zip a handler, get a URL; each function is its own microVM</span
+            >upload a zip, invoke over HTTP; every invocation runs in its own
+            hardware-isolated microVM</span
           >
         </li>
         <li class="done">
           <span class="mark" aria-hidden="true"></span>
           <span class="rm-name">Sessions</span>
           <span class="rm-desc"
-            >agent sandboxes that sleep mid-conversation and resume with their
-            state</span
+            >agent sandboxes that suspend mid-conversation and resume with
+            their state intact</span
           >
         </li>
         <li class="done">
@@ -180,10 +214,28 @@
             that wakes on kubectl connect</span
           >
         </li>
+        <li class="done">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="rm-name">Continuity</span>
+          <span class="rm-desc"
+            >a routine deploy or daemon restart never cold-boots a database
+            and never destroys sleeping state</span
+          >
+        </li>
+        <li class="done">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="rm-name">Agents</span>
+          <span class="rm-desc"
+            >the agent platform's long-lived threads run on Ember
+            sessions</span
+          >
+        </li>
         <li class="next">
           <span class="mark" aria-hidden="true"></span>
-          <span class="rm-name">Virtual control planes</span>
-          <span class="rm-desc">many tenants over one execution log</span>
+          <span class="rm-name">Packaging</span>
+          <span class="rm-desc"
+            >a standalone open-source release that boots on one machine</span
+          >
         </li>
       </ol>
     </section>
@@ -428,6 +480,60 @@
     font-size: 14.5px;
     line-height: 1.6;
     color: var(--em-muted);
+  }
+
+  .arch {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .lane {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+  }
+
+  .anode {
+    padding: 5px 10px;
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 6px;
+    color: var(--em-ink);
+    white-space: nowrap;
+  }
+
+  .anode.vm {
+    border-color: var(--em-ember-dim);
+    box-shadow: var(--em-shadow-soft);
+  }
+
+  .anode.cp {
+    border-color: var(--em-frost-dim);
+  }
+
+  .arrow {
+    color: var(--em-faint);
+    white-space: nowrap;
+  }
+
+  .arrow.warm {
+    color: var(--em-ember-deep);
+  }
+
+  .arrow.miss {
+    color: var(--em-frost);
+  }
+
+  .lane-note {
+    margin: 0 0 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--em-muted);
+    max-width: 64ch;
   }
 
   .principles {
