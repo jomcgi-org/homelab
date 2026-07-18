@@ -255,8 +255,17 @@
       } else {
         stopSavingsTimer();
       }
+      // Own-wake grace window: a warm run finishes in tens of ms, so the
+      // asleep -> waking transition it caused usually lands on a poll AFTER
+      // running has already flipped false. Without the window, the visitor's
+      // own wake gets blamed on "another visitor".
       const wasAsleep = prevState == null || prevState === "banked";
-      if (wasAsleep && WAKING_STATES.has(body.state) && !running) {
+      if (
+        wasAsleep &&
+        WAKING_STATES.has(body.state) &&
+        !running &&
+        Date.now() - lastOwnActivityAt > 4000
+      ) {
         othersWoke = true;
       }
       prevState = body.state;
@@ -405,17 +414,17 @@
     banked: { label: "Asleep", tone: "asleep", sentence: "" },
     checkpointed: { label: "Asleep", tone: "asleep", sentence: "" },
     relighting: {
-      label: "Waking (from snapshot)",
+      label: "Waking",
       tone: "waking",
-      sentence: "Waking up...",
+      sentence: "Waking from a snapshot...",
     },
     cold_booting: {
-      label: "Waking (cold start)",
+      label: "Waking",
       tone: "waking",
-      sentence: "Waking up...",
+      sentence: "Cold booting...",
     },
     starting: {
-      label: "Starting",
+      label: "Waking",
       tone: "waking",
       sentence: "Waking up...",
     },
@@ -539,10 +548,18 @@
       : "some",
   );
 
-  // Full phrase, not a bare value: composing "in about" with the "under
-  // 100 ms" fallback used to render "in about under 100 ms".
-  let asleepWakePhrase = $derived(
-    tiers.relight != null ? `in about ${ms(tiers.relight)}` : "in under a second",
+  // The card's headline stat: the wake promise. Best measured relight this
+  // session, else the honest ceiling.
+  let wakeHeadline = $derived(tiers.relight != null ? `~${ms(tiers.relight)}` : "<1 s");
+
+  // Nerd stats live behind the info glyph, not in the card: less is more.
+  let finePrint = $derived(
+    [
+      `generation ${status?.generation ?? "-"}`,
+      `snapshot pair ${status?.pair_valid == null ? "-" : status.pair_valid ? "valid" : "invalid"}`,
+      `data volume ${asleepMib === "some" ? "-" : asleepMib}`,
+      "savings assume the 512 MiB VM stayed running",
+    ].join(" · "),
   );
 
   // Dozing narration while serving-but-idle: an approach, not a countdown.
@@ -552,17 +569,12 @@
       : null,
   );
 
-  // Who-woke-it narration.
-  let othersHint = $derived(
-    othersWoke
-      ? "Another visitor just woke it."
-      : status?.state === "serving" &&
-          !running &&
-          Date.now() - lastOwnActivityAt > 5000 &&
-          idleSeconds < 1.5
-        ? "Another visitor is using it right now."
-        : null,
-  );
+  // Who-woke-it narration. Only the observed asleep -> waking transition
+  // (othersWoke, with its own-wake grace window) earns the line; the old
+  // "another visitor is using it right now" idle-time inference misfired on
+  // the visitor's own activity (status-cache lag kept last_active_at looking
+  // fresh) and flickered against the doze hint, so it is gone.
+  let othersHint = $derived(othersWoke ? "Another visitor just woke it." : null);
 
   // Turnstile widget lifecycle: rendered lazily above the controls whenever a
   // site key is configured and no session exists yet. Mirrors
@@ -628,35 +640,26 @@
       </div>
       {#if stateView.tone === "asleep" && (status?.state === "banked" || status?.state === "checkpointed")}
         <p class="state-sentence">
-          <strong>Asleep, costing nothing.</strong> 0 CPU, 0 memory, {asleepMib}
-          safe on disk. The next query wakes it {asleepWakePhrase}.
+          <strong>Asleep, costing nothing.</strong> 0 CPU, 0 memory, data safe
+          on disk.
         </p>
       {:else}
         <p class="state-sentence">{dozeHint ?? othersHint ?? stateView.sentence}</p>
       {/if}
-      <dl class="state-facts">
-        <div>
-          <dt>generation</dt>
-          <dd>{status?.generation ?? "–"}</dd>
-        </div>
-        <div>
-          <dt>snapshot pairs</dt>
-          <dd>{status?.pair_valid == null ? "–" : status.pair_valid ? "yes" : "no"}</dd>
-        </div>
-        <div>
-          <dt>volume</dt>
-          <dd>{asleepMib === "some" ? "–" : asleepMib}</dd>
-        </div>
-      </dl>
-      <p class="savings-line" class:savings-active={status?.state === "banked"}>
-        memory saved while asleep this visit:
-        <span class="savings-value">{mibSeconds(savedMibSeconds)}</span>
-      </p>
-      <p class="savings-caption">assuming the 512 MiB VM stayed running</p>
-      <p class="alltime-savings">
-        all visitors, all time: <span class="alltime-savings-value"
-          >{gbHours(status?.total_saved_mib_s)}</span
-        > saved while asleep
+      <div class="state-stat">
+        <span class="state-stat-value" class:stat-live={running}>
+          {running ? ms(stopwatchMs) : wakeHeadline}
+        </span>
+        <span class="state-stat-label">
+          {running ? "waking now" : "wake on the next query"}
+        </span>
+      </div>
+      <p class="resource-line">
+        saved by sleeping:
+        <span class="resource-value">{mibSeconds(savedMibSeconds)}</span> this
+        visit · <span class="resource-value">{gbHours(status?.total_saved_mib_s)}</span>
+        all&nbsp;time
+        <span class="fine-print" title={finePrint} aria-label={finePrint}>&#9432;</span>
       </p>
       {#if statusError}
         <p class="soft-error">status: {statusError}</p>
@@ -745,13 +748,14 @@
   </div>
 
   <div class="right-col">
-    <p class="formula-bar">{view === "summary" ? SUMMARY_SQL : ORDERS_SQL}</p>
-    <p class="reset-countdown">
-      ledger resets on the hour · <span class="reset-countdown-value"
-        >{resetCountdown.mmss}</span
-      >
-      <span class="reset-countdown-clock">({resetCountdown.clockLabel})</span>
-    </p>
+    <div class="console-header">
+      <p class="formula-bar">{view === "summary" ? SUMMARY_SQL : ORDERS_SQL}</p>
+      <p class="reset-countdown">
+        resets on the hour · <span class="reset-countdown-value"
+          >{resetCountdown.mmss}</span
+        >
+      </p>
+    </div>
     <div class="result-card">
       {#if view === "summary"}
         <div class="result-view swap-in">
@@ -915,6 +919,7 @@
     font-family: var(--em-mono);
     font-weight: 600;
     font-size: 12.5px;
+    min-width: 11ch;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--em-ink);
@@ -965,20 +970,36 @@
     color: var(--em-ink);
     font-size: 15px;
     line-height: 1.5;
-    min-height: 2.9em;
+    min-height: 3em;
   }
 
   .state-sentence strong {
     font-weight: 650;
   }
 
-  .state-facts {
+  .state-stat {
     display: flex;
-    gap: 18px;
-    margin: 0;
+    align-items: baseline;
+    gap: 10px;
   }
 
-  .state-facts dt {
+  .state-stat-value {
+    display: inline-block;
+    min-width: 5ch;
+    font-family: var(--em-mono);
+    font-size: 30px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    color: var(--em-ember-deep);
+  }
+
+  .state-stat-value.stat-live {
+    color: var(--em-ember);
+  }
+
+  .state-stat-label {
     font-family: var(--em-mono);
     font-size: 10.5px;
     text-transform: uppercase;
@@ -986,51 +1007,29 @@
     color: var(--em-faint);
   }
 
-  .state-facts dd {
-    margin: 2px 0 0;
+  .resource-line {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--em-faint);
+  }
+
+  .resource-value {
+    display: inline-block;
+    min-width: 7ch;
     font-family: var(--em-mono);
-    font-size: 13px;
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     color: var(--em-muted);
   }
 
-  .savings-line {
-    margin: 0;
+  .fine-print {
+    cursor: help;
+    color: var(--em-faint);
     font-size: 13px;
-    color: var(--em-faint);
+    margin-left: 2px;
   }
 
-  .savings-line.savings-active {
-    color: var(--em-ink);
-  }
-
-  .savings-value {
-    display: inline-block;
-    min-width: 8ch;
-    font-family: var(--em-mono);
-    font-variant-numeric: tabular-nums;
-    font-weight: 700;
-  }
-
-  .savings-caption {
-    margin: -8px 0 0;
-    font-size: 11px;
-    color: var(--em-faint);
-  }
-
-  .alltime-savings {
-    margin: 0;
-    font-size: 11px;
-    color: var(--em-faint);
-  }
-
-  .alltime-savings-value {
-    display: inline-block;
-    min-width: 6ch;
-    font-family: var(--em-mono);
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
+  .fine-print:hover {
     color: var(--em-muted);
   }
 
@@ -1221,19 +1220,30 @@
     color: var(--em-faint);
   }
 
+  .console-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    padding: 2px 4px;
+    min-height: 22px;
+  }
+
   .formula-bar {
     margin: 0;
-    padding: 6px 4px;
     font-family: var(--em-mono);
     font-size: 12px;
     color: var(--em-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .reset-countdown {
     margin: 0;
-    padding: 0 4px;
     font-size: 12px;
     color: var(--em-faint);
+    white-space: nowrap;
   }
 
   .reset-countdown-value {
