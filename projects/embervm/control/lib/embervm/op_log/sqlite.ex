@@ -1425,7 +1425,16 @@ defmodule Embervm.OpLog.SQLite do
 
   # Audit-only kinds: no task/result projection.
   defp project(_conn, %Op{kind: kind}, _seq)
-       when kind in [:denied, :base_built, :primed, :vm_destroyed, :quota_enforced, :drain] do
+       when kind in [
+              :denied,
+              :base_built,
+              :primed,
+              :vm_destroyed,
+              :quota_enforced,
+              :drain,
+              :node_drain_started,
+              :node_drain_finished
+            ] do
     :ok
   end
 

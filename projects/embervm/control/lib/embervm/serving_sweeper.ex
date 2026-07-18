@@ -207,6 +207,11 @@ defmodule Embervm.ServingSweeper do
     {:reply, reply, state}
   end
 
+  def handle_call({:drain_node, node_id}, _from, state) do
+    {count, state} = drain_bank_node(state, node_id)
+    {:reply, count, state}
+  end
+
   @impl true
   def handle_info(:sweep, state) do
     state = do_sweep(state)
@@ -488,6 +493,37 @@ defmodule Embervm.ServingSweeper do
       :error ->
         state
     end
+  end
+
+  # Force-bank every published serving instance on a draining node (R6, ADR
+  # embervm/009). Called by the DrainCoordinator on the drain edge. Unlike the idle
+  # pass, it ignores idle age and the minInstances floor (the node is being
+  # preempted, so every warm endpoint banks) but reuses the same drain-then-bank
+  # machinery, whose short drainSeconds timer completes well within noded's 120s
+  # hold. Starting instances (no snapshot yet) are left to die and re-provision.
+  # Returns {count_started, state}.
+  @spec drain_node(GenServer.server(), String.t()) :: non_neg_integer()
+  def drain_node(server \\ __MODULE__, node_id) do
+    GenServer.call(server, {:drain_node, node_id}, :infinity)
+  end
+
+  defp drain_bank_node(state, node_id) do
+    now = state.clock.()
+
+    instances =
+      ServingStore.all(state.store)
+      |> Enum.filter(&(&1.state == :published and &1.node_id == node_id))
+      |> Enum.reject(&Map.has_key?(state.draining, &1.instance_id))
+
+    state =
+      Enum.reduce(instances, state, fn instance, acc ->
+        case serving_cfg(acc, instance.workload) do
+          {:ok, cfg} -> begin_bank_drain(acc, instance, cfg, now)
+          :error -> acc
+        end
+      end)
+
+    {length(instances), state}
   end
 
   # Begin the drain-before-bank: unpublish (reason :bank, so the EDS update pulls the

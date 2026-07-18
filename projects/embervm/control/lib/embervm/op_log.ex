@@ -181,7 +181,14 @@ defmodule Embervm.OpLog do
     :group_degraded,
     :group_destroyed,
     :group_failed,
-    :group_stats
+    :group_stats,
+    # Continuity: node drain (R6, ADR embervm/009). Audit-only kinds recording a
+    # bounded-preemption drain edge and its outcome: node_drain_started stamps the
+    # published deadline and the per-class live-instance counts the control plane
+    # will force-bank; node_drain_finished stamps the per-class banked counts. No
+    # projection table (like :drain), the log itself is the audit record.
+    :node_drain_started,
+    :node_drain_finished
   ]
 
   @spec kinds() :: [atom()]

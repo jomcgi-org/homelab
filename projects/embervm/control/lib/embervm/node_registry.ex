@@ -213,6 +213,12 @@ defmodule Embervm.NodeRegistry do
       max_backoff_ms: max_backoff,
       min_watch_ms: min_watch,
       node_runtime: node_runtime,
+      # The process notified once per drain rising edge with {:node_draining,
+      # node_id, deadline_ms} so it can force-bank the node's live instances before
+      # the pod exits (R6, ADR embervm/009). A registered name or pid; default the
+      # DrainCoordinator. A missing target (tests, or drain during boot) is a silent
+      # no-op: the daemon's own deadline reap is the backstop.
+      drain_listener: Keyword.get(opts, :drain_listener, Embervm.DrainCoordinator),
       # pid -> node_id for the CURRENT streamer of each node, so an event tagged
       # with a superseded streamer's pid is dropped (never in this map).
       streamers: %{}
@@ -353,9 +359,35 @@ defmodule Embervm.NodeRegistry do
   # later goes down again fires reassignment afresh.
   defp apply_status(state, node_id, %NodeStatus{} = status) do
     now = state.clock.()
-    rt = %{state.node_runtime[node_id] | last_status_at: now, health: :healthy, draining: status.draining}
+    prev = state.node_runtime[node_id]
+    rt = %{prev | last_status_at: now, health: :healthy, draining: status.draining}
     state = put_in(state.node_runtime[node_id], rt)
+    notify_drain_edge(state, node_id, prev, status)
     refresh_capacity(state, node_id, status)
+  end
+
+  # On the RISING edge of draining (false -> true) notify the drain listener exactly
+  # once with the node's published deadline, so it force-banks the node's live
+  # instances within the bounded-preemption window (R6). Only the edge fires; a
+  # steady draining=true stream (re-sent every heartbeat) does not re-notify.
+  defp notify_drain_edge(state, node_id, prev, %NodeStatus{} = status) do
+    if status.draining and not prev.draining do
+      send_drain(state.drain_listener, {:node_draining, node_id, status.drain_deadline_unix_ms})
+    end
+
+    :ok
+  end
+
+  defp send_drain(nil, _msg), do: :ok
+  defp send_drain(pid, msg) when is_pid(pid), do: send(pid, msg)
+
+  defp send_drain(name, msg) when is_atom(name) do
+    case Process.whereis(name) do
+      nil -> :ok
+      pid -> send(pid, msg)
+    end
+
+    :ok
   end
 
   # A node is dispatchable iff its stream is healthy AND its daemon is not

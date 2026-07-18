@@ -273,6 +273,15 @@ defmodule Embervm.Application do
       # With no stats_base wired (reuses EMBERVM_SERVING_STATS_BASE) every tick fails
       # open and banks nothing, mirroring StatefulSweeper's no-op default.
       {Embervm.GroupSweeper, group_sweeper_opts()},
+      # The drain coordinator (R6 Continuity, ADR embervm/009): NodeRegistry sends it
+      # {:node_draining, node_id, deadline_ms} on the drain rising edge, and it fans
+      # out drain_node/2 to the four class sweepers to force-bank the node's live
+      # instances within the bounded-preemption window. Placed AFTER all four sweepers
+      # it drives (so under :rest_for_one a sweeper restart does not orphan it) and
+      # AFTER NodeRegistry (which finds it by registered name to send the edge event).
+      # It holds no durable state; a restart only misses an in-flight drain edge, which
+      # the daemon's own deadline reap backstops.
+      {Embervm.DrainCoordinator, drain_coordinator_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -605,6 +614,14 @@ defmodule Embervm.Application do
   # bank cap, and the max-lifetime drain patience window. Unset stats_base disables the
   # scrape, so every tick fails open and banks nothing, exactly the ServingSweeper
   # default.
+  # The drain coordinator reads only its safety-margin knob from the environment;
+  # an unset var lets the module apply its own 15s default (the reject drops the
+  # nil so it never overrides the default with nil).
+  defp drain_coordinator_opts do
+    [safety_margin_ms: int_env_or_nil("EMBERVM_DRAIN_SAFETY_MARGIN_MS")]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
   defp stateful_sweeper_opts do
     [
       sweep_interval_ms: stateful_sweep_interval_ms(),

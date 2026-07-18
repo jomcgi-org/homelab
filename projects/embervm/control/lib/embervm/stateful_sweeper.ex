@@ -279,6 +279,12 @@ defmodule Embervm.StatefulSweeper do
       # whose bank RPC is in flight in a spawned worker. Prevents a second tick
       # from re-arming a bank already in progress.
       banking: %{},
+      # The set of workloads whose node is DRAINING (R6, ADR embervm/009): a
+      # drain-forced bank bypasses the recheck raced-in/scrape/cap aborts and
+      # forces COMMIT even against a parked connection (spot semantics: the parked
+      # caller re-wakes against the new noded). Added in force_bank_node, cleared
+      # when the bank/resolve for that workload completes.
+      draining_workloads: MapSet.new(),
       # workload -> the wall-clock ms an over-lifetime LIVE instance was first
       # seen both over-lifetime and with an active connection, so the drain
       # patience window is measured from THAT point (never from created_at, so
@@ -305,9 +311,27 @@ defmodule Embervm.StatefulSweeper do
     {:ok, state}
   end
 
+  @doc """
+  Force-bank every live stateful instance on a draining node (R6, ADR embervm/009).
+
+  Called by the DrainCoordinator on the drain rising edge. Returns the count of
+  instances whose bank was started. Each is banked with COMMIT-despite-parked
+  semantics (a parked caller re-wakes against the new noded); the idle predicate,
+  the recheck raced-in/scrape aborts, and the per-node bank cap are all bypassed.
+  """
+  @spec drain_node(GenServer.server(), String.t()) :: non_neg_integer()
+  def drain_node(server \\ __MODULE__, node_id) do
+    GenServer.call(server, {:drain_node, node_id}, :infinity)
+  end
+
   @impl true
   def handle_call(:sweep, _from, state) do
     {:reply, :ok, do_sweep(state)}
+  end
+
+  def handle_call({:drain_node, node_id}, _from, state) do
+    {count, state} = force_bank_node(state, node_id)
+    {:reply, count, state}
   end
 
   @impl true
@@ -322,6 +346,9 @@ defmodule Embervm.StatefulSweeper do
   # endpoint captured BEFORE unpublish cleared the ETS row (see
   # spawn_bank_worker/2's comment); needed to restore it on a failed bank.
   def handle_info({:bank_done, instance_id, node_id, vm_id, ip, port, workload, outcome}, state) do
+    # Atomic bank finished: clear any drain mark (interruptible workloads clear at
+    # resolve_done instead, after decide_resolve has read it).
+    state = clear_draining(state, workload)
     {:noreply, finish_bank(state, instance_id, node_id, vm_id, ip, port, workload, outcome)}
   end
 
@@ -334,6 +361,9 @@ defmodule Embervm.StatefulSweeper do
   # The ResolveStateful RPC finished: complete the durable transition, notify the
   # manager, and release the per-node bank slot + banking bookkeeping.
   def handle_info({:resolve_done, instance_id, node_id, vm_id, ip, port, workload, mode, outcome}, state) do
+    # Interruptible bank resolved (COMMIT or ABORT): decide_resolve has already read
+    # the drain mark, so clear it now.
+    state = clear_draining(state, workload)
     {:noreply, finish_resolve(state, instance_id, node_id, vm_id, ip, port, workload, mode, outcome)}
   end
 
@@ -614,6 +644,36 @@ defmodule Embervm.StatefulSweeper do
     end
   end
 
+  # -- drain force-bank (R6, ADR embervm/009) ---------------------------------
+
+  # Force-bank every live stateful instance on a draining node. Marks each
+  # workload draining (so recheck skips the raced-in/scrape/cap aborts and
+  # decide_resolve forces COMMIT despite a parked connection) then begins its bank,
+  # bypassing the idle predicate. Instances already banking are skipped (idempotent
+  # under a repeated drain edge). Returns {count_started, state}.
+  defp force_bank_node(state, node_id) do
+    now = state.clock.()
+
+    instances =
+      StatefulStore.all(state.store)
+      |> Enum.filter(&(&1.state == :serving and &1.node_id == node_id))
+      |> Enum.reject(&Map.has_key?(state.banking, &1.instance_id))
+
+    state =
+      Enum.reduce(instances, state, fn instance, acc ->
+        acc = %{acc | draining_workloads: MapSet.put(acc.draining_workloads, instance.workload)}
+        begin_bank(acc, instance, now)
+      end)
+
+    {length(instances), state}
+  end
+
+  defp draining_workload?(state, workload), do: MapSet.member?(state.draining_workloads, workload)
+
+  defp clear_draining(state, workload) do
+    %{state | draining_workloads: MapSet.delete(state.draining_workloads, workload)}
+  end
+
   # Begin the bank: unpublish (serving -> banking, ETS-only), republish so the
   # activator installs atomically, RECHECK the freshest cx_active reading, and
   # either abort (a connection raced in) or proceed to StopStateful(BANK).
@@ -655,6 +715,13 @@ defmodule Embervm.StatefulSweeper do
     {state, fresh?} = refresh_current_stats(state, instance.node_id)
 
     cond do
+      # DRAIN (R6): bank unconditionally. The node is being preempted, so a raced-in
+      # connection, a failed re-scrape, and the per-node bank cap all defer to
+      # evacuating state. The parked caller re-wakes against the new noded, and
+      # decide_resolve forces COMMIT for this workload.
+      draining_workload?(state, instance.workload) ->
+        admit_bank(state, instance)
+
       # A FRESH reading shows a connection raced in: abort for everyone.
       connection_raced_in?(state, instance) ->
         abort_bank(state, instance, :recheck_active)
@@ -1045,6 +1112,12 @@ defmodule Embervm.StatefulSweeper do
     aborts = Map.get(state.checkpoint_aborts, workload, 0)
 
     cond do
+      # DRAIN (R6): force COMMIT even against a parked connection. The node is being
+      # preempted; durability is the hard guarantee, the parked caller re-wakes
+      # against the new noded (spot semantics). The flap guard is irrelevant here.
+      draining_workload?(state, workload) ->
+        {:commit, state}
+
       aborts >= state.flap_abort_threshold ->
         Tracer.with_span "embervm.stateful.checkpoint_flap_guard",
                          %{attributes: %{"ember.workload" => workload, "ember.checkpoint_aborts" => aborts}} do
