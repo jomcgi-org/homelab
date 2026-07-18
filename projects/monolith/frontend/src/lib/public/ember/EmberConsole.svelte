@@ -242,13 +242,32 @@
   // insert session cookie.
   let clientId = "";
 
+  // Parse a response body as JSON, returning null instead of throwing when the
+  // body is not JSON. The public gateway enforces a coarse rate limit and
+  // answers 429 with a PLAIN-TEXT body ("local_rate_limited"), and other edge
+  // errors can be non-JSON too; calling resp.json() on those blows up with a
+  // "Unexpected token" SyntaxError that used to leak straight into the panel.
+  async function parseJsonSafe(resp) {
+    const text = await resp.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+
   async function pollStatus() {
     try {
       const url = clientId
         ? `${API}/status?p=${encodeURIComponent(clientId)}`
         : `${API}/status`;
       const resp = await fetch(url);
-      const body = await resp.json();
+      // A rate-limited or non-JSON poll is not worth alarming about: keep the
+      // last good status and let the next poll (or a click) recover. Never
+      // surface a raw parse error for a background poll.
+      if (resp.status === 429) return;
+      const body = await parseJsonSafe(resp);
+      if (body == null) return;
       if (body.configured === false) {
         statusError = "demo-postgres is not configured on this deployment";
         return;
@@ -296,7 +315,11 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ turnstile_token: turnstileToken }),
       });
-      const body = await resp.json().catch(() => ({}));
+      // A 429 here is the gateway rate limit, not a verification failure: leave
+      // inserts gated as-is and let a later mint retry, rather than latching
+      // insertUnavailable off a transient limit.
+      if (resp.status === 429) return;
+      const body = (await parseJsonSafe(resp)) ?? {};
       if (resp.ok && body.ok) {
         sessionReady = true;
         sessionError = "";
@@ -319,7 +342,23 @@
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ mode }),
     });
-    const body = await resp.json();
+    // The public gateway answers a tripped rate limit with 429 and a plain-text
+    // "local_rate_limited" body. Handle it before any JSON parse, and mark it
+    // permanent for this run so fetchWithBackoff does NOT retry, hammering a
+    // limiter that is already saying slow down only deepens the wait.
+    if (resp.status === 429) {
+      return {
+        ok: false,
+        permanent: true,
+        error: "the demo is busy right now, give it a few seconds and try again",
+      };
+    }
+    const body = await parseJsonSafe(resp);
+    if (body == null) {
+      // Non-JSON on any other status (a gateway error page, a proxy hiccup):
+      // surface it calmly instead of leaking a raw JSON SyntaxError.
+      return { ok: false, error: `unexpected response from the demo (${resp.status})` };
+    }
     if (resp.status === 503 && /not configured/i.test(body?.detail ?? "")) {
       // Permanent: no DSN configured on this deployment, retrying won't help.
       return { ok: false, permanent: true, error: body.detail };
