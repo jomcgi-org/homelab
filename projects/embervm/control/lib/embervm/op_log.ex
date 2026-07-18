@@ -188,7 +188,18 @@ defmodule Embervm.OpLog do
     # will force-bank; node_drain_finished stamps the per-class banked counts. No
     # projection table (like :drain), the log itself is the audit record.
     :node_drain_started,
-    :node_drain_finished
+    :node_drain_finished,
+    # Continuity: off-node artifact durability (R6, ADR embervm/009). Audit-only
+    # kinds recording an artifact moving between node disk and the object store:
+    # artifact_exported when a bank commit's write-back completes, artifact_restored
+    # when a restore-on-miss wake copies an artifact back before relight/cold boot,
+    # artifact_evicted_remote when a local eviction trigger (banked TTL, superseded
+    # generation, workload deletion) also drops the store copy. No projection table
+    # (like :node_drain_*), the log itself is the audit record; the payload carries
+    # the ArtifactRef {kind, workload, ref} and, for a volume, its generation.
+    :artifact_exported,
+    :artifact_restored,
+    :artifact_evicted_remote
   ]
 
   @spec kinds() :: [atom()]

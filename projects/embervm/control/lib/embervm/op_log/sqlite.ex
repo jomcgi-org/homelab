@@ -1433,7 +1433,10 @@ defmodule Embervm.OpLog.SQLite do
               :quota_enforced,
               :drain,
               :node_drain_started,
-              :node_drain_finished
+              :node_drain_finished,
+              :artifact_exported,
+              :artifact_restored,
+              :artifact_evicted_remote
             ] do
     :ok
   end

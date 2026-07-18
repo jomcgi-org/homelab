@@ -68,8 +68,10 @@ defmodule Embervm.ServingManager do
   alias Embervm.{EndpointPublisher, NodeCapacity, ServingPlacement, ServingState, ServingStore, SessionTrace, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
+    ArtifactRef,
     FreshSource,
     RelightSource,
+    RestoreArtifactRequest,
     StartServingRequest,
     StartServingResponse,
     Trace
@@ -160,6 +162,15 @@ defmodule Embervm.ServingManager do
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       start_serving_fun: Keyword.get(opts, :start_serving_fun, &default_start_serving/2),
+      # Restore-on-miss seam (R6, Task 8): (channel, %RestoreArtifactRequest{}) ->
+      # {:ok, %RestoreArtifactResponse{}} | {:error, _}. Fetches a banked SERVING
+      # bundle back onto local disk from the object store before a relight on a TRUE
+      # local miss (the bundle is exported but no longer on the anchor node's disk).
+      # Injected for tests; production dials the real NodeService stub.
+      restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
+      # The op-log the restore audit record (:artifact_restored) is appended to.
+      # Injected for tests; production uses the SQLite backend.
+      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
       # workload -> [{from, req, principal}] parked behind an in-flight wake, so
       # concurrent misses share ONE StartServing (single-flight). The first miss
       # kicks the worker; the rest append here.
@@ -340,6 +351,25 @@ defmodule Embervm.ServingManager do
             send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
         end
 
+      # Restore-on-miss (R6): the local snapshot is gone but its store copy is
+      # recoverable. Restore the SERVING bundle inside the wake worker FIRST (so
+      # park/single-flight semantics are unchanged), then relight exactly as the warm
+      # path. The restore failing (store unreachable mid-wake, or the copy vanished)
+      # degrades to the daemon's own cold-boot fallback (fail-open warmth).
+      {:restore_then_relight, instance, node_id} ->
+        case ServingStore.mark(state.store, instance.instance_id, :relight) do
+          {:ok, _} ->
+            req = relight_request(entry, instance)
+
+            spawn_wake(owner, workload, fn ->
+              _ = restore_bundle(state, node_id, workload, instance.snapshot_ref)
+              run_relight(state, instance, node_id, req)
+            end)
+
+          {:error, reason} ->
+            send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+        end
+
       {:cold, node_id, base_ref} ->
         req = cold_request(entry, workload, base_ref)
         spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, base_ref, req) end)
@@ -375,17 +405,62 @@ defmodule Embervm.ServingManager do
   # Decide relight-vs-cold PURELY (ETS reads only): the freshest banked instance
   # whose serving snapshot a node still reports relights; otherwise a cold create on
   # a serving-capable node with the workload's base + budget. Returns
-  # `{:relight, instance, node_id}` | `{:cold, node_id, base_ref}` | `{:error, r}`.
+  # `{:relight, instance, node_id}` | `{:restore_then_relight, instance, node_id}` |
+  # `{:cold, node_id, base_ref}` | `{:error, r}`.
+  #
+  # Restore-on-miss (R6, Task 8): a relight candidate's snapshot may be EXPORTED to
+  # the object store but no longer on the anchor node's local disk (disk lost, or the
+  # node rotated). When that happens AND the node's store is reachable, restore the
+  # bundle first, then relight (fail-open warmth otherwise: an unreachable store or a
+  # missing store copy falls through to the plain relight attempt, which the daemon
+  # degrades to a cold boot if the local bundle is truly gone). Serving carries no
+  # volume/generation pairing (unlike stateful), so there is only this one bundle-
+  # restore case, never a restore_volume branch.
   defp plan_wake(state, workload) do
     case pick_bankable_instance(state, workload) do
       {:ok, instance, node_id} ->
-        {:relight, instance, node_id}
+        if bundle_local?(state, node_id, instance.snapshot_ref) or
+             not store_reachable?(state, node_id) do
+          {:relight, instance, node_id}
+        else
+          {:restore_then_relight, instance, node_id}
+        end
 
       :none ->
         case ServingPlacement.node_for_create(workload, state.capacity_table) do
           {:ok, node_id, base_ref} -> {:cold, node_id, base_ref}
           {:error, :no_capacity} -> {:error, :no_capacity}
         end
+    end
+  end
+
+  # -- restore-on-miss (R6, Task 8) -------------------------------------------
+
+  # Whether the node still reports the instance's snapshot on LOCAL disk (its
+  # snapshot_ref is in the node's serving_snapshots). A relight needs no restore when
+  # true; a true local miss (false) may consult the store instead.
+  defp bundle_local?(state, node_id, snapshot_ref) when is_binary(snapshot_ref) and snapshot_ref != "" do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        fact
+        |> Map.get(:serving_snapshots, [])
+        |> Enum.any?(&(&1.snapshot_ref == snapshot_ref))
+
+      :error ->
+        false
+    end
+  end
+
+  defp bundle_local?(_state, _node_id, _ref), do: false
+
+  # The node's latest object-store reachability verdict (R6). Absent/false (a node
+  # with no store configured, or one that never reported) reads as NOT reachable, so
+  # no restore is attempted and the wake degrades to the plain relight attempt (never
+  # blocked: this only gates the store consultation, never a local-state wake).
+  defp store_reachable?(state, node_id) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} -> Map.get(fact, :store_reachable, false) == true
+      :error -> false
     end
   end
 
@@ -410,10 +485,28 @@ defmodule Embervm.ServingManager do
           end
 
         {:error, :snapshot_lost} ->
-          false
+          # The snapshot is no longer on local disk (disk lost, node rotated). It may
+          # still be recoverable from the object store (R6 restore-on-miss): if the
+          # instance's anchor node is reporting a reachable store, keep it as a relight
+          # candidate anchored there. plan_wake then routes it to :restore_then_relight
+          # (bundle_local? is false, so it restores first). An unreachable store or a
+          # gone node stays :none, so the wake cold-boots (fail-open warmth).
+          restore_candidate_node(state, instance)
       end
     end)
   end
+
+  # The instance's anchor node when it is reporting a reachable store (a
+  # restore-on-miss candidate), else false (no restore possible, cold-boot).
+  defp restore_candidate_node(state, %{node_id: node_id} = instance) when is_binary(node_id) and node_id != "" do
+    if store_reachable?(state, node_id) and lineage_current?(state.capacity_table, node_id, instance) do
+      {:ok, instance, node_id}
+    else
+      false
+    end
+  end
+
+  defp restore_candidate_node(_state, _instance), do: false
 
   # Whether a banked instance's base lineage still matches the node's CURRENT
   # serving_image_ref for the workload. Fail-OPEN when the node reports no current ref
@@ -1020,6 +1113,97 @@ defmodule Embervm.ServingManager do
 
   defp default_start_serving(channel, req) do
     Embervm.Node.V1.NodeService.Stub.start_serving(channel, req)
+  end
+
+  # -- restore-on-miss RPC (R6, Task 8) ---------------------------------------
+
+  # Restore the SERVING bundle for `workload` from the object store back onto the
+  # node's disk (RestoreArtifact, kind SERVING), then record :artifact_restored.
+  # Best-effort: a restore failure returns :error and the caller (the wake worker)
+  # falls through to the relight, which the daemon degrades to a cold boot on a
+  # truly-missing snapshot (fail-open warmth). Idempotent on the daemon side, so a
+  # re-run of a partially-restored artifact is safe.
+  defp restore_bundle(state, node_id, workload, snapshot_ref) do
+    ref = %ArtifactRef{kind: :ARTIFACT_KIND_SERVING, workload: workload, ref: snapshot_ref}
+
+    case safe_restore_artifact(state, node_id, ref) do
+      {:ok, resp} ->
+        record_restore(state, workload, :ARTIFACT_KIND_SERVING, snapshot_ref, resp)
+        :ok
+
+      other ->
+        Logger.warning("embervm serving: bundle restore-on-miss failed, degrading to cold",
+          workload: workload,
+          snapshot_ref: snapshot_ref,
+          reason: inspect(other)
+        )
+
+        :error
+    end
+  end
+
+  defp safe_restore_artifact(state, node_id, %ArtifactRef{} = ref) do
+    req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        case state.restore_artifact_fun.(channel, req) do
+          {:error, reason} = err ->
+            if Embervm.NodeChannel.transport_dead?(reason) do
+              _ = state.invalidate_fun.(node_id, channel)
+            end
+
+            err
+
+          other ->
+            other
+        end
+      rescue
+        e -> {:error, {:restore_artifact_raised, e}}
+      catch
+        :exit, reason ->
+          _ = state.invalidate_fun.(node_id, channel)
+          {:error, {:restore_artifact_raised, {:exit, reason}}}
+
+        kind, reason ->
+          {:error, {:restore_artifact_raised, {kind, reason}}}
+      end
+    end
+  end
+
+  # Append the audit-only :artifact_restored op (no projection table; the log itself
+  # is the record). Best-effort: an append failure must never fail the wake, which
+  # already ran the restore RPC (the durable state is the restored bytes on disk, not
+  # this audit row).
+  defp record_restore(state, workload, kind, ref, resp) do
+    op = %Embervm.OpLog.Op{
+      kind: :artifact_restored,
+      tenant: state.tenant,
+      principal: wake_principal(state, workload),
+      workload: workload,
+      ts: state.clock.(),
+      payload: %{
+        kind: artifact_kind_string(kind),
+        ref: ref,
+        bytes_moved: Map.get(resp, :bytes_moved, 0),
+        generation: Map.get(resp, :generation, 0),
+        skipped: Map.get(resp, :skipped, false)
+      }
+    }
+
+    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm serving: artifact_restored append raised", workload: workload, error: inspect(e))
+      :ok
+  end
+
+  defp artifact_kind_string(:ARTIFACT_KIND_SERVING), do: "serving"
+  defp artifact_kind_string(other), do: to_string(other)
+
+  defp default_restore_artifact(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.restore_artifact(channel, req)
   end
 
   # -- misc ------------------------------------------------------------------

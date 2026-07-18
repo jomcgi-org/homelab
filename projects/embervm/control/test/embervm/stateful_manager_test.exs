@@ -83,9 +83,20 @@ defmodule Embervm.StatefulManagerTest do
         start_stateful_fun: start_stateful_fun,
         stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, fn _ch, _req -> {:ok, %Embervm.Node.V1.StopStatefulResponse{}} end),
         get_secret_fun: get_secret_fun,
+        op_log: op_log,
         reconcile_interval_ms: 0,
         id_fun: id_seq(suffix)
-      ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap, :wake_bound_ms, :mono_clock, :wake_timeout_margin_ms])
+      ] ++
+        Keyword.take(opts, [
+          :wake_max,
+          :wake_window_ms,
+          :park_cap,
+          :wake_bound_ms,
+          :mono_clock,
+          :wake_timeout_margin_ms,
+          :restore_artifact_fun,
+          :evict_artifact_fun
+        ])
 
     {:ok, mgr} = StatefulManager.start_link(mgr_opts)
 
@@ -141,7 +152,8 @@ defmodule Embervm.StatefulManagerTest do
       },
       stateful_vms: Keyword.get(opts, :stateful_vms, []),
       stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
-      volumes: Keyword.get(opts, :volumes, [])
+      volumes: Keyword.get(opts, :volumes, []),
+      store_reachable: Keyword.get(opts, :store_reachable, false)
     })
   end
 
@@ -997,5 +1009,132 @@ defmodule Embervm.StatefulManagerTest do
 
     {:ok, healed} = StatefulStore.get(ctx.store, "stf-banked")
     assert healed.state == :banked
+  end
+
+  # -- restore-on-miss (R6, Task 8) -------------------------------------------
+
+  # Records every RestoreArtifact call the manager issues, returning a successful
+  # response. `kind`/`ref`/`workload` are pulled off the ArtifactRef so a test can
+  # assert exactly what was restored.
+  defp recording_restore_fun do
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    fun = fn _ch, req ->
+      art = req.artifact
+      Agent.update(calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload} | &1])
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 4096, skipped: false, generation: 3}}
+    end
+
+    {fun, calls}
+  end
+
+  test "a local-bundle miss with an exported pair RESTORES the bundle then relights" do
+    {restore_fun, restore_calls} = recording_restore_fun()
+
+    relit_fun = fn _ch, _req ->
+      {:ok, %StartStatefulResponse{vm_id: "vm-relit", ip: "10.88.0.5", port: 5432, generation: 3, was_relight: true}}
+    end
+
+    ctx = start_stack(start_stateful_fun: relit_fun, restore_artifact_fun: restore_fun)
+    stateful_workload(ctx, "wl-a")
+
+    # The anchor node reports the workload's volume (so exported_generation is
+    # known) but NO local stateful bundle: a true local bundle miss. The store copy
+    # is current (exported_generation == the banked bundle generation) and the store
+    # is reachable, so the wake restores then relights.
+    stateful_node(ctx, "node-4",
+      stateful_bundles: [],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3}],
+      store_reachable: true
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+    assert StatefulStore.pair_valid?(ctx.store, "wl-a")
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    # RestoreArtifact was called for the STATEFUL bundle, before the relight landed.
+    assert [%{kind: :ARTIFACT_KIND_STATEFUL, ref: "stateful/stf-banked", workload: "wl-a"}] =
+             Agent.get(restore_calls, & &1)
+
+    # The SAME banked instance relit in place (a warm relight, not a fresh boot).
+    {:ok, relit} = StatefulStore.get(ctx.store, "stf-banked")
+    assert relit.state == :serving
+
+    # gate: the restore is auditable from the op-log alone.
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    restored = Enum.find(ops, &(&1.kind == :artifact_restored))
+    assert restored, "expected an artifact_restored op"
+    assert restored.payload["kind"] == "stateful"
+    assert restored.payload["ref"] == "stateful/stf-banked"
+  end
+
+  test "a local-volume miss with an exported (vol, gen) pair RESTORES the volume then cold-boots at that generation" do
+    {restore_fun, restore_calls} = recording_restore_fun()
+
+    cold_fun = fn _ch, _req ->
+      {:ok, %StartStatefulResponse{vm_id: "vm-cold", ip: "10.88.0.7", port: 5432, generation: 3, was_relight: false}}
+    end
+
+    ctx = start_stack(start_stateful_fun: cold_fun, restore_artifact_fun: restore_fun)
+    stateful_workload(ctx, "wl-a")
+
+    # No banked bundle, but the anchor node reports the volume with an exported pair
+    # (exported_generation > 0) and a reachable store: the wake restores the volume
+    # then cold-boots against it.
+    stateful_node(ctx, "node-4",
+      stateful_bundles: [],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3}],
+      store_reachable: true
+    )
+
+    # Seed the volume ETS fact (no banked instance) so plan_wake sees a volume row
+    # with an exported generation.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3})
+
+    assert {:ok, %{ip: "10.88.0.7", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "wl-a", workload: "wl-a"}] = Agent.get(restore_calls, & &1)
+
+    live = Enum.reject(StatefulStore.list(ctx.store, "wl-a"), &Embervm.StatefulState.terminal?(&1.state))
+    assert [inst] = live
+    assert inst.state == :serving
+    assert inst.generation == 3
+  end
+
+  test "an UNREACHABLE store on a true local-bundle miss attempts no restore and degrades to the relight/cold path" do
+    {restore_fun, restore_calls} = recording_restore_fun()
+
+    # The daemon-side relight falls back to a cold boot (the bundle is not on disk),
+    # returning was_relight=false: the CP-side warmth was correctly not consulted.
+    fallback_fun = fn _ch, _req ->
+      {:ok,
+       %StartStatefulResponse{
+         vm_id: "vm-cold",
+         ip: "10.88.0.8",
+         port: 5432,
+         generation: 3,
+         was_relight: false,
+         cold_boot_reason: "no_bundle"
+       }}
+    end
+
+    ctx = start_stack(start_stateful_fun: fallback_fun, restore_artifact_fun: restore_fun)
+    stateful_workload(ctx, "wl-a")
+
+    # True local miss (no local bundle) but the store is UNREACHABLE: fail-open
+    # warmth means the local-state wake still runs, it just never consults the store.
+    stateful_node(ctx, "node-4",
+      stateful_bundles: [],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3}],
+      store_reachable: false
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+
+    assert {:ok, %{ip: "10.88.0.8", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    # No restore was attempted (store unreachable), and no wake was blocked.
+    assert Agent.get(restore_calls, & &1) == []
   end
 end

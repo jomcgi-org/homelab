@@ -144,6 +144,8 @@ defmodule Embervm.StatefulSweeper do
   alias Embervm.OpLog.Op
 
   alias Embervm.Node.V1.{
+    ArtifactRef,
+    EvictArtifactRequest,
     EvictSnapshotRequest,
     ResolveStatefulRequest,
     ResolveStatefulResponse,
@@ -237,6 +239,12 @@ defmodule Embervm.StatefulSweeper do
       # production dials the real NodeService stub.
       resolve_stateful_fun: Keyword.get(opts, :resolve_stateful_fun, &default_resolve_stateful/2),
       evict_snapshot_fun: Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
+      # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
+      # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside the local
+      # EvictSnapshot so the store copy of a banked bundle is dropped on the same
+      # triggers (banked TTL, superseded generation). Injected for tests; production
+      # dials the real NodeService stub.
+      evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
       # status.stateful {state,generation,bundleGeneration,volumeBytes} writer
       # (Task 10). Defaults to the K8s merge-patch on the workload status
       # subresource, the same seam ServingSweeper.status_writer uses; tests inject
@@ -1482,10 +1490,25 @@ defmodule Embervm.StatefulSweeper do
   # -- eager broken-pair eviction ----------------------------------------------
 
   # Runs the store's sweep primitive every tick, so a bundle whose pair broke
-  # (the volume's generation moved out from under it) is evicted before the
-  # next wake discovers it stale.
+  # (the volume's generation moved out from under it, a superseded-generation
+  # eviction) is evicted before the next wake discovers it stale. R6, Task 9: the
+  # store copy of each just-evicted bundle follows the local eviction on the same
+  # trigger. The primitive returns the evicted instance_ids; we read each one's
+  # last-known node/ref (it is now terminal but still in the store) to target the
+  # remote evict. A bundle whose row no longer resolves is skipped (nothing to
+  # target). The VOLUME is never evicted here: a broken pair means the volume moved
+  # ON to a newer generation, which is exactly a generation a live/future bundle
+  # will pair with, so the store must keep it (generation guard, standing decision 8).
   defp eager_evict_broken_pairs(state) do
-    _ = StatefulStore.eager_evict_broken_pairs(state.store)
+    evicted = StatefulStore.eager_evict_broken_pairs(state.store)
+
+    for instance_id <- evicted do
+      case StatefulStore.get(state.store, instance_id) do
+        {:ok, instance} -> _ = evict_remote_bundle(state, instance)
+        _ -> :ok
+      end
+    end
+
     state
   end
 
@@ -1511,6 +1534,12 @@ defmodule Embervm.StatefulSweeper do
 
   defp evict_banked(state, instance, reason) do
     _ = evict_snapshot(state, instance)
+    # R6, Task 9: the store copy of the bundle follows the local eviction on the
+    # same trigger (banked TTL, superseded generation). Best-effort and idempotent
+    # on the daemon side; a store copy that was never made is an already-absent
+    # no-op. The VOLUME is never touched here (bundle eviction never strands a
+    # volume generation), so no pairing guard applies to this call.
+    _ = evict_remote_bundle(state, instance)
 
     _ =
       StatefulStore.transition(
@@ -1562,6 +1591,31 @@ defmodule Embervm.StatefulSweeper do
   end
 
   defp evict_snapshot(_state, _instance), do: :ok
+
+  # R6, Task 9: drop the store copy of a banked STATEFUL bundle (EvictArtifact,
+  # remote=true, kind STATEFUL) alongside the local EvictSnapshot. Best-effort: a
+  # failure never wedges the sweep (the local eviction and durable transition are
+  # authoritative; a stranded store copy is swept later by the remote-orphan
+  # reconcile). Idempotent on the daemon; an already-absent store copy is a no-op.
+  defp evict_remote_bundle(state, %{node_id: node_id, snapshot_ref: ref, workload: workload})
+       when is_binary(node_id) and is_binary(ref) and ref != "" do
+    artifact = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: ref}
+    req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.evict_artifact_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp evict_remote_bundle(_state, _instance), do: :ok
 
   # -- per-node bank cap --------------------------------------------------------
 
@@ -1687,6 +1741,10 @@ defmodule Embervm.StatefulSweeper do
 
   defp default_evict_snapshot(channel, req) do
     Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+  end
+
+  defp default_evict_artifact(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
   end
 
   defp default_resolve_stateful(channel, req) do

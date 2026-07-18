@@ -170,8 +170,9 @@ defmodule Embervm.GroupWakeManagerTest do
         port_base: 30_000,
         pod_ip: "10.0.0.9",
         clock: clock,
+        channel_fun: fn _node -> {:ok, :ch} end,
         reconcile_interval_ms: 0
-      ] ++ Keyword.take(opts, [:wake_bound_ms, :mono_clock])
+      ] ++ Keyword.take(opts, [:wake_bound_ms, :mono_clock, :restore_artifact_fun])
 
     {:ok, mgr} = GroupWakeManager.start_link(mgr_opts)
 
@@ -249,6 +250,56 @@ defmodule Embervm.GroupWakeManagerTest do
     {creates, wakes, _adopts} = sup_counts()
     assert creates == 0
     assert wakes == 1
+  end
+
+  # -- restore-on-miss (R6, Task 8) -------------------------------------------
+
+  test "a complete exported set whose local bundles are gone RESTORES then relights" do
+    {:ok, restore_calls} = Agent.start_link(fn -> [] end)
+
+    restore_fun = fn _ch, req ->
+      art = req.artifact
+      Agent.update(restore_calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload} | &1])
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 8192, skipped: false}}
+    end
+
+    ctx = start_stack(instance_id: "g-restore", restore_artifact_fun: restore_fun)
+    _ = seed_banked(ctx, "g-restore", "set-r")
+
+    # The node reports the set as a STORE-ONLY marker: exported=true but no local
+    # member bundles (empty members list), i.e. the local disk lost the set. The
+    # store is reachable, so the wake restores the whole GROUP_SET then relights.
+    seed_node(ctx, %{
+      group_bundle_sets: [%{set_id: "set-r", group_instance_id: "g-restore", members: [], exported: true}],
+      store_reachable: true
+    })
+
+    assert {:ok, %{ip: "10.0.0.9", port: 30_010}} = GroupWakeManager.wake(ctx.mgr, "grp-a", "system:group:grp-a")
+
+    # RestoreArtifact was issued for the whole set, and the delegated relight ran.
+    assert [%{kind: :ARTIFACT_KIND_GROUP_SET, ref: "set-r", workload: "grp-a"}] = Agent.get(restore_calls, & &1)
+    {_creates, wakes, _adopts} = sup_counts()
+    assert wakes == 1
+
+    # The restore is auditable from the op-log alone.
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert Enum.any?(ops, &(&1.kind == :artifact_restored and &1.payload["ref"] == "set-r"))
+  end
+
+  test "an unreachable store on a set miss attempts no restore and relights (fresh-fallback) as before" do
+    {:ok, restore_calls} = Agent.start_link(fn -> [] end)
+    restore_fun = fn _ch, _req -> Agent.update(restore_calls, &[:called | &1]) && {:error, :unused} end
+
+    ctx = start_stack(instance_id: "g-nostore", restore_artifact_fun: restore_fun)
+    _ = seed_banked(ctx, "g-nostore", "set-n")
+
+    seed_node(ctx, %{
+      group_bundle_sets: [%{set_id: "set-n", group_instance_id: "g-nostore", members: [], exported: true}],
+      store_reachable: false
+    })
+
+    assert {:ok, %{ip: "10.0.0.9", port: 30_010}} = GroupWakeManager.wake(ctx.mgr, "grp-a", "system:group:grp-a")
+    assert Agent.get(restore_calls, & &1) == []
   end
 
   test "create path: no instance at all -> exactly one create_group, N replies" do
