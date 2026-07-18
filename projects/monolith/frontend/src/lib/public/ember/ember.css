@@ -19,9 +19,12 @@
    * washout. */
   --em-muted: #3d434e;
   --em-faint: #646b76;
-  --em-ember: #e05c26;
-  --em-ember-deep: #b7461a;
-  --em-ember-dim: #f0c4ae;
+  /* Hotter than fcstory's #e05c26 family: Joe read the orange as muted on
+   * the timing bar and buttons; this leans red while staying in the ember
+   * family. */
+  --em-ember: #e0421a;
+  --em-ember-deep: #b02f0e;
+  --em-ember-dim: #f3bda8;
   --em-frost: #3d7ec2;
   --em-frost-dim: #b9d2ea;
   --em-amber: #f2b04e;
@@ -40,4 +43,12 @@
   color: var(--em-ink);
   font-family: var(--em-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Overscroll / rubber-band ground: without this the document behind the page
+ * shows the neobrutalist site background when a visitor drags past the edge.
+ * :has() scopes it to documents actually rendering the ember mini-site. */
+html:has(.ember-site),
+body:has(.ember-site) {
+  background: #f7f5f0;
 }

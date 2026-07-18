@@ -21,6 +21,11 @@ const DOMAIN_PREFIX_MAP = {
 const APEX_HOST = "jomcgi.dev";
 const APEX_PREFIX = "/public";
 
+// Local previews (adapter-node build or vite dev on a workstation) serve the
+// public tier: without this every path 404s locally because nothing maps the
+// un-prefixed browser path into /public. Prod never serves on these hosts.
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
+
 // Top-level routes that intentionally live outside /public and /private.
 // The browser OTEL exporter posts to same-origin /otel/v1/traces and the
 // handler proxies to the cluster-internal SigNoz collector, so it must
@@ -62,7 +67,7 @@ export function reroute({ url }) {
     }
   }
   if (
-    url.hostname === APEX_HOST &&
+    (url.hostname === APEX_HOST || LOCAL_HOSTS.has(url.hostname)) &&
     !url.pathname.startsWith(`${APEX_PREFIX}/`)
   ) {
     return `${APEX_PREFIX}${url.pathname}`;

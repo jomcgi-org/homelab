@@ -18,6 +18,7 @@
   // (see the +server.js routes beside this component's page), never direct
   // /api fetches: the public tier's rule 2 (public-tier-checklist.md).
   import { onMount } from "svelte";
+  import { fade } from "svelte/transition";
 
   /** @type {{ turnstileSiteKey?: string, initialStatus?: object|null, initialSavings?: object|null, status?: object|null, running?: boolean, stopwatchMs?: number }} */
   let {
@@ -27,16 +28,11 @@
     status = $bindable(null),
     running = $bindable(false),
     stopwatchMs = $bindable(0),
+    wakePromise = $bindable(""),
   } = $props();
 
   const API = "/ember/postgres/api";
   const POLL_MS = 700;
-
-  // Resource-savings counter assumption: the demo VM is sized at 512 MiB, so
-  // every second it spends banked is 512 MiB-seconds of RAM not spent. Not
-  // measured, a stated assumption shown alongside the number.
-  const MIB_SAVED_PER_S = 512;
-  const SAVINGS_TICK_MS = 200;
 
   // Clicks during a lifecycle transition (mid-bank, wake-rate limiter) fail
   // transiently; retry the same request under the still-ticking stopwatch so
@@ -77,6 +73,25 @@
   // Best-seen wall time per boot path: the demo's headline comparison.
   let tiers = $state({ cold: null, relight: null, warm: null });
 
+  // Every run's wake+connect this session, newest last, capped for the
+  // sparkline. Log-scaled bars: values legitimately span ~6ms to ~30s.
+  const SPARK_MAX = 24;
+  let runHistory = $state([]);
+
+  // Session-relative log scale: bars normalize to THIS session's range, so
+  // an all-warm session reads as a full band of consistently-fast runs
+  // instead of dots under empty air, while a mixed session keeps the tall
+  // cold bar -> short warm bar drama.
+  function sparkHeight(connectMs) {
+    const vals = runHistory.map((r) => r.connect_ms);
+    if (vals.length === 0) return 0;
+    const lo = Math.max(1, Math.min(...vals) * 0.8);
+    const hi = Math.max(...vals) * 1.1;
+    if (hi / lo < 1.05) return 60;
+    const frac = (Math.log10(connectMs) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo));
+    return Math.max(12, Math.min(100, Math.round(frac * 100)));
+  }
+
   let pollTimer = null;
 
   // Live wake stopwatch: ticks via requestAnimationFrame while a query is in
@@ -86,8 +101,6 @@
   // poll loop.
   let stopwatchRaf = null;
   let stopwatchStart = 0;
-  let connectPulse = $state(false);
-  let pulseTimer = null;
 
   function startStopwatch() {
     stopwatchStart = performance.now();
@@ -106,26 +119,49 @@
     }
   }
 
-  function flashConnectPulse() {
-    connectPulse = false;
-    requestAnimationFrame(() => {
-      connectPulse = true;
-      if (pulseTimer) clearTimeout(pulseTimer);
-      pulseTimer = setTimeout(() => {
-        connectPulse = false;
-      }, 500);
-    });
+  let retryTimeoutId = null;
+
+  // Client-side rate limit shared by both buttons: at most one request per
+  // second, enforced as a cooldown after every run settles. Stops repeat
+  // mashing from racing the backend's own limiter and the VM's bank cycle.
+  const COOLDOWN_MS = 1000;
+  let cooldown = $state(false);
+  let cooldownTimer = null;
+
+  // Clicks during a run or the pacing gap queue up (capped) instead of
+  // being dropped by a greyed-out button: labels stay put (no flashing),
+  // a small chip shows the queue depth, and the queue drains itself at the
+  // one-per-second pace.
+  const QUEUE_CAP = 3;
+  let queued = $state([]);
+
+  let queuedInserts = $derived(queued.filter((m) => m === "insert").length);
+  let queuedAggregates = $derived(queued.filter((m) => m === "aggregate").length);
+
+  function requestRun(mode) {
+    if (mode === "insert" && ((!!turnstileSiteKey && !sessionReady) || insertUnavailable)) {
+      return;
+    }
+    if (running || cooldown) {
+      if (queued.length < QUEUE_CAP) queued = [...queued, mode];
+      return;
+    }
+    runQuery(mode);
   }
 
-  // Falling-asleep narration: seconds since the VM's last activity, ticked by
-  // the status poll (not a fabricated countdown, just a rough approach).
-  let idleSeconds = $state(0);
-
-  // True while a retry delay is in flight, so the narration line can say
-  // "still waking, retrying" instead of the poll-driven wake narration or a
-  // mid-sequence error.
-  let retrying = $state(false);
-  let retryTimeoutId = null;
+  function startCooldown() {
+    cooldown = true;
+    if (cooldownTimer) clearTimeout(cooldownTimer);
+    cooldownTimer = setTimeout(() => {
+      cooldown = false;
+      cooldownTimer = null;
+      const next = queued[0];
+      if (next) {
+        queued = queued.slice(1);
+        runQuery(next);
+      }
+    }, COOLDOWN_MS);
+  }
 
   function sleep(delayMs) {
     return new Promise((resolve) => {
@@ -141,7 +177,6 @@
       clearTimeout(retryTimeoutId);
       retryTimeoutId = null;
     }
-    retrying = false;
   }
 
   // Shared retry wrapper: runs doAttempt() up to 1 + RETRY_DELAYS_MS.length
@@ -159,37 +194,10 @@
         lastResult = { ok: false, error: String(err) };
       }
       if (attempt < RETRY_DELAYS_MS.length) {
-        retrying = true;
         await sleep(RETRY_DELAYS_MS[attempt]);
-        retrying = false;
       }
     }
     return lastResult;
-  }
-
-  // Session-scoped RAM-savings counter: accumulates MiB-seconds while banked.
-  // A coarse setInterval (not raf) is plenty for a number that only needs to
-  // visibly tick, not animate smoothly.
-  let savedMibSeconds = $state(0);
-  let savingsTimer = null;
-  let savingsLastTick = 0;
-
-  function startSavingsTimer() {
-    if (savingsTimer != null) return;
-    savingsLastTick = performance.now();
-    savingsTimer = setInterval(() => {
-      const now = performance.now();
-      const elapsedS = (now - savingsLastTick) / 1000;
-      savingsLastTick = now;
-      savedMibSeconds += elapsedS * MIB_SAVED_PER_S;
-    }, SAVINGS_TICK_MS);
-  }
-
-  function stopSavingsTimer() {
-    if (savingsTimer != null) {
-      clearInterval(savingsTimer);
-      savingsTimer = null;
-    }
   }
 
   // Hourly reset countdown: the backend lazily deletes rows older than the
@@ -223,12 +231,9 @@
     return { mmss: `${mm}:${ss}`, clockLabel };
   });
 
-  // Who-woke-it inference: client-side only, no backend signal for this.
-  let prevState = null;
+  // Timestamp of the visitor's own last completed run; the stale-poll guard
+  // below keys off it.
   let lastOwnActivityAt = 0;
-  let othersWoke = $state(false);
-
-  const WAKING_STATES = new Set(["relighting", "cold_booting", "starting", "serving"]);
 
   async function pollStatus() {
     try {
@@ -244,31 +249,19 @@
         return;
       }
       statusError = "";
-      status = body;
-      idleSeconds =
-        body.state === "serving" && body.last_active_at
-          ? (Date.now() - new Date(body.last_active_at).getTime()) / 1000
-          : 0;
-      if (body.state === "banked") {
-        startSavingsTimer();
-        othersWoke = false;
-      } else {
-        stopSavingsTimer();
-      }
-      // Own-wake grace window: a warm run finishes in tens of ms, so the
-      // asleep -> waking transition it caused usually lands on a poll AFTER
-      // running has already flipped false. Without the window, the visitor's
-      // own wake gets blamed on "another visitor".
-      const wasAsleep = prevState == null || prevState === "banked";
-      if (
-        wasAsleep &&
-        WAKING_STATES.has(body.state) &&
-        !running &&
-        Date.now() - lastOwnActivityAt > 4000
-      ) {
-        othersWoke = true;
-      }
-      prevState = body.state;
+      // Stale-poll guard: the status read is cached ~500ms and polled at
+      // 700ms, so right after a completed run the poll can still say
+      // "banked" while we already know the VM served us. Accepting that
+      // regression makes the stage sweep backwards then forwards again;
+      // hold "serving" until the poll data is plausibly fresher than our
+      // own roundtrip.
+      const staleCold =
+        status?.state === "serving" &&
+        (body.state === "banked" ||
+          body.state === "checkpointed" ||
+          body.state === "banking") &&
+        Date.now() - lastOwnActivityAt < 2500;
+      status = staleCold ? { ...body, state: "serving" } : body;
     } catch (err) {
       statusError = String(err);
     }
@@ -280,6 +273,11 @@
   // private panel's behavior closely enough that dev/no-key still works.
   let sessionReady = $state(false);
   let sessionError = $state("");
+  // True when there is no widget to solve AND the sessionless mint was
+  // refused (backend demands Turnstile, e.g. a local preview without a site
+  // key): inserts are disabled outright rather than erroring toward a check
+  // that does not exist.
+  let insertUnavailable = $state(false);
 
   async function mintSession(turnstileToken = "") {
     try {
@@ -292,8 +290,13 @@
       if (resp.ok && body.ok) {
         sessionReady = true;
         sessionError = "";
+        insertUnavailable = false;
       } else if (!resp.ok) {
-        sessionError = "verification failed, try again";
+        if (turnstileSiteKey) {
+          sessionError = "verification failed, try again";
+        } else {
+          insertUnavailable = true;
+        }
       }
     } catch {
       // fire-and-forget: a network hiccup just leaves inserts gated
@@ -315,14 +318,21 @@
       return { ok: false, error: body?.detail || `query failed (${resp.status})` };
     }
     if (body.session_required) {
+      if (!turnstileSiteKey) insertUnavailable = true;
       return {
         ok: false,
         permanent: true,
-        error: "solve the check above to add orders",
+        error: turnstileSiteKey
+          ? "solve the check above to add orders"
+          : "inserts need the human check, which is not configured here",
       };
     }
     if (body.rate_limited) {
-      return { ok: false, permanent: true, error: body.error };
+      return {
+        ok: false,
+        permanent: true,
+        error: "rate limited to one order per 5s, wait a bit and retry",
+      };
     }
     if (body.error) {
       return { ok: false, error: body.error };
@@ -332,10 +342,8 @@
 
   async function runQuery(mode) {
     if (running) return;
-    if (mode === "insert" && turnstileSiteKey && !sessionReady) return;
     running = true;
     runError = "";
-    othersWoke = false;
     startStopwatch();
     try {
       const result = await fetchWithBackoff(() => attemptQuery(mode));
@@ -345,6 +353,7 @@
       }
       const body = result.body;
       lastRun = body;
+      resultPage = 0;
       // A completed roundtrip MEANS the VM is serving right now; reflect it
       // immediately instead of letting the stage fall back to "banked" for
       // the up-to-1.2s gap (500ms status cache + 700ms poll) between running
@@ -352,7 +361,6 @@
       // visibly dips mid-wake; the next poll still owns the true state.
       if (status?.state !== "serving") {
         status = { ...(status ?? {}), state: "serving" };
-        prevState = "serving";
       }
       view = mode === "aggregate" ? "summary" : "orders";
       const tier =
@@ -362,12 +370,16 @@
       if (tiers[tier] == null || body.connect_ms < tiers[tier]) {
         tiers = { ...tiers, [tier]: body.connect_ms };
       }
-      flashConnectPulse();
+      runHistory = [
+        ...runHistory.slice(-(SPARK_MAX - 1)),
+        { connect_ms: body.connect_ms, tier },
+      ];
     } finally {
       running = false;
       lastOwnActivityAt = Date.now();
       cancelPendingRetry();
       stopStopwatch();
+      startCooldown();
     }
   }
 
@@ -388,81 +400,10 @@
     return () => {
       clearInterval(pollTimer);
       stopStopwatch();
-      stopSavingsTimer();
       stopClockTimer();
       cancelPendingRetry();
-      if (pulseTimer) clearTimeout(pulseTimer);
+      if (cooldownTimer) clearTimeout(cooldownTimer);
     };
-  });
-
-  const WAKE_NARRATION = {
-    banked: "connection parked, waking the VM",
-    relighting: "relighting from snapshot",
-    cold_booting: "cold booting against the volume",
-    serving: "spliced through, running SQL",
-  };
-
-  let wakeNarration = $derived(
-    retrying
-      ? "still waking, retrying"
-      : (WAKE_NARRATION[status?.state] ?? "connection parked, waking the VM"),
-  );
-
-  const STATE_VIEW = {
-    serving: {
-      label: "Awake",
-      tone: "awake",
-      sentence:
-        "Answering in single-digit milliseconds. Asleep again about a second after the last query.",
-    },
-    banking: {
-      label: "Falling asleep",
-      tone: "drowsy",
-      sentence: "Saving itself to disk...",
-    },
-    banked: { label: "Asleep", tone: "asleep", sentence: "" },
-    checkpointed: { label: "Asleep", tone: "asleep", sentence: "" },
-    relighting: {
-      label: "Waking",
-      tone: "waking",
-      sentence: "Waking from a snapshot...",
-    },
-    cold_booting: {
-      label: "Waking",
-      tone: "waking",
-      sentence: "Cold booting...",
-    },
-    starting: {
-      label: "Waking",
-      tone: "waking",
-      sentence: "Waking up...",
-    },
-  };
-
-  let stateView = $derived(
-    STATE_VIEW[status?.state] ?? {
-      label: status?.state || "No instance yet",
-      tone: "asleep",
-      sentence: "Cold-boots on the first connection.",
-    },
-  );
-
-  // Classification of the last completed run, in plain words, so the
-  // narration line under the wake number is always occupied.
-  const CLASS_SENTENCE = {
-    warm: "was already awake",
-    relight: "woke from a snapshot",
-    cold: "cold start: fresh boot against the saved data",
-  };
-
-  let lastRunSentence = $derived.by(() => {
-    if (!lastRun) return "";
-    if (lastRun.classification === "warm") return CLASS_SENTENCE.warm;
-    if (lastRun.classification === "relight") {
-      return `woke from a snapshot in ${ms(lastRun.connect_ms)}`;
-    }
-    if (lastRun.classification === "cold") return CLASS_SENTENCE.cold;
-    return "";
   });
 
   function ms(v) {
@@ -480,12 +421,7 @@
     return `£${(v ?? 0).toFixed(2)}`;
   }
 
-  function mibSeconds(v) {
-    return v < 1024 ? `${Math.round(v)} MiB·s` : `${(v / 1024).toFixed(1)} GiB·s`;
-  }
-
-  // Compact number formatting shared by the aggregate headline and the
-  // all-time savings line.
+  // Compact number formatting for the aggregate headline.
   function humanize(n) {
     const abs = Math.abs(n);
     if (abs < 1000) return `${Math.round(n)}`;
@@ -514,76 +450,54 @@
     return total >= 10000 ? humanize(total) : `${total}`;
   }
 
-  // All-time "memory saved while asleep" across every visitor, in GB-hours.
-  function gbHours(mibSeconds) {
-    if (mibSeconds == null) return "–";
-    const gbh = mibSeconds / 1024 / 3600;
-    if (gbh < 10) return `${gbh.toFixed(1)} GB·h`;
-    return `${humanize(gbh)} GB·h`;
-  }
+  // Flattened band-header + row items, newest first, paged to a fixed count
+  // so the result card never grows past its locked height: the ledger
+  // paginates instead of pushing the page down.
+  const PAGE_ITEMS = 12;
+  let resultPage = $state(0);
 
-  function barPct(run, part) {
-    const total = (run.connect_ms ?? 0) + (run.query_ms ?? 0);
-    if (!total) return 0;
-    return (part / total) * 100;
-  }
-
-  // Group rows into epoch bands by postmaster_start, newest group first, so
-  // the grid visually shows which rows share a resumed process and which rows
-  // outlived a cold boot.
-  let epochBands = $derived.by(() => {
+  let orderItems = $derived.by(() => {
     const rows = lastRun?.rows ?? [];
-    const bands = [];
+    const items = [];
+    let lastStart = null;
+    let bandIndex = -1;
     for (const row of rows) {
-      let band = bands[bands.length - 1];
-      if (!band || band.postmaster_start !== row.postmaster_start) {
-        band = { postmaster_start: row.postmaster_start, rows: [] };
-        bands.push(band);
+      if (lastStart !== row.postmaster_start) {
+        lastStart = row.postmaster_start;
+        bandIndex += 1;
+        items.push({
+          type: "band",
+          key: `band-${row.postmaster_start}`,
+          postmaster_start: row.postmaster_start,
+          current: bandIndex === 0,
+        });
       }
-      band.rows.push(row);
+      items.push({ type: "row", key: `row-${row.id}`, row });
     }
-    return bands;
+    return items;
   });
+
+  let orderPageCount = $derived(Math.max(1, Math.ceil(orderItems.length / PAGE_ITEMS)));
+
+  let pagedOrderItems = $derived.by(() => {
+    const page = Math.min(resultPage, orderPageCount - 1);
+    return orderItems.slice(page * PAGE_ITEMS, (page + 1) * PAGE_ITEMS);
+  });
+
+  let shownPage = $derived(Math.min(resultPage, orderPageCount - 1));
 
   let maxRevenue = $derived(
     Math.max(1, ...((lastRun?.breakdown ?? []).map((b) => b.revenue))),
   );
 
-  // Asleep hero copy: the volume size and best-known relight time, so the
-  // panel's rest state reads as a claim rather than an absence.
-  let asleepMib = $derived(
-    status?.volume_bytes != null
-      ? `${(status.volume_bytes / 1024 / 1024).toFixed(1)} MiB`
-      : "some",
-  );
-
-  // The card's headline stat: the wake promise. Best measured relight this
-  // session, else the honest ceiling.
+  // The wake promise: best measured relight this session, else the honest
+  // ceiling. Published as a bindable so the stage's asleep overlay shows it
+  // (the separate state card duplicated the stage and is gone).
   let wakeHeadline = $derived(tiers.relight != null ? `~${ms(tiers.relight)}` : "<1 s");
 
-  // Nerd stats live behind the info glyph, not in the card: less is more.
-  let finePrint = $derived(
-    [
-      `generation ${status?.generation ?? "-"}`,
-      `snapshot pair ${status?.pair_valid == null ? "-" : status.pair_valid ? "valid" : "invalid"}`,
-      `data volume ${asleepMib === "some" ? "-" : asleepMib}`,
-      "savings assume the 512 MiB VM stayed running",
-    ].join(" · "),
-  );
-
-  // Dozing narration while serving-but-idle: an approach, not a countdown.
-  let dozeHint = $derived(
-    status?.state === "serving" && !running && idleSeconds >= 1
-      ? "Dozing off any moment."
-      : null,
-  );
-
-  // Who-woke-it narration. Only the observed asleep -> waking transition
-  // (othersWoke, with its own-wake grace window) earns the line; the old
-  // "another visitor is using it right now" idle-time inference misfired on
-  // the visitor's own activity (status-cache lag kept last_active_at looking
-  // fresh) and flickered against the doze hint, so it is gone.
-  let othersHint = $derived(othersWoke ? "Another visitor just woke it." : null);
+  $effect(() => {
+    wakePromise = wakeHeadline;
+  });
 
   // Turnstile widget lifecycle: rendered lazily above the controls whenever a
   // site key is configured and no session exists yet. Mirrors
@@ -642,39 +556,6 @@
 
 <section class="pg-panel">
   <div class="left-col">
-    <div class="state-block">
-      <div class="state-chip tone-{stateView.tone}">
-        <span class="state-dot" aria-hidden="true"></span>
-        <span class="state-label">{stateView.label}</span>
-      </div>
-      {#if stateView.tone === "asleep" && (status?.state === "banked" || status?.state === "checkpointed")}
-        <p class="state-sentence">
-          <strong>Asleep, costing nothing.</strong> 0 CPU, 0 memory, data safe
-          on disk.
-        </p>
-      {:else}
-        <p class="state-sentence">{dozeHint ?? othersHint ?? stateView.sentence}</p>
-      {/if}
-      <div class="state-stat">
-        <span class="state-stat-value" class:stat-live={running}>
-          {running ? ms(stopwatchMs) : wakeHeadline}
-        </span>
-        <span class="state-stat-label">
-          {running ? "waking now" : "wake on the next query"}
-        </span>
-      </div>
-      <p class="resource-line">
-        saved by sleeping:
-        <span class="resource-value">{mibSeconds(savedMibSeconds)}</span> this
-        visit · <span class="resource-value">{gbHours(status?.total_saved_mib_s)}</span>
-        all&nbsp;time
-        <span class="fine-print" title={finePrint} aria-label={finePrint}>&#9432;</span>
-      </p>
-      {#if statusError}
-        <p class="soft-error">status: {statusError}</p>
-      {/if}
-    </div>
-
     {#if turnstileSiteKey && !sessionReady}
       <div class="turnstile-slot">
         <p class="turnstile-hint">solve the check to add orders</p>
@@ -689,71 +570,96 @@
       <button
         class="run-btn"
         type="button"
-        onclick={() => runQuery("insert")}
-        disabled={running || (!!turnstileSiteKey && !sessionReady)}
-        title="appends a random line item from the menu"
+        onclick={() => requestRun("insert")}
+        disabled={(!!turnstileSiteKey && !sessionReady) || insertUnavailable}
       >
-        {running ? "Connecting…" : "INSERT an order"}
+        {insertUnavailable ? "INSERTs unavailable" : "INSERT an order"}
+        {#if queuedInserts > 0}<span class="queue-chip">+{queuedInserts} queued</span>{/if}
       </button>
-      <button
-        class="aggregate-btn"
-        type="button"
-        onclick={() => runQuery("aggregate")}
-        disabled={running}
-        title="SELECT only: wakes the VM without writing"
-      >
-        {running ? "Connecting…" : "Run aggregate"}
+      <button class="aggregate-btn" type="button" onclick={() => requestRun("aggregate")}>
+        Run aggregate
+        {#if queuedAggregates > 0}<span class="queue-chip">+{queuedAggregates} queued</span>{/if}
       </button>
     </div>
 
     {#if runError}
-      <p class="run-error">
-        {runError}
-        <span class="run-error-hint">
-          (a refused connect usually means the wake-rate limiter; wait a beat and retry)
-        </span>
-      </p>
+      <p class="run-error">{runError}</p>
+    {/if}
+    {#if statusError}
+      <p class="soft-error">status: {statusError}</p>
     {/if}
 
-    <div class="last-run">
-      <div class="last-run-numbers">
-        <div class="last-run-big">
-          <span class="last-run-value" class:connect-pulse={connectPulse}>
-            {running ? ms(stopwatchMs) : ms(lastRun?.connect_ms)}
+    <div class="stats-card">
+      <div class="stats-section">
+        <span class="stats-label">Last run</span>
+        <div class="stat-row">
+          <span class="stat-name">wake + connect</span>
+          <span class="stat-value" class:stat-live={running}>
+            {#key running ? "live" : (lastRun?.connect_ms ?? "none")}
+              <span class="fade-swap" in:fade={{ duration: 220 }}>
+                {running ? ms(stopwatchMs) : ms(lastRun?.connect_ms)}
+              </span>
+            {/key}
           </span>
-          <span class="last-run-label">wake + connect</span>
         </div>
-        <div class="last-run-big">
-          <span class="last-run-value">{running ? "–" : ms(lastRun?.query_ms)}</span>
-          <span class="last-run-label">query</span>
+        <div class="stat-row">
+          <span class="stat-name">query</span>
+          <span class="stat-value">
+            {#key running ? "live" : (lastRun?.query_ms ?? "none")}
+              <span class="fade-swap" in:fade={{ duration: 220 }}>
+                {running ? "–" : ms(lastRun?.query_ms)}
+              </span>
+            {/key}
+          </span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-name">total</span>
+          <span class="stat-value">
+            {#key running || !lastRun ? "none" : lastRun.connect_ms}
+              <span class="fade-swap" in:fade={{ duration: 220 }}>
+                {running || !lastRun ? "–" : ms((lastRun.connect_ms ?? 0) + (lastRun.query_ms ?? 0))}
+              </span>
+            {/key}
+          </span>
+        </div>
+
+        <div class="spark-wrap">
+          <div class="spark" aria-hidden="true">
+            {#each runHistory as run, i (i)}
+              <span
+                class="spark-bar spark-{run.tier}"
+                style:height="{sparkHeight(run.connect_ms)}%"
+              ></span>
+            {/each}
+          </div>
+          <span class="spark-caption">wake + connect, every run this session</span>
         </div>
       </div>
-      <p class="last-run-narration">{running ? wakeNarration : lastRunSentence}</p>
-      <div class="timing-bar" aria-hidden="true">
-        {#if lastRun}
-          <span class="bar-connect" style:width="{barPct(lastRun, lastRun.connect_ms)}%"></span>
-          <span class="bar-query" style:width="{barPct(lastRun, lastRun.query_ms)}%"></span>
-        {/if}
+
+      <div class="stats-section stats-best">
+        <span class="stats-label">Best times this session</span>
+        <div class="stat-row">
+          <span class="stat-name">cold start</span>
+          <span class="stat-value">
+            {#key tiers.cold}<span class="fade-swap" in:fade={{ duration: 220 }}>{ms(tiers.cold)}</span>{/key}
+          </span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-name">from snapshot</span>
+          <span class="stat-value">
+            {#key tiers.relight}<span class="fade-swap" in:fade={{ duration: 220 }}>{ms(tiers.relight)}</span>{/key}
+          </span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-name">already awake</span>
+          <span class="stat-value">
+            {#key tiers.warm}<span class="fade-swap" in:fade={{ duration: 220 }}>{ms(tiers.warm)}</span>{/key}
+          </span>
+        </div>
       </div>
     </div>
 
-    <div class="tiers">
-      <div class="tier">
-        <span class="tier-value">{ms(tiers.cold)}</span>
-        <span class="tier-label">cold start</span>
-      </div>
-      <span class="tier-arrow" aria-hidden="true">›</span>
-      <div class="tier">
-        <span class="tier-value">{ms(tiers.relight)}</span>
-        <span class="tier-label">from snapshot</span>
-      </div>
-      <span class="tier-arrow" aria-hidden="true">›</span>
-      <div class="tier">
-        <span class="tier-value">{ms(tiers.warm)}</span>
-        <span class="tier-label">already awake</span>
-      </div>
-      <p class="tiers-caption">best this session</p>
-    </div>
+
   </div>
 
   <div class="right-col">
@@ -827,38 +733,59 @@
               </tr>
             </thead>
             <tbody>
-              {#each epochBands as band, i (band.postmaster_start)}
-                <tr class="epoch-band" class:epoch-current={i === 0}>
-                  <td colspan={ORDER_COLUMNS.length}>
-                    process born {clock(band.postmaster_start)}
-                    · {i === 0 ? "current" : "survived a later boot"}
-                  </td>
-                </tr>
-                {#each band.rows as row (row.id)}
-                  <tr class:row-new={row.id === lastRun?.inserted?.id}>
-                    <td class="col-numeric">{row.id}</td>
-                    <td>{row.item}</td>
-                    <td class="col-numeric">{row.qty}</td>
-                    <td class="col-numeric">{money(row.unit_price)}</td>
-                    <td>{clock(row.written_at)}</td>
+              {#each pagedOrderItems as item (item.key)}
+                {#if item.type === "band"}
+                  <tr class="epoch-band" class:epoch-current={item.current}>
+                    <td colspan={ORDER_COLUMNS.length}>
+                      process born {clock(item.postmaster_start)}
+                      · {item.current ? "current" : "survived a later boot"}
+                    </td>
+                  </tr>
+                {:else}
+                  <tr class:row-new={item.row.id === lastRun?.inserted?.id}>
+                    <td class="col-numeric">{item.row.id}</td>
+                    <td>{item.row.item}</td>
+                    <td class="col-numeric">{item.row.qty}</td>
+                    <td class="col-numeric">{money(item.row.unit_price)}</td>
+                    <td>{clock(item.row.written_at)}</td>
                     <td class="col-session">
-                      {#if row.yours}
+                      {#if item.row.yours}
                         <span class="yours-chip">you</span>
                       {:else}
                         <span class="visitor-label">visitor</span>
                       {/if}
                     </td>
                   </tr>
-                {/each}
+                {/if}
               {/each}
             </tbody>
           </table>
-          <p class="result-footer">({lastRun?.total_orders ?? 0} rows)</p>
-          <p class="result-note">
-            Bands group rows written by the same database process. A new band
-            means the VM was rebuilt from scratch; older rows surviving it
-            show the data outlives the VM.
-          </p>
+          <div class="result-footer-row">
+            <p class="result-footer">({lastRun?.total_orders ?? 0} rows)</p>
+            {#if orderPageCount > 1}
+              <div class="pager">
+                <button
+                  class="pager-btn"
+                  type="button"
+                  onclick={() => (resultPage = Math.max(0, shownPage - 1))}
+                  disabled={shownPage === 0}
+                  aria-label="newer rows"
+                >
+                  &#8249;
+                </button>
+                <span class="pager-count">{shownPage + 1}/{orderPageCount}</span>
+                <button
+                  class="pager-btn"
+                  type="button"
+                  onclick={() => (resultPage = Math.min(orderPageCount - 1, shownPage + 1))}
+                  disabled={shownPage >= orderPageCount - 1}
+                  aria-label="older rows"
+                >
+                  &#8250;
+                </button>
+              </div>
+            {/if}
+          </div>
         </div>
       {/if}
     </div>
@@ -873,7 +800,7 @@
   .pg-panel {
     display: grid;
     grid-template-columns: 340px 1fr;
-    align-items: start;
+    align-items: stretch;
     gap: 16px;
     max-width: 1100px;
   }
@@ -883,12 +810,8 @@
       grid-template-columns: 1fr;
     }
 
-    .state-block {
-      min-height: 0;
-    }
-
     .result-card {
-      min-height: 200px;
+      min-height: 320px;
     }
   }
 
@@ -903,142 +826,6 @@
     flex-direction: column;
     gap: 8px;
     min-width: 0;
-  }
-
-  .state-block {
-    background: var(--em-panel);
-    border: 1px solid var(--em-line);
-    border-radius: 14px;
-    box-shadow: var(--em-shadow-soft);
-    padding: 14px 16px;
-    min-height: 168px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .state-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 9px;
-    padding: 6px 14px;
-    border-radius: 999px;
-    border: 1px solid var(--em-line);
-    background: var(--em-ground);
-    font-family: var(--em-mono);
-    font-weight: 600;
-    font-size: 12.5px;
-    min-width: 11ch;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--em-ink);
-    align-self: flex-start;
-  }
-
-  .state-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--em-faint);
-  }
-
-  .tone-awake .state-dot {
-    background: var(--em-ember);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--em-ember) 18%, transparent);
-  }
-
-  .tone-drowsy .state-dot,
-  .tone-waking .state-dot {
-    background: var(--em-amber);
-    animation: pulse 0.9s ease-in-out infinite;
-  }
-
-  .tone-asleep .state-dot {
-    background: var(--em-frost);
-  }
-
-  .tone-asleep .state-label {
-    color: var(--em-muted);
-  }
-
-  @keyframes pulse {
-    0%,
-    100% {
-      transform: scale(1);
-      opacity: 1;
-    }
-    50% {
-      transform: scale(1.35);
-      opacity: 0.55;
-    }
-  }
-
-  .state-sentence {
-    margin: 0;
-    color: var(--em-ink);
-    font-size: 15px;
-    line-height: 1.5;
-    min-height: 3em;
-  }
-
-  .state-sentence strong {
-    font-weight: 650;
-  }
-
-  .state-stat {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-  }
-
-  .state-stat-value {
-    display: inline-block;
-    min-width: 5ch;
-    font-family: var(--em-mono);
-    font-size: 30px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.02em;
-    line-height: 1.1;
-    color: var(--em-ember-deep);
-  }
-
-  .state-stat-value.stat-live {
-    color: var(--em-ember);
-  }
-
-  .state-stat-label {
-    font-family: var(--em-mono);
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--em-faint);
-  }
-
-  .resource-line {
-    margin: 0;
-    font-size: 12.5px;
-    color: var(--em-faint);
-  }
-
-  .resource-value {
-    display: inline-block;
-    min-width: 7ch;
-    font-family: var(--em-mono);
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
-    color: var(--em-muted);
-  }
-
-  .fine-print {
-    cursor: help;
-    color: var(--em-faint);
-    font-size: 13px;
-    margin-left: 2px;
-  }
-
-  .fine-print:hover {
-    color: var(--em-muted);
   }
 
   .soft-error {
@@ -1113,119 +900,132 @@
     cursor: default;
   }
 
+  .run-btn,
+  .aggregate-btn {
+    position: relative;
+  }
+
+  .queue-chip {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-family: var(--em-mono);
+    font-size: 11px;
+    font-weight: 600;
+    background: color-mix(in srgb, var(--em-panel) 30%, transparent);
+    border: 1px solid color-mix(in srgb, var(--em-panel) 55%, transparent);
+  }
+
+  .fade-swap {
+    display: inline-block;
+  }
+
+  .aggregate-btn .queue-chip {
+    background: var(--em-ground);
+    border-color: var(--em-line);
+    color: var(--em-muted);
+  }
+
   .run-error {
     margin: 0;
     color: var(--em-ember-deep);
     font-size: 13px;
   }
 
-  .run-error-hint {
-    color: var(--em-muted);
-  }
 
-  .last-run {
+  .stats-card {
     background: var(--em-panel);
     border: 1px solid var(--em-line);
     border-radius: 14px;
     box-shadow: var(--em-shadow-soft);
-    padding: 14px 16px;
-  }
-
-  .last-run-numbers {
-    display: flex;
-    gap: 28px;
-  }
-
-  .last-run-big {
+    padding: 16px;
     display: flex;
     flex-direction: column;
+    gap: 16px;
+    flex: 1;
   }
 
-  .last-run-value {
-    font-family: var(--em-mono);
-    font-size: 26px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.02em;
-    line-height: 1.1;
+  .stats-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .stats-best {
+    margin-top: auto;
+    border-top: 1px solid var(--em-line-soft);
+    padding-top: 14px;
+    gap: 8px;
+  }
+
+  .stats-label {
+    font-size: 15px;
+    font-weight: 750;
+    letter-spacing: -0.01em;
     color: var(--em-ink);
   }
 
-  .last-run-label {
-    font-family: var(--em-mono);
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--em-faint);
-    margin-top: 5px;
-  }
-
-  .last-run-narration {
-    margin: 10px 0 0;
-    font-size: 13px;
-    color: var(--em-muted);
-    min-height: 1.4em;
-  }
-
-  .timing-bar {
+  .spark-wrap {
     display: flex;
-    height: 8px;
-    border-radius: 4px;
-    overflow: hidden;
-    margin-top: 12px;
-    background: var(--em-track);
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
   }
 
-  .bar-connect {
+  .spark {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 40px;
+    border-bottom: 1px solid var(--em-line-soft);
+  }
+
+  .spark-bar {
+    flex: 1 1 0;
+    max-width: 10px;
+    border-radius: 2px 2px 0 0;
     background: var(--em-ember);
   }
 
-  .bar-query {
-    background: var(--em-frost);
+  .spark-bar.spark-cold {
+    background: var(--em-ember-deep);
   }
 
-  .tiers {
-    background: var(--em-panel);
-    border: 1px solid var(--em-line);
-    border-radius: 14px;
-    box-shadow: var(--em-shadow-soft);
-    padding: 12px 16px;
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
+  .spark-bar.spark-warm {
+    background: var(--em-amber);
   }
 
-  .tier {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .tier-value {
+  .spark-caption {
     font-family: var(--em-mono);
-    font-size: 19px;
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    color: var(--em-faint);
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  .stat-name {
+    font-size: 14px;
+    color: var(--em-muted);
+  }
+
+  .stat-value {
+    font-family: var(--em-mono);
+    font-size: 16px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     color: var(--em-ink);
   }
 
-  .tier-label {
-    font-family: var(--em-mono);
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--em-faint);
-  }
-
-  .tier-arrow {
-    color: var(--em-line);
-    font-size: 18px;
-  }
-
-  .tiers-caption {
-    margin: 0 0 0 auto;
-    font-size: 12px;
-    color: var(--em-faint);
+  .stat-value.stat-live {
+    color: var(--em-ember);
   }
 
   .console-header {
@@ -1273,7 +1073,58 @@
     border-radius: 14px;
     box-shadow: var(--em-shadow);
     padding: 14px 16px;
-    min-height: 300px;
+    flex: 1;
+    min-height: 430px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .result-view {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .result-footer-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: auto;
+    padding-top: 8px;
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pager-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    border: 1px solid var(--em-line);
+    background: var(--em-panel);
+    color: var(--em-ink);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .pager-btn:hover:not(:disabled) {
+    border-color: var(--em-faint);
+  }
+
+  .pager-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .pager-count {
+    font-family: var(--em-mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--em-muted);
   }
 
   .result-view {
@@ -1406,35 +1257,13 @@
   }
 
   .result-footer {
-    margin: 10px 0 0;
+    margin: 0;
     font-size: 12px;
     font-family: var(--em-mono);
     color: var(--em-faint);
   }
 
-  .result-note {
-    margin: 12px 0 0;
-    font-size: 12px;
-    color: var(--em-muted);
-  }
-
   @media (prefers-reduced-motion: no-preference) {
-    .connect-pulse {
-      display: inline-block;
-      animation: connect-pulse 0.5s ease-out;
-    }
-
-    @keyframes connect-pulse {
-      0% {
-        transform: scale(1.25);
-        color: var(--em-ember);
-      }
-      100% {
-        transform: scale(1);
-        color: var(--em-ink);
-      }
-    }
-
     .row-new {
       animation: row-new-fade 0.8s ease-out;
     }

@@ -18,18 +18,18 @@
    * frost tones. */
   --es-cold-hue-base: 208;
   --es-cold-hue-span: 12;
-  --es-cold-sat-base: 46;
+  --es-cold-sat-base: 52;
   --es-cold-sat-span: 14;
-  --es-cold-light-base: 64;
+  --es-cold-light-base: 60;
   --es-cold-light-span: 12;
 
   /* Hot (serving) cell hue range: same ember family fcstory uses. */
-  --es-hot-hue-base: 16;
-  --es-hot-hue-span: 9;
-  --es-hot-sat-base: 72;
+  --es-hot-hue-base: 5;
+  --es-hot-hue-span: 10;
+  --es-hot-sat-base: 80;
   --es-hot-sat-span: 12;
-  --es-hot-light-base: 46;
-  --es-hot-light-span: 14;
+  --es-hot-light-base: 44;
+  --es-hot-light-span: 12;
 
   --es-glow: color-mix(in srgb, #e05c26 18%, transparent);
 
