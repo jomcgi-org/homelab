@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 	"google.golang.org/grpc"
@@ -30,6 +31,18 @@ const watchNodeHeartbeats = 3
 
 type fakeServer struct {
 	nodev1.UnimplementedNodeServiceServer
+	// store is the in-memory object-store stand-in for the continuity verbs (R6):
+	// ExportArtifact records a key, a repeat export short-circuits skipped, and
+	// EvictArtifact removes it, so the round-trip test proves the verbs cross the
+	// wire and observe each other's effect within one test's fresh server.
+	mu    sync.Mutex
+	store map[string]bool
+}
+
+// storeKey mirrors the Fork-3 layout <kind>/<workload>/<ref> so the fake's
+// idempotency keying matches the real store's.
+func storeKey(a *nodev1.ArtifactRef) string {
+	return fmt.Sprintf("%d/%s/%s", a.GetKind(), a.GetWorkload(), a.GetRef())
 }
 
 func (fakeServer) BuildBase(_ context.Context, req *nodev1.BuildBaseRequest) (*nodev1.BuildBaseResponse, error) {
@@ -259,11 +272,84 @@ func (fakeServer) StopGroupMember(_ context.Context, req *nodev1.StopGroupMember
 	return &nodev1.StopGroupMemberResponse{}, nil
 }
 
-func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequest) (*nodev1.NodeStatus, error) {
+// ExportArtifact records the artifact key in the in-memory store and reports the
+// bytes moved (derived from the ref length so the client proves the ref crossed),
+// short-circuiting skipped=true on a repeat export of the same key. It echoes the
+// volume generation for a VOLUME artifact so the pairing fact crosses the wire.
+func (s *fakeServer) ExportArtifact(_ context.Context, req *nodev1.ExportArtifactRequest) (*nodev1.ExportArtifactResponse, error) {
+	art := req.GetArtifact()
+	if art.GetRef() == "" && art.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME {
+		return nil, status.Errorf(codes.FailedPrecondition, "artifact ref required for kind %v", art.GetKind())
+	}
+	key := storeKey(art)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store[key] {
+		return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: true, Generation: volGen(art)}, nil
+	}
+	s.store[key] = true
+	return &nodev1.ExportArtifactResponse{
+		BytesMoved: uint64(len(art.GetWorkload()) + len(art.GetRef())),
+		Skipped:    false,
+		Generation: volGen(art),
+	}, nil
+}
+
+// RestoreArtifact reports a successful restore for a key present in the store,
+// echoing the volume generation for a VOLUME. FAILED_PRECONDITION when the store
+// has no copy (a corrupt or absent restore surfaces loudly, never silently).
+func (s *fakeServer) RestoreArtifact(_ context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
+	art := req.GetArtifact()
+	key := storeKey(art)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.store[key] {
+		return nil, status.Errorf(codes.FailedPrecondition, "artifact %q absent from store", key)
+	}
+	return &nodev1.RestoreArtifactResponse{
+		BytesMoved: uint64(len(art.GetWorkload()) + len(art.GetRef())),
+		Skipped:    false,
+		Generation: volGen(art),
+	}, nil
+}
+
+// EvictArtifact deletes the key from the store (remote=true) and is idempotent on
+// an already-absent artifact. remote=false is accepted as the typed local-evict
+// alias and returns OK without touching the store map.
+func (s *fakeServer) EvictArtifact(_ context.Context, req *nodev1.EvictArtifactRequest) (*nodev1.EvictArtifactResponse, error) {
+	art := req.GetArtifact()
+	key := storeKey(art)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	present := s.store[key]
+	if req.GetRemote() {
+		delete(s.store, key)
+	}
+	if !present {
+		return &nodev1.EvictArtifactResponse{BytesFreed: 0}, nil
+	}
+	return &nodev1.EvictArtifactResponse{BytesFreed: uint64(len(art.GetWorkload()) + len(art.GetRef()))}, nil
+}
+
+// volGen scripts a fixed volume generation for a VOLUME artifact so the client
+// can assert the generation echo crosses the wire; 0 for every other kind.
+func volGen(a *nodev1.ArtifactRef) uint64 {
+	if a.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME {
+		return 5
+	}
+	return 0
+}
+
+func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequest) (*nodev1.NodeStatus, error) {
 	return &nodev1.NodeStatus{
 		NodeId:     req.GetNodeId(),
 		LiveVms:    1,
 		MaxLiveVms: 10,
+		// Continuity facts (R6): a fixed drain deadline and store reachability so
+		// the client can assert the new node-level fields round-trip. The bundle,
+		// volume, and set exported flags below prove the per-artifact fields cross.
+		DrainDeadlineUnixMs: 1_700_000_009_000,
+		StoreReachable:      true,
 		// Session facts (R2): deterministic, so the client can assert the new
 		// repeated/scalar status fields round-trip.
 		SessionVms: []*nodev1.SessionVm{
@@ -336,6 +422,8 @@ func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequ
 				Generation:      5,
 				SizeBytes:       16384,
 				CreatedAtUnixMs: 1_700_000_004_000,
+				// exported (R6): this bundle's store copy is present and current.
+				Exported: true,
 			},
 		},
 		Volumes: []*nodev1.Volume{
@@ -345,6 +433,9 @@ func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequ
 				SizeBytes:      10_737_418_240,
 				AllocatedBytes: 536_870_912,
 				Attached:       true,
+				// exported_generation (R6): the store holds the gen-5 (vol.img, gen)
+				// pair, so a disk-loss restore recovers to generation 5.
+				ExportedGeneration: 5,
 			},
 		},
 		// Group facts (R5): deterministic, so the client can assert the new
@@ -378,6 +469,8 @@ func (fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequ
 					{MemberName: "worker-0", SnapshotRef: "group/set-abc/worker-0", SizeBytes: 5120},
 				},
 				CreatedAtUnixMs: 1_700_000_006_000,
+				// exported (R6): the whole set's store copy is present and current.
+				Exported: true,
 			},
 		},
 	}, nil
@@ -401,7 +494,7 @@ func main() {
 		os.Exit(1)
 	}
 	srv := grpc.NewServer()
-	nodev1.RegisterNodeServiceServer(srv, fakeServer{})
+	nodev1.RegisterNodeServiceServer(srv, &fakeServer{store: map[string]bool{}})
 
 	// Announce the chosen port on stdout (unbuffered) so the harness can connect.
 	fmt.Printf("PORT=%d\n", lis.Addr().(*net.TCPAddr).Port)
