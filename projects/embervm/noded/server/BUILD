@@ -32,6 +32,7 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "drain_test.go",
         "group_member_test.go",
         "group_test.go",
         "server_test.go",
