@@ -34,12 +34,18 @@
   // Firecracker demos under /demos/* render their own Grimoire-style topbar
   // (wordmark + tabs) and are a full-page tool, not a page of the portfolio
   // site, so the global nav is suppressed here too.
+  //
+  // The /ember/* pages are their own small site in the fcstory visual
+  // language, each with its own wordmark topbar linking home; they had this
+  // suppression under the old /app/firecracker path and lost it in the move
+  // to /ember.
   let hideNav = $derived(
     isPrivate ||
       /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?demos(\/|$)/.test($page.url.pathname) ||
+      /^\/(public\/|private\/)?ember(\/|$)/.test($page.url.pathname) ||
       $page.error != null,
   );
 
