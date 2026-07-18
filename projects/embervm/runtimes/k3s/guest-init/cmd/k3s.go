@@ -100,6 +100,16 @@ func k3sArgv(env func(string) string) ([]string, error) {
 		argv := []string{
 			bin, "server",
 			"--flannel-backend=host-gw",
+			// Non-default cluster/service CIDRs: the OUTER homelab cluster is also
+			// k3s with the default 10.42.0.0/16 pods + 10.43.0.0/16 services, so an
+			// inner cluster left on the defaults shadows the entire outer pod
+			// network. Once flannel host-gw installs the inner per-node 10.42.x/24
+			// routes, the guest routes replies to any outer-pod client INTO its own
+			// pod network instead of back out the default gateway - the entry DNAT
+			// blackhole behind the R6 Gate-1 EOF (traffic in, SYN-ACK swallowed).
+			"--cluster-cidr=10.52.0.0/16",
+			"--service-cidr=10.53.0.0/16",
+			"--cluster-dns=10.53.0.10",
 		}
 		if secret != "" {
 			// A supplied secret becomes the cluster token AND the static token-auth
