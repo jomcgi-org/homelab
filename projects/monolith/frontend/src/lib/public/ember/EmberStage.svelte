@@ -10,8 +10,8 @@
   import { onMount } from "svelte";
   import "./ember-stage.css";
 
-  /** @type {{ state?: string|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean }} */
-  let { state = null, totalSavedMibS = null, stopwatchMs = 0, running = false } = $props();
+  /** @type {{ vmState?: string|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean }} */
+  let { vmState = null, totalSavedMibS = null, stopwatchMs = 0, running = false } = $props();
 
   const WAKING = new Set(["relighting", "cold_booting", "starting"]);
 
@@ -88,13 +88,13 @@
   let flickerTickAt = 0;
 
   function targetFor(now) {
-    if (state === "banked" || state == null) return 0;
-    if (state === "serving") return 1;
-    if (WAKING.has(state)) {
+    if (vmState === "banked" || vmState == null) return 0;
+    if (vmState === "serving") return 1;
+    if (WAKING.has(vmState)) {
       const frac = Math.min(1, (now - sweepStartAt) / WAKE_SWEEP_MS);
       return sweepFromW + (1 - sweepFromW) * frac;
     }
-    if (state === "banking") {
+    if (vmState === "banking") {
       const frac = Math.min(1, (now - sweepStartAt) / BANK_SWEEP_MS);
       return sweepFromW * (1 - frac);
     }
@@ -105,11 +105,11 @@
     const dt = lastFrameAt ? now - lastFrameAt : 16;
     lastFrameAt = now;
 
-    if (state !== prevFrameState) {
+    if (vmState !== prevFrameState) {
       // Entered a new state this frame: (re)start the sweep clock from the
       // current eased warmth, so a mid-sweep state flip (e.g. banking
       // interrupted by a new request) never snaps.
-      prevFrameState = state;
+      prevFrameState = vmState;
       sweepStartAt = now;
       sweepFromW = w;
     }
@@ -125,7 +125,7 @@
       }
     }
 
-    if (state === "serving") {
+    if (vmState === "serving") {
       // Subtle per-cell flicker: a handful of hot cells get a brief opacity
       // wobble, staggered by picking a new random subset roughly every
       // 250ms rather than every frame.
@@ -181,7 +181,7 @@
   });
 
   // ── Reduced-motion static fallback: two-state cell fill, no rAF loop ──
-  let staticHot = $derived(state === "serving" || WAKING.has(state ?? ""));
+  let staticHot = $derived(vmState === "serving" || WAKING.has(vmState ?? ""));
 
   function ms(v) {
     if (v == null) return "–";
@@ -213,10 +213,10 @@
     return `${humanize(gbh)} GB·h`;
   }
 
-  let stateWord = $derived(STATE_WORD[state ?? ""] ?? "Asleep");
+  let stateWord = $derived(STATE_WORD[vmState ?? ""] ?? "Asleep");
 
   let heroKind = $derived(
-    state === "serving" ? "serving" : state != null && WAKING.has(state) ? "waking" : "cold",
+    vmState === "serving" ? "serving" : vmState != null && WAKING.has(vmState) ? "waking" : "cold",
   );
 </script>
 
@@ -294,7 +294,7 @@
   }
 
   /* Reduced-motion fallback: a second, static grid painted with a plain
-     two-state (cold/hot) fill using the same cell tokens, no per-cell
+     two-vmState (cold/hot) fill using the same cell tokens, no per-cell
      randomness and no rAF loop. Only one of the two .es-grid elements is
      visible at a time (see the media query below). */
   .es-static :global(.es-cell) {

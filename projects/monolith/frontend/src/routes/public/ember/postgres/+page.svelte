@@ -37,7 +37,7 @@
   </header>
 
   <EmberStage
-    state={consoleStatus?.state}
+    vmState={consoleStatus?.state}
     totalSavedMibS={consoleStatus?.total_saved_mib_s}
     stopwatchMs={consoleStopwatchMs}
     running={consoleRunning}
