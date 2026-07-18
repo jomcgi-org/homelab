@@ -230,23 +230,41 @@ func run(logger *slog.Logger) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		// Drain: stop advertising capacity, stop accepting new RPCs, and let
-		// in-flight Assigns finish. Each Assign holds its microVM until it returns,
-		// so GracefulStop draining handlers == draining running tasks (the fc-invoke
-		// HTTP-Shutdown lesson). The pod's terminationGracePeriodSeconds is set
-		// above DrainTimeout so Kubernetes never SIGKILLs mid-drain.
-		logger.Info("shutdown signal received; draining", "budget", cfg.DrainTimeout)
-		srv.SetDraining()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = health.Shutdown(shutdownCtx)
+		// Drain (R6 bounded preemption): publish a deadline and HOLD the door.
+		// noded has no lifecycle authority, so it does not bank anything itself; it
+		// sets draining + a deadline on NodeStatus, and the control plane, watching
+		// that stream, force-banks every managed session/serving/stateful/group VM
+		// before the deadline (ADR embervm/009). The gRPC surface stays UP the whole
+		// time so those Bank/Stop/Resolve rpcs are served; only new BuildBase/Prime/
+		// Assign are refused (the draining flag). We hold until the managed live-VM
+		// registry empties or the deadline passes, then drain in-flight task Assigns
+		// via GracefulStop. The pod's terminationGracePeriodSeconds is drain + 30s so
+		// Kubernetes never SIGKILLs mid-bank.
+		deadline := time.Now().Add(cfg.DrainTimeout)
+		logger.Info("shutdown signal received; draining", "budget", cfg.DrainTimeout, "deadline", deadline.UTC())
+		srv.SetDraining(deadline)
 
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = health.Shutdown(shutdownCtx)
+		cancel()
+
+		// Hold the door: keep serving lifecycle rpcs until the control plane has
+		// banked every managed VM, or the deadline elapses. remaining>0 means the
+		// bank pass could not finish in the window; those VMs die with the pod (spot
+		// semantics: their durable state is the volume or a prior bundle).
+		if remaining := srv.WaitForManagedDrain(context.Background(), deadline); remaining > 0 {
+			logger.Warn("drain deadline reached with managed VMs still live; they will be reaped with the pod", "remaining", remaining)
+		} else {
+			logger.Info("all managed VMs drained; stopping")
+		}
+
+		// Now stop the server: in-flight task Assigns get a short grace, then hard stop.
 		done := make(chan struct{})
 		go func() { gs.GracefulStop(); close(done) }()
 		select {
 		case <-done:
-		case <-time.After(cfg.DrainTimeout):
-			logger.Warn("drain budget exceeded; forcing stop", "budget", cfg.DrainTimeout)
+		case <-time.After(10 * time.Second):
+			logger.Warn("graceful stop budget exceeded; forcing stop")
 			gs.Stop()
 		}
 		return nil

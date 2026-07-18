@@ -689,11 +689,15 @@ noded:
   # CR automatically. Entries here merge on top.
   images: {}
 
-  # Graceful-drain budget: on SIGTERM the daemon waits up to this long for in-
-  # flight Assigns before exiting. terminationGracePeriodSeconds is set above it
-  # (grace = drain + 30s), so a rollout never drops a running task.
+  # Graceful-drain budget (R6 bounded preemption, ADR embervm/009): on SIGTERM the
+  # daemon publishes a drain deadline (now + this) via NodeStatus and HOLDS the
+  # gRPC surface up so the control plane can force-bank every managed session/
+  # serving/stateful/group VM before the deadline; only then does it drain
+  # in-flight task Assigns and exit. terminationGracePeriodSeconds is set above it
+  # (grace = drain + 30s), so a rollout never SIGKILLs mid-bank and never drops a
+  # running task. 120s is the v1 spot-instance preemption window.
   drain:
-    timeoutSeconds: 60
+    timeoutSeconds: 120
 
   # R1 zip lane: a BuildBase zip source is a runtime image plus a zip archive noded
   # fetches, sha256-verifies into memory, and hydrates into the build VM over vsock

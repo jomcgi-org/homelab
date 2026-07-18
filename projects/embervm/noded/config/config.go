@@ -86,9 +86,13 @@ type Config struct {
 	// A restored guest is already warm; this short budget only covers WaitReady
 	// retrying past the Firecracker post-restore vsock RX-queue race. Default 2s.
 	RestoreReadyTimeout time.Duration
-	// DrainTimeout bounds graceful shutdown: on SIGTERM the daemon stops
-	// accepting new RPCs and waits up to this long for in-flight Assigns to
-	// finish. The pod's terminationGracePeriodSeconds must exceed it. Default 60s.
+	// DrainTimeout bounds graceful shutdown: on SIGTERM the daemon publishes a
+	// drain deadline (now + DrainTimeout) via NodeStatus and HOLDS the gRPC
+	// surface up, serving lifecycle RPCs, until every managed (session/serving/
+	// stateful/group) VM has left the registry (the control plane force-banks
+	// them, R6) or this budget elapses; only then does it drain in-flight Assigns
+	// and stop. The pod's terminationGracePeriodSeconds must exceed it (chart sets
+	// drain + 30s). Default 120s (the R6 bounded-preemption window).
 	DrainTimeout time.Duration
 
 	// EgressSidecarAddr is the pod-local egress-proxy sidecar TCP address. The
@@ -190,7 +194,7 @@ func Load() (Config, error) {
 		GuestOomScoreAdj:    atoiDefault("EMBERVM_NODED_GUEST_OOM_SCORE_ADJ", 1000),
 		BootReadyTimeout:    60 * time.Second,
 		RestoreReadyTimeout: 2 * time.Second,
-		DrainTimeout:        60 * time.Second,
+		DrainTimeout:        120 * time.Second,
 		EgressSidecarAddr:   getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
 		ArchiveFetchTimeout: 60 * time.Second,
 		ArchiveMaxBytes:     512 << 20,

@@ -234,8 +234,9 @@ type Server struct {
 	// groupclock.Resync; overridable in tests.
 	groupClock groupClock
 
-	drainingMu sync.RWMutex
-	draining   bool
+	drainingMu          sync.RWMutex
+	draining            bool
+	drainDeadlineUnixMs int64
 
 	subMu sync.Mutex
 	subs  map[chan struct{}]struct{}
@@ -1293,6 +1294,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		LiveVms:               uint32(live),
 		MaxLiveVms:            uint32(maxLive),
 		Draining:              s.isDraining(),
+		DrainDeadlineUnixMs:   s.drainDeadline(),
 		BuildError:            s.bases.firstBuildError(),
 		SessionVms:            sessionVMs,
 		SessionSnapshots:      snaps,
@@ -1540,11 +1542,17 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 
 // ---- drain + change notification -------------------------------------------
 
-// SetDraining marks the daemon draining so WatchNode reports draining=true and
-// new BuildBase/Prime calls are rejected. Called on SIGTERM before GracefulStop.
-func (s *Server) SetDraining() {
+// SetDraining marks the daemon draining and publishes the drain deadline so
+// WatchNode reports draining=true plus drain_deadline_unix_ms, and new
+// BuildBase/Prime/Assign calls are rejected. The control plane reads the deadline
+// off the WatchNode stream and force-banks every managed VM before it (R6). All
+// LIFECYCLE rpcs (Bank/Stop/Resolve/StopGroupMember) keep being served while
+// draining so that force-bank can run; only new-work verbs are refused. Called on
+// SIGTERM before the daemon holds shutdown for the bank pass.
+func (s *Server) SetDraining(deadline time.Time) {
 	s.drainingMu.Lock()
 	s.draining = true
+	s.drainDeadlineUnixMs = deadline.UnixMilli()
 	s.drainingMu.Unlock()
 	s.signalChange()
 }
@@ -1553,6 +1561,53 @@ func (s *Server) isDraining() bool {
 	s.drainingMu.RLock()
 	defer s.drainingMu.RUnlock()
 	return s.draining
+}
+
+// drainDeadline returns the published drain deadline in unix-ms, 0 when not
+// draining. Surfaced in NodeStatus so the control plane bounds its force-bank
+// pass to deadline - safety_margin.
+func (s *Server) drainDeadline() int64 {
+	s.drainingMu.RLock()
+	defer s.drainingMu.RUnlock()
+	return s.drainDeadlineUnixMs
+}
+
+// managedLiveVMCount is the number of live NON-task VMs the control plane must
+// force-bank during a drain: session, serving, stateful, and group member VMs.
+// Task-class VMs (in-flight Assigns) are excluded; they drain via GracefulStop.
+// The shutdown path holds the gRPC surface up until this reaches zero (every
+// managed VM banked or destroyed by the control plane) or the deadline passes.
+func (s *Server) managedLiveVMCount() int {
+	return len(s.sessionVMs.snapshot()) + s.servingVMs.count() + s.statefulVMs.count() + s.groupMembers.count()
+}
+
+// WaitForManagedDrain holds until every managed VM has left the registry (the
+// control plane force-banked or destroyed them) or the deadline passes,
+// whichever comes first, and returns the count still live at return (0 on a
+// clean drain). It wakes on every NodeStatus change (each Bank/Stop signals) so a
+// clean drain returns promptly, with a periodic re-check as a backstop against a
+// missed signal. It does NOT stop the gRPC server: the caller does that after
+// this returns, so lifecycle rpcs stay served for the whole window.
+func (s *Server) WaitForManagedDrain(ctx context.Context, deadline time.Time) int {
+	ch := s.subscribe()
+	defer s.unsubscribe(ch)
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if n := s.managedLiveVMCount(); n == 0 {
+			return 0
+		}
+		select {
+		case <-ch:
+		case <-ticker.C:
+		case <-timer.C:
+			return s.managedLiveVMCount()
+		case <-ctx.Done():
+			return s.managedLiveVMCount()
+		}
+	}
 }
 
 func (s *Server) subscribe() chan struct{} {
