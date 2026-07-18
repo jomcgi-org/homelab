@@ -197,7 +197,7 @@
         <a
           class="src"
           href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/README.md"
-          >read the README</a
+          >source</a
         >
       </p>
     </header>
