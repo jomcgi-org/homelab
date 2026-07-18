@@ -585,8 +585,48 @@ k3s_archive(
     arm64_binary_url = "https://github.com/k3s-io/k3s/releases/download/v1.30.6+k3s1/k3s-arm64",
 )
 
+# Vendor the Abseil checkout + its dep distdir for the EmberVM skyframe demo guest
+# (ADR embervm/010). The zero-egress bazel-query guest runs the warming
+# `bazel cquery //absl/...` fully offline via WORKSPACE mode + --distdir; this rule
+# bakes /opt/abseil and /opt/distdir into an apko layer. The dep set was enumerated
+# and its offline viability proven under Bazel 7.4.1 (see bazel_demo_workspace.bzl).
+bazel_demo_workspace = use_repo_rule("//bazel/tools/http:bazel_demo_workspace.bzl", "bazel_demo_workspace")
+
+bazel_demo_workspace(
+    name = "bazel_demo_workspace",
+    abseil_sha256 = "733726b8c3a6d39a4120d7e45ea8b41a434cdacde401cba500f14236c49b39dc",
+    abseil_strip_prefix = "abseil-cpp-20240116.2",
+    abseil_url = "https://github.com/abseil/abseil-cpp/releases/download/20240116.2/abseil-cpp-20240116.2.tar.gz",
+    distdir_sha256s = [
+        "cd55a062e763b9349921f0f5db8c3933288dc8ba4f76dd9416aac68acee3cb94",  # bazel-skylib-1.5.0.tar.gz
+        "6bc180a57d23d4d9515519f92b0c83d61b05b5bab188961f36ac7b06b0d9e9ce",  # v1.8.3.tar.gz (google/benchmark)
+        "8ad598c73ad796e0d8280b082cebd82a630d73e73cd3c70057938a6501bba5d7",  # v1.14.0.tar.gz (google/googletest)
+        "8150406605389ececb6da07cbcb509d5637a3ab9a24bc69b1101531367d89d74",  # platforms-0.0.8.tar.gz
+        "2037875b9a4456dce4a79d112a8ae885bbc4aad968e6587dca6e64f3a0900cdf",  # rules_cc-0.0.9.tar.gz
+        "0a8003b044294d7840ac7d9d73eef05d6ceb682d7516781a4ec62eeb34702578",  # rules_python-0.24.0.tar.gz
+    ],
+    distdir_urls = [
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.5.0/bazel-skylib-1.5.0.tar.gz",
+        "https://github.com/google/benchmark/archive/refs/tags/v1.8.3.tar.gz",
+        "https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz",
+        "https://github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
+        "https://github.com/bazelbuild/rules_cc/releases/download/0.0.9/rules_cc-0.0.9.tar.gz",
+        "https://github.com/bazelbuild/rules_python/releases/download/0.24.0/rules_python-0.24.0.tar.gz",
+    ],
+)
+
 # Download multiarch binaries (raw binary files)
 multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
+
+multiarch_http_file(
+    name = "bazel_demo_bin",
+    amd64_sha256 = "c97f02133adce63f0c28678ac1f21d65fa8255c80429b588aeeba8a1fac6202b",
+    amd64_url = "https://github.com/bazelbuild/bazel/releases/download/7.4.1/bazel-7.4.1-linux-x86_64",
+    arm64_sha256 = "d7aedc8565ed47b6231badb80b09f034e389c5f2b1c2ac2c55406f7c661d8b88",
+    arm64_url = "https://github.com/bazelbuild/bazel/releases/download/7.4.1/bazel-7.4.1-linux-arm64",
+    binary_name = "bazel",
+    package_dir = "/usr/local/bin",
+)
 
 multiarch_http_file(
     name = "bb",

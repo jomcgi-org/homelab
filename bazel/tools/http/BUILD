@@ -17,6 +17,12 @@ bzl_library(
 )
 
 bzl_library(
+    name = "bazel_demo_workspace",
+    srcs = ["bazel_demo_workspace.bzl"],
+    visibility = ["//visibility:public"],
+)
+
+bzl_library(
     name = "k3s_archive",
     srcs = ["k3s_archive.bzl"],
     visibility = ["//visibility:public"],
