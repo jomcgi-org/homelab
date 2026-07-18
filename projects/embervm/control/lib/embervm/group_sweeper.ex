@@ -122,7 +122,9 @@ defmodule Embervm.GroupSweeper do
   alias Embervm.OpLog.Op
 
   alias Embervm.Node.V1.{
+    ArtifactRef,
     DeleteGroupNetworkRequest,
+    EvictArtifactRequest,
     EvictSnapshotRequest,
     StopGroupMemberRequest,
     Trace
@@ -202,6 +204,12 @@ defmodule Embervm.GroupSweeper do
       delete_group_network_fun:
         Keyword.get(opts, :delete_group_network_fun, &default_delete_group_network/2),
       evict_snapshot_fun: Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
+      # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
+      # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside the local
+      # per-member EvictSnapshot so the store copy of the whole banked SET is dropped
+      # on the same trigger (banked TTL, forced roll). Injected for tests; production
+      # dials the real NodeService stub.
+      evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
       # status.group {state, members{live,degraded}, setId, subnetCidr} + groupSummary
       # writer (Task 9). Defaults to the K8s merge-patch on the workload status
       # subresource, the SAME seam StatefulSweeper.status_writer uses; tests inject a
@@ -949,6 +957,11 @@ defmodule Embervm.GroupSweeper do
   # group_destroyed{reason}. Warmth-only terminal: the set IS the instance's end.
   defp destroy_banked(state, instance, reason) do
     _ = evict_member_bundles(state, instance)
+    # R6, Task 9: drop the store copy of the whole banked SET (EvictArtifact,
+    # remote=true, kind GROUP_SET) alongside the local per-member eviction, on the
+    # same trigger. The set is the export/evict unit; a single remote evict covers
+    # every member. Best-effort and idempotent on the daemon.
+    _ = evict_remote_set(state, instance)
     _ = delete_network(state, instance)
 
     _ =
@@ -1048,6 +1061,30 @@ defmodule Embervm.GroupSweeper do
     :ok
   end
 
+  # R6, Task 9: drop the store copy of a banked GROUP_SET (EvictArtifact,
+  # remote=true) alongside the local per-member eviction. ref is the set_id (the set
+  # is the export/evict unit). Best-effort; a set with no set_id (a partial set
+  # already cleared) or no node is a clean no-op.
+  defp evict_remote_set(state, %{node_id: node_id, set_id: set_id, workload: workload})
+       when is_binary(node_id) and is_binary(set_id) and set_id != "" do
+    artifact = %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: workload, ref: set_id}
+    req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
+
+    with {:ok, channel} <- safe_channel(state, node_id) do
+      try do
+        state.evict_artifact_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp evict_remote_set(_state, _instance), do: :ok
+
   # -- stats scrape helpers -----------------------------------------------------
 
   # Composite groups run on the same node Envoy as serving/stateful, so reuse the
@@ -1136,6 +1173,10 @@ defmodule Embervm.GroupSweeper do
 
   defp default_evict_snapshot(channel, req) do
     Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+  end
+
+  defp default_evict_artifact(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
   end
 
   # Production scrape: identical to StatefulSweeper's (GET /stats?format=json over the

@@ -56,13 +56,16 @@ defmodule Embervm.SessionManager do
   alias Embervm.{NodeCapacity, SessionPlacement, SessionState, SessionStore, SessionTrace, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
+    ArtifactRef,
     BankRequest,
     BankResponse,
+    EvictArtifactRequest,
     EvictSnapshotRequest,
     PrimeRequest,
     PrimeResponse,
     RelightRequest,
     RelightResponse,
+    RestoreArtifactRequest,
     Trace
   }
 
@@ -189,6 +192,22 @@ defmodule Embervm.SessionManager do
       bank_fun: Keyword.get(opts, :bank_fun, &default_bank/2),
       relight_fun: Keyword.get(opts, :relight_fun, &default_relight/2),
       evict_fun: Keyword.get(opts, :evict_fun, &default_evict/2),
+      # Restore-on-miss seam (R6, Task 8): (channel, %RestoreArtifactRequest{}) ->
+      # {:ok, %RestoreArtifactResponse{}} | {:error, _}. Fetches a banked SESSION
+      # bundle back onto local disk from the object store before a relight, when the
+      # bundle is exported but no longer locally reported. Injected for tests;
+      # production dials the real NodeService stub.
+      restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
+      # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
+      # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside every local
+      # EvictSnapshot so the store copy of a session's bundle follows on the same
+      # triggers (banked TTL, disk pressure, destroy, expiry, orphan sweep). Sessions
+      # carry no volume/generation, so no pairing guard applies here. Injected for
+      # tests; production dials the real NodeService stub.
+      evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
+      # The op-log the restore audit record (:artifact_restored) is appended to.
+      # Injected for tests; production uses the SQLite backend.
+      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
       # Extra opts threaded into every started Embervm.Session (the daemon seams),
       # so a test can inject a fake session_assign into the spawned process.
       session_opts: Keyword.get(opts, :session_opts, []),
@@ -1013,6 +1032,20 @@ defmodule Embervm.SessionManager do
     # session share this one relight). nil when tracing is off.
     traceparent = first_waiter_traceparent(state, session_id)
 
+    # Restore-on-miss (R6, Task 8): the session's recorded node_id may no longer
+    # report the bundle locally (disk lost, or a node restart that dropped it),
+    # while the bundle is still exported (its store copy is present and current)
+    # and the store is reachable. The DECISION (a pure ETS read) is taken here on
+    # the serialized manager, cheap and consistent with the wake decision itself;
+    # the RESTORE RPC, when the decision says to attempt one, runs inside the
+    # spawned worker below (before node_for_relight's placement check), so park
+    # semantics are unchanged and a slow store round-trip never blocks the
+    # manager. A restore failure (or a genuinely unreachable store / a bundle
+    # that was never exported) is fail-open: node_for_relight then makes exactly
+    # the same call it always did, degrading to the daemon's existing
+    # snapshot_lost failure rather than blocking the relight on store state.
+    restore = restore_plan(state, session)
+
     spawn(fn ->
       SessionTrace.restore_parent(traceparent)
 
@@ -1025,8 +1058,27 @@ defmodule Embervm.SessionManager do
                            "ember.generation" => session.generation || 0
                          }
                        } do
+        # Restore-on-miss: when the bundle is gone locally but exported, restore it
+        # first and then relight against the SAME anchor node directly. The relight
+        # must NOT re-consult node_for_relight after a restore: that guard checks the
+        # CP's ETS session_snapshots fact, which the just-completed restore has not
+        # yet refreshed (it updates on the next NodeStatus), so it would spuriously
+        # report snapshot_lost and skip the relight the restore just enabled. A
+        # restore FAILURE falls back to the normal node_for_relight path (fail-open).
+        restore_target =
+          case restore do
+            {:restore, restore_node_id, restore_ref} ->
+              case restore_bundle(state, restore_node_id, session.workload, restore_ref) do
+                :ok -> {:ok, restore_node_id}
+                _ -> :none
+              end
+
+            _ ->
+              :none
+          end
+
         outcome =
-          case SessionPlacement.node_for_relight(session, capacity_table) do
+          case relight_node(restore_target, session, capacity_table) do
             {:ok, node_id} ->
               t0 = clock.()
 
@@ -1049,6 +1101,138 @@ defmodule Embervm.SessionManager do
       end
     end)
   end
+
+  # -- restore-on-miss (R6, Task 8) -------------------------------------------
+
+  # The node to relight against. After a SUCCESSFUL restore-on-miss the anchor node
+  # is authoritative (the bundle was just restored there), bypassing the
+  # node_for_relight snapshot-presence guard which the fresh restore has not yet
+  # reflected in the CP's ETS facts. Otherwise the normal placement check.
+  defp relight_node({:ok, node_id}, _session, _capacity_table), do: {:ok, node_id}
+  defp relight_node(:none, session, capacity_table), do: SessionPlacement.node_for_relight(session, capacity_table)
+
+  # Whether the session's bundle should be restored before the relight: the
+  # session's recorded node_id + snapshot_ref are both present, the bundle is NOT
+  # locally reported on that node, and the node's store is reachable. Returns
+  # `{:restore, node_id, snapshot_ref}` when a restore should be attempted, or
+  # `:skip` when the bundle is already local, the node/ref is missing, or the
+  # store is unreachable (fail-open: skip never blocks the relight, it only
+  # withholds the restore attempt).
+  defp restore_plan(state, session) do
+    node_id = Map.get(session, :node_id)
+    snapshot_ref = Map.get(session, :snapshot_ref)
+
+    if is_binary(node_id) and node_id != "" and is_binary(snapshot_ref) and snapshot_ref != "" and
+         not bundle_local?(state, node_id, snapshot_ref) and store_reachable?(state, node_id) do
+      {:restore, node_id, snapshot_ref}
+    else
+      :skip
+    end
+  end
+
+  # Whether the node still reports the bundle on LOCAL disk (its snapshot_ref is in
+  # the node's session_snapshots). A relight needs no restore when true; a true
+  # local miss (false) may consult the store.
+  defp bundle_local?(state, node_id, snapshot_ref) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        fact
+        |> Map.get(:session_snapshots, [])
+        |> Enum.any?(&(Map.get(&1, :snapshot_ref) == snapshot_ref))
+
+      :error ->
+        false
+    end
+  end
+
+  # The node's latest object-store reachability verdict (R6). Absent/false (a node
+  # with no store configured, or one that never reported) reads as NOT reachable,
+  # so no restore is attempted and the relight degrades to node_for_relight's
+  # existing snapshot_lost path. This only gates the store consultation, never a
+  # local-state relight.
+  defp store_reachable?(state, node_id) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} -> Map.get(fact, :store_reachable, false) == true
+      :error -> false
+    end
+  end
+
+  # Restore the SESSION bundle for `session_id` (implicit via workload/ref) from the
+  # object store back onto `node_id`'s disk (RestoreArtifact, kind SESSION), then
+  # record :artifact_restored. Best-effort: a restore failure returns :error and the
+  # caller falls through to node_for_relight's existing check, which the daemon (or
+  # the placement layer) degrades to snapshot_lost exactly as it would without this
+  # feature (fail-open warmth). Idempotent on the daemon side.
+  defp restore_bundle(state, node_id, workload, snapshot_ref) do
+    ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
+
+    case safe_restore_artifact(state, node_id, ref) do
+      {:ok, resp} ->
+        record_restore(state, workload, :ARTIFACT_KIND_SESSION, snapshot_ref, resp)
+        :ok
+
+      other ->
+        Logger.warning("embervm session: bundle restore-on-miss failed, degrading to snapshot_lost path",
+          workload: workload,
+          snapshot_ref: snapshot_ref,
+          reason: inspect(other)
+        )
+
+        :error
+    end
+  end
+
+  defp safe_restore_artifact(state, node_id, %ArtifactRef{} = ref) do
+    req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.restore_artifact_fun.(channel, req)
+      rescue
+        e -> {:error, {:restore_artifact_raised, e}}
+      catch
+        kind, reason -> {:error, {:restore_artifact_raised, {kind, reason}}}
+      end
+    end
+  end
+
+  # Append the audit-only :artifact_restored op (no projection table; the log
+  # itself is the record). Best-effort: an append failure must never fail the
+  # relight, which already ran the restore RPC (the durable state is the restored
+  # bytes on disk, not this audit row).
+  defp record_restore(state, workload, kind, ref, resp) do
+    op = %Embervm.OpLog.Op{
+      kind: :artifact_restored,
+      tenant: state.tenant,
+      principal: workload_principal(state, workload),
+      workload: workload,
+      ts: state.clock.(),
+      payload: %{
+        kind: artifact_kind_string(kind),
+        ref: ref,
+        bytes_moved: Map.get(resp, :bytes_moved, 0),
+        generation: Map.get(resp, :generation, 0),
+        skipped: Map.get(resp, :skipped, false)
+      }
+    }
+
+    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm session: artifact_restored append raised", workload: workload, error: inspect(e))
+      :ok
+  end
+
+  defp artifact_kind_string(:ARTIFACT_KIND_SESSION), do: "session"
+  defp artifact_kind_string(other), do: to_string(other)
+
+  # The op-log principal attribution for a workload-scoped audit row (the restore/
+  # remote-evict ops carry no single session's principal, since a bundle-level
+  # store action is keyed by workload, not by the individual session that happened
+  # to trigger it). Mirrors StatefulManager.wake_principal/1's synthesized-owner
+  # idiom for a class with no natural single owner at this granularity.
+  defp workload_principal(_state, workload), do: "system:session:#{workload}"
 
   # The traceparent carried on the FIRST parked invoke for `session_id` (they share
   # the relight), or nil when the ledger is empty / tracing is off.
@@ -1337,10 +1521,10 @@ defmodule Embervm.SessionManager do
     for f <- facts, snap <- Map.get(f, :session_snapshots, []) || [] do
       case SessionStore.get(state.session_store, snap.session_id) do
         {:ok, %{state: st}} when st in [:expired, :evicted, :destroyed, :failed] ->
-          _ = evict_snapshot_on_node(state, f.configured_id, snap.snapshot_ref, f.node_id)
+          _ = evict_snapshot_on_node(state, f.configured_id, snap.snapshot_ref, f.node_id, snap.workload)
 
         :error ->
-          _ = evict_snapshot_on_node(state, f.configured_id, snap.snapshot_ref, f.node_id)
+          _ = evict_snapshot_on_node(state, f.configured_id, snap.snapshot_ref, f.node_id, snap.workload)
 
         _ ->
           :ok
@@ -1550,13 +1734,14 @@ defmodule Embervm.SessionManager do
 
   # -- snapshot eviction RPC -------------------------------------------------
 
-  defp evict_snapshot(state, %{node_id: node_id, snapshot_ref: ref}) when is_binary(node_id) and is_binary(ref) do
-    evict_snapshot_on_node(state, node_id, ref, node_id)
+  defp evict_snapshot(state, %{node_id: node_id, snapshot_ref: ref, workload: workload})
+       when is_binary(node_id) and is_binary(ref) do
+    evict_snapshot_on_node(state, node_id, ref, node_id, workload)
   end
 
   defp evict_snapshot(_state, _session), do: :ok
 
-  defp evict_snapshot_on_node(state, node_id, snapshot_ref, _reported_id)
+  defp evict_snapshot_on_node(state, node_id, snapshot_ref, _reported_id, workload)
        when is_binary(node_id) and is_binary(snapshot_ref) do
     # A lifecycle span (Task 9): reclaiming a snapshot bundle from node disk. Root
     # span (eviction is sweep/adoption-driven, no caller trace).
@@ -1574,11 +1759,45 @@ defmodule Embervm.SessionManager do
         end
       end
 
+      # R6, Task 9: drop the store copy of the SESSION bundle alongside the local
+      # EvictSnapshot, on every eviction trigger (banked TTL, disk pressure,
+      # destroy, expiry, orphan sweep) since they all funnel through here. Sessions
+      # carry no volume/generation, so no pairing guard applies (unlike the
+      # stateful class's volume-generation guard).
+      _ = evict_remote_bundle(state, node_id, workload, snapshot_ref)
+
       :ok
     end
   end
 
-  defp evict_snapshot_on_node(_state, _node_id, _ref, _reported), do: :ok
+  defp evict_snapshot_on_node(_state, _node_id, _ref, _reported, _workload), do: :ok
+
+  # Drop the store copy of a banked SESSION bundle (EvictArtifact, remote=true, kind
+  # SESSION). Best-effort: a failure never wedges the caller (the local eviction and
+  # durable transition are authoritative; a stranded store copy is swept later by
+  # the remote-orphan reconcile). Idempotent on the daemon; an already-absent store
+  # copy is a no-op. A missing/unknown workload (should not happen; every eviction
+  # site carries one) skips the remote call rather than issuing a malformed ref.
+  defp evict_remote_bundle(state, node_id, workload, snapshot_ref)
+       when is_binary(node_id) and is_binary(workload) and workload != "" and is_binary(snapshot_ref) and
+              snapshot_ref != "" do
+    artifact = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
+    req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.evict_artifact_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp evict_remote_bundle(_state, _node_id, _workload, _snapshot_ref), do: :ok
 
   # -- shared fail path ------------------------------------------------------
 
@@ -1755,6 +1974,14 @@ defmodule Embervm.SessionManager do
 
   defp default_evict(channel, %EvictSnapshotRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+  end
+
+  defp default_restore_artifact(channel, %RestoreArtifactRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.restore_artifact(channel, req)
+  end
+
+  defp default_evict_artifact(channel, %EvictArtifactRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
   end
 
   defp default_clock, do: System.system_time(:millisecond)

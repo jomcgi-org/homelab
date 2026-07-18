@@ -445,6 +445,12 @@ defmodule Embervm.NodeRegistry do
       live_vms: s.live_vms,
       max_live_vms: s.max_live_vms,
       draining: false,
+      # Continuity fact (R6, additive): the daemon's latest object-store
+      # reachability verdict. Read by the restore-on-miss wake planners to decide
+      # whether a TRUE local miss can consult the store at all; false NEVER blocks a
+      # local-state wake (fail-open warmth, standing decision 7). False on a daemon
+      # with no store configured or one that never sets it (wire-compatible).
+      store_reachable: s.store_reachable,
       updated_at: now,
       # Session facts (R2): the node's LIVE session VMs and BANKED snapshot
       # inventory, plus the sessions snapshot-dir disk usage. These are the source
@@ -523,6 +529,10 @@ defmodule Embervm.NodeRegistry do
         set_id: s.set_id,
         group_instance_id: s.group_instance_id,
         created_at_unix_ms: s.created_at_unix_ms,
+        # exported is true only when the WHOLE set's store copy is present and
+        # current (R6): the restore-on-miss group planner reads it to know a
+        # complete exported set can be restored on a true local miss.
+        exported: s.exported,
         members:
           for(m <- s.members || [], do: %{member_name: m.member_name, snapshot_ref: m.snapshot_ref, size_bytes: m.size_bytes})
       }
@@ -552,7 +562,10 @@ defmodule Embervm.NodeRegistry do
         snapshot_ref: snap.snapshot_ref,
         workload: snap.workload,
         size_bytes: snap.size_bytes,
-        created_at_unix_ms: snap.created_at_unix_ms
+        created_at_unix_ms: snap.created_at_unix_ms,
+        # exported is true when this bundle's store copy is present and current
+        # (R6): the restore-on-miss serving planner reads it on a true local miss.
+        exported: snap.exported
       }
     end
   end
@@ -588,7 +601,10 @@ defmodule Embervm.NodeRegistry do
         workload: b.workload,
         generation: b.generation,
         size_bytes: b.size_bytes,
-        created_at_unix_ms: b.created_at_unix_ms
+        created_at_unix_ms: b.created_at_unix_ms,
+        # exported is true when this bundle's store copy is present and current
+        # (R6): the restore-on-miss stateful planner reads it on a true local miss.
+        exported: b.exported
       }
     end
   end
@@ -602,7 +618,13 @@ defmodule Embervm.NodeRegistry do
         generation: v.generation,
         size_bytes: v.size_bytes,
         allocated_bytes: v.allocated_bytes,
-        attached: v.attached
+        attached: v.attached,
+        # exported_generation is the volume generation whose (vol.img, gen) pair
+        # the store currently holds, 0 if no store copy exists (R6). The
+        # restore-on-miss planner reads it to know a lost volume can be restored to
+        # this generation, and the remote GC guard reads it to skip a re-export when
+        # it already equals the live generation.
+        exported_generation: v.exported_generation
       }
     end
   end
@@ -624,7 +646,10 @@ defmodule Embervm.NodeRegistry do
         session_id: snap.session_id,
         workload: snap.workload,
         size_bytes: snap.size_bytes,
-        created_at_unix_ms: snap.created_at_unix_ms
+        created_at_unix_ms: snap.created_at_unix_ms,
+        # exported is true when this bundle's store copy is present and current
+        # (R6): the restore-on-miss session planner reads it on a true local miss.
+        exported: snap.exported
       }
     end
   end

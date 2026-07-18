@@ -145,7 +145,10 @@ defmodule Embervm.StatefulManager do
   alias Embervm.{EndpointPublisher, NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
+    ArtifactRef,
+    EvictArtifactRequest,
     ResourceSpec,
+    RestoreArtifactRequest,
     StartStatefulRequest,
     StartStatefulResponse,
     StopStatefulRequest,
@@ -286,6 +289,22 @@ defmodule Embervm.StatefulManager do
       start_stateful_fun: Keyword.get(opts, :start_stateful_fun, &default_start_stateful/2),
       stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
       delete_volume_fun: Keyword.get(opts, :delete_volume_fun, &default_delete_volume/2),
+      # Restore-on-miss seam (R6, Task 8): (channel, %RestoreArtifactRequest{}) ->
+      # {:ok, %RestoreArtifactResponse{}} | {:error, _}. Fetches a banked STATEFUL
+      # bundle or a VOLUME back onto local disk from the object store before a wake
+      # relights/cold-boots on a TRUE local miss. Injected for tests; production
+      # dials the real NodeService stub.
+      restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
+      # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
+      # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside DeleteVolume
+      # so the store copy of a workload's VOLUME is dropped on the same workload-
+      # deletion trigger. The generation guard holds by construction here: delete is
+      # refused while ANY non-terminal instance exists, so no bundle still pairs with
+      # the volume generation being evicted (standing decision 8). Injected for tests.
+      evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
+      # The op-log the restore audit record (:artifact_restored) is appended to.
+      # Injected for tests; production uses the SQLite backend.
+      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
       # R4, D-R4.PR-7.1 (MMDS-lite over boot-args): reads a K8s Secret into a
       # decoded key/value map for cold_request/2 to populate mmds_env from.
       # Injected so tests can fake the K8s round-trip; production defaults to
@@ -601,7 +620,7 @@ defmodule Embervm.StatefulManager do
     # worth its own child span at this granularity).
     wake_start = :opentelemetry.timestamp()
     plan = plan_wake(state, workload)
-    cold = match?({:cold, _, _, _, _}, plan)
+    cold = match?({:cold, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan)
     state = stamp_wake_trace(state, workload, %{wake_start: wake_start, cold: cold})
 
     # Stamp the wake's start (for the adoption stuck-check + park_full age) and arm the
@@ -628,9 +647,45 @@ defmodule Embervm.StatefulManager do
             send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
         end
 
+      # Restore-on-miss (R6): the local bundle is gone but its store copy is
+      # recoverable. Restore the STATEFUL bundle inside the wake worker FIRST (so
+      # park/single-flight semantics are unchanged), then relight exactly as the
+      # warm path. The restore failing (store unreachable mid-wake, or the copy
+      # vanished) degrades to the daemon's cold-boot fallback via the boot_image_ref
+      # that rides the relight request (fail-open warmth).
+      {:restore_then_relight, instance, node_id, snapshot_ref} ->
+        case StatefulStore.mark(state.store, instance.instance_id, :relight) do
+          {:ok, _} ->
+            fallback_ref = boot_image_ref(state, node_id, workload)
+            req = relight_request(entry, snapshot_ref, fallback_ref)
+
+            spawn_wake(owner, workload, fn ->
+              _ = restore_bundle(state, node_id, workload, snapshot_ref)
+              run_relight(state, instance, node_id, req)
+            end)
+
+          {:error, reason} ->
+            send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+        end
+
       {:cold, node_id, boot_ref, mode, reason} ->
         req = cold_request(state, entry, workload, boot_ref, mode)
         spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, boot_ref, mode, reason, req) end)
+
+      # Restore-on-miss (R6): the volume itself is gone but a (vol.img, gen) pair is
+      # exported. Restore the VOLUME inside the wake worker FIRST, then cold-boot at
+      # the restored generation (COLD mode: the volume already exists after the
+      # restore, no create). A restore failure degrades to a plain cold boot, which
+      # for a truly-absent volume the daemon fails closed on (data fails closed).
+      {:restore_volume_then_cold, wl, node_id, volume} ->
+        boot_ref = boot_image_ref(state, node_id, wl)
+        req = cold_request(state, entry, wl, boot_ref, :cold)
+        reason = cold_reason(volume)
+
+        spawn_wake(owner, workload, fn ->
+          _ = restore_volume(state, node_id, wl, volume)
+          run_cold(state, wl, node_id, boot_ref, :cold, reason, req)
+        end)
 
       {:error, reason} ->
         send(self(), {:wake_done, workload, {:error, reason}})
@@ -698,14 +753,32 @@ defmodule Embervm.StatefulManager do
       nil ->
         # No bundle to resume: a genuine FRESH first boot (no volume yet, reason
         # nil -> stateful_started) or a COLD boot against an existing volume whose
-        # bundle is gone (reason :no_bundle -> stateful_cold_booted{no_bundle}).
-        cold_plan(state, workload, volume, cold_reason(volume))
+        # bundle is gone (reason :no_bundle -> stateful_cold_booted{no_bundle}). If
+        # the volume ITSELF is missing locally but a (vol.img, gen) pair is exported
+        # (exported_generation > 0) and the store is reachable, restore the volume
+        # first, then cold-boot at the restored generation (R6 restore-on-miss).
+        restore_volume_or_cold(state, workload, volume)
 
       instance ->
         if StatefulStore.pair_valid?(state.store, workload) do
           case anchor_node(state, volume) do
-            {:ok, node_id} -> {:relight, instance, node_id, instance.snapshot_ref}
-            {:error, reason} -> {:error, reason}
+            {:ok, node_id} ->
+              # Local banked bundle present on the anchor node -> relight it (the
+              # existing warm path). Local bundle GONE (disk lost) but its store copy
+              # is recoverable (the volume's exported_generation matches the bundle's
+              # snapshot_generation) and the store is reachable -> restore the bundle
+              # first, then relight (R6 restore-on-miss). An unreachable store or a
+              # missing store copy falls through to the existing relight attempt,
+              # which the daemon degrades to a cold boot (fail-open warmth).
+              if bundle_local?(state, node_id, instance.snapshot_ref) or
+                   not bundle_restorable?(state, node_id, instance, volume) do
+                {:relight, instance, node_id, instance.snapshot_ref}
+              else
+                {:restore_then_relight, instance, node_id, instance.snapshot_ref}
+              end
+
+            {:error, reason} ->
+              {:error, reason}
           end
         else
           # Broken pair: evict the stale bundle through the durable path (so a
@@ -732,6 +805,88 @@ defmodule Embervm.StatefulManager do
   # bundle to resume, e.g. after a forced roll).
   defp cold_reason(nil), do: nil
   defp cold_reason(_volume), do: :no_bundle
+
+  # -- restore-on-miss (R6, Task 8) -------------------------------------------
+
+  # No banked bundle to resume. If the VOLUME itself is missing locally but a
+  # (vol.img, gen) pair is exported and the store is reachable, restore the volume
+  # first then cold-boot at the restored generation; otherwise the ordinary cold
+  # plan (FRESH first boot or COLD against an existing volume). A missing volume
+  # ROW whose exported_generation is unknown here (no fact at all) cannot restore,
+  # so it stays a fresh boot: exported_generation only survives as a node fact while
+  # the volume is at least reported, which is exactly the "disk present, bundle
+  # lost" case restore-on-miss targets.
+  defp restore_volume_or_cold(state, workload, volume) do
+    cond do
+      volume_restorable?(state, volume) ->
+        # The anchor node still reports the volume row (so exported_generation is
+        # known) but the local pair is unusable; restore the exported volume pair,
+        # then cold-boot at that generation. anchor_node guards the node is present.
+        case anchor_node(state, volume) do
+          {:ok, node_id} -> {:restore_volume_then_cold, workload, node_id, volume}
+          {:error, reason} -> {:error, reason}
+        end
+
+      true ->
+        cold_plan(state, workload, volume, cold_reason(volume))
+    end
+  end
+
+  # Whether the anchor node still reports the instance's bundle on LOCAL disk (its
+  # snapshot_ref is in the node's stateful_bundles). A relight needs no restore when
+  # true; a true local miss (false) may consult the store.
+  defp bundle_local?(state, node_id, snapshot_ref) when is_binary(snapshot_ref) and snapshot_ref != "" do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        fact
+        |> Map.get(:stateful_bundles, [])
+        |> Enum.any?(&(&1.snapshot_ref == snapshot_ref))
+
+      :error ->
+        false
+    end
+  end
+
+  defp bundle_local?(_state, _node_id, _ref), do: false
+
+  # Whether a locally-missing bundle can be restored from the store: the store is
+  # reachable AND the volume's exported_generation equals the bundle's stamped
+  # snapshot_generation (the store holds a matching (bundle, volume-gen) pair). The
+  # generation match keeps restore generation-safe: a restored bundle still only
+  # relights against its matching volume generation (pairing rules unchanged).
+  # store_reachable == false NEVER blocks the local-state wake here, it only
+  # withholds the restore so the wake degrades to the existing relight/cold path
+  # (fail-open warmth, standing decision 7).
+  defp bundle_restorable?(state, node_id, instance, volume) do
+    store_reachable?(state, node_id) and
+      is_integer(instance.snapshot_generation) and
+      exported_generation(volume) == instance.snapshot_generation
+  end
+
+  # Whether a missing/broken-pair volume can be restored: the store is reachable
+  # and a (vol.img, gen) pair is exported (exported_generation > 0). The node the
+  # volume is anchored to owns the store reachability verdict.
+  defp volume_restorable?(_state, nil), do: false
+
+  defp volume_restorable?(state, %{node_id: node_id} = volume) when is_binary(node_id) do
+    store_reachable?(state, node_id) and exported_generation(volume) > 0
+  end
+
+  defp volume_restorable?(_state, _volume), do: false
+
+  defp exported_generation(nil), do: 0
+  defp exported_generation(volume), do: Map.get(volume, :exported_generation, 0) || 0
+
+  # The anchor node's latest object-store reachability verdict (R6). Absent/false
+  # (a node with no store configured, or one that never reported) reads as NOT
+  # reachable, so no restore is attempted and the wake degrades to cold (never
+  # blocked: this only gates the store consultation, never a local-state wake).
+  defp store_reachable?(state, node_id) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} -> Map.get(fact, :store_reachable, false) == true
+      :error -> false
+    end
+  end
 
   # Cold placement: FRESH (no volume row exists yet, the daemon must create it)
   # when `volume` is nil; COLD (an existing volume, no bundle to resume) otherwise.
@@ -1369,6 +1524,11 @@ defmodule Embervm.StatefulManager do
     else
       volume = StatefulStore.get_volume(state.store, workload)
       _ = safe_delete_volume(state, volume, workload)
+      # R6, Task 9: the store copy of the volume follows the local deletion. Safe
+      # without a further pairing guard: delete was refused above while any
+      # non-terminal instance existed, so no banked bundle still pairs with this
+      # volume's generation (standing decision 8). Best-effort.
+      _ = evict_remote_volume(state, volume, workload)
 
       case StatefulStore.delete_volume(state.store, workload) do
         :ok ->
@@ -1598,7 +1758,13 @@ defmodule Embervm.StatefulManager do
         node_id: f.configured_id,
         generation: v.generation,
         size_bytes: v.size_bytes,
-        allocated_bytes: v.allocated_bytes
+        allocated_bytes: v.allocated_bytes,
+        # exported_generation (R6): the volume generation whose (vol.img, gen) pair
+        # the store currently holds. Carried into the ETS volume fact so a wake can
+        # decide restore-on-miss (a lost local bundle whose snapshot_generation
+        # equals this can be recovered from the store) even after the local bundle
+        # fact is gone. 0/absent when no store copy exists.
+        exported_generation: Map.get(v, :exported_generation, 0)
       })
     end
 
@@ -1715,6 +1881,147 @@ defmodule Embervm.StatefulManager do
     kind, reason -> {:error, {:channel_raised, {kind, reason}}}
   end
 
+  # -- restore-on-miss RPC (R6, Task 8) ---------------------------------------
+
+  # Restore the STATEFUL bundle for `workload` from the object store back onto the
+  # anchor node's disk (RestoreArtifact, kind STATEFUL), then record :artifact_restored.
+  # Best-effort: a restore failure returns :error and the caller (the wake worker)
+  # falls through to the relight, which the daemon degrades to a cold boot via the
+  # boot_image_ref that rides the request (fail-open warmth). Idempotent on the
+  # daemon side, so a re-run of a partially-restored artifact is safe.
+  defp restore_bundle(state, node_id, workload, snapshot_ref) do
+    ref = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: snapshot_ref}
+
+    case safe_restore_artifact(state, node_id, ref) do
+      {:ok, resp} ->
+        record_restore(state, workload, :ARTIFACT_KIND_STATEFUL, snapshot_ref, resp)
+        :ok
+
+      other ->
+        Logger.warning("embervm stateful: bundle restore-on-miss failed, degrading to cold",
+          workload: workload,
+          snapshot_ref: snapshot_ref,
+          reason: inspect(other)
+        )
+
+        :error
+    end
+  end
+
+  # Restore the VOLUME for `workload` (kind VOLUME, ref is the workload's own name,
+  # per the ArtifactRef contract for a singleton volume) from the exported
+  # (vol.img, gen) pair, then record :artifact_restored. Best-effort, same as
+  # restore_bundle: a failure degrades to a plain cold boot (which the daemon fails
+  # closed on for a truly-absent volume).
+  defp restore_volume(state, node_id, workload, _volume) do
+    ref = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload, ref: workload}
+
+    case safe_restore_artifact(state, node_id, ref) do
+      {:ok, resp} ->
+        record_restore(state, workload, :ARTIFACT_KIND_VOLUME, workload, resp)
+        :ok
+
+      other ->
+        Logger.warning("embervm stateful: volume restore-on-miss failed, degrading to cold",
+          workload: workload,
+          reason: inspect(other)
+        )
+
+        :error
+    end
+  end
+
+  defp safe_restore_artifact(state, node_id, %ArtifactRef{} = ref) do
+    req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        case state.restore_artifact_fun.(channel, req) do
+          {:error, reason} = err ->
+            if Embervm.NodeChannel.transport_dead?(reason) do
+              _ = state.invalidate_fun.(node_id, channel)
+            end
+
+            err
+
+          other ->
+            other
+        end
+      rescue
+        e -> {:error, {:restore_artifact_raised, e}}
+      catch
+        :exit, reason ->
+          _ = state.invalidate_fun.(node_id, channel)
+          {:error, {:restore_artifact_raised, {:exit, reason}}}
+
+        kind, reason ->
+          {:error, {:restore_artifact_raised, {kind, reason}}}
+      end
+    end
+  end
+
+  # Append the audit-only :artifact_restored op (no projection table; the log itself
+  # is the record). Best-effort: an append failure must never fail the wake, which
+  # already ran the restore RPC (the durable state is the restored bytes on disk,
+  # not this audit row).
+  defp record_restore(state, workload, kind, ref, resp) do
+    op = %Embervm.OpLog.Op{
+      kind: :artifact_restored,
+      tenant: state.tenant,
+      principal: wake_principal(workload),
+      workload: workload,
+      ts: state.clock.(),
+      payload: %{
+        kind: artifact_kind_string(kind),
+        ref: ref,
+        bytes_moved: Map.get(resp, :bytes_moved, 0),
+        generation: Map.get(resp, :generation, 0),
+        skipped: Map.get(resp, :skipped, false)
+      }
+    }
+
+    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm stateful: artifact_restored append raised", workload: workload, error: inspect(e))
+      :ok
+  end
+
+  defp artifact_kind_string(:ARTIFACT_KIND_STATEFUL), do: "stateful"
+  defp artifact_kind_string(:ARTIFACT_KIND_VOLUME), do: "volume"
+  defp artifact_kind_string(other), do: to_string(other)
+
+  # -- remote volume eviction (R6, Task 9) ------------------------------------
+
+  # Drop the store copy of a workload's VOLUME (EvictArtifact, remote=true, kind
+  # VOLUME) alongside DeleteVolume. Best-effort; the daemon refuses the evict if a
+  # bundle still pairs (its own generation guard), and here delete was already
+  # refused while any instance existed, so the guard is doubly held.
+  defp evict_remote_volume(state, %{node_id: node_id}, workload) when is_binary(node_id) do
+    artifact = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload, ref: workload}
+    req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.evict_artifact_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        :exit, _ ->
+          _ = state.invalidate_fun.(node_id, channel)
+          :error
+
+        _, _ ->
+          :error
+      end
+    end
+
+    :ok
+  end
+
+  defp evict_remote_volume(_state, _volume, _workload), do: :ok
+
   defp default_start_stateful(channel, req) do
     Embervm.Node.V1.NodeService.Stub.start_stateful(channel, req)
   end
@@ -1725,6 +2032,14 @@ defmodule Embervm.StatefulManager do
 
   defp default_delete_volume(channel, req) do
     Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req)
+  end
+
+  defp default_restore_artifact(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.restore_artifact(channel, req)
+  end
+
+  defp default_evict_artifact(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
   end
 
   # -- misc --------------------------------------------------------------------

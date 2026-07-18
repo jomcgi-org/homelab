@@ -110,7 +110,9 @@ defmodule Embervm.SessionBankRelightTest do
           :wake_max,
           :wake_window_ms,
           :bank_concurrency,
-          :status_writer
+          :status_writer,
+          :restore_artifact_fun,
+          :evict_artifact_fun
         ])
 
     {:ok, mgr} = SessionManager.start_link(mgr_opts)
@@ -186,6 +188,7 @@ defmodule Embervm.SessionBankRelightTest do
       snapshot_disk_free_bytes: Keyword.get(opts, :free, 10_000_000),
       snapshot_disk_used_bytes: 0,
       draining: false,
+      store_reachable: Keyword.get(opts, :store_reachable, false),
       updated_at: 0
     }
   end
@@ -338,6 +341,42 @@ defmodule Embervm.SessionBankRelightTest do
     assert session.state == :running
     # A session_relit op landed (state back to running with a fresh VM).
     assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+  end
+
+  # -- restore-on-miss (R6, Task 8) -------------------------------------------
+
+  test "invoke on a banked session whose bundle is gone locally but exported RESTORES then relights" do
+    test_pid = self()
+
+    restore_fun = fn _ch, req ->
+      art = req.artifact
+      send(test_pid, {:restored, art.kind, art.ref, art.workload})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 2_000, skipped: false}}
+    end
+
+    ctx = start_stack(restore_artifact_fun: restore_fun)
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+    :ok = force_idle_bank(ctx, created.session_id)
+
+    # The node reports NO session snapshots (a true local bundle miss) but a
+    # reachable store: the invoke restores the SESSION bundle then relights against
+    # the same anchor node (bypassing the snapshot-presence placement guard the fresh
+    # restore has not yet reflected).
+    NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [], store_reachable: true))
+
+    {:ok, resp} = SessionManager.invoke(ctx.mgr, created.session_id, %{method: "POST", path: "/", headers: %{}, body: "restored"})
+    assert resp.status_code == 200
+    assert resp.body == "restored"
+
+    assert_received {:restored, :ARTIFACT_KIND_SESSION, ref, "wl"}
+    assert ref == "snap-#{created.session_id}"
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :running
+
+    {:ok, ops} = Embervm.OpLog.SQLite.read_from(ctx.op_log, 0)
+    assert Enum.any?(ops, &(&1.kind == :artifact_restored))
   end
 
   test "the wake-rate limit 429s an excess relight-triggering invoke without a node hit" do
@@ -609,6 +648,29 @@ defmodule Embervm.SessionBankRelightTest do
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :evicted
     assert session.terminal_reason == "idle_ttl"
+  end
+
+  test "a banked-TTL eviction ALSO issues EvictArtifact(remote) for the session bundle" do
+    test_pid = self()
+
+    evict_artifact_fun = fn _ch, req ->
+      send(test_pid, {:remote_evicted, req.remote, req.artifact.kind, req.artifact.ref})
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{bytes_freed: 2_000}}
+    end
+
+    ctx = start_stack(evict_artifact_fun: evict_artifact_fun)
+    put_workload(ctx, "wl", max_lifetime_seconds: 100_000, banked_ttl_seconds: 5)
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+    :ok = force_idle_bank(ctx, created.session_id)
+
+    advance(ctx.clock_pid, 10_000)
+    :ok = SessionManager.sweep(ctx.mgr)
+
+    # The local EvictSnapshot fired AND the remote store copy was dropped on the same
+    # trigger (a SESSION artifact, remote=true).
+    assert_received {:evicted, _ref}
+    assert_received {:remote_evicted, true, :ARTIFACT_KIND_SESSION, ref}
+    assert ref == "snap-#{created.session_id}"
   end
 
   test "disk-pressure eviction removes the coldest banked sessions LRU to the watermark" do

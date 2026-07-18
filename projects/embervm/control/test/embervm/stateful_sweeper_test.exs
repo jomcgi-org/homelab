@@ -23,7 +23,7 @@ defmodule Embervm.StatefulSweeperTest do
 
   alias Embervm.{NodeCapacity, StatefulStore, StatefulSweeper, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{EvictSnapshotResponse, ResolveStatefulResponse, StopStatefulResponse}
+  alias Embervm.Node.V1.{EvictArtifactResponse, EvictSnapshotResponse, ResolveStatefulResponse, StopStatefulResponse}
 
   # A publisher that RECORDS each publish/1 cast, mirroring ServingSweeperTest's
   # FakePublisher.
@@ -137,6 +137,13 @@ defmodule Embervm.StatefulSweeperTest do
       {:ok, %EvictSnapshotResponse{}}
     end
 
+    {:ok, evict_artifact_calls} = Agent.start_link(fn -> [] end)
+
+    evict_artifact_fun = fn _ch, req ->
+      Agent.update(evict_artifact_calls, &[req | &1])
+      {:ok, %EvictArtifactResponse{bytes_freed: 4096}}
+    end
+
     sweeper_opts =
       [
         name: nil,
@@ -153,6 +160,7 @@ defmodule Embervm.StatefulSweeperTest do
         stop_stateful_fun: stop_stateful_fun,
         resolve_stateful_fun: resolve_stateful_fun,
         evict_snapshot_fun: evict_snapshot_fun,
+        evict_artifact_fun: evict_artifact_fun,
         manager: fake_mgr,
         parked_fun: fn _wl -> Agent.get(parked, & &1) end,
         flap_abort_threshold: Keyword.get(opts, :flap_abort_threshold, 20),
@@ -190,6 +198,7 @@ defmodule Embervm.StatefulSweeperTest do
       stop_calls: stop_calls,
       bank_fail: bank_fail,
       evict_calls: evict_calls,
+      evict_artifact_calls: evict_artifact_calls,
       status_calls: status_calls,
       resolve_calls: resolve_calls,
       resolve_fail: resolve_fail,
@@ -202,6 +211,7 @@ defmodule Embervm.StatefulSweeperTest do
   defp set_scrape(ctx, reading), do: Agent.update(ctx.scrape_agent, fn _ -> reading end)
   defp stop_calls(ctx), do: Agent.get(ctx.stop_calls, &Enum.reverse(&1))
   defp evict_calls(ctx), do: Agent.get(ctx.evict_calls, &Enum.reverse(&1))
+  defp evict_artifact_calls(ctx), do: Agent.get(ctx.evict_artifact_calls, &Enum.reverse(&1))
   defp status_writes(ctx), do: Agent.get(ctx.status_calls, &Enum.reverse(&1))
   defp resolve_calls(ctx), do: Agent.get(ctx.resolve_calls, &Enum.reverse(&1))
   defp resolved_notes(ctx), do: Agent.get(ctx.resolved_notes, &Enum.reverse(&1))
@@ -590,6 +600,69 @@ defmodule Embervm.StatefulSweeperTest do
     volume = StatefulStore.get_volume(ctx.store, "wl-a")
     assert volume != nil
     assert volume.generation == 1
+  end
+
+  # -- remote retention / GC (R6, Task 9) -------------------------------------
+
+  test "a banked-TTL eviction ALSO issues EvictArtifact(remote) for the bundle; the volume is never remote-evicted" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a", 5400, %{banked_ttl_seconds: 100, max_lifetime_seconds: 1_000_000})
+    stateful_node(ctx, "node-4")
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-4",
+        generation: 1,
+        size_bytes: 1_073_741_824,
+        allocated_bytes: 100
+      })
+
+    banked_instance(ctx, "sf-1", "wl-a", "vm-1", 1)
+
+    advance(ctx.clock_agent, 200_000)
+    set_scrape(ctx, reading("state-5400", 0, 0))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    # The remote store copy of the bundle is dropped on the SAME trigger: an
+    # EvictArtifact(remote=true) for the STATEFUL bundle. NEVER a VOLUME evict (a
+    # bundle eviction never strands a volume generation, standing decision 8).
+    assert [req] = evict_artifact_calls(ctx)
+    assert req.remote == true
+    assert req.artifact.kind == :ARTIFACT_KIND_STATEFUL
+    assert req.artifact.ref == "snap-sf-1"
+    assert req.artifact.workload == "wl-a"
+    refute Enum.any?(evict_artifact_calls(ctx), &(&1.artifact.kind == :ARTIFACT_KIND_VOLUME))
+  end
+
+  test "the generation guard: a superseded-generation (broken pair) eviction remote-evicts the BUNDLE but never the volume" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a", 5400, %{banked_ttl_seconds: 1_000_000, max_lifetime_seconds: 1_000_000})
+    stateful_node(ctx, "node-4")
+
+    # A volume that has moved ON to generation 5, and a bundle stamped at generation
+    # 2: a broken pair (superseded generation). The eager sweep evicts the stale
+    # bundle. The store must keep the volume (its generation 5 is one a future bundle
+    # will pair with), so no VOLUME remote-evict is ever issued.
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-4",
+        generation: 5,
+        size_bytes: 1_073_741_824,
+        allocated_bytes: 100
+      })
+
+    banked_instance(ctx, "sf-stale", "wl-a", "vm-1", 2)
+    refute StatefulStore.pair_valid?(ctx.store, "wl-a")
+
+    set_scrape(ctx, reading("state-5400", 0, 0))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    {:ok, instance} = StatefulStore.get(ctx.store, "sf-stale")
+    assert instance.state == :evicted
+
+    # The bundle's remote copy is dropped; the volume's is NOT (generation guard).
+    assert Enum.any?(evict_artifact_calls(ctx), &(&1.artifact.kind == :ARTIFACT_KIND_STATEFUL and &1.artifact.ref == "snap-sf-stale"))
+    refute Enum.any?(evict_artifact_calls(ctx), &(&1.artifact.kind == :ARTIFACT_KIND_VOLUME))
   end
 
   test "a banked bundle still within bankedTtlSeconds is kept" do

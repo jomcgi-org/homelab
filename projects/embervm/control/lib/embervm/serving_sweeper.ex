@@ -89,7 +89,7 @@ defmodule Embervm.ServingSweeper do
   alias Embervm.{NodeCapacity, ServingState, ServingStore, WorkloadCatalog}
   alias Embervm.OpLog.Op
 
-  alias Embervm.Node.V1.{StopServingRequest, StopServingResponse, Trace}
+  alias Embervm.Node.V1.{ArtifactRef, EvictArtifactRequest, StopServingRequest, StopServingResponse, Trace}
 
   # Per-node concurrent-bank cap, shared-in-spirit with sessions (banking writes
   # GiBs, so serialize per node): the node daemon also refuses a second concurrent
@@ -156,6 +156,15 @@ defmodule Embervm.ServingSweeper do
       # NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       stop_serving_fun: Keyword.get(opts, :stop_serving_fun, &default_stop_serving/2),
+      # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
+      # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside the durable
+      # serving_evicted transition so the store copy of a banked SERVING bundle is
+      # dropped on the same triggers (banked TTL, stale lineage, forced roll). v1 issues
+      # no local EvictSnapshot RPC here (the activator's adoption reconcile evicts the
+      # node-local orphan separately), but the STORE copy needs an explicit drop since
+      # nothing else targets it. Injected for tests; production dials the real
+      # NodeService stub.
+      evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
       # Per-node concurrent-bank cap: node_id -> banks in flight. A node at its cap
       # defers new banks to a later tick (the idle instance stays live, re-evaluated).
       bank_concurrency: Keyword.get(opts, :bank_concurrency, @default_bank_concurrency),
@@ -924,6 +933,12 @@ defmodule Embervm.ServingSweeper do
     # snapshot is no longer a relight target. (v1 does not issue a separate evict RPC
     # here; the activator's reconcile evicts the orphan on the node, matching the
     # merged evict_orphan_snapshots path.)
+    # R6, Task 9: the store copy of the bundle DOES need dropping even though local
+    # disk is reclaimed lazily by the node's own GC, so fire the remote EvictArtifact
+    # alongside the durable transition (banked TTL, stale lineage, and forced roll all
+    # route through here).
+    _ = evict_remote_bundle(state, instance)
+
     _ =
       ServingStore.transition(
         state.store,
@@ -942,6 +957,31 @@ defmodule Embervm.ServingSweeper do
 
     state
   end
+
+  # R6, Task 9: drop the store copy of a banked SERVING bundle (EvictArtifact,
+  # remote=true, kind SERVING) alongside the local eviction transition. Best-effort: a
+  # failure never wedges the sweep (the durable transition is authoritative; a
+  # stranded store copy is swept later by the remote-orphan reconcile). Idempotent on
+  # the daemon; an already-absent store copy is a no-op.
+  defp evict_remote_bundle(state, %{node_id: node_id, snapshot_ref: ref, workload: workload})
+       when is_binary(node_id) and is_binary(ref) and ref != "" do
+    artifact = %ArtifactRef{kind: :ARTIFACT_KIND_SERVING, workload: workload, ref: ref}
+    req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        state.evict_artifact_fun.(channel, req)
+      rescue
+        _ -> :error
+      catch
+        _, _ -> :error
+      end
+    end
+
+    :ok
+  end
+
+  defp evict_remote_bundle(_state, _instance), do: :ok
 
   defp stop_serving_destroy(state, %{node_id: node_id, vm_id: vm_id})
        when is_binary(node_id) and is_binary(vm_id) do
@@ -1057,6 +1097,10 @@ defmodule Embervm.ServingSweeper do
 
   defp default_stop_serving(channel, req) do
     Embervm.Node.V1.NodeService.Stub.stop_serving(channel, req)
+  end
+
+  defp default_evict_artifact(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
   end
 
   # Production scrape: GET /stats?format=json over the shared Finch pool, parse the

@@ -85,6 +85,8 @@ defmodule Embervm.GroupWakeManager do
 
   alias Embervm.{EndpointPublisher, GroupManager, GroupState, GroupStore, NodeCapacity, WorkloadCatalog}
 
+  alias Embervm.Node.V1.{ArtifactRef, RestoreArtifactRequest, Trace}
+
   # Wake-rate + parked-cap defaults mirror the R4 stateful values (a composite group
   # is a group-level singleton owned by one principal, so per-workload == per-
   # principal, same reasoning as StatefulManager).
@@ -158,6 +160,16 @@ defmodule Embervm.GroupWakeManager do
       # implementing create_group/2 + wake_group/1 (or a per-workload scripted fake).
       # Production drives Embervm.GroupManager.Supervisor.
       supervisor_mod: Keyword.get(opts, :supervisor_mod, GroupManager.Supervisor),
+      # Restore-on-miss seams (R6, Task 8). Unlike serving/stateful this module owns
+      # no dispatch channel of its own (the heavy relight is delegated to a
+      # GroupManager child), so the restore-before-relight RPC dials its own channel
+      # through the shared NodeChannel. restore_artifact_fun issues RestoreArtifact for
+      # a complete exported GROUP_SET; op_log records the :artifact_restored audit. All
+      # injected for tests; production dials the real NodeService stub.
+      channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
+      restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
+      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
       # The composite supernet + DNAT port base + control-plane pod IP, the SAME
       # shared values that feed the GroupManager (and noded's CompositeSupernet /
       # ServingPortBase). Adoption re-derives the entry DNAT endpoint `{pod_ip,
@@ -395,11 +407,164 @@ defmodule Embervm.GroupWakeManager do
         end
 
       {:relight, instance_id} ->
+        # Restore-on-miss (R6, Task 8): a COMPLETE exported set whose local bundles
+        # are gone is restored FIRST, then the delegated relight resumes it warm. A
+        # partial local set that is NOT fully exported, or an unreachable store, skips
+        # the restore and the GroupManager wake evicts + fresh-boots as it does today
+        # (fail-open warmth, standing decision 7). The restore runs inside this wake
+        # worker so single-flight/park semantics are unchanged.
+        _ = maybe_restore_set(state, workload, instance_id)
         run_group_wake(state, workload, instance_id)
 
       {:fresh, instance_id} ->
         run_group_wake(state, workload, instance_id)
     end
+  end
+
+  # -- restore-on-miss (R6, Task 8) ------------------------------------------
+
+  # Restore the whole exported GROUP_SET for a banked instance when its local
+  # bundles are missing but the store holds a complete set and the store is
+  # reachable. Best-effort: any gap (no set_id, set already local, store
+  # unreachable, or not exported) is a clean skip that leaves the relight to the
+  # existing GroupManager fresh-fallback path. The restore RPC failing degrades the
+  # same way.
+  defp maybe_restore_set(state, workload, instance_id) do
+    # The group instance_id IS the group_instance_id the node keys its bundle sets by
+    # (GroupStore rows carry no separate group_instance_id column; the instance id is
+    # that identity, mirroring how do_reconcile indexes sets by group_instance_id).
+    with {:ok, %{node_id: node_id, set_id: set_id}}
+         when is_binary(node_id) and is_binary(set_id) and set_id != "" <-
+           GroupStore.get(state.store, instance_id),
+         false <- set_local?(state, node_id, instance_id),
+         true <- set_restorable?(state, node_id, instance_id) do
+      restore_set(state, node_id, workload, set_id)
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
+  # Whether the anchor node still reports this group's bundle SET with member
+  # bundles present on LOCAL disk (a reported set whose members list is non-empty).
+  # True -> the local set is present, no restore needed. A set reported with an
+  # empty member list is a store-only marker (exported but locally gone), which is
+  # exactly the restore-on-miss case, so it reads as NOT local here.
+  defp set_local?(state, node_id, group_instance_id) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        fact
+        |> Map.get(:group_bundle_sets, [])
+        |> Enum.any?(fn s ->
+          s.group_instance_id == group_instance_id and Map.get(s, :members, []) != []
+        end)
+
+      :error ->
+        false
+    end
+  end
+
+  # Whether a locally-missing set can be restored: the store is reachable AND the
+  # store holds the WHOLE set (its exported flag is set). exported is a per-set
+  # atomicity fact (a partially exported set is not exported), so this is the
+  # complete-set gate. store_reachable == false never blocks the local-state wake;
+  # it only withholds the restore (fail-open warmth).
+  defp set_restorable?(state, node_id, group_instance_id) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        Map.get(fact, :store_reachable, false) == true and
+          fact
+          |> Map.get(:group_bundle_sets, [])
+          |> Enum.any?(&(&1.group_instance_id == group_instance_id and Map.get(&1, :exported, false) == true))
+
+      :error ->
+        false
+    end
+  end
+
+  defp restore_set(state, node_id, workload, set_id) do
+    ref = %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: workload, ref: set_id}
+    req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: workload}}
+
+    case safe_restore_artifact(state, node_id, req) do
+      {:ok, resp} ->
+        record_restore(state, workload, set_id, resp)
+        :ok
+
+      other ->
+        Logger.warning("embervm group: set restore-on-miss failed, degrading to fresh",
+          workload: workload,
+          set_id: set_id,
+          reason: inspect(other)
+        )
+
+        :error
+    end
+  end
+
+  defp safe_restore_artifact(state, node_id, %RestoreArtifactRequest{} = req) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+      try do
+        case state.restore_artifact_fun.(channel, req) do
+          {:error, reason} = err ->
+            if Embervm.NodeChannel.transport_dead?(reason) do
+              _ = state.invalidate_fun.(node_id, channel)
+            end
+
+            err
+
+          other ->
+            other
+        end
+      rescue
+        e -> {:error, {:restore_artifact_raised, e}}
+      catch
+        :exit, reason ->
+          _ = state.invalidate_fun.(node_id, channel)
+          {:error, {:restore_artifact_raised, {:exit, reason}}}
+
+        kind, reason ->
+          {:error, {:restore_artifact_raised, {kind, reason}}}
+      end
+    end
+  end
+
+  defp safe_channel(channel_fun, node_id) do
+    channel_fun.(node_id)
+  rescue
+    e -> {:error, {:channel_raised, e}}
+  catch
+    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  # Append the audit-only :artifact_restored op (no projection table). Best-effort:
+  # an append failure must never fail the wake (the restored bytes on disk are the
+  # durable state, not this audit row).
+  defp record_restore(state, workload, set_id, resp) do
+    op = %Embervm.OpLog.Op{
+      kind: :artifact_restored,
+      tenant: state.tenant,
+      principal: wake_principal(workload),
+      workload: workload,
+      ts: state.clock.(),
+      payload: %{
+        kind: "group_set",
+        ref: set_id,
+        bytes_moved: Map.get(resp, :bytes_moved, 0),
+        skipped: Map.get(resp, :skipped, false)
+      }
+    }
+
+    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm group: artifact_restored append raised", workload: workload, error: inspect(e))
+      :ok
+  end
+
+  defp default_restore_artifact(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.restore_artifact(channel, req)
   end
 
   # Spawn (or reuse) the GroupManager child for the banked instance and drive its
@@ -726,6 +891,11 @@ defmodule Embervm.GroupWakeManager do
   defp audit_denial(principal, workload, reason) do
     Embervm.Metering.record_denial(principal, workload, reason)
   end
+
+  # The op-log owner attribution for a group's restore audit, matching
+  # GroupSweeper.usage_principal/1 (a composite group is a singleton owned by one
+  # principal, so per-workload == per-principal).
+  defp wake_principal(workload), do: "system:group:#{workload}"
 
   defp schedule(msg, interval_ms) when interval_ms > 0 do
     Process.send_after(self(), msg, interval_ms)

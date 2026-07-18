@@ -65,9 +65,10 @@ defmodule Embervm.ServingManagerTest do
         channel_fun: fn _node -> {:ok, :ch} end,
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_serving_fun: start_serving_fun,
+        op_log: op_log,
         reconcile_interval_ms: 0,
         id_fun: id_seq(suffix)
-      ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap])
+      ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap, :restore_artifact_fun])
 
     {:ok, mgr} = ServingManager.start_link(mgr_opts)
 
@@ -101,7 +102,8 @@ defmodule Embervm.ServingManagerTest do
         }
       },
       serving_vms: Keyword.get(opts, :serving_vms, []),
-      serving_snapshots: Keyword.get(opts, :serving_snapshots, [])
+      serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
+      store_reachable: Keyword.get(opts, :store_reachable, false)
     })
   end
 
@@ -446,6 +448,56 @@ defmodule Embervm.ServingManagerTest do
     assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
     # The relight sent the guest port 8080 (serving_workload's serving.port), NOT 30002.
     assert Agent.get(ports, & &1) == [8080]
+  end
+
+  # -- restore-on-miss (R6, Task 8) -------------------------------------------
+
+  test "a banked instance whose snapshot is gone locally but exported RESTORES then relights" do
+    {:ok, restore_calls} = Agent.start_link(fn -> [] end)
+
+    restore_fun = fn _ch, req ->
+      art = req.artifact
+      Agent.update(restore_calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload} | &1])
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 2048, skipped: false}}
+    end
+
+    relit_fun = fn _ch, _req ->
+      {:ok, %StartServingResponse{vm_id: "vm-relit", ip: "10.99.0.5", port: 8080}}
+    end
+
+    ctx = start_stack(start_serving_fun: relit_fun, restore_artifact_fun: restore_fun)
+    serving_workload(ctx, "wl-a")
+
+    # The node reports NO serving snapshots (a true local miss) but a reachable store,
+    # so the banked instance stays a relight candidate and the wake restores first.
+    serving_node(ctx, "node-4", serving_snapshots: [], store_reachable: true)
+
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1", 30002)
+
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+
+    assert [%{kind: :ARTIFACT_KIND_SERVING, ref: "serving/s-1", workload: "wl-a"}] = Agent.get(restore_calls, & &1)
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert Enum.any?(ops, &(&1.kind == :artifact_restored and &1.payload["ref"] == "serving/s-1"))
+  end
+
+  test "a banked snapshot gone locally with an UNREACHABLE store attempts no restore and cold-boots" do
+    {:ok, restore_calls} = Agent.start_link(fn -> [] end)
+    restore_fun = fn _ch, _req -> Agent.update(restore_calls, &[:called | &1]) && {:error, :unused} end
+
+    {fun, srcs} = recording_start_fun()
+
+    ctx = start_stack(start_serving_fun: fun, restore_artifact_fun: restore_fun)
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-4", serving_snapshots: [], store_reachable: false)
+
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1", 30002)
+
+    assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+    # No restore attempted, and the wake cold-booted (a FRESH source, not a relight).
+    assert Agent.get(restore_calls, & &1) == []
+    assert Agent.get(srcs, & &1) == [:fresh]
   end
 
   test "a STALE-lineage banked instance is NOT relit: the wake cold-boots the current base" do
