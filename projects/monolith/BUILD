@@ -37,6 +37,7 @@
 # gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude kloak_placeholder_drift_test.py
+# gazelle:exclude ember_public_savings_grants_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -5203,6 +5204,15 @@ bdd_test(
 bdd_test(
     name = "public_api_chunks_grants_test",
     srcs = ["public_api_chunks_grants_test.py"],
+)
+
+# Real-Postgres test: public_writer can SELECT/INSERT/UPDATE demo_pg_savings
+# (the accrual write path used by both tiers' status poll) and public_reader
+# can SELECT it (the cached GET /savings endpoint) but not write it (Task 3,
+# ADR security/005's narrow-grant precedent).
+bdd_test(
+    name = "ember_public_savings_grants_test",
+    srcs = ["ember_public_savings_grants_test.py"],
 )
 
 bdd_test(

@@ -165,6 +165,17 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
     }
 
 
+@router.get("/savings")
+async def postgres_savings() -> dict:
+    """The all-time "memory saved while asleep" counter, cached 30s.
+
+    Reads through core.cached_demo_pg_savings (reader engine, single-flight
+    TTL cache) so a burst of pollers shares one DB read. Never 5xxs: a
+    missing table or read failure comes back as total_saved_mib_s: null.
+    """
+    return await core.cached_demo_pg_savings()
+
+
 @router.post("/session")
 async def postgres_session(
     body: PostgresSessionRequest, request: Request, response: Response

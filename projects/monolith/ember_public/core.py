@@ -34,6 +34,7 @@ import psycopg
 from sqlmodel import Session
 
 from app.db import get_engine
+from ember_public.db import get_savings_engine
 from ember_public.models import DemoPgSavings
 from shared.k8s_auth import auth_headers
 
@@ -299,8 +300,10 @@ def record_demo_pg_savings_core(
 
 
 def _record_demo_pg_savings_sync(state: str | None, generation: int | None) -> float:
-    """Opens its own Session; never receives a session from the caller's thread."""
-    with Session(get_engine()) as session:
+    """Opens its own Session against the writer engine (public_writer on the
+    public tier, the default app engine on the private tier); never receives
+    a session from the caller's thread."""
+    with Session(get_savings_engine()) as session:
         return record_demo_pg_savings_core(
             session, state=state, generation=generation, now=datetime.now(timezone.utc)
         )
@@ -315,6 +318,57 @@ async def record_demo_pg_savings(
     except Exception as exc:  # noqa: BLE001 - accrual is best-effort, never fatal
         logger.warning("demo-postgres savings accrual failed: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# GET /savings: a 30s in-process cache over a plain SELECT of the singleton
+# demo_pg_savings row. Reads always use the DEFAULT reader engine
+# (app.db.get_engine, public_reader on the replica): SELECT works fine on the
+# replica, and reserving the writer engine for accrual keeps the read path
+# off the primary. Missing table (pre-migration) or any error degrades to
+# total_saved_mib_s: None, never a 5xx (mirrors the status endpoint's
+# in-band error posture).
+# ---------------------------------------------------------------------------
+
+_SAVINGS_CACHE_TTL_S = 30.0
+_savings_cache_lock = asyncio.Lock()
+_savings_cache: dict = {"at": None, "total_saved_mib_s": None, "as_of": None}
+
+
+def _read_demo_pg_savings_sync() -> float | None:
+    with Session(get_engine()) as session:
+        row = session.get(DemoPgSavings, 1)
+        return row.total_mib_seconds if row is not None else None
+
+
+async def cached_demo_pg_savings() -> dict:
+    """Single-flight, 30s-TTL-cached read of the all-time savings counter.
+
+    Returns {"total_saved_mib_s": float | None, "as_of": iso8601}; as_of is
+    when the value was actually read from the DB (the cached_at timestamp),
+    not the current time, so a stale-but-still-fresh cached response is
+    honest about its age.
+    """
+    async with _savings_cache_lock:
+        now = monotonic()
+        cached_at = _savings_cache["at"]
+        if cached_at is not None and (now - cached_at) < _SAVINGS_CACHE_TTL_S:
+            return {
+                "total_saved_mib_s": _savings_cache["total_saved_mib_s"],
+                "as_of": _savings_cache["as_of"],
+            }
+
+        try:
+            total = await asyncio.to_thread(_read_demo_pg_savings_sync)
+        except Exception as exc:  # noqa: BLE001 - a read failure is data, not a fault
+            logger.warning("demo-postgres savings read failed: %s", exc)
+            total = None
+
+        as_of = datetime.now(timezone.utc).isoformat()
+        _savings_cache["at"] = now
+        _savings_cache["total_saved_mib_s"] = total
+        _savings_cache["as_of"] = as_of
+        return {"total_saved_mib_s": total, "as_of": as_of}
 
 
 def classify_wake(before: dict | None) -> str:
