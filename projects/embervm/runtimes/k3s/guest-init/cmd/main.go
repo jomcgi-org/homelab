@@ -31,12 +31,15 @@
 //   - COMPOSITE MEMBER (R5, a cold boot carrying the EMBER_GROUP_* facts but NO
 //     volume boot-arg): a group member is WARMTH-ONLY (a standing R5 decision: no
 //     member volume, state lost on fresh/destroy), yet it is a real k3s boot. It
-//     runs exactly like the stateful lane MINUS the volume mount: k3s's datastore
-//     lives on the ephemeral writable rootfs subtree. EMBER_GROUP_MEMBER (set for
-//     every member, never for a base build) is the marker that separates it from a
-//     base build, which also carries no volume. Without this lane the volume-only
-//     discriminator sends every composite member down the base-build path and k3s
-//     never starts (the bug this init originally shipped with).
+//     runs like the stateful lane but, having no volume, backs k3s's data dir with
+//     a tmpfs (mountCompositeDataDir) instead of a block-device mount: the rootfs
+//     is read-only, so without a writable data dir k3s dies extracting its assets.
+//     The datastore + unpacked airgap therefore live in RAM (counting against the
+//     member's mem_mib). EMBER_GROUP_MEMBER (set for every member, never for a base
+//     build) is the marker that separates it from a base build, which also carries
+//     no volume. Without this lane the volume-only discriminator sends every
+//     composite member down the base-build path and k3s never starts (the bug this
+//     init originally shipped with).
 //
 // The airgap image tarball baked at /var/lib/rancher/k3s/agent/images is imported
 // by k3s itself at startup (standing decision 12: zero-egress). This init never
@@ -130,12 +133,16 @@ func run(logger *slog.Logger) error {
 		}
 
 	case bootComposite:
-		// R5 composite member (warmth-only, no volume): k3s runs on the ephemeral
-		// writable rootfs subtree (mountGuestFilesystems made /var/lib/rancher/k3s
-		// writable). State is lost on fresh/destroy by design (the R5 warmth-only
-		// decision); there is no volume to mount.
+		// R5 composite member (warmth-only, no volume): the rootfs is read-only and
+		// there is no volume, so k3s's data dir needs a writable tmpfs backing (else
+		// k3s dies extracting its assets). Mount it + stage the airgap here. State
+		// lives in RAM and is lost on fresh/destroy by design (the R5 warmth-only
+		// decision).
 		logger.Info("ember-k3s-init: composite member boot, running k3s (warmth-only, no volume)",
 			"member", getenv(memberEnv), "role", getenv(roleEnv))
+		if err := mountCompositeDataDir(logger); err != nil {
+			return err
+		}
 	}
 
 	// Both k3s lanes (stateful + composite) start the guest control agent

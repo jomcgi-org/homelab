@@ -20,3 +20,10 @@ func mountGuestFilesystems(_ *slog.Logger) {}
 func mountStatefulVolume(_ *slog.Logger, dev, _ string) error {
 	return fmt.Errorf("ember-k3s-init: stateful volume mount unsupported on %s (dev=%s)", runtime.GOOS, dev)
 }
+
+// mountCompositeDataDir always fails off Linux: the tmpfs mount is Linux-only.
+// The composite path only runs inside the microVM; this stub keeps the package
+// building under the host toolchain for unit tests, which never reach it.
+func mountCompositeDataDir(_ *slog.Logger) error {
+	return fmt.Errorf("ember-k3s-init: composite data dir mount unsupported on %s", runtime.GOOS)
+}
