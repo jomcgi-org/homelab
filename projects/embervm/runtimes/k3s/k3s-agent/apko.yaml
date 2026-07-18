@@ -68,6 +68,22 @@ paths:
     uid: 0
     gid: 0
     permissions: 0o700
+  # Warmth-only composite members have NO volume and a read-only rootfs, so k3s +
+  # its embedded kubelet/CNI need these as tmpfs mounts too (guest-init
+  # mountCompositeDataDir). A tmpfs mount needs its mountpoint to pre-exist on the
+  # read-only rootfs, so bake them empty here (the stateful/base-build lanes never
+  # mount over them, so they stay harmless empty dirs there). The k3s read-only-root
+  # contract's writable set is data-dir + /etc/rancher + these two + /run + /var/log.
+  - path: /var/lib/kubelet
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o700
+  - path: /var/lib/cni
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o700
   - path: /run
     type: directory
     uid: 0
