@@ -1,4 +1,4 @@
-/* Design tokens for the public /app/firecracker scroll story. Ported 1:1
+/* Design tokens for the public /ember/firecracker scroll story. Ported 1:1
  * from the approved reference mockup's `:root` block (./reference-mockup.html).
  * All literal hex values live here, scoped under .fcstory, so
  * FcScrollStory.svelte and ReplayWidget.svelte's <style> blocks can reference

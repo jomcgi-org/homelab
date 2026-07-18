@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bake real fc-invoke trace data for the public /app/firecracker explainer.
+# Bake real fc-invoke trace data for the public /ember/firecracker explainer.
 #
 # Restores: triggers real Python-sandbox runs through the private demos API
 # and captures each run's span tree via the demo trace endpoint.
@@ -45,7 +45,7 @@ echo "> triggering $RUNS sandbox runs"
 for i in $(seq 1 "$RUNS"); do
 	tid="$(curl -fsS -X POST http://127.0.0.1:18000/api/demos/firecracker/python \
 		-H 'content-type: application/json' \
-		-d '{"code": "print(\"baked for /app/firecracker\")"}' | jq -r .trace_id)"
+		-d '{"code": "print(\"baked for /ember/firecracker\")"}' | jq -r .trace_id)"
 	echo "  run $i: $tid"
 	echo "$tid" >>"$TMP/trace_ids"
 	sleep 2
