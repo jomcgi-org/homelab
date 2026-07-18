@@ -193,6 +193,12 @@
         <span><b>~{vmRestore} ms</b> VM restore</span>
         <span class="sep">·</span>
         <span>numbers are live</span>
+        <span class="sep">·</span>
+        <a
+          class="src"
+          href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/README.md"
+          >read the README</a
+        >
       </p>
     </header>
 
@@ -550,7 +556,12 @@
         >Elixir/OTP control plane · Go node daemon · Firecracker microVMs ·
         running on this cluster</span
       >
-      <a href="/">jomcgi.dev</a>
+      <span class="foot-links">
+        <a href="https://github.com/jomcgi/homelab/tree/main/projects/embervm"
+          >github.com/jomcgi/homelab</a
+        >
+        <a href="/">jomcgi.dev</a>
+      </span>
     </footer>
   </main>
 </div>
@@ -750,6 +761,21 @@
 
   .stats .sep {
     color: var(--eml-line-strong);
+  }
+
+  .stats .src {
+    color: var(--em-ember-deep);
+    text-decoration: none;
+    border-bottom: 1px solid var(--em-ember-dim);
+  }
+
+  .stats .src:hover {
+    border-bottom-color: var(--em-ember-deep);
+  }
+
+  .stats .src:focus-visible {
+    outline: 2px solid var(--em-ember-deep);
+    outline-offset: 3px;
   }
 
   /* ---------- section headings, README style ---------- */
@@ -1177,6 +1203,11 @@
     font-family: var(--em-mono);
     font-size: 12.5px;
     color: var(--em-faint);
+  }
+
+  .foot-links {
+    display: flex;
+    gap: 18px;
   }
 
   .foot a {
