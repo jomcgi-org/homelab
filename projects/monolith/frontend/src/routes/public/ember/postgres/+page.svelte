@@ -5,8 +5,16 @@
   // Turnstile-gated and rate-limited for public traffic (see the design doc,
   // docs/plans/2026-07-18-ember-public-pages-design.md).
   import EmberConsole from "$lib/public/ember/EmberConsole.svelte";
+  import EmberStage from "$lib/public/ember/EmberStage.svelte";
 
   let { data } = $props();
+
+  // EmberConsole owns the one poll loop for this page (status/running/
+  // stopwatchMs); these are bindable props on the console so the stage can
+  // read the same live values without a second poller.
+  let consoleStatus = $state(null);
+  let consoleRunning = $state(false);
+  let consoleStopwatchMs = $state(0);
 </script>
 
 <svelte:head>
@@ -28,13 +36,20 @@
     </p>
   </header>
 
-  <!-- Task 8 (live ember stage) mounts here: a hot/cold RAM cell grid driven
-       by the console's live status poll, above the console proper. -->
+  <EmberStage
+    state={consoleStatus?.state}
+    totalSavedMibS={consoleStatus?.total_saved_mib_s}
+    stopwatchMs={consoleStopwatchMs}
+    running={consoleRunning}
+  />
 
   <EmberConsole
     turnstileSiteKey={data.turnstileSiteKey}
     initialStatus={data.initialStatus}
     initialSavings={data.initialSavings}
+    bind:status={consoleStatus}
+    bind:running={consoleRunning}
+    bind:stopwatchMs={consoleStopwatchMs}
   />
 
   <section class="explainer">

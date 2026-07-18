@@ -1,0 +1,39 @@
+/* Design tokens for EmberStage.svelte, the live hot/cold RAM cell grid on
+ * /ember/postgres. Mirrors fcstory.css's discipline: all literal hex/hsl
+ * base values live here as CSS custom properties, scoped under .ember-stage,
+ * so EmberStage.svelte's <style> block only ever references var(--es-*)
+ * (semgrep rule svelte-hardcoded-color-in-style flags bare hex literals
+ * inside a .svelte <style> block).
+ */
+
+.ember-stage {
+  --es-panel: var(--paper, #ffffff);
+  --es-border: var(--ink, #1a1a1a);
+  --es-grid-bg: #eeebe3;
+  --es-cell-idle-bg: #e6e2d7;
+  --es-ink: var(--ink, #1a1a1a);
+  --es-muted: var(--ink-3, #6b6658);
+
+  /* Cold (banked) cell hue range: same blue family fcstory uses for its
+   * frost tones. */
+  --es-cold-hue-base: 208;
+  --es-cold-hue-span: 12;
+  --es-cold-sat-base: 46;
+  --es-cold-sat-span: 14;
+  --es-cold-light-base: 64;
+  --es-cold-light-span: 12;
+
+  /* Hot (serving) cell hue range: same ember family fcstory uses. */
+  --es-hot-hue-base: 16;
+  --es-hot-hue-span: 9;
+  --es-hot-sat-base: 72;
+  --es-hot-sat-span: 12;
+  --es-hot-light-base: 46;
+  --es-hot-light-span: 14;
+
+  --es-glow: color-mix(in srgb, #e05c26 18%, transparent);
+
+  /* Reduced-motion static fallback: a single flat hot swatch (no jitter, no
+   * per-cell randomness needed since every hot cell renders identically). */
+  --es-static-hot: #d9702c;
+}
