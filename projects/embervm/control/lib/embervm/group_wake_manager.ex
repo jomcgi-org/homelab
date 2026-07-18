@@ -92,6 +92,21 @@ defmodule Embervm.GroupWakeManager do
   @default_wake_window_ms 60_000
   @default_park_cap 16
 
+  # Wake-worker bound (R6, Task 10). A wedged member boot (the R5 drill: a member
+  # that never opens its port, chaining `:infinity` waits) must NOT pin `waking`
+  # forever, starving `adopt_one` and overflowing the park. So the WORKER is bounded
+  # by the workload's `wakeTimeoutSeconds` plus this margin: on the bound the wake is
+  # FAILED (single-flight released, parked callers erred/re-parked, the banked set
+  # left re-wakeable), NOT held. The parked caller's own `:infinity` GenServer.call is
+  # untouched: a caller waits as long as it chooses, the bound is on the wake it waits
+  # behind. The margin covers the legitimate relight/fresh sequence beyond the guest's
+  # own readiness budget (network setup, the create fallback). Default group
+  # wakeTimeoutSeconds is 120 (scratch-k8s 180), so the bound defaults to ~135s.
+  @default_wake_timeout_margin_ms 15_000
+  # Fallback wakeTimeoutSeconds when the catalog entry carries none (matches
+  # WorkloadWatcher's @group_defaults.wake_timeout_seconds).
+  @default_wake_timeout_seconds 120
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -155,11 +170,24 @@ defmodule Embervm.GroupWakeManager do
       pod_ip: Keyword.get(opts, :pod_ip, group_default(:pod_ip, nil)),
       # workload -> [{from, principal}] parked behind an in-flight wake (single-flight).
       waking: %{},
+      # workload -> monotonic ms the in-flight wake started (Task 10). Feeds the
+      # adoption self-recovery: a workload still `waking` past 2 * wakeTimeoutSeconds
+      # is a wedged wake whose worker never reported, recovered as a casualty rather
+      # than skipped forever.
+      wake_started: %{},
       # principal -> [wake timestamps within the window] (sliding-window rate limit).
       wake_events: %{},
       wake_max: Keyword.get(opts, :wake_max, @default_wake_max),
       wake_window_ms: Keyword.get(opts, :wake_window_ms, @default_wake_window_ms),
       park_cap: Keyword.get(opts, :park_cap, @default_park_cap),
+      # Wake-worker bound (Task 10). Derived per-wake from the workload's
+      # wakeTimeoutSeconds + this margin, unless `wake_bound_ms` overrides it outright
+      # (tests inject a tiny bound so a never-ready wake fails deterministically). The
+      # monotonic clock the bound + the adoption stuck-check read is injectable too
+      # (tests drive it with a fake counter).
+      wake_timeout_margin_ms: Keyword.get(opts, :wake_timeout_margin_ms, @default_wake_timeout_margin_ms),
+      wake_bound_ms: Keyword.get(opts, :wake_bound_ms, nil),
+      mono_clock: Keyword.get(opts, :mono_clock, &default_mono/0),
       reconcile_interval_ms: Keyword.get(opts, :reconcile_interval_ms, 0)
     }
 
@@ -190,6 +218,21 @@ defmodule Embervm.GroupWakeManager do
   @impl true
   def handle_info({:wake_done, workload, outcome}, state) do
     {:noreply, finish_wake(state, workload, outcome)}
+  end
+
+  # The wake-worker bound (Task 10) elapsed. If the wake for THIS workload is still
+  # in flight (the worker never reported a {:wake_done}, the wedged-boot case), fail
+  # it: finish_wake releases single-flight and errs the parked callers, leaving the
+  # banked set re-wakeable. A stale timer for a wake that already finished (or a newer
+  # wake replaced it) is a no-op: `waking` no longer has the workload, so finish_wake
+  # pops an empty waiter list and touches nothing.
+  def handle_info({:wake_timeout, workload}, state) do
+    if Map.has_key?(state.waking, workload) do
+      Logger.warning("embervm group wake timed out at bound", workload: workload)
+      {:noreply, finish_wake(state, workload, {:error, {:wake_failed, :wake_timeout}})}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info(:reconcile, state) do
@@ -242,9 +285,31 @@ defmodule Embervm.GroupWakeManager do
 
     if length(waiters) >= state.park_cap do
       audit_denial(principal, workload, :park_full)
+      log_park_full(state, workload, length(waiters))
       {:reply, {:error, {:park_full, "parked-connection cap exceeded for workload"}}, state}
     else
       {:noreply, %{state | waking: Map.put(state.waking, workload, waiters ++ [{from, principal}])}}
+    end
+  end
+
+  # Log a park overflow as STRUCTURED warning (Task 10) so the Task 11 alert can match
+  # `park_full` with the oldest-waiter age: a park filling up means the in-flight wake
+  # is not draining, the exact R5 symptom. The oldest-waiter age is how long the wake
+  # this park sits behind has been in flight (mono now - wake_started); 0 when no start
+  # was recorded. The alert is NOT implemented here (PR-7); this only emits the signal.
+  defp log_park_full(state, workload, depth) do
+    Logger.warning("embervm group park_full",
+      event: :park_full,
+      workload: workload,
+      park_depth: depth,
+      oldest_waiter_age_ms: oldest_waiter_age_ms(state, workload)
+    )
+  end
+
+  defp oldest_waiter_age_ms(state, workload) do
+    case Map.get(state.wake_started, workload) do
+      started when is_integer(started) -> max(state.mono_clock.() - started, 0)
+      _ -> 0
     end
   end
 
@@ -260,8 +325,35 @@ defmodule Embervm.GroupWakeManager do
     plan = plan_wake(state, workload)
 
     spawn_wake(owner, workload, fn -> run_wake(state, workload, plan) end)
-    state
+    # Stamp the wake's start (for the adoption stuck-check) and arm the wake-worker
+    # bound: if the worker has not reported a {:wake_done} by then, {:wake_timeout}
+    # fails the wake so single-flight releases (Task 10).
+    schedule_wake_timeout(workload, wake_bound_ms(state, workload))
+    %{state | wake_started: Map.put(state.wake_started, workload, state.mono_clock.())}
   end
+
+  # The per-wake worker bound in ms: the explicit `wake_bound_ms` override (tests) or
+  # the workload's wakeTimeoutSeconds + margin.
+  defp wake_bound_ms(%{wake_bound_ms: ms}, _workload) when is_integer(ms) and ms > 0, do: ms
+
+  defp wake_bound_ms(state, workload) do
+    wake_timeout_seconds(state, workload) * 1_000 + state.wake_timeout_margin_ms
+  end
+
+  # The workload's wakeTimeoutSeconds from the catalog (group config), defaulting to
+  # @default_wake_timeout_seconds when the entry carries none.
+  defp wake_timeout_seconds(state, workload) do
+    case WorkloadCatalog.fetch(state.catalog_table, workload) do
+      {:ok, %{group: %{wake_timeout_seconds: secs}}} when is_integer(secs) and secs > 0 -> secs
+      _ -> @default_wake_timeout_seconds
+    end
+  end
+
+  defp schedule_wake_timeout(workload, bound_ms) when is_integer(bound_ms) and bound_ms > 0 do
+    Process.send_after(self(), {:wake_timeout, workload}, bound_ms)
+  end
+
+  defp schedule_wake_timeout(_workload, _bound_ms), do: :ok
 
   defp spawn_wake(owner, workload, fun) do
     spawn(fn ->
@@ -351,7 +443,7 @@ defmodule Embervm.GroupWakeManager do
 
   defp pop_waiters(state, workload) do
     waiters = Map.get(state.waking, workload, [])
-    {waiters, %{state | waking: Map.delete(state.waking, workload)}}
+    {waiters, %{state | waking: Map.delete(state.waking, workload), wake_started: Map.delete(state.wake_started, workload)}}
   end
 
   defp reply_all(waiters, reply) do
@@ -422,7 +514,24 @@ defmodule Embervm.GroupWakeManager do
 
   defp adopt_one(state, instance, live_members, bundle_sets) do
     cond do
-      # An in-flight wake owns the workload's transition; never touch it.
+      # A wake stuck waking past 2 * wakeTimeoutSeconds (Task 10): the worker never
+      # reported and the {:wake_timeout} timer is lost (a CP restart drops the timer
+      # but the projection is rebuilt, so `waking` is empty on boot; this covers the
+      # in-process wedge a timer somehow missed). Recover it as a casualty: drop the
+      # stale waking bookkeeping, then fall through to the normal casualty/heal logic
+      # below rather than skipping it forever. A wake within the bound still OWNS its
+      # transition and is skipped (the next case).
+      Map.has_key?(state.waking, instance.workload) and wake_stuck?(state, instance.workload) ->
+        Logger.warning("embervm group wake stuck past bound, recovering as casualty",
+          workload: instance.workload,
+          instance_id: instance.instance_id
+        )
+
+        state = clear_stuck_wake(state, instance.workload)
+        adopt_one(state, instance, live_members, bundle_sets)
+
+      # An in-flight wake (within the bound) owns the workload's transition; never
+      # touch it.
       Map.has_key?(state.waking, instance.workload) ->
         state
 
@@ -551,6 +660,33 @@ defmodule Embervm.GroupWakeManager do
 
   defp node_reporting?(_state, _node_id), do: false
 
+  # -- stuck-wake recovery (Task 10) -----------------------------------------
+
+  # A workload is stuck iff its in-flight wake has been waking past 2 *
+  # wakeTimeoutSeconds. The bound itself (start_wake's {:wake_timeout} timer) is the
+  # primary release; this is the backstop for a wedge the timer missed (or a CP that
+  # somehow rebuilt `waking`). No start timestamp recorded (never happens on the wake
+  # path) reads as NOT stuck, so adoption defers to the timer.
+  defp wake_stuck?(state, workload) do
+    case Map.get(state.wake_started, workload) do
+      started when is_integer(started) ->
+        state.mono_clock.() - started >= 2 * wake_timeout_seconds(state, workload) * 1_000
+
+      _ ->
+        false
+    end
+  end
+
+  # Drop the stale waking bookkeeping for a stuck wake and err its parked callers so
+  # they stop blocking (their own retry re-enters the wake path once the workload is
+  # recovered to a re-wakeable row). Single-flight is released; the reconcile then
+  # heals the workload's state through the normal casualty/heal path.
+  defp clear_stuck_wake(state, workload) do
+    {waiters, state} = pop_waiters(state, workload)
+    reply_all(waiters, {:error, {:wake_failed, :wake_stuck}})
+    state
+  end
+
   # -- wake-rate limit -------------------------------------------------------
 
   defp wake_allowed?(%{wake_max: max}, _principal) when not is_integer(max) or max <= 0, do: true
@@ -637,4 +773,8 @@ defmodule Embervm.GroupWakeManager do
   defp mask_for(prefix), do: band(bsl(0xFFFFFFFF, 32 - prefix), 0xFFFFFFFF)
 
   defp default_clock, do: System.system_time(:millisecond)
+
+  # Monotonic ms for the wake-worker bound + the adoption stuck-check (never wall
+  # time: the bound is a duration, immune to clock steps). Tests inject a fake.
+  defp default_mono, do: System.monotonic_time(:millisecond)
 end
