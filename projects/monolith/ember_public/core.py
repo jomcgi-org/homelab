@@ -212,6 +212,56 @@ def check_and_record_insert(session_tag: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Presence: a rough live count of visitors watching the exhibit right now, so
+# the shared-VM warmth reads as "N people are here poking it" instead of a
+# ghost wake nobody in the room triggered. Each client mints an ephemeral id
+# on page load and carries it on every status poll (the poll the page already
+# fires sub-second); we stamp last-seen per id and count ids seen within the
+# TTL window. Keyed on the opaque client id, never an IP, and NOT the insert
+# session_tag: the session cookie is minted only on first insert and is not
+# forwarded on the status poll, so tagging presence to it would count only
+# people who have written, not people watching.
+#
+# Bounded two ways: a TTL prune on every access (a client that closes the tab
+# ages out within _PRESENCE_TTL_S), plus a hard id cap so a scripted client
+# churning a fresh id every poll cannot grow the map without limit.
+# ---------------------------------------------------------------------------
+
+_PRESENCE_TTL_S = 6.0
+_PRESENCE_MAX_IDS = 5000
+_PRESENCE_ID_MAXLEN = 64
+_presence: dict[str, float] = {}
+
+
+def _prune_presence(now: float) -> None:
+    cutoff = now - _PRESENCE_TTL_S
+    stale = [cid for cid, seen in _presence.items() if seen < cutoff]
+    for cid in stale:
+        del _presence[cid]
+
+
+def record_presence(client_id: str) -> None:
+    """Stamp this client id as seen now. Ignores an empty or oversized id, and
+    refuses a brand-new id once the map is at its cap (so an id-churning client
+    cannot grow it past _PRESENCE_MAX_IDS); an id already present is always
+    refreshed so genuine visitors never age out under the cap."""
+    if not client_id or len(client_id) > _PRESENCE_ID_MAXLEN:
+        return
+    now = monotonic()
+    _prune_presence(now)
+    if client_id not in _presence and len(_presence) >= _PRESENCE_MAX_IDS:
+        return
+    _presence[client_id] = now
+
+
+def present_count() -> int:
+    """Distinct client ids seen within the TTL window (prunes as it reads)."""
+    now = monotonic()
+    _prune_presence(now)
+    return len(_presence)
+
+
+# ---------------------------------------------------------------------------
 # Most recent query outcome, module-level. Task 4's health check consumes
 # this to detect a failed or slow wake with no newer success; no health logic
 # lives here, this module only records the observation.

@@ -55,6 +55,7 @@
       stopwatchMs={consoleStopwatchMs}
       running={consoleRunning}
       wakePromise={consoleWakePromise}
+      present={consoleStatus?.present}
     />
 
     <EmberConsole

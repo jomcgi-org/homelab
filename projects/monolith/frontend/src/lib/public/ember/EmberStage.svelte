@@ -11,13 +11,14 @@
   import { fade } from "svelte/transition";
   import "./ember-stage.css";
 
-  /** @type {{ vmState?: string|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean, wakePromise?: string }} */
+  /** @type {{ vmState?: string|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean, wakePromise?: string, present?: number|null }} */
   let {
     vmState = null,
     totalSavedMibS = null,
     stopwatchMs = 0,
     running = false,
     wakePromise = "",
+    present = null,
   } = $props();
 
   const WAKING = new Set(["relighting", "cold_booting", "starting"]);
@@ -307,6 +308,20 @@
         ? "waking"
         : "cold",
   );
+
+  // Live watchers pill: names the OTHER cause of warmth on this shared VM.
+  // Without it a wake someone else triggered reads as a ghost ("why is it
+  // glowing, I did nothing"); with it the crowd is the explanation. Solo is
+  // its own message on purpose: "just you" is exactly when you WILL see the VM
+  // sleep, so it reinforces the exhibit instead of looking lonely. Hidden
+  // entirely until the first poll returns a count (present == null).
+  let watchers = $derived(
+    present == null
+      ? null
+      : present <= 1
+        ? "just you here now"
+        : `${present} here now`,
+  );
 </script>
 
 <div class="ember-stage">
@@ -316,11 +331,21 @@
   {/if}
 
   <div class="es-overlay">
-    <span class="es-state-word">
-      {#key stateWord}
-        <span class="fade-swap" in:fade={{ duration: 260 }}>{stateWord}</span>
-      {/key}
-    </span>
+    <div class="es-status-row">
+      <span class="es-state-word">
+        {#key stateWord}
+          <span class="fade-swap" in:fade={{ duration: 260 }}>{stateWord}</span>
+        {/key}
+      </span>
+      {#if watchers}
+        <span class="es-watchers" in:fade={{ duration: 260 }}>
+          <span class="es-watchers-dot" aria-hidden="true"></span>
+          {#key watchers}
+            <span class="fade-swap" in:fade={{ duration: 260 }}>{watchers}</span>
+          {/key}
+        </span>
+      {/if}
+    </div>
     <div class="es-hero">
       {#key heroKind}
         <div class="es-hero-inner" in:fade={{ duration: 260 }}>
@@ -426,6 +451,14 @@
     text-align: center;
   }
 
+  .es-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
   .es-state-word {
     font-family: var(--em-mono, ui-monospace, monospace);
     font-size: 12.5px;
@@ -437,6 +470,47 @@
     box-shadow: var(--em-shadow-soft);
     padding: 4px 12px;
     border-radius: 999px;
+  }
+
+  /* Watchers pill: quieter than the state word (it is context, not the
+     headline), same panel chip language. The dot is the only warm accent, a
+     "live" tell borrowed from presence indicators everywhere. */
+  .es-watchers {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--em-mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--es-ink);
+    background: color-mix(in srgb, var(--es-panel) 88%, transparent);
+    box-shadow: var(--em-shadow-soft);
+    padding: 4px 11px;
+    border-radius: 999px;
+  }
+
+  .es-watchers-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--em-ember, currentColor);
+    flex: none;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .es-watchers-dot {
+      animation: es-watchers-pulse 2.2s ease-in-out infinite;
+    }
+    @keyframes es-watchers-pulse {
+      0%,
+      100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.35;
+      }
+    }
   }
 
   .es-hero {

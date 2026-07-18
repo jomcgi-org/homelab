@@ -45,6 +45,7 @@ def _reset_ember_public_module_state():
             {"at": None, "payload": None, "state": None, "state_changed_at": None}
         )
         core._insert_bucket.clear()
+        core._presence.clear()
         core._last_query_outcome.update(
             {"at_monotonic": None, "ok": None, "connect_ms": None}
         )
@@ -104,6 +105,46 @@ def test_postgres_status_shapes_control_plane_payload(monkeypatch):
     assert body["pair_valid"] is True
     assert body["healthy"] is True
     assert body["last_active_at"] == "2026-07-17T10:00:00Z"
+
+
+def test_postgres_status_reports_live_presence(monkeypatch):
+    """The ?p= client id is counted and returned as `present` so the UI can
+    show how many visitors are watching the shared VM."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload()
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    client = _client()
+
+    def present_for(query: str) -> int:
+        body = client.get(f"/api/ember/postgres/status{query}").json()
+        return body["present"]
+
+    # Two distinct client ids -> two watchers; a sessionless poll still returns
+    # a count (it just does not add one of its own).
+    assert present_for("?p=alice") == 1
+    assert present_for("?p=bob") == 2
+    # Same id again does not double-count.
+    assert present_for("?p=alice") == 2
+    assert present_for("") == 2
+
+
+def test_postgres_status_error_path_still_reports_presence(monkeypatch):
+    """A flaky control-plane poll returns present alongside the in-band error."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+
+    body = _client().get("/api/ember/postgres/status?p=alice").json()
+    assert body["present"] == 1
+    assert "boom" in body["error"]
 
 
 def test_postgres_status_error_is_in_band(monkeypatch):
@@ -278,6 +319,43 @@ def test_postgres_query_connect_failure_is_in_band(monkeypatch):
     assert "connection refused" in body["error"]
     assert body["mode"] == "insert"
     assert body["classification"] == "warm"
+
+
+def test_presence_ttl_prunes_and_counts(monkeypatch):
+    core._presence.clear()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(core, "monotonic", lambda: clock["t"])
+
+    core.record_presence("a")
+    core.record_presence("b")
+    assert core.present_count() == 2
+
+    # Refreshing "a" keeps it alive across the TTL boundary; "b" ages out.
+    clock["t"] = 1000.0 + core._PRESENCE_TTL_S - 0.1
+    core.record_presence("a")
+    clock["t"] = 1000.0 + core._PRESENCE_TTL_S + 0.1
+    assert core.present_count() == 1  # only "a" survived
+
+
+def test_presence_ignores_empty_and_oversized_ids():
+    core._presence.clear()
+    core.record_presence("")
+    core.record_presence("x" * (core._PRESENCE_ID_MAXLEN + 1))
+    assert core.present_count() == 0
+
+
+def test_presence_cap_refuses_new_ids_but_refreshes_known(monkeypatch):
+    core._presence.clear()
+    monkeypatch.setattr(core, "_PRESENCE_MAX_IDS", 2)
+
+    core.record_presence("a")
+    core.record_presence("b")
+    core.record_presence("c")  # over cap: refused
+    assert core.present_count() == 2
+    assert "c" not in core._presence
+    # A known id is still refreshed even at the cap.
+    core.record_presence("a")
+    assert core.present_count() == 2
 
 
 def test_classify_wake_paths():

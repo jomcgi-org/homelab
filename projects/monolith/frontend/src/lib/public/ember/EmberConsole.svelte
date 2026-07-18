@@ -235,9 +235,19 @@
   // below keys off it.
   let lastOwnActivityAt = 0;
 
+  // Ephemeral per-page client id for the live-watchers count. Minted once in
+  // onMount (never at SSR/module eval, hence the empty default), carried on
+  // every status poll as ?p=. Opaque and not persisted: it identifies this
+  // open tab for the ~6s presence TTL, nothing more, and is unrelated to the
+  // insert session cookie.
+  let clientId = "";
+
   async function pollStatus() {
     try {
-      const resp = await fetch(`${API}/status`);
+      const url = clientId
+        ? `${API}/status?p=${encodeURIComponent(clientId)}`
+        : `${API}/status`;
+      const resp = await fetch(url);
       const body = await resp.json();
       if (body.configured === false) {
         statusError = "demo-postgres is not configured on this deployment";
@@ -384,6 +394,14 @@
   }
 
   onMount(() => {
+    // Mint the ephemeral watcher id before the first poll so this tab is
+    // counted from its opening request. crypto.randomUUID is available on the
+    // https public site and on localhost; the Math.random fallback covers any
+    // context without it (the id only needs to be unique-ish per tab).
+    clientId =
+      globalThis.crypto?.randomUUID?.() ??
+      `c-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+
     if (!turnstileSiteKey) {
       // No widget configured (dev): mint sessionlessly, matching the private
       // panel and the backend's private-tier allowance.
