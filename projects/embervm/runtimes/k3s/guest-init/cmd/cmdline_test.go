@@ -103,6 +103,76 @@ func TestStatefulVolumeFromCmdline(t *testing.T) {
 	}
 }
 
+func TestClassifyBoot(t *testing.T) {
+	cases := []struct {
+		name string
+		dev  string
+		env  map[string]string
+		want bootClass
+	}{
+		{
+			name: "no volume and no facts is a base build",
+			dev:  "",
+			env:  map[string]string{},
+			want: bootBaseBuild,
+		},
+		{
+			name: "a volume boot-arg is the stateful lane",
+			dev:  "/dev/vdc",
+			env:  map[string]string{},
+			want: bootStateful,
+		},
+		{
+			// The regression this fix exists for: an R5 composite member carries
+			// EMBER_GROUP_* facts but NO volume (warmth-only), and MUST run k3s. The
+			// old volume-only discriminator classified it as a base build, so k3s
+			// never started and the member's health-gate never passed.
+			name: "composite member (facts, no volume) runs k3s, not a base build",
+			dev:  "",
+			env: map[string]string{
+				"EMBER_GROUP_MEMBER": "server",
+				"EMBER_GROUP_ROLE":   "server",
+				"EMBER_GROUP_IP":     "10.101.0.10",
+				"EMBER_GROUP_SECRET": "s3cr3t",
+			},
+			want: bootComposite,
+		},
+		{
+			name: "an agent member is also composite",
+			dev:  "",
+			env: map[string]string{
+				"EMBER_GROUP_MEMBER": "agent-0",
+				"EMBER_GROUP_ROLE":   "agent",
+			},
+			want: bootComposite,
+		},
+		{
+			// A volume takes precedence: the stateful lane is volume-backed even if
+			// group facts were somehow also present (they are not, in practice).
+			name: "a volume wins over facts (stateful, not composite)",
+			dev:  "/dev/vdc",
+			env:  map[string]string{"EMBER_GROUP_MEMBER": "server"},
+			want: bootStateful,
+		},
+		{
+			// A composite member with an empty role still classifies composite: the
+			// member-name marker (not the role) is the discriminator, because the CR
+			// role can be empty and k3sArgv then defaults to server.
+			name: "member name present but role empty is still composite",
+			dev:  "",
+			env:  map[string]string{"EMBER_GROUP_MEMBER": "server", "EMBER_GROUP_ROLE": ""},
+			want: bootComposite,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyBoot(tc.dev, envFunc(tc.env)); got != tc.want {
+				t.Fatalf("classifyBoot(%q, %v) = %d, want %d", tc.dev, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsValidEnvKeyName(t *testing.T) {
 	cases := map[string]bool{
 		"EMBER_GROUP_ROLE":   true,

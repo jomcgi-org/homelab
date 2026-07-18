@@ -6,7 +6,8 @@
 // A raw Firecracker boot ignores the OCI image config entirely and boots
 // init=<HarnessInit> (see the noded driver's bootArgs), so the apko entrypoint
 // is never honoured. This init is that missing PID 1. Like the scratch-postgres
-// guest-init it has to satisfy TWO distinct boot classes off ONE rootfs:
+// guest-init it has to satisfy THREE distinct boot classes off ONE rootfs
+// (classified by classifyBoot from the volume boot-arg + the injected facts):
 //
 //   - BASE BUILD (a plain cold boot with NO volume boot-arg): noded's BuildBase
 //     cold-boots the guest, health-gates it over vsock at the frozen readiness
@@ -26,6 +27,16 @@
 //     `k3s server`/`k3s agent`. Runtime health is a TCP connect to the k3s port
 //     over the tap NIC (noded's finishStatefulStart), NOT the vsock ready path;
 //     the vsock server stays up harmlessly.
+//
+//   - COMPOSITE MEMBER (R5, a cold boot carrying the EMBER_GROUP_* facts but NO
+//     volume boot-arg): a group member is WARMTH-ONLY (a standing R5 decision: no
+//     member volume, state lost on fresh/destroy), yet it is a real k3s boot. It
+//     runs exactly like the stateful lane MINUS the volume mount: k3s's datastore
+//     lives on the ephemeral writable rootfs subtree. EMBER_GROUP_MEMBER (set for
+//     every member, never for a base build) is the marker that separates it from a
+//     base build, which also carries no volume. Without this lane the volume-only
+//     discriminator sends every composite member down the base-build path and k3s
+//     never starts (the bug this init originally shipped with).
 //
 // The airgap image tarball baked at /var/lib/rancher/k3s/agent/images is imported
 // by k3s itself at startup (standing decision 12: zero-egress). This init never
@@ -93,29 +104,43 @@ func run(logger *slog.Logger) error {
 	var ready readyFlag
 	serveErr := startVsockReadyServer(ctx, logger, ready.Load)
 
-	// Detect the boot class from the presence of the volume boot-arg (exactly as
-	// scratch-postgres distinguishes a base build from a stateful cold boot). A
-	// base build has none and only needs the vsock ready answer; a stateful cold
-	// boot mounts the volume and runs k3s.
+	// Detect the boot class from the volume boot-arg AND the injected composite
+	// facts. Three lanes off one rootfs (see classifyBoot): a base build (no volume,
+	// no facts -> vsock ready only, no k3s), a stateful cold boot (volume-backed
+	// k3s), and an R5 composite member (warmth-only, volume-less k3s). Deciding on
+	// the volume alone predates R5 and misclassifies every composite member (which
+	// carries NO volume) as a base build, so k3s never runs; classifyBoot fixes that.
 	dev, mountPath := statefulVolumeFromCmdline(logger)
 
-	if dev == "" {
+	switch classifyBoot(dev, getenv) {
+	case bootBaseBuild:
 		// Base build: no volume, no k3s. Answer ready and hold PID 1 until the
 		// host snapshots and reaps the VM. Do NOT exit: exiting PID 1 panics the
 		// guest kernel before noded can snapshot.
 		ready.Store(true)
 		logger.Info("ember-k3s-init: base build boot, ready (no volume, no k3s)")
 		return waitForShutdown(ctx, serveErr, logger)
+
+	case bootStateful:
+		// Stateful cold boot: mount the writable volume at k3s's data dir BEFORE
+		// k3s starts, so the sqlite datastore + kubelet state land on durable
+		// storage.
+		if err := mountStatefulVolume(logger, dev, mountPath); err != nil {
+			return err
+		}
+
+	case bootComposite:
+		// R5 composite member (warmth-only, no volume): k3s runs on the ephemeral
+		// writable rootfs subtree (mountGuestFilesystems made /var/lib/rancher/k3s
+		// writable). State is lost on fresh/destroy by design (the R5 warmth-only
+		// decision); there is no volume to mount.
+		logger.Info("ember-k3s-init: composite member boot, running k3s (warmth-only, no volume)",
+			"member", getenv(memberEnv), "role", getenv(roleEnv))
 	}
 
-	// Stateful cold boot: mount the writable volume at k3s's data dir BEFORE k3s
-	// starts, so the sqlite datastore + kubelet state land on durable storage.
-	if err := mountStatefulVolume(logger, dev, mountPath); err != nil {
-		return err
-	}
-
-	// Start the vsock guest control agent (guestagent) sidecar on the frozen port
-	// 1024, so a post-resume clock resync works (standing decision 7). Non-fatal
+	// Both k3s lanes (stateful + composite) start the guest control agent
+	// (guestagent) sidecar on the frozen vsock port 1024, so a post-resume clock
+	// resync works (standing decision 7; R5 relight has the same contract). Non-fatal
 	// off Linux / no vsock. It is a SUPERVISED sidecar alongside k3s.
 	startGuestAgent(ctx, logger)
 
