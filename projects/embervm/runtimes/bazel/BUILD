@@ -1,0 +1,64 @@
+# gazelle:ignore
+load("@aspect_bazel_lib//lib:tar.bzl", "tar")
+load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("//bazel/tools/oci:apko_image.bzl", "apko_image")
+
+# EmberVM bazel-query demo runtime image (ADR embervm/010). A thin Wolfi apko
+# base (busybox + a cc toolchain for bazel's local_config_cc probe) carrying the
+# vendored Bazel 7.4.1 binary (/usr/local/bin/bazel, via @bazel_demo_bin) and the
+# Abseil checkout + offline dep distdir (/opt/abseil + /opt/distdir, via
+# @bazel_demo_workspace). Its PID 1 is ember-bazel-init (guest-init/cmd): on the
+# base-build cold boot it runs the warming `bazel cquery //absl/...` fully offline
+# (WORKSPACE mode + --distdir), and flips /shim/ready only AFTER the warming
+# client exits, so BuildBase snapshots a warm bazel SERVER (the Skyframe analysis
+# graph resident in the JVM heap). Restored clones resume inside the vsock serve
+# loop and answer exactly one POST /query before Assign reaps the VM. In-guest
+# ROOT (guest-init needs mounts; the microVM boundary is the isolation statement,
+# see README.md). Dual-arch, mirroring the k3s/postgres/python runtimes.
+
+# ember-bazel-init, the PID-1 init: cross-compiled per arch and layered at
+# /usr/local/bin/ember-bazel-init (the noded harnessInit boots it via init=<path>).
+platform_transition_filegroup(
+    name = "guest_init_amd64_bin",
+    srcs = ["//projects/embervm/runtimes/bazel/guest-init/cmd"],
+    target_platform = "@rules_go//go/toolchain:linux_amd64",
+)
+
+tar(
+    name = "guest_init_tar_amd64",
+    srcs = [":guest_init_amd64_bin"],
+    mtree = [
+        "./usr/local/bin/ember-bazel-init type=file content=$(execpath :guest_init_amd64_bin) mode=0755 uid=0 gid=0",
+    ],
+)
+
+platform_transition_filegroup(
+    name = "guest_init_arm64_bin",
+    srcs = ["//projects/embervm/runtimes/bazel/guest-init/cmd"],
+    target_platform = "@rules_go//go/toolchain:linux_arm64",
+)
+
+tar(
+    name = "guest_init_tar_arm64",
+    srcs = [":guest_init_arm64_bin"],
+    mtree = [
+        "./usr/local/bin/ember-bazel-init type=file content=$(execpath :guest_init_arm64_bin) mode=0755 uid=0 gid=0",
+    ],
+)
+
+apko_image(
+    name = "image",
+    config = "apko.yaml",
+    contents = "@embervm_runtime_bazel_lock//:contents",
+    multiarch_tars = [
+        # The vendored Bazel 7.4.1 binary (/usr/local/bin/bazel). @bazel_demo_bin
+        # is a multiarch_http_file, whose //:tar alias resolves per arch.
+        "@bazel_demo_bin//:tar",
+        # The Abseil checkout (/opt/abseil) + the offline dep distdir
+        # (/opt/distdir). Content is arch-independent; the rule emits identical
+        # per-arch tars so multiarch_tars' label-suffixing works.
+        "@bazel_demo_workspace//:tar",
+        ":guest_init_tar",
+    ],
+    repository = "ghcr.io/jomcgi/homelab/projects/embervm/runtimes/bazel",
+)
