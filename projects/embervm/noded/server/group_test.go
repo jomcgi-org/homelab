@@ -33,6 +33,15 @@ type fakeGroupNet struct {
 	removedTaps  []string
 	ensureTapErr error
 	ensureCalls  []ensureTapCall
+	entryDNATs   []entryDNATCall // recorded EnsureEntryDNAT calls
+	entryDNATErr error
+}
+
+// entryDNATCall records one EnsureEntryDNAT invocation for assertions.
+type entryDNATCall struct {
+	groupInstanceID string
+	entryIP         string
+	guestPort       uint32
 }
 
 // ensureTapCall records one EnsureMemberTap invocation for pinned-world assertions.
@@ -138,6 +147,16 @@ func (f *fakeGroupNet) PrefixLen(id string) int    { return 24 }
 
 func (f *fakeGroupNet) EntryEndpoint(ip net.IP, port uint32) (string, uint32) {
 	return ip.String(), port
+}
+
+func (f *fakeGroupNet) EnsureEntryDNAT(_ context.Context, id string, entryIP net.IP, guestPort uint32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.entryDNATErr != nil {
+		return f.entryDNATErr
+	}
+	f.entryDNATs = append(f.entryDNATs, entryDNATCall{groupInstanceID: id, entryIP: entryIP.String(), guestPort: guestPort})
+	return nil
 }
 
 // fakeGroupRecords is an in-memory groupRecordStore.

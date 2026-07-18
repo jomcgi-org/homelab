@@ -96,6 +96,10 @@ defmodule Embervm.GroupManagerTest do
     start_group_member_fun = fn _ch, req ->
       relight? = req.mode == :START_GROUP_MEMBER_MODE_RELIGHT
       record(rec, {:start_member, req.member_name, req.member_index, req.ip, req.env, req.mode})
+      # Additive record of the entry-DNAT marker (invisible to the :start_member
+      # assertions, which all filter/find by that tag) so a test can assert only the
+      # entry member carries a non-zero entry_guest_port.
+      record(rec, {:start_member_entry, req.member_name, req.entry_guest_port})
       vm_id = "vm-#{req.member_name}"
 
       cond do
@@ -226,6 +230,21 @@ defmodule Embervm.GroupManagerTest do
     assert Enum.all?(members, & &1.healthy)
 
     assert FakePublisher.count(ctx.pub) >= 1
+  end
+
+  test "only the entry member carries a non-zero entry_guest_port (installs the entry DNAT)" do
+    ctx = start_group()
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+
+    entry_ports =
+      events(ctx.rec)
+      |> Enum.filter(&match?({:start_member_entry, _, _}, &1))
+      |> Map.new(fn {:start_member_entry, name, port} -> {name, port} end)
+
+    # The entry member ("leader") gets the workload entry port; every other member 0.
+    assert entry_ports["leader"] == 8080
+    assert entry_ports["worker-0"] == 0
+    assert entry_ports["worker-1"] == 0
   end
 
   test "ordered-start property: order N never starts before every order N-1 member" do
