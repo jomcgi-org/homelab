@@ -149,6 +149,7 @@ defmodule Embervm.StatefulSweeperTest do
         scrape_fun: fn _url -> Agent.get(scrape_agent, & &1) end,
         stats_base: Keyword.get(opts, :stats_base, "http://serving:9902"),
         channel_fun: fn _node -> {:ok, :ch} end,
+        invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _n, _c -> :ok end),
         stop_stateful_fun: stop_stateful_fun,
         resolve_stateful_fun: resolve_stateful_fun,
         evict_snapshot_fun: evict_snapshot_fun,
