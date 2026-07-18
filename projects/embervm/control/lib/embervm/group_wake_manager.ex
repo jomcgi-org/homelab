@@ -81,6 +81,10 @@ defmodule Embervm.GroupWakeManager do
 
   use GenServer
   require Logger
+
+  # Tracer.with_span/set_attributes are OpenTelemetry.Tracer MACROS, required (not
+  # aliased as a runtime dep). Matches the stateful/serving/session manager idiom.
+  require OpenTelemetry.Tracer, as: Tracer
   import Bitwise
 
   alias Embervm.{EndpointPublisher, GroupManager, GroupState, GroupStore, NodeCapacity, WorkloadCatalog}
@@ -500,32 +504,63 @@ defmodule Embervm.GroupWakeManager do
     end
   end
 
-  defp safe_restore_artifact(state, node_id, %RestoreArtifactRequest{} = req) do
+  defp safe_restore_artifact(state, node_id, %RestoreArtifactRequest{artifact: ref} = req) do
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
-      try do
-        case state.restore_artifact_fun.(channel, req) do
-          {:error, reason} = err ->
-            if Embervm.NodeChannel.transport_dead?(reason) do
-              _ = state.invalidate_fun.(node_id, channel)
-            end
-
-            err
-
-          other ->
-            other
-        end
-      rescue
-        e -> {:error, {:restore_artifact_raised, e}}
-      catch
-        :exit, reason ->
-          _ = state.invalidate_fun.(node_id, channel)
-          {:error, {:restore_artifact_raised, {:exit, reason}}}
-
-        kind, reason ->
-          {:error, {:restore_artifact_raised, {kind, reason}}}
+      # The `artifact_restore` span (Task 11): a child span around the
+      # RestoreArtifact RPC (the restore-on-miss read path). A group set is always
+      # kind GROUP_SET; bytes-moved/skipped stamped from the response.
+      Tracer.with_span "embervm.artifact_restore",
+                       %{
+                         attributes: %{
+                           "ember.workload" => ref.workload,
+                           "ember.artifact_kind" => "group_set",
+                           "ember.artifact_ref" => ref.ref
+                         }
+                       } do
+        result = restore_rpc(state, node_id, channel, req)
+        stamp_restore_span(result)
+        result
       end
     end
   end
+
+  # The RestoreArtifact RPC with transport-death channel invalidation. Extracted so
+  # the `artifact_restore` span wraps exactly the call and its result.
+  defp restore_rpc(state, node_id, channel, req) do
+    try do
+      case state.restore_artifact_fun.(channel, req) do
+        {:error, reason} = err ->
+          if Embervm.NodeChannel.transport_dead?(reason) do
+            _ = state.invalidate_fun.(node_id, channel)
+          end
+
+          err
+
+        other ->
+          other
+      end
+    rescue
+      e -> {:error, {:restore_artifact_raised, e}}
+    catch
+      :exit, reason ->
+        _ = state.invalidate_fun.(node_id, channel)
+        {:error, {:restore_artifact_raised, {:exit, reason}}}
+
+      kind, reason ->
+        {:error, {:restore_artifact_raised, {kind, reason}}}
+    end
+  end
+
+  # Stamp bytes-moved/skipped onto the current `artifact_restore` span from a
+  # successful RestoreArtifact response. A failure leaves only the identity attrs.
+  defp stamp_restore_span({:ok, resp}) do
+    Tracer.set_attributes(%{
+      "ember.bytes_moved" => Map.get(resp, :bytes_moved, 0),
+      "ember.skipped" => Map.get(resp, :skipped, false)
+    })
+  end
+
+  defp stamp_restore_span(_other), do: :ok
 
   defp safe_channel(channel_fun, node_id) do
     channel_fun.(node_id)

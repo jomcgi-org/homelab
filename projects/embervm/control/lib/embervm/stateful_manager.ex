@@ -1926,30 +1926,63 @@ defmodule Embervm.StatefulManager do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
 
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
-      try do
-        case state.restore_artifact_fun.(channel, req) do
-          {:error, reason} = err ->
-            if Embervm.NodeChannel.transport_dead?(reason) do
-              _ = state.invalidate_fun.(node_id, channel)
-            end
-
-            err
-
-          other ->
-            other
-        end
-      rescue
-        e -> {:error, {:restore_artifact_raised, e}}
-      catch
-        :exit, reason ->
-          _ = state.invalidate_fun.(node_id, channel)
-          {:error, {:restore_artifact_raised, {:exit, reason}}}
-
-        kind, reason ->
-          {:error, {:restore_artifact_raised, {kind, reason}}}
+      # The `artifact_restore` span (Task 11): a child span around the
+      # RestoreArtifact RPC (the restore-on-miss read path). Carries the artifact
+      # identity up front and stamps bytes-moved/skipped from the response, so the
+      # Task 12 restore-on-miss gate reads its evidence off the span alone.
+      Tracer.with_span "embervm.artifact_restore",
+                       %{
+                         attributes: %{
+                           "ember.workload" => ref.workload,
+                           "ember.artifact_kind" => artifact_kind_string(ref.kind),
+                           "ember.artifact_ref" => ref.ref
+                         }
+                       } do
+        result = restore_rpc(state, node_id, channel, req)
+        stamp_restore_span(result)
+        result
       end
     end
   end
+
+  # The RestoreArtifact RPC with transport-death channel invalidation. Extracted so
+  # the `artifact_restore` span wraps exactly the call and its result.
+  defp restore_rpc(state, node_id, channel, req) do
+    try do
+      case state.restore_artifact_fun.(channel, req) do
+        {:error, reason} = err ->
+          if Embervm.NodeChannel.transport_dead?(reason) do
+            _ = state.invalidate_fun.(node_id, channel)
+          end
+
+          err
+
+        other ->
+          other
+      end
+    rescue
+      e -> {:error, {:restore_artifact_raised, e}}
+    catch
+      :exit, reason ->
+        _ = state.invalidate_fun.(node_id, channel)
+        {:error, {:restore_artifact_raised, {:exit, reason}}}
+
+      kind, reason ->
+        {:error, {:restore_artifact_raised, {kind, reason}}}
+    end
+  end
+
+  # Stamp bytes-moved/skipped onto the current `artifact_restore` span from a
+  # successful RestoreArtifact response. A failure result leaves the span with only
+  # its identity attributes (the error itself surfaces in the caller's warning log).
+  defp stamp_restore_span({:ok, resp}) do
+    Tracer.set_attributes(%{
+      "ember.bytes_moved" => Map.get(resp, :bytes_moved, 0),
+      "ember.skipped" => Map.get(resp, :skipped, false)
+    })
+  end
+
+  defp stamp_restore_span(_other), do: :ok
 
   # Append the audit-only :artifact_restored op (no projection table; the log itself
   # is the record). Best-effort: an append failure must never fail the wake, which

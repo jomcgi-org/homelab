@@ -107,6 +107,9 @@ Baseline per `docs/security.md`. A base snapshot embeds function code (imported 
 > **R3 Serving is now a live consumer of this loop's future verbs (2026-07-16).**
 > R3 shipped (ADR embervm/001 roadmap; [plan Closure](../../plans/2026-07-16-embervm-r3-serving-spec-and-plan.md#closure-2026-07-16)). A serving workload's snapshot residency constrains where it can wake (`node_for_relight` resolves only to the node still reporting the snapshot), so serving is the first tier whose scheduling is bounded by "which node holds the base" exactly as this ADR's Problem describes. Two concrete pulls on the distribution/eviction verbs already exist: (1) **cross-node serving** needs a base to be placeable on a node that did not build it (routable serving endpoints now exist via DECISIONS.md D-R3.11.4, so the remaining gap is base residency, not reachability); (2) **stale serving base-dir GC** (memfiles/handler artifacts accumulating per runtime roll) is the eviction half of this loop applied to serving bases: R3's turnover fix (D-R3.11.5) evicts superseded banked *snapshots* but defers the *base* GC here.
 
+> **The verb family shipped generalized via R6 Continuity (2026-07-18).**
+> R6 Continuity ([ADR 009](009-roadmap-extension-continuity-before-tenancy.md)) generalized this ADR's base-only `ExportBase`/`RestoreBase`/`EvictBase` into one typed verb family, `ExportArtifact`/`RestoreArtifact`/`EvictArtifact` over an `ArtifactRef {kind: BASE|SESSION|SERVING|STATEFUL|GROUP_SET|VOLUME}`, so this ADR's contract (idempotent per key, control-plane-driven, evict refuses while referenced) now covers every artifact kind rather than needing a second verb family later; bases are simply one kind of that family.
+
 ---
 
 ## References

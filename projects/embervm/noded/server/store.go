@@ -472,6 +472,13 @@ func (s *Server) exportWorker(ctx context.Context) {
 // the current generation is already exported (the store's own Head-compare would
 // also skip, but this avoids the round-trip). It always clears the dedupe key so
 // a subsequent change can re-enqueue.
+//
+// No OpenTelemetry span is emitted here (R6, Task 11): noded has no Go otel tracer
+// wired (unlike the control plane), and inventing a tracing dependency for one span
+// is out of scope. Export visibility comes from the structured logs below
+// ("noded: exported artifact off node" / "noded: async export failed") and the
+// export-backlog alert keys on the "export queue full" log. The control-plane
+// `embervm.artifact_restore` span covers the paired read path.
 func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	defer func() {
 		s.exportDedupeMu.Lock()

@@ -1186,15 +1186,42 @@ defmodule Embervm.SessionManager do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
 
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
-      try do
-        state.restore_artifact_fun.(channel, req)
-      rescue
-        e -> {:error, {:restore_artifact_raised, e}}
-      catch
-        kind, reason -> {:error, {:restore_artifact_raised, {kind, reason}}}
+      # The `artifact_restore` span (Task 11): a child span around the
+      # RestoreArtifact RPC (the restore-on-miss read path). Identity up front,
+      # bytes-moved/skipped stamped from the response.
+      Tracer.with_span "embervm.artifact_restore",
+                       %{
+                         attributes: %{
+                           "ember.workload" => ref.workload,
+                           "ember.artifact_kind" => artifact_kind_string(ref.kind),
+                           "ember.artifact_ref" => ref.ref
+                         }
+                       } do
+        result =
+          try do
+            state.restore_artifact_fun.(channel, req)
+          rescue
+            e -> {:error, {:restore_artifact_raised, e}}
+          catch
+            kind, reason -> {:error, {:restore_artifact_raised, {kind, reason}}}
+          end
+
+        stamp_restore_span(result)
+        result
       end
     end
   end
+
+  # Stamp bytes-moved/skipped onto the current `artifact_restore` span from a
+  # successful RestoreArtifact response. A failure leaves only the identity attrs.
+  defp stamp_restore_span({:ok, resp}) do
+    Tracer.set_attributes(%{
+      "ember.bytes_moved" => Map.get(resp, :bytes_moved, 0),
+      "ember.skipped" => Map.get(resp, :skipped, false)
+    })
+  end
+
+  defp stamp_restore_span(_other), do: :ok
 
   # Append the audit-only :artifact_restored op (no projection table; the log
   # itself is the record). Best-effort: an append failure must never fail the
