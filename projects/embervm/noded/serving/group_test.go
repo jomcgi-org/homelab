@@ -251,9 +251,10 @@ func TestGroupManagerCIDRValidation(t *testing.T) {
 	}
 }
 
-// TestGroupManagerCreateIdempotent asserts a re-issue with the same cidr is a
-// no-op hit (same bridge/gateway, no extra bridge-create calls), and a re-issue
-// with a DIFFERENT cidr for the same id is refused.
+// TestGroupManagerCreateIdempotent asserts a re-issue with the same cidr returns
+// the same (bridge, gateway) and re-issues the idempotent bridge setup (so a bridge
+// that outlived its record is rebuilt rather than trusted), and a re-issue with a
+// DIFFERENT cidr for the same id is refused.
 func TestGroupManagerCreateIdempotent(t *testing.T) {
 	fr := &fakeRunner{}
 	m, err := NewGroupManager(fr, "10.101.0.0/16", "", "", 40000)
@@ -273,14 +274,54 @@ func TestGroupManagerCreateIdempotent(t *testing.T) {
 	if br1 != br2 || gw1 != gw2 {
 		t.Errorf("idempotent re-create changed identity: (%s,%s) vs (%s,%s)", br1, gw1, br2, gw2)
 	}
-	// A re-issue must NOT run any new ip/nft commands (no bridge re-create).
-	if len(fr.calls) != callsAfterFirst {
-		t.Errorf("idempotent re-create ran %d extra commands, want 0", len(fr.calls)-callsAfterFirst)
+	// A re-issue must re-run the idempotent bridge setup so a bridge that died with
+	// a prior pod (record survives) is rebuilt, not silently trusted.
+	sawAdd := false
+	for _, c := range fr.calls[callsAfterFirst:] {
+		if strings.Join(c, " ") == fmt.Sprintf("ip link add name %s type bridge", br2) {
+			sawAdd = true
+		}
+	}
+	if !sawAdd {
+		t.Errorf("idempotent re-create did not re-issue the bridge setup; extra calls: %v", fr.calls[callsAfterFirst:])
 	}
 
 	// Same id, different cidr => conflict.
 	if _, _, err := m.CreateGroupNetwork(context.Background(), "grp-A", "10.101.2.0/24"); err == nil {
 		t.Error("re-creating grp-A with a different cidr should conflict")
+	}
+}
+
+// TestGroupManagerCreateRebuildsBridgeAfterAdopt is the regression for the R6
+// drill wedge: AdoptGroupNetwork re-seeds a group record on boot WITHOUT creating
+// the bridge (it died with the prior pod), and a subsequent CreateGroupNetwork
+// re-issue must REBUILD the bridge. Before the fix the idempotency hit short-
+// circuited on the map entry and issued no bridge setup, so EnsureMemberTap later
+// pinned a member tap to a nonexistent bridge ("Device does not exist").
+func TestGroupManagerCreateRebuildsBridgeAfterAdopt(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewGroupManager(fr, "10.101.0.0/16", "", "", 40000)
+	if err != nil {
+		t.Fatalf("NewGroupManager: %v", err)
+	}
+	// Boot rescan seeds the record but not the device.
+	if err := m.AdoptGroupNetwork("grp-A", "10.101.1.0/24", 0); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	callsAfterAdopt := len(fr.calls)
+
+	br, _, err := m.CreateGroupNetwork(context.Background(), "grp-A", "10.101.1.0/24")
+	if err != nil {
+		t.Fatalf("create after adopt: %v", err)
+	}
+	sawAdd := false
+	for _, c := range fr.calls[callsAfterAdopt:] {
+		if strings.Join(c, " ") == fmt.Sprintf("ip link add name %s type bridge", br) {
+			sawAdd = true
+		}
+	}
+	if !sawAdd {
+		t.Fatalf("create after adopt did NOT rebuild the bridge (idempotency short-circuit skipped bridge setup); calls: %v", fr.argvStrings())
 	}
 }
 
