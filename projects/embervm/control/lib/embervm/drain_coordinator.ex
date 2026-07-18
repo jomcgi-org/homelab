@@ -1,0 +1,128 @@
+defmodule Embervm.DrainCoordinator do
+  @moduledoc """
+  Force-banks every live workload on a draining node within the bounded-preemption
+  window (R6 Continuity, ADR embervm/009).
+
+  noded has no lifecycle authority: on SIGTERM it only sets `draining` and publishes
+  a deadline on its NodeStatus, then holds the gRPC surface up. The control plane is
+  what actually evacuates state. NodeRegistry watches that stream and, on the drain
+  RISING edge, sends this coordinator `{:node_draining, node_id, deadline_ms}`. This
+  coordinator then asks each class sweeper to force-bank its live instances on that
+  node (stateful with COMMIT-despite-parked semantics, groups as whole bundle sets,
+  sessions and serving via their bank verbs), so a routine noded roll never
+  cold-boots a stateful workload and never destroys a banked group.
+
+  It is deliberately thin: each sweeper owns its own instances, admission, per-node
+  bank concurrency, and worker lifecycle, so this coordinator only fans out the four
+  `drain_node/2` calls and records the drain edge in the op-log. Each call returns
+  promptly (it starts async bank workers and returns a count); the actual banks
+  complete against noded, which holds shutdown until they do or the deadline passes.
+  A class whose sweeper is down or raises is logged and skipped: the daemon's own
+  deadline reap is the backstop, and a partial evacuation is strictly better than
+  wedging the rest.
+
+  The `safety_margin_ms` env (EMBERVM_DRAIN_SAFETY_MARGIN_MS, default 15000) is
+  recorded on the op so the actual bank wall time can be compared against the
+  window; the hard bound lives on noded (it holds until the deadline).
+  """
+  use GenServer
+
+  require Logger
+
+  alias Embervm.OpLog.Op
+
+  @default_safety_margin_ms 15_000
+
+  def start_link(opts) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
+  end
+
+  @impl true
+  def init(opts) do
+    state = %{
+      tenant: Keyword.get(opts, :tenant, "homelab"),
+      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      safety_margin_ms: Keyword.get(opts, :safety_margin_ms, @default_safety_margin_ms),
+      clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end),
+      stateful: Keyword.get(opts, :stateful_sweeper, Embervm.StatefulSweeper),
+      serving: Keyword.get(opts, :serving_sweeper, Embervm.ServingSweeper),
+      session: Keyword.get(opts, :session_manager, Embervm.SessionManager),
+      group: Keyword.get(opts, :group_sweeper, Embervm.GroupSweeper),
+      # The per-class drain call, seamed for tests. Production dispatches to the
+      # sweeper module's drain_node/2 (a GenServer.call to the named process).
+      drain_fun:
+        Keyword.get(opts, :drain_fun, fn _class, server, node_id ->
+          server.drain_node(server, node_id)
+        end),
+      # The op-log append, seamed for tests. Production appends the audit op to the
+      # SQLite backend; a test records it instead.
+      append_fun: Keyword.get(opts, :append_fun, fn op_log, op -> op_log.append(op_log, op) end)
+    }
+
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_info({:node_draining, node_id, deadline_ms}, state) do
+    handle_drain(state, node_id, deadline_ms)
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  defp handle_drain(state, node_id, deadline_ms) do
+    Logger.info("embervm drain: node draining, force-banking all classes",
+      node_id: node_id,
+      deadline_ms: deadline_ms
+    )
+
+    append_op(state, :node_drain_started, %{
+      node_id: node_id,
+      deadline_ms: deadline_ms,
+      safety_margin_ms: state.safety_margin_ms
+    })
+
+    # Stateful and group first (the two classes the R6 invariant names), then
+    # sessions and serving. Each call is prompt (starts async workers, returns a
+    # count); the ordering only affects which class's workers are enqueued first.
+    counts = %{
+      stateful: drain_class(state, :stateful, node_id),
+      group: drain_class(state, :group, node_id),
+      session: drain_class(state, :session, node_id),
+      serving: drain_class(state, :serving, node_id)
+    }
+
+    Logger.info("embervm drain: force-bank dispatched", Keyword.new(Map.put(counts, :node_id, node_id)))
+
+    append_op(state, :node_drain_finished, Map.put(counts, :node_id, node_id))
+    :ok
+  end
+
+  # Best-effort per class: a sweeper that is down or raises must not wedge the drain
+  # of the other classes. Returns the count of instances whose bank was started, 0
+  # on any failure.
+  defp drain_class(state, class, node_id) do
+    state.drain_fun.(class, Map.fetch!(state, class), node_id)
+  rescue
+    e ->
+      Logger.warning("embervm drain: class drain raised", class: class, error: inspect(e))
+      0
+  catch
+    kind, reason ->
+      Logger.warning("embervm drain: class drain exited", class: class, reason: inspect({kind, reason}))
+      0
+  end
+
+  defp append_op(state, kind, payload) do
+    op = %Op{kind: kind, tenant: state.tenant, ts: state.clock.(), payload: payload}
+    _ = state.append_fun.(state.op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm drain: op-log append raised", kind: kind, error: inspect(e))
+      :ok
+  end
+end

@@ -1153,4 +1153,56 @@ defmodule Embervm.StatefulSweeperTest do
     {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     Enum.filter(ops, &(&1.kind == atom))
   end
+
+  describe "drain_node/2 (R6 force-bank)" do
+    test "banks a live instance even though it is NOT idle (bypasses the idle predicate)" do
+      ctx = start_stack()
+      stateful_workload(ctx, "scratch-postgres", 5433)
+      stateful_node(ctx, "node-4")
+      serving_instance(ctx, "i1", "scratch-postgres", "vm-1", "10.98.0.5")
+
+      # An ACTIVE connection: the idle pass would never bank this. Drain must.
+      set_scrape(ctx, reading("state-5433", 1, 100))
+
+      assert StatefulSweeper.drain_node(ctx.sweeper, "node-4") == 1
+
+      wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "i1")) end)
+      assert [%{mode: :STOP_STATEFUL_MODE_BANK}] = stop_calls(ctx)
+    end
+
+    test "an interruptible workload COMMITs on drain even with a parked connection" do
+      ctx = start_stack()
+      stateful_workload(ctx, "scratch-postgres", 5433, %{interruptible_bank: true})
+      stateful_node(ctx, "node-4")
+      serving_instance(ctx, "i1", "scratch-postgres", "vm-1", "10.98.0.5")
+
+      # A parked caller wants it hot NOW: without drain, decide_resolve ABORTs
+      # (resumes). Under drain, spot semantics force COMMIT (the caller re-wakes).
+      set_parked(ctx, true)
+
+      assert StatefulSweeper.drain_node(ctx.sweeper, "node-4") == 1
+
+      wait_until(ctx, fn -> length(resolve_calls(ctx)) >= 1 end)
+      assert [%{mode: :RESOLVE_MODE_COMMIT}] = resolve_calls(ctx)
+
+      wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "i1")) end)
+
+      # The drain mark self-clears once the resolve completes (no leak into a later
+      # non-drain checkpoint of the same workload).
+      assert not MapSet.member?(:sys.get_state(ctx.sweeper).draining_workloads, "scratch-postgres")
+    end
+
+    test "instances on OTHER nodes are untouched" do
+      ctx = start_stack()
+      stateful_workload(ctx, "scratch-postgres", 5433)
+      stateful_node(ctx, "node-4")
+      serving_instance(ctx, "i1", "scratch-postgres", "vm-1", "10.98.0.5")
+
+      # Drain a different node: nothing on node-4 banks.
+      assert StatefulSweeper.drain_node(ctx.sweeper, "node-9") == 0
+      flush(ctx)
+      assert {:ok, %{state: :serving}} = StatefulStore.get(ctx.store, "i1")
+      assert stop_calls(ctx) == []
+    end
+  end
 end

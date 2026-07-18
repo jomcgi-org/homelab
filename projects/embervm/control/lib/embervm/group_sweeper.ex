@@ -250,6 +250,11 @@ defmodule Embervm.GroupSweeper do
     {:reply, reply, state}
   end
 
+  def handle_call({:drain_node, node_id}, _from, state) do
+    {count, state} = drain_bank_node(state, node_id)
+    {:reply, count, state}
+  end
+
   @impl true
   def handle_info(:sweep, state) do
     state = do_sweep(state)
@@ -700,6 +705,30 @@ defmodule Embervm.GroupSweeper do
   # endpoint dropped (the manager re-published the activator swap); an abort/failure
   # returns it to `running` (the manager's bank_abort), so re-derive the fan-out so
   # the live group is reachable again.
+  @doc """
+  Force-bank every running group on a draining node (R6, ADR embervm/009).
+
+  Called by the DrainCoordinator on the drain edge. Banks each `:running` group as a
+  unit (the all-members-or-none bundle-set contract) via the existing drive_bank
+  path, so a routine roll never destroys a banked group. Unlike the idle pass it
+  ignores idle age; degraded groups still bank (a preempted node's members are lost
+  either way, so a best-effort set is strictly better than none). Returns the count
+  of groups whose bank was driven.
+  """
+  @spec drain_node(GenServer.server(), String.t()) :: non_neg_integer()
+  def drain_node(server \\ __MODULE__, node_id) do
+    GenServer.call(server, {:drain_node, node_id}, :infinity)
+  end
+
+  defp drain_bank_node(state, node_id) do
+    instances =
+      GroupStore.all(state.store)
+      |> Enum.filter(&(&1.state == :running and &1.node_id == node_id))
+
+    state = Enum.reduce(instances, state, fn instance, acc -> drive_bank(acc, instance) end)
+    {length(instances), state}
+  end
+
   defp drive_bank(state, instance) do
     case state.bank_fun.(instance.workload, instance.instance_id) do
       {:ok, %{set_id: set_id, pause_spread_ms: spread}} ->

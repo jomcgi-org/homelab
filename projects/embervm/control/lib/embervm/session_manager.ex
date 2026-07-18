@@ -297,6 +297,11 @@ defmodule Embervm.SessionManager do
     {:reply, reply, state}
   end
 
+  def handle_call({:drain_node, node_id}, _from, state) do
+    {count, state} = drain_bank_node(state, node_id)
+    {:reply, count, state}
+  end
+
   def handle_call(:reconcile, _from, state) do
     {:reply, :ok, do_reconcile(state)}
   end
@@ -659,6 +664,34 @@ defmodule Embervm.SessionManager do
   # multi-second bank never head-of-line-blocks another session's routing, gate 3).
   # Replies `:ok` (admitted; the caller session process stops) or a refusal (the
   # caller re-arms its timer and stays live).
+  @doc """
+  Force-bank every live session on a draining node (R6, ADR embervm/009).
+
+  Called by the DrainCoordinator on the drain edge. Banks each `:running` session
+  on the node via the existing bank path (so its state survives the roll and relights
+  on the next invoke). Sessions already banking are skipped. Sessions refused (at the
+  per-node bank cap, or with unknown disk facts) are left for the normal sweep, which
+  keeps ticking during the hold. Returns the count whose bank was admitted.
+  """
+  @spec drain_node(GenServer.server(), String.t()) :: non_neg_integer()
+  def drain_node(server \\ __MODULE__, node_id) do
+    GenServer.call(server, {:drain_node, node_id}, :infinity)
+  end
+
+  defp drain_bank_node(state, node_id) do
+    sessions =
+      SessionStore.all(state.session_store)
+      |> Enum.filter(&(&1.state == :running and &1.node_id == node_id))
+      |> Enum.reject(&Map.has_key?(state.banking, &1.session_id))
+
+    Enum.reduce(sessions, {0, state}, fn session, {n, acc} ->
+      case do_bank(acc, session.session_id) do
+        {:ok, acc} -> {n + 1, acc}
+        {{:error, _reason}, acc} -> {n, acc}
+      end
+    end)
+  end
+
   defp do_bank(state, session_id) do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
