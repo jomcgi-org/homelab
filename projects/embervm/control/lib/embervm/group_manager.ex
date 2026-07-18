@@ -417,7 +417,13 @@ defmodule Embervm.GroupManager do
       snapshot_ref: "",
       health_port: member.health_port || 0,
       resources: %ResourceSpec{vcpus: member.vcpus || 1, mem_mib: member.mem_mib || 512},
-      env: member_env(member, plan, secret, state.workload, subnet_cidr)
+      env: member_env(member, plan, secret, state.workload, subnet_cidr),
+      # Mark the ENTRY member so noded installs the entry DNAT that makes the
+      # {pod IP, vmPort} endpoint we publish actually reach tap:entry_port. Only the
+      # member named by the workload's entry carries a non-zero port; every other
+      # member gets 0 (no DNAT). Without this the published entry is a dead port
+      # (the entry-EOF): noded never wired the DNAT the endpoint assumes.
+      entry_guest_port: entry_guest_port_for(state, member)
     }
 
     case safe_start_group_member(state, req) do
@@ -434,6 +440,24 @@ defmodule Embervm.GroupManager do
 
       other ->
         {:error, {:member_start_failed, member.expanded_name, other}}
+    end
+  end
+
+  # entry_guest_port_for returns the workload entry's guest port when THIS member is
+  # the entry member (matched by expanded_name, exactly as finish_create resolves the
+  # entry from the plan), else 0. A non-zero value tells noded to install the entry
+  # DNAT for this member so the {pod IP, vmPort} endpoint we publish reaches its tap;
+  # 0 means a non-entry member (no DNAT). Kept in lockstep with finish_create's entry
+  # resolution so the member noded DNATs is the same member whose IP we derive vmPort
+  # from.
+  defp entry_guest_port_for(state, member) do
+    entry = with %{group: group} <- state.entry, do: Map.get(group, :entry)
+    name = member.expanded_name
+
+    if is_map(entry) and name == Map.get(entry, :member) do
+      Map.get(entry, :port) || 0
+    else
+      0
     end
   end
 

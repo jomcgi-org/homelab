@@ -54,6 +54,11 @@ type groupNetwork interface {
 	// EntryEndpoint projects a group entry member's (tap IP, guest port) into the
 	// reported endpoint (pod IP + DNAT port when enabled, else the tap unchanged).
 	EntryEndpoint(entryIP net.IP, guestPort uint32) (string, uint32)
+	// EnsureEntryDNAT installs (or refreshes) the entry-member DNAT exposing the entry
+	// member's tap as {pod IP, vmPort}. Called on a ready entry member so the endpoint
+	// the control plane publishes actually routes to tap:guestPort. No-op when DNAT is
+	// disabled (no pod IP); dropped with the group by DeleteGroupNetwork.
+	EnsureEntryDNAT(ctx context.Context, groupInstanceID string, entryIP net.IP, guestPort uint32) error
 }
 
 // groupMemberDriver is the subset of the fcvm driver the R5 member lifecycle needs

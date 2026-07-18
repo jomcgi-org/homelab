@@ -255,6 +255,71 @@ func TestStartGroupMemberFreshBootsOnGroupBridge(t *testing.T) {
 	}
 }
 
+// TestStartGroupMemberEntryInstallsDNAT proves the entry member (entry_guest_port >
+// 0) installs the entry DNAT exposing {pod IP, vmPort} -> {tap, entry_guest_port},
+// and a non-entry member (0) installs none. Regression for the entry-EOF: the entry
+// endpoint the control plane publishes was unreachable because StartGroupMember never
+// called EnsureEntryDNAT.
+func TestStartGroupMemberEntryInstallsDNAT(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, gn, _, _ := newGroupMemberTestServer(t)
+
+	// A non-entry member installs no DNAT.
+	startFreshMember(t, s, port, "worker-1", 1)
+	if len(gn.entryDNATs) != 0 {
+		t.Fatalf("non-entry member installed an entry DNAT: %+v", gn.entryDNATs)
+	}
+
+	// The entry member (entry_guest_port > 0) installs the DNAT at that guest port.
+	if _, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
+		GroupInstanceId: "grp-A",
+		MemberName:      "server",
+		MemberIndex:     0,
+		Ip:              "127.0.0.1",
+		Source:          "src-a",
+		HealthPort:      port,
+		EntryGuestPort:  6443,
+	}); err != nil {
+		t.Fatalf("StartGroupMember(entry): %v", err)
+	}
+	if len(gn.entryDNATs) != 1 {
+		t.Fatalf("entry member entry DNAT calls = %d want 1 (%+v)", len(gn.entryDNATs), gn.entryDNATs)
+	}
+	got := gn.entryDNATs[0]
+	if got.groupInstanceID != "grp-A" || got.entryIP != "127.0.0.1" || got.guestPort != 6443 {
+		t.Errorf("entry DNAT = %+v want {grp-A 127.0.0.1 6443}", got)
+	}
+}
+
+// TestStartGroupMemberEntryDNATFailureReaps proves an entry DNAT install failure
+// reaps the member (no half-published entry whose DNAT never landed).
+func TestStartGroupMemberEntryDNATFailureReaps(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, gn, _, _ := newGroupMemberTestServer(t)
+	gn.entryDNATErr = errors.New("nft apply failed")
+
+	_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
+		GroupInstanceId: "grp-A",
+		MemberName:      "server",
+		MemberIndex:     0,
+		Ip:              "127.0.0.1",
+		Source:          "src-a",
+		HealthPort:      port,
+		EntryGuestPort:  6443,
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("entry DNAT failure code = %v want Internal", status.Code(err))
+	}
+	if len(gn.removedTaps) != 1 {
+		t.Errorf("entry DNAT failure did not remove the member tap: %v", gn.removedTaps)
+	}
+	if len(s.nodeStatus().GetGroupMemberVms()) != 0 {
+		t.Error("a member whose entry DNAT failed must not be published")
+	}
+}
+
 // TestStartGroupMemberFreshHealthGateFailureReaps proves a member that never health-
 // gates is reaped and its tap removed, and no member is published.
 func TestStartGroupMemberFreshHealthGateFailure(t *testing.T) {

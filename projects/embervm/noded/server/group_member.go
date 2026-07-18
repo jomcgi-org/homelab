@@ -120,7 +120,7 @@ func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGro
 		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot group member: %v", err)
 	}
-	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, false, s.cfg.BootReadyTimeout)
+	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), false, s.cfg.BootReadyTimeout)
 }
 
 // startGroupMemberRelight recreates the member's pinned tap world, resumes the banked
@@ -167,17 +167,29 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member %q clock resync failed: %v", ref, clockErr)
 	}
 
-	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, true, s.cfg.RestoreReadyTimeout)
+	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), true, s.cfg.RestoreReadyTimeout)
 }
 
 // finishGroupMemberStart is the shared tail of both member start paths: TCP-health-
 // gate {ip, health_port}, register the live member, and start its probe. On a
 // readiness failure it reaps the VM and removes the tap, returning
 // FAILED_PRECONDITION (no half-alive member is ever published).
-func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle, groupInstanceID, memberName string, memberIndex uint32, tap string, ip net.IP, healthPort uint32, wasRelight bool, readyBudget time.Duration) (*nodev1.StartGroupMemberResponse, error) {
+func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle, groupInstanceID, memberName string, memberIndex uint32, tap string, ip net.IP, healthPort, entryGuestPort uint32, wasRelight bool, readyBudget time.Duration) (*nodev1.StartGroupMemberResponse, error) {
 	if err := s.waitStatefulReady(ctx, ip, healthPort, readyBudget); err != nil {
 		s.reapGroupMember(h, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member not ready over tap: %v", err)
+	}
+	// Install the entry DNAT for the ENTRY member (entry_guest_port > 0) so the entry
+	// endpoint the control plane publishes, {pod_ip, vmPort}, actually routes to this
+	// member's tap:entry_guest_port. Mirrors serving/stateful, which call EnsureDNAT
+	// inline in their start handlers. Refreshed on every entry-member start (fresh or
+	// relight), so it always points at the live entry tap; DeleteGroupNetwork drops it
+	// with the group record on teardown. A non-entry member (0) installs nothing.
+	if entryGuestPort > 0 {
+		if err := s.groupNet.EnsureEntryDNAT(ctx, groupInstanceID, ip, entryGuestPort); err != nil {
+			s.reapGroupMember(h, groupInstanceID, tap, ip)
+			return nil, status.Errorf(codes.Internal, "noded: install group entry DNAT for member %q: %v", memberName, err)
+		}
 	}
 	probe := serving.StartTCPProbe(s.newGroupTCPProber(), ip, healthPort)
 	s.groupMembers.add(&groupMemberEntry{

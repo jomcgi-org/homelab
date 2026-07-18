@@ -982,6 +982,17 @@ message StartGroupMemberRequest {
   // not the daemon; the daemon delivers whatever map it is handed and interprets
   // none of it.
   map<string, string> env = 11;
+  // entry_guest_port, when > 0, marks THIS member as the group's entry member and
+  // is its entry guest port (e.g. k3s apiserver 6443). On a ready entry member the
+  // daemon installs the entry DNAT exposing {pod_ip, vmPort} -> {tap_ip,
+  // entry_guest_port} (vmPort = ServingPortBase + hostOffset(ip), the same
+  // derivation the control plane re-publishes), exactly as serving/stateful install
+  // their DNAT inline in StartServing/StartStateful. 0 (the default) means a
+  // non-entry member: no entry DNAT is installed. Only ONE member per group carries
+  // a non-zero value (the control plane sets it for the member named by the
+  // workload's entry). It may differ from health_port (the health-gate port), so it
+  // is carried explicitly rather than reusing health_port.
+  uint32 entry_guest_port = 12;
 }
 
 message StartGroupMemberResponse {
