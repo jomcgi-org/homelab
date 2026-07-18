@@ -331,7 +331,7 @@
       return {
         ok: false,
         permanent: true,
-        error: "rate limited to one order per 5s, wait a bit and retry",
+        error: "rate limited to one order per second, wait a moment and retry",
       };
     }
     if (body.error) {

@@ -89,7 +89,7 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
     - a session is required for inserts once Turnstile is configured (public
       tier); the private tier, which leaves TURNSTILE_SECRET_KEY unset, still
       allows sessionless inserts.
-    - one insert per session per 5 seconds (core.check_and_record_insert).
+    - one insert per session per second (core.check_and_record_insert).
     - a global semaphore around the roundtrip (core.try_acquire_query_slot),
       exhausted under a concurrent burst.
     """
@@ -113,7 +113,7 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
                 }
         elif not core.check_and_record_insert(session_tag):
             return {
-                "error": "one order per five seconds",
+                "error": "one order per second",
                 "rate_limited": True,
                 "mode": body.mode,
             }

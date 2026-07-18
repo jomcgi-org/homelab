@@ -708,7 +708,7 @@ def test_semaphore_slot_released_after_roundtrip_allows_next_request(monkeypatch
     assert core._query_semaphore._value == core._QUERY_SEMAPHORE_SIZE
 
 
-def test_insert_bucket_rejects_second_insert_within_five_seconds(monkeypatch):
+def test_insert_bucket_rejects_second_insert_within_window(monkeypatch):
     monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
     monkeypatch.setattr(core, "EMBERVM_URL", "")
 
@@ -742,10 +742,10 @@ def test_insert_bucket_rejects_second_insert_within_five_seconds(monkeypatch):
     assert second.status_code == 200
     body = second.json()
     assert body["rate_limited"] is True
-    assert "five seconds" in body["error"]
+    assert "per second" in body["error"]
 
 
-def test_insert_bucket_allows_after_five_seconds_elapse(monkeypatch):
+def test_insert_bucket_allows_after_window_elapses(monkeypatch):
     monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
     monkeypatch.setattr(core, "EMBERVM_URL", "")
 

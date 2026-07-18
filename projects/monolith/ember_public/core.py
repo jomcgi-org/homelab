@@ -172,12 +172,15 @@ def release_query_slot() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Per-session insert bucket: one insert per session_tag per 5 seconds. Keyed
+# Per-session insert bucket: one insert per session_tag per second. Keyed
 # on the opaque session tag (not IP), bounded by pruning stale entries on
 # every access so long-running processes never grow this dict unbounded.
+# The window sits just below the frontend queue's 1000ms cooldown so the
+# honest one-per-second queue never trips it; this stays a backstop against
+# scripted clients that bypass the UI or tabs racing a shared session cookie.
 # ---------------------------------------------------------------------------
 
-_INSERT_BUCKET_WINDOW_S = 5.0
+_INSERT_BUCKET_WINDOW_S = 0.9
 _INSERT_BUCKET_PRUNE_AGE_S = 3600.0
 _insert_bucket: dict[str, float] = {}
 
