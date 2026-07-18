@@ -345,6 +345,15 @@
       }
       const body = result.body;
       lastRun = body;
+      // A completed roundtrip MEANS the VM is serving right now; reflect it
+      // immediately instead of letting the stage fall back to "banked" for
+      // the up-to-1.2s gap (500ms status cache + 700ms poll) between running
+      // flipping false and the poll confirming. Without this the warm sweep
+      // visibly dips mid-wake; the next poll still owns the true state.
+      if (status?.state !== "serving") {
+        status = { ...(status ?? {}), state: "serving" };
+        prevState = "serving";
+      }
       view = mode === "aggregate" ? "summary" : "orders";
       const tier =
         body.classification === "relight" || body.classification === "warm"
@@ -946,7 +955,6 @@
 
   .tone-asleep .state-dot {
     background: var(--em-frost);
-    opacity: 0.55;
   }
 
   .tone-asleep .state-label {
