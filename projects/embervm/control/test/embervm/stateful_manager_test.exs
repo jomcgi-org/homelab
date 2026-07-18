@@ -407,6 +407,28 @@ defmodule Embervm.StatefulManagerTest do
     assert_receive {:invalidated, "node-4", :ch}, 1_000
   end
 
+  test "a wake whose channel process is dead (:noproc exit) invalidates so the next wake re-dials" do
+    # A noded rollout kills the Mint ConnectionProcess behind the cached
+    # channel; the gRPC stub's GenServer.call then EXITS :noproc instead of
+    # returning a transport error. Observed live on demo-postgres 2026-07-18:
+    # without invalidation every subsequent wake failed until a control-plane
+    # restart.
+    test_pid = self()
+
+    ctx =
+      start_stack(
+        start_stateful_fun: fn _ch, _req -> exit({:noproc, {GenServer, :call, [:dead_pid]}}) end,
+        invalidate_fun: fn node_id, chan -> send(test_pid, {:invalidated, node_id, chan}) end,
+        wake_max: 100
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:error, {:wake_failed, _}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert_receive {:invalidated, "node-4", :ch}, 1_000
+  end
+
   # -- straggler -----------------------------------------------------------------
 
   test "a connection arriving while a live endpoint exists is resolved, not re-woken" do
