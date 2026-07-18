@@ -191,6 +191,7 @@ def _write_k9s_config() -> None:
     with open(cfg_path, "w", encoding="utf-8") as f:
         f.write(_K9S_CONFIG)
 
+
 # The single live session (newest connection wins). Guarded by _session_lock.
 _session_lock = asyncio.Lock()
 _current_session: "_TerminalSession | None" = None
