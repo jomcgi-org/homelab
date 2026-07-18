@@ -39,6 +39,12 @@ helm_chart(
         # source.image.ref all resolve to the same pinned digest.
         "scratchK8sServer.guestImage": "//projects/embervm/runtimes/k3s/k3s-server:image.info",
         "scratchK8sAgent.guestImage": "//projects/embervm/runtimes/k3s/k3s-agent:image.info",
+        # ADR embervm/010 (Skyframe snapshot demo): the bazel-query base image (a
+        # warm Bazel server over Abseil). Distinct FLAT top-level key (D14a.6),
+        # digest-pinned from its .info so the noded EMBERVM_NODED_IMAGES ref, the
+        # rootfs-builder GUEST_IMAGE, and the Workload CR's source.image.ref all
+        # resolve to the same pinned digest.
+        "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

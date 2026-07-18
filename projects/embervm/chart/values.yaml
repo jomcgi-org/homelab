@@ -359,6 +359,39 @@ semgrepWorkload:
   cap: 16
   timeoutSeconds: 90
 
+# The bazel-query workload (ADR embervm/010: the Skyframe snapshot demo). Task
+# class: the base is a warm Bazel server (Abseil analysis graph resident in the
+# JVM heap); each request restores a CoW clone, runs one `bazel cquery`, and the
+# VM is destroyed after the response (task-class Assign is the reap, so no idle
+# TTL). Its guest image ref is the SAME Bazel-pinned value the noded rootfs-builder
+# bakes and EMBERVM_NODED_IMAGES keys on, so BuildBase(ref) resolves on the node.
+# Guest contract: vsock 1027, /shim/ready (200 only after the warming client
+# exits), /query (one POST with {"expression": "..."}).
+bazelQueryWorkload:
+  enabled: true
+  name: bazel-query
+  port: 1027
+  readyPath: /shim/ready
+  invokePath: /query
+  vcpus: 2
+  # Node-4 RAM arithmetic (bounded, not discovered; ADR 002 rule 4): -Xmx1g JVM
+  # heap + the guest's 1536m /tmp tmpfs (install base + extracted external/ under
+  # output_base) + OS overhead. 3072 leaves headroom above heap + tmpfs; at cap 2
+  # that is ~6 GiB worst case on the ~62Gi node-4, comfortably within budget.
+  #
+  # ENOSPC COUPLING: memMib is sized to hold the guest's tmpfs in RAM. If a live
+  # base build ENOSPCs on /tmp during the warming cquery, the tmpfs `size=` in the
+  # guest-init (runtimes/bazel/guest-init/cmd/main.go) and this memMib MUST be
+  # raised TOGETHER: a larger tmpfs with the same memMib would exhaust guest RAM
+  # instead of running out of /tmp, trading one failure for another.
+  memMib: 3072
+  # floor: one primed clone kept warm; restore is demand-paged so a miss is cheap.
+  floor: 1
+  # cap: the governor is RAM (ADR); raise only after measuring per-clone dirtied
+  # RSS. One query per clone means throughput scales with restore rate, not cap.
+  cap: 2
+  timeoutSeconds: 20
+
 # The hot-image-demo workload (EmberVM R3, D-R3.11.5): the shared image renderer run
 # WARM as a SERVING-class workload over its tap NIC, publicly at
 # jomcgi.dev/functions/hot-image-demo. Its cold sibling is the task-class FaaS demo
@@ -469,6 +502,15 @@ workloads:
   scratchK8sAgent:
     rootfsPath: /disks/nvme-02/embervm-noded/scratch-k8s-agent/rootfs.ext4
     harnessInit: /usr/local/bin/ember-k3s-init
+  # Bazel Skyframe query demo base (ADR embervm/010). Its PID-1 ember-bazel-init
+  # mounts a large tmpfs at /tmp, runs the warming `bazel cquery //absl/...`
+  # offline (distdir), and only flips /shim/ready after the warming CLIENT exits
+  # so BuildBase snapshots the warm JVM (analysis graph resident in heap). The key
+  # must match the top-level `bazelQuery` block below (the deployment ranges over
+  # `workloads` and looks the guest image up by the same key).
+  bazelQuery:
+    rootfsPath: /disks/nvme-02/embervm-noded/bazel-query/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-bazel-init
 
 # The python sandbox guest image, Bazel-pinned (helm_chart images="sandbox.guestImage")
 # from the frozen fc-invoke sandbox guest's .info provider, so the guest contract
@@ -547,6 +589,17 @@ scratchK8sServer:
 scratchK8sAgent:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/k3s/k3s-agent
+    tag: latest
+
+# The bazel-query base image (ADR embervm/010: the Skyframe snapshot demo), Bazel-
+# pinned (helm_chart images="bazelQuery.guestImage") from its .info provider.
+# Distinct FLAT top-level key (never nested) so the image pin does not collide on
+# YAML parse (D14a.6). Three refs derive from here and always match: the rootfs-
+# builder GUEST_IMAGE, the derived EMBERVM_NODED_IMAGES entry, and the Workload
+# CR's source.image.ref.
+bazelQuery:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/bazel
     tag: latest
 
 # The scratch-k8s composite consumer knobs (the Workload CR + OnePasswordItem read

@@ -1,0 +1,49 @@
+{{- if .Values.bazelQueryWorkload.enabled }}
+# The bazel-query workload (ADR embervm/010: the Skyframe snapshot demo). Its guest
+# image ref is the SAME Bazel-pinned value the noded rootfs-builder bakes and
+# EMBERVM_NODED_IMAGES keys on, so BaseBuilder's BuildBase(ref) resolves on the
+# node. The base is a warm Bazel server (Abseil analysis graph resident in the JVM
+# heap); on admission the control plane cold-boots one VM, runs the warming cquery
+# in guest-init, snapshots it as the base (status.snapshotRef), the PoolManager
+# primes `floor` clones, and a submit drives an Assign that runs one `bazel cquery`
+# in a CoW clone (the VM is destroyed after the response).
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: {{ .Values.bazelQueryWorkload.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  class: task
+  source:
+    image:
+      # Must match the top-level bazelQuery.guestImage exactly (the derived
+      # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
+      ref: "{{ .Values.bazelQuery.guestImage.repository }}:{{ .Values.bazelQuery.guestImage.tag }}"
+      port: {{ .Values.bazelQueryWorkload.port }}
+      readyPath: {{ .Values.bazelQueryWorkload.readyPath | quote }}
+      invokePath: {{ .Values.bazelQueryWorkload.invokePath | quote }}
+  resources:
+    vcpus: {{ .Values.bazelQueryWorkload.vcpus }}
+    memMib: {{ .Values.bazelQueryWorkload.memMib }}
+  concurrency:
+    floor: {{ .Values.bazelQueryWorkload.floor }}
+    cap: {{ .Values.bazelQueryWorkload.cap }}
+  invocation:
+    timeoutSeconds: {{ .Values.bazelQueryWorkload.timeoutSeconds }}
+    retry:
+      # A guest non-2xx here is a visitor's bad query expression (bazel exits
+      # non-zero -> the guest returns 422 with bazel's error text), never a
+      # transient fault, so guest5xx/timeout are NOT retried. Only a transport
+      # failure (the Assign never reached the guest) is worth one more attempt.
+      maxAttempts: 1
+      retryOn:
+        - transport
+    resultTtlSeconds: 600
+    resultMaxBytes: 1048576
+    deadLetter:
+      # One query per clone with no downstream side effects: a failed task has
+      # nothing to dead-letter, the caller gets the error synchronously.
+      enabled: false
+{{- end }}
