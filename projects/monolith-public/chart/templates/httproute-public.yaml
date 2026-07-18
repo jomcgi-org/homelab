@@ -119,6 +119,46 @@ spec:
       timeouts:
         request: 60s
 ---
+# /ember/postgres/api/status + /savings -> the frontend, on their OWN HTTPRoute
+# so the demo's sub-second lifecycle polling does NOT share the page's coarse
+# rate-limit budget. That page limit is a single gateway-wide bucket shared
+# across ALL clients (Local rate limit, no clientSelectors), and the status poll
+# alone runs ~85 req/min per viewer, so one lingering visitor could starve the
+# whole apex site (429 local_rate_limited for everyone). Both endpoints are
+# cheap, wake-safe control-plane reads served from a short server-side cache
+# (status 500ms single-flight, savings 30s), so a high poll rate costs the
+# backend almost nothing and a generous dedicated limit is safe. The write paths
+# (/query, /session) deliberately stay on the page budget, backstopped by the
+# backend's per-session insert bucket, the query semaphore, and Turnstile.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-ember-reads
+  labels:
+    ingress-tier: {{ .Values.cfIngress.public.tier }}
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.cfIngress.public.gateway.name }}
+      namespace: {{ .Values.cfIngress.public.gateway.namespace }}
+  hostnames:
+    - {{ .Values.cfIngress.public.hostname | quote }}
+  rules:
+    # Exact matches (higher precedence than the catch-all "/" page rule) so ONLY
+    # these two poll endpoints move to the dedicated budget, not /query|/session.
+    - matches:
+        - path:
+            type: Exact
+            value: /ember/postgres/api/status
+        - path:
+            type: Exact
+            value: /ember/postgres/api/savings
+      backendRefs:
+        - name: {{ include "monolith-public.fullname" . }}-frontend
+          port: {{ .Values.frontend.service.port | int }}
+      timeouts:
+        request: 60s
+---
 {{- $rlParams := dict
   "name" (printf "%s-public" (include "monolith-public.fullname" .))
   "rateLimit" .Values.cfIngress.public.rateLimit
@@ -130,4 +170,10 @@ spec:
   "rateLimit" .Values.cfIngress.public.functionsRateLimit
 }}
 {{- include "cf-ingress.rate-limit" $fnRlParams }}
+---
+{{- $emberRlParams := dict
+  "name" (printf "%s-ember-reads" (include "monolith-public.fullname" .))
+  "rateLimit" .Values.cfIngress.public.emberReadsRateLimit
+}}
+{{- include "cf-ingress.rate-limit" $emberRlParams }}
 {{- end }}

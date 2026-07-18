@@ -656,6 +656,16 @@ cfIngress:
     functionsRateLimit:
       requests: 120
       unit: Minute
+    # Dedicated budget for the ember demo's cheap, wake-safe, server-cached
+    # lifecycle reads (/ember/postgres/api/status + /savings), carved onto their
+    # own HTTPRoute so their sub-second polling never shares (and exhausts) the
+    # page's 100/min gateway-wide bucket. status is 500ms single-flight cached
+    # and savings 30s cached, so a high poll rate is nearly free upstream; 600/min
+    # gives comfortable headroom for concurrent viewers. Writes (/query, /session)
+    # stay on the page limit above, backstopped by the backend gates + Turnstile.
+    emberReadsRateLimit:
+      requests: 600
+      unit: Minute
 
 # CiliumNetworkPolicy gates (ADR platform/012). templates/cilium-policy.yaml is
 # the Cilium translation of the Linkerd policy chain; both gates default off so
