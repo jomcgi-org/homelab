@@ -293,9 +293,10 @@ def test_postgres_query_returns_timings_and_classification(monkeypatch):
     async def fake_status():
         return _pg_status_payload(state="banked", pair_valid=True)
 
-    def fake_roundtrip(dsn, mode):
+    def fake_roundtrip(dsn, mode, session_tag):
         assert dsn == "postgresql://x"
         assert mode == "insert"
+        assert session_tag is None
         return {
             "connect_ms": 850.0,
             "query_ms": 12.0,
@@ -359,7 +360,7 @@ def test_postgres_query_aggregate_mode(monkeypatch):
     async def fake_status():
         return _pg_status_payload(state="serving")
 
-    def fake_roundtrip(dsn, mode):
+    def fake_roundtrip(dsn, mode, session_tag):
         assert mode == "aggregate"
         return {
             "connect_ms": 1.5,
@@ -393,7 +394,7 @@ def test_postgres_query_default_mode_is_insert(monkeypatch):
     async def fake_status():
         return _pg_status_payload(state="serving")
 
-    def fake_roundtrip(dsn, mode):
+    def fake_roundtrip(dsn, mode, session_tag):
         assert mode == "insert"
         return {
             "connect_ms": 1.5,
@@ -425,7 +426,7 @@ def test_postgres_query_connect_failure_is_in_band(monkeypatch):
     async def fake_status():
         return _pg_status_payload(state="serving")
 
-    def fake_roundtrip(dsn, mode):
+    def fake_roundtrip(dsn, mode, session_tag):
         raise OSError("connection refused")
 
     monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
@@ -481,36 +482,123 @@ def test_postgres_reset_proxies_destroy(monkeypatch):
     assert resp.json() == {"destroyed": 1, "evicted": 1}
 
 
-def test_postgres_truncate_unconfigured_is_503(monkeypatch):
-    monkeypatch.delenv("DEMO_POSTGRES_DSN", raising=False)
+def test_postgres_session_mint_without_turnstile_secret(monkeypatch):
+    monkeypatch.delenv("TURNSTILE_SECRET_KEY", raising=False)
 
-    resp = _client().post("/api/demos/firecracker/postgres/truncate")
-    assert resp.status_code == 503
-
-
-def test_postgres_truncate_ok(monkeypatch):
-    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
-
-    def fake_truncate(dsn):
-        return {"truncated": True, "connect_ms": 5.0}
-
-    monkeypatch.setattr(fc, "_demo_pg_truncate", fake_truncate)
-
-    resp = _client().post("/api/demos/firecracker/postgres/truncate")
-    assert resp.status_code == 200
-    assert resp.json() == {"truncated": True, "connect_ms": 5.0}
-
-
-def test_postgres_truncate_error_in_band(monkeypatch):
-    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
-
-    def fake_truncate(dsn):
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(fc, "_demo_pg_truncate", fake_truncate)
-
-    resp = _client().post("/api/demos/firecracker/postgres/truncate")
+    resp = _client().post("/api/demos/firecracker/postgres/session", json={})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["truncated"] is False
-    assert "connection refused" in body["error"]
+    assert body == {"ok": True, "existing": False}
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "demo_pg_session" in set_cookie
+    assert "HttpOnly" in set_cookie
+
+
+def test_postgres_session_requires_token_when_turnstile_configured(monkeypatch):
+    monkeypatch.setenv("TURNSTILE_SECRET_KEY", "sekret")
+
+    resp = _client().post("/api/demos/firecracker/postgres/session", json={})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "turnstile verification failed"
+
+
+def test_postgres_session_verifies_token_with_turnstile(monkeypatch):
+    monkeypatch.setenv("TURNSTILE_SECRET_KEY", "sekret")
+
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self, success):
+            self._success = success
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"success": self._success}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, data=None):
+            assert url == "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+            assert data["secret"] == "sekret"
+            captured["response"] = data["response"]
+            return FakeResponse(captured.get("success", False))
+
+    monkeypatch.setattr(fc.httpx, "AsyncClient", FakeAsyncClient)
+
+    captured["success"] = False
+    resp = _client().post(
+        "/api/demos/firecracker/postgres/session",
+        json={"turnstile_token": "bad-token"},
+    )
+    assert resp.status_code == 403
+    assert captured["response"] == "bad-token"
+
+    captured["success"] = True
+    resp = _client().post(
+        "/api/demos/firecracker/postgres/session",
+        json={"turnstile_token": "good-token"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"ok": True, "existing": False}
+    assert "demo_pg_session" in resp.headers.get("set-cookie", "")
+
+
+def test_postgres_session_existing_cookie_short_circuits(monkeypatch):
+    monkeypatch.delenv("TURNSTILE_SECRET_KEY", raising=False)
+
+    client = _client()
+    client.cookies.set("demo_pg_session", "already-here")
+
+    resp = client.post("/api/demos/firecracker/postgres/session", json={})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "existing": True}
+    assert "set-cookie" not in resp.headers
+
+
+def test_postgres_query_passes_session_tag_from_cookie(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(fc, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(state="serving")
+
+    captured = {}
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        captured["session_tag"] = session_tag
+        return {
+            "connect_ms": 1.5,
+            "query_ms": 3.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": None,
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 0,
+            "total_revenue": 0.0,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(fc, "_fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(fc, "_demo_pg_orders_roundtrip", fake_roundtrip)
+
+    client = _client()
+    client.cookies.set("demo_pg_session", "visitor-cookie-value")
+
+    resp = client.post("/api/demos/firecracker/postgres/query", json={})
+    assert resp.status_code == 200
+    tag = captured["session_tag"]
+    assert isinstance(tag, str)
+    assert len(tag) == 16
+    assert re.fullmatch(r"[0-9a-f]{16}", tag)
