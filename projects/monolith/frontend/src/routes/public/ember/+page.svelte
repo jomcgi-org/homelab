@@ -98,10 +98,96 @@
       </a>
     </div>
 
-    <p class="foot">
-      Every number on these pages is a live measurement from this cluster, not
-      a mockup.
-    </p>
+    <section class="section">
+      <h2 class="section-kicker">why this exists</h2>
+      <p class="section-body">
+        A homelab has one machine's worth of RAM and a dozen ideas' worth of
+        services. The usual answer is to run fewer things. Ember is the other
+        answer: an orchestrator built from scratch for this cluster, an Elixir
+        control plane driving Firecracker microVMs through a Go node daemon,
+        where anything idle is frozen whole to disk. The Postgres above is not
+        a mockup of the idea; it is one rung of the roadmap, live.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2 class="section-kicker">principles</h2>
+      <div class="principles">
+        <div class="principle">
+          <h3>Idle costs nothing</h3>
+          <p>
+            Not running means 0 vCPU and 0 MiB of RAM, not a small reservation
+            kept warm just in case.
+          </p>
+        </div>
+        <div class="principle">
+          <h3>Warmth survives sleep</h3>
+          <p>
+            A wake restores the whole VM from its snapshot: page cache, open
+            state, warmed-up process. A cold boot is the fallback, not the
+            design.
+          </p>
+        </div>
+        <div class="principle">
+          <h3>Measured, not claimed</h3>
+          <p>
+            Every number on these pages is a live reading from the cluster
+            serving them.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-kicker">roadmap</h2>
+      <ol class="roadmap">
+        <li class="done">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="rm-name">Functions</span>
+          <span class="rm-desc"
+            >zip a handler, get a URL; each function is its own microVM</span
+          >
+        </li>
+        <li class="done">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="rm-name">Sessions</span>
+          <span class="rm-desc"
+            >agent sandboxes that sleep mid-conversation and resume with their
+            state</span
+          >
+        </li>
+        <li class="done">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="rm-name">Serving</span>
+          <span class="rm-desc"
+            >warm HTTP with the control plane off the hot path; a request only
+            meets it on a wake</span
+          >
+        </li>
+        <li class="done">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="rm-name">Stateful</span>
+          <span class="rm-desc"
+            >databases: data on a durable volume, warmth in the snapshot. The
+            demo above</span
+          >
+        </li>
+        <li class="done">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="rm-name">Composite</span>
+          <span class="rm-desc"
+            >groups that sleep as one unit: a three-node Kubernetes cluster
+            that wakes on kubectl connect</span
+          >
+        </li>
+        <li class="next">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="rm-name">Virtual control planes</span>
+          <span class="rm-desc">many tenants over one execution log</span>
+        </li>
+      </ol>
+    </section>
+
   </main>
 </div>
 
@@ -318,11 +404,110 @@
     }
   }
 
-  .foot {
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--em-line-soft);
+  }
+
+  .section-kicker {
     margin: 0;
     font-family: var(--em-mono);
-    font-size: 12.5px;
-    color: var(--em-faint);
+    font-size: 11.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--em-ember-deep);
+  }
+
+  .section-body {
+    margin: 0;
+    max-width: 64ch;
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--em-muted);
+  }
+
+  .principles {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+  }
+
+  .principle {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .principle h3 {
+    margin: 0;
+    font-size: 14.5px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--em-ink);
+  }
+
+  .principle p {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--em-muted);
+  }
+
+  .roadmap {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .roadmap li {
+    display: grid;
+    grid-template-columns: 14px 170px 1fr;
+    align-items: baseline;
+    gap: 12px;
+    padding: 8px 0;
+  }
+
+  .roadmap li + li {
+    border-top: 1px solid var(--em-line-soft);
+  }
+
+  .mark {
+    align-self: center;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .done .mark {
+    background: var(--em-ember);
+  }
+
+  .next .mark {
+    background: transparent;
+    border: 1.5px solid var(--em-faint);
+  }
+
+  .rm-name {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--em-ink);
+  }
+
+  .next .rm-name {
+    color: var(--em-muted);
+  }
+
+  .rm-desc {
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--em-muted);
   }
 
   @media (max-width: 720px) {
@@ -342,6 +527,20 @@
     .go {
       opacity: 1;
       transform: none;
+    }
+
+    .principles {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    .roadmap li {
+      grid-template-columns: 14px 1fr;
+      row-gap: 2px;
+    }
+
+    .rm-desc {
+      grid-column: 2;
     }
   }
 </style>
