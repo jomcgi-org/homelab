@@ -164,6 +164,13 @@ defmodule Embervm.GroupWakeManager do
       # implementing create_group/2 + wake_group/1 (or a per-workload scripted fake).
       # Production drives Embervm.GroupManager.Supervisor.
       supervisor_mod: Keyword.get(opts, :supervisor_mod, GroupManager.Supervisor),
+      # The teardown seam for a wake that expired at the bound (and for a dead
+      # create found by adoption): force-rolls the workload's live instance so the
+      # singleton gate releases and the NEXT wake can create afresh. Without this a
+      # bound-expired create leaves a live-forever instance every later wake
+      # bounces off (:already_live), a permanent wedge only an operator's forced
+      # roll could clear. Injected in tests as a module implementing force_roll/1.
+      sweeper_mod: Keyword.get(opts, :sweeper_mod, Embervm.GroupSweeper),
       # Restore-on-miss seams (R6, Task 8). Unlike serving/stateful this module owns
       # no dispatch channel of its own (the heavy relight is delegated to a
       # GroupManager child), so the restore-before-relight RPC dials its own channel
@@ -245,7 +252,15 @@ defmodule Embervm.GroupWakeManager do
   def handle_info({:wake_timeout, workload}, state) do
     if Map.has_key?(state.waking, workload) do
       Logger.warning("embervm group wake timed out at bound", workload: workload)
-      {:noreply, finish_wake(state, workload, {:error, {:wake_failed, :wake_timeout}})}
+      state = finish_wake(state, workload, {:error, {:wake_failed, :wake_timeout}})
+      # Tear the expired wake's instance down (async: force_roll drives noded RPCs
+      # and must not block this manager). The create/relight worker behind it may
+      # still be hung inside a member start; rolling the instance terminal releases
+      # the singleton so the next wake can create afresh instead of bouncing off
+      # :already_live forever, and the store's publish guard keeps the zombie
+      # worker from publishing onto the rolled instance if it ever returns.
+      teardown_expired_wake(state, workload)
+      {:noreply, state}
     else
       {:noreply, state}
     end
@@ -370,6 +385,29 @@ defmodule Embervm.GroupWakeManager do
   end
 
   defp schedule_wake_timeout(_workload, _bound_ms), do: :ok
+
+  # Force-roll a workload's live instance after its wake expired at the bound (or
+  # adoption found a dead create). Async and best-effort: the sweeper drives noded
+  # StopGroupMember/DeleteGroupNetwork RPCs, so it must not run on this manager's
+  # process; a crash in the spawned task only means the wedge waits for the next
+  # adoption pass (which retries via the same seam).
+  defp teardown_expired_wake(state, workload) do
+    sweeper = state.sweeper_mod
+
+    spawn(fn ->
+      try do
+        result = sweeper.force_roll(workload)
+        Logger.warning("embervm group expired wake torn down", workload: workload, result: inspect(result))
+      rescue
+        e -> Logger.error("embervm group expired-wake teardown failed", workload: workload, error: inspect(e))
+      catch
+        kind, reason ->
+          Logger.error("embervm group expired-wake teardown failed", workload: workload, error: inspect({kind, reason}))
+      end
+    end)
+
+    :ok
+  end
 
   defp spawn_wake(owner, workload, fun) do
     spawn(fn ->
@@ -733,6 +771,21 @@ defmodule Embervm.GroupWakeManager do
       Map.has_key?(state.waking, instance.workload) ->
         state
 
+      # A `creating` instance with NO in-flight wake is a dead create: its owning
+      # worker is gone (a CP restart mid-create, or a bound-expired wake whose
+      # teardown was lost). It can never finish, and adopting whatever members DID
+      # start to `running` would publish a partial group (the 1-of-3-members zombie
+      # from the R6 Gate-1 drill). Roll it terminal (destroys the reported members
+      # + network, releases the singleton) so the next connection creates afresh.
+      instance.state == :creating ->
+        Logger.warning("embervm group adoption: dead create, rolling terminal",
+          workload: instance.workload,
+          instance_id: instance.instance_id
+        )
+
+        teardown_expired_wake(state, instance.workload)
+        state
+
       # Live members reported for this instance -> a live group: adopt to running,
       # rebind member endpoints/health, respawn the GroupManager owner, re-derive
       # the entry endpoint. Never touches a VM.
@@ -774,29 +827,43 @@ defmodule Embervm.GroupWakeManager do
     state
   end
 
-  # Re-derive the DNAT entry endpoint from the ENTRY member's node-reported ip and
-  # force it into the instance, so the republish equals the pre-restart publish. The
-  # entry member is the instance's `entry_member`; its live ip comes from node truth
-  # (the member VMs the reconcile just indexed). vm_port = port_base + host_offset(ip,
-  # supernet), the exact derivation GroupManager.entry_vm_port uses. A missing entry
-  # member ip, an ip outside the supernet, or no pod_ip configured leaves the endpoint
-  # untouched (the fallback rebuild stands; adoption never publishes a bad endpoint).
+  # Re-derive the DNAT entry endpoint's PORT from the ENTRY member's node-reported
+  # ip (vm_port = port_base + host_offset(ip, supernet), the exact derivation
+  # GroupManager.entry_vm_port uses) and force it into the instance, so the
+  # republish equals the pre-restart publish.
+  #
+  # The endpoint HOST prefers the instance's already-recorded entry_ip: the publish
+  # that recorded it carried the DAEMON's endpoint projection (the noded pod IP,
+  # where the DNAT actually lives), and adoption must not clobber it. state.pod_ip
+  # (this control plane's OWN pod IP) remains only as the legacy fallback for an
+  # instance that was never published; for a split noded deployment it is known-
+  # unroutable (the F-bug), but adoption preserves the old shape rather than
+  # publishing nothing. A missing entry member ip, an ip outside the supernet, or
+  # no host at all leaves the endpoint untouched (the fallback rebuild stands;
+  # adoption never publishes a bad endpoint).
   defp adopt_entry_endpoint(state, instance, members) do
+    recorded_host = Map.get(instance, :entry_ip)
+
     with entry_name when is_binary(entry_name) <- instance.entry_member,
          %{ip: entry_ip} when is_binary(entry_ip) and entry_ip != "" <-
            Enum.find(members, &(&1.member_name == entry_name)),
          {:ok, offset} <- host_offset(state.supernet, entry_ip),
-         pod_ip when is_binary(pod_ip) and pod_ip != "" <- state.pod_ip || entry_ip do
+         host when is_binary(host) and host != "" <-
+           first_present([recorded_host, state.pod_ip, entry_ip]) do
       vm_port = state.port_base + offset
 
       if vm_port >= 1 and vm_port <= 65_535 do
-        GroupStore.adopt_endpoint(state.store, instance.instance_id, pod_ip, vm_port)
+        GroupStore.adopt_endpoint(state.store, instance.instance_id, host, vm_port)
       else
         :ok
       end
     else
       _ -> :ok
     end
+  end
+
+  defp first_present(candidates) do
+    Enum.find(candidates, fn v -> is_binary(v) and v != "" end)
   end
 
   defp heal_to_banked(state, %{state: :banked}), do: state

@@ -993,6 +993,15 @@ message StartGroupMemberRequest {
   // workload's entry). It may differ from health_port (the health-gate port), so it
   // is carried explicitly rather than reusing health_port.
   uint32 entry_guest_port = 12;
+  // ready_budget_seconds, when > 0, overrides the daemon's default readiness
+  // budget (BootReadyTimeout for FRESH, RestoreReadyTimeout for RELIGHT) for THIS
+  // member's health gate. The control plane sets it from the workload's
+  // wakeTimeoutSeconds so the daemon's per-member gate and the CP's whole-wake
+  // bound share one policy: without it a member that legitimately needs longer
+  // than the daemon default (a k3s agent's kubelet only opens :10250 after the
+  // full join) is silently reaped at the daemon's own budget while the CP is
+  // still waiting. 0 keeps the daemon default.
+  uint32 ready_budget_seconds = 13;
 }
 
 message StartGroupMemberResponse {
@@ -1005,6 +1014,15 @@ message StartGroupMemberResponse {
   // was_relight is true when the call resumed a banked bundle (a verified RELIGHT,
   // clock-resync within one second); false for a FRESH cold boot.
   bool was_relight = 3;
+  // endpoint_ip/endpoint_port carry the daemon's OWN projection of the entry
+  // endpoint, {noded pod IP, vmPort}, filled only for the ENTRY member
+  // (entry_guest_port > 0) after its DNAT install. This is the address the control
+  // plane must publish: the DNAT lives in the DAEMON pod's network namespace, so
+  // publishing any other pod's IP (the CP's own, as the pre-R6 code did) produces
+  // an endpoint no client can reach. Empty/0 for non-entry members and when DNAT
+  // is disabled (no pod IP configured on the daemon).
+  string endpoint_ip = 4;
+  uint32 endpoint_port = 5;
 }
 
 enum StopGroupMemberMode {

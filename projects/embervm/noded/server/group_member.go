@@ -120,7 +120,21 @@ func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGro
 		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot group member: %v", err)
 	}
-	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), false, s.cfg.BootReadyTimeout)
+	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), false, groupMemberReadyBudget(req, s.cfg.BootReadyTimeout))
+}
+
+// groupMemberReadyBudget resolves the readiness budget for one member start: the
+// request's ready_budget_seconds when set (the control plane forwards the
+// workload's wakeTimeoutSeconds so daemon gate and CP wake bound share one
+// policy), else the daemon default for the start mode. Without the override a
+// member that needs longer than the daemon default (a k3s agent's kubelet opens
+// :10250 only after the full join) is reaped here while the CP is still waiting
+// on its own, longer bound.
+func groupMemberReadyBudget(req *nodev1.StartGroupMemberRequest, fallback time.Duration) time.Duration {
+	if secs := req.GetReadyBudgetSeconds(); secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return fallback
 }
 
 // startGroupMemberRelight recreates the member's pinned tap world, resumes the banked
@@ -167,7 +181,7 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member %q clock resync failed: %v", ref, clockErr)
 	}
 
-	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), true, s.cfg.RestoreReadyTimeout)
+	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), true, groupMemberReadyBudget(req, s.cfg.RestoreReadyTimeout))
 }
 
 // finishGroupMemberStart is the shared tail of both member start paths: TCP-health-
@@ -176,8 +190,14 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 // FAILED_PRECONDITION (no half-alive member is ever published).
 func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle, groupInstanceID, memberName string, memberIndex uint32, tap string, ip net.IP, healthPort, entryGuestPort uint32, wasRelight bool, readyBudget time.Duration) (*nodev1.StartGroupMemberResponse, error) {
 	if err := s.waitStatefulReady(ctx, ip, healthPort, readyBudget); err != nil {
+		// Loud on purpose: this reap is the daemon KILLING a member that missed its
+		// readiness budget. Silent, it reads as a mystery VM disappearance (the R6
+		// Gate-1 drill lost both k3s agents here with no trace).
+		s.logger.Warn("noded: reaping group member (readiness gate missed)",
+			"group", groupInstanceID, "member", memberName, "vm", h.ID,
+			"ip", ip.String(), "health_port", healthPort, "budget", readyBudget.String(), "err", err.Error())
 		s.reapGroupMember(h, groupInstanceID, tap, ip)
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member not ready over tap: %v", err)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member %q not ready over tap within %s: %v", memberName, readyBudget, err)
 	}
 	// Install the entry DNAT for the ENTRY member (entry_guest_port > 0) so the entry
 	// endpoint the control plane publishes, {pod_ip, vmPort}, actually routes to this
@@ -204,11 +224,23 @@ func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle,
 		probe:           probe,
 	})
 	s.signalChange()
-	return &nodev1.StartGroupMemberResponse{
+	resp := &nodev1.StartGroupMemberResponse{
 		VmId:       h.ID,
 		Ip:         ip.String(),
 		WasRelight: wasRelight,
-	}, nil
+	}
+	// The ENTRY member's response carries the daemon's own projection of the entry
+	// endpoint, {noded pod IP, vmPort}: the DNAT installed above lives in THIS
+	// pod's netns, so this address (not the control plane's own pod IP) is the one
+	// the CP must publish. Empty when DNAT is disabled (no pod IP configured).
+	if entryGuestPort > 0 {
+		epIP, epPort := s.groupNet.EntryEndpoint(ip, entryGuestPort)
+		if epIP != "" && epIP != ip.String() {
+			resp.EndpointIp = epIP
+			resp.EndpointPort = epPort
+		}
+	}
+	return resp, nil
 }
 
 // StopGroupMember tears down one live member VM. BANK pauses it, snapshots it under

@@ -106,6 +106,22 @@ defmodule Embervm.GroupWakeManagerTest do
     defp maybe_sleep(_s), do: :ok
   end
 
+  # The bound-expiry teardown seam (H-fix): records force_roll calls to a per-test
+  # probe process when one is registered, so a test can assert an expired wake (or
+  # a dead create found by adoption) rolled the instance. Tests within one module
+  # run serially (async: true parallelizes across modules), so the registered
+  # probe name cannot cross-talk.
+  defmodule FakeSweeper do
+    def force_roll(workload) do
+      case Process.whereis(:gwm_sweeper_probe) do
+        nil -> :ok
+        pid -> send(pid, {:force_rolled, workload})
+      end
+
+      %{destroyed: 1, evicted: 0}
+    end
+  end
+
   defp start_stack(opts \\ []) do
     suffix = System.unique_integer([:positive])
     path = Path.join(System.tmp_dir!(), "embervm_groupwake_test_#{suffix}.db")
@@ -172,6 +188,9 @@ defmodule Embervm.GroupWakeManagerTest do
         clock: clock,
         channel_fun: fn _node -> {:ok, :ch} end,
         op_log: op_log,
+        # Default the teardown seam to the no-op fake: without it an expired-wake
+        # teardown would dial the real (absent) GroupSweeper and log a crash.
+        sweeper_mod: FakeSweeper,
         reconcile_interval_ms: 0
       ] ++ Keyword.take(opts, [:wake_bound_ms, :mono_clock, :restore_artifact_fun])
 
@@ -530,6 +549,62 @@ defmodule Embervm.GroupWakeManagerTest do
     :ok = GroupWakeManager.reconcile(ctx.mgr)
     {:ok, inst} = GroupStore.get(ctx.store, "g-1")
     assert inst.state == :banked
+  end
+
+  test "a bound-expired wake tears its instance down via the sweeper (H-fix)" do
+    # A wake that expires at the bound must force-roll the workload's instance:
+    # without it a bound-expired CREATE leaves a live-forever :creating instance and
+    # every later wake bounces off :already_live (the permanent Gate-1 wedge).
+    Process.register(self(), :gwm_sweeper_probe)
+    on_exit(fn -> if Process.whereis(:gwm_sweeper_probe) == self(), do: Process.unregister(:gwm_sweeper_probe) end)
+
+    ctx = start_stack(instance_id: "g-1", latency_ms: 3_000, fail: true, wake_bound_ms: 40)
+    _ = seed_banked(ctx, "g-1")
+
+    assert {:error, {:wake_failed, :wake_timeout}} =
+             GroupWakeManager.wake(ctx.mgr, "grp-a", "system:group:grp-a")
+
+    assert_receive {:force_rolled, "grp-a"}, 1_000
+  end
+
+  test "adoption rolls a dead create (:creating with no in-flight wake) terminal" do
+    # A :creating instance with no wake in flight is a dead create (a CP restart
+    # mid-create, or a lost bound timer): it can never finish, and adopting its
+    # partial member set to running would publish a partial group. Adoption must
+    # roll it via the sweeper instead of adopt_live-ing it.
+    Process.register(self(), :gwm_sweeper_probe)
+    on_exit(fn -> if Process.whereis(:gwm_sweeper_probe) == self(), do: Process.unregister(:gwm_sweeper_probe) end)
+
+    ctx = start_stack(instance_id: nil)
+
+    {:ok, _} =
+      GroupStore.create(ctx.store, %{
+        instance_id: "g-dead",
+        tenant: "homelab",
+        principal: "system:group:grp-a",
+        workload: "grp-a",
+        node_id: "node-4",
+        subnet_cidr: "10.101.0.0/24",
+        entry_member: "leader",
+        entry_port: 8080,
+        listen_port: 5410,
+        secret: "s"
+      })
+
+    # One live member reported by the node (the 1-of-3 zombie shape): without the
+    # dead-create branch this instance would be adopt_live'd to running.
+    seed_node(ctx, %{
+      group_member_vms: [
+        %{group_instance_id: "g-dead", member_name: "leader", vm_id: "vm-l", ip: "10.101.0.10", healthy: true}
+      ]
+    })
+
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    assert_receive {:force_rolled, "grp-a"}, 1_000
+    # The instance was NOT adopted to running (the sweeper owns its teardown).
+    {:ok, inst} = GroupStore.get(ctx.store, "g-dead")
+    refute inst.state == :running
   end
 
   test "adoption recovers a workload stuck waking past 2 * wakeTimeoutSeconds" do

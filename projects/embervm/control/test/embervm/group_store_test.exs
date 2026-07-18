@@ -108,6 +108,32 @@ defmodule Embervm.GroupStoreTest do
     assert leader.state == "banked"
   end
 
+  test "member_started records the daemon-reported entry endpoint (ETS-only)" do
+    ctx = start_store()
+    {:ok, _} = create(ctx, "g-1")
+    {:ok, m} = member(ctx, "g-1", "leader", 0, %{endpoint_ip: "10.42.1.95", endpoint_port: 36_443})
+    assert m.endpoint_ip == "10.42.1.95"
+    assert m.endpoint_port == 36_443
+
+    # A member reported without one carries the zero values, not nil.
+    {:ok, w} = member(ctx, "g-1", "worker-0", 1)
+    assert w.endpoint_ip == ""
+    assert w.endpoint_port == 0
+  end
+
+  test "member_started against a terminal instance is refused (zombie worker guard)" do
+    # A StartGroupMember that returns AFTER the wake bound expired and the instance
+    # was force-rolled must not resurrect member rows on the destroyed instance.
+    ctx = start_store()
+    {:ok, _} = create(ctx, "g-1")
+
+    {:ok, _} =
+      GroupStore.transition(ctx.store, "g-1", :destroy, :group_destroyed, %{reason: "forced_roll"}, %{})
+
+    assert {:error, {:instance_terminal, :destroyed}} = member(ctx, "g-1", "leader", 0)
+    assert GroupStore.members(ctx.store, "g-1") == []
+  end
+
   test "the degraded flag: one member unhealthy on a running group names it; recovery clears it" do
     ctx = start_store()
     {:ok, _} = create(ctx, "g-1")

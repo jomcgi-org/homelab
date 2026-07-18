@@ -357,6 +357,33 @@ defmodule Embervm.NodeRoundtripTest do
     assert fresh.vm_id == "vm:worker-base"
     assert fresh.ip == "10.100.0.10"
     assert fresh.was_relight == false
+    # No entry port and no budget on this request -> the R6 fields stay zero-valued.
+    assert fresh.endpoint_ip == ""
+    assert fresh.endpoint_port == 0
+
+    # StartGroupMember FRESH, ENTRY member with a readiness budget (R6): proves
+    # ready_budget_seconds crosses the wire (the fake folds it into vm_id) and the
+    # daemon-side endpoint projection fields cross back (the F-fix lane: the CP
+    # publishes the DAEMON's reported endpoint, so these must survive the wire).
+    {:ok, entry_fresh} =
+      NodeService.Stub.start_group_member(ch, %StartGroupMemberRequest{
+        trace: %Trace{workload: "composite"},
+        mode: :START_GROUP_MEMBER_MODE_FRESH,
+        group_instance_id: "grp-inst1",
+        member_name: "server",
+        member_index: 0,
+        ip: "10.100.0.10",
+        source: "server-base",
+        health_port: 6443,
+        resources: %ResourceSpec{vcpus: 1, mem_mib: 256},
+        env: %{},
+        entry_guest_port: 6443,
+        ready_budget_seconds: 180
+      })
+
+    assert entry_fresh.vm_id == "vm:server-base@180s"
+    assert entry_fresh.endpoint_ip == "fakenode-pod"
+    assert entry_fresh.endpoint_port == 36_443
 
     # StartGroupMember RELIGHT, verified: resumes warm (was_relight true) once the
     # clock-resync handshake verified within one second. The fake scripts a warm

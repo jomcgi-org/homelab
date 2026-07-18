@@ -292,6 +292,82 @@ func TestStartGroupMemberEntryInstallsDNAT(t *testing.T) {
 	}
 }
 
+// TestStartGroupMemberEntryReportsEndpoint proves the ENTRY member's response
+// carries the daemon's endpoint projection ({pod IP, vmPort}) when DNAT is
+// enabled, and that non-entry members (and a DNAT-disabled daemon) report none.
+// Regression for the F-bug: the control plane used to publish its OWN pod IP,
+// an address the entry DNAT does not live at.
+func TestStartGroupMemberEntryReportsEndpoint(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, gn, _, _ := newGroupMemberTestServer(t)
+	gn.podIP = "10.42.1.95"
+
+	// Non-entry member: no endpoint reported.
+	worker := startFreshMember(t, s, port, "worker-1", 1)
+	if worker.GetEndpointIp() != "" || worker.GetEndpointPort() != 0 {
+		t.Errorf("non-entry member reported an endpoint: %q:%d", worker.GetEndpointIp(), worker.GetEndpointPort())
+	}
+
+	// Entry member: the response carries the daemon's projection.
+	resp, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
+		GroupInstanceId: "grp-A",
+		MemberName:      "server",
+		MemberIndex:     0,
+		Ip:              "127.0.0.1",
+		Source:          "src-a",
+		HealthPort:      port,
+		EntryGuestPort:  6443,
+	})
+	if err != nil {
+		t.Fatalf("StartGroupMember(entry): %v", err)
+	}
+	if resp.GetEndpointIp() != "10.42.1.95" || resp.GetEndpointPort() != 30000+6443 {
+		t.Errorf("entry endpoint = %q:%d want 10.42.1.95:%d", resp.GetEndpointIp(), resp.GetEndpointPort(), 30000+6443)
+	}
+}
+
+// TestStartGroupMemberEntryNoDNATReportsNoEndpoint proves a DNAT-disabled daemon
+// (no pod IP; EntryEndpoint falls back to the tap) reports NO endpoint, so the
+// control plane falls back to its own derivation instead of publishing a
+// node-internal tap address.
+func TestStartGroupMemberEntryNoDNATReportsNoEndpoint(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _, _ := newGroupMemberTestServer(t)
+
+	resp, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
+		GroupInstanceId: "grp-A",
+		MemberName:      "server",
+		MemberIndex:     0,
+		Ip:              "127.0.0.1",
+		Source:          "src-a",
+		HealthPort:      port,
+		EntryGuestPort:  6443,
+	})
+	if err != nil {
+		t.Fatalf("StartGroupMember(entry): %v", err)
+	}
+	if resp.GetEndpointIp() != "" || resp.GetEndpointPort() != 0 {
+		t.Errorf("DNAT-disabled daemon reported an endpoint: %q:%d", resp.GetEndpointIp(), resp.GetEndpointPort())
+	}
+}
+
+// TestGroupMemberReadyBudget proves the request's ready_budget_seconds overrides
+// the daemon default and 0 keeps it. Regression for the silent 60s reap: noded's
+// own BootReadyTimeout undercut the workload's wakeTimeoutSeconds, so the k3s
+// agents (kubelet up only after the full join) were reaped mid-join with the
+// control plane still inside its wake bound.
+func TestGroupMemberReadyBudget(t *testing.T) {
+	req := &nodev1.StartGroupMemberRequest{ReadyBudgetSeconds: 180}
+	if got := groupMemberReadyBudget(req, 60*time.Second); got != 180*time.Second {
+		t.Errorf("override budget = %v want 180s", got)
+	}
+	if got := groupMemberReadyBudget(&nodev1.StartGroupMemberRequest{}, 60*time.Second); got != 60*time.Second {
+		t.Errorf("default budget = %v want 60s", got)
+	}
+}
+
 // TestStartGroupMemberEntryDNATFailureReaps proves an entry DNAT install failure
 // reaps the member (no half-published entry whose DNAT never landed).
 func TestStartGroupMemberEntryDNATFailureReaps(t *testing.T) {

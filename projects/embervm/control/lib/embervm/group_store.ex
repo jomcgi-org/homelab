@@ -792,7 +792,8 @@ defmodule Embervm.GroupStore do
   # -- member started --------------------------------------------------------
 
   defp do_member_started(state, instance_id, fields) do
-    with {:ok, instance} <- fetch(state, instance_id) do
+    with {:ok, instance} <- fetch(state, instance_id),
+         :ok <- refuse_terminal(instance) do
       ts = state.clock.()
       member_name = Map.fetch!(fields, :member_name)
 
@@ -819,6 +820,12 @@ defmodule Embervm.GroupStore do
             member_index: Map.get(fields, :member_index),
             vm_id: Map.get(fields, :vm_id),
             ip: Map.get(fields, :ip),
+            # The daemon-reported entry-endpoint projection ({noded pod IP, vmPort}),
+            # set only on the ENTRY member's report. Held in ETS only (not projected
+            # to SQLite): it is consumed by the same in-flight wake that recorded it
+            # (the publish that follows), and a rebuilt CP never resumes that wake.
+            endpoint_ip: Map.get(fields, :endpoint_ip, ""),
+            endpoint_port: Map.get(fields, :endpoint_port, 0),
             state: "starting",
             # A fresh member boot clears any prior banked slice (the warmth is spent).
             snapshot_ref: nil,
@@ -835,6 +842,13 @@ defmodule Embervm.GroupStore do
     else
       {:error, _reason} = error -> {:reply, error, state}
     end
+  end
+
+  # A member report against a terminal instance is a zombie worker (its wake
+  # expired at the bound and the instance was rolled while a StartGroupMember hung):
+  # refuse rather than resurrecting rows on a destroyed/failed instance.
+  defp refuse_terminal(%{state: st}) do
+    if GroupState.terminal?(st), do: {:error, {:instance_terminal, st}}, else: :ok
   end
 
   # -- transition ------------------------------------------------------------

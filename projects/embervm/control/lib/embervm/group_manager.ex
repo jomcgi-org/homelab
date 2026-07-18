@@ -423,16 +423,27 @@ defmodule Embervm.GroupManager do
       # member named by the workload's entry carries a non-zero port; every other
       # member gets 0 (no DNAT). Without this the published entry is a dead port
       # (the entry-EOF): noded never wired the DNAT the endpoint assumes.
-      entry_guest_port: entry_guest_port_for(state, member)
+      entry_guest_port: entry_guest_port_for(state, member),
+      # Forward the workload's wake budget as the daemon's per-member readiness
+      # budget, so both ends enforce ONE policy. Without it noded reaps a member at
+      # its own (shorter) default while this create is still inside the wake bound:
+      # the k3s agents died exactly this way, silently, at noded's 60s.
+      ready_budget_seconds: wake_budget_seconds(state)
     }
 
     case safe_start_group_member(state, req) do
-      {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip}} when is_binary(vm_id) and vm_id != "" ->
+      {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip} = resp} when is_binary(vm_id) and vm_id != "" ->
         case GroupStore.member_started(state.store, state.instance_id, %{
                member_name: member.expanded_name,
                member_index: member.index,
                vm_id: vm_id,
-               ip: ip
+               ip: ip,
+               # The daemon's own entry-endpoint projection ({noded pod IP, vmPort}),
+               # non-empty only for the entry member. Recorded so finish_create
+               # publishes the address the DNAT actually lives at (the daemon pod),
+               # not this control plane's own pod IP.
+               endpoint_ip: resp.endpoint_ip || "",
+               endpoint_port: resp.endpoint_port || 0
              }) do
           {:ok, _} -> :ok
           {:error, reason} -> {:error, {:member_record_failed, member.expanded_name, reason}}
@@ -440,6 +451,16 @@ defmodule Embervm.GroupManager do
 
       other ->
         {:error, {:member_start_failed, member.expanded_name, other}}
+    end
+  end
+
+  # The workload's wakeTimeoutSeconds from the catalog entry this manager was
+  # spawned with, forwarded to noded as the per-member readiness budget. 0 (keep
+  # the daemon default) when the entry carries none.
+  defp wake_budget_seconds(state) do
+    case state.entry do
+      %{group: %{wake_timeout_seconds: secs}} when is_integer(secs) and secs > 0 -> secs
+      _ -> 0
     end
   end
 
@@ -461,9 +482,14 @@ defmodule Embervm.GroupManager do
     end
   end
 
-  # Publish the entry endpoint + move to running. The published endpoint is the entry
-  # member's DNAT projection: {pod IP, vmPort}, vmPort re-derived from the entry
-  # member's group-subnet IP (see the moduledoc's lockstep note).
+  # Publish the entry endpoint + move to running. The published endpoint is the
+  # DAEMON's own projection {noded pod IP, vmPort}, reported by noded in the entry
+  # member's StartGroupMemberResponse and recorded on its member row: the entry
+  # DNAT lives in the noded pod's netns, so that pod's IP is the only address the
+  # endpoint is reachable at. The CP-local derivation ({state.pod_ip, re-derived
+  # vmPort}, the pre-R6 lane) remains ONLY as a fallback for a daemon that reports
+  # no endpoint (older noded, or DNAT disabled); publishing the CP's own pod IP was
+  # the F-bug that made every published group entry unroutable.
   defp finish_create(state, plan, group) do
     entry_member = Enum.find(plan, &(&1.expanded_name == group.entry.member))
 
@@ -473,15 +499,13 @@ defmodule Embervm.GroupManager do
         {{:error, {:entry_member_not_in_plan, group.entry.member}}, state}
 
       %{ip: entry_ip} ->
-        case entry_vm_port(state, entry_ip) do
-          {:ok, vm_port} ->
-            pod_ip = state.pod_ip || entry_ip
-
-            case GroupStore.publish(state.store, state.instance_id, pod_ip, vm_port) do
+        case entry_publish_endpoint(state, group, entry_ip) do
+          {:ok, ep_ip, ep_port} ->
+            case GroupStore.publish(state.store, state.instance_id, ep_ip, ep_port) do
               {:ok, _} ->
                 Embervm.EndpointPublisher.publish(state.publisher)
                 Logger.info("embervm group running", workload: state.workload, instance_id: state.instance_id)
-                {{:ok, %{ip: pod_ip, port: vm_port}}, state}
+                {{:ok, %{ip: ep_ip, port: ep_port}}, state}
 
               {:error, reason} ->
                 teardown_failed(state, {:publish_failed, reason})
@@ -491,6 +515,32 @@ defmodule Embervm.GroupManager do
           {:error, reason} ->
             teardown_failed(state, {:entry_port_derivation, reason})
             {{:error, {:entry_port_derivation, reason}}, state}
+        end
+    end
+  end
+
+  # The endpoint to publish for the entry member: the daemon-reported projection
+  # recorded on the entry member's row when present, else the CP-local derivation
+  # (fallback for a daemon that reported none).
+  defp entry_publish_endpoint(state, group, entry_ip) do
+    daemon_reported =
+      GroupStore.members(state.store, state.instance_id)
+      |> Enum.find_value(fn m ->
+        if m.member_name == group.entry.member and
+             is_binary(Map.get(m, :endpoint_ip)) and Map.get(m, :endpoint_ip) != "" and
+             is_integer(Map.get(m, :endpoint_port)) and Map.get(m, :endpoint_port) > 0 do
+          {Map.get(m, :endpoint_ip), Map.get(m, :endpoint_port)}
+        end
+      end)
+
+    case daemon_reported do
+      {ip, port} ->
+        {:ok, ip, port}
+
+      nil ->
+        case entry_vm_port(state, entry_ip) do
+          {:ok, vm_port} -> {:ok, state.pod_ip || entry_ip, vm_port}
+          {:error, reason} -> {:error, reason}
         end
     end
   end
@@ -746,13 +796,16 @@ defmodule Embervm.GroupManager do
           snapshot_ref: ref,
           health_port: member.health_port || 0,
           resources: %ResourceSpec{vcpus: member.vcpus || 1, mem_mib: member.mem_mib || 512},
-          env: %{}
+          env: %{},
+          # Same one-policy budget forwarding as the FRESH path: the daemon's
+          # readiness gate must not undercut the wake bound this relight runs under.
+          ready_budget_seconds: wake_budget_seconds(state)
         }
 
         case safe_start_group_member(state, req) do
-          {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip, was_relight: true}}
+          {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: true} = resp}
           when is_binary(vm_id) and vm_id != "" ->
-            record_member_live(state, member, vm_id, ip)
+            record_member_live(state, member, resp)
 
           # A RELIGHT that the daemon could not verify (clock-resync out of bounds,
           # decision 7, surfaces as was_relight=false): the VM DID resume and is holding
@@ -761,10 +814,10 @@ defmodule Embervm.GroupManager do
           # whole set falls back to fresh. We never accept a half-resumed member as
           # part of a live relit set, but we must not leak its tap either. Stamp the
           # span's was_relight=false so the trace records the clock-resync-failed member.
-          {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip, was_relight: false}}
+          {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: false} = resp}
           when is_binary(vm_id) and vm_id != "" ->
             Tracer.set_attributes(%{"ember.was_relight" => false})
-            _ = record_member_live(state, member, vm_id, ip)
+            _ = record_member_live(state, member, resp)
             {:error, {:member_relight_unverified, member.expanded_name}}
 
           {:ok, %StartGroupMemberResponse{was_relight: false}} ->
@@ -780,12 +833,16 @@ defmodule Embervm.GroupManager do
     end
   end
 
-  defp record_member_live(state, member, vm_id, ip) do
+  defp record_member_live(state, member, %StartGroupMemberResponse{vm_id: vm_id, ip: ip} = resp) do
     case GroupStore.member_started(state.store, state.instance_id, %{
            member_name: member.expanded_name,
            member_index: member.index,
            vm_id: vm_id,
-           ip: ip
+           ip: ip,
+           # Daemon-reported entry-endpoint projection (entry member only), the
+           # address finish_wake_publish/finish_create must publish.
+           endpoint_ip: resp.endpoint_ip || "",
+           endpoint_port: resp.endpoint_port || 0
          }) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, {:member_record_failed, member.expanded_name, reason}}
@@ -804,15 +861,13 @@ defmodule Embervm.GroupManager do
         {{:error, {:entry_member_not_in_plan, group.entry.member}}, state}
 
       %{ip: entry_ip} ->
-        case entry_vm_port(state, entry_ip) do
-          {:ok, vm_port} ->
-            pod_ip = state.pod_ip || entry_ip
-
-            case GroupStore.publish(state.store, state.instance_id, pod_ip, vm_port) do
+        case entry_publish_endpoint(state, group, entry_ip) do
+          {:ok, ep_ip, ep_port} ->
+            case GroupStore.publish(state.store, state.instance_id, ep_ip, ep_port) do
               {:ok, _} ->
                 Embervm.EndpointPublisher.publish(state.publisher)
                 Logger.info("embervm group woken", workload: state.workload, instance_id: state.instance_id)
-                {{:ok, %{ip: pod_ip, port: vm_port}}, state}
+                {{:ok, %{ip: ep_ip, port: ep_port}}, state}
 
               {:error, reason} ->
                 {{:error, {:publish_failed, reason}}, state}
