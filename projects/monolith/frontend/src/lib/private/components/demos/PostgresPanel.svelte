@@ -15,13 +15,15 @@
   //                  statements against an orders ledger, and returns two
   //                  separately-bracketed wall times: connect (which IS the
   //                  wake when asleep) and query, plus the verbatim SQL run.
-  //   truncate    -> POST /api/demos/firecracker/postgres/truncate. Clears
-  //                  the ledger; the VM lives, the data dies (the mirror of
-  //                  reset, which destroys the VM and keeps the data).
   //   reset       -> POST /api/demos/firecracker/postgres/reset. Destroys the
   //                  live VM AND evicts its snapshot; the data volume
   //                  survives, so the next query pays a full cold boot against
   //                  retained rows: the durability proof on demand.
+  //
+  // The ledger is a rolling one-hour window: the backend lazily deletes rows
+  // older than the current hour on each query, so there's no manual clear.
+  // A session cookie (minted fire-and-forget on mount) attributes inserted
+  // rows to the caller, surfaced in the grid as the "yours" column.
   import { onMount } from "svelte";
 
   const API = "/api/demos/firecracker/postgres";
@@ -44,6 +46,7 @@
     { key: "qty", label: "qty", type: "int" },
     { key: "unit_price", label: "unit_price", type: "numeric(8,2)" },
     { key: "written_at", label: "written_at", type: "timestamptz" },
+    { key: "yours", label: "session", type: "who" },
   ];
 
   const ORDERS_SQL = "SELECT * FROM demo_orders ORDER BY id DESC";
@@ -54,13 +57,11 @@
   let statusError = $state("");
   let running = $state(false);
   let resetting = $state(false);
-  let truncating = $state(false);
-  let truncateConfirming = $state(false);
   let lastRun = $state(null);
   let runError = $state("");
 
-  // Which result shape the right column shows. INSERT and TRUNCATE land on
-  // the orders grid; the aggregate query switches to the summary table.
+  // Which result shape the right column shows. INSERT lands on the orders
+  // grid; the aggregate query switches to the summary table.
   let view = $state("orders");
 
   // Best-seen wall time per boot path: the demo's headline comparison.
@@ -137,8 +138,8 @@
   // times, waiting the next backoff delay between attempts. doAttempt should
   // return {ok: true, ...} on success or {ok: false, permanent, error} on a
   // failure worth surfacing; a thrown error is treated as transient. The
-  // caller's own running/truncating flag is expected to already be set, so
-  // this never overlaps with a fresh click.
+  // caller's own running flag is expected to already be set, so this never
+  // overlaps with a fresh click.
   async function fetchWithBackoff(doAttempt) {
     let lastResult = null;
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
@@ -182,6 +183,38 @@
       savingsTimer = null;
     }
   }
+
+  // Hourly reset countdown: the backend lazily deletes rows older than the
+  // current hour on each query, so there's no event to listen for, just a
+  // clock. A plain 1 s setInterval keeps a $state(Date.now()) fresh; the
+  // remaining time to the next top of the hour is derived from it.
+  let nowMs = $state(Date.now());
+  let clockTimer = null;
+
+  function startClockTimer() {
+    clockTimer = setInterval(() => {
+      nowMs = Date.now();
+    }, 1000);
+  }
+
+  function stopClockTimer() {
+    if (clockTimer != null) {
+      clearInterval(clockTimer);
+      clockTimer = null;
+    }
+  }
+
+  let resetCountdown = $derived.by(() => {
+    const now = new Date(nowMs);
+    const next = new Date(now);
+    next.setMinutes(0, 0, 0);
+    next.setHours(next.getHours() + 1);
+    const remainingS = Math.max(0, Math.round((next.getTime() - now.getTime()) / 1000));
+    const mm = String(Math.floor(remainingS / 60)).padStart(2, "0");
+    const ss = String(remainingS % 60).padStart(2, "0");
+    const clockLabel = next.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return { mmss: `${mm}:${ss}`, clockLabel };
+  });
 
   async function pollStatus() {
     try {
@@ -234,7 +267,6 @@
 
   async function runQuery(mode) {
     if (running) return;
-    truncateConfirming = false;
     running = true;
     runError = "";
     startStopwatch();
@@ -262,51 +294,8 @@
     }
   }
 
-  function onTruncateClick() {
-    if (running || truncating) return;
-    if (!truncateConfirming) {
-      truncateConfirming = true;
-      return;
-    }
-    truncateConfirming = false;
-    truncateLedger();
-  }
-
-  async function attemptTruncate() {
-    const resp = await fetch(`${API}/truncate`, { method: "POST" });
-    const body = await resp.json();
-    if (resp.status === 503 && /not configured/i.test(body?.detail ?? "")) {
-      return { ok: false, permanent: true, error: body.detail };
-    }
-    if (!resp.ok) {
-      return { ok: false, error: body?.detail || `truncate failed (${resp.status})` };
-    }
-    if (!body.truncated) {
-      return { ok: false, error: body.error || "truncate failed" };
-    }
-    return { ok: true };
-  }
-
-  async function truncateLedger() {
-    truncating = true;
-    runError = "";
-    try {
-      const result = await fetchWithBackoff(attemptTruncate);
-      if (!result.ok) {
-        runError = result.error;
-        return;
-      }
-      lastRun = null;
-      view = "orders";
-    } finally {
-      truncating = false;
-      cancelPendingRetry();
-    }
-  }
-
   async function resetInstance() {
     if (resetting) return;
-    truncateConfirming = false;
     resetting = true;
     runError = "";
     try {
@@ -323,16 +312,27 @@
   }
 
   onMount(() => {
+    // Fire-and-forget: mints the session cookie that attributes inserted
+    // rows to this visitor. Kicked off first (not awaited) so it usually
+    // wins the race with the first insert click, without blocking paint.
+    fetch(`${API}/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ turnstile_token: "" }),
+    }).catch(() => {});
+
     // Opening the tab IS the wake-on-connect demo: fire a read-only aggregate
     // unprompted so the visitor watches the VM wake for them without writing,
     // then start the lifecycle poll.
     runQuery("aggregate");
     pollStatus();
     pollTimer = setInterval(pollStatus, POLL_MS);
+    startClockTimer();
     return () => {
       clearInterval(pollTimer);
       stopStopwatch();
       stopSavingsTimer();
+      stopClockTimer();
       cancelPendingRetry();
       if (pulseTimer) clearTimeout(pulseTimer);
     };
@@ -533,20 +533,6 @@
       </button>
       <div class="destructive-group">
         <button
-          class="truncate-btn"
-          class:confirming={truncateConfirming}
-          type="button"
-          onclick={onTruncateClick}
-          disabled={running || truncating}
-          title="TRUNCATE demo_orders. The VM lives, the data dies."
-        >
-          {truncating
-            ? "Truncating…"
-            : truncateConfirming
-              ? "really truncate?"
-              : "Clear ledger (TRUNCATE)"}
-        </button>
-        <button
           class="reset-btn"
           type="button"
           onclick={resetInstance}
@@ -557,8 +543,8 @@
         </button>
       </div>
       <p class="destructive-caption">
-        truncate keeps the VM and kills the data; cold boot keeps the data and
-        kills the VM
+        cold boot destroys the VM but keeps the data; the ledger clears
+        itself on the hour
       </p>
     </div>
 
@@ -614,6 +600,12 @@
 
   <div class="right-col">
     <p class="formula-bar">{view === "summary" ? SUMMARY_SQL : ORDERS_SQL}</p>
+    <p class="reset-countdown">
+      ledger resets on the hour · <span class="reset-countdown-value"
+        >{resetCountdown.mmss}</span
+      >
+      <span class="reset-countdown-clock">({resetCountdown.clockLabel})</span>
+    </p>
     <div class="result-card">
       {#if view === "summary"}
         <div class="result-view swap-in">
@@ -690,6 +682,13 @@
                     <td class="col-numeric">{row.qty}</td>
                     <td class="col-numeric">{money(row.unit_price)}</td>
                     <td>{clock(row.written_at)}</td>
+                    <td class="col-session">
+                      {#if row.yours}
+                        <span class="yours-chip">you</span>
+                      {:else}
+                        <span class="visitor-label">visitor</span>
+                      {/if}
+                    </td>
                   </tr>
                 {/each}
               {/each}
@@ -872,7 +871,6 @@
 
   .run-btn,
   .aggregate-btn,
-  .truncate-btn,
   .reset-btn {
     padding: 10px 18px;
     border-radius: 8px;
@@ -898,7 +896,6 @@
 
   .run-btn:disabled,
   .aggregate-btn:disabled,
-  .truncate-btn:disabled,
   .reset-btn:disabled {
     opacity: 0.6;
     cursor: default;
@@ -909,22 +906,9 @@
     gap: 10px;
   }
 
-  .destructive-group .truncate-btn,
-  .destructive-group .reset-btn {
-    flex: 1 1 50%;
-    min-width: 0;
-  }
-
-  .truncate-btn,
   .reset-btn {
     background: var(--surface);
     color: var(--danger);
-  }
-
-  .truncate-btn.confirming {
-    background: var(--danger);
-    border-color: var(--danger);
-    color: var(--surface);
   }
 
   .destructive-caption {
@@ -1047,6 +1031,25 @@
     color: var(--text-faint);
   }
 
+  .reset-countdown {
+    margin: 0;
+    padding: 0 4px;
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+
+  .reset-countdown-value {
+    display: inline-block;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+
+  .reset-countdown-clock {
+    color: var(--text-faint);
+  }
+
   .result-card {
     background: var(--surface);
     border: 1px solid var(--line);
@@ -1119,6 +1122,27 @@
 
   .result-table td.col-numeric {
     text-align: right;
+  }
+
+  .col-session {
+    white-space: nowrap;
+  }
+
+  .yours-chip {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: lowercase;
+  }
+
+  .visitor-label {
+    font-size: 11px;
+    color: var(--text-faint);
+    text-transform: lowercase;
   }
 
   .epoch-band td {
