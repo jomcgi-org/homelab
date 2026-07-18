@@ -31,6 +31,31 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _reset_ember_public_module_state():
+    """Every gating mechanism in core.py is process-global (status cache,
+    semaphore, insert bucket, last-query-outcome), so tests running back to
+    back within the same 500ms status-cache TTL would otherwise leak state
+    (a cached payload, a held slot, a bucket entry) across test functions.
+    Reset before AND after each test.
+    """
+
+    def _reset():
+        core._status_cache.update(
+            {"at": None, "payload": None, "state": None, "state_changed_at": None}
+        )
+        core._insert_bucket.clear()
+        core._last_query_outcome.update(
+            {"at_monotonic": None, "ok": None, "connect_ms": None}
+        )
+        while core._query_semaphore._value < core._query_semaphore._initial_value:
+            core._query_semaphore.release()
+
+    _reset()
+    yield
+    _reset()
+
+
 def _pg_status_payload(**overrides):
     base = {
         "workload": "demo-postgres",
@@ -533,3 +558,390 @@ def test_public_app_serves_no_demos_route():
 
     paths = {getattr(r, "path", None) for r in public_app.routes}
     assert not any(p and p.startswith("/api/demos") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: status cache single-flight, global semaphore, insert bucket,
+# and session-required gating.
+# ---------------------------------------------------------------------------
+
+
+def test_status_cache_single_flight_shares_one_upstream_fetch(monkeypatch):
+    """Concurrent callers within the 500ms TTL share one fetch, not one each."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    calls = {"n": 0}
+
+    async def counting_status():
+        calls["n"] += 1
+        return _pg_status_payload()
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", counting_status)
+
+    client = _client()
+    client.get("/api/ember/postgres/status")
+    client.get("/api/ember/postgres/status")
+    client.get("/api/ember/postgres/status")
+
+    assert calls["n"] == 1
+
+
+def test_status_cache_refetches_after_ttl_expires(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    calls = {"n": 0}
+
+    async def counting_status():
+        calls["n"] += 1
+        return _pg_status_payload()
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", counting_status)
+
+    fake_clock = {"t": 1000.0}
+    monkeypatch.setattr(core, "monotonic", lambda: fake_clock["t"])
+
+    client = _client()
+    client.get("/api/ember/postgres/status")
+    fake_clock["t"] += core._STATUS_CACHE_TTL_S + 0.01
+    client.get("/api/ember/postgres/status")
+
+    assert calls["n"] == 2
+
+
+def test_status_cache_records_state_changed_at_on_transition(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    fake_clock = {"t": 1000.0}
+    monkeypatch.setattr(core, "monotonic", lambda: fake_clock["t"])
+
+    state = {"s": "banked"}
+
+    async def variable_status():
+        return _pg_status_payload(state=state["s"])
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", variable_status)
+
+    client = _client()
+    client.get("/api/ember/postgres/status")
+    first_changed_at = core.status_cache_state_changed_at()
+    assert first_changed_at == 1000.0
+
+    fake_clock["t"] += core._STATUS_CACHE_TTL_S + 0.01
+    state["s"] = "relighting"
+    client.get("/api/ember/postgres/status")
+    assert core.status_cache_state_changed_at() == fake_clock["t"]
+    assert core.status_cache_state_changed_at() != first_changed_at
+
+
+def test_semaphore_exhausted_returns_in_band_busy(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+
+    async def fake_status():
+        return _pg_status_payload()
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        return {
+            "connect_ms": 1.0,
+            "query_ms": 1.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": None,
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 0,
+            "total_revenue": 0.0,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    # Exhaust every slot up front (mirrors an in-flight burst) without
+    # releasing, then confirm the next request is refused in-band.
+    max_concurrent = core._query_semaphore._initial_value
+    acquired = [core.try_acquire_query_slot() for _ in range(max_concurrent)]
+    assert all(acquired)
+
+    resp = _client().post("/api/ember/postgres/query", json={"mode": "aggregate"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["busy"] is True
+    assert "busy" in body["error"]
+
+    for _ in range(max_concurrent):
+        core.release_query_slot()
+
+
+def test_semaphore_slot_released_after_roundtrip_allows_next_request(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        return {
+            "connect_ms": 1.0,
+            "query_ms": 1.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": None,
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 0,
+            "total_revenue": 0.0,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    client = _client()
+    for _ in range(3):
+        resp = client.post("/api/ember/postgres/query", json={"mode": "aggregate"})
+        assert resp.status_code == 200
+        assert resp.json().get("busy") is not True
+
+    assert core._query_semaphore._value == core._query_semaphore._initial_value
+
+
+def test_insert_bucket_rejects_second_insert_within_five_seconds(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        return {
+            "connect_ms": 1.0,
+            "query_ms": 1.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": {"id": 1, "item": "flat white", "qty": 1, "unit_price": 3.50},
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 1,
+            "total_revenue": 3.50,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    fake_clock = {"t": 2000.0}
+    monkeypatch.setattr(core, "monotonic", lambda: fake_clock["t"])
+
+    client = _client()
+    client.cookies.set("demo_pg_session", "visitor-a")
+
+    first = client.post("/api/ember/postgres/query", json={"mode": "insert"})
+    assert first.status_code == 200
+    assert first.json().get("rate_limited") is not True
+
+    second = client.post("/api/ember/postgres/query", json={"mode": "insert"})
+    assert second.status_code == 200
+    body = second.json()
+    assert body["rate_limited"] is True
+    assert "five seconds" in body["error"]
+
+
+def test_insert_bucket_allows_after_five_seconds_elapse(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        return {
+            "connect_ms": 1.0,
+            "query_ms": 1.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": {"id": 1, "item": "flat white", "qty": 1, "unit_price": 3.50},
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 1,
+            "total_revenue": 3.50,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    fake_clock = {"t": 3000.0}
+    monkeypatch.setattr(core, "monotonic", lambda: fake_clock["t"])
+
+    client = _client()
+    client.cookies.set("demo_pg_session", "visitor-b")
+
+    first = client.post("/api/ember/postgres/query", json={"mode": "insert"})
+    assert first.json().get("rate_limited") is not True
+
+    fake_clock["t"] += core._INSERT_BUCKET_WINDOW_S + 0.01
+    second_body = client.post(
+        "/api/ember/postgres/query", json={"mode": "insert"}
+    ).json()
+    assert second_body.get("rate_limited") is not True
+    assert second_body.get("inserted", {}).get("id") == 1
+
+
+def test_insert_bucket_is_per_session_not_shared(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        return {
+            "connect_ms": 1.0,
+            "query_ms": 1.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": {"id": 1, "item": "flat white", "qty": 1, "unit_price": 3.50},
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 1,
+            "total_revenue": 3.50,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    fake_clock = {"t": 4000.0}
+    monkeypatch.setattr(core, "monotonic", lambda: fake_clock["t"])
+
+    client_a = _client()
+    client_a.cookies.set("demo_pg_session", "visitor-a")
+    resp_a = client_a.post("/api/ember/postgres/query", json={"mode": "insert"})
+    assert resp_a.json().get("rate_limited") is not True
+
+    client_b = _client()
+    client_b.cookies.set("demo_pg_session", "visitor-b")
+    resp_b = client_b.post("/api/ember/postgres/query", json={"mode": "insert"})
+    assert resp_b.json().get("rate_limited") is not True
+
+
+def test_insert_bucket_pruning_drops_stale_entries(monkeypatch):
+    fake_clock = {"t": 5000.0}
+    monkeypatch.setattr(core, "monotonic", lambda: fake_clock["t"])
+
+    assert core.check_and_record_insert("stale-visitor") is True
+
+    fake_clock["t"] += core._INSERT_BUCKET_PRUNE_AGE_S + 1
+    # A fresh access prunes the stale entry as a side effect.
+    assert core.check_and_record_insert("other-visitor") is True
+    assert "stale-visitor" not in core._insert_bucket
+
+
+def test_sessionless_insert_allowed_when_turnstile_secret_unset(monkeypatch):
+    """Private tier: TURNSTILE_SECRET_KEY unset, no cookie -> insert proceeds."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+    monkeypatch.setattr(turnstile, "SECRET_KEY", "")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        assert session_tag is None
+        return {
+            "connect_ms": 1.0,
+            "query_ms": 1.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": {"id": 1, "item": "flat white", "qty": 1, "unit_price": 3.50},
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 1,
+            "total_revenue": 3.50,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    resp = _client().post("/api/ember/postgres/query", json={"mode": "insert"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body.get("session_required") is not True
+    assert body["inserted"]["id"] == 1
+
+
+def test_sessionless_insert_rejected_when_turnstile_secret_set(monkeypatch):
+    """Public tier: TURNSTILE_SECRET_KEY set, no cookie -> rejected in-band."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+    monkeypatch.setattr(turnstile, "SECRET_KEY", "sekret")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        raise AssertionError("must not reach the roundtrip without a session")
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    resp = _client().post("/api/ember/postgres/query", json={"mode": "insert"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["session_required"] is True
+    assert "challenge" in body["error"]
+
+
+def test_sessionless_aggregate_allowed_regardless_of_turnstile_config(monkeypatch):
+    """Aggregate mode stays session-optional on both tiers."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+    monkeypatch.setattr(turnstile, "SECRET_KEY", "sekret")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        assert session_tag is None
+        return {
+            "connect_ms": 1.0,
+            "query_ms": 1.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": None,
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 0,
+            "total_revenue": 0.0,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    resp = _client().post("/api/ember/postgres/query", json={"mode": "aggregate"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body.get("session_required") is not True
+    assert body["mode"] == "aggregate"
+
+
+def test_query_records_last_outcome_on_success(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        return {
+            "connect_ms": 42.0,
+            "query_ms": 1.0,
+            "mode": mode,
+            "statements": [],
+            "inserted": None,
+            "rows": [],
+            "breakdown": [],
+            "total_orders": 0,
+            "total_revenue": 0.0,
+            "postmaster_start": "2026-07-17T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    _client().post("/api/ember/postgres/query", json={"mode": "aggregate"})
+
+    outcome = core.last_query_outcome()
+    assert outcome["ok"] is True
+    assert outcome["connect_ms"] == 42.0
+    assert outcome["at_monotonic"] is not None
+
+
+def test_query_records_last_outcome_on_failure(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "")
+
+    def fake_roundtrip(dsn, mode, session_tag):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    _client().post("/api/ember/postgres/query", json={"mode": "aggregate"})
+
+    outcome = core.last_query_outcome()
+    assert outcome["ok"] is False
+    assert outcome["connect_ms"] is None
