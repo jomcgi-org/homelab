@@ -1403,8 +1403,23 @@ defmodule Embervm.GroupManager do
     Embervm.Node.V1.NodeService.Stub.delete_group_network(channel, req)
   end
 
+  # StartGroupMember blocks server-side for the member's whole readiness gate (up
+  # to ready_budget_seconds, e.g. 180s for scratch-k8s), so the call deadline must
+  # cover the budget plus RPC margin. Without an explicit timeout the grpc-elixir
+  # default 10s deadline fires mid-gate: the daemon cancels the stream (the member
+  # is reaped "context canceled" while healthy and mid-join) and the RST_STREAM
+  # cancel trips the Mint adapter's connection-crash bug, killing every sibling
+  # member stream on the same channel. This deadline was the true k3s-agent killer
+  # behind the R6 Gate-1 drill; the daemon-side budget fix alone cannot help while
+  # the client hangs up at 10s.
   defp default_start_group_member(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.start_group_member(channel, req)
+    budget_ms =
+      case req.ready_budget_seconds do
+        secs when is_integer(secs) and secs > 0 -> secs * 1_000
+        _ -> 60_000
+      end
+
+    Embervm.Node.V1.NodeService.Stub.start_group_member(channel, req, timeout: budget_ms + 30_000)
   end
 
   defp default_stop_group_member(channel, req) do
