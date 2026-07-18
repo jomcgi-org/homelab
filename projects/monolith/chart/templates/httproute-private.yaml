@@ -33,7 +33,8 @@ spec:
           port: {{ .Values.service.apiPort | int }}
     # k8s-terminal demo WebSocket: an interactive k9s session lives as one
     # long request, so the demos-wide 600s timeout would cut it at 10 minutes.
-    # Matched before the /api/demos prefix rule (more specific path + ordering).
+    # Wins over the /api/demos rule by longest-prefix match (Gateway API
+    # matches by specificity, not rule order).
     - matches:
         - path:
             type: PathPrefix

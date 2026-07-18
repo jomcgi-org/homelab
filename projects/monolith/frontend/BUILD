@@ -59,6 +59,10 @@ js_library(
         ":node_modules/d3-quadtree",
         ":node_modules/d3-selection",
         ":node_modules/d3-zoom",
+        # Terminal emulator for the private k8s demo tab (client-only dynamic
+        # import; the package must still be linked for vite to resolve it)
+        ":node_modules/@xterm/xterm",
+        ":node_modules/@xterm/addon-fit",
     ],
 )
 

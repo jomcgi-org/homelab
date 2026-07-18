@@ -40,6 +40,7 @@ import os
 import pty
 import signal
 import struct
+import tempfile
 import termios
 import time
 from datetime import UTC, datetime
@@ -223,7 +224,8 @@ def _write_kubeconfig(token: str) -> str:
     for its own SANs; the transport to the entry is in-cluster. The token is
     the group secret (k3s token-auth file entry, decision 13).
     """
-    path = f"/tmp/k8s-demo-kubeconfig-{os.getpid()}"
+    fd, path = tempfile.mkstemp(prefix="k8s-demo-kubeconfig-")
+    os.close(fd)
     config = {
         "apiVersion": "v1",
         "kind": "Config",
@@ -324,6 +326,7 @@ async def _classify_wake(warm_expected: bool, duration_ms: int) -> str:
     """
     if not warm_expected:
         return "cold-boot"
+    kubeconfig = None
     try:
         token = await _read_group_secret()
         kubeconfig = _write_kubeconfig(token)
@@ -353,6 +356,10 @@ async def _classify_wake(warm_expected: bool, duration_ms: int) -> str:
     except Exception:  # noqa: BLE001
         logger.exception("k8s demo: wake classification failed")
         return "unclassified"
+    finally:
+        if kubeconfig:
+            with contextlib.suppress(OSError):
+                os.unlink(kubeconfig)
 
 
 # -- the PTY session ----------------------------------------------------------
@@ -366,6 +373,7 @@ class _TerminalSession:
         self.master_fd: int | None = None
         self.proc: asyncio.subprocess.Process | None = None
         self.closed = asyncio.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def spawn(self, kubeconfig: str, cols: int, rows: int) -> None:
         master_fd, slave_fd = pty.openpty()
@@ -403,23 +411,28 @@ class _TerminalSession:
     async def pump(self) -> None:
         """Bridge PTY <-> WebSocket until either side closes."""
         loop = asyncio.get_running_loop()
+        self._loop = loop
         out_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=256)
+        # The fd is captured as a LOCAL: a concurrent close() (session takeover)
+        # nulls self.master_fd, and an armed reader firing in that window must
+        # hit a plain closed-fd OSError (handled), never os.read(None).
+        fd = self.master_fd
 
         def _on_readable() -> None:
             try:
-                data = os.read(self.master_fd, 65536)
+                data = os.read(fd, 65536)
             except OSError:
                 data = b""
             if data:
                 with contextlib.suppress(asyncio.QueueFull):
                     out_queue.put_nowait(data)
             else:
-                # EOF: k9s exited (or the PTY died).
-                loop.remove_reader(self.master_fd)
+                # EOF: k9s exited (or the PTY died / was closed under us).
+                loop.remove_reader(fd)
                 with contextlib.suppress(asyncio.QueueFull):
                     out_queue.put_nowait(None)
 
-        loop.add_reader(self.master_fd, _on_readable)
+        loop.add_reader(fd, _on_readable)
 
         async def to_client() -> None:
             while True:
@@ -434,7 +447,10 @@ class _TerminalSession:
                 if message.get("type") == "websocket.disconnect":
                     break
                 if (data := message.get("bytes")) is not None:
-                    os.write(self.master_fd, data)
+                    try:
+                        os.write(fd, data)
+                    except OSError:
+                        break
                 elif (textmsg := message.get("text")) is not None:
                     with contextlib.suppress(json.JSONDecodeError, KeyError):
                         control = json.loads(textmsg)
@@ -459,7 +475,7 @@ class _TerminalSession:
                     logger.warning("k8s demo pump error: %r", task.exception())
         finally:
             with contextlib.suppress(Exception):
-                loop.remove_reader(self.master_fd)
+                loop.remove_reader(fd)
 
     async def close(self) -> None:
         if self.closed.is_set():
@@ -476,6 +492,13 @@ class _TerminalSession:
                 with contextlib.suppress(Exception):
                     await self.proc.wait()
         if self.master_fd is not None:
+            # Disarm the reader BEFORE closing: close() runs concurrently with
+            # the (old) session's pump during a takeover, and a reader firing
+            # between os.close and pump's own remove_reader would spin on a
+            # recycled fd number.
+            if getattr(self, "_loop", None) is not None:
+                with contextlib.suppress(Exception):
+                    self._loop.remove_reader(self.master_fd)
             with contextlib.suppress(OSError):
                 os.close(self.master_fd)
             self.master_fd = None
@@ -518,6 +541,7 @@ async def k8s_terminal(websocket: WebSocket) -> None:
         # 2. Credentials + PTY.
         token = await _read_group_secret()
         kubeconfig = _write_kubeconfig(token)
+        session.kubeconfig = kubeconfig
         cols = int(websocket.query_params.get("cols", 120))
         rows = int(websocket.query_params.get("rows", 32))
         await session.spawn(kubeconfig, cols, rows)
@@ -536,6 +560,9 @@ async def k8s_terminal(websocket: WebSocket) -> None:
             await websocket.send_text(json.dumps({"type": "error", "error": str(exc)}))
     finally:
         await session.close()
+        if (kc := getattr(session, "kubeconfig", None)) is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(kc)
         async with _session_lock:
             if _current_session is session:
                 _current_session = None
