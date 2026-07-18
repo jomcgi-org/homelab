@@ -34,8 +34,8 @@
 <div class="ember-site">
   <header class="topbar">
     <span
-      ><a class="brand" href="/"><strong>jomcgi.dev</strong></a> / ember /
-      postgres</span
+      ><a class="brand" href="/"><strong>jomcgi.dev</strong></a> /
+      <a class="brand" href="/ember">ember</a> / postgres</span
     >
     <a class="topbar-cross" href="/ember/firecracker">how does firecracker work?</a>
   </header>

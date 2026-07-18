@@ -60,7 +60,7 @@
 
   // ── Plain (non-reactive) per-frame refs ──
   let scrollerEl, stageEl, machineEl, cellsEl, ramGlowEl;
-  let heroEl, topbarEl, brandEl;
+  let heroEl, topbarEl, brandEl, crumbEl;
   let capBootEl, capFreezeEl, capRestoreEl, capRepeatEl;
   let vmEl, vmstateEl, diskEl, fileMemEl, fileVmsEl, fillMemEl, fillVmsEl;
   let trackEl, coldBarEl, coldTotalEl, restoreRowEl, restoreBarEl, zoomEl;
@@ -159,10 +159,12 @@
     // collide with the "Feel it. Restore one now." heading).
     const topbarO = 1 - sub(t, 0.02, 0.06);
     topbarEl.style.opacity = topbarO;
-    // The home link is the only interactive thing in the (pointer-events:none)
-    // topbar; disable it once the bar has faded so it is never an invisible
-    // click target over the story.
-    brandEl.style.pointerEvents = topbarO > 0.5 ? "auto" : "none";
+    // The home and /ember crumb links are the only interactive things in the
+    // (pointer-events:none) topbar; disable them once the bar has faded so
+    // they are never invisible click targets over the story.
+    const linkPE = topbarO > 0.5 ? "auto" : "none";
+    brandEl.style.pointerEvents = linkPE;
+    crumbEl.style.pointerEvents = linkPE;
 
     const ho = 1 - sub(t, PHASES.heroOut[0], PHASES.heroOut[1]);
     heroEl.style.opacity = ho;
@@ -347,7 +349,8 @@
     <span
       ><a class="brand" href="/" bind:this={brandEl}
         ><strong>jomcgi.dev</strong></a
-      > / ember / firecracker</span
+      > / <a class="brand" href="/ember" bind:this={crumbEl}>ember</a> /
+      firecracker</span
     >
   </header>
 
@@ -696,7 +699,8 @@
     text-decoration: none;
     border-radius: 4px;
   }
-  .topbar .brand:hover strong {
+  .topbar .brand:hover strong,
+  .topbar .brand:not(:has(strong)):hover {
     text-decoration: underline;
     text-underline-offset: 3px;
   }
