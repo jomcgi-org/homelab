@@ -162,6 +162,22 @@ turnstile:
   onepassword:
     itemPath: ""
 
+# Demo-postgres DSN password (the ember postgres exhibit's scale-to-zero VM,
+# EmberVM R4). SAME 1Password item the private monolith chart syncs
+# (scratchPostgres.onepassword.itemPath there), so both tiers connect to the
+# ONE demo workload with the same superuser password; a K8s Secret cannot be
+# read cross-namespace/cross-release, so this chart syncs its own copy into the
+# monolith-public namespace. The password surfaces as Secret key
+# POSTGRES_PASSWORD (mirroring the private chart's field mapping); web.env
+# below builds DEMO_POSTGRES_DSN from it via $(DEMO_PG_PASSWORD) kubelet
+# substitution. onepassword.itemPath is set in deploy/values.yaml and left
+# empty here so a bare `helm template` does not emit a OnePasswordItem with a
+# null path.
+demoPostgres:
+  secretName: monolith-public-demo-postgres
+  onepassword:
+    itemPath: ""
+
 # imgproxy URL signing (trip images). imgproxy validates an HMAC-SHA256 signature
 # on every /img request; only URLs the SSR signer (frontend
 # lib/server/trips-img.js) produces are accepted, so the unsigned /unsafe/ path is
@@ -236,6 +252,25 @@ web:
     # chart does.
     - name: EMBERVM_URL
       value: "http://embervm-embervm.embervm.svc.cluster.local:8080"
+    # Demo-postgres DSN (ember_public router, /api/ember/postgres): the SAME
+    # serving Service, port, and password the private monolith chart uses for
+    # scratchPostgres.demoListenPort (5401), so both tiers wake the ONE demo
+    # VM. Host/port are an in-cluster literal (this chart's values.yaml is not
+    # Helm-templated); the password comes from the demoPostgres-synced Secret
+    # via DEMO_PG_PASSWORD, substituted by the kubelet at container start so
+    # the secret never appears inline.
+    - name: DEMO_PG_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-demo-postgres
+          key: POSTGRES_PASSWORD
+    - name: DEMO_POSTGRES_DSN
+      value: "postgresql://postgres:$(DEMO_PG_PASSWORD)@embervm-embervm-serving.embervm.svc:5401/scratch"
+    # Global semaphore around the demo-postgres query roundtrip
+    # (ember_public/core.py try_acquire_query_slot), same value as intended
+    # for the private tier's env (unset there, falls back to this default).
+    - name: EMBER_DEMO_MAX_CONCURRENT
+      value: "4"
     - name: CHAT_PUBLIC_CHAR_CAP
       value: "8000"
     - name: CHAT_PUBLIC_MAX_TURNS
