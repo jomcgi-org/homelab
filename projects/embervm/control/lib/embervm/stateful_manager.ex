@@ -1242,7 +1242,14 @@ defmodule Embervm.StatefulManager do
       rescue
         _ -> :error
       catch
-        _, _ -> :error
+        # Dead Mint ConnectionProcess: invalidate so the next verb re-dials
+        # (best-effort verb, but leaving the corpse cached wedges later wakes).
+        :exit, _ ->
+          _ = state.invalidate_fun.(node_id, channel)
+          :error
+
+        _, _ ->
+          :error
       end
     end
 
@@ -1288,7 +1295,13 @@ defmodule Embervm.StatefulManager do
       rescue
         _ -> :error
       catch
-        _, _ -> :error
+        # Same dead-ConnectionProcess invalidation as stop_stateful_destroy.
+        :exit, _ ->
+          _ = state.invalidate_fun.(node_id, channel)
+          :error
+
+        _, _ ->
+          :error
       end
     end
 
@@ -1520,25 +1533,39 @@ defmodule Embervm.StatefulManager do
 
   defp safe_start_stateful(state, node_id, req) do
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
-      case state.start_stateful_fun.(channel, req) do
-        {:error, reason} = err ->
-          # A wake that failed because the channel's transport is dead must tear
-          # the cached channel down so the NEXT wake re-dials; see
-          # Embervm.NodeChannel.transport_dead?/1 (the wrapped-RPCError case).
-          if Embervm.NodeChannel.transport_dead?(reason) do
-            _ = state.invalidate_fun.(node_id, channel)
-          end
+      try do
+        case state.start_stateful_fun.(channel, req) do
+          {:error, reason} = err ->
+            # A wake that failed because the channel's transport is dead must
+            # tear the cached channel down so the NEXT wake re-dials; see
+            # Embervm.NodeChannel.transport_dead?/1 (the wrapped-RPCError case).
+            if Embervm.NodeChannel.transport_dead?(reason) do
+              _ = state.invalidate_fun.(node_id, channel)
+            end
 
-          err
+            err
 
-        other ->
-          other
+          other ->
+            other
+        end
+      rescue
+        e -> {:error, {:start_stateful_raised, e}}
+      catch
+        :exit, reason ->
+          # The Mint ConnectionProcess behind the cached channel died (a noded
+          # rollout kills in-flight connections), so GenServer.call exits
+          # :noproc instead of returning a transport error. Without this
+          # invalidation the dead channel stays cached and EVERY subsequent
+          # wake fails until the control plane restarts, wedging the workload
+          # (observed live on demo-postgres, 2026-07-18). Mirrors
+          # Embervm.GroupManager.over_channel/3.
+          _ = state.invalidate_fun.(node_id, channel)
+          {:error, {:start_stateful_raised, {:exit, reason}}}
+
+        kind, reason ->
+          {:error, {:start_stateful_raised, {kind, reason}}}
       end
     end
-  rescue
-    e -> {:error, {:start_stateful_raised, e}}
-  catch
-    kind, reason -> {:error, {:start_stateful_raised, {kind, reason}}}
   end
 
   defp safe_channel(channel_fun, node_id) do
