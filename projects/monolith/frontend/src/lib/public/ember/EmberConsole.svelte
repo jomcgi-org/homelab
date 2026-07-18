@@ -1002,7 +1002,6 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-    flex: 1;
   }
 
   .stats-section {
@@ -1012,7 +1011,6 @@
   }
 
   .stats-best {
-    margin-top: auto;
     border-top: 1px solid var(--em-line-soft);
     padding-top: 14px;
     gap: 8px;
