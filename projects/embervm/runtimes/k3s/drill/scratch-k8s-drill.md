@@ -11,6 +11,11 @@ Kubernetes cluster, deploys a pod, lets the group bank, later wakes it, and find
 the pod (a warm relight preserved state) OR finds it gone (a fresh boot: the
 warmth-only contract held). Both outcomes are recorded.
 
+> For hands-on validation / debugging when the wired consumer path is not set up,
+> see `scratch-k8s-manual-wake-drill.md` in this directory: a temporary manual drill
+> that drives the wake by port-forwarding the serving entry directly and reads its
+> proof from `noded` logs. Use it to watch a composite boot from the outside.
+
 ## Prerequisites
 
 - The `scratch-k8s` Workload CR SYNCED (embervm chart `scratchK8s.enabled: true`
