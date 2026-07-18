@@ -134,9 +134,8 @@
     consecutive live runs.
     <br />
     source:
-    <a
-      href="https://github.com/jomcgi/homelab/tree/main/projects/firecracker"
-      >projects/firecracker</a
+    <a href="https://github.com/jomcgi/homelab/tree/main/projects/embervm"
+      >projects/embervm</a
     >
   </div>
 </div>

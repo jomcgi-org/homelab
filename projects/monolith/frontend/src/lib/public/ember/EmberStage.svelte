@@ -8,18 +8,25 @@
   // values live in ./ember-stage.css as CSS custom properties (bare hex in a
   // .svelte <style> block is semgrep-blocked).
   import { onMount } from "svelte";
+  import { fade } from "svelte/transition";
   import "./ember-stage.css";
 
-  /** @type {{ vmState?: string|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean }} */
-  let { vmState = null, totalSavedMibS = null, stopwatchMs = 0, running = false } = $props();
+  /** @type {{ vmState?: string|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean, wakePromise?: string }} */
+  let {
+    vmState = null,
+    totalSavedMibS = null,
+    stopwatchMs = 0,
+    running = false,
+    wakePromise = "",
+  } = $props();
 
   const WAKING = new Set(["relighting", "cold_booting", "starting"]);
 
   // Visual sweep durations, not measurements: the wake sweep aims at the
   // typical connect time so the ragged edge crosses the grid roughly as the
   // real wake happens; the bank sweep is a flat, deliberately quick cool-down.
-  const WAKE_SWEEP_MS = 1500;
-  const BANK_SWEEP_MS = 1500;
+  const WAKE_SWEEP_MS = 1400;
+  const BANK_SWEEP_MS = 2200;
   // How fast the eased warmth `w` chases `target`. Small = tracks closely
   // (the sweeps above already own the pacing), just enough easing to avoid a
   // visible snap on state flips (banked -> serving with no run in between).
@@ -50,6 +57,35 @@
   let sweepStartAt = 0;
   let sweepFromW = 0;
 
+  // Directional damping: rises are accepted instantly (a click or a wake
+  // should pivot the sweep immediately), but a transition toward cold only
+  // takes effect after the cold-ish state has held for COLD_DEBOUNCE_MS.
+  // During a wake-retry cycle the lifecycle can thrash relighting -> failed
+  // -> relighting every second; without the debounce the grid flaps.
+  const COLD_DEBOUNCE_MS = 1200;
+  let coldSince = null;
+  let acceptedState = null;
+
+  // Reactive mirror of the damped state, written by the rAF loop only on
+  // transitions, so the badge and hero flip in the SAME frame the color
+  // scrub starts instead of announcing "Asleep" over a still-warm grid.
+  let displayState = $state(null);
+
+  function dampedState(now) {
+    const raw = effectiveState();
+    const warms = raw === "serving" || WAKING.has(raw ?? "");
+    if (warms) {
+      coldSince = null;
+      acceptedState = raw;
+      return raw;
+    }
+    if (coldSince == null) coldSince = now;
+    if (now - coldSince >= COLD_DEBOUNCE_MS || acceptedState == null) {
+      acceptedState = raw;
+    }
+    return acceptedState;
+  }
+
   function buildCells() {
     // Grid sized from the container, same technique as FcScrollStory's
     // buildCells: ncols/nrows from clientWidth/clientHeight, each cell gets a
@@ -69,19 +105,20 @@
       const col = i % ncols;
       const d = document.createElement("div");
       d.className = "es-cell";
-      const hotHue = 16 + Math.random() * 9;
-      const hotSat = 72 + Math.random() * 12;
-      const hotLight = 46 + Math.random() * 14;
+      const hotHue = 5 + Math.random() * 10;
+      const hotSat = 80 + Math.random() * 12;
+      const hotLight = 44 + Math.random() * 12;
       const coldHue = 208 + Math.random() * 12;
-      const coldSat = 46 + Math.random() * 14;
-      const coldLight = 64 + Math.random() * 12;
+      const coldSat = 52 + Math.random() * 14;
+      const coldLight = 60 + Math.random() * 12;
       d.style.setProperty("--hot", `hsl(${hotHue} ${hotSat}% ${hotLight}%)`);
       d.style.setProperty("--cold", `hsl(${coldHue} ${coldSat}% ${coldLight}%)`);
       gridEl.appendChild(d);
       cells.push({
         el: d,
-        th: (col + 0.2 + Math.random() * 2.6) / (ncols + 2.6),
+        th: (col + 0.2 + Math.random() * 1.3) / (ncols + 1.3),
         hot: false,
+        twinkling: false,
       });
     }
   }
@@ -104,32 +141,28 @@
   }
 
   function targetFor(now, state) {
-    if (state === "serving") return 1;
-    if (WAKING.has(state)) {
+    if (state === "serving" || WAKING.has(state)) {
+      // One rising sweep from wherever the transition caught the warmth to
+      // full, always at sweep pace: a warm run answering in 80ms must not
+      // snap the remaining fill, it keeps rolling to completion.
       const frac = Math.min(1, (now - sweepStartAt) / WAKE_SWEEP_MS);
       return sweepFromW + (1 - sweepFromW) * frac;
     }
-    if (
-      state === "banking" ||
-      state === "banked" ||
-      state === "checkpointed" ||
-      state == null
-    ) {
-      // Cool-down is always the deliberate 1.5s sweep, even when the poll
-      // jumps straight from serving to banked and skips the brief banking
-      // state: sweepFromW was captured at the transition, so the grid
-      // visibly banks warm -> cold instead of near-snapping to 0.
-      const frac = Math.min(1, (now - sweepStartAt) / BANK_SWEEP_MS);
-      return sweepFromW * (1 - frac);
-    }
-    return w; // unknown state: hold
+    // Everything else (banking, banked, checkpointed, null, and unknown
+    // lifecycle states like failed/evicted) cools down on the deliberate
+    // sweep: sweepFromW was captured at the transition, so the grid visibly
+    // banks warm -> cold instead of near-snapping, and a wedged state never
+    // holds a hot grid under an ASLEEP badge.
+    const frac = Math.min(1, (now - sweepStartAt) / BANK_SWEEP_MS);
+    return sweepFromW * (1 - frac);
   }
 
   function frame(now) {
     const dt = lastFrameAt ? now - lastFrameAt : 16;
     lastFrameAt = now;
 
-    const state = effectiveState();
+    const state = dampedState(now);
+    if (state !== displayState) displayState = state;
     if (state !== prevFrameState) {
       // Entered a new (effective) state this frame: (re)start the sweep clock
       // from the current eased warmth, so a mid-sweep state flip (e.g. banking
@@ -152,17 +185,28 @@
     }
 
     if (vmState === "serving") {
-      // Subtle per-cell flicker: a handful of hot cells get a brief opacity
-      // wobble, staggered by picking a new random subset roughly every
-      // 250ms rather than every frame.
-      if (now - flickerTickAt > 250) {
+      // Gentle per-cell twinkle: every tick a couple of hot cells start their
+      // own one-shot shimmer with a randomized duration and clean up on
+      // animationend. Never clears cells in batches: cancelling animations
+      // mid-flight snapped them back in sync, which read as flashing.
+      if (now - flickerTickAt > 900) {
         flickerTickAt = now;
-        for (const c of cells) c.el.style.removeProperty("--flicker");
-        const hotCells = cells.filter((c) => c.hot);
-        const n = Math.min(hotCells.length, Math.max(1, Math.round(hotCells.length * 0.04)));
+        const hotCells = cells.filter((c) => c.hot && !c.twinkling);
+        const n = Math.min(hotCells.length, Math.max(1, Math.round(cells.length * 0.008)));
         for (let i = 0; i < n; i++) {
           const c = hotCells[Math.floor(Math.random() * hotCells.length)];
-          if (c) c.el.style.setProperty("--flicker", "1");
+          if (!c || c.twinkling) continue;
+          c.twinkling = true;
+          c.el.style.setProperty("--tw-dur", `${(1.4 + Math.random() * 1.2).toFixed(2)}s`);
+          c.el.style.setProperty("--flicker", "1");
+          c.el.addEventListener(
+            "animationend",
+            () => {
+              c.el.style.removeProperty("--flicker");
+              c.twinkling = false;
+            },
+            { once: true },
+          );
         }
       }
     }
@@ -247,14 +291,19 @@
     return `${humanize(gbh)} GB·h`;
   }
 
-  let stateWord = $derived(
-    optimisticWaking ? "Waking" : (STATE_WORD[vmState ?? ""] ?? "Asleep"),
+  // The badge/hero follow displayState (the damped, sweep-synchronized
+  // state) when the rAF loop is running; reduced-motion has no loop, so it
+  // falls back to the raw + optimistic derivation.
+  let effDisplay = $derived(
+    displayState ?? (optimisticWaking ? "relighting" : vmState),
   );
 
+  let stateWord = $derived(STATE_WORD[effDisplay ?? ""] ?? "Asleep");
+
   let heroKind = $derived(
-    vmState === "serving"
+    effDisplay === "serving"
       ? "serving"
-      : optimisticWaking || (vmState != null && WAKING.has(vmState))
+      : effDisplay != null && WAKING.has(effDisplay)
         ? "waking"
         : "cold",
   );
@@ -267,18 +316,26 @@
   {/if}
 
   <div class="es-overlay">
-    <span class="es-state-word">{stateWord}</span>
+    <span class="es-state-word">
+      {#key stateWord}
+        <span class="fade-swap" in:fade={{ duration: 260 }}>{stateWord}</span>
+      {/key}
+    </span>
     <div class="es-hero">
-      {#if heroKind === "cold"}
-        <span class="es-hero-value">{gbHours(totalSavedMibS)}</span>
-        <span class="es-hero-caption">saved by sleeping, all visitors, all time</span>
-      {:else if heroKind === "waking"}
-        <span class="es-hero-value">{ms(running ? stopwatchMs : null)}</span>
-        <span class="es-hero-caption">waking up</span>
-      {:else}
-        <span class="es-hero-value">awake</span>
-        <span class="es-hero-caption">single-digit millisecond answers</span>
-      {/if}
+      {#key heroKind}
+        <div class="es-hero-inner" in:fade={{ duration: 260 }}>
+          {#if heroKind === "cold"}
+            <span class="es-hero-value">{gbHours(totalSavedMibS)}</span>
+            <span class="es-hero-caption">saved by scaling to zero</span>
+          {:else if heroKind === "waking"}
+            <span class="es-hero-value">{ms(running ? stopwatchMs : null)}</span>
+            <span class="es-hero-caption">waking up</span>
+          {:else}
+            <span class="es-hero-value">512 MiB</span>
+            <span class="es-hero-caption">of Postgres live in memory</span>
+          {/if}
+        </div>
+      {/key}
     </div>
   </div>
 </div>
@@ -306,7 +363,7 @@
 
   .es-grid :global(.es-cell) {
     border-radius: 1.5px;
-    background: var(--es-cell-idle-bg);
+    background: var(--cold, var(--es-cell-idle-bg));
     opacity: 1;
   }
 
@@ -316,10 +373,10 @@
 
   @media (prefers-reduced-motion: no-preference) {
     .es-grid :global(.es-cell) {
-      transition: background-color 0.35s ease;
+      transition: background-color 0.18s ease-out;
     }
     .es-grid :global(.es-cell[style*="--flicker"]) {
-      animation: es-flicker 0.6s ease-in-out;
+      animation: es-flicker var(--tw-dur, 1.8s) ease-in-out;
     }
     @keyframes es-flicker {
       0%,
@@ -328,8 +385,8 @@
         filter: brightness(1);
       }
       50% {
-        opacity: 0.75;
-        filter: brightness(1.25);
+        opacity: 0.92;
+        filter: brightness(1.08);
       }
     }
   }
@@ -375,19 +432,31 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.1em;
-    color: var(--es-muted);
-    background: color-mix(in srgb, var(--es-panel) 78%, transparent);
+    color: var(--es-ink);
+    background: var(--es-panel);
+    box-shadow: var(--em-shadow-soft);
     padding: 4px 12px;
     border-radius: 999px;
   }
 
   .es-hero {
+    display: grid;
+    place-items: center;
+    min-height: 64px;
+  }
+
+  /* Outgoing and incoming hero states share the grid cell so the fade never
+     stacks them vertically. */
+  .es-hero-inner {
+    grid-area: 1 / 1;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    min-height: 64px;
-    justify-content: center;
+  }
+
+  .fade-swap {
+    display: inline-block;
   }
 
   .es-hero-value {
@@ -397,15 +466,16 @@
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     color: var(--es-ink);
-    background: color-mix(in srgb, var(--es-panel) 78%, transparent);
+    background: var(--es-panel);
+    box-shadow: var(--em-shadow-soft);
     padding: 2px 14px;
     border-radius: 8px;
   }
 
   .es-hero-caption {
     font-size: 13px;
-    color: var(--es-muted);
-    background: color-mix(in srgb, var(--es-panel) 78%, transparent);
+    color: var(--es-ink);
+    background: color-mix(in srgb, var(--es-panel) 94%, transparent);
     padding: 2px 10px;
     border-radius: 6px;
   }

@@ -20,13 +20,14 @@
   let consoleStatus = $state(null);
   let consoleRunning = $state(false);
   let consoleStopwatchMs = $state(0);
+  let consoleWakePromise = $state("");
 </script>
 
 <svelte:head>
-  <title>Scale-to-zero Postgres · jomcgi.dev</title>
+  <title>Ember Postgres</title>
   <meta
     name="description"
-    content="A Postgres microVM that banks itself to disk about a second after its last connection closes and wakes on the next connect. Query it live: every number on this page is a real measurement, not a mockup."
+    content="Postgres scaling to zero on Firecracker microVMs with sub-second resume from disk to memory. Query it live: every number on this page is a real measurement, not a mockup."
   />
 </svelte:head>
 
@@ -40,31 +41,21 @@
   </header>
 
   <main class="ember-page">
-    <!-- The fold: claim on the left, live proof on the right, console
-         controls directly below. A visitor on a ~900px window sees the state,
-         the headline number, and both buttons without scrolling; the prose
-         explainers live below the fold. -->
-    <div class="fold">
-      <header class="ember-hero">
-        <h1>
-          A database that <span class="frost-word">sleeps</span> when nobody's
-          asking.
-        </h1>
-        <p class="lede">
-          Banks itself to disk a second after the last connection closes, then
-          costs nothing. The next query
-          <span class="ember-word">wakes it</span> in under a second, on the
-          exact data it left behind.
-        </p>
-      </header>
+    <header class="masthead">
+      <h1><span class="ember-word">Ember</span> Postgres</h1>
+      <p class="subtitle">
+        Postgres scaling to zero on Firecracker microVMs with sub-second
+        resume from disk to memory.
+      </p>
+    </header>
 
-      <EmberStage
-        vmState={consoleStatus?.state}
-        totalSavedMibS={consoleStatus?.total_saved_mib_s}
-        stopwatchMs={consoleStopwatchMs}
-        running={consoleRunning}
-      />
-    </div>
+    <EmberStage
+      vmState={consoleStatus?.state}
+      totalSavedMibS={consoleStatus?.total_saved_mib_s}
+      stopwatchMs={consoleStopwatchMs}
+      running={consoleRunning}
+      wakePromise={consoleWakePromise}
+    />
 
     <EmberConsole
       turnstileSiteKey={data.turnstileSiteKey}
@@ -73,26 +64,8 @@
       bind:status={consoleStatus}
       bind:running={consoleRunning}
       bind:stopwatchMs={consoleStopwatchMs}
+      bind:wakePromise={consoleWakePromise}
     />
-
-    <section class="explainer">
-      <h2>Why the data survives</h2>
-      <p>
-        The orders table lives on a separate volume from the snapshot, so
-        destroying the VM never touches rows already written. A cold boot
-        against that volume is slower than a snapshot resume but recovers
-        every row: the compute is disposable, the data is not. "Wake +
-        connect" on the console is wall-clock time from the first TCP packet
-        to a usable connection, whichever path the wake took.
-      </p>
-    </section>
-
-    <footer class="ember-foot">
-      <p>
-        The freeze and restore underneath this demo:
-        <a href="/ember/firecracker">boot once, restore forever</a>.
-      </p>
-    </footer>
   </main>
 </div>
 
@@ -149,91 +122,37 @@
   .ember-page {
     max-width: 1100px;
     margin: 0 auto;
-    padding: 12px 24px 80px;
+    padding: 4px 24px 48px;
     display: flex;
     flex-direction: column;
-    gap: 24px;
-  }
-
-  .fold {
-    display: grid;
-    grid-template-columns: 340px 1fr;
     gap: 16px;
-    align-items: center;
   }
 
-  .ember-hero {
+  .masthead {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 4px;
+    padding-bottom: 4px;
   }
 
-  .ember-hero h1 {
+  .masthead h1 {
     margin: 0;
-    font-size: clamp(26px, 2.8vw, 36px);
+    font-size: clamp(24px, 2.4vw, 30px);
     font-weight: 800;
-    letter-spacing: -0.025em;
-    line-height: 1.08;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
     color: var(--em-ink);
-    text-wrap: balance;
-  }
-
-  .frost-word {
-    color: var(--em-frost);
   }
 
   .ember-word {
     color: var(--em-ember);
-    font-weight: 600;
   }
 
-  .lede {
+  .subtitle {
     margin: 0;
-    font-size: 15px;
-    line-height: 1.55;
+    font-size: 14.5px;
+    line-height: 1.5;
     color: var(--em-muted);
-    max-width: 44ch;
-  }
-
-  .explainer {
-    max-width: 720px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .explainer h2 {
-    margin: 0;
-    font-size: clamp(19px, 1.8vw, 23px);
-    font-weight: 750;
-    letter-spacing: -0.02em;
-    color: var(--em-ink);
-    text-wrap: balance;
-  }
-
-  .explainer p {
-    margin: 0;
-    font-size: 15px;
-    line-height: 1.6;
-    color: var(--em-muted);
-  }
-
-  .ember-foot {
-    border-top: 1px solid var(--em-line);
-    padding-top: 20px;
-    max-width: 720px;
-  }
-
-  .ember-foot p {
-    margin: 0;
-    font-size: 14px;
-    color: var(--em-faint);
-  }
-
-  .ember-foot a {
-    color: var(--em-ember-deep);
-    text-decoration: underline;
-    text-underline-offset: 3px;
   }
 
   @media (max-width: 900px) {
@@ -242,22 +161,8 @@
     }
 
     .ember-page {
-      padding: 8px 16px 64px;
-      gap: 18px;
-    }
-
-    .fold {
-      grid-template-columns: 1fr;
+      padding: 4px 16px 48px;
       gap: 14px;
-    }
-
-    .ember-hero h1 {
-      font-size: clamp(24px, 6.4vw, 30px);
-    }
-
-    .lede {
-      font-size: 14px;
-      max-width: none;
     }
   }
 </style>
