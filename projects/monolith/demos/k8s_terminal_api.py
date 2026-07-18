@@ -83,6 +83,114 @@ _TERM_GRACE_S = 3.0
 _K9S_BIN = "/usr/local/bin/k9s"
 _KUBECTL_BIN = "/usr/local/bin/kubectl"
 
+# Light k9s skin matched to the private demos palette (paper background, ink
+# text, slate accent). Written into K9S_CONFIG_DIR before each spawn so the
+# terminal reads as part of the page rather than a dark hole in it.
+_K9S_SKIN_LIGHT = """k9s:
+  body:
+    fgColor: "#1a1f28"
+    bgColor: "#f7f8fa"
+    logoColor: "#33507a"
+  prompt:
+    fgColor: "#1a1f28"
+    bgColor: "#f7f8fa"
+    suggestColor: "#656e7c"
+  info:
+    fgColor: "#656e7c"
+    sectionColor: "#1a1f28"
+  dialog:
+    fgColor: "#1a1f28"
+    bgColor: "#f7f8fa"
+    buttonFgColor: "#f7f8fa"
+    buttonBgColor: "#33507a"
+    buttonFocusFgColor: "#ffffff"
+    buttonFocusBgColor: "#a4372e"
+    labelFgColor: "#8a5a00"
+    fieldFgColor: "#1a1f28"
+  frame:
+    border:
+      fgColor: "#c9d0d9"
+      focusColor: "#33507a"
+    menu:
+      fgColor: "#1a1f28"
+      keyColor: "#33507a"
+      numKeyColor: "#a4372e"
+    crumbs:
+      fgColor: "#f7f8fa"
+      bgColor: "#33507a"
+      activeColor: "#8a5a00"
+    status:
+      newColor: "#33507a"
+      modifyColor: "#8a5a00"
+      addColor: "#1e6a3c"
+      pendingColor: "#8a5a00"
+      errorColor: "#a4372e"
+      highlightColor: "#33507a"
+      killColor: "#656e7c"
+      completedColor: "#656e7c"
+    title:
+      fgColor: "#1a1f28"
+      bgColor: "#f7f8fa"
+      highlightColor: "#33507a"
+      counterColor: "#8a5a00"
+      filterColor: "#1e6a3c"
+  views:
+    charts:
+      bgColor: "#f7f8fa"
+      defaultDialColors:
+        - "#33507a"
+        - "#a4372e"
+      defaultChartColors:
+        - "#33507a"
+        - "#a4372e"
+    table:
+      fgColor: "#1a1f28"
+      bgColor: "#f7f8fa"
+      cursorFgColor: "#f7f8fa"
+      cursorBgColor: "#33507a"
+      markColor: "#8a5a00"
+      header:
+        fgColor: "#1a1f28"
+        bgColor: "#f7f8fa"
+        sorterColor: "#a4372e"
+    xray:
+      fgColor: "#1a1f28"
+      bgColor: "#f7f8fa"
+      cursorColor: "#33507a"
+      graphicColor: "#33507a"
+      showIcons: false
+    yaml:
+      keyColor: "#33507a"
+      colonColor: "#656e7c"
+      valueColor: "#1a1f28"
+    logs:
+      fgColor: "#1a1f28"
+      bgColor: "#f7f8fa"
+      indicator:
+        fgColor: "#f7f8fa"
+        bgColor: "#33507a"
+"""
+
+# Minimal k9s config selecting the skin; k9s fills in the rest of its schema
+# with defaults and rewrites the file freely (the dir is per-session tmpfs-ish).
+_K9S_CONFIG = """k9s:
+  ui:
+    skin: light
+    logoless: true
+  logger:
+    tail: 200
+"""
+
+
+def _write_k9s_config() -> None:
+    cfg_dir = "/tmp/k8s-demo-home/k9s"
+    os.makedirs(os.path.join(cfg_dir, "skins"), exist_ok=True)
+    with open(os.path.join(cfg_dir, "skins", "light.yaml"), "w", encoding="utf-8") as f:
+        f.write(_K9S_SKIN_LIGHT)
+    cfg_path = os.path.join(cfg_dir, "config.yaml")
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        f.write(_K9S_CONFIG)
+
 # The single live session (newest connection wins). Guarded by _session_lock.
 _session_lock = asyncio.Lock()
 _current_session: "_TerminalSession | None" = None
@@ -386,8 +494,13 @@ class _TerminalSession:
             "K9S_CONFIG_DIR": "/tmp/k8s-demo-home/k9s",
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "COLORTERM": "truecolor",
+            # k9s is a static (cgo-free) binary: user.Current() fails without
+            # $USER and k9s exits before drawing anything ("Fail to init k9s
+            # logs location"). LOGNAME for the same lookup on other paths.
+            "USER": "demo",
+            "LOGNAME": "demo",
         }
-        os.makedirs("/tmp/k8s-demo-home/k9s", exist_ok=True)
+        _write_k9s_config()
         self.proc = await asyncio.create_subprocess_exec(
             _K9S_BIN,
             "--logoless",
