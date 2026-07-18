@@ -15,7 +15,7 @@ export const apps = [
     slug: "firecracker",
     label: "Firecracker",
     desc: "microVM snapshot restore, explained",
-    href: "/app/firecracker",
+    href: "/ember/firecracker",
     featured: true,
   },
   {

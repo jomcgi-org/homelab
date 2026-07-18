@@ -33,7 +33,12 @@
     },
     { "id": "grimoire-world", "path": "/app/grimoire/world" },
     { "id": "grimoire-chat", "path": "/app/grimoire/chat" },
-    { "id": "firecracker", "path": "/app/firecracker" },
+    { "id": "firecracker", "path": "/ember/firecracker" },
+    {
+      "id": "ember-postgres",
+      "path": "/ember/postgres",
+      "static_initial": true
+    },
     { "id": "docs", "path": "/docs" },
     { "id": "docs-slug", "path": "/docs/agents" },
     { "id": "cv", "path": "/cv" },

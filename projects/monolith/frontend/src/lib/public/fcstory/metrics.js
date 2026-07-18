@@ -7,7 +7,7 @@
 //
 // Two families of number live here:
 //   - sandbox* / cold*: derived from data/trace.js, the real baked trace
-//     data behind the /app/firecracker explainer (see FcScrollStory.svelte,
+//     data behind the /ember/firecracker explainer (see FcScrollStory.svelte,
 //     which imports the same derivation from this module).
 //   - agent*: the agent-platform cold-start figures. trace.js only covers
 //     the sandbox demo daemon, not the full agent-platform request path
@@ -67,7 +67,7 @@ export const goosecrackerGuestInitMs = 20;
 export const goosecrackerAgentUpMs = 50;
 
 // ---- Semgrep scan-guest figures (measured fc-invoke semgrep workload runs,
-// visible live on the /app/firecracker demos Semgrep tab: snapshot_restore
+// visible live on the /ember/firecracker demos Semgrep tab: snapshot_restore
 // ~21.9ms, ~0.72s wall for a single Pro taint scan vs a ~6.7s cold start.
 // Not derivable from trace.js, which only covers the sandbox demo daemon;
 // re-bake by hand when the semgrep workload is re-measured) ----

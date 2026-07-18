@@ -1,5 +1,5 @@
 <script>
-  // "Boot once, restore forever": the public /app/firecracker scroll-scrubbed
+  // "Boot once, restore forever": the public /ember/firecracker scroll-scrubbed
   // explainer of the fc-invoke daemon. A tall scroller wraps a
   // position: sticky full-viewport stage; one rAF loop maps scroll progress
   // to a master fraction t in [0, 1], and the pure timeline.js module turns

@@ -21,6 +21,14 @@ const ROUTES = [
   ["/api/grimoire/entities", "fixtures/api/grimoire_entities.json"],
   ["/api/grimoire/adventures", "fixtures/api/grimoire_adventures.json"],
   ["/api/grimoire/explore/ego", "fixtures/api/grimoire_explore_ego.json"],
+  // /ember/postgres's proxies are all POST or GET against the same raw
+  // /api/ember/postgres/* paths; this server ignores req.method entirely (see
+  // startMock below), so one fixture per path covers both the page's GET
+  // polls (status, savings) and its POST calls on mount (session, query).
+  ["/api/ember/postgres/status", "fixtures/api/ember_postgres_status.json"],
+  ["/api/ember/postgres/savings", "fixtures/api/ember_postgres_savings.json"],
+  ["/api/ember/postgres/session", "fixtures/api/ember_postgres_session.json"],
+  ["/api/ember/postgres/query", "fixtures/api/ember_postgres_query.json"],
 ];
 const PREFIX = [["/api/trips/trip/", "fixtures/api/trips_trip.json"]];
 

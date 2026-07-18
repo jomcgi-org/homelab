@@ -74,7 +74,7 @@
               <b>EmberVM</b> runs this substrate today: one-shot tasks, stateful
               sessions, and warm HTTP serving. Watch a microVM restore from
               disk in <b>{sandboxRestoreMs}ms</b>.
-              <a class="more" href="/app/firecracker">watch it restore &rarr;</a>
+              <a class="more" href="/ember/firecracker">watch it restore &rarr;</a>
             </p>
           {/if}
         </div>
@@ -93,7 +93,7 @@
           fc-invoke is frozen and the goose agent is its last tenant.
         </p>
         <div class="clinks">
-          <a class="more" href="/app/firecracker">how &rarr;</a>
+          <a class="more" href="/ember/firecracker">how &rarr;</a>
           <a class="more" href="/docs/projects/firecracker">docs &rarr;</a>
         </div>
       </div>
