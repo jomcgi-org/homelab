@@ -380,7 +380,13 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/main.runfiles/_main/projects/monolith/.main/lib/python3.13/site-packages/certifi/cacert.pem",
     },
     main = "app/main.py",
-    multiarch_tars = ["@claude_code//:tar"],
+    multiarch_tars = [
+        "@claude_code//:tar",
+        # kubectl + k9s for the private k8s-terminal demo: the backend spawns
+        # k9s in a PTY against the scratch-k8s composite entry (demos domain).
+        "@k9s//:tar",
+        "@kubectl//:tar",
+    ],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
 )
 
@@ -5057,6 +5063,16 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "demos_k8s_terminal_api_test",
+    srcs = ["demos/k8s_terminal_api_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
     ],
 )
 

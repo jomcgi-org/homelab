@@ -608,6 +608,31 @@ multiarch_http_file(
     package_dir = "/usr/local/bin",
 )
 
+# kubectl + k9s for the private k8s-terminal demo (demos/k8s_terminal_api.py):
+# the monolith backend spawns k9s in a PTY against the scratch-k8s composite
+# group's entry. Dual-arch, pinned by sha. k9s ships as a release tar.gz, so it
+# uses extract_path; kubectl is a raw binary.
+multiarch_http_file(
+    name = "kubectl",
+    amd64_sha256 = "1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82",
+    amd64_url = "https://dl.k8s.io/release/v1.36.2/bin/linux/amd64/kubectl",
+    arm64_sha256 = "c957eb8c4bea27a3bb35b269edd9082e27f027f7b76b20b5bf4afebc726c6d3e",
+    arm64_url = "https://dl.k8s.io/release/v1.36.2/bin/linux/arm64/kubectl",
+    binary_name = "kubectl",
+    package_dir = "/usr/local/bin",
+)
+
+multiarch_http_file(
+    name = "k9s",
+    amd64_sha256 = "c3752ad51a5a4015a113819c4eeb6e55a4d0e4b8e652494797532f6fc8161dd7",
+    amd64_url = "https://github.com/derailed/k9s/releases/download/v0.51.0/k9s_Linux_amd64.tar.gz",
+    arm64_sha256 = "3ee05c82e5f9198928a4e86133608ba6a2c10a2244d6a7789e820f78319d640c",
+    arm64_url = "https://github.com/derailed/k9s/releases/download/v0.51.0/k9s_Linux_arm64.tar.gz",
+    binary_name = "k9s",
+    extract_path = "k9s",
+    package_dir = "/usr/local/bin",
+)
+
 multiarch_http_file(
     name = "claude_code",
     amd64_sha256 = "0d43fcd11d29206563eeef3a1f787f0615c21cd703cc91f3a180915fd5797ef6",
