@@ -27,6 +27,14 @@ turnstile:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/cloudflare-turnstile"
 
+# Demo-postgres password (ember postgres exhibit, EmberVM R4): the SAME
+# 1Password item the private monolith's scratchPostgres block syncs (see
+# projects/monolith/deploy/values.yaml), so the public and private tiers wake
+# the ONE demo workload with the same superuser password.
+demoPostgres:
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/scratch-postgres"
+
 # Trip image URL signing: sync the imgproxy KEY/SALT from 1Password into the
 # monolith-public-imgproxy-signing Secret (keys IMGPROXY_KEY / IMGPROXY_SALT).
 # Both the imgproxy and frontend components reference it via secretKeyRef.

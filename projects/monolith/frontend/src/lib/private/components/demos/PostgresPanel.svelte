@@ -3,13 +3,16 @@
   // scale-to-zero Postgres microVM tuned to bank (pause-to-disk) ~a second
   // after its last connection closes, and wake on the next TCP connect.
   //
-  // Three moving parts, all backend-proxied:
-  //   status poll -> GET  /api/demos/firecracker/postgres/status. A control-
-  //                  plane management read: it never opens a connection to the
+  // Three moving parts, all backend-proxied. Status/query/session are served
+  // by ember_public, mounted at the same path on both tiers (the public
+  // /ember/postgres page uses the same endpoints, Turnstile-gated); reset
+  // stays a private-only, griefing-sensitive endpoint on the old demos path.
+  //   status poll -> GET  /api/ember/postgres/status. A control-plane
+  //                  management read: it never opens a connection to the
   //                  workload itself, so polling CANNOT keep the VM awake.
   //                  This is what lets the sleep indicator watch the VM doze
   //                  off in real time without heisenberging the demo.
-  //   query       -> POST /api/demos/firecracker/postgres/query. The backend
+  //   query       -> POST /api/ember/postgres/query. The backend
   //                  psycopg-connects (short-lived by design: an open
   //                  connection pins the VM awake), runs the mode's
   //                  statements against an orders ledger, and returns two
@@ -26,7 +29,12 @@
   // rows to the caller, surfaced in the grid as the "yours" column.
   import { onMount } from "svelte";
 
-  const API = "/api/demos/firecracker/postgres";
+  // Status/query/session moved to the ember_public router (mounted on both
+  // tiers at the same path, see ember_public/router.py); reset is private-only
+  // and griefing-sensitive, so it stays on the old demos path (fetched with an
+  // explicit URL below rather than derived from API).
+  const API = "/api/ember/postgres";
+  const RESET_URL = "/api/demos/firecracker/postgres/reset";
   const POLL_MS = 700;
 
   // Resource-savings counter assumption: the demo VM is sized at 512 MiB, so
@@ -319,7 +327,7 @@
     resetting = true;
     runError = "";
     try {
-      const resp = await fetch(`${API}/reset`, { method: "POST" });
+      const resp = await fetch(RESET_URL, { method: "POST" });
       if (!resp.ok) {
         const body = await resp.json().catch(() => null);
         runError = body?.detail || `reset failed (${resp.status})`;
