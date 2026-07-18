@@ -1,0 +1,478 @@
+// Package store is embervm-noded's off-node durability client (R6): a stdlib
+// net/http client against an S3-API object store (SeaweedFS in-cluster is the
+// first backend) that moves banked artifacts between node disk and the store.
+// It is the mechanism behind the continuity verbs (ExportArtifact /
+// RestoreArtifact / EvictArtifact) so a node (or its NVMe) can be lost without
+// losing data.
+//
+// Standing decision 5: this is a RAW S3-API client (PUT/GET/HEAD/DELETE against
+// <endpoint>/<bucket>/<key>), NOT the aws-sdk-go, and there is NO SigV4 signing
+// in v1 (SeaweedFS in-cluster is anonymous; a static-credential header seam is
+// left for later). The style mirrors the zip-lane fetch pattern already in the
+// server (plain net/http, bounded reads, sha256 verification).
+//
+// Artifact layout (Fork 3): every artifact is a set of files under a key prefix
+// <kind>/<workload>/<ref> (kind lowercase; ref MAY be empty for a singleton
+// VOLUME, so the prefix collapses to volume/<workload>). A meta.json
+// completeness marker (per-file sizes + SHA-256, plus a generation and a
+// created-at) is the LAST object written on export and the FIRST read on
+// restore or a presence check, so a partially-written or partially-deleted
+// artifact is invisible: no meta.json means "not present".
+package store
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// metaObject is the object key (within an artifact prefix) of the completeness
+// marker. It is written LAST on export and read FIRST on restore/presence: a
+// prefix without it is an incomplete (or absent) artifact.
+const metaObject = "meta.json"
+
+// reachableTimeout bounds the cheap bucket-root HEAD the reachability probe
+// issues, so an unreachable store fails the probe fast rather than hanging the
+// caller (the probe feeds NodeStatus.store_reachable, a warmth hint, never a
+// gate).
+const reachableTimeout = 3 * time.Second
+
+// ErrNotPresent is the sentinel a Restore (or a meta fetch) returns when the
+// store holds no meta.json for the prefix (the artifact is absent or was only
+// partially written). The verb handler maps it to codes.FailedPrecondition so a
+// restore of an incomplete store copy surfaces loudly instead of overwriting
+// local state with bad bytes.
+var ErrNotPresent = errors.New("store: artifact not present (no meta.json)")
+
+// FileMeta is one file's completeness record within an artifact's meta.json:
+// its exact byte size and hex SHA-256, verified on restore so a corrupt or
+// truncated object never overwrites good local bytes.
+type FileMeta struct {
+	Size   int64  `json:"size"`
+	Sha256 string `json:"sha256"`
+}
+
+// Meta is the artifact completeness marker, JSON-serialized as meta.json and
+// written LAST on export. Files maps each artifact file's base name to its size
+// and checksum; Generation carries the volume generation for a VOLUME artifact
+// (0 for kinds with no generation); CreatedAtUnixMs records when the export ran.
+type Meta struct {
+	Files           map[string]FileMeta `json:"files"`
+	Generation      uint64              `json:"generation"`
+	CreatedAtUnixMs int64               `json:"createdAtUnixMs"`
+}
+
+// Store is the S3-API object-store client. It is safe for concurrent use (the
+// *http.Client is). A nil *Store means the store is disabled (New returns nil on
+// an empty endpoint); every method is nil-safe so callers can hold a nil Store
+// and let the verb handlers refuse with FAILED_PRECONDITION rather than panic.
+type Store struct {
+	endpoint string // base URL, no trailing slash (e.g. http://seaweedfs-s3...:8333)
+	bucket   string
+	client   *http.Client
+}
+
+// New builds a Store for endpoint + bucket. It returns nil when endpoint is
+// empty, which every caller reads as "the store is disabled" (export is skipped,
+// restore-on-miss is impossible, and the continuity verbs refuse). The endpoint
+// is normalised to have no trailing slash so key joins are unambiguous.
+func New(endpoint, bucket string) *Store {
+	if endpoint == "" {
+		return nil
+	}
+	return &Store{
+		endpoint: strings.TrimRight(endpoint, "/"),
+		bucket:   bucket,
+		client:   &http.Client{},
+	}
+}
+
+// url composes the object URL for a key under the bucket. The key is used
+// verbatim (callers build it from a Fork-3 prefix plus a file base name, both
+// filesystem-safe), so no escaping is applied beyond joining with slashes.
+func (s *Store) url(key string) string {
+	return s.endpoint + "/" + s.bucket + "/" + strings.TrimLeft(key, "/")
+}
+
+// ---- raw object operations -------------------------------------------------
+
+// Put uploads size bytes read from r to the object key (HTTP PUT). size is sent
+// as Content-Length so the store can size the object without buffering; a
+// negative size lets net/http chunk it. Any non-2xx status is an error.
+func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64) error {
+	if s == nil {
+		return ErrNotPresent
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.url(key), r)
+	if err != nil {
+		return fmt.Errorf("store: build PUT %q: %w", key, err)
+	}
+	if size >= 0 {
+		req.ContentLength = size
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("store: PUT %q: %w", key, err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("store: PUT %q: unexpected status %d", key, resp.StatusCode)
+	}
+	return nil
+}
+
+// Get fetches the object key (HTTP GET) and returns its body plus the reported
+// size (Content-Length, -1 when unknown). The caller MUST close the returned
+// reader. A 404 is reported as ErrNotPresent so callers can distinguish a
+// missing object from a transport failure.
+func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	if s == nil {
+		return nil, 0, ErrNotPresent
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url(key), nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: build GET %q: %w", key, err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: GET %q: %w", key, err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		drainClose(resp.Body)
+		return nil, 0, ErrNotPresent
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		drainClose(resp.Body)
+		return nil, 0, fmt.Errorf("store: GET %q: unexpected status %d", key, resp.StatusCode)
+	}
+	return resp.Body, resp.ContentLength, nil
+}
+
+// Head reports whether the object key exists (HTTP HEAD, true iff 200). A 404 is
+// (false, nil); any other non-2xx status is an error so a transport fault is not
+// silently read as absence.
+func (s *Store) Head(ctx context.Context, key string) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, s.url(key), nil)
+	if err != nil {
+		return false, fmt.Errorf("store: build HEAD %q: %w", key, err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("store: HEAD %q: %w", key, err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		return true, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	return false, fmt.Errorf("store: HEAD %q: unexpected status %d", key, resp.StatusCode)
+}
+
+// Delete removes the object key (HTTP DELETE). It is idempotent: a 404 (the
+// object is already gone) is success, matching the desired-end-state contract.
+func (s *Store) Delete(ctx context.Context, key string) error {
+	if s == nil {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.url(key), nil)
+	if err != nil {
+		return fmt.Errorf("store: build DELETE %q: %w", key, err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("store: DELETE %q: %w", key, err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already gone: the desired end-state holds
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("store: DELETE %q: unexpected status %d", key, resp.StatusCode)
+	}
+	return nil
+}
+
+// ---- artifact-level helpers ------------------------------------------------
+
+// Export writes each of localDir's named files to the store under prefix, then
+// meta.json LAST as the completeness marker. It first computes every file's
+// SHA-256 and HEAD-compares against any existing meta.json: if the store already
+// holds this exact artifact (identical file checksums), it returns skipped=true
+// and bytesMoved=0 without re-uploading (idempotent per checksum). Otherwise it
+// PUTs each file, then PUTs meta.json, and returns the sum of the uploaded file
+// sizes. files are base names resolved against localDir; a missing local file is
+// an error (an incomplete artifact must not be exported as complete).
+func (s *Store) Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64) (bytesMoved int64, skipped bool, err error) {
+	if s == nil {
+		return 0, false, ErrNotPresent
+	}
+	meta := Meta{
+		Files:           make(map[string]FileMeta, len(files)),
+		Generation:      generation,
+		CreatedAtUnixMs: nowMs,
+	}
+	var totalSize int64
+	for _, name := range files {
+		path := filepath.Join(localDir, name)
+		fm, ferr := fileMeta(path)
+		if ferr != nil {
+			return 0, false, fmt.Errorf("store: stat artifact file %q: %w", name, ferr)
+		}
+		meta.Files[name] = fm
+		totalSize += fm.Size
+	}
+
+	// Idempotency short-circuit: if the store already holds a meta.json whose
+	// per-file checksums match ours, the artifact is already durable at this
+	// content. HEAD-then-GET the marker; a Head miss (or a mismatch) falls
+	// through to a full re-upload.
+	if present, remoteMeta, merr := s.getMeta(ctx, prefix); merr == nil && present && sameFiles(remoteMeta.Files, meta.Files) {
+		return 0, true, nil
+	}
+
+	for name, fm := range meta.Files {
+		f, oerr := os.Open(filepath.Join(localDir, name))
+		if oerr != nil {
+			return bytesMoved, false, fmt.Errorf("store: open artifact file %q: %w", name, oerr)
+		}
+		perr := s.Put(ctx, prefix+"/"+name, f, fm.Size)
+		_ = f.Close()
+		if perr != nil {
+			return bytesMoved, false, perr
+		}
+		bytesMoved += fm.Size
+	}
+
+	// meta.json LAST: only now is the artifact visible as complete.
+	metaBytes, merr := json.Marshal(meta)
+	if merr != nil {
+		return bytesMoved, false, fmt.Errorf("store: marshal meta: %w", merr)
+	}
+	if perr := s.Put(ctx, prefix+"/"+metaObject, bytes.NewReader(metaBytes), int64(len(metaBytes))); perr != nil {
+		return bytesMoved, false, perr
+	}
+	return bytesMoved, false, nil
+}
+
+// Restore fetches meta.json first (ErrNotPresent when absent, which the caller
+// maps to FAILED_PRECONDITION), then GETs each listed file into localDir,
+// verifying its SHA-256 against the marker. Each file is written to a temp path
+// and renamed into place only after its checksum matches, so a mismatch (or a
+// short read) never leaves a corrupt file on disk. It returns the bytes written
+// and the marker's generation.
+func (s *Store) Restore(ctx context.Context, prefix, localDir string) (bytesMoved int64, generation uint64, err error) {
+	if s == nil {
+		return 0, 0, ErrNotPresent
+	}
+	present, meta, merr := s.getMeta(ctx, prefix)
+	if merr != nil {
+		return 0, 0, merr
+	}
+	if !present {
+		return 0, 0, ErrNotPresent
+	}
+	if err := os.MkdirAll(localDir, 0o700); err != nil {
+		return 0, 0, fmt.Errorf("store: mkdir restore dir %q: %w", localDir, err)
+	}
+	for name, fm := range meta.Files {
+		n, ferr := s.restoreFile(ctx, prefix+"/"+name, filepath.Join(localDir, name), fm)
+		if ferr != nil {
+			return bytesMoved, 0, ferr
+		}
+		bytesMoved += n
+	}
+	return bytesMoved, meta.Generation, nil
+}
+
+// restoreFile GETs one object into a temp file alongside dst, verifies its size
+// and SHA-256 against the marker, and only then renames it into place. On any
+// mismatch or read error it removes the temp file and returns an error, so a
+// corrupt restore never leaves a bad file where a good one (or none) belongs.
+func (s *Store) restoreFile(ctx context.Context, key, dst string, want FileMeta) (int64, error) {
+	body, _, err := s.Get(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	defer drainClose(body)
+
+	tmp := dst + ".restore.tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("store: create temp restore file %q: %w", tmp, err)
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), body)
+	closeErr := f.Close()
+	if err != nil {
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("store: read object %q: %w", key, err)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("store: close temp restore file %q: %w", tmp, closeErr)
+	}
+	if want.Size >= 0 && n != want.Size {
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("store: object %q size %d != meta %d", key, n, want.Size)
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if want.Sha256 != "" && got != want.Sha256 {
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("store: object %q sha256 %s != meta %s", key, got, want.Sha256)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("store: publish restored file %q: %w", dst, err)
+	}
+	return n, nil
+}
+
+// DeleteArtifact removes an artifact from the store. It deletes meta.json FIRST
+// so the artifact is immediately invisible (a presence check reads meta.json
+// first), then best-effort deletes each file the marker named. If meta.json is
+// already gone, the artifact is treated as absent and the call is a no-op
+// success (idempotent, matching the desired-end-state contract).
+func (s *Store) DeleteArtifact(ctx context.Context, prefix string) error {
+	if s == nil {
+		return nil
+	}
+	present, meta, err := s.getMeta(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil // already invisible: nothing to delete
+	}
+	// Delete the marker FIRST: from here the artifact is invisible to any
+	// presence check even if the file deletes below partially fail.
+	if err := s.Delete(ctx, prefix+"/"+metaObject); err != nil {
+		return err
+	}
+	// Best-effort delete of each known file (each Delete is idempotent on 404),
+	// so an orphaned file cannot survive a completed marker deletion silently.
+	var firstErr error
+	for name := range meta.Files {
+		if derr := s.Delete(ctx, prefix+"/"+name); derr != nil && firstErr == nil {
+			firstErr = derr
+		}
+	}
+	return firstErr
+}
+
+// Present reports whether the store holds a complete artifact at prefix (a
+// readable meta.json) and its generation. A missing marker is (false, 0, nil):
+// absence is not an error, it is the answer.
+func (s *Store) Present(ctx context.Context, prefix string) (bool, uint64, error) {
+	if s == nil {
+		return false, 0, nil
+	}
+	present, meta, err := s.getMeta(ctx, prefix)
+	if err != nil {
+		return false, 0, err
+	}
+	if !present {
+		return false, 0, nil
+	}
+	return true, meta.Generation, nil
+}
+
+// Reachable is a cheap liveness probe against the bucket root with a short
+// timeout, feeding NodeStatus.store_reachable (a warmth hint, never a gate). A
+// HEAD on the bucket root that returns any HTTP status (2xx, 403, even 404)
+// proves the endpoint answered; only a transport failure or timeout is
+// unreachable. A nil store is never reachable.
+func (s *Store) Reachable(ctx context.Context) bool {
+	if s == nil {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, reachableTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodHead, s.endpoint+"/"+s.bucket, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return false
+	}
+	drainClose(resp.Body)
+	// Any answered status means the endpoint is up; the reachability probe does
+	// not judge the bucket's contents, only that the store responds.
+	return true
+}
+
+// getMeta fetches and decodes meta.json for a prefix. It returns (false, _, nil)
+// when the marker is absent (ErrNotPresent from Get), so callers distinguish an
+// absent artifact from a transport or decode error.
+func (s *Store) getMeta(ctx context.Context, prefix string) (bool, Meta, error) {
+	body, _, err := s.Get(ctx, prefix+"/"+metaObject)
+	if errors.Is(err, ErrNotPresent) {
+		return false, Meta{}, nil
+	}
+	if err != nil {
+		return false, Meta{}, err
+	}
+	defer drainClose(body)
+	var meta Meta
+	if derr := json.NewDecoder(body).Decode(&meta); derr != nil {
+		return false, Meta{}, fmt.Errorf("store: decode meta for %q: %w", prefix, derr)
+	}
+	return true, meta, nil
+}
+
+// fileMeta computes one local file's size and hex SHA-256 for the export marker.
+func fileMeta(path string) (FileMeta, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return FileMeta{}, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return FileMeta{}, err
+	}
+	return FileMeta{Size: n, Sha256: hex.EncodeToString(h.Sum(nil))}, nil
+}
+
+// sameFiles reports whether two file-meta maps carry identical names and
+// checksums (the idempotency test: the store already holds this exact content).
+// Sizes are implied by the checksum but compared too for a cheap early-out.
+func sameFiles(a, b map[string]FileMeta) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, fa := range a {
+		fb, ok := b[name]
+		if !ok || fa.Sha256 != fb.Sha256 || fa.Size != fb.Size {
+			return false
+		}
+	}
+	return true
+}
+
+// drainClose drains and closes a response body so the underlying connection can
+// be reused (the net/http keep-alive discipline the zip-lane fetch also follows).
+func drainClose(rc io.ReadCloser) {
+	if rc == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(rc, 4<<10))
+	_ = rc.Close()
+}

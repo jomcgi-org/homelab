@@ -165,6 +165,15 @@ spec:
               value: {{ .Values.noded.zipLane.fetchTimeout | quote }}
             - name: EMBERVM_NODED_ARCHIVE_MAX_BYTES
               value: {{ .Values.noded.zipLane.maxBytes | quote }}
+            # R6 off-node durability: the S3-API object store the continuity verbs
+            # (ExportArtifact/RestoreArtifact/EvictArtifact) move banked artifacts to
+            # and from. Default the in-cluster SeaweedFS S3 gateway (anonymous, no
+            # SigV4 in v1). An EMPTY endpoint disables the store: exports are skipped
+            # and restore-on-miss is impossible, so state stays local-only.
+            - name: EMBERVM_NODED_STORE_ENDPOINT
+              value: {{ .Values.noded.store.endpoint | quote }}
+            - name: EMBERVM_NODED_STORE_BUCKET
+              value: {{ .Values.noded.store.bucket | quote }}
             # Node-side image identity table (image_ref -> {rootfsPath, harnessInit}),
             # rendered as JSON. Derived from noded.workloads + each workload's pinned
             # guestImage so the ref here MATCHES the rootfs-builder GUEST_IMAGE and the

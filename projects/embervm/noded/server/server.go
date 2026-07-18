@@ -238,6 +238,28 @@ type Server struct {
 	draining            bool
 	drainDeadlineUnixMs int64
 
+	// store is the off-node object-store client the R6 continuity verbs and the
+	// async export queue use. nil disables the store (no endpoint configured):
+	// ExportArtifact/RestoreArtifact refuse FAILED_PRECONDITION, exports are
+	// no-ops, and NodeStatus.store_reachable stays false. In production a
+	// *store.Store satisfies it; tests inject an in-memory fake.
+	store artifactStore
+	// exported caches which artifacts (by store prefix) have a current store copy
+	// and at which generation, updated by the export queue and read by the
+	// NodeStatus projection for the per-artifact `exported` bool and
+	// Volume.exported_generation.
+	exported *exportedCache
+	// exportCh is the bounded async export queue; exportDedupe drops a re-enqueue
+	// of an already-queued prefix. Both nil/empty until startExportQueue runs.
+	exportCh       chan exportJob
+	exportOnce     sync.Once
+	exportDedupeMu sync.Mutex
+	exportDedupe   map[string]struct{}
+	// storeReachable is the latest object-store reachability verdict from the
+	// probe loop, surfaced in NodeStatus.store_reachable.
+	storeMu        sync.RWMutex
+	storeReachable bool
+
 	subMu sync.Mutex
 	subs  map[chan struct{}]struct{}
 }
@@ -300,6 +322,12 @@ type Options struct {
 	// health probe loop (defaults applied when zero), mirroring the stateful knobs.
 	GroupProbeInterval      time.Duration
 	GroupUnhealthyThreshold int
+	// Store is the off-node object-store client the R6 continuity verbs and the
+	// async export queue use. nil (the default) disables the store: the continuity
+	// verbs refuse FAILED_PRECONDITION and exports are no-ops, so a Server built
+	// without a store still compiles and every other class is untouched. In
+	// production a *store.Store satisfies it; tests inject an in-memory fake.
+	Store artifactStore
 }
 
 // New builds a Server. Driver and Transport must not be nil.
@@ -333,6 +361,9 @@ func New(opts Options) *Server {
 		groupDriver:     opts.GroupDriver,
 		groupBundles:    newGroupBundleRegistry(),
 		groupClock:      opts.GroupClock,
+		store:           opts.Store,
+		exported:        newExportedCache(),
+		exportDedupe:    make(map[string]struct{}),
 		subs:            make(map[chan struct{}]struct{}),
 	}
 	// VolumeRoot may be set directly on Options (mirroring how cmd/main.go wires
@@ -1056,6 +1087,9 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
 	})
+	// Async off-node write-back (R6): the banked bundle is now crash-consistent on
+	// disk, so enqueue its export fire-and-forget (never blocking this bank path).
+	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: req.GetTrace().GetWorkload(), Ref: ref.ID})
 	s.signalChange()
 	return &nodev1.BankResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
 }
@@ -1309,6 +1343,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		GroupNetworks:         s.groupNetworksStatus(),
 		GroupMemberVms:        groupMemberVMs,
 		GroupBundleSets:       s.groupBundleSetsStatus(),
+		StoreReachable:        s.storeReachableNow(),
 	}
 }
 
@@ -1349,9 +1384,23 @@ func (s *Server) servingSnapshotsStatus() []*nodev1.ServingSnapshot {
 			Workload:        e.workload,
 			SizeBytes:       uint64(e.sizeBytes),
 			CreatedAtUnixMs: e.createdAtUnixMs,
+			Exported:        s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, e.workload, e.snapshotRef),
 		})
 	}
 	return out
+}
+
+// artifactExported reports whether an artifact's store copy is currently present
+// (from the exported cache the export queue maintains). A workload-less entry (a
+// disk-only reconcile whose control-plane binding is not yet known) has no
+// composable prefix and reports false until the control plane rebinds it, which
+// is safe: the CP treats false as "a roll would lose this off-node copy".
+func (s *Server) artifactExported(kind nodev1.ArtifactKind, workload, ref string) bool {
+	prefix := artifactPrefix(&nodev1.ArtifactRef{Kind: kind, Workload: workload, Ref: ref})
+	if prefix == "" {
+		return false
+	}
+	return s.exported.present(prefix)
 }
 
 // servingSubnetCIDR reports the serving subnet CIDR for NodeStatus, or "" when no
@@ -1408,6 +1457,7 @@ func (s *Server) statefulBundlesStatus() []*nodev1.StatefulBundle {
 			Generation:      e.generation,
 			SizeBytes:       uint64(e.sizeBytes),
 			CreatedAtUnixMs: e.createdAtUnixMs,
+			Exported:        s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, e.workload, e.snapshotRef),
 		})
 	}
 	return out
@@ -1426,12 +1476,20 @@ func (s *Server) volumesStatus() []*nodev1.Volume {
 	}
 	out := make([]*nodev1.Volume, 0, len(inv))
 	for _, v := range inv {
+		var exportedGen uint64
+		prefix := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: v.Workload})
+		if prefix != "" {
+			if g, ok := s.exported.generation(prefix); ok {
+				exportedGen = g
+			}
+		}
 		out = append(out, &nodev1.Volume{
-			Workload:       v.Workload,
-			Generation:     v.Generation,
-			SizeBytes:      v.SizeBytes,
-			AllocatedBytes: v.AllocatedBytes,
-			Attached:       v.Attached,
+			Workload:           v.Workload,
+			Generation:         v.Generation,
+			SizeBytes:          v.SizeBytes,
+			AllocatedBytes:     v.AllocatedBytes,
+			Attached:           v.Attached,
+			ExportedGeneration: exportedGen,
 		})
 	}
 	return out
@@ -1465,6 +1523,7 @@ func (s *Server) sessionSnapshotsStatus() []*nodev1.SessionSnapshot {
 			Workload:        e.workload,
 			SizeBytes:       uint64(e.sizeBytes),
 			CreatedAtUnixMs: e.createdAtUnixMs,
+			Exported:        s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, e.workload, e.snapshotRef),
 		})
 	}
 	return out

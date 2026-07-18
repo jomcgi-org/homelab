@@ -29,6 +29,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/embervm/noded/server"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
+	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockhttp"
 )
 
@@ -114,7 +115,19 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	srv := server.New(server.Options{
+	// The off-node object store (R6): the continuity verbs and the async export
+	// queue move banked artifacts to and from this S3-API endpoint. store.New
+	// returns nil for an empty endpoint (the store is disabled), so the Options
+	// field is left unset in that case to keep the server's typed-nil guards clean
+	// (a nil interface, not an interface holding a nil pointer).
+	artStore := store.New(cfg.StoreEndpoint, cfg.StoreBucket)
+	if cfg.StoreEndpoint == "" {
+		logger.Warn("object store DISABLED: EMBERVM_NODED_STORE_ENDPOINT unset; banked state stays local-only (no off-node durability, no restore-on-miss)")
+	} else {
+		logger.Info("object store configured", "endpoint", cfg.StoreEndpoint, "bucket", cfg.StoreBucket)
+	}
+
+	opts := server.Options{
 		Config: cfg,
 		Driver: restoreDriver,
 		// The same restore driver serves the R2 session verbs: SnapshotSession /
@@ -152,7 +165,11 @@ func run(logger *slog.Logger) error {
 		GroupDriver:             restoreDriver,
 		GroupProbeInterval:      cfg.StatefulProbeInterval,
 		GroupUnhealthyThreshold: cfg.StatefulUnhealthyThreshold,
-	})
+	}
+	if artStore != nil {
+		opts.Store = artStore
+	}
+	srv := server.New(opts)
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.
 	srv.ReconcileBasesFromDisk()
@@ -177,6 +194,14 @@ func run(logger *slog.Logger) error {
 	// node truth (live members died with the prior pod; the on-disk bundle sets
 	// survive and the control plane resolves each group to relightable-or-fresh).
 	srv.ReconcileGroupBundlesFromDisk()
+	// R6 off-node durability: start the bounded async export-worker pool, the
+	// store-reachability probe (feeds NodeStatus.store_reachable), and a reconcile
+	// sweep that enqueues an export for any local artifact whose store copy is
+	// missing or stale (covers "a roll exited before exports finished"). All three
+	// no-op when the store is disabled. They run for the daemon's lifetime; ctx
+	// cancels them on shutdown, and the export queue is fire-and-forget so it never
+	// holds the drain deadline.
+	srv.StartStoreLoops(ctx)
 	// Create the serving bridge and install the ingress-only nftables posture before
 	// serving any StartServing. Idempotent across restarts (existing bridge tolerated).
 	if err := servingNet.EnsureNetwork(ctx); err != nil {

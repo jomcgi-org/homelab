@@ -723,6 +723,16 @@ noded:
     # renders in scientific notation, which strconv.ParseInt would reject).
     maxBytes: "536870912" # 512 MiB
 
+  # R6 off-node durability (ADR embervm/009): the S3-API object store the
+  # continuity verbs move banked artifacts to and from, so a node (or its NVMe)
+  # can be lost without losing data. The first backend is the in-cluster SeaweedFS
+  # S3 gateway (anonymous in-cluster; no SigV4 in v1, a static-credential seam is
+  # left for later). An EMPTY endpoint DISABLES the store: exports are skipped and
+  # restore-on-miss is impossible, so state stays local-only (a safe degrade).
+  store:
+    endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
+    bucket: embervm
+
   # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
   # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it
   # does not overcommit node scheduling, exactly like fc-invoke's 50Gi cap.
