@@ -48,6 +48,9 @@ def _reset_ember_public_module_state():
         core._last_query_outcome.update(
             {"at_monotonic": None, "ok": None, "connect_ms": None}
         )
+        core._savings_cache.update(
+            {"at": None, "total_saved_mib_s": None, "as_of": None}
+        )
         while core._query_semaphore._value < core._query_semaphore._initial_value:
             core._query_semaphore.release()
 
@@ -945,3 +948,90 @@ def test_query_records_last_outcome_on_failure(monkeypatch):
     outcome = core.last_query_outcome()
     assert outcome["ok"] is False
     assert outcome["connect_ms"] is None
+
+
+# ---------------------------------------------------------------------------
+# Task 3: GET /savings (30s cached read via the reader engine) and accrual
+# writing through the writer engine.
+# ---------------------------------------------------------------------------
+
+
+def test_savings_endpoint_returns_cached_value(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_read():
+        calls["n"] += 1
+        return 4096.0
+
+    monkeypatch.setattr(core, "_read_demo_pg_savings_sync", fake_read)
+
+    client = _client()
+    first = client.get("/api/ember/postgres/savings")
+    assert first.status_code == 200
+    body = first.json()
+    assert body["total_saved_mib_s"] == 4096.0
+    assert body["as_of"]
+
+    second = client.get("/api/ember/postgres/savings")
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["total_saved_mib_s"] == 4096.0
+
+    # Second call within the 30s TTL must not re-read the DB.
+    assert calls["n"] == 1
+
+
+def test_savings_endpoint_refetches_after_ttl_expires(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_read():
+        calls["n"] += 1
+        return float(calls["n"])
+
+    monkeypatch.setattr(core, "_read_demo_pg_savings_sync", fake_read)
+
+    fake_clock = {"t": 1000.0}
+    monkeypatch.setattr(core, "monotonic", lambda: fake_clock["t"])
+
+    client = _client()
+    client.get("/api/ember/postgres/savings")
+    fake_clock["t"] += core._SAVINGS_CACHE_TTL_S + 0.01
+    client.get("/api/ember/postgres/savings")
+
+    assert calls["n"] == 2
+
+
+def test_savings_endpoint_null_on_read_error(monkeypatch):
+    def fake_read():
+        raise RuntimeError("relation demo_pg_savings does not exist")
+
+    monkeypatch.setattr(core, "_read_demo_pg_savings_sync", fake_read)
+
+    resp = _client().get("/api/ember/postgres/savings")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_saved_mib_s"] is None
+    assert body["as_of"]
+
+
+def test_savings_accrual_uses_writer_engine_not_default(monkeypatch):
+    """The accrual sync helper must read/write through
+    ember_public.db.get_savings_engine, not app.db.get_engine directly, so
+    public-tier accrual goes through public_writer rather than the
+    read-only public_reader default."""
+    calls = {"n": 0}
+    fake_engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    SQLModel.metadata.create_all(fake_engine)
+
+    def fake_get_savings_engine():
+        calls["n"] += 1
+        return fake_engine
+
+    monkeypatch.setattr(core, "get_savings_engine", fake_get_savings_engine)
+
+    result = core._record_demo_pg_savings_sync("banked", 7)
+
+    assert result == 0.0
+    assert calls["n"] == 1
