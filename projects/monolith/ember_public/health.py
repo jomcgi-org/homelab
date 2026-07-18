@@ -1,0 +1,76 @@
+"""demo_postgres /api/health component (see framework/core.py's register_health).
+
+Sourced ENTIRELY from the cached control-plane status read
+(``core.cached_demo_pg_status``) and the in-process query-outcome record
+(``core.last_query_outcome``): this check must never open a DB connection to
+the demo VM, since an asleep demo is healthy and a health probe that woke it
+would defeat the whole sleep story.
+
+Four unhealthy conditions (see docs/plans/2026-07-18-ember-public-pages-design.md
+"Health + alerting"), checked in order and short-circuited at the first hit:
+
+1. The control plane is unreachable or the demo is unconfigured.
+2. The workload reports a broken snapshot/volume pairing while banked.
+3. A transitional state (relighting/cold_booting/starting/banking) has
+   persisted past 90s (wakeTimeoutSeconds is 60s plus margin), a passive
+   sign of a wedged cold boot.
+4. The most recent real query in the last 10 minutes failed or its connect
+   exceeded 60s, with no newer success superseding it.
+"""
+
+from __future__ import annotations
+
+from time import monotonic
+
+from ember_public import core
+
+_TRANSITIONAL_STATES = frozenset({"relighting", "cold_booting", "starting", "banking"})
+
+_STUCK_TRANSITION_S = 90.0
+_SLOW_WAKE_CONNECT_MS = 60000.0
+_RECENT_OUTCOME_WINDOW_S = 600.0
+
+
+async def demo_postgres_health() -> dict:
+    """The demo_postgres /api/health component. Never connects to the demo DB."""
+    if not core.EMBERVM_URL or not core.demo_pg_dsn():
+        return {"ok": False, "detail": "control plane unreachable or unconfigured"}
+
+    try:  # nosemgrep: no-broad-except-swallow - the exception itself is the finding, returned in-band
+        status = await core.cached_demo_pg_status()
+    except Exception as exc:  # noqa: BLE001 - an unreachable control plane is the finding
+        return {"ok": False, "detail": f"control plane unreachable: {exc}"}
+
+    state = status.get("state")
+
+    if state == "banked" and status.get("pair_valid") is False:
+        return {"ok": False, "detail": "banked with invalid snapshot/volume pairing"}
+
+    if state in _TRANSITIONAL_STATES:
+        changed_at = core.status_cache_state_changed_at()
+        if changed_at is not None:
+            stuck_for = monotonic() - changed_at
+            if stuck_for > _STUCK_TRANSITION_S:
+                return {
+                    "ok": False,
+                    "detail": f"{state} for {stuck_for:.0f}s, wake likely wedged",
+                }
+
+    outcome = core.last_query_outcome()
+    at_monotonic = outcome.get("at_monotonic")
+    if at_monotonic is not None:
+        age_s = monotonic() - at_monotonic
+        if age_s <= _RECENT_OUTCOME_WINDOW_S:
+            ok = outcome.get("ok")
+            connect_ms = outcome.get("connect_ms")
+            if not ok:
+                return {"ok": False, "detail": "most recent wake attempt failed"}
+            if connect_ms is not None and connect_ms > _SLOW_WAKE_CONNECT_MS:
+                return {
+                    "ok": False,
+                    "detail": f"most recent wake took {connect_ms:.0f}ms, exceeds threshold",
+                }
+
+    if state == "banked":
+        return {"ok": True, "detail": "banked, pair valid"}
+    return {"ok": True, "detail": f"{state}"}

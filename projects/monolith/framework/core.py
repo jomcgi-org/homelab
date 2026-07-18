@@ -42,6 +42,7 @@ RegisterHook = Callable[[FastAPI], None]
 StartupHook = Callable[[FastAPI], Awaitable[None]]
 LeaderStartHook = Callable[[FastAPI], Awaitable["list[asyncio.Task]"]]
 LeaderStopHook = Callable[[FastAPI], Awaitable[None]]
+HealthCheck = Callable[[], Awaitable[dict]]
 
 
 class Tier(enum.Enum):
@@ -142,6 +143,10 @@ class Module:
       cancel them. The hook must attach ``log_task_exception`` as a
       done-callback on each task it creates (at ``create_task`` time, so a
       crash before the hook returns is still logged).
+    - ``register_health``: optional ``{name: async check}`` components folded
+      into the deep ``/api/health`` response (see ``_add_health``). A check
+      returns ``{"ok": bool, "detail": str}``; a crashing check is caught by
+      the framework and reported not-ok rather than 500ing the whole handler.
     - ``requires_secrets``: secret env names the module's PRIVATE surface
       uses (leader hooks, MCP, write routers). A restricted private profile
       refuses to compose such a module; the public tier ignores it because it
@@ -155,6 +160,7 @@ class Module:
     startup: StartupHook | None = None
     leader_start: LeaderStartHook | None = None
     leader_stop: LeaderStopHook | None = None
+    register_health: dict[str, HealthCheck] | None = None
     requires_secrets: frozenset[str] = frozenset()
 
 
@@ -238,7 +244,7 @@ async def stop_leader_singletons(app: FastAPI, modules: Sequence[Module]) -> Non
     app.state.singleton_tasks = []
 
 
-def _add_health(app: FastAPI, profile: Profile) -> None:
+def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> None:
     @app.get("/healthz")
     def healthz():
         return {"status": "ok"}
@@ -259,26 +265,57 @@ def _add_health(app: FastAPI, profile: Profile) -> None:
         health_logger = logger
         health_message = "deep health check failed"
 
+    component_checks: dict[str, HealthCheck] = {}
+    for m in modules:
+        if m.register_health:
+            component_checks.update(m.register_health)
+
+    async def _run_component(name: str, check: HealthCheck) -> dict:
+        try:  # nosemgrep: no-broad-except-swallow - logged via health_logger below
+            return await check()
+        except Exception as exc:  # noqa: BLE001 - a crashing check is itself a finding
+            health_logger.exception("health component %s raised", name)
+            return {"ok": False, "detail": str(exc)}
+
     @app.get("/api/health")
-    def api_health():
+    async def api_health():
         """Deep health: SELECT 1 proves the DB endpoint + role actually work.
 
         On the public tier the backend is never internet-reachable, so the
         externally assertable signal is the frontend /health proxy reaching
         this route; a DB outage returns a clean 503 (logged once per probe)
-        instead of a traceback.
+        instead of a traceback. Module-contributed components (see
+        ``Module.register_health``) run alongside SELECT 1 and are folded
+        into a ``components`` map; any component not ok makes the whole
+        response 503, same as the SELECT 1 baseline.
         """
         from sqlmodel import Session, text
 
         from app.db import get_engine
 
-        try:
+        db_ok = True
+        try:  # nosemgrep: no-broad-except-swallow - logged via health_logger below
             with Session(get_engine()) as session:
                 session.execute(text("SELECT 1"))
         except Exception:
             health_logger.exception(health_message)
-            return JSONResponse({"status": "unhealthy"}, status_code=503)
-        return {"status": "ok"}
+            db_ok = False
+
+        components: dict[str, dict] = {}
+        if component_checks:
+            names = list(component_checks)
+            results = await asyncio.gather(
+                *(_run_component(name, component_checks[name]) for name in names)
+            )
+            components = dict(zip(names, results))
+
+        all_ok = db_ok and all(c.get("ok") for c in components.values())
+        body = {"status": "ok" if all_ok else "unhealthy"}
+        if components:
+            body["components"] = components
+        if not all_ok:
+            return JSONResponse(body, status_code=503)
+        return body
 
 
 def _mount_static_frontend(app: FastAPI) -> None:
@@ -405,7 +442,7 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
         app = FastAPI(title=profile.title)
         for m in modules:
             m.register_public(app)
-        _add_health(app, profile)
+        _add_health(app, profile, modules)
         return app
 
     # ---- PRIVATE tier ----
@@ -446,7 +483,7 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
     if mcp_http_app is not None:
         app.mount("/mcp", mcp_http_app)
 
-    _add_health(app, profile)
+    _add_health(app, profile, modules)
 
     if profile.static_frontend:
         _mount_static_frontend(app)
