@@ -173,6 +173,18 @@ type Config struct {
 	// unused in Task 4. Default 5s / 3.
 	GroupProbeInterval      time.Duration
 	GroupUnhealthyThreshold int
+
+	// StoreEndpoint is the base URL of the S3-API object store the continuity
+	// verbs (R6) move banked artifacts to and from. Default the in-cluster
+	// SeaweedFS S3 gateway (anonymous, standing decision 5). An EMPTY endpoint
+	// DISABLES the store entirely: exports are skipped, restore-on-miss is
+	// impossible, and ExportArtifact/RestoreArtifact refuse FAILED_PRECONDITION,
+	// so a build without a store (tests, a cluster without SeaweedFS) still runs
+	// with only local durability. Env EMBERVM_NODED_STORE_ENDPOINT.
+	StoreEndpoint string
+	// StoreBucket is the single bucket every artifact key lives under (Fork 3).
+	// Default "embervm". Env EMBERVM_NODED_STORE_BUCKET.
+	StoreBucket string
 }
 
 // Load resolves configuration from the environment, applying defaults for all
@@ -213,6 +225,9 @@ func Load() (Config, error) {
 		CompositeSupernet:       getenvDefault("EMBERVM_NODED_COMPOSITE_SUPERNET", "10.101.0.0/16"),
 		GroupProbeInterval:      5 * time.Second,
 		GroupUnhealthyThreshold: atoiDefault("EMBERVM_NODED_GROUP_UNHEALTHY_THRESHOLD", 3),
+
+		StoreEndpoint: getenvDefault("EMBERVM_NODED_STORE_ENDPOINT", "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"),
+		StoreBucket:   getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
 	}
 
 	if c.Node == "" {

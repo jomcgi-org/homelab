@@ -268,6 +268,12 @@ func (s *Server) stopGroupMemberBank(ctx context.Context, req *nodev1.StopGroupM
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
 	})
+	// Async off-node write-back (R6): a group set is the export unit, so enqueue
+	// the SET (keyed by group instance + set_id) fire-and-forget after each member
+	// bank. The dedupe coalesces overlapping member banks of the same set; the
+	// export walks whatever is on disk at run time and the checksum-compare re-uploads
+	// on the next member bank until the set converges complete. Never blocks the bank.
+	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_GROUP_SET, Workload: e.groupInstanceID, Ref: setID})
 	s.signalChange()
 	return &nodev1.StopGroupMemberResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
 }

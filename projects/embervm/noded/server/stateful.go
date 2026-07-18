@@ -497,6 +497,10 @@ func (s *Server) commitCheckpoint(ctx context.Context, e *statefulEntry, token s
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
 	})
+	// Async off-node write-back (R6): the committed bundle and its paired volume,
+	// fire-and-forget (identical to stopStatefulBank's tail).
+	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: e.workload, Ref: ref.ID})
+	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: e.workload})
 	s.signalChange()
 	return &nodev1.ResolveStatefulResponse{SnapshotRef: ref.ID, Generation: e.generation, SizeBytes: uint64(ref.SizeBytes)}, nil
 }
@@ -589,6 +593,11 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
 	})
+	// Async off-node write-back (R6): a stateful bank ships BOTH the bundle and its
+	// paired volume (vol.img + gen); the volume export skips when its generation is
+	// unchanged since the last export. Both are fire-and-forget (never blocking).
+	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: e.workload, Ref: ref.ID})
+	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: e.workload})
 	s.signalChange()
 	return &nodev1.StopStatefulResponse{SnapshotRef: ref.ID, Generation: e.generation, SizeBytes: uint64(ref.SizeBytes)}, nil
 }

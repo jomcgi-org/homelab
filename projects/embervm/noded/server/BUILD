@@ -12,6 +12,7 @@ go_library(
         "serving_registry.go",
         "stateful.go",
         "stateful_registry.go",
+        "store.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/server",
     visibility = ["//projects/embervm/noded:__subpackages__"],
@@ -38,6 +39,7 @@ go_test(
         "server_test.go",
         "serving_test.go",
         "stateful_test.go",
+        "store_test.go",
     ],
     embed = [":server"],
     deps = [

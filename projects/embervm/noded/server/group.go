@@ -261,6 +261,10 @@ func (s *Server) groupBundleSetsStatus() []*nodev1.GroupBundleSet {
 			GroupInstanceId: agg.groupInstanceID,
 			Members:         agg.members,
 			CreatedAtUnixMs: agg.createdAtUnixMs,
+			// A set is the export unit: `exported` is true only when the WHOLE set's
+			// store copy is present (the export queue marks the set prefix on a
+			// completed set export). Keyed by the group instance + set_id (Fork 3).
+			Exported: s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_GROUP_SET, agg.groupInstanceID, setID),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].GetSetId() < out[j].GetSetId() })
