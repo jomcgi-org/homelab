@@ -508,7 +508,7 @@
         <a class="anchor" href="#live-exhibits">See it run</a>
       </h2>
       <p class="body">
-        Two exhibits run on the live system, through the same wake path
+        Three exhibits run on the live system, through the same wake path
         production uses.
       </p>
       <div class="doors">
@@ -521,6 +521,15 @@
             78&nbsp;ms.
           </p>
           <span class="go">ember/postgres</span>
+        </a>
+        <a class="door" href="/ember/bazel">
+          <span class="k">live demo</span>
+          <h3>Query a frozen Bazel brain</h3>
+          <p>
+            Each query runs in a disposable clone of a snapshotted warm
+            Bazel server.
+          </p>
+          <span class="go">ember/bazel</span>
         </a>
         <a class="door" href="/ember/firecracker">
           <span class="k">explainer</span>
@@ -1076,7 +1085,7 @@
   /* ---------- doors ---------- */
   .doors {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;
   }
 
