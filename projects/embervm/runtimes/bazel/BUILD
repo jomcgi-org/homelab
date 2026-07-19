@@ -27,8 +27,8 @@ platform_transition_filegroup(
 tar(
     name = "guest_init_tar_amd64",
     srcs = [
-        ":guest_init_amd64_bin",
         "etc/hosts",
+        ":guest_init_amd64_bin",
     ],
     mtree = [
         "./usr/local/bin/ember-bazel-init type=file content=$(execpath :guest_init_amd64_bin) mode=0755 uid=0 gid=0",
@@ -51,8 +51,8 @@ platform_transition_filegroup(
 tar(
     name = "guest_init_tar_arm64",
     srcs = [
-        ":guest_init_arm64_bin",
         "etc/hosts",
+        ":guest_init_arm64_bin",
     ],
     mtree = [
         "./usr/local/bin/ember-bazel-init type=file content=$(execpath :guest_init_arm64_bin) mode=0755 uid=0 gid=0",
