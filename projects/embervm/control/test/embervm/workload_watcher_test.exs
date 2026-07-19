@@ -1279,6 +1279,124 @@ defmodule Embervm.WorkloadWatcherTest do
     assert Process.alive?(watcher)
   end
 
+  # -- periodic BaseBuilder resync (RCA H1 self-heal) --------------------------
+
+  # Exercises the fix for RCA candidate H1: BaseBuilder.reconcile/2 is a
+  # fire-and-forget cast_if_alive with no internal re-assert, so a single
+  # dropped delivery (the BaseBuilder momentarily down, a transient error, a
+  # restart race) previously left a base unprovisioned forever. These tests
+  # drive the periodic resync synchronously via resync_bases_now/1 (never a
+  # real timer, per this test module's async/watch_startup: false discipline)
+  # to prove: (1) a dropped initial cast leaves nothing reconciled, and (2) the
+  # resync tick re-delivers it, self-healing within one interval instead of
+  # wedging forever.
+  describe "periodic BaseBuilder resync" do
+    test "a dropped initial cast is re-delivered by the next resync tick" do
+      table = unique_table()
+      agent = start_recorder()
+      base = start_base_recorder()
+
+      # Simulate BaseBuilder being down for the FIRST reconcile (the dropped
+      # delivery): base_reconcile_fun is a no-op that records nothing, exactly
+      # like cast_if_alive/2 silently swallowing a cast when
+      # GenServer.whereis(BaseBuilder) is nil.
+      dropped = fn _desc -> :ok end
+      lister = fn -> {:ok, [valid_cr()]} end
+
+      watcher =
+        start_watcher(lister, recording_status_writer(agent), table, base_reconcile_fun: dropped)
+
+      :ok = WorkloadWatcher.reconcile_now(watcher)
+
+      # The Workload IS cataloged (cataloging and the base-build trigger are
+      # independent), but the "delivery" to BaseBuilder never happened.
+      assert {:ok, _entry} = WorkloadCatalog.fetch(table, "semgrep")
+      assert Agent.get(base, & &1.reconciled) == []
+
+      # Swap in the real recording seam (as if the BaseBuilder had since come
+      # back up) without touching the catalog or re-listing, then fire one
+      # resync tick.
+      healed_fun = base_seams(agent: base)[:base_reconcile_fun]
+      :sys.replace_state(watcher, fn state -> %{state | base_reconcile_fun: healed_fun} end)
+      :ok = WorkloadWatcher.resync_bases_now(watcher)
+
+      # The resync self-healed the dropped delivery: exactly one reconcile call
+      # now recorded, for the Workload that was already in the catalog.
+      assert [desc] = Agent.get(base, & &1.reconciled)
+      assert desc.name == "semgrep"
+      assert desc.image_ref == "x"
+      assert desc.guest_port == 8080
+    end
+
+    test "resync re-casts the identical descriptor a fresh LIST would have sent" do
+      table = unique_table()
+      agent = start_recorder()
+      base = start_base_recorder()
+      lister = fn -> {:ok, [valid_cr()]} end
+      watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
+
+      :ok = WorkloadWatcher.reconcile_now(watcher)
+      assert [from_list] = Agent.get(base, & &1.reconciled)
+
+      :ok = WorkloadWatcher.resync_bases_now(watcher)
+      assert [^from_list, from_resync] = Agent.get(base, & &1.reconciled)
+      assert from_resync == from_list
+    end
+
+    test "a deleted Workload is never re-cast by a later resync tick" do
+      table = unique_table()
+      agent = start_recorder()
+      base = start_base_recorder()
+      {:ok, lister_agent} = Agent.start_link(fn -> [valid_cr()] end)
+      lister = fn -> {:ok, Agent.get(lister_agent, & &1)} end
+      watcher = start_watcher(lister, recording_status_writer(agent), table, base_seams(agent: base))
+
+      :ok = WorkloadWatcher.reconcile_now(watcher)
+      assert [_] = Agent.get(base, & &1.reconciled)
+
+      Agent.update(lister_agent, fn _ -> [] end)
+      :ok = WorkloadWatcher.reconcile_now(watcher)
+      assert WorkloadCatalog.fetch(table, "semgrep") == :error
+
+      :ok = WorkloadWatcher.resync_bases_now(watcher)
+      # Still exactly the one reconcile call from before the delete; the resync
+      # only re-casts what is CURRENTLY in the catalog.
+      assert [_] = Agent.get(base, & &1.reconciled)
+    end
+
+    test "resync_interval_ms: 0 disables the periodic timer" do
+      table = unique_table()
+      agent = start_recorder()
+      base = start_base_recorder()
+
+      # watch_startup: true (the default) so init/1's timer-arming branch
+      # actually runs; a 0 interval must still never fire a resync tick. The
+      # boot LIST catalogs the Workload and casts base_reconcile_fun ONCE (the
+      # normal admission path); if the timer were armed despite
+      # resync_interval_ms: 0, a second identical cast would show up within the
+      # wait below.
+      {:ok, watcher} =
+        WorkloadWatcher.start_link(
+          Keyword.merge(
+            [
+              name: nil,
+              table: table,
+              lister: fn -> {:ok, [valid_cr()]} end,
+              watcher_fun: fn _rv, _emit -> Process.sleep(:infinity) end,
+              status_writer: recording_status_writer(agent),
+              resync_interval_ms: 0
+            ],
+            base_seams(agent: base)
+          )
+        )
+
+      assert_eventually(fn -> Agent.get(base, & &1.reconciled) != [] end)
+      Process.sleep(150)
+      assert [_one] = Agent.get(base, & &1.reconciled)
+      assert Process.alive?(watcher)
+    end
+  end
+
   # -- watch stream (list-then-watch informer) ------------------------------
 
   # These exercise the informer's state machine (event application + the

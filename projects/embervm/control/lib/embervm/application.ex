@@ -46,6 +46,13 @@ defmodule Embervm.Application do
     # NOT put here in that case, so the watcher's Application.get_env default fires).
     put_composite_group_config()
 
+    # The periodic BaseBuilder catalog-resync cadence (RCA H1 self-heal, see
+    # Embervm.WorkloadWatcher's @moduledoc): from EMBERVM_WORKLOAD_RESYNC_INTERVAL_MS
+    # into app-env BEFORE the supervisor starts, exactly like the composite-group
+    # config above. Absent or malformed env is left UNSET, so the watcher's own
+    # Application.get_env default (60s) fires.
+    put_workload_resync_config()
+
     children = [
       # The sync-wait waiter registry + park-count ETS owner come FIRST: every
       # terminal task-state write in TaskStore calls Embervm.SyncWait.notify,
@@ -863,6 +870,31 @@ defmodule Embervm.Application do
     case max_group_size_env() do
       nil -> :ok
       size -> Application.put_env(:embervm, :max_group_size, size)
+    end
+  end
+
+  # The periodic BaseBuilder catalog-resync cadence (RCA H1 self-heal), from
+  # EMBERVM_WORKLOAD_RESYNC_INTERVAL_MS. Left UNSET on an absent or malformed
+  # value (put_env skipped), so Embervm.WorkloadWatcher's own
+  # Application.get_env default (60s) fires. A value of 0 is accepted and
+  # disables the timer (the watcher treats <= 0 as "no timer").
+  defp put_workload_resync_config do
+    case workload_resync_interval_ms_env() do
+      nil -> :ok
+      ms -> Application.put_env(:embervm, :workload_resync_interval_ms, ms)
+    end
+  end
+
+  defp workload_resync_interval_ms_env do
+    case trimmed_env("EMBERVM_WORKLOAD_RESYNC_INTERVAL_MS") do
+      "" ->
+        nil
+
+      raw ->
+        case Integer.parse(raw) do
+          {ms, ""} when ms >= 0 -> ms
+          _ -> nil
+        end
     end
   end
 
