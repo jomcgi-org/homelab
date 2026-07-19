@@ -796,3 +796,10 @@ use_repo(
     "protoc_linux_x86_64",
     "rebar3",
 )
+
+# Prebuilt TLC model checker for the ADR embervm/006 TLA+ pilot (bazel/tla). TLC
+# checks the adoption-protocol spec in projects/embervm/specs during CI; the jar
+# plus a vendored Temurin 21 JRE run natively on the amd64 executor. Build-time
+# only: nothing deployed uses Java.
+tla = use_extension("//bazel/tla:repositories.bzl", "tla")
+use_repo(tla, "temurin21_jre_linux_amd64", "tla2tools")
