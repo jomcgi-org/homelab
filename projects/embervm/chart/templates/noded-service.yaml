@@ -1,4 +1,17 @@
 {{- if .Values.noded.enabled }}
+# HEADLESS noded Service (artifact-decoupling PR-C, C4): clusterIP None so the
+# control plane discovers every noded pod's INDIVIDUAL endpoint (via EndpointSlice
+# discovery) and dials each daemon directly, instead of a single ClusterIP load-
+# balancing one WatchNode stream to one arbitrary pod. A DaemonSet fans noded
+# across every FC node; NodeRegistry opens one stream per pod and pushes the
+# workload registry per pod, so per-pod endpoints are the multi-node seam.
+#
+# publishNotReadyAddresses: true is REQUIRED and load-bearing: noded gates
+# readiness on the control-plane registry replay (/readyz flips only after the
+# first SyncRegistry). If the Service published only READY endpoints, the control
+# plane would never see a fresh pod to push the registry to, and the pod could
+# never become ready: a deadlock. Publishing not-ready addresses lets the CP
+# discover a booting pod, dial it, and push the registry that makes it ready.
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,11 +20,15 @@ metadata:
     {{- include "embervm.noded.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
   selector:
     {{- include "embervm.noded.selectorLabels" . | nindent 4 }}
   ports:
-    # gRPC NodeService the control plane dials (Task 11 wires the dispatcher to
-    # <fullname>.<namespace>.svc.cluster.local:{{ .Values.noded.grpcPort }}).
+    # gRPC NodeService the control plane dials per pod. With a headless Service the
+    # control plane resolves individual pod IPs from EndpointSlices and dials
+    # <pod-ip>:{{ .Values.noded.grpcPort }} directly (see
+    # Embervm.Application.configured_nodes/0 EndpointSlice discovery).
     - name: grpc
       port: {{ .Values.noded.grpcPort }}
       targetPort: grpc

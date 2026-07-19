@@ -50,24 +50,23 @@ opLog:
   # audit lives in SigNoz.
   journalHorizonDays: 30
 
-# The single node daemon the control plane talks to (v1: exactly one). Address is
-# resolved in-cluster; the registry takes a list so multi-node needs no reshape.
-#
-# SINGLE-NODE ONLY while noded is a Deployment (replicas: 1) behind a ClusterIP
-# Service: the derived address resolves to the one pod. A DaemonSet across
-# multiple firecracker nodes cannot be served this way (a ClusterIP fans a single
-# stream out to a random pod); that requires a HEADLESS noded Service +
-# EndpointSlice discovery in the control plane, feeding the same list seam. See
+# Node discovery for the control plane (artifact-decoupling PR-C, C4). noded is a
+# DaemonSet behind a HEADLESS Service, so the control plane DISCOVERS every
+# daemon's individual pod endpoint via EndpointSlice discovery and dials each one
+# (per-pod WatchNode + SyncRegistry). No single node.id is configured any more:
+# the fleet is whatever nodes carry homelab.io/firecracker=true. See
 # Embervm.Application.configured_nodes/0.
+#
+# `node.address` (below) is the ONLY override: set it to pin the control plane at
+# one daemon outside this release (tests, an out-of-cluster daemon), which wins
+# over discovery. Left empty (the default) means "discover the DaemonSet pods".
 node:
-  # Correlation id the control plane configures for this daemon (echoed in
-  # WatchNodeRequest.node_id and used as the NodeRegistry's capacity-table key).
-  # The daemon reports its own node id in NodeStatus regardless; this is a label.
-  # noded is node-pinned to node-4 (homelab.io/firecracker=true).
-  id: node-4
-  # gRPC address the NodeRegistry dials. Empty means "derive the in-cluster
-  # embervm-noded Service DNS from the release" (see deployment.yaml); set this
-  # only to point the control plane at a daemon outside this release.
+  # Escape-hatch correlation id, used ONLY alongside node.address (the pinned
+  # single-node override). Ignored under discovery, where the id is the node name.
+  id: ""
+  # gRPC address of a single pinned daemon (host:port). Empty (default) means
+  # discover the noded DaemonSet's pods via EndpointSlices; set this only to point
+  # the control plane at a daemon outside this release.
   address: ""
   # Static bearer token secret (1Password-provisioned) gating the daemon gRPC.
   # Deferred to Task 11: noded currently runs open (noded.bearerTokenSecret.enabled

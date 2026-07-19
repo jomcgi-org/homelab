@@ -66,26 +66,60 @@ rate-limited at Envoy (120/min) and by a daily 3600 vCPU-second quota.
 The full threat model is in
 [ADR embervm/001](../../docs/decisions/embervm/001-embervm-beam-firecracker-workload-orchestrator.md).
 
-## Node taint (one-time operator action)
+## Node labelling (one-time operator action)
 
-FC nodes carry guest memory, so general workloads must never compete for it.
-The chart gives noded and the serving relay a toleration for the FC-node taint
-(`embervm.jomcgi.dev/node=true:NoSchedule`); the taint itself is applied to the
-node by hand, once, because a node taint is node-lifecycle config (the same
-class as joining the node), not a GitOps-managed resource, so the "never
-kubectl-mutate managed resources" rule does not apply.
+noded is a DaemonSet over the FC node pool: it runs one daemon per node carrying
+the label `homelab.io/firecracker=true`, and the control plane discovers each
+daemon's pod endpoint (via EndpointSlices) and dials it individually. Growing the
+fleet is therefore a LABEL, not a values edit: label a node and a noded pod
+schedules onto it; the control plane discovers it on its next (re)start.
 
-**Ordering matters: tolerations first, taint second, never the reverse.** Apply
-the taint only AFTER the chart version carrying the tolerations is live,
-otherwise Kubernetes evicts noded and the relay off the node the moment it is
-tainted. Once the tolerations are rolled out:
+A node label is node-lifecycle config (the same class as joining the node), not a
+GitOps-managed resource, so the "never kubectl-mutate managed resources" rule
+does not apply. Label each FC node once:
 
 ```bash
-kubectl taint nodes node-4 embervm.jomcgi.dev/node=true:NoSchedule
+kubectl label nodes node-1 node-2 node-3 homelab.io/firecracker=true
 ```
 
-To remove it (e.g. reclaiming the node): `kubectl taint nodes node-4
-embervm.jomcgi.dev/node=true:NoSchedule-`.
+Where serving redundancy is wanted, also label the serving-capable nodes so the
+serving relay schedules there too:
+
+```bash
+kubectl label nodes node-1 node-2 node-3 embervm.io/serving=true
+```
+
+### CPU vendor boundary during fleet expansion
+
+Firecracker memory snapshots are non-portable across the AMD/Intel boundary, so
+warmth (bases, sessions, serving/stateful bundles) is keyed and validated per CPU
+vendor. Until the CPU-template work (PR-E) lands, the fleet is a single vendor
+(AMD) and there is no Intel-pool warmth to place onto. The hard boundary is
+enforced FAIL-CLOSED at the daemon regardless of fleet size: a restore of a
+snapshot whose stamped vendor differs from the node's is refused with a loud
+`vendor mismatch` error (never a silent wrong-vendor boot), so labelling a node
+of a different vendor into the pool can never cross-place snapshot-restoring work,
+it just fails that restore loudly. Do not add a mixed-vendor node to the FC label
+set before PR-E without expecting those restores to (correctly) refuse.
+
+### Node taint: recorded option, not applied (ADR embervm/012)
+
+An earlier plan gave noded and the serving relay a toleration for an FC-node
+taint (`embervm.jomcgi.dev/node=true:NoSchedule`) so general workloads could be
+locked off the guest-memory hosts. Per ADR embervm/012 (fleet colocation) that
+taint is a **recorded option, not an applied one**: the fleet colocates ordinary
+workloads with guest memory and relies on the disposable priority class (microVM
+workloads die first under memory pressure), not a hard taint, so the taint is
+NOT applied today. The tolerations remain in the chart so the option can be taken
+later without a code change. If a node ever needs the hard taint (reclaiming it
+purely for guest memory), apply it only AFTER confirming the tolerations are live
+(tolerations first, taint second, never the reverse):
+
+```bash
+# Recorded option, not applied by default:
+kubectl taint nodes <node> embervm.jomcgi.dev/node=true:NoSchedule
+# Remove: kubectl taint nodes <node> embervm.jomcgi.dev/node=true:NoSchedule-
+```
 
 ## Roadmap
 
