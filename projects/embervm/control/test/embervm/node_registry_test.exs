@@ -346,6 +346,7 @@ defmodule Embervm.NodeRegistryTest do
         sync_registry_fun: fn _ch, _id -> :ok end,
         disconnect_fun: fn :fake_channel -> :ok end,
         discover_fun: discover_fun,
+        channel_updater_fun: fn _id, _addr -> :ok end,
         # Large age-out so the blocked watch does not age out during the test.
         age_check_ms: 60_000,
         unknown_after_ms: 60_000,
@@ -385,6 +386,7 @@ defmodule Embervm.NodeRegistryTest do
         sync_registry_fun: fn _ch, _id -> :ok end,
         disconnect_fun: fn :fake_channel -> :ok end,
         discover_fun: fn -> raise "boom" end,
+        channel_updater_fun: fn _id, _addr -> :ok end,
         age_check_ms: 60_000,
         unknown_after_ms: 60_000,
         down_after_ms: 60_000
@@ -394,5 +396,62 @@ defmodule Embervm.NodeRegistryTest do
     # A raising discovery must NOT tear the existing node down.
     NodeRegistry.discover(reg)
     assert Map.has_key?(NodeRegistry.status(reg), "node-a")
+  end
+
+  test "an address change on a STABLE node id re-dials the streamer and channel at the NEW address" do
+    # A DaemonSet pod roll: the node id (nodeName) is stable, but the pod IP
+    # (address) changes. Discovery must detect this by ADDRESS, not just id, and
+    # re-point both the WatchNode streamer and the Prime/Assign channel.
+    {:ok, disc} = Agent.start_link(fn -> [%{id: "node-a", address: "old-ip:9090"}] end)
+    on_exit(fn -> if Process.alive?(disc), do: Agent.stop(disc) end)
+
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(dialed), do: Agent.stop(dialed) end)
+
+    {:ok, chan_updates} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(chan_updates), do: Agent.stop(chan_updates) end)
+
+    # connect_fun records EVERY address it is dialed with, so we can prove the
+    # streamer re-dials the new IP after the roll.
+    connect_fun = fn address ->
+      Agent.update(dialed, &[address | &1])
+      {:ok, :fake_channel}
+    end
+
+    {reg, _table} =
+      start_registry(
+        watch_startup: true,
+        nodes: [%{id: "node-a", address: "old-ip:9090"}],
+        connect_fun: connect_fun,
+        watch_fun: fn _ch, node_id, emit ->
+          emit.(node_status(node_id: node_id))
+          receive do: (:never -> {:ok, :closed})
+        end,
+        sync_registry_fun: fn _ch, _id -> :ok end,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        discover_fun: fn -> Agent.get(disc, & &1) end,
+        channel_updater_fun: fn node_id, address ->
+          Agent.update(chan_updates, &[{node_id, address} | &1])
+          :ok
+        end,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    # The node is up on the OLD address.
+    eventually(fn -> "old-ip:9090" in Agent.get(dialed, & &1) end, 200)
+
+    # The pod rolls: SAME id, NEW address.
+    Agent.update(disc, fn _ -> [%{id: "node-a", address: "new-ip:9090"}] end)
+    NodeRegistry.discover(reg)
+
+    # The streamer re-dialed the NEW address (not just left on the dead old IP).
+    eventually(fn -> "new-ip:9090" in Agent.get(dialed, & &1) end, 200)
+    # The Prime/Assign channel was re-pointed at the new address too.
+    eventually(fn -> {"node-a", "new-ip:9090"} in Agent.get(chan_updates, & &1) end, 200)
+    # The node is still present under its stable id (re-pointed, not dropped).
+    assert Map.has_key?(NodeRegistry.status(reg), "node-a")
+    assert NodeRegistry.status(reg)["node-a"].address == "new-ip:9090"
   end
 end

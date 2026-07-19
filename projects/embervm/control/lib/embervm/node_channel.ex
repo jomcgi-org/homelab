@@ -80,6 +80,21 @@ defmodule Embervm.NodeChannel do
   end
 
   @doc """
+  Point `node_id` at a NEW `address` and drop any cached channel so the next
+  `get/1` re-dials the new endpoint (artifact-decoupling PR-C, C4). The node_addr
+  map seeded at init is STATIC; when a noded DaemonSet pod rolls, its stable
+  node id keeps but its pod IP (address) changes, so `Embervm.NodeRegistry`'s
+  re-discovery calls this to keep the Prime/Assign hot-path channel from dialing
+  the dead old IP forever. Adds the node if it was unknown (a newly-discovered
+  node). Synchronous so the caller knows the map is updated before it starts a
+  fresh streamer against the same address.
+  """
+  @spec update_address(GenServer.server(), String.t(), String.t()) :: :ok
+  def update_address(server \\ __MODULE__, node_id, address) do
+    GenServer.call(server, {:update_address, node_id, address})
+  end
+
+  @doc """
   Whether `error` means the CHANNEL's transport is dead (so the cached channel
   must be invalidated and re-dialed), as opposed to a server-returned gRPC status
   that rode a HEALTHY channel (which must NOT tear the shared channel down, per
@@ -134,6 +149,25 @@ defmodule Embervm.NodeChannel do
       :undefined -> {:reply, do_dial(state, node_id), state}
       channel -> {:reply, {:ok, channel}, state}
     end
+  end
+
+  @impl true
+  def handle_call({:update_address, node_id, address}, _from, state) do
+    state = %{state | node_addr: Map.put(state.node_addr, node_id, address)}
+
+    # Drop any channel cached against the OLD address so the next get/1 re-dials
+    # the new endpoint. Unconditional erase (not identity-guarded): the address
+    # changed, so whatever is cached is dialed at a stale endpoint and must go.
+    case :persistent_term.get(pt_key(node_id), :undefined) do
+      :undefined ->
+        :ok
+
+      channel ->
+        :persistent_term.erase(pt_key(node_id))
+        safe_disconnect(state, channel)
+    end
+
+    {:reply, :ok, state}
   end
 
   @impl true

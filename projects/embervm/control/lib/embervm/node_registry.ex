@@ -216,6 +216,13 @@ defmodule Embervm.NodeRegistry do
     # disables re-discovery entirely, so the node set stays exactly the :nodes list.
     discover_fun = Keyword.get(opts, :discover_fun, nil)
     discover_interval = Keyword.get(opts, :discover_interval_ms, @discover_interval_ms)
+    # How a re-discovered node's NEW address is propagated to the Prime/Assign
+    # hot-path channel holder (Embervm.NodeChannel), whose node_addr map is static
+    # and would otherwise keep dialing a rolled pod's dead IP. Default calls the
+    # singleton NodeChannel; tests inject a fake to assert the propagation without a
+    # running NodeChannel.
+    channel_updater_fun =
+      Keyword.get(opts, :channel_updater_fun, &default_channel_update/2)
 
     NodeCapacity.create(table)
 
@@ -259,6 +266,7 @@ defmodule Embervm.NodeRegistry do
       min_watch_ms: min_watch,
       discover_fun: discover_fun,
       discover_interval_ms: discover_interval,
+      channel_updater_fun: channel_updater_fun,
       node_runtime: node_runtime,
       # The process notified once per drain rising edge with {:node_draining,
       # node_id, deadline_ms} so it can force-bank the node's live instances before
@@ -946,13 +954,32 @@ defmodule Embervm.NodeRegistry do
         current_ids = MapSet.new(Map.keys(state.node_runtime))
         desired_ids = MapSet.new(Map.keys(desired))
 
+        # New ids: seed + open a streamer.
         state =
           Enum.reduce(MapSet.difference(desired_ids, current_ids), state, fn id, acc ->
             add_discovered_node(acc, id, desired[id])
           end)
 
-        Enum.reduce(MapSet.difference(current_ids, desired_ids), state, fn id, acc ->
-          remove_discovered_node(acc, id)
+        # Vanished ids: tear down.
+        state =
+          Enum.reduce(MapSet.difference(current_ids, desired_ids), state, fn id, acc ->
+            remove_discovered_node(acc, id)
+          end)
+
+        # Ids present in BOTH but whose ADDRESS changed (a DaemonSet pod roll keeps
+        # the stable node id but changes the pod IP). The stored address would never
+        # otherwise be compared, so reconnect and the Prime/Assign channel would
+        # re-dial the DEAD OLD IP forever. Re-point the node: tear down the old
+        # streamer, re-add at the new address, and propagate to NodeChannel.
+        MapSet.intersection(desired_ids, current_ids)
+        |> Enum.reduce(state, fn id, acc ->
+          if acc.node_runtime[id].address != desired[id] do
+            acc
+            |> remove_discovered_node(id)
+            |> add_discovered_node(id, desired[id])
+          else
+            acc
+          end
         end)
 
       :error ->
@@ -971,7 +998,37 @@ defmodule Embervm.NodeRegistry do
       :error
   end
 
-  # Add a freshly-discovered node: seed its runtime (mirroring init's shape) and
+  # Propagate a node's address to the Prime/Assign channel holder, swallowing any
+  # error (a NodeChannel that is not running, or a slow call): the streamer we open
+  # next carries WatchNode over its own channel regardless, and the hot-path channel
+  # simply re-dials on its next invalidate if this update did not land.
+  defp safe_channel_update(nil, _node_id, _address), do: :ok
+
+  defp safe_channel_update(updater, node_id, address) do
+    updater.(node_id, address)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm node registry: channel address update for #{node_id} failed: #{inspect(e)}")
+      :ok
+  catch
+    # GenServer.call to a NodeChannel that is not running EXITs (does not raise);
+    # swallow it (the streamer carries WatchNode regardless and the channel
+    # re-dials on its next invalidate).
+    kind, reason ->
+      Logger.warning("embervm node registry: channel address update for #{node_id} exited: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  # Default: point the singleton Embervm.NodeChannel at the node's new address.
+  defp default_channel_update(node_id, address) do
+    Embervm.NodeChannel.update_address(node_id, address)
+    :ok
+  end
+
+  # Add a freshly-discovered node (or re-add one at a NEW address after a roll):
+  # seed its runtime (mirroring init's shape), propagate the address to the
+  # Prime/Assign channel holder so the hot path dials the current endpoint, and
   # open its streamer, which pushes SyncRegistry + consumes WatchNode like any
   # other node.
   defp add_discovered_node(state, node_id, address) do
@@ -989,7 +1046,8 @@ defmodule Embervm.NodeRegistry do
       draining: false
     }
 
-    Logger.info("embervm node registry: discovered new node #{node_id} (#{address})")
+    Logger.info("embervm node registry: discovered node #{node_id} (#{address})")
+    safe_channel_update(state.channel_updater_fun, node_id, address)
 
     state
     |> put_in([:node_runtime, node_id], rt)
