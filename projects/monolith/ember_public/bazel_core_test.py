@@ -341,44 +341,10 @@ def test_savings_never_credits_negative_even_if_wall_ms_exceeds_cold_baseline(
     assert total == 0.0
 
 
-def test_savings_endpoint_returns_cached_value(monkeypatch):
-    calls = {"n": 0}
-
-    def fake_read():
-        calls["n"] += 1
-        return 42.0
-
-    monkeypatch.setattr(bazel_core, "_read_bazel_query_savings_sync", fake_read)
-
-    import asyncio
-
-    first = asyncio.run(bazel_core.cached_bazel_query_savings())
-    assert first["total_analysis_s_saved"] == 42.0
-    assert first["as_of"]
-
-    second = asyncio.run(bazel_core.cached_bazel_query_savings())
-    assert second["total_analysis_s_saved"] == 42.0
-
-    # Second call within the 30s TTL must not re-read the DB.
-    assert calls["n"] == 1
-
-
-def test_savings_endpoint_refetches_after_ttl_expires(monkeypatch):
-    calls = {"n": 0}
-
-    def fake_read():
-        calls["n"] += 1
-        return float(calls["n"])
-
-    monkeypatch.setattr(bazel_core, "_read_bazel_query_savings_sync", fake_read)
-
-    fake_clock = {"t": 1000.0}
-    monkeypatch.setattr(bazel_core, "monotonic", lambda: fake_clock["t"])
-
-    import asyncio
-
-    asyncio.run(bazel_core.cached_bazel_query_savings())
-    fake_clock["t"] += bazel_core._SAVINGS_CACHE_TTL_S + 0.01
-    asyncio.run(bazel_core.cached_bazel_query_savings())
-
-    assert calls["n"] == 2
+# cached_bazel_query_savings's cache-hit/TTL-expiry behavior is covered in
+# bazel_router_test.py's GET /savings tests instead of here: that module
+# drives the async cache read through a single TestClient (one running event
+# loop for the whole test), whereas two independent asyncio.run() calls in
+# one test (as this file's other async coverage does per-call) rebinds the
+# module-level asyncio.Lock() across event loops and fails; see the postgres
+# demo's savings tests for the same TestClient-only pattern.
