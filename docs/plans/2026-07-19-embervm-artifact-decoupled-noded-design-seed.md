@@ -7,7 +7,8 @@ costs of the current coupling. Amended 2026-07-19 after review with Joe: added t
 storage-tier taxonomy, the rollout topology (surge rolls now, control-plane-managed
 node deployments as the target), and resolved open questions 1 and 3. Second review
 pass the same day resolved relay handover, placement authority, the drain budget
-(1m50s), GC policy, and backfill scheduling (resolved questions 3 to 7).
+(1m50s), GC policy, backfill scheduling, and store durability delegation (resolved
+questions 3 to 8).
 
 ## Problem
 
@@ -275,6 +276,16 @@ template is Phase 6's, unchanged.
    needs no KVM) and snapshot builds on SKU-matched FC nodes, pull-based. No
    CI-to-store network path, no publish webhook; this unifies with the Phase 3 build
    queue as one mechanism for builds and backfills.
+8. **Store durability is delegated to the backend behind the S3 endpoint.** The store
+   client speaks plain S3 API with a configurable endpoint (ADR 009 chose SeaweedFS as
+   the first backend, not the architecture), so a production deployment points at real
+   S3/R2/B2 and inherits its durability with a values change. The homelab accepts
+   SeaweedFS as-is, with eviction policy as the compensating lever: local eviction of
+   **durable** artifacts is a space-pressure action, not routine hygiene, so NVMe keeps
+   a second copy while there is room. The exposure window is then "store dies AND the
+   banking node dies before re-fetch", the same double-failure class a real S3 backend
+   protects against. Reconstructible artifacts need no such care (worst case is a
+   re-bake or re-warm).
 
 ## Open questions
 
@@ -287,9 +298,3 @@ template is Phase 6's, unchanged.
    naming today implies tag-keyed, not digest-keyed)?
 3. Where the build queue's state lives: op-log rows (durable, replayable, consistent
    with everything else) is the presumptive answer.
-4. SeaweedFS durability as the master copy: "S3 is the durable layer" promotes
-   SeaweedFS to tier-0 infrastructure, and its own replication story (the item already
-   blocking R6 gates 6 and 7, plus the recent volume slot ceiling) is not settled.
-   GC (resolved question 6) bounds growth, but the replication factor and what backs
-   SeaweedFS's volumes need an answer before Phase 4 leans on restore-on-miss as the
-   norm.
