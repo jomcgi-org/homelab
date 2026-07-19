@@ -134,3 +134,23 @@ def test_savings_endpoint_returns_cached_value(monkeypatch):
 
     # Second call within the 30s TTL must not re-read the DB.
     assert calls["n"] == 1
+
+
+def test_savings_endpoint_refetches_after_ttl_expires(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_read():
+        calls["n"] += 1
+        return float(calls["n"])
+
+    monkeypatch.setattr(bazel_core, "_read_bazel_query_savings_sync", fake_read)
+
+    fake_clock = {"t": 1000.0}
+    monkeypatch.setattr(bazel_core, "monotonic", lambda: fake_clock["t"])
+
+    client = _client()
+    client.get("/api/ember/bazel/savings")
+    fake_clock["t"] += bazel_core._SAVINGS_CACHE_TTL_S + 0.01
+    client.get("/api/ember/bazel/savings")
+
+    assert calls["n"] == 2
