@@ -281,6 +281,100 @@ defmodule Embervm.K8s do
   end
 
   @doc """
+  Lists the pods matching `label_selector` in `namespace`, returning one
+  `%{name, node_name, phase}` per pod (artifact-decoupling PR-I). The CP dynamic
+  sizer (`Embervm.NodeSizer`) uses this to map a node's capacity facts (keyed by
+  the K8s node NAME the daemon self-reports) to the noded pod NAME it must address
+  the `pods/resize` subresource against, since a DaemonSet pod's name is not
+  derivable from the node name alone.
+
+  Requires `list` on `pods` (core API group) in the namespace (granted in the
+  chart RBAC). A pod with no `spec.nodeName` (unscheduled) is still returned with
+  `node_name: nil`; the sizer skips it. An empty result (no pods yet) is
+  `{:ok, []}`, so a boot before the DaemonSet is scheduled simply finds nothing.
+  """
+  @spec list_pods(String.t(), String.t()) ::
+          {:ok, [%{name: String.t(), node_name: String.t() | nil, phase: String.t() | nil}]}
+          | {:error, term()}
+  def list_pods(namespace, label_selector) do
+    query = URI.encode_query([{"labelSelector", label_selector}])
+    path = "/api/v1/namespaces/#{URI.encode(namespace)}/pods?" <> query
+
+    case do_request(:get, path, nil, nil) do
+      {:ok, 200, resp_body} ->
+        decoded = :json.decode(resp_body)
+        items = Map.get(decoded, "items", [])
+
+        pods =
+          for item <- items do
+            %{
+              name: get_in(item, ["metadata", "name"]),
+              node_name: get_in(item, ["spec", "nodeName"]),
+              phase: get_in(item, ["status", "phase"])
+            }
+          end
+
+        {:ok, pods}
+
+      {:ok, status, _resp_body} ->
+        {:error, {:apiserver_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Resizes one pod's `container` resources IN PLACE via the `pods/resize`
+  subresource (Kubernetes 1.35 InPlacePodVerticalScaling), the CP dynamic-sizing
+  actuator (artifact-decoupling PR-I, ADR embervm/012). `requests` and `limits`
+  are quantity-string maps (e.g. `%{"cpu" => "100m", "memory" => "8Gi"}`); a
+  strategic-merge patch against the resize subresource updates only the named
+  container's `resources`, adjusting request AND limit together so the scheduler's
+  ledger stays honest.
+
+  QoS INVARIANT (the kubelet REJECTS a resize that would change a pod's QoS class):
+  noded is Burstable (CPU request with NO CPU limit, memory request == limit, per
+  the repo sizing convention). The caller MUST pass `limits` WITHOUT a `cpu` key
+  and keep `memory` present in both maps so the Burstable shape is preserved;
+  introducing a CPU limit (making it Guaranteed on a single container) or dropping
+  the memory limit would flip QoS and the kubelet returns 422, which this surfaces
+  as `{:error, {:apiserver_status, 422}}` (the sizer treats a non-2xx as a
+  placement refusal, never an overcommit).
+
+  A 200 is a satisfied resize; a 4xx (e.g. 422 Infeasible / QoS-change) or a
+  transport error is returned verbatim for the caller to classify. Requires
+  `patch` on `pods/resize` (core API group) in the namespace (granted in the
+  chart RBAC).
+  """
+  @spec resize_pod(String.t(), String.t(), String.t(), %{optional(String.t()) => String.t()}, %{
+          optional(String.t()) => String.t()
+        }) :: :ok | {:error, term()}
+  def resize_pod(namespace, pod_name, container, requests, limits) do
+    path =
+      "/api/v1/namespaces/#{URI.encode(namespace)}/pods/#{URI.encode(pod_name)}/resize"
+
+    patch = %{
+      "spec" => %{
+        "containers" => [
+          %{
+            "name" => container,
+            "resources" => %{"requests" => requests, "limits" => limits}
+          }
+        ]
+      }
+    }
+
+    body = :json.encode(patch) |> :erlang.iolist_to_binary()
+
+    case do_request(:patch, path, body, "application/strategic-merge-patch+json") do
+      {:ok, 200, _resp_body} -> :ok
+      {:ok, status, _resp_body} -> {:error, {:apiserver_status, status}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   The pod's own namespace, read from the projected ServiceAccount `namespace`
   file. Falls back to `default` when the file is absent (local `mix`, ExUnit),
   where EndpointSlice discovery is never exercised anyway.

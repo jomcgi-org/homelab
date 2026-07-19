@@ -82,3 +82,58 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "embervm.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+---
+# Namespaced pod RBAC for the CP dynamic sizer (artifact-decoupling PR-I,
+# ADR embervm/012). A Role (not ClusterRole) because it grants access only to the
+# embervm namespace's own noded pods:
+#
+#   pods (get/list/watch)   Embervm.NodeSizer.list_pods maps a node's capacity
+#                           facts (keyed by spec.nodeName) to the noded pod NAME it
+#                           must resize (a DaemonSet pod name is not derivable from
+#                           the node name); NodeRegistry age-out/health also reads
+#                           pod state. Missing this makes the sizer find no pods and
+#                           silently never resize (guests stay scheduler-invisible).
+#   pods/resize (patch)     Embervm.K8s.resize_pod PATCHes the pods/resize
+#                           subresource (k8s 1.35 InPlacePodVerticalScaling) to grow
+#                           /shrink each noded pod's memory + CPU request AND limit
+#                           to the committed guest capacity on that node. Missing the
+#                           patch verb makes every resize a Forbidden the sizer treats
+#                           as a placement refusal, so nothing is ever placed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "embervm.fullname" . }}-node-sizer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/resize
+    verbs:
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "embervm.fullname" . }}-node-sizer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "embervm.fullname" . }}-node-sizer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "embervm.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

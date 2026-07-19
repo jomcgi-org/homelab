@@ -96,6 +96,20 @@ defmodule Embervm.Application do
       # reads; workers invalidate a channel on a transport error. With no node
       # wired it caches nothing.
       {Embervm.NodeChannel, nodes: configured_nodes()},
+      # The CP dynamic per-node sizer (artifact-decoupling PR-I, ADR embervm/012):
+      # the resize control loop that makes guest memory scheduler-visible by growing
+      # each noded pod's request AND limit to the committed guest capacity on that
+      # node, replacing the fixed maxLiveVMs/36Gi static sizing. Placed AFTER
+      # NodeRegistry (it reads the NodeCapacity table the registry projects) and
+      # WorkloadWatcher (it reads WorkloadCatalog sizing), and BEFORE the placement
+      # consumers (Dispatcher, SessionManager, ServingManager): those call
+      # NodeSizer.reserve/3 for grow-eager capacity, and a resize the kubelet refuses
+      # is a placement refusal for that node. CRITICAL (boot ordering, ADR 012): its
+      # init makes NO Finch/k8s call; the first resize runs in handle_continue AFTER
+      # Finch is up, so a k8s error logs+continues rather than crash-looping. With no
+      # namespace wired (mix test) it is disabled and reserve returns {:error,
+      # :disabled}, so placement keeps the legacy maxLiveVMs backstop unchanged.
+      {Embervm.NodeSizer, node_sizer_opts()},
       # Metering, audit, and quotas (Task 12). Owns the public per-principal daily
       # quota-cache ETS table (rebuilt on boot from the op-log's usage projection)
       # and appends request-scoped denials. Placed AFTER OpLog.SQLite (it reads the
@@ -488,6 +502,47 @@ defmodule Embervm.Application do
   end
 
   defp pool_opts, do: []
+
+  # Embervm.NodeSizer (PR-I) config: the pod namespace + label selector it addresses
+  # the pods/resize subresource against, the noded container name, the daemon-only
+  # baseline (mem + cpu) the CP grows above per committed guest, the bounded headroom,
+  # and the shrink-lazy threshold. The namespace is the release namespace read from
+  # the projected SA (in-cluster); an absent namespace file (mix test) yields "" so
+  # the sizer is DISABLED and placement keeps the legacy maxLiveVMs backstop. The
+  # label selector targets the noded DaemonSet pods (chart-wired via
+  # EMBERVM_NODED_POD_SELECTOR); unset also disables actuation.
+  defp node_sizer_opts do
+    [
+      namespace: node_sizer_namespace(),
+      pod_label_selector: trimmed_env("EMBERVM_NODED_POD_SELECTOR") |> nil_if_empty(),
+      container: trimmed_env("EMBERVM_NODED_CONTAINER") |> nil_if_empty() || "noded"
+    ] ++
+      opt_int("EMBERVM_NODE_SIZER_BASELINE_MEM_MIB", :baseline_mem_mib) ++
+      opt_int("EMBERVM_NODE_SIZER_BASELINE_CPU_MILLICORES", :baseline_cpu_millicores) ++
+      opt_int("EMBERVM_NODE_SIZER_HEADROOM_MIB", :headroom_mib) ++
+      opt_int("EMBERVM_NODE_SIZER_SHRINK_THRESHOLD_MIB", :shrink_threshold_mib)
+  end
+
+  # The sizer's target namespace: only set when BOTH a namespace is readable
+  # (in-cluster) AND a pod selector is configured, so a control plane with no
+  # sizing config (or out-of-cluster) leaves the sizer disabled. Embervm.K8s.namespace/0
+  # falls back to "default" out-of-cluster, so we gate on the selector being present
+  # to avoid a spurious enable in mix test.
+  defp node_sizer_namespace do
+    if trimmed_env("EMBERVM_NODED_POD_SELECTOR") != "" do
+      Embervm.K8s.namespace()
+    else
+      nil
+    end
+  end
+
+  # Emit [{key, integer}] for a set env var, or [] to fall back to the module default.
+  defp opt_int(env_name, key) do
+    case int_env_or_nil(env_name) do
+      nil -> []
+      value -> [{key, value}]
+    end
+  end
 
   # Extra opts threaded into every Embervm.Session the SessionManager starts. Empty
   # in production (the session process uses its real NodeChannel/SessionAssign
