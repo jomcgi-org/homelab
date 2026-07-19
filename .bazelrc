@@ -52,6 +52,17 @@ common --@rules_python//python/config_settings:bootstrap_impl=script
 # CI builds: timestamp + branch tag (via //bazel/tools/oci:ci_build condition)
 common --workspace_status_command=./bazel/tools/workspace_status.sh
 
+# Reproducible apko image digests. apko stamps a wall-clock `created` timestamp
+# into the image config blob (and layer mtimes) unless SOURCE_DATE_EPOCH is set,
+# so identical source produced a different digest on every rebuild, forcing the
+# recurring "republish drifted image digests" chart bumps and fleet-wide rolls.
+# apko honors this only as an env var (there is no --source-date-epoch build
+# flag in apko v0.30.x); the rules_apko action runs with use_default_shell_env,
+# so --action_env reaches it. A FIXED constant, not a build/commit time: a
+# varying value would move every image's digest on every build and reintroduce
+# the churn. Tools that ignore SOURCE_DATE_EPOCH are unaffected.
+common --action_env=SOURCE_DATE_EPOCH=0
+
 # Release config for backwards compatibility
 common:release --stamp --workspace_status_command=./bazel/tools/workspace_status.sh
 
