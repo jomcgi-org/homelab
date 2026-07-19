@@ -89,6 +89,18 @@ spec:
               value: {{ include "embervm.noded.fullname" . | quote }}
             - name: EMBERVM_NODED_GRPC_PORT
               value: {{ .Values.noded.grpcPort | quote }}
+            # CP dynamic sizer (PR-I, ADR embervm/012): the label selector
+            # Embervm.NodeSizer lists the noded DaemonSet pods with, to map a node's
+            # capacity facts (keyed by spec.nodeName) to the pod NAME it resizes via
+            # pods/resize. Same selector labels the noded pods carry (see
+            # embervm.noded.selectorLabels); setting this ENABLES the sizer (an unset
+            # selector leaves it disabled, so placement keeps the legacy maxLiveVMs
+            # backstop). The noded container name the resize patch targets is fixed
+            # ("noded") but overridable for parity with the sizer's default.
+            - name: EMBERVM_NODED_POD_SELECTOR
+              value: "app.kubernetes.io/component=noded,app.kubernetes.io/instance={{ .Release.Name }}"
+            - name: EMBERVM_NODED_CONTAINER
+              value: noded
             {{- end }}
             {{- if and .Values.runtimePython .Values.runtimePython.guestImage .Values.runtimePython.guestImage.repository }}
             # R1 zip lane (ADR embervm/002): the zip-lane runtime name -> pinned

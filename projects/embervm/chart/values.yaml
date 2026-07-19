@@ -711,9 +711,13 @@ noded:
   # inference or the database under memory pressure, so lowest priority.
   priorityClassName: homelab-disposable
 
-  # Node-level backstop cap on concurrently live microVMs. The control plane owns
-  # real concurrency; this only stops a runaway from exhausting the node.
-  maxLiveVMs: 8
+  # PURE RUNAWAY BACKSTOP on concurrently live microVMs (PR-I, ADR embervm/012).
+  # This is NO LONGER a capacity model: the control-plane dynamic sizer
+  # (Embervm.NodeSizer) grows each noded pod's request AND limit live to the
+  # committed guest capacity, so scheduler-visible memory is what bounds real
+  # concurrency now. This cap only stops a runaway (a bug that primes unboundedly)
+  # from exhausting a node before the sizer/scheduler react, so it is set generous.
+  maxLiveVMs: 64
 
   # R5 composite-group supernet: noded carves a per-group /24 out of this supernet
   # for each composite-workload group and VALIDATES the control-plane-assigned group
@@ -813,24 +817,25 @@ noded:
   # CP/noded state.
   requireBlessing: true
 
-  # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
-  # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it
-  # does not overcommit node scheduling, exactly like fc-invoke's 50Gi cap.
+  # DAEMON-ONLY BASELINE (PR-I, ADR embervm/012). The hand-computed 36Gi ceiling
+  # arithmetic is gone: guest memory is no longer bounded by a fixed pod limit but
+  # made SCHEDULER-VISIBLE by the control-plane dynamic sizer (Embervm.NodeSizer),
+  # which grows this pod's request AND limit IN PLACE (pods/resize,
+  # InPlacePodVerticalScaling) to the committed guest capacity on the node and shrinks
+  # them lazily as guests release. So these values are only what the pod needs with
+  # ZERO live guests: the daemon process + Go runtime + a little transient base-build
+  # cold-boot headroom. The CP grows above this per committed guest.
   #
-  # embervm worst case (both workloads at cap, no serialization):
-  #   semgrep 16 x 1536Mi = 24Gi + sandbox 16 x 512Mi = 8Gi + ~2Gi transient
-  #   base-build cold-boot + ~0.3Gi daemon ~= 34Gi -> 36Gi ceiling.
-  #
-  # node-4 has 63.4GiB allocatable. The two daemons' CEILINGS oversubscribe
-  # (fc-invoke halved ~40Gi + embervm 36Gi = 76Gi), which is SAFE because these
-  # are cgroup caps, not reservations: real simultaneous cap-16 peak never occurs
-  # during side-by-side (production PR scans stay on fc-invoke, so embervm idles at
-  # its floor: semgrep 4x1536 + sandbox 4x512 = 8Gi steady), and post-drain only
-  # embervm peaks (fc-invoke drained). oom_score_adj kills guests before the
-  # daemon/DB. The absolute cap-16 throughput run is a post-drain Task 16 gate.
+  # QoS INVARIANT: this shape keeps noded BURSTABLE (CPU request, NO CPU limit;
+  # memory request == limit). In-place resize CANNOT change QoS class (the kubelet
+  # rejects one that would), so the sizer's grows/shrinks preserve exactly this shape:
+  # they set a CPU request but never a CPU limit, and keep memory request == limit.
+  # These baseline numbers MUST stay aligned with the sizer's baseline defaults
+  # (EMBERVM_NODE_SIZER_BASELINE_MEM_MIB / _CPU_MILLICORES) so the CP's first resize
+  # is a small delta, not a jump.
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 512Mi
     limits:
-      memory: 36Gi
+      memory: 512Mi
