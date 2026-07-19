@@ -315,6 +315,80 @@ defmodule Embervm.NodeRoundtripTest do
              NodeService.Stub.delete_volume(ch, %DeleteVolumeRequest{workload: "scratch-postgres"})
   end
 
+  test "StartStateful honors blessed_generation and volume_device (R7 additive fields)", %{
+    channel: ch
+  } do
+    # FRESH with blessed_generation set: the control-plane-issued generation wins
+    # over the fake's legacy self-bump value of 1.
+    {:ok, fresh_blessed} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_FRESH,
+        boot_image_ref: "pg-base",
+        port: 5432,
+        blessed_generation: 42
+      })
+
+    assert fresh_blessed.generation == 42
+
+    # FRESH with blessed_generation unset (0): falls back to the legacy scripted
+    # value, proving a pre-blessing daemon/CP pair still round-trips.
+    {:ok, fresh_legacy} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_FRESH,
+        boot_image_ref: "pg-base",
+        port: 5432
+      })
+
+    assert fresh_legacy.generation == 1
+
+    # RELIGHT with blessed_generation set: same override on the warm-relight path.
+    {:ok, relight_blessed} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_RELIGHT,
+        relight_snapshot_ref: "stateful/scratch-postgres",
+        boot_image_ref: "pg-base",
+        port: 5432,
+        blessed_generation: 43
+      })
+
+    assert relight_blessed.generation == 43
+    assert relight_blessed.was_relight == true
+
+    # RELIGHT with blessed_generation unset (0): falls back to the legacy scripted
+    # value of 7 for the warm-relight branch.
+    {:ok, relight_legacy} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_RELIGHT,
+        relight_snapshot_ref: "stateful/scratch-postgres",
+        boot_image_ref: "pg-base",
+        port: 5432
+      })
+
+    assert relight_legacy.generation == 7
+
+    # volume_device set (R7, Longhorn-native lane): the fake echoes it into vm_id
+    # so the client can assert the device path crossed the wire.
+    {:ok, device_set} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_FRESH,
+        boot_image_ref: "pg-base",
+        port: 5432,
+        volume_device: "/dev/longhorn/scratch-postgres"
+      })
+
+    assert device_set.vm_id == "vm:pg-base@/dev/longhorn/scratch-postgres"
+
+    # volume_device empty (legacy vol.img lane): no suffix on vm_id.
+    {:ok, device_unset} =
+      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
+        mode: :START_STATEFUL_MODE_FRESH,
+        boot_image_ref: "pg-base",
+        port: 5432
+      })
+
+    assert device_unset.vm_id == "vm:pg-base"
+  end
+
   test "group verbs round-trip across the wire (R5 additive contract)", %{channel: ch} do
     # CreateGroupNetwork: derives bridge_name/gateway_ip from the request, proving
     # the group_instance_id and cidr fields crossed the wire.
@@ -597,6 +671,35 @@ defmodule Embervm.NodeRoundtripTest do
 
     assert missing.status == GRPC.Status.failed_precondition()
 
+    # RestoreArtifact with vendor set (R7): a normal ref restores fine, proving
+    # vendor crosses the wire without being misread as a mismatch.
+    {:ok, vendor_ok} =
+      NodeService.Stub.restore_artifact(ch, %RestoreArtifactRequest{
+        artifact: stateful,
+        vendor: "amd"
+      })
+
+    assert vendor_ok.bytes_moved > 0
+
+    # RestoreArtifact vendor mismatch (R7, standing decision 1): the fake scripts
+    # a FAILED_PRECONDITION off a "vendor-mismatch" ref when vendor is set, proving
+    # a cross-vendor restore fails closed rather than silently cold-booting.
+    mismatched = %ArtifactRef{
+      kind: :ARTIFACT_KIND_STATEFUL,
+      workload: "scratch-postgres",
+      ref: "stateful/scratch-postgres-vendor-mismatch"
+    }
+
+    {:ok, _} = NodeService.Stub.export_artifact(ch, %ExportArtifactRequest{artifact: mismatched})
+
+    {:error, vendor_mismatch} =
+      NodeService.Stub.restore_artifact(ch, %RestoreArtifactRequest{
+        artifact: mismatched,
+        vendor: "intel"
+      })
+
+    assert vendor_mismatch.status == GRPC.Status.failed_precondition()
+
     # EvictArtifact(remote=true): removes the store copy, reports bytes freed.
     {:ok, ev} =
       NodeService.Stub.evict_artifact(ch, %EvictArtifactRequest{artifact: stateful, remote: true})
@@ -630,6 +733,16 @@ defmodule Embervm.NodeRoundtripTest do
 
     assert [set] = ns.group_bundle_sets
     assert set.exported == true
+  end
+
+  test "NodeStatus reports distribution facts (R7 additive fields)", %{channel: ch} do
+    {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
+
+    assert ns.cpu_vendor == "amd"
+    assert ns.node_template_hash == "tmpl-abc123"
+
+    assert [vol] = ns.volumes
+    assert vol.generation_blessed == true
   end
 
   test "WatchNode server-streams heartbeats in order", %{channel: ch} do
