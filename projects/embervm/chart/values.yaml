@@ -202,7 +202,15 @@ servingEnvoy:
   # diverge later; v1 both land on node-4.
   nodeSelector:
     embervm.io/serving: "true"
-  tolerations: []
+  # Tolerate the FC-node taint so the serving relay still schedules onto the
+  # guest-memory hosts once they are tainted (embervm.jomcgi.dev/node=true:
+  # NoSchedule locks general workloads off those nodes). See projects/embervm/
+  # README.md: the taint is applied by an operator AFTER this toleration is live.
+  tolerations:
+    - key: embervm.jomcgi.dev/node
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
   # Disposable tier: the data plane must yield before inference/DB under pressure.
   priorityClassName: homelab-disposable
   # Small, per repo convention: CPU request-only (no limit), memory req==limit.
@@ -690,7 +698,16 @@ noded:
   # node-4 pinning: the lone Firecracker node (homelab.io/firecracker=true).
   nodeSelector:
     homelab.io/firecracker: "true"
-  tolerations: []
+  # Tolerate the FC-node taint so noded still schedules onto the guest-memory
+  # hosts once they are tainted (embervm.jomcgi.dev/node=true:NoSchedule locks
+  # general workloads off those nodes so they never compete with guest memory).
+  # See projects/embervm/README.md: the taint is an operator action applied AFTER
+  # this toleration is live (tolerations first, taint second, never the reverse).
+  tolerations:
+    - key: embervm.jomcgi.dev/node
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
   # Disposable tier (ADR platform/010): microVM workloads must die before
   # inference or the database under memory pressure, so lowest priority.
   priorityClassName: homelab-disposable
