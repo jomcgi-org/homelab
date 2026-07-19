@@ -202,6 +202,12 @@ func run(logger *slog.Logger) error {
 	// cancels them on shutdown, and the export queue is fire-and-forget so it never
 	// holds the drain deadline.
 	srv.StartStoreLoops(ctx)
+	// Sample the cgroup CPU usage rate on the liveness cadence so
+	// NodeStatus.cpu_headroom_millicores always has a live two-sample delta
+	// rather than a stale or empty one (ADR embervm/005 item 4: the daemon
+	// reads its own cgroup budget, not static config). Mem budget/headroom
+	// are cheap best-effort reads with no caching and need no loop.
+	srv.StartBudgetLoop(ctx)
 	// Create the serving bridge and install the ingress-only nftables posture before
 	// serving any StartServing. Idempotent across restarts (existing bridge tolerated).
 	if err := servingNet.EnsureNetwork(ctx); err != nil {

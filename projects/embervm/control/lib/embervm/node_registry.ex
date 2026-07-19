@@ -528,6 +528,13 @@ defmodule Embervm.NodeRegistry do
       cpu_headroom_millicores: s.cpu_headroom_millicores,
       live_vms: s.live_vms,
       max_live_vms: s.max_live_vms,
+      # Budget facts (R0 PR-1, additive): the ceiling the daemon reads from its
+      # OWN cgroup (ADR embervm/005 item 4, ADR embervm/013 section 7 as
+      # amended). These feed the per-size-class brick slot ceiling; no
+      # capacity decision may read max_live_vms after this. 0 means unknown
+      # (unlimited cgroup or a daemon that never sets them, wire-compatible).
+      mem_budget_mib: s.mem_budget_mib,
+      cpu_budget_millicores: s.cpu_budget_millicores,
       draining: false,
       # Continuity fact (R6, additive): the daemon's latest object-store
       # reachability verdict. Read by the restore-on-miss wake planners to decide

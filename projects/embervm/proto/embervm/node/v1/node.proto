@@ -1623,4 +1623,25 @@ message NodeStatus {
   // The CP rollout controller (standing decision 6) compares this against the
   // current DaemonSet template hash to decide which node still needs a roll.
   string node_template_hash = 25;
+
+  // -- Budget facts (R0 PR-1, additive) ----------------------------------------
+  // These two fields are the budget-agnostic daemon's sensor output (ADR
+  // embervm/005 item 4, ADR embervm/013 section 7 as amended): the ceiling
+  // the daemon reads from its OWN cgroup rather than being configured or
+  // resized. They feed the per-size-class brick slot ceiling (the new
+  // meaning of max_live_vms), never a resize loop (resize is dropped). Both
+  // are optional and wire-compatible with a daemon that never sets them
+  // (0 = unknown, matching the existing mem_headroom_mib /
+  // cpu_headroom_millicores best-effort semantics).
+
+  // mem_budget_mib is the cgroup v2 memory.max ceiling in MiB, minus the
+  // daemon's own RSS reserve (EMBERVM_NODED_DAEMON_RESERVE_MIB). 0 means
+  // unknown (unlimited cgroup or read error), never a guess.
+  uint64 mem_budget_mib = 26;
+  // cpu_budget_millicores is the cgroup v2 cpu.max quota/period ceiling
+  // expressed as millicores. 0 means unknown (unlimited cgroup or read
+  // error). cpu_headroom_millicores (field 4, above) is now populated from
+  // this budget minus the observed usage-rate delta sampled across
+  // refreshes, rather than hard-coded 0.
+  uint64 cpu_budget_millicores = 27;
 }

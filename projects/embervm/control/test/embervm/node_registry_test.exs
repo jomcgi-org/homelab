@@ -58,9 +58,11 @@ defmodule Embervm.NodeRegistryTest do
           }
         ]),
       mem_headroom_mib: 2048,
-      cpu_headroom_millicores: 0,
+      cpu_headroom_millicores: Keyword.get(opts, :cpu_headroom_millicores, 0),
       live_vms: Keyword.get(opts, :live_vms, 0),
       max_live_vms: 8,
+      mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 3584),
+      cpu_budget_millicores: Keyword.get(opts, :cpu_budget_millicores, 2000),
       draining: Keyword.get(opts, :draining, false),
       build_error: ""
     }
@@ -94,6 +96,23 @@ defmodule Embervm.NodeRegistryTest do
     snapshot = NodeRegistry.status(reg)
     assert snapshot["node-4"].health == :healthy
     assert snapshot["node-4"].dispatchable
+  end
+
+  test "registry projects budget facts (R0 PR-1: mem/cpu budget from the daemon's own cgroup)" do
+    {clock, _advance} = new_clock()
+    {reg, table} = start_registry(clock: clock)
+
+    :ok =
+      NodeRegistry.inject_status(
+        reg,
+        "node-4",
+        node_status(mem_budget_mib: 3584, cpu_budget_millicores: 2000, cpu_headroom_millicores: 1500)
+      )
+
+    assert [facts] = NodeRegistry.capacity(table)
+    assert facts.mem_budget_mib == 3584
+    assert facts.cpu_budget_millicores == 2000
+    assert facts.cpu_headroom_millicores == 1500
   end
 
   test "a draining NodeStatus stops new assignments immediately (fail-closed, zero facts)" do
