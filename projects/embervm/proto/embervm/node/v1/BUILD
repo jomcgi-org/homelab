@@ -16,7 +16,13 @@ load("@rules_go//go:def.bzl", "go_library")
 filegroup(
     name = "node_proto",
     srcs = ["node.proto"],
-    visibility = ["//projects/embervm:__subpackages__"],
+    # //bazel/erlang is granted access so mix_test_smoke (the general test lane)
+    # can stage node.proto into the mix sandbox for the layer-1 spec vocabulary
+    # test, which parses the rpc verbs out of it (ADR embervm/006 layer 1).
+    visibility = [
+        "//bazel/erlang:__pkg__",
+        "//projects/embervm:__subpackages__",
+    ],
 )
 
 # Go codegen: protoc-gen-go emits the message types (node.pb.go) and

@@ -98,9 +98,18 @@ genrule(
         "//projects/embervm/proto/embervm/node/v1:node_elixir_src",
         ":hex_tarballs",
         "@rebar3//file",
+        # Layer-1 spec vocabulary test inputs (ADR embervm/006): the spec sources
+        # (adoption.tla + vocabulary.exs) and node.proto. mix_test.sh stages these
+        # into the sandbox and exports EMBERVM_SPECS_DIR / EMBERVM_NODE_PROTO so
+        # spec_vocabulary_test.exs finds them; absent env leaves behavior unchanged.
+        "//projects/embervm/specs:spec_files",
+        "//projects/embervm/proto/embervm/node/v1:node_proto",
     ],
     outs = ["mix_test_smoke.txt"],
-    cmd = "MIX_REBAR3_SRC=\"$$(pwd)/$(location @rebar3//file)\" $(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
+    cmd = "MIX_REBAR3_SRC=\"$$(pwd)/$(location @rebar3//file)\" " +
+          "EMBERVM_SPECS_SRCS=\"$(locations //projects/embervm/specs:spec_files)\" " +
+          "EMBERVM_NODE_PROTO_SRC=\"$(location //projects/embervm/proto/embervm/node/v1:node_proto)\" " +
+          "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
     tags = ["no-remote-cache"],
     tools = ["mix_test.sh"],
 )

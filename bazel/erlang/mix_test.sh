@@ -89,6 +89,33 @@ if [ -n "${MIX_REBAR3_SRC:-}" ]; then
 	chmod +x "$work/otp/bin/rebar3"
 	export MIX_REBAR3="$work/otp/bin/rebar3"
 fi
+
+# Layer-1 spec vocabulary test inputs (ADR embervm/006): stage the spec sources
+# (adoption.tla + vocabulary.exs) and node.proto into the sandbox and point the
+# test at them via env, so spec_vocabulary_test.exs is hermetic on the executor.
+# Both are OPTIONAL: absent (any lane not passing these) leaves the build
+# unchanged, exactly like MIX_REBAR3_SRC above. Bazel passes the paths
+# execroot-relative, so absolutize each before we cd into the workdir.
+if [ -n "${EMBERVM_SPECS_SRCS:-}" ]; then
+	mkdir -p "$work/specs"
+	for spec in $EMBERVM_SPECS_SRCS; do
+		case "$spec" in
+		/*) abs="$spec" ;;
+		*) abs="$(pwd)/$spec" ;;
+		esac
+		cp "$abs" "$work/specs/"
+	done
+	export EMBERVM_SPECS_DIR="$work/specs"
+fi
+if [ -n "${EMBERVM_NODE_PROTO_SRC:-}" ]; then
+	case "$EMBERVM_NODE_PROTO_SRC" in
+	/*) proto_abs="$EMBERVM_NODE_PROTO_SRC" ;;
+	*) proto_abs="$(pwd)/$EMBERVM_NODE_PROTO_SRC" ;;
+	esac
+	mkdir -p "$work/proto"
+	cp "$proto_abs" "$work/proto/node.proto"
+	export EMBERVM_NODE_PROTO="$work/proto/node.proto"
+fi
 export HOME="$work" # mix/hex write under $HOME (~/.mix); keep it in the sandbox
 export MIX_ENV=test
 # The executor env is stripped, so force UTF-8 filename handling (avoids the

@@ -81,7 +81,9 @@ genrule(
 
 # The spec sources the layer-1 vocabulary sync test (Task 3) reads. vocabulary.exs
 # is globbed now so Task 3 does not have to touch this BUILD; the glob tolerates
-# its current absence.
+# its current absence. //bazel/erlang is granted visibility because mix_test_smoke
+# (the general test lane, //bazel/erlang) stages these into the mix sandbox so the
+# vocabulary test can read adoption.tla + vocabulary.exs there.
 filegroup(
     name = "spec_files",
     srcs = glob([
@@ -89,5 +91,8 @@ filegroup(
         "*.cfg",
         "vocabulary.exs",
     ]),
-    visibility = ["//projects/embervm:__subpackages__"],
+    visibility = [
+        "//bazel/erlang:__pkg__",
+        "//projects/embervm:__subpackages__",
+    ],
 )
