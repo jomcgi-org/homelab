@@ -506,6 +506,33 @@ func (s *Server) imageProvisioned(imageRef string) bool {
 	return ok
 }
 
+// refuseIfStale rejects an admission RPC that would place NEW work while the
+// workload registry is STALE (a boot-cache load with no live SyncRegistry yet,
+// ADR embervm/012 never-warm-to-dead). A stale daemon serves EXISTING warmth but
+// must admit NO new work: the control plane dials pods directly with
+// publishNotReadyAddresses, so the /readyz gate does NOT protect this path, and a
+// stale daemon otherwise advertises full placeable capacity (its warm bases were
+// adopted from disk and imageProvisioned is true from the stale cache). This is
+// the daemon-side backstop that makes "serve existing warmth, never admit new
+// work" airtight. WARM-serving paths (Assign to an already-primed VM, relight/
+// restore of an existing base, a Prime refill of an already-warm workload) do NOT
+// call this, so existing warmth keeps flowing. Returns nil when not stale.
+func (s *Server) refuseIfStale(what string) error {
+	if s.registry.isStale() {
+		return status.Errorf(codes.FailedPrecondition, "noded: registry stale, awaiting live sync (refusing %s)", what)
+	}
+	return nil
+}
+
+// hasPrimedForWorkload reports whether the task pool already holds at least one
+// primed VM for a workload. A Prime for a workload with existing warmth is a
+// refill (allowed while stale); a Prime for a workload with none is cold
+// placement (refused while stale).
+func (s *Server) hasPrimedForWorkload(workload string) bool {
+	primed, _ := s.vms.capacity()
+	return len(primed[workload]) > 0
+}
+
 // ---- BuildBase -------------------------------------------------------------
 
 // BuildBase resolves the image to its node-side rootfs, cold-boots a guest,
@@ -515,6 +542,11 @@ func (s *Server) imageProvisioned(imageRef string) bool {
 func (s *Server) BuildBase(ctx context.Context, req *nodev1.BuildBaseRequest) (*nodev1.BuildBaseResponse, error) {
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
+	}
+	// A stale registry (boot cache, no live sync yet) admits no new work: a base
+	// build is the coldest possible placement.
+	if err := s.refuseIfStale("BuildBase"); err != nil {
+		return nil, err
 	}
 	if s.newBuildDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: base building not configured")
@@ -844,6 +876,15 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	}
 	if base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: base %q not ready (state %s)", ref, base.state)
+	}
+	// While the registry is stale, a Prime that would be the FIRST warm VM for a
+	// workload is cold placement (refused); a Prime that refills an already-warm
+	// workload keeps existing warmth topped up (allowed). This preserves "serve
+	// existing warmth, never admit new work" without the daemon knowing CP intent.
+	if !s.hasPrimedForWorkload(base.workload) {
+		if err := s.refuseIfStale("Prime (no existing warm pool for workload)"); err != nil {
+			return nil, err
+		}
 	}
 	readyPath := base.readyPath
 	if readyPath == "" {

@@ -83,6 +83,12 @@ func (s *Server) StartGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 // first-boot env carried, and health-gates {ip, health_port}. A readiness failure
 // reaps the VM and removes the tap.
 func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGroupMemberRequest, groupInstanceID, memberName string, pinnedIP net.IP, healthPort uint32) (*nodev1.StartGroupMemberResponse, error) {
+	// A FRESH member cold boot is new-work placement. A stale registry (boot
+	// cache, no live sync) refuses it; RELIGHT of an existing member bundle stays
+	// allowed so existing warmth is served.
+	if err := s.refuseIfStale("StartGroupMember FRESH"); err != nil {
+		return nil, err
+	}
 	source := req.GetSource()
 	if source == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: source required for FRESH")

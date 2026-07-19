@@ -370,6 +370,27 @@ func TestStartServingFreshResolvesFromPushedRegistry(t *testing.T) {
 	}
 }
 
+// TestStartServingFreshRefusedWhileStale proves a stale registry refuses a FRESH
+// serving cold boot (new-work placement) with FailedPrecondition/stale, while a
+// live sync clears the refusal.
+func TestStartServingFreshRefusedWhileStale(t *testing.T) {
+	_, port := healthServer(t, servingHealthPath)
+	s, _, _ := newServingTestServer(t)
+	s.registry.mu.Lock()
+	s.registry.stale = true
+	s.registry.mu.Unlock()
+
+	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
+		Port:       port,
+		HealthPath: servingHealthPath,
+		Trace:      &nodev1.Trace{Workload: "wl-serve"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("FRESH StartServing while stale: err = %v, want FailedPrecondition", err)
+	}
+}
+
 func TestStartServingFresh(t *testing.T) {
 	_, port := healthServer(t, servingHealthPath)
 	s, fsn, fsd := newServingTestServer(t)

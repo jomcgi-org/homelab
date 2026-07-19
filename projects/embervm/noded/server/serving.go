@@ -62,6 +62,12 @@ func (s *Server) StartServing(ctx context.Context, req *nodev1.StartServingReque
 // resume (D-R3.4.2, D-R3.11.2): the runtime rootfs is drive 1 and the handler artifact
 // is drive 2, from which the guest imports the handler before serving.
 func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServingRequest, servingImageRef, workload string, port uint32, healthPath string) (*nodev1.StartServingResponse, error) {
+	// A FRESH serving cold boot is new-work placement. A stale registry (boot
+	// cache, no live sync) refuses it; RELIGHT of an existing serving snapshot
+	// stays allowed so existing warmth is served.
+	if err := s.refuseIfStale("StartServing FRESH"); err != nil {
+		return nil, err
+	}
 	if servingImageRef == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: fresh.serving_image_ref required")
 	}
