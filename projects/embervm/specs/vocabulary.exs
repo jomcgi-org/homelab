@@ -76,10 +76,13 @@
         ~w(serving_started serving_published serving_unpublished serving_banked
            serving_relit serving_evicted serving_destroyed serving_failed
            serving_stats)a ++
-        # R4 stateful lifecycle + volume kinds, out of scope.
-        ~w(volume_created volume_deleted stateful_started stateful_published
-           stateful_unpublished stateful_banked stateful_relit stateful_cold_booted
-           stateful_evicted stateful_destroyed stateful_failed stateful_stats)a ++
+        # R4 stateful lifecycle + volume kinds, out of scope. generation_blessed
+        # is the volume-generation blessing ledger audit kind (control plane as
+        # sole generation issuer), part of the same out-of-scope volume machinery.
+        ~w(volume_created volume_deleted generation_blessed stateful_started
+           stateful_published stateful_unpublished stateful_banked stateful_relit
+           stateful_cold_booted stateful_evicted stateful_destroyed stateful_failed
+           stateful_stats)a ++
         # R5 composite-group lifecycle kinds, out of scope.
         ~w(group_created group_net_created group_net_deleted group_member_started
            group_running group_published group_unpublished group_banked group_relit
