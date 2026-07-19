@@ -25,8 +25,9 @@
   const DEFAULT_EXPR = "deps(//absl/strings)";
   // Known-good cquery expressions offered as one-click chips. Each is verified
   // against the backend charset validator (bazel_core.validate_expr) and is a
-  // real Abseil target/pattern, so a click always returns a result, never an
-  // error. Clicking populates the input AND runs (respecting the cooldown).
+  // real Abseil target/pattern, so running one always returns a result, never
+  // an error. Clicking a chip only fills the input; the visitor runs it with
+  // the button (so they can eyeball or tweak the expression first).
   const EXAMPLES = [
     { label: "deps", expr: "deps(//absl/strings)" },
     { label: "cc_library kinds", expr: 'kind("cc_library", //absl/...)' },
@@ -495,11 +496,18 @@
         />
         <button
           class="run-btn"
+          class:is-pending={running || queuedExpr != null}
           type="button"
           onclick={() => requestRun(expr)}
           disabled={(!!turnstileSiteKey && !sessionReady) || queryUnavailable}
         >
-          {queryUnavailable ? "unavailable" : running ? "querying…" : "run cquery"}
+          {queryUnavailable
+            ? "unavailable"
+            : running
+              ? "querying…"
+              : queuedExpr != null
+                ? "queued…"
+                : "run cquery"}
         </button>
       </div>
 
@@ -510,7 +518,6 @@
             type="button"
             onclick={() => {
               expr = ex.expr;
-              requestRun(ex.expr);
             }}
           >
             {ex.label}
@@ -519,7 +526,7 @@
       </div>
 
       {#if !running && !result && !runError}
-        <p class="idle-hint">run a query or tap an example</p>
+        <p class="idle-hint">pick an example or type your own, then run</p>
       {/if}
 
       {#if runError}
@@ -886,6 +893,29 @@
   .run-btn:disabled {
     opacity: 0.55;
     cursor: default;
+  }
+
+  /* Same "working" cue for both states that block a query: a query in flight
+     (running) and a click parked during the cooldown (queued). A steady pulse
+     reads as pending without the hard-dimmed look of :disabled. */
+  .run-btn.is-pending {
+    cursor: default;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .run-btn.is-pending {
+      animation: run-btn-pulse 1s ease-in-out infinite;
+    }
+  }
+
+  @keyframes run-btn-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.6;
+    }
   }
 
   /* Drop the generic blue UA focus ring left after a mouse click, but keep an
