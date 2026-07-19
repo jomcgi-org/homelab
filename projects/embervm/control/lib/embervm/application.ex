@@ -353,38 +353,47 @@ defmodule Embervm.Application do
   # supervises nothing rather than crash-looping on a bad dial. The id falls back
   # to the address when unset, purely for correlation labels.
   #
-  # The node list source (artifact-decoupling PR-C, C4). noded is now a DaemonSet
-  # behind a HEADLESS Service, so the control plane discovers every daemon's
-  # INDIVIDUAL pod endpoint via EndpointSlice discovery and dials each one (one
-  # WatchNode stream + one SyncRegistry push per pod), rather than a single
-  # ClusterIP load-balancing one stream to an arbitrary pod. This function
-  # produces the same [%{id, address}] list Embervm.NodeRegistry/NodeChannel
-  # consume, so their ETS projection, age-out, and reassignment are unchanged.
+  # The node list the three node consumers (BaseBuilder, NodeRegistry, NodeChannel)
+  # are SEEDED with at children-construction time (artifact-decoupling PR-C, C4).
   #
-  # An explicit EMBERVM_NODE_ADDRESS override still wins (tests and out-of-cluster
-  # daemons: a single pinned address, no discovery). Otherwise, when the headless
-  # Service name is configured (EMBERVM_NODED_SERVICE), a one-shot EndpointSlice
-  # LIST at boot enumerates the current noded pods. (Interim: a boot-time list, not
-  # a live watch. A daemon whose pod IP changes after a roll is re-discovered on
-  # the next control-plane restart; PR-H replaces this whole seam with CP-managed
-  # per-node Deployments and per-node dialing.) An empty override and no service
-  # name yields [] (the control plane supervises an empty node list and idles).
-  defp configured_nodes do
+  # CRITICAL: this runs while the supervisor children list is being BUILT, which is
+  # BEFORE any child (including Finch, Embervm.K8s.finch_child_spec/0) is started.
+  # So it MUST NOT touch Finch / the K8s API: EndpointSlice discovery cannot run
+  # here (Finch.request would raise "unknown registry: Embervm.Finch" and crash
+  # Application.start into a CrashLoopBackOff). Discovery therefore runs POST-start,
+  # driven by NodeRegistry's periodic discover_fun (which fires promptly after boot,
+  # once Finch is up) and reconciled out to NodeChannel and BaseBuilder as nodes
+  # appear. Here we return only the STATIC source:
+  #
+  #   * an explicit EMBERVM_NODE_ADDRESS override: a single pinned daemon (tests,
+  #     out-of-cluster), which needs no discovery and is safe to seed at boot; or
+  #   * otherwise the EMPTY list. The three consumers start empty and are populated
+  #     by post-Finch discovery. The empty seed is what makes boot Finch-free.
+  # Public (@doc false) so the boot-ordering regression test can assert it is
+  # Finch-free at construction; not part of the module's real API.
+  @doc false
+  def configured_nodes do
     address = trimmed_env("EMBERVM_NODE_ADDRESS")
     id = trimmed_env("EMBERVM_NODE_ID")
 
     cond do
       address != "" and id != "" -> [%{id: id, address: address}]
       address != "" -> [%{id: address, address: address}]
-      true -> discovered_nodes()
+      # Discovery source: seed EMPTY. NodeRegistry's discover_fun populates all
+      # three consumers post-Finch (never at construction, never via Finch here).
+      true -> []
     end
   end
 
   # EndpointSlice-discovered noded endpoints, or [] when discovery is not
   # configured or finds nothing. EMBERVM_NODED_SERVICE names the headless Service;
-  # EMBERVM_NODED_GRPC_PORT is the daemon gRPC port (default 9090). A discovery
-  # error is logged and treated as "no nodes yet" rather than crashing boot: the
-  # control plane still starts (idle) and a later restart re-lists.
+  # EMBERVM_NODED_GRPC_PORT is the daemon gRPC port (default 9090). This is ONLY
+  # ever called POST-start (from NodeRegistry's discover_fun), when Finch is up.
+  #
+  # Defense in depth: the ENTIRE body is wrapped so a transient Finch/API error, or
+  # any raise (e.g. Finch not yet registered on a race, or an apiserver blip), can
+  # NEVER crash the caller: it yields [] (log + idle) and the next discover tick
+  # retries. A raise here previously crashed Application.start; it must not recur.
   defp discovered_nodes do
     service = trimmed_env("EMBERVM_NODED_SERVICE")
 
@@ -403,6 +412,14 @@ defmodule Embervm.Application do
           []
       end
     end
+  rescue
+    e ->
+      Logger.warning("embervm: noded endpoint discovery raised (#{inspect(e)}); starting with no nodes")
+      []
+  catch
+    kind, reason ->
+      Logger.warning("embervm: noded endpoint discovery exited (#{inspect({kind, reason})}); starting with no nodes")
+      []
   end
 
   defp configured_noded_grpc_port do

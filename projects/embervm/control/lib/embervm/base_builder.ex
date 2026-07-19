@@ -178,6 +178,31 @@ defmodule Embervm.BaseBuilder do
   end
 
   @doc """
+  Add (or update the address of) a node to the builder's placement set
+  (artifact-decoupling PR-C, C4). Under EndpointSlice discovery the builder is
+  SEEDED EMPTY at boot (discovery cannot run at construction time, before Finch),
+  so `Embervm.NodeRegistry`'s post-Finch discovery calls this as each noded pod
+  appears. Adding the FIRST node re-drives every workload that was held
+  `{:pending, :no_node}` so its base finally builds. Idempotent: re-adding a known
+  node only refreshes its address. `whereis`-guarded like `reconcile/2`.
+  """
+  @spec add_node(GenServer.server(), String.t(), String.t()) :: :ok
+  def add_node(server \\ __MODULE__, node_id, address) do
+    cast_if_alive(server, {:add_node, node_id, address})
+  end
+
+  @doc """
+  Remove a node from the builder's placement set (its noded pod vanished from
+  discovery). A workload placed on it is unpinned so a later add re-places it; a
+  build already in flight for that node is left to finish and its result is applied
+  or dropped as usual. `whereis`-guarded like `reconcile/2`.
+  """
+  @spec remove_node(GenServer.server(), String.t()) :: :ok
+  def remove_node(server \\ __MODULE__, node_id) do
+    cast_if_alive(server, {:remove_node, node_id})
+  end
+
+  @doc """
   Report current refcounts against a superseded base snapshot ref for a
   workload, so the BaseBuilder can decide when it is safe to evict (R2 base
   refcounting, ADR embervm/001 standing decision 5). Callers report the counts
@@ -280,6 +305,14 @@ defmodule Embervm.BaseBuilder do
 
   def handle_cast({:forget, name}, state) do
     {:noreply, forget_workload(state, name)}
+  end
+
+  def handle_cast({:add_node, node_id, address}, state) do
+    {:noreply, add_node_to_state(state, node_id, address)}
+  end
+
+  def handle_cast({:remove_node, node_id}, state) do
+    {:noreply, remove_node_from_state(state, node_id)}
   end
 
   @impl true
@@ -387,6 +420,108 @@ defmodule Embervm.BaseBuilder do
         |> write_base_status(w, :building)
         |> maybe_start_build(node_id)
     end
+  end
+
+  # -- node set updates (discovery) --------------------------------------------
+
+  # Add or refresh a node in the placement set, then re-drive every workload that
+  # was held with no node so its base finally builds. Idempotent: a known node id
+  # keeps its queue/worker and only its address is refreshed.
+  defp add_node_to_state(state, node_id, address) do
+    known? = Map.has_key?(state.nodes, node_id)
+
+    state =
+      state
+      |> put_in([:node_addr, node_id], address)
+      |> update_in([:node_ids], fn ids -> if node_id in ids, do: ids, else: ids ++ [node_id] end)
+      |> update_in([:nodes], fn nodes ->
+        Map.put_new(nodes, node_id, %{building: nil, queue: [], worker: nil})
+      end)
+
+    if known? do
+      # A pure address refresh (a rolled pod at a new IP): nothing to re-drive, the
+      # workloads already placed on this id keep their placement and its next build
+      # dials the refreshed address.
+      state
+    else
+      # A newly-added node: re-drive every workload that was held {:pending,
+      # :no_node} (node_id nil, unbuilt) so it places onto the fleet now.
+      state.workloads
+      |> Map.keys()
+      |> Enum.reduce(state, fn name, acc -> redrive_pending_workload(acc, name) end)
+    end
+  end
+
+  # Re-place a held workload (no node, no built base) now that a node exists,
+  # reusing the same enqueue + status + build path reconcile_desc's build branch
+  # uses. A workload already placed or already built is left untouched.
+  defp redrive_pending_workload(state, name) do
+    w = Map.get(state.workloads, name)
+    node_id = placement(state, %{node_id: nil})
+
+    cond do
+      w == nil or node_id == nil ->
+        state
+
+      w.node_id != nil ->
+        # Already placed on some node (or built); do not steal it to a new node.
+        state
+
+      w.snapshot_ref != nil and w.built_signature == signature(w) ->
+        state
+
+      zip_runtime_unresolved?(state, w) ->
+        write_base_status(state, w, {:failed, zip_runtime_error(state, w)})
+
+      true ->
+        w = %{w | node_id: node_id}
+        state = put_in(state.workloads[name], w)
+
+        state
+        |> cancel_pending_retry(name)
+        |> enqueue(node_id, name)
+        |> write_base_status(w, :building)
+        |> maybe_start_build(node_id)
+    end
+  end
+
+  # Remove a node from the placement set: drop it from node_ids/node_addr (so no
+  # NEW build targets it) and UNPIN every workload placed on it (node_id -> nil) so
+  # a later add re-drives it.
+  #
+  # The runtime entry (state.nodes[node_id]) is dropped ONLY when it has no build in
+  # flight. If a worker is still running for this node, we KEEP the entry (with its
+  # queue cleared) so finish_build's put_in([:nodes, node_id, :building], nil) does
+  # not crash on a missing key when that worker reports; the entry is harmless once
+  # node_id is gone from node_ids (nothing places onto it) and finish_build's
+  # trailing maybe_start_build drains the empty queue to a no-op. A pure orphan
+  # entry with no queue and no worker is fine to leave until the next add refreshes
+  # it, but we drop it when idle to keep the map tidy.
+  defp remove_node_from_state(state, node_id) do
+    state =
+      state
+      |> update_in([:node_ids], &List.delete(&1, node_id))
+      |> update_in([:node_addr], &Map.delete(&1, node_id))
+
+    state =
+      case Map.get(state.nodes, node_id) do
+        %{building: nil, worker: nil} ->
+          update_in(state.nodes, &Map.delete(&1, node_id))
+
+        %{} = n ->
+          # Build in flight: keep the entry (clear its queue) so the in-flight
+          # worker's finish_build lands cleanly; it self-cleans on completion.
+          put_in(state.nodes[node_id], %{n | queue: []})
+
+        nil ->
+          state
+      end
+
+    update_in(state.workloads, fn workloads ->
+      for {name, w} <- workloads, into: %{} do
+        if w.node_id == node_id, do: {name, %{w | node_id: nil}}, else: {name, w}
+      end
+    end)
   end
 
   # Cancel a workload's pending backoff-retry timer (if any) when a build is
