@@ -72,12 +72,25 @@ async def bazel_query(body: BazelQueryRequest, request: Request) -> dict:
     finally:
         bazel_core.release_query_slot()
 
-    if status != 200:
+    # A bazel query rejection (status 422: a wrong cquery the guest evaluated
+    # and refused) is a visitor mistake, so it rides back in-band as a 200 with
+    # {error, wall_ms}, matching the pre-submit rejections above. The browser
+    # shows bazel's error text verbatim AND the failed run's timing in the
+    # scoreboard. A transport error (502) or timeout (504) is a real infra
+    # failure, not a visitor mistake, so it stays a 5xx HTTPException.
+    if status not in (200, 422):
         raise HTTPException(status_code=status, detail=payload.get("error"))
 
+    # bazel ran against the warm snapshot for both a success and a query
+    # rejection, so both skipped the cold load+analyze: credit the savings when
+    # a real run happened. wall_ms is 0 for a pre-flight validation reject (no
+    # bazel run), so it credits nothing.
     wall_ms = payload.get("wall_ms")
-    if isinstance(wall_ms, (int, float)):
+    if isinstance(wall_ms, (int, float)) and wall_ms > 0:
         await bazel_core.record_bazel_query_savings(wall_ms)
+
+    if status == 422:
+        return {"error": payload.get("error"), "wall_ms": wall_ms}
     return payload
 
 
