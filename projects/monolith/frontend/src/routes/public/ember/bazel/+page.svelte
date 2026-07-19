@@ -375,7 +375,7 @@
   <title>Ember Bazel Skyframe Query</title>
   <meta
     name="description"
-    content="Bazel spends seconds to minutes analyzing a build graph before it can answer a query. This page skips that step: Abseil (514 targets) was analyzed once, the warm Bazel server was snapshotted with Firecracker, and each query runs in its own throwaway copy of that snapshot."
+    content="Remote execution speeds up a Bazel build's action phase, not loading and analysis. This page removes that cost: Abseil (514 targets) was analyzed once, the warm Bazel server was snapshotted with Firecracker, and each query runs in its own throwaway copy: 13.8 s of cold analysis replaced by a roughly 450 ms round trip."
   />
 </svelte:head>
 
@@ -392,15 +392,17 @@
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Bazel Skyframe Query</h1>
       <p class="subtitle">
-        Bazel spends seconds to minutes analyzing a build graph before it can
-        answer anything. This page skips that step:
+        Remote execution and remote caching speed up the third phase of a Bazel
+        build: executing actions. They do nothing for the first two, loading and
+        analysis, which run on one machine, in one JVM heap, and are re-paid
+        every time a server starts cold. This page removes that cost.
         <a class="inline-link" href="https://github.com/abseil/abseil-cpp"
           >Abseil</a
         >
         (release 20240116.2, 514 targets) was analyzed once, the warm Bazel
         server was snapshotted with Firecracker, and each query below runs in
-        its own throwaway copy of that snapshot. One query per copy, then it is
-        destroyed.
+        its own throwaway copy of that snapshot: 13.8 seconds of cold analysis
+        replaced by a roughly 450 ms round trip.
       </p>
     </header>
 
