@@ -189,6 +189,7 @@ def go_image(name, binary, base = "@distroless_base", repository = None, extra_t
         name = name + ".info",
         repository = _repository,
         image_tags = name + "_stamped_ci.tags.txt",
+        image_digest = ":" + name + ".digest",
         image = ":" + name,
         visibility = ["//visibility:public"],
     )

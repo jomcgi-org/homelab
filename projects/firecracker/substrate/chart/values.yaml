@@ -4,6 +4,7 @@ fullnameOverride: ""
 image:
   repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/invoke
   tag: latest
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   pullPolicy: Always
 
 # Per-workload guest images the base rootfs is built from. Bazel pins
@@ -42,6 +43,7 @@ rootfsBuilder:
   image:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   # Size of the ext4 base rootfs image built from a guest filesystem (the
   # semgrep guest carries semgrep, the Pro engine and merged rules). 4G covers
   # a ~3G guest with headroom.

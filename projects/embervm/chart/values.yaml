@@ -9,6 +9,7 @@ image:
   # Pinned at build time by helm_chart(images={"image": ".../image:image.info"}).
   repository: ghcr.io/jomcgi/homelab/projects/embervm/image
   tag: latest
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   pullPolicy: IfNotPresent
 
 # GHCR pull credentials. The control-plane image is private, and embervm runs in
@@ -133,6 +134,7 @@ xds:
     # Pinned at build time by helm_chart(images={"xds.image": ".../xds/image:image.info"}).
     repository: ghcr.io/jomcgi/homelab/projects/embervm/xds/image
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
   # ADS gRPC port (pod network, exposed on the embervm Service; node Envoys dial
   # this) and the loopback-only snapshot API port the control plane PUTs to.
@@ -672,6 +674,7 @@ rootfsBuilder:
   image:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   # 4G covers the largest guest (semgrep: engine + rules + python); the sandbox
   # base is smaller but a uniform size keeps the builder simple (matches
   # fc-invoke's 4G). The ext4 is sparse, so an oversized fs costs little.
@@ -688,6 +691,7 @@ noded:
     # Pinned at build time by helm_chart(images={"noded.image": ".../noded/image:image.info"}).
     repository: ghcr.io/jomcgi/homelab/projects/embervm/noded/image
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
 
   # gRPC port the control plane dials; health port for kubelet probes.

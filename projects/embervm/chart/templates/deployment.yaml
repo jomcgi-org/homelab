@@ -36,7 +36,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: control-plane
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -298,7 +298,7 @@ spec:
         # and makes no decisions: an empty cache at boot serves nothing until the
         # first PUT, and if it restarts the node Envoys keep their last-ACKed config.
         - name: xds
-          image: "{{ .Values.xds.image.repository }}:{{ .Values.xds.image.tag }}"
+          image: "{{ .Values.xds.image.repository }}@{{ .Values.xds.image.digest }}"
           imagePullPolicy: {{ .Values.xds.image.pullPolicy }}
           ports:
             - name: xds-grpc

@@ -4,6 +4,7 @@ fullnameOverride: ""
 image:
   repository: ghcr.io/jomcgi/homelab/projects/firecracker/git-mirror
   tag: latest
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   pullPolicy: Always
 
 # List of repos to mirror. Each entry: name (used as the bare clone dir

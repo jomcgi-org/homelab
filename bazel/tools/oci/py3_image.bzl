@@ -233,6 +233,7 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         name = name + ".info",
         repository = _repository,
         image_tags = name + "_stamped_ci.tags.txt",
+        image_digest = ":" + name + ".digest",
         image = ":" + name,
         visibility = ["//visibility:public"],
     )

@@ -1,10 +1,11 @@
 "OciImageInfo provider and oci_image_info rule for exposing image metadata to helm_chart."
 
 OciImageInfo = provider(
-    doc = "Provides OCI image repository and tag information for use by helm_chart.",
+    doc = "Provides OCI image repository, tag, and digest information for use by helm_chart.",
     fields = {
         "repository": "File containing the OCI repository URL (plain text, no trailing newline)",
         "image_tags": "File containing the image tags (one per line; first line is primary tag)",
+        "digest": "File containing the content-addressed manifest/index digest (sha256:...), from the image's rules_oci :{name}.digest target. Pinned into Helm values so the deployed reference is content-stable (a chart republish rolls a container only when its digest actually changes).",
     },
 )
 
@@ -25,6 +26,7 @@ def _oci_image_info_impl(ctx):
         OciImageInfo(
             repository = repo_file,
             image_tags = ctx.file.image_tags,
+            digest = ctx.file.image_digest,
         ),
     ]
 
@@ -40,10 +42,16 @@ oci_image_info = rule(
             allow_single_file = True,
             doc = "Tags file produced by the CI stamp step (first line is the primary tag)",
         ),
+        "image_digest": attr.label(
+            mandatory = True,
+            allow_single_file = True,
+            doc = "The image's rules_oci :{name}.digest file (a raw sha256:... line). " +
+                  "Pinned into Helm values as the content-stable deployed reference.",
+        ),
         "image": attr.label(
             doc = "The image target this info describes. Only widens the dependency " +
                   "closure for the chart-version bot; not built into outputs.",
         ),
     },
-    doc = "Exposes OCI image repository + tag information via OciImageInfo provider.",
+    doc = "Exposes OCI image repository, tag, and digest information via OciImageInfo provider.",
 )

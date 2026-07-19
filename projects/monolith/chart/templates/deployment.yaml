@@ -29,7 +29,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: backend
-          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          image: "{{ .Values.backend.image.repository }}@{{ .Values.backend.image.digest }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
           ports:
             - name: api
@@ -552,7 +552,7 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
         - name: frontend
-          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
+          image: "{{ .Values.frontend.image.repository }}@{{ .Values.frontend.image.digest }}"
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
           ports:
             - name: http

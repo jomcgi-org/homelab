@@ -102,84 +102,84 @@ def apko_image(
             if "arm64" in tar_dict:
                 tars_arm64.append(tar_dict["arm64"])
 
-    # If no tars are provided, use the simple multi-platform apko image
-    if not tars_amd64 and not tars_arm64:
+    # Build EVERY apko image via rules_oci (oci_image per arch + oci_image_index
+    # for multi-arch), even when no extra tars are layered. This gives every image
+    # a rules_oci `:{name}.digest` target (the content-addressed index digest),
+    # which the chart pins so the deployed reference is digest-stable and a chart
+    # republish rolls a container only when its content actually changes. A raw
+    # rules_apko multi-arch image emits a FLAT per-arch manifest list whose index
+    # digest is not directly readable by jq; wrapping in oci_image_index yields a
+    # single-entry index whose digest is. Empty tar lists are valid, so the
+    # no-tars case is just the general path with tars = [].
+
+    # Create the amd64 base image (always built).
+    _apko_image(
+        name = name + "_base_amd64",
+        architecture = "x86_64",
+        config = config,
+        contents = contents,
+        tag = "latest",
+    )
+
+    # Transition the base image to its target platform
+    # (apko bases are already platform-specific, this just sets the platform metadata)
+    platform_transition_filegroup(
+        name = name + "_base_amd64_transitioned",
+        srcs = [":" + name + "_base_amd64"],
+        target_platform = "@rules_go//go/toolchain:linux_amd64",
+    )
+
+    if arm64:
         _apko_image(
-            name = name,
-            config = config,
-            contents = contents,
-            tag = "latest",
-        )
-        push_image = name
-        use_oci_push = False
-    else:
-        # Create the amd64 base image (always built).
-        _apko_image(
-            name = name + "_base_amd64",
-            architecture = "x86_64",
+            name = name + "_base_arm64",
+            architecture = "aarch64",
             config = config,
             contents = contents,
             tag = "latest",
         )
 
-        # Transition the base image to its target platform
-        # (apko bases are already platform-specific, this just sets the platform metadata)
         platform_transition_filegroup(
-            name = name + "_base_amd64_transitioned",
-            srcs = [":" + name + "_base_amd64"],
-            target_platform = "@rules_go//go/toolchain:linux_amd64",
+            name = name + "_base_arm64_transitioned",
+            srcs = [":" + name + "_base_arm64"],
+            target_platform = "@rules_go//go/toolchain:linux_arm64",
         )
 
-        if arm64:
-            _apko_image(
-                name = name + "_base_arm64",
-                architecture = "aarch64",
-                config = config,
-                contents = contents,
-                tag = "latest",
-            )
+        # Layer tars on top of the transitioned bases (empty list when no tars
+        # given). Note: tars are NOT transitioned because they contain
+        # platform-independent files (e.g. JavaScript bundles, config files)
+        # that are built on the exec platform.
+        oci_image(
+            name = name + "_amd64",
+            base = ":" + name + "_base_amd64_transitioned",
+            tars = tars_amd64,
+        )
 
-            platform_transition_filegroup(
-                name = name + "_base_arm64_transitioned",
-                srcs = [":" + name + "_base_arm64"],
-                target_platform = "@rules_go//go/toolchain:linux_arm64",
-            )
+        oci_image(
+            name = name + "_arm64",
+            base = ":" + name + "_base_arm64_transitioned",
+            tars = tars_arm64,
+        )
 
-            # Layer tars on top of the transitioned bases
-            # Note: tars are NOT transitioned because they contain platform-independent files
-            # (e.g., JavaScript bundles, config files) that are built on the exec platform
-            oci_image(
-                name = name + "_amd64",
-                base = ":" + name + "_base_amd64_transitioned",
-                tars = tars_amd64,
-            )
+        # Create multi-platform index
+        oci_image_index(
+            name = name,
+            images = [
+                ":" + name + "_amd64",
+                ":" + name + "_arm64",
+            ],
+        )
+    else:
+        # Single-arch (amd64-only): :{name} is the amd64 image directly, no
+        # index. Used when a layered tar carries an amd64-specific artifact
+        # (e.g. a compiled NIF) that has no valid aarch64 counterpart.
+        oci_image(
+            name = name,
+            base = ":" + name + "_base_amd64_transitioned",
+            tars = tars_amd64,
+        )
 
-            oci_image(
-                name = name + "_arm64",
-                base = ":" + name + "_base_arm64_transitioned",
-                tars = tars_arm64,
-            )
-
-            # Create multi-platform index
-            oci_image_index(
-                name = name,
-                images = [
-                    ":" + name + "_amd64",
-                    ":" + name + "_arm64",
-                ],
-            )
-        else:
-            # Single-arch (amd64-only): :{name} is the amd64 image directly, no
-            # index. Used when a layered tar carries an amd64-specific artifact
-            # (e.g. a compiled NIF) that has no valid aarch64 counterpart.
-            oci_image(
-                name = name,
-                base = ":" + name + "_base_amd64_transitioned",
-                tars = tars_amd64,
-            )
-
-        push_image = name
-        use_oci_push = True
+    push_image = name
+    use_oci_push = True
 
     # Create stamped tags file for CI builds (branch + timestamp)
     expand_template(
@@ -240,6 +240,7 @@ def apko_image(
         name = name + ".info",
         repository = _repository,
         image_tags = name + "_stamped_ci.tags.txt",
+        image_digest = ":" + name + ".digest",
         image = ":" + name,
         visibility = ["//visibility:public"],
     )

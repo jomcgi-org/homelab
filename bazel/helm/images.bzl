@@ -36,6 +36,7 @@ def _helm_images_values_impl(ctx):
         info = target[OciImageInfo]
         all_inputs.append(info.repository)
         all_inputs.append(info.image_tags)
+        all_inputs.append(info.digest)
 
         # Expand dot-notation into nested YAML keys.
         # e.g. "image" → ["image"]
@@ -71,6 +72,20 @@ def _helm_images_values_impl(ctx):
             "echo '{leaf_indent}tag: '\"$(head -1 {tags})\" >> {out}".format(
                 leaf_indent = leaf_indent,
                 tags = info.image_tags.path,
+                out = output.path,
+            ),
+        )
+
+        # Content-addressed digest (sha256:...) from the image's rules_oci
+        # :{name}.digest target. Charts reference the image as
+        # `repository@digest` so an unchanged image renders an identical
+        # Deployment (no spurious rollout on a chart republish); only a real
+        # content change moves the digest. `tag` above is retained for the
+        # missed-bump guard and any label use, but is not the deployed ref.
+        cmd_lines.append(
+            "echo '{leaf_indent}digest: '\"$(head -1 {digest})\" >> {out}".format(
+                leaf_indent = leaf_indent,
+                digest = info.digest.path,
                 out = output.path,
             ),
         )

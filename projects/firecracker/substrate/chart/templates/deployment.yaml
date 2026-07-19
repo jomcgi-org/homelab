@@ -72,7 +72,7 @@ spec:
         {{- $top := index $.Values $name }}
         {{- if and $top $top.guestImage $top.guestImage.repository }}
         - name: build-{{ $name }}-rootfs
-          image: "{{ $.Values.rootfsBuilder.image.repository }}:{{ $.Values.rootfsBuilder.image.tag }}"
+          image: "{{ $.Values.rootfsBuilder.image.repository }}@{{ $.Values.rootfsBuilder.image.digest }}"
           command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
           env:
             - name: GUEST_IMAGE
@@ -111,7 +111,7 @@ spec:
       {{- end }}
       containers:
         - name: fc-invoke
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- if .Values.firecracker.enabled }}
           securityContext:
@@ -227,7 +227,7 @@ spec:
         # serves every egress-enabled workload on the node. Runs non-root (uid
         # 65532). Plain mode: NO secret catalog / CA / secret-swap (a later PR).
         - name: egress-proxy
-          image: "{{ .Values.egress.image.repository }}:{{ .Values.egress.image.tag }}"
+          image: "{{ .Values.egress.image.repository }}@{{ .Values.egress.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             runAsNonRoot: true

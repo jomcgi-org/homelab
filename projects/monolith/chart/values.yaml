@@ -3,6 +3,7 @@ backend:
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/backend
     tag: main
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
   resources:
     requests:
@@ -723,6 +724,7 @@ frontend:
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/frontend
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
   resources:
     requests:
