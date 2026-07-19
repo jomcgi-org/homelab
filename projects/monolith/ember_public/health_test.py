@@ -159,6 +159,71 @@ async def test_stuck_transition_past_90s_is_not_ok(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_evicted_pair_broken_past_threshold_is_not_ok(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(
+            state="evicted",
+            pair_valid=False,
+            instance={"healthy": False, "terminal_reason": "pair_broken"},
+        )
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    await core.cached_demo_pg_status()
+    core._status_cache["state_changed_at"] = monotonic() - 91
+
+    result = await demo_postgres_health()
+    assert result["ok"] is False
+    assert "pair_broken" in result["detail"]
+    assert "broken" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_evicted_pair_broken_under_threshold_is_ok(monkeypatch):
+    """A brief pair_broken eviction (warmth discard) recovers on the next wake and
+    must not flap the check before the stuck window elapses."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(
+            state="evicted",
+            pair_valid=False,
+            instance={"healthy": False, "terminal_reason": "pair_broken"},
+        )
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    await core.cached_demo_pg_status()
+    core._status_cache["state_changed_at"] = monotonic() - 10
+
+    result = await demo_postgres_health()
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_evicted_ttl_is_ok(monkeypatch):
+    """A ttl eviction is benign recycling, healthy even past the stuck window."""
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(
+            state="evicted",
+            pair_valid=False,
+            instance={"healthy": True, "terminal_reason": "ttl"},
+        )
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    await core.cached_demo_pg_status()
+    core._status_cache["state_changed_at"] = monotonic() - 120
+
+    result = await demo_postgres_health()
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_recent_failed_wake_is_not_ok(monkeypatch):
     monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
     monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
