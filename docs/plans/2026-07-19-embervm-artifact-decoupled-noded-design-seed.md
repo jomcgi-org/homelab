@@ -3,7 +3,9 @@
 **Status:** Design seed for review, not scheduled work. Extends the R7 Distribution seed
 (docs/plans/2026-07-18-embervm-r7-distribution-design-seed.md) and ADR embervm/009's S3
 durability seam. Written 2026-07-19 after the bazel-query base-build night surfaced the
-costs of the current coupling.
+costs of the current coupling. Amended 2026-07-19 after review with Joe: added the
+storage-tier taxonomy, the rollout topology (surge rolls now, control-plane-managed
+node deployments as the target), and resolved open questions 1 and 3.
 
 ## Problem
 
@@ -78,6 +80,94 @@ entirely, while snapshot building escapes the *serving pod* but not the CPU SKU.
 - NodeRegistry's per-daemon stream and reconnect handling, which the registry replay
   piggybacks on.
 
+### Storage tiers on the node
+
+noded's disk splits into three tiers with different durability answers. Only the third
+tier ever gets a real PVC.
+
+1. **Reconstructible cache** (rootfs ext4s, base snapshots): the S3 store is the master
+   copy; the node holds a digest-keyed cache on local NVMe. This stays **hostPath (or a
+   local PV), deliberately**. A per-pod ephemeral PVC would empty the cache on every
+   roll and turn the init tax into a fetch tax; a Longhorn PVC would pay network
+   replication to protect data whose durable copy already lives in the store. Node-local
+   persistence across pod restarts is a feature: during a surge roll the old and new pod
+   share the cache, so the new pod comes up warm for free.
+2. **Durable artifacts** (session banks, stateful generations, serving banks, group
+   sets): local NVMe plus async S3 export plus evict-only-after-export-confirmed.
+   Shipped in R6, already correct, no PVC needed; S3 is the durability layer.
+3. **Live durable volumes** (pg data and other guest-attached durable storage): the one
+   tier where a PVC belongs. Longhorn-native volumes with attach-as-fence, per the R7
+   Distribution seed. Attach moves with placement; the volume outlives any node.
+
+**Rejected: a shared read-only PVC for artifacts with a writer-privileged builder.**
+It reads as simpler but loses on every axis: Longhorn RWX is an NFS share-manager pod,
+a single point of failure in front of every node's artifact reads with mediocre
+large-sequential-read performance; every node sees every artifact instead of caching
+only what it serves; and it introduces a second distribution path (filesystem
+consistency semantics alongside the store's meta.json-last contract). The S3 store plus
+per-node cache strictly dominates: partial per-node sets, no attach choreography, a
+well-defined degraded mode, and the builder writes through the existing store client
+instead of needing privileged attach semantics.
+
+### Rollout topology: surge rolls now, control-plane-managed deployments as the target
+
+Today noded is already a Deployment (not a DaemonSet): single replica, pinned to
+node-4 by nodeSelector, `strategy: Recreate` with the comment "never run two against
+one node". Zero-downtime rolls mean dissolving that constraint so two noded pods can
+coexist on one node for a handover window. Pausing guests is acceptable; losing
+warmth is not.
+
+**What zero-downtime means per workload class.** Firecracker has no live migration
+(no pre-copy memory streaming); the migration primitive is pause, snapshot, move
+files, restore. A cut snapshot is inert data and moves freely within an
+(arch, cpu_sku) compatibility class, so cross-node warmth moves are supported; only
+zero-pause moves of a running VM are off the table, and nothing here needs them.
+
+- **Serving workloads**: true zero downtime via overlap. The new pod primes from base
+  snapshots out of the shared node cache, the relay shifts traffic, the old pod drains.
+- **Sessions / stateful**: brief pause, never loss. The old pod banks on drain (the R6
+  sleep path), the new pod relights from the shared node cache. Seconds, not rebuilds.
+- **In-flight builds**: preStop drain short-term (Phase 0); structurally, out-of-band
+  builds (Phase 3) mean serving rolls never kill builds at all.
+
+**Step 1, surge-safe pod spec, in the chart, shippable early.** Partition per-instance
+mutable state under nvmeRoot (VM run dirs, vsock CID ranges, TAP naming) by pod
+instance so two daemons never collide, while the artifact cache dirs stay shared
+(digest-keyed content is safe for concurrent readers; meta.json-last covers the
+writer). Readiness means "adopted by the control plane and registry replayed";
+traffic must never reach a pod before that gate. preStop means "bank sessions, drain
+builds, confirm exports". Then flip Recreate to `RollingUpdate` with `maxSurge: 1,
+maxUnavailable: 0`. This ships zero-downtime rolls on node-4 with plain Kubernetes
+primitives, and every line of it is the pod template the control plane later stamps.
+
+**Target, the control plane authors per-node Deployments on tainted nodes.** No
+intermediate per-node Helm templating layer (a values list of nodes would have exactly
+one customer today and gets deleted when the control plane takes over). The control
+plane creates and deletes one noded Deployment per registered node, tolerating the FC
+node taint, and owns roll choreography: surge the new pod, replay the registry, wait
+for banks to confirm, release the old. This is the standard operator pattern; the
+GitOps rule forbids humans mutating the cluster, not controllers doing their job.
+Ground rules:
+
+- **Git stays the source of truth for versions.** The desired noded image digest is
+  chart-delivered control-plane config; a chart bump still drives every roll, the
+  control plane is the actuator that rolls node-by-node (and can canary one node).
+- **Gated on Phase 2, clean after Phase 5.** While EMBERVM_NODED_IMAGES and the init
+  containers exist, a control-plane-authored pod spec must carry per-workload env,
+  dragging chart values into controller code. After the pushed registry and empty
+  boot, the pod spec is workload-agnostic (image digest, node, NVMe mount), the shape
+  a controller stamps trivially. Building the controller before that means building
+  it twice.
+- **Bootstrap asymmetry**: the control plane itself stays a plain Helm/ArgoCD
+  Deployment forever, schedulable off the tainted FC nodes, so a wedged fleet can
+  never take down the thing that repairs it.
+- **ArgoCD hygiene**: control-plane-created Deployments live outside the Argo app
+  (untracked foreign resources, like any operator's children), with ownerReferences
+  chaining to a control-plane-owned parent so GC cleans up forgotten nodes.
+- **Taint FC nodes** (`embervm.jomcgi.dev/node=true:NoSchedule`) so only noded,
+  builder, and relay pods land there and general workloads never compete with guest
+  memory. Valuable independent of everything else; can ship in Phase 0.
+
 ## Phases (each independently shippable)
 
 **Phase 0, quick wins (can ship this week, no design risk):**
@@ -86,6 +176,8 @@ entirely, while snapshot building escapes the *serving pod* but not the CPU SKU.
   where images did not change.
 - preStop drain: noded finishes or cleanly aborts in-flight BuildBase work inside the
   termination grace period instead of orphaning half-built VMs.
+- Taint the FC nodes and add tolerations to noded and the serving relay, locking
+  general workloads off guest-memory hosts.
 
 **Phase 1, rootfs via store:** CI (or a cluster Job) bakes ext4 per (image digest,
 arch) on image publish and exports it as a new artifact kind (ROOTFS) through the
@@ -110,6 +202,16 @@ cold and the control plane warms it per policy. This dissolves into R7 proper
 (vendor-keyed warmth, multi-node fan-out) and is where the second Firecracker node
 (R7's hardware prerequisite) starts paying rent.
 
+**Phase 6, surge rolls (can ship early, independent of Phases 1 to 5):** partition
+per-instance state under nvmeRoot, readiness gate on registry-replayed-and-adopted,
+preStop bank/drain, then Recreate becomes RollingUpdate maxSurge 1 / maxUnavailable 0.
+Zero-downtime rolls on node-4; traffic never reaches an unready pod.
+
+**Phase 7, control-plane-managed node deployments:** the control plane authors one
+noded Deployment per registered tainted node and owns roll choreography; the chart's
+static noded Deployment is deleted. Gated on Phase 2 (clean after Phase 5); the pod
+template is Phase 6's, unchanged.
+
 ## Invariants and risks
 
 - **Hit/miss invariant holds:** exports, restores, registry pushes are lifecycle
@@ -125,19 +227,32 @@ cold and the control plane warms it per policy. This dissolves into R7 proper
 - **Registry replay must be idempotent and complete** on every reconnect; a node that
   missed a Deregister must converge to the pushed set (SyncRegistry is authoritative,
   incrementals are optimizations).
+- **Traffic never reaches an unready noded.** Readiness means registry replayed and
+  control-plane adoption complete; the surge handover kills the old pod only after the
+  new one passes that gate and banks are confirmed.
+- **The artifact cache is node-scoped, not pod-scoped.** Rolls must inherit the warm
+  cache; any storage change that empties the cache on pod restart is a regression.
+
+## Resolved questions (2026-07-19 review)
+
+1. **ROOTFS artifacts live in the S3 store**, not GHCR OCI artifacts: one distribution
+   path, one auth story, one completeness contract, and the store client already
+   exists. CI or the builder pushes through the same seam as every other artifact.
+2. **Builder role: same noded binary, builder flag, separate pod**, scheduled by the
+   control plane on a matching-SKU tainted node, writing through the existing store
+   client. Serving rolls never kill builds; no shared-volume attach semantics needed.
 
 ## Open questions
 
-1. ROOTFS artifact store: the S3 seam (consistent with everything else) vs GHCR OCI
-   artifacts (closer to the image publish pipeline). Leaning S3 for one distribution
-   path and one auth story.
-2. cpu_sku granularity: vendor+family, or pin a conservative Firecracker CPU template
+1. cpu_sku granularity: vendor+family, or pin a conservative Firecracker CPU template
    per fleet generation so snapshots stay portable across minor SKU differences at some
-   feature cost.
-3. Builder role: same noded binary with a builder flag on the same node (simplest, one
-   binary), vs a separate builder DaemonSet/Job (cleaner blast radius, more moving
-   parts). Leaning same binary, separate pod, so serving rolls never kill builds.
-4. Does Phase 0's bake cache change the rootfs versioning story (rootfs-<tag>.ext4
+   feature cost. This is quietly the most important R7 question: without a fleet-wide
+   template, each hardware generation fragments the snapshot pool into incompatible
+   SKU islands and "move warmth" silently becomes "rebuild warmth".
+2. Does Phase 0's bake cache change the rootfs versioning story (rootfs-<tag>.ext4
    naming today implies tag-keyed, not digest-keyed)?
-5. Where the build queue's state lives: op-log rows (durable, replayable, consistent
+3. Where the build queue's state lives: op-log rows (durable, replayable, consistent
    with everything else) is the presumptive answer.
+4. Per-instance partitioning mechanics for surge (Phase 6): CID range allocation and
+   TAP naming per pod instance, and whether the instance key is the pod name or a
+   control-plane-issued epoch.
