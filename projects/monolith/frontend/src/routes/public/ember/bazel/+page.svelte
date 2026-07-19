@@ -398,15 +398,16 @@
   <main class="ember-page">
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Bazel Skyframe Query</h1>
+      <p class="lede">
+        Bazel recomputes its analysis graph (Skyframe) on every cold start:
+        minutes on a large monorepo, and remote execution can't help.
+      </p>
       <p class="subtitle">
-        Bazel's analysis graph (Skyframe) lives only in server memory, so
-        every cold start recomputes it: minutes on a large monorepo, and
-        remote execution can't help. Here it was computed once for
         <a class="inline-link" href="https://github.com/abseil/abseil-cpp"
           >Abseil</a
         >
-        (514 targets), snapshotted with Firecracker, and every query below
-        restores a throwaway copy.
+        (514 targets) was analyzed once and the warm server snapshotted with
+        Firecracker. Every query below restores a throwaway copy.
       </p>
     </header>
 
@@ -674,8 +675,8 @@
   .masthead {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding-bottom: 4px;
+    gap: 8px;
+    padding-bottom: 8px;
   }
 
   .masthead h1 {
@@ -691,12 +692,24 @@
     color: var(--em-ember);
   }
 
+  /* Lede: the one-sentence hook, a touch bolder and darker than the body
+     paragraph beneath it, on a tighter 58ch measure so it reads as a lede
+     rather than a wide body line. */
+  .lede {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 1.5;
+    color: var(--em-ink);
+    max-width: 58ch;
+  }
+
   .subtitle {
     margin: 0;
     font-size: 14.5px;
     line-height: 1.5;
     color: var(--em-muted);
-    max-width: 68ch;
+    max-width: 58ch;
   }
 
   .inline-link {
