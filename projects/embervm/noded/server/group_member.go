@@ -386,8 +386,9 @@ func (s *Server) groupMemberMAC(groupInstanceID, memberName string, memberIndex 
 // sends member.image_ref as the source, the per-member rootfs is staged on the
 // node by the noded init-container base builder, and s.cfg.Images is the node-side
 // image identity table (image_ref -> {rootfsPath, harnessInit}). Resolving through
-// s.bases here (keyed by baseKeyFor(workload, image_ref, revision), never the raw
-// image_ref) could never match the source the control plane sends, so every
+// s.bases here (keyed by baseKeyFor(workload, image_ref, revision, vendor),
+// never the raw image_ref) could never match the source the control plane sends,
+// so every
 // composite member start failed with "not a ready base"; a composite cluster could
 // not boot at all until this resolved the image directly.
 func (s *Server) resolveGroupMemberBoot(source string) (rootfsPath, harnessInit string, err error) {

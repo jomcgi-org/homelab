@@ -36,8 +36,10 @@ type artifactStore interface {
 }
 
 // artifactKindStr maps an ArtifactKind to its lowercase store-key segment (Fork
-// 3: <kindStr>/<workload>/<ref>). Returns "" for the unspecified kind so a
-// caller refuses an unknown ref rather than composing a bogus prefix.
+// 3, extended by R7 standing decision 11: <kindStr>/<workload>/<ref> for VOLUME,
+// <kindStr>/<vendor>/<workload>/<ref> for every other kind). Returns "" for the
+// unspecified kind so a caller refuses an unknown ref rather than composing a
+// bogus prefix.
 func artifactKindStr(kind nodev1.ArtifactKind) string {
 	switch kind {
 	case nodev1.ArtifactKind_ARTIFACT_KIND_BASE:
@@ -57,12 +59,64 @@ func artifactKindStr(kind nodev1.ArtifactKind) string {
 	}
 }
 
-// artifactPrefix composes the Fork-3 store key prefix for a ref:
-// <kindStr>/<workload>/<ref>. For a VOLUME the ref MAY be empty (the volume is a
-// singleton per workload), so the prefix collapses to volume/<workload>. Returns
-// "" when the kind is unknown or the workload is empty (isolation: keys are
-// always namespaced by workload).
-func artifactPrefix(ref *nodev1.ArtifactRef) string {
+// legacyVendorAlias is the vendor a pre-R7 (un-vendored) store artifact is
+// treated as (the node-4 alias, standing decision 11): every artifact exported
+// before vendor keying shipped was exported from node-4 (AMD), the only node in
+// the fleet at the time. It mirrors the driver package's constant of the same
+// name and value; the two live in separate layers (store-key resolution here,
+// snapshot-restore validation there) so neither imports the other for one
+// string constant.
+const legacyVendorAlias = "amd"
+
+// artifactVendorSegment reports whether kind is one of the vendor-bound kinds
+// (BASE, SESSION, SERVING, STATEFUL, GROUP_SET) that carries a vendor segment in
+// its store key (R7 standing decision 11). VOLUME data is fully portable across
+// vendors (standing decision 1) and is deliberately excluded: its key never
+// gains a vendor segment, so a volume exported from one node restores cleanly
+// onto any other regardless of CPU vendor.
+func artifactVendorSegment(kind nodev1.ArtifactKind) bool {
+	return kind != nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME
+}
+
+// artifactPrefix composes the store key prefix for a ref. VOLUME collapses to
+// volume/<workload> (the ref MAY be empty: the volume is a singleton per
+// workload) with no vendor segment, since volume data is vendor-portable
+// (standing decision 1). Every other kind is vendor-bound (standing decision
+// 11) and keys as <kindStr>/<vendor>/<workload>/<ref>; an empty vendor for a
+// vendor-bound kind is refused ("") rather than silently omitting the segment,
+// so a caller that forgot to resolve a vendor never composes an ambiguous key.
+// Returns "" when the kind is unknown or the workload is empty (isolation: keys
+// are always namespaced by workload).
+func artifactPrefix(ref *nodev1.ArtifactRef, vendor string) string {
+	kindStr := artifactKindStr(ref.GetKind())
+	if kindStr == "" || ref.GetWorkload() == "" {
+		return ""
+	}
+	if artifactVendorSegment(ref.GetKind()) {
+		if vendor == "" {
+			return ""
+		}
+		if r := ref.GetRef(); r != "" {
+			return kindStr + "/" + vendor + "/" + ref.GetWorkload() + "/" + r
+		}
+		return kindStr + "/" + vendor + "/" + ref.GetWorkload()
+	}
+	if r := ref.GetRef(); r != "" {
+		return kindStr + "/" + ref.GetWorkload() + "/" + r
+	}
+	return kindStr + "/" + ref.GetWorkload()
+}
+
+// legacyArtifactPrefix composes the pre-R7 un-vendored prefix for a vendor-bound
+// kind (<kindStr>/<workload>/<ref>), the key layout every BASE/SESSION/SERVING/
+// STATEFUL/GROUP_SET artifact used before vendor keying shipped. It is the alias
+// target: an artifact found here is treated as vendor "amd" (the node-4 alias,
+// standing decision 11) without re-exporting. Returns "" for VOLUME (which never
+// had a different layout to alias from) or an unknown kind/empty workload.
+func legacyArtifactPrefix(ref *nodev1.ArtifactRef) string {
+	if !artifactVendorSegment(ref.GetKind()) {
+		return ""
+	}
 	kindStr := artifactKindStr(ref.GetKind())
 	if kindStr == "" || ref.GetWorkload() == "" {
 		return ""
@@ -184,7 +238,7 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; export unavailable")
 	}
 	ref := req.GetArtifact()
-	prefix := artifactPrefix(ref)
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
 	if prefix == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
 	}
@@ -217,9 +271,9 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; restore unavailable")
 	}
 	ref := req.GetArtifact()
-	prefix := artifactPrefix(ref)
-	if prefix == "" {
-		return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
+	prefix, err := s.resolveRestorePrefix(ctx, ref, req.GetVendor())
+	if err != nil {
+		return nil, err
 	}
 	localDir := s.artifactLocalDir(ref)
 	if localDir == "" {
@@ -248,6 +302,40 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	return &nodev1.RestoreArtifactResponse{BytesMoved: uint64(moved), Generation: generation}, nil
 }
 
+// resolveRestorePrefix composes the store prefix a restore reads from. It
+// requires a vendor for a vendor-bound kind (FAILED_PRECONDITION when the
+// caller left it and the ref's kind needs one, VOLUME excepted). vendor
+// mismatches the node's own reported vendor are refused closed here too: the
+// daemon restores only the vendor-matching copy and never silently substitutes
+// a cold boot at this layer (the CP plans that). One exception: when the
+// vendor-keyed prefix holds no artifact but the pre-R7 un-vendored legacy
+// prefix does, AND the requested vendor is the node-4 alias ("amd", standing
+// decision 11), the legacy prefix is used directly rather than treated as
+// absent, so an existing pre-vendor-keying artifact is never needlessly
+// re-exported under the new layout.
+func (s *Server) resolveRestorePrefix(ctx context.Context, ref *nodev1.ArtifactRef, vendor string) (string, error) {
+	if artifactVendorSegment(ref.GetKind()) {
+		if vendor == "" {
+			return "", status.Error(codes.InvalidArgument, "noded: vendor required to restore this artifact kind")
+		}
+		if s.cfg.CpuVendor != "" && vendor != s.cfg.CpuVendor {
+			return "", status.Errorf(codes.FailedPrecondition, "noded: vendor mismatch on restore: requested %q != node %q", vendor, s.cfg.CpuVendor)
+		}
+	}
+	prefix := artifactPrefix(ref, vendor)
+	if prefix == "" {
+		return "", status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
+	}
+	if legacy := legacyArtifactPrefix(ref); legacy != "" && vendor == legacyVendorAlias {
+		if present, _, err := s.store.Present(ctx, prefix); err == nil && !present {
+			if legacyPresent, _, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
+				return legacy, nil
+			}
+		}
+	}
+	return prefix, nil
+}
+
 // EvictArtifact deletes an artifact. remote=true evicts the store copy
 // (meta.json first, so a partial delete is invisible); remote=false evicts the
 // LOCAL copy over the typed ref via the existing EvictSnapshot/RemoveBundle
@@ -257,7 +345,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 // already-absent artifact.
 func (s *Server) EvictArtifact(ctx context.Context, req *nodev1.EvictArtifactRequest) (*nodev1.EvictArtifactResponse, error) {
 	ref := req.GetArtifact()
-	prefix := artifactPrefix(ref)
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
 	if prefix == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
 	}
@@ -426,7 +514,7 @@ func (s *Server) enqueueExport(ref *nodev1.ArtifactRef) {
 	if s.store == nil || s.exportCh == nil {
 		return
 	}
-	key := artifactPrefix(ref)
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
 	if key == "" {
 		return
 	}
@@ -562,9 +650,19 @@ func (s *Server) enqueueReconcileExports(ctx context.Context) {
 // "enqueue anyway" (fail toward durability): the export's own Head-compare then
 // makes the final skip decision.
 func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) {
-	prefix := artifactPrefix(ref)
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
 	if prefix == "" {
 		return
+	}
+	// A vendor-bound kind already durable under the legacy un-vendored prefix
+	// (this node's own artifact, exported before vendor keying shipped) is
+	// already exported; treat it as present so the reconcile sweep never
+	// re-exports it under the new layout for content it already has off node.
+	if legacy := legacyArtifactPrefix(ref); legacy != "" {
+		if legacyPresent, legacyGen, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
+			s.exported.mark(prefix, legacyGen)
+			return
+		}
 	}
 	present, gen, err := s.store.Present(ctx, prefix)
 	if err == nil && present {

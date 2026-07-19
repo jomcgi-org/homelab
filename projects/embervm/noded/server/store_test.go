@@ -214,7 +214,7 @@ func newStoreTestServer(t *testing.T, fs *fakeStore) *Server {
 	root := t.TempDir()
 	volRoot := t.TempDir()
 	s := New(Options{
-		Config:         config.Config{Arch: "amd64", Node: "node-4", SnapshotRoot: root, VolumeRoot: volRoot},
+		Config:         config.Config{Arch: "amd64", Node: "node-4", CpuVendor: "amd", SnapshotRoot: root, VolumeRoot: volRoot},
 		Driver:         &fakeDriver{},
 		StatefulDriver: newDiskScanStatefulDriver(root),
 		Transport:      &fakeTransport{},
@@ -277,7 +277,7 @@ func TestExportArtifactStateful(t *testing.T) {
 	if resp.GetBytesMoved() == 0 {
 		t.Fatal("export moved 0 bytes")
 	}
-	prefix := "stateful/scratch-postgres/state-abc"
+	prefix := "stateful/amd/scratch-postgres/state-abc"
 	if !fs.has(prefix) {
 		t.Fatalf("store missing %q after export", prefix)
 	}
@@ -335,7 +335,7 @@ func TestBankCommitTriggersExport(t *testing.T) {
 
 	// Simulate the tail of Bank: enqueue the export for the banked bundle.
 	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "sandbox-session", Ref: ref})
-	waitForExport(t, fs, "session/sandbox-session/sess-1")
+	waitForExport(t, fs, "session/amd/sandbox-session/sess-1")
 }
 
 // TestVolumeExportSkipsUnchangedGeneration proves a second volume export at the
@@ -419,6 +419,7 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	// Restore the bundle.
 	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: bundleRef},
+		Vendor:   "amd",
 	})
 	if err != nil {
 		t.Fatalf("restore bundle: %v", err)
@@ -456,6 +457,7 @@ func TestRestoreArtifactAbsentFails(t *testing.T) {
 	s := newStoreTestServer(t, fs)
 	_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "w", Ref: "missing"},
+		Vendor:   "amd",
 	})
 	if err == nil {
 		t.Fatal("restore of an absent store copy should fail")
@@ -478,7 +480,7 @@ func TestEvictArtifactRemote(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	prefix := "serving/hot-image-demo/serv-1"
+	prefix := "serving/amd/hot-image-demo/serv-1"
 	if !fs.has(prefix) {
 		t.Fatal("store missing artifact before evict")
 	}
@@ -560,5 +562,105 @@ func TestDrainingDoesNotBlockOnExportQueue(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("enqueue flood blocked; the export queue must never stall the caller")
+	}
+}
+
+// TestArtifactPrefixVendorLayout proves the store key layout: vendor-bound
+// kinds (BASE/SESSION/SERVING/STATEFUL/GROUP_SET) key as
+// <kind>/<vendor>/<workload>/<ref>, and VOLUME stays unvendored at
+// volume/<workload> (R7, standing decision 11: volumes are vendor-portable).
+func TestArtifactPrefixVendorLayout(t *testing.T) {
+	cases := []struct {
+		name string
+		ref  *nodev1.ArtifactRef
+		want string
+	}{
+		{
+			name: "stateful",
+			ref:  &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "pg", Ref: "r1"},
+			want: "stateful/intel/pg/r1",
+		},
+		{
+			name: "base",
+			ref:  &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: "b1"},
+			want: "base/intel/echo/b1",
+		},
+		{
+			name: "session",
+			ref:  &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "sbx", Ref: "s1"},
+			want: "session/intel/sbx/s1",
+		},
+		{
+			name: "serving",
+			ref:  &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "hot", Ref: "sv1"},
+			want: "serving/intel/hot/sv1",
+		},
+		{
+			name: "group_set",
+			ref:  &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_GROUP_SET, Workload: "grp", Ref: "set1"},
+			want: "group_set/intel/grp/set1",
+		},
+		{
+			name: "volume unvendored",
+			ref:  &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "pg"},
+			want: "volume/pg",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := artifactPrefix(tc.ref, "intel"); got != tc.want {
+				t.Errorf("artifactPrefix(%s) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestArtifactPrefixRefusesEmptyVendorForVendorBoundKind proves a vendor-bound
+// kind composes NO prefix when the caller passes an empty vendor, so a caller
+// that forgot to resolve one can never compose an ambiguous (ex-vendor) key.
+func TestArtifactPrefixRefusesEmptyVendorForVendorBoundKind(t *testing.T) {
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "pg", Ref: "r1"}
+	if got := artifactPrefix(ref, ""); got != "" {
+		t.Errorf("artifactPrefix with empty vendor = %q, want empty", got)
+	}
+}
+
+// TestRestoreArtifactLegacyAliasResolves proves standing decision 11's alias: an
+// artifact present only under the pre-R7 un-vendored prefix restores when the
+// requested vendor is "amd" (the node-4 alias), without needing a re-export
+// under the new vendor-keyed layout.
+func TestRestoreArtifactLegacyAliasResolves(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	// Seed the store directly under the LEGACY (un-vendored) prefix, as if this
+	// bundle had been exported before vendor keying shipped.
+	legacyPrefix := "stateful/scratch-postgres/legacy-1"
+	dir := filepath.Join(s.cfg.SnapshotRoot, "stateful", "legacy-1")
+	writeBundleFiles(t, dir, map[string]string{"snapfile": "snap", "memfile": "mem"})
+	if _, _, err := fs.Export(ctx, legacyPrefix, dir, []string{"snapfile", "memfile"}, 7, 0); err != nil {
+		t.Fatalf("seed legacy export: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("rm local bundle: %v", err)
+	}
+
+	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: "legacy-1"},
+		Vendor:   "amd",
+	})
+	if err != nil {
+		t.Fatalf("restore via legacy alias should succeed: %v", err)
+	}
+	if resp.GetGeneration() != 7 {
+		t.Fatalf("restored generation = %d, want 7 (from the legacy marker)", resp.GetGeneration())
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "snapfile")); string(got) != "snap" {
+		t.Fatalf("restored snapfile = %q, want snap", got)
+	}
+	// The vendor-keyed prefix was never populated; the legacy prefix served it.
+	if fs.has("stateful/amd/scratch-postgres/legacy-1") {
+		t.Fatal("legacy restore should read the legacy prefix directly, not populate the new vendor-keyed one")
 	}
 }

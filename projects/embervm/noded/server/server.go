@@ -452,7 +452,7 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: image %q not provisioned on this node", imageRef)
 	}
-	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision())
+	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor)
 	// The control plane records the resolved image identity; without an OCI pull
 	// the ref IS the identity for R0 (deploys are digest-pinned upstream). The image
 	// lane carries no archive and never hydrates (nil archive).
@@ -488,7 +488,7 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 	// the digest for R0 (deploys are digest-pinned upstream), mirroring the image
 	// lane where image_ref IS the identity.
 	imageDigest := runtimeRef
-	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256())
+	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor)
 
 	// Short-circuit on an already-built base BEFORE fetching the archive: an
 	// idempotent repeat must not re-download or re-attach.
@@ -759,10 +759,11 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		Arch:     s.cfg.Arch,
 		ThreadID: newID("vm"),
 		BaseSnapshotRef: substrate.SnapshotRef{
-			ID:   ref,
-			Node: s.cfg.Node,
-			Arch: s.cfg.Arch,
-			Base: true,
+			ID:     ref,
+			Node:   s.cfg.Node,
+			Arch:   s.cfg.Arch,
+			Vendor: s.cfg.CpuVendor,
+			Base:   true,
 		},
 	}
 	h, err := s.driver.Claim(ctx, spec)
@@ -1322,6 +1323,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	freeBytes, usedBytes := s.snapshotDiskUsage()
 	return &nodev1.NodeStatus{
 		NodeId:                s.cfg.Node,
+		CpuVendor:             s.cfg.CpuVendor,
 		Workloads:             caps,
 		MemHeadroomMib:        s.memHeadroom(),
 		CpuHeadroomMillicores: 0,
@@ -1396,7 +1398,7 @@ func (s *Server) servingSnapshotsStatus() []*nodev1.ServingSnapshot {
 // composable prefix and reports false until the control plane rebinds it, which
 // is safe: the CP treats false as "a roll would lose this off-node copy".
 func (s *Server) artifactExported(kind nodev1.ArtifactKind, workload, ref string) bool {
-	prefix := artifactPrefix(&nodev1.ArtifactRef{Kind: kind, Workload: workload, Ref: ref})
+	prefix := artifactPrefix(&nodev1.ArtifactRef{Kind: kind, Workload: workload, Ref: ref}, s.cfg.CpuVendor)
 	if prefix == "" {
 		return false
 	}
@@ -1477,7 +1479,7 @@ func (s *Server) volumesStatus() []*nodev1.Volume {
 	out := make([]*nodev1.Volume, 0, len(inv))
 	for _, v := range inv {
 		var exportedGen uint64
-		prefix := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: v.Workload})
+		prefix := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: v.Workload}, s.cfg.CpuVendor)
 		if prefix != "" {
 			if g, ok := s.exported.generation(prefix); ok {
 				exportedGen = g
@@ -2037,11 +2039,17 @@ const defaultReadyPath = "/shim/ready"
 var baseKeyUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
 // baseKeyFor derives the deterministic, filesystem-safe base key (== the opaque
-// snapshot_ref) from the workload and the (image_ref, workload_revision)
-// idempotency inputs. The workload prefix is recoverable on startup for the
-// capacity report; the hash suffix keys the bundle per image+revision.
-func baseKeyFor(workload, imageRef, revision string) string {
-	sum := sha256.Sum256([]byte(imageRef + "\x00" + revision))
+// snapshot_ref) from the workload and the (image_ref, workload_revision, vendor)
+// idempotency inputs. vendor is hashed in (R7, standing decision 1) so the same
+// image built on an Intel node and an AMD node gets DIFFERENT base keys: a
+// Firecracker snapshot restore never crosses the vendor boundary, so a base key
+// that ignored vendor would let one vendor's warm cache be handed to noded on
+// the other, and BuildBase's idempotency check would wrongly report the
+// mismatched-vendor base as AlreadyBuilt. The workload prefix is recoverable on
+// startup for the capacity report; the hash suffix keys the bundle per
+// image+revision+vendor.
+func baseKeyFor(workload, imageRef, revision, vendor string) string {
+	sum := sha256.Sum256([]byte(imageRef + "\x00" + revision + "\x00" + vendor))
 	sig := hex.EncodeToString(sum[:])[:12]
 	wl := baseKeyUnsafe.ReplaceAllString(workload, "_")
 	if wl == "" {
@@ -2051,12 +2059,14 @@ func baseKeyFor(workload, imageRef, revision string) string {
 }
 
 // baseKeyForZip derives the base key (== the opaque snapshot_ref) for a ZIP-lane
-// build. Its idempotency inputs are (runtime image digest, archive sha256): the
-// same archive on the same runtime keys the same base, so a re-registration is a
-// no-op hit. The workload prefix is recoverable on startup for the capacity
+// build. Its idempotency inputs are (runtime image digest, archive sha256,
+// vendor): the same archive on the same runtime AND the same CPU vendor keys the
+// same base, so a re-registration is a no-op hit; a different vendor keys a
+// distinct base for the same reason baseKeyFor hashes vendor in (R7, standing
+// decision 1). The workload prefix is recoverable on startup for the capacity
 // report, mirroring baseKeyFor.
-func baseKeyForZip(workload, imageDigest, archiveSha256 string) string {
-	sum := sha256.Sum256([]byte("zip\x00" + imageDigest + "\x00" + archiveSha256))
+func baseKeyForZip(workload, imageDigest, archiveSha256, vendor string) string {
+	sum := sha256.Sum256([]byte("zip\x00" + imageDigest + "\x00" + archiveSha256 + "\x00" + vendor))
 	sig := hex.EncodeToString(sum[:])[:12]
 	wl := baseKeyUnsafe.ReplaceAllString(workload, "_")
 	if wl == "" {

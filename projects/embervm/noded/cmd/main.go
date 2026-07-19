@@ -321,6 +321,7 @@ func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 		SnapshotRoot:      cfg.SnapshotRoot,
 		Node:              cfg.Node,
 		Arch:              cfg.Arch,
+		Vendor:            cfg.CpuVendor,
 	}, &driver.ExecLauncher{
 		Bin:             cfg.BinPath,
 		OOMScoreAdj:     cfg.GuestOomScoreAdj,
