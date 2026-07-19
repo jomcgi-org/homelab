@@ -500,8 +500,19 @@ class _TerminalSession:
             # logs location"). LOGNAME for the same lookup on other paths.
             "USER": "demo",
             "LOGNAME": "demo",
+            # k9s logs land somewhere findable for the next debugging session.
+            "XDG_STATE_HOME": "/tmp/k8s-demo-home/.state",
         }
         _write_k9s_config()
+
+        def _become_tty_session() -> None:
+            # New session + make the PTY slave (stdin) the CONTROLLING terminal.
+            # start_new_session alone leaves the child with NO controlling tty,
+            # and k9s/tcell opens /dev/tty directly - "open /dev/tty: no such
+            # device or address", exit 1, the first live session's failure.
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
         self.proc = await asyncio.create_subprocess_exec(
             _K9S_BIN,
             "--logoless",
@@ -509,7 +520,7 @@ class _TerminalSession:
             stdout=slave_fd,
             stderr=slave_fd,
             env=env,
-            start_new_session=True,
+            preexec_fn=_become_tty_session,
         )
         os.close(slave_fd)
 
