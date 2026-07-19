@@ -801,6 +801,17 @@ message StartStatefulRequest {
   // MMDS seam (the secrets seam for first-boot DB credentials), exactly as
   // existing verbs deliver init env. The daemon never persists or interprets them.
   map<string, string> mmds_env = 10;
+  // blessed_generation is the volume generation the control plane issued for
+  // THIS writable attach (R7, ADR embervm/011, standing decision 4). The daemon
+  // records it and reports it back, it never invents one. 0 means legacy
+  // self-bump, accepted only until noded's EMBERVM_NODED_REQUIRE_BLESSING flag
+  // is set, after which 0 is rejected.
+  uint64 blessed_generation = 11;
+  // volume_device is the host block-device path (e.g. /dev/longhorn/<name>) the
+  // control plane resolved for this workload's Longhorn-native volume (R7,
+  // standing decision 2). Empty means the legacy vol.img lane during the
+  // transition: the daemon falls back to volume_size_bytes/volume_mount.
+  string volume_device = 12;
 }
 
 message StartStatefulResponse {
@@ -1229,6 +1240,12 @@ message Volume {
   // this generation (R6, additive). A separate field from a bool because the
   // exported generation can lag the live generation.
   uint64 exported_generation = 6;
+  // generation_blessed is true when this volume's current generation was issued
+  // by the control plane's blessing ledger (R7, standing decision 4), false when
+  // it is an unblessed self-bumped generation the control plane has not yet
+  // reconciled. The control plane quarantines a volume reporting false here: no
+  // wake is planned for it until a runbook decision resolves the mismatch.
+  bool generation_blessed = 7;
 }
 
 // GroupNetwork is one per-group bridge the node currently holds, reported so a
@@ -1335,6 +1352,13 @@ message ExportArtifactResponse {
 message RestoreArtifactRequest {
   ArtifactRef artifact = 1;
   Trace trace = 2;
+  // vendor is the CPUID vendor ("amd", "intel") the control plane resolves the
+  // restore against (R7, standing decision 1 and 11). Vendor-bound kinds
+  // (BASE, SESSION, SERVING, STATEFUL, GROUP_SET) key in the store as
+  // <kind>/<vendor>/<workload>/<ref>/<file>; the daemon restores only the
+  // vendor-matching copy and fails closed on a mismatch, never a silent cold
+  // boot at this layer. Empty for VOLUME, which is vendor-portable.
+  string vendor = 3;
 }
 
 // RestoreArtifactResponse reports the outcome. bytes_moved is 0 when the artifact
@@ -1470,4 +1494,21 @@ message NodeStatus {
   // control plane only consults it to decide whether a restore-on-miss can be
   // planned at all. Unset (false) on a daemon with no store configured.
   bool store_reachable = 23;
+
+  // -- Distribution facts (R7, additive) --------------------------------------
+  // These two fields drive vendor-keyed warmth and the CP-sequenced rollout
+  // controller. Both are optional and wire-compatible with a daemon that never
+  // sets them (empty = the pre-R7 behavior, treated as node-4's vendor by the
+  // one-time reconcile-side alias, standing decision 11).
+
+  // cpu_vendor is the CPUID vendor this node reports ("amd", "intel"), detected
+  // from /proc/cpuinfo vendor_id. The control plane keys warmth artifacts and
+  // placement decisions on this (standing decision 1): memory snapshots never
+  // cross the vendor boundary.
+  string cpu_vendor = 24;
+  // node_template_hash is the pod-template hash the running noded was deployed
+  // from (the DaemonSet controller-revision the pod's owner reference names).
+  // The CP rollout controller (standing decision 6) compares this against the
+  // current DaemonSet template hash to decide which node still needs a roll.
+  string node_template_hash = 25;
 }
