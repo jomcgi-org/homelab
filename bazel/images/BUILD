@@ -32,6 +32,7 @@ multirun(
         "//projects/embervm/chart:chart.push",
         "//projects/embervm/image:image.push",
         "//projects/embervm/noded/image:image.push",
+        "//projects/embervm/runtimes/bazel:image.push",
         "//projects/embervm/runtimes/k3s/k3s-agent:image.push",
         "//projects/embervm/runtimes/k3s/k3s-server:image.push",
         "//projects/embervm/runtimes/postgres:image.push",
