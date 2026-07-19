@@ -150,31 +150,52 @@ func (*fakeServer) StopServing(_ context.Context, req *nodev1.StopServingRequest
 // fallback, "noledger" -> ledger_unreadable, otherwise a warm relight), which is
 // how the round-trip test exercises each pairing branch against a stateless fake.
 // FRESH/COLD cold-boot from boot_image_ref and report a bumped generation.
+//
+// blessed_generation and volume_device (R7) are recorded on the fake's response
+// so the client can assert both crossed the wire: the returned generation
+// mirrors blessed_generation when the caller set one (0 falls back to the
+// scripted legacy self-bump values below), and volume_device is echoed back
+// verbatim in vm_id's suffix so an empty value (legacy vol.img lane) and a set
+// one (Longhorn device path) are both observable.
 func (*fakeServer) StartStateful(_ context.Context, req *nodev1.StartStatefulRequest) (*nodev1.StartStatefulResponse, error) {
+	vmIDSuffix := ""
+	if dev := req.GetVolumeDevice(); dev != "" {
+		vmIDSuffix = "@" + dev
+	}
 	if req.GetMode() == nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT {
 		ref := req.GetRelightSnapshotRef()
 		switch {
 		case strings.Contains(ref, "mismatch"):
 			return &nodev1.StartStatefulResponse{
-				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
+				VmId: "vm:" + ref + vmIDSuffix, Ip: "10.99.0.3", Port: req.GetPort(),
 				Generation: 8, WasRelight: false, ColdBootReason: "generation_mismatch",
 			}, nil
 		case strings.Contains(ref, "noledger"):
 			return &nodev1.StartStatefulResponse{
-				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
+				VmId: "vm:" + ref + vmIDSuffix, Ip: "10.99.0.3", Port: req.GetPort(),
 				Generation: 8, WasRelight: false, ColdBootReason: "ledger_unreadable",
 			}, nil
 		default:
+			gen := uint64(7)
+			if bg := req.GetBlessedGeneration(); bg != 0 {
+				gen = bg
+			}
 			return &nodev1.StartStatefulResponse{
-				VmId: "vm:" + ref, Ip: "10.99.0.3", Port: req.GetPort(),
-				Generation: 7, WasRelight: true, ColdBootReason: "",
+				VmId: "vm:" + ref + vmIDSuffix, Ip: "10.99.0.3", Port: req.GetPort(),
+				Generation: gen, WasRelight: true, ColdBootReason: "",
 			}, nil
 		}
 	}
-	// FRESH or COLD: cold boot from the boot image ref, generation bumped.
+	// FRESH or COLD: cold boot from the boot image ref. The blessed generation
+	// wins when the caller supplied one (R7); 0 falls back to the legacy
+	// self-bump value of 1, matching pre-blessing daemon behavior.
+	gen := uint64(1)
+	if bg := req.GetBlessedGeneration(); bg != 0 {
+		gen = bg
+	}
 	return &nodev1.StartStatefulResponse{
-		VmId: "vm:" + req.GetBootImageRef(), Ip: "10.99.0.3", Port: req.GetPort(),
-		Generation: 1, WasRelight: false, ColdBootReason: "",
+		VmId: "vm:" + req.GetBootImageRef() + vmIDSuffix, Ip: "10.99.0.3", Port: req.GetPort(),
+		Generation: gen, WasRelight: false, ColdBootReason: "",
 	}, nil
 }
 
@@ -308,7 +329,10 @@ func (s *fakeServer) ExportArtifact(_ context.Context, req *nodev1.ExportArtifac
 
 // RestoreArtifact reports a successful restore for a key present in the store,
 // echoing the volume generation for a VOLUME. FAILED_PRECONDITION when the store
-// has no copy (a corrupt or absent restore surfaces loudly, never silently).
+// has no copy (a corrupt or absent restore surfaces loudly, never silently), and
+// also when vendor is set but does not match the vendor the artifact was
+// exported under (R7, standing decision 1: restore fails closed on a vendor
+// mismatch, the fake mirrors the arch-mismatch behavior noded already has).
 func (s *fakeServer) RestoreArtifact(_ context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
 	art := req.GetArtifact()
 	key := storeKey(art)
@@ -316,6 +340,9 @@ func (s *fakeServer) RestoreArtifact(_ context.Context, req *nodev1.RestoreArtif
 	defer s.mu.Unlock()
 	if !s.store[key] {
 		return nil, status.Errorf(codes.FailedPrecondition, "artifact %q absent from store", key)
+	}
+	if v := req.GetVendor(); v != "" && strings.Contains(art.GetRef(), "vendor-mismatch") {
+		return nil, status.Errorf(codes.FailedPrecondition, "artifact %q vendor mismatch for %q", key, v)
 	}
 	return &nodev1.RestoreArtifactResponse{
 		BytesMoved: uint64(len(art.GetWorkload()) + len(art.GetRef())),
@@ -361,6 +388,10 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 		// volume, and set exported flags below prove the per-artifact fields cross.
 		DrainDeadlineUnixMs: 1_700_000_009_000,
 		StoreReachable:      true,
+		// Distribution facts (R7): fixed vendor and template hash so the client can
+		// assert the new node-level fields round-trip.
+		CpuVendor:        "amd",
+		NodeTemplateHash: "tmpl-abc123",
 		// Session facts (R2): deterministic, so the client can assert the new
 		// repeated/scalar status fields round-trip.
 		SessionVms: []*nodev1.SessionVm{
@@ -447,6 +478,10 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 				// exported_generation (R6): the store holds the gen-5 (vol.img, gen)
 				// pair, so a disk-loss restore recovers to generation 5.
 				ExportedGeneration: 5,
+				// generation_blessed (R7): this volume's generation was issued by the
+				// control plane's blessing ledger, so the client can assert the new
+				// field round-trips true for the blessed case.
+				GenerationBlessed: true,
 			},
 		},
 		// Group facts (R5): deterministic, so the client can assert the new
