@@ -27,6 +27,7 @@ defmodule Embervm.Application do
   router can be hit.
   """
   use Application
+  require Logger
 
   @impl true
   def start(_type, _args) do
@@ -352,26 +353,62 @@ defmodule Embervm.Application do
   # supervises nothing rather than crash-looping on a bad dial. The id falls back
   # to the address when unset, purely for correlation labels.
   #
-  # THIS STATIC-VALUES SOURCE IS SINGLE-NODE ONLY. It is correct today because
-  # noded is one node-pinned Deployment (replicas: 1) behind a ClusterIP Service,
-  # so the one address resolves to the one pod. It is NOT compatible with a
-  # DaemonSet: a ClusterIP Service load-balances a single stream to one arbitrary
-  # pod (the registry would see "one node" while N-1 daemons stay invisible, and
-  # read capacity from the wrong pod), and values cannot enumerate churning pod
-  # IPs. The multi-node source is endpoint discovery: a HEADLESS noded Service
-  # (clusterIP: None) plus an EndpointSlice/Pod watch that opens a stream per pod
-  # and ages one out when its pod drains. That swap changes ONLY this function
-  # (it produces the same [%{id, address}] list); Embervm.NodeRegistry, its ETS
-  # projection, age-out, and reassignment are unchanged. Land it when noded
-  # actually becomes a DaemonSet.
+  # The node list source (artifact-decoupling PR-C, C4). noded is now a DaemonSet
+  # behind a HEADLESS Service, so the control plane discovers every daemon's
+  # INDIVIDUAL pod endpoint via EndpointSlice discovery and dials each one (one
+  # WatchNode stream + one SyncRegistry push per pod), rather than a single
+  # ClusterIP load-balancing one stream to an arbitrary pod. This function
+  # produces the same [%{id, address}] list Embervm.NodeRegistry/NodeChannel
+  # consume, so their ETS projection, age-out, and reassignment are unchanged.
+  #
+  # An explicit EMBERVM_NODE_ADDRESS override still wins (tests and out-of-cluster
+  # daemons: a single pinned address, no discovery). Otherwise, when the headless
+  # Service name is configured (EMBERVM_NODED_SERVICE), a one-shot EndpointSlice
+  # LIST at boot enumerates the current noded pods. (Interim: a boot-time list, not
+  # a live watch. A daemon whose pod IP changes after a roll is re-discovered on
+  # the next control-plane restart; PR-H replaces this whole seam with CP-managed
+  # per-node Deployments and per-node dialing.) An empty override and no service
+  # name yields [] (the control plane supervises an empty node list and idles).
   defp configured_nodes do
     address = trimmed_env("EMBERVM_NODE_ADDRESS")
     id = trimmed_env("EMBERVM_NODE_ID")
 
     cond do
-      address == "" -> []
-      id == "" -> [%{id: address, address: address}]
-      true -> [%{id: id, address: address}]
+      address != "" and id != "" -> [%{id: id, address: address}]
+      address != "" -> [%{id: address, address: address}]
+      true -> discovered_nodes()
+    end
+  end
+
+  # EndpointSlice-discovered noded endpoints, or [] when discovery is not
+  # configured or finds nothing. EMBERVM_NODED_SERVICE names the headless Service;
+  # EMBERVM_NODED_GRPC_PORT is the daemon gRPC port (default 9090). A discovery
+  # error is logged and treated as "no nodes yet" rather than crashing boot: the
+  # control plane still starts (idle) and a later restart re-lists.
+  defp discovered_nodes do
+    service = trimmed_env("EMBERVM_NODED_SERVICE")
+
+    if service == "" do
+      []
+    else
+      namespace = Embervm.K8s.namespace()
+      grpc_port = configured_noded_grpc_port()
+
+      case Embervm.K8s.list_noded_endpoints(service, namespace, grpc_port) do
+        {:ok, nodes} ->
+          nodes
+
+        {:error, reason} ->
+          Logger.warning("embervm: noded endpoint discovery failed (#{inspect(reason)}); starting with no nodes")
+          []
+      end
+    end
+  end
+
+  defp configured_noded_grpc_port do
+    case trimmed_env("EMBERVM_NODED_GRPC_PORT") do
+      "" -> 9090
+      raw -> String.to_integer(raw)
     end
   end
 

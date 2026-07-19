@@ -1,16 +1,30 @@
 {{- if .Values.noded.enabled }}
+# noded is a DaemonSet over the FC node pool (artifact-decoupling PR-C, C4): one
+# node-affine daemon per node labelled homelab.io/firecracker=true, each owning
+# that node's KVM device + nvme scratch. This is the interim bridge to the
+# CP-managed per-node Deployments (PR-H); it replaces the single node-pinned
+# Deployment so the fleet grows by LABELLING a node rather than editing values.
+# The pod template is UNCHANGED from the Deployment (same securityContext,
+# tolerations, terminationGracePeriodSeconds, volumes, probes); only the workload
+# kind, the selector strategy, and the update strategy differ.
+#
+# A DaemonSet runs at most ONE pod per node by construction, so the "never run two
+# against one node" invariant the old Recreate Deployment enforced holds
+# inherently. The rolling update replaces node-by-node; each replacement drains
+# within noded's own 110s budget (terminationGracePeriodSeconds = drain + 30s).
+# maxSurge/zero-downtime handover across the roll is PR-F's concern; here the
+# DaemonSet default RollingUpdate (maxUnavailable 1) is the interim behavior.
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: {{ include "embervm.noded.fullname" . }}
   labels:
     {{- include "embervm.noded.labels" . | nindent 4 }}
 spec:
-  # Single replica: the daemon is node-affine (FC guests are node-bound) and owns
-  # node-4's KVM device + nvme scratch. Recreate, never run two against one node.
-  replicas: 1
-  strategy:
-    type: Recreate
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   selector:
     matchLabels:
       {{- include "embervm.noded.selectorLabels" . | nindent 6 }}
