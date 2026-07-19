@@ -126,6 +126,17 @@ def test_rate_limit_prunes_stale_entries(monkeypatch):
     assert "stale-session" not in bazel_core._rate_bucket
 
 
+def test_rate_limit_bucket_keys_are_hashed_not_raw_cookies(monkeypatch):
+    clock = {"t": 5000.0}
+    monkeypatch.setattr(bazel_core, "monotonic", lambda: clock["t"])
+
+    cookie = "a-real-session-cookie-value"
+    bazel_core.check_and_record_query(cookie)
+
+    assert cookie not in bazel_core._rate_bucket
+    assert bazel_core._session_tag(cookie) in bazel_core._rate_bucket
+
+
 # ---------------------------------------------------------------------------
 # semaphore
 # ---------------------------------------------------------------------------

@@ -47,6 +47,11 @@ async def bazel_query(body: BazelQueryRequest, request: Request) -> dict:
     if error is not None:
         return {"error": error}
 
+    # Existence-checked only: the cookie value itself is opaque and never
+    # verified against a store (no session table). This deliberately matches
+    # the postgres demo's accepted trade; the real abuse bound is downstream,
+    # the semaphore(2) slot cap and the one-clone-per-query reap, not this
+    # cookie check.
     session_cookie = request.cookies.get(_BAZEL_SESSION_COOKIE, "")
     if not session_cookie:
         if turnstile.SECRET_KEY:

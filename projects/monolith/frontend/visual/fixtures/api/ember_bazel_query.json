@@ -1,0 +1,6 @@
+{
+  "labels": "//absl/strings:strings\n//absl/strings:string_view\n//absl/base:core_headers\n//absl/base:config",
+  "truncated": false,
+  "analyzed_line": "Analyzed target //absl/strings:strings (0 packages loaded, 0 targets configured).",
+  "wall_ms": 312
+}

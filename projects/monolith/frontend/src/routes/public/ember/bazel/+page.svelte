@@ -155,6 +155,17 @@
         runError = "the demo is busy right now, give it a few seconds and try again";
         return;
       }
+      if (!resp.ok) {
+        // Post-submit failures come back as a real HTTP status with a
+        // FastAPI {"detail": ...} body (see ember_public/bazel_router.py's
+        // HTTPException on non-200 from run_query): the guest's own 422 with
+        // bazel's verbatim error text, or a 502/504 from a transport error
+        // or timeout. Pre-submit rejections (bad expression, missing
+        // session, rate limit, busy semaphore) are handled below as in-band
+        // 200 + {error, ...flag} bodies instead.
+        runError = body?.detail ?? body?.error ?? `query failed (${resp.status})`;
+        return;
+      }
       if (body.session_required) {
         if (!turnstileSiteKey) queryUnavailable = true;
         runError = turnstileSiteKey
@@ -191,6 +202,10 @@
     if (!turnstileSiteKey) {
       mintSession("");
     }
+    return () => {
+      stopStopwatch();
+      if (cooldownTimer) clearTimeout(cooldownTimer);
+    };
   });
 
   // Turnstile widget lifecycle: mirrors EmberConsole's script-load +
