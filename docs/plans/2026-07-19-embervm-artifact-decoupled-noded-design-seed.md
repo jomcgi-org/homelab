@@ -5,7 +5,9 @@
 durability seam. Written 2026-07-19 after the bazel-query base-build night surfaced the
 costs of the current coupling. Amended 2026-07-19 after review with Joe: added the
 storage-tier taxonomy, the rollout topology (surge rolls now, control-plane-managed
-node deployments as the target), and resolved open questions 1 and 3.
+node deployments as the target), and resolved open questions 1 and 3. Second review
+pass the same day resolved relay handover, placement authority, the drain budget
+(1m50s), GC policy, and backfill scheduling (resolved questions 3 to 7).
 
 ## Problem
 
@@ -203,8 +205,9 @@ cold and the control plane warms it per policy. This dissolves into R7 proper
 (R7's hardware prerequisite) starts paying rent.
 
 **Phase 6, surge rolls (can ship early, independent of Phases 1 to 5):** partition
-per-instance state under nvmeRoot, readiness gate on registry-replayed-and-adopted,
-preStop bank/drain, then Recreate becomes RollingUpdate maxSurge 1 / maxUnavailable 0.
+per-instance state under nvmeRoot (keyed by the control-plane-issued instance id),
+readiness gate on registry-replayed-and-adopted, preStop bank/drain inside the 1m50s
+budget, then Recreate becomes RollingUpdate maxSurge 1 / maxUnavailable 0.
 Zero-downtime rolls on node-4; traffic never reaches an unready pod.
 
 **Phase 7, control-plane-managed node deployments:** the control plane authors one
@@ -241,6 +244,37 @@ template is Phase 6's, unchanged.
 2. **Builder role: same noded binary, builder flag, separate pod**, scheduled by the
    control plane on a matching-SKU tainted node, writing through the existing store
    client. Serving rolls never kill builds; no shared-volume attach semantics needed.
+3. **Relay handover during surge is control-plane-driven.** The control plane owns the
+   xDS layer: on a roll or preemption it shifts serving endpoints to the new instance
+   and drains the old one, holding or re-queueing in-flight sync-wait requests within
+   the drain budget. Prerequisite: preemption/SIGTERM must reach the control plane
+   immediately (event, not polled status), so coordination starts at notice time.
+4. **Daemon authority flips: daemons never claim nodes, the control plane places
+   instances.** noded reports identity and capacity; the control plane decides what
+   runs where and issues each instance its identity (an epoch/instance id assigned at
+   placement). Two instances on one node therefore exist only because the control
+   plane asked for it (surge handover, builder pod), and it always knows which is
+   authoritative. CID ranges and TAP naming derive from the issued instance id, which
+   settles the surge partitioning mechanics.
+5. **Drain wall-time budget is 1m50s**, targeting spot-instance compatibility (2m
+   notice minus notification latency). Priority order inside the budget: durable banks
+   first, serving banks second, abort in-flight builds on clock expiry (builds are
+   reconstructible by definition). terminationGracePeriodSeconds stays budget + 30s
+   per the existing convention.
+6. **GC is control-plane-owned, and the policy splits by tier.** Reconstructible
+   artifacts (rootfs, base snapshots): registry-referenced entries are pinned,
+   unreferenced ones TTL out by age (order 1h; worst case is a re-bake), with a
+   bounded +n allowance for workloads that snapshot prolifically. Durable artifacts
+   (banks, generations) are never TTL'd: they are ref-counted from the op-log and
+   deleted only when the owning session/generation is gone. Age is the wrong signal
+   for data that cannot be rebuilt.
+7. **rootfs baking and backfill are control-plane-scheduled Jobs, not CI.** The
+   control plane knows the node inventory (arch, cpu_sku), the workload registry, and
+   the store contents, so a registry entry whose artifact is missing from the store
+   IS the work signal: it schedules a bake Job on any node of the right arch (baking
+   needs no KVM) and snapshot builds on SKU-matched FC nodes, pull-based. No
+   CI-to-store network path, no publish webhook; this unifies with the Phase 3 build
+   queue as one mechanism for builds and backfills.
 
 ## Open questions
 
@@ -253,6 +287,9 @@ template is Phase 6's, unchanged.
    naming today implies tag-keyed, not digest-keyed)?
 3. Where the build queue's state lives: op-log rows (durable, replayable, consistent
    with everything else) is the presumptive answer.
-4. Per-instance partitioning mechanics for surge (Phase 6): CID range allocation and
-   TAP naming per pod instance, and whether the instance key is the pod name or a
-   control-plane-issued epoch.
+4. SeaweedFS durability as the master copy: "S3 is the durable layer" promotes
+   SeaweedFS to tier-0 infrastructure, and its own replication story (the item already
+   blocking R6 gates 6 and 7, plus the recent volume slot ceiling) is not settled.
+   GC (resolved question 6) bounds growth, but the replication factor and what backs
+   SeaweedFS's volumes need an answer before Phase 4 leans on restore-on-miss as the
+   norm.
