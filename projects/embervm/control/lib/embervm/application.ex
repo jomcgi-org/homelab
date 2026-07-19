@@ -88,7 +88,7 @@ defmodule Embervm.Application do
       # it) and after WorkloadWatcher; it dials the daemon directly over its own
       # Mint gRPC connection, so it does not depend on the Finch pool. With no node
       # wired (empty address), it supervises an empty node list and does nothing.
-      {Embervm.NodeRegistry, nodes: configured_nodes()},
+      {Embervm.NodeRegistry, [nodes: configured_nodes()] ++ node_discovery_opts()},
       # The shared per-node gRPC channel holder (Task 11): one long-lived, reused
       # Mint channel per node for the Prime/Assign hot path (unlike NodeRegistry/
       # BaseBuilder, which each own their own channel and can afford a per-op
@@ -409,6 +409,23 @@ defmodule Embervm.Application do
     case trimmed_env("EMBERVM_NODED_GRPC_PORT") do
       "" -> 9090
       raw -> String.to_integer(raw)
+    end
+  end
+
+  # NodeRegistry opts that arm PERIODIC EndpointSlice re-discovery (C4 interim): a
+  # discover_fun that re-lists the noded pods so a DaemonSet roll that changes a pod
+  # IP is picked up without a control-plane restart. Only supplied when discovery is
+  # the active source (a headless Service name configured, no pinned single-node
+  # override); a pinned override or no service name leaves discover_fun unset, so
+  # the node set is the static list and never re-lists (tests, out-of-cluster).
+  defp node_discovery_opts do
+    address = trimmed_env("EMBERVM_NODE_ADDRESS")
+    service = trimmed_env("EMBERVM_NODED_SERVICE")
+
+    if address == "" and service != "" do
+      [discover_fun: fn -> discovered_nodes() end]
+    else
+      []
     end
   end
 
