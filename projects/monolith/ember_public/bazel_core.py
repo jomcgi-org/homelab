@@ -22,6 +22,10 @@ Gating mirrors core.py's demo-postgres helpers:
   - try_acquire_query_slot / release_query_slot: a module-level semaphore
     sized to the workload's `cap` (2), so a burst of visitors cannot pile
     more concurrent tasks onto the workload than it has clones for.
+  - record_bazel_query_savings / cached_bazel_query_savings: the all-time
+    "estimated cold analysis time skipped" counter, credited directly from
+    each successful query's wall_ms (no polling, no state machine, unlike
+    demo_pg_savings; see the section below run_query for the design note).
 """
 
 from __future__ import annotations
@@ -32,8 +36,14 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from time import monotonic
 
+from sqlmodel import Session
+
+from app.db import get_engine
+from ember_public.bazel_models import BazelQuerySavings
+from ember_public.db import get_savings_engine
 from faas import embervm_client
 from faas.embervm_client import EmberVMTimeout, EmberVMTransportError
 
@@ -200,3 +210,101 @@ async def run_query(expr: str) -> tuple[int, dict]:
         resp.text[:500],
     )
     return resp.status_code, {"error": resp.text}
+
+
+# ---------------------------------------------------------------------------
+# All-time savings counter: "estimated cold analysis time skipped". Unlike
+# demo_pg_savings (a polled banked-to-banked delta with a state-machine
+# credit rule), this counter has no polling and no state machine: every
+# successful query already knows exactly how much cold-analysis time it
+# skipped, so accrual is a direct add, called once per successful
+# POST /query response (see bazel_router.py). Storage/read-cache shape
+# mirrors demo_pg_savings exactly (singleton row, writer/reader engine
+# split, 30s single-flight cache).
+# ---------------------------------------------------------------------------
+
+# The recorded cold baseline rendered on the page (loading + analysis of
+# Abseil on a warm dev server, pre-snapshot): every query's credit is this
+# minus that run's own wall_ms, floored at 0 so a pathologically slow run
+# never subtracts from the counter.
+_COLD_ANALYSIS_S = 13.8
+
+
+def record_bazel_query_savings_core(session: Session, *, wall_ms: float) -> float:
+    """Credit one query's skipped analysis time into the single all-time row.
+    Sync; to_thread. Always writes (no throttle: this is called once per
+    successful query, not on a sub-second poll like demo_pg_savings)."""
+    row = session.get(BazelQuerySavings, 1)
+    if row is None:
+        row = BazelQuerySavings(id=1, total_analysis_s_saved=0.0)
+        session.add(row)
+
+    credit_s = max(0.0, _COLD_ANALYSIS_S - (wall_ms / 1000.0))
+    row.total_analysis_s_saved += credit_s
+    session.commit()
+    return row.total_analysis_s_saved
+
+
+def _record_bazel_query_savings_sync(wall_ms: float) -> float:
+    """Opens its own Session against the writer engine (public_writer on the
+    public tier, the default app engine on the private tier); never receives
+    a session from the caller's thread."""
+    with Session(get_savings_engine()) as session:
+        return record_bazel_query_savings_core(session, wall_ms=wall_ms)
+
+
+async def record_bazel_query_savings(wall_ms: float) -> float | None:
+    """Best-effort: a missing table (pre-migration) must not break queries."""
+    try:
+        return await asyncio.to_thread(_record_bazel_query_savings_sync, wall_ms)
+    except Exception as exc:  # noqa: BLE001 - accrual is best-effort, never fatal
+        logger.warning("bazel-query savings accrual failed: %s", exc)
+        return None
+
+
+# GET /savings: a 30s in-process cache over a plain SELECT of the singleton
+# bazel_query_savings row. Reads always use the DEFAULT reader engine
+# (app.db.get_engine, public_reader on the replica): SELECT works fine on the
+# replica, and reserving the writer engine for accrual keeps the read path
+# off the primary. Missing table (pre-migration) or any error degrades to
+# total_analysis_s_saved: None, never a 5xx.
+
+_SAVINGS_CACHE_TTL_S = 30.0
+_savings_cache_lock = asyncio.Lock()
+_savings_cache: dict = {"at": None, "total_analysis_s_saved": None, "as_of": None}
+
+
+def _read_bazel_query_savings_sync() -> float | None:
+    with Session(get_engine()) as session:
+        row = session.get(BazelQuerySavings, 1)
+        return row.total_analysis_s_saved if row is not None else None
+
+
+async def cached_bazel_query_savings() -> dict:
+    """Single-flight, 30s-TTL-cached read of the all-time savings counter.
+
+    Returns {"total_analysis_s_saved": float | None, "as_of": iso8601}; as_of
+    is when the value was actually read from the DB (the cached_at
+    timestamp), not the current time, so a stale-but-still-fresh cached
+    response is honest about its age.
+    """
+    async with _savings_cache_lock:
+        now = monotonic()
+        cached_at = _savings_cache["at"]
+        if cached_at is not None and (now - cached_at) < _SAVINGS_CACHE_TTL_S:
+            return {
+                "total_analysis_s_saved": _savings_cache["total_analysis_s_saved"],
+                "as_of": _savings_cache["as_of"],
+            }
+
+        try:
+            total = await asyncio.to_thread(_read_bazel_query_savings_sync)
+        except Exception as exc:  # noqa: BLE001 - a read failure is data, not a fault
+            logger.warning("bazel-query savings read failed: %s", exc)
+            total = None
+
+        as_of = datetime.now(timezone.utc).isoformat()
+        _savings_cache["at"] = now
+        _savings_cache["total_analysis_s_saved"] = total
+        _savings_cache["as_of"] = as_of
+        return {"total_analysis_s_saved": total, "as_of": as_of}

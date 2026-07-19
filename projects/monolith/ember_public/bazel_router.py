@@ -3,7 +3,10 @@
 Mounted at ``/api/ember/bazel`` on the public app, Turnstile-gated the same
 way the demo-postgres session is: ``POST /session`` mints a cookie once a
 Turnstile token is verified, and ``POST /query`` requires that cookie before
-submitting to the ``bazel-query`` EmberVM workload.
+submitting to the ``bazel-query`` EmberVM workload. ``GET /savings`` is a
+cached read of the all-time "estimated cold analysis time skipped" counter,
+credited by every successful ``POST /query`` (see bazel_core.py's savings
+accrual, mirroring ember_public/router.py's demo-postgres savings counter).
 
 Session admission uses ``chat_public.turnstile.siteverify`` (see
 bazel_core.py's neighbour, ember_public/router.py, for the same pattern):
@@ -71,7 +74,22 @@ async def bazel_query(body: BazelQueryRequest, request: Request) -> dict:
 
     if status != 200:
         raise HTTPException(status_code=status, detail=payload.get("error"))
+
+    wall_ms = payload.get("wall_ms")
+    if isinstance(wall_ms, (int, float)):
+        await bazel_core.record_bazel_query_savings(wall_ms)
     return payload
+
+
+@router.get("/savings")
+async def bazel_savings() -> dict:
+    """The all-time "estimated cold analysis time skipped" counter.
+
+    Reads through core.cached_bazel_query_savings (reader engine,
+    single-flight cached 30s), mirroring ember_public/router.py's
+    postgres_savings.
+    """
+    return await bazel_core.cached_bazel_query_savings()
 
 
 @router.post("/session")

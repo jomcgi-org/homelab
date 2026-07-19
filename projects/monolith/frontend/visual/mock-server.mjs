@@ -29,11 +29,13 @@ const ROUTES = [
   ["/api/ember/postgres/savings", "fixtures/api/ember_postgres_savings.json"],
   ["/api/ember/postgres/session", "fixtures/api/ember_postgres_session.json"],
   ["/api/ember/postgres/query", "fixtures/api/ember_postgres_query.json"],
-  // /ember/bazel fires a fire-and-forget session mint on mount (no
-  // unprompted query, unlike postgres); the session fixture is what capture
-  // actually exercises, the query fixture is here for parity/coverage.
+  // /ember/bazel fires a fire-and-forget session mint plus an SSR savings
+  // read on mount (no unprompted query, unlike postgres); the session and
+  // savings fixtures are what capture actually exercises, the query fixture
+  // is here for parity/coverage.
   ["/api/ember/bazel/session", "fixtures/api/ember_bazel_session.json"],
   ["/api/ember/bazel/query", "fixtures/api/ember_bazel_query.json"],
+  ["/api/ember/bazel/savings", "fixtures/api/ember_bazel_savings.json"],
 ];
 const PREFIX = [["/api/trips/trip/", "fixtures/api/trips_trip.json"]];
 
