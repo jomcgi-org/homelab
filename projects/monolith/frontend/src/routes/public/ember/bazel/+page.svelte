@@ -37,6 +37,30 @@
   let result = $state(null);
   let runError = $state("");
 
+  // All-time "estimated cold analysis time skipped" counter (see
+  // ember_public/bazel_router.py GET /savings). SSR-seeded so the counter
+  // isn't blank on first paint, refetched after every successful query so
+  // the visitor watches their own contribution land without a reload.
+  let savedS = $state(data.initialSavings?.total_analysis_s_saved ?? null);
+
+  async function refetchSavings() {
+    try {
+      const resp = await fetch(`${API}/savings`);
+      if (!resp.ok) return;
+      const body = await parseJsonSafe(resp);
+      if (body?.total_analysis_s_saved != null) savedS = body.total_analysis_s_saved;
+    } catch {
+      // best-effort: leave the last known value on screen
+    }
+  }
+
+  function formatSavedTime(s) {
+    if (s == null) return "–";
+    if (s < 60) return `${s.toFixed(1)} s`;
+    if (s < 3600) return `${(s / 60).toFixed(1)} min`;
+    return `${(s / 3600).toFixed(1)} h`;
+  }
+
   let stopwatchRaf = null;
   let stopwatchStart = 0;
 
@@ -189,6 +213,11 @@
         return;
       }
       result = body;
+      // Fire-and-forget: the backend already credited this query's savings
+      // synchronously inside POST /query, this just re-reads the counter so
+      // the visitor sees their own contribution without a page reload. A
+      // failed refetch just leaves the last known value on screen.
+      refetchSavings();
     } catch (err) {
       runError = String(err);
     } finally {
@@ -202,6 +231,7 @@
     if (!turnstileSiteKey) {
       mintSession("");
     }
+    if (savedS == null) refetchSavings();
     return () => {
       stopStopwatch();
       if (cooldownTimer) clearTimeout(cooldownTimer);
@@ -273,7 +303,60 @@
     };
   });
 
-  let labelLines = $derived((result?.labels ?? "").split("\n").filter((l) => l.length > 0));
+  // cquery's frozen --output=label format is "//pkg:target (config-hash)" or
+  // "//pkg:target (null)" for source files, which have no configuration.
+  // Guest flags stay frozen (warming/serving parity), so this is purely a
+  // client-side render split: strip the trailing " (...)" and keep the
+  // config hash as a separate field, rendering nothing for a null config
+  // rather than the literal text "(null)", which reads as an error.
+  const LABEL_CONFIG_RE = /^(.*) \(([^()]*)\)$/;
+
+  function parseLabelLine(line) {
+    const m = LABEL_CONFIG_RE.exec(line);
+    if (!m) return { target: line, configHash: null };
+    const [, target, config] = m;
+    return { target, configHash: config === "null" ? null : config };
+  }
+
+  let labelItems = $derived(
+    (result?.labels ?? "")
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map(parseLabelLine),
+  );
+
+  // Client-side substring filter + pagination: the full list is already in
+  // memory (capped at 256KiB server-side), so both are plain array ops, no
+  // round trip. Filter resets to page 1 whenever the query text or the
+  // underlying result changes.
+  const PAGE_SIZE = 25;
+  let filterText = $state("");
+  let labelPage = $state(0);
+
+  let filteredLabelItems = $derived.by(() => {
+    const needle = filterText.trim().toLowerCase();
+    if (!needle) return labelItems;
+    return labelItems.filter((item) => item.target.toLowerCase().includes(needle));
+  });
+
+  let labelPageCount = $derived(Math.max(1, Math.ceil(filteredLabelItems.length / PAGE_SIZE)));
+
+  let shownLabelPage = $derived(Math.min(labelPage, labelPageCount - 1));
+
+  let pagedLabelItems = $derived.by(() => {
+    const page = shownLabelPage;
+    return filteredLabelItems.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  });
+
+  $effect(() => {
+    // Reset to page 1 whenever the filter text or the result set changes,
+    // not on every re-render (an $effect over the exact reset triggers,
+    // rather than doing it inline in the filter handler, keeps the "new
+    // result" reset and the "typed a filter" reset in one place).
+    filterText;
+    labelItems;
+    labelPage = 0;
+  });
 </script>
 
 <svelte:head>
@@ -297,10 +380,14 @@
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Bazel Skyframe Query</h1>
       <p class="subtitle">
-        A real Bazel server was warmed once: loading and analysis of Abseil,
-        514 targets. That warm server was frozen as a Firecracker memory
-        snapshot. Every query below runs in a disposable copy-on-write clone
-        of that frozen brain: relight, one query, destroy.
+        A real Bazel server was warmed once: loading and analysis of
+        <a class="inline-link" href="https://github.com/abseil/abseil-cpp"
+          >Abseil</a
+        >
+        (release 20240116.2, 514 targets). That warm server was frozen as a
+        Firecracker memory snapshot. Every query below runs in a disposable
+        copy-on-write clone of that frozen brain: relight, one query,
+        destroy.
       </p>
     </header>
 
@@ -385,16 +472,67 @@
 
         <div class="result-card">
           <div class="result-header">
-            <span class="result-count">{labelLines.length} label{labelLines.length === 1 ? "" : "s"}</span>
+            <span class="result-count">
+              {filteredLabelItems.length}
+              {#if filteredLabelItems.length !== labelItems.length}of {labelItems.length}{/if}
+              label{labelItems.length === 1 ? "" : "s"}
+            </span>
             {#if result.truncated}
               <span class="result-truncated">output truncated</span>
             {/if}
           </div>
+
+          <input
+            class="label-filter"
+            type="text"
+            bind:value={filterText}
+            placeholder="filter labels"
+            spellcheck="false"
+            autocomplete="off"
+          />
+
           <ul class="label-list">
-            {#each labelLines as label, i (i)}
-              <li>{label}</li>
+            {#each pagedLabelItems as item, i (i)}
+              <li>
+                <span class="label-target">{item.target}</span>
+                {#if item.configHash}
+                  <span class="label-config-badge">{item.configHash}</span>
+                {/if}
+              </li>
+            {:else}
+              <li class="label-empty">no labels match "{filterText}"</li>
             {/each}
           </ul>
+
+          <div class="result-footer-row">
+            <p class="result-footer">
+              the badge is the target's configuration hash; source files have
+              none
+            </p>
+            {#if labelPageCount > 1}
+              <div class="pager">
+                <button
+                  class="pager-btn"
+                  type="button"
+                  onclick={() => (labelPage = Math.max(0, shownLabelPage - 1))}
+                  disabled={shownLabelPage === 0}
+                  aria-label="previous page"
+                >
+                  &#8249;
+                </button>
+                <span class="pager-count">page {shownLabelPage + 1} of {labelPageCount}</span>
+                <button
+                  class="pager-btn"
+                  type="button"
+                  onclick={() => (labelPage = Math.min(labelPageCount - 1, shownLabelPage + 1))}
+                  disabled={shownLabelPage >= labelPageCount - 1}
+                  aria-label="next page"
+                >
+                  &#8250;
+                </button>
+              </div>
+            {/if}
+          </div>
         </div>
       {/if}
     </section>
@@ -426,6 +564,15 @@
           >
         </div>
       </div>
+
+      <div class="saved-total">
+        <span class="saved-total-value">{formatSavedTime(savedS)}</span>
+        <span class="saved-total-label"
+          >estimated cold analysis time skipped, across every visitor's
+          query, all time</span
+        >
+      </div>
+
       <p class="recorded-footer">
         Design doc: <a
           href="https://github.com/jomcgi/homelab/blob/main/docs/decisions/embervm/010-bazel-skyframe-snapshot-query-demo.md"
@@ -521,6 +668,16 @@
     line-height: 1.5;
     color: var(--em-muted);
     max-width: 68ch;
+  }
+
+  .inline-link {
+    color: var(--em-ember-deep);
+    text-decoration: none;
+    border-bottom: 1px solid var(--em-ember-dim);
+  }
+
+  .inline-link:hover {
+    border-bottom-color: var(--em-ember-deep);
   }
 
   .console-section {
@@ -734,7 +891,6 @@
     border-radius: 12px;
     background: var(--em-ground);
     padding: 12px 16px;
-    max-height: 360px;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -753,10 +909,29 @@
     color: var(--em-ember-deep);
   }
 
+  .label-filter {
+    padding: 7px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--em-line);
+    background: var(--em-panel);
+    color: var(--em-ink);
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+  }
+
+  .label-filter:focus-visible {
+    outline: 2px solid var(--em-ember-deep);
+    outline-offset: 1px;
+  }
+
   .label-list {
     margin: 0;
     padding: 0;
     list-style: none;
+    /* Well below viewport height: with pagination capping each page at 25
+       rows, this is a safety net for unusually long wrapped label text, not
+       the primary scroll mechanism (that's the pager below). */
+    max-height: min(40vh, 320px);
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -767,13 +942,85 @@
   }
 
   .label-list li {
-    padding: 2px 0;
+    padding: 3px 0;
     border-bottom: 1px solid var(--em-line-soft);
-    word-break: break-all;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
   }
 
   .label-list li:last-child {
     border-bottom: none;
+  }
+
+  .label-target {
+    word-break: break-all;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .label-config-badge {
+    flex: none;
+    font-size: 10.5px;
+    color: var(--em-faint);
+    background: var(--em-line-soft);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .label-empty {
+    color: var(--em-faint);
+    font-style: italic;
+    border-bottom: none;
+  }
+
+  .result-footer-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .result-footer {
+    margin: 0;
+    font-size: 11px;
+    color: var(--em-faint);
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pager-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    border: 1px solid var(--em-line);
+    background: var(--em-panel);
+    color: var(--em-ink);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .pager-btn:hover:not(:disabled) {
+    border-color: var(--em-faint);
+  }
+
+  .pager-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .pager-count {
+    font-family: var(--em-mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--em-muted);
   }
 
   .recorded-section {
@@ -853,6 +1100,32 @@
     font-size: 11.5px;
     line-height: 1.4;
     color: var(--em-faint);
+  }
+
+  .saved-total {
+    margin-top: 14px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+    background: color-mix(in srgb, var(--em-ember-dim) 20%, var(--em-panel));
+    border: 1px solid var(--em-ember-dim);
+    border-radius: 10px;
+  }
+
+  .saved-total-value {
+    font-family: var(--em-mono);
+    font-size: 20px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--em-ember-deep);
+  }
+
+  .saved-total-label {
+    font-size: 12.5px;
+    line-height: 1.4;
+    color: var(--em-muted);
   }
 
   .recorded-footer {

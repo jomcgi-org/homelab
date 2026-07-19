@@ -11,8 +11,11 @@ import logging
 
 import httpx
 import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
 import ember_public.bazel_core as bazel_core
+from ember_public.bazel_models import BazelQuerySavings  # noqa: F401  (registers the table)
 from faas.embervm_client import EmberVMTimeout, EmberVMTransportError
 
 
@@ -289,3 +292,93 @@ async def test_run_query_no_warning_when_packages_loaded_is_zero(monkeypatch, ca
 
     assert status == 200
     assert not any("0 packages loaded" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# savings accrual: "estimated cold analysis time skipped", credited directly
+# from each successful query's wall_ms, no polling and no state machine
+# (unlike demo_pg_savings' banked-to-banked credit rule).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _savings_db():
+    """In-memory SQLite with bazel_query_savings created, mirroring
+    router_test.py's _savings_db fixture."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        yield session
+
+
+def test_savings_first_credit_creates_row(_savings_db):
+    total = bazel_core.record_bazel_query_savings_core(_savings_db, wall_ms=310.0)
+    assert total == pytest.approx(bazel_core._COLD_ANALYSIS_S - 0.31)
+
+
+def test_savings_accumulates_across_queries(_savings_db):
+    bazel_core.record_bazel_query_savings_core(_savings_db, wall_ms=310.0)
+    total = bazel_core.record_bazel_query_savings_core(_savings_db, wall_ms=450.0)
+    expected = (bazel_core._COLD_ANALYSIS_S - 0.31) + (
+        bazel_core._COLD_ANALYSIS_S - 0.45
+    )
+    assert total == pytest.approx(expected)
+
+
+def test_savings_never_credits_negative_even_if_wall_ms_exceeds_cold_baseline(
+    _savings_db,
+):
+    # A pathological slow query (wall_ms > cold baseline) must not subtract
+    # from the counter; the credit floors at 0 for that query.
+    huge_wall_ms = (bazel_core._COLD_ANALYSIS_S + 5) * 1000
+    total = bazel_core.record_bazel_query_savings_core(
+        _savings_db, wall_ms=huge_wall_ms
+    )
+    assert total == 0.0
+
+
+def test_savings_endpoint_returns_cached_value(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_read():
+        calls["n"] += 1
+        return 42.0
+
+    monkeypatch.setattr(bazel_core, "_read_bazel_query_savings_sync", fake_read)
+
+    import asyncio
+
+    first = asyncio.run(bazel_core.cached_bazel_query_savings())
+    assert first["total_analysis_s_saved"] == 42.0
+    assert first["as_of"]
+
+    second = asyncio.run(bazel_core.cached_bazel_query_savings())
+    assert second["total_analysis_s_saved"] == 42.0
+
+    # Second call within the 30s TTL must not re-read the DB.
+    assert calls["n"] == 1
+
+
+def test_savings_endpoint_refetches_after_ttl_expires(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_read():
+        calls["n"] += 1
+        return float(calls["n"])
+
+    monkeypatch.setattr(bazel_core, "_read_bazel_query_savings_sync", fake_read)
+
+    fake_clock = {"t": 1000.0}
+    monkeypatch.setattr(bazel_core, "monotonic", lambda: fake_clock["t"])
+
+    import asyncio
+
+    asyncio.run(bazel_core.cached_bazel_query_savings())
+    fake_clock["t"] += bazel_core._SAVINGS_CACHE_TTL_S + 0.01
+    asyncio.run(bazel_core.cached_bazel_query_savings())
+
+    assert calls["n"] == 2
