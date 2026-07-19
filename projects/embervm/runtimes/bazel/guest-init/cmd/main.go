@@ -35,6 +35,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -66,6 +67,15 @@ const (
 	distDir      = "/opt/distdir" // vendored dep archives (read-only rootfs); offline --distdir
 	warmExpr     = "//absl/..."   // the warming query: analyze the whole Abseil graph
 	heapArg      = "--host_jvm_args=-Xmx1g"
+	// egdArg points the JVM's SecureRandom seed source at /dev/urandom. In a
+	// NIC-less Firecracker microVM the kernel CRNG can take a long time to reach
+	// "initialized" (little entropy is gathered without disks/network/interrupts),
+	// and the bazel server JVM blocks on getrandom() during SecureRandom init,
+	// which presents as a warming VM stuck at ZERO CPU with no bazel output. Seeding
+	// from /dev/urandom (non-blocking) removes that stall. Passed as a SECOND
+	// --host_jvm_args startup option (bazel accepts the flag repeatedly, each adding
+	// one JVM arg), kept inside buildArgv so warming and serving stay identical.
+	egdArg       = "--host_jvm_args=-Djava.security.egd=file:/dev/urandom"
 	queryTimeout = 15 * time.Second // per-serving-query wall budget (guest side)
 	settleDelay  = 10 * time.Second // post-warming idle before ready, lets the JVM GC settle
 	maxOutput    = 256 << 10        // bytes; cap the labels payload over vsock
@@ -99,6 +109,18 @@ func run(logger *slog.Logger) error {
 	}
 	setDefaultEnv(logger)
 
+	// Bring up the loopback interface and set the hostname BEFORE warming. The
+	// bazel client talks to the bazel SERVER over a gRPC socket on 127.0.0.1; a
+	// raw Firecracker boot leaves `lo` DOWN, so that connect blocks forever and
+	// the warming VM sits at zero CPU. Setting the hostname (with 127.0.0.1
+	// localhost + the hostname baked into /etc/hosts) also stops the JVM stalling
+	// on an InetAddress.getLocalHost() reverse lookup. Both are best-effort: a
+	// failure is logged loudly to the console but does not abort the boot (so the
+	// failure is diagnosable rather than a silent exit), and if warming then still
+	// hangs the console output pinpoints which hedge did not take.
+	bringUpLoopback(logger)
+	setHostname(logger)
+
 	// ready gates GET /shim/ready. It stays false until the warming client has
 	// exited cleanly and the settle delay has passed, so a base build never
 	// snapshots a cold-or-broken server (a warming failure leaves ready false and
@@ -121,13 +143,14 @@ func run(logger *slog.Logger) error {
 
 	// The warming client has exited. Let the JVM settle (idle GC, any lazily
 	// spawned worker threads quiesce) before the snapshot is cut.
+	logger.Info("ember-bazel-init: settling before ready", "settle", settleDelay.String())
 	select {
 	case <-time.After(settleDelay):
 	case <-ctx.Done():
 		return waitForShutdown(ctx, serveErr, logger)
 	}
 	ready.Store(true)
-	logger.Info("ember-bazel-init: warm base ready", "settle", settleDelay.String())
+	logger.Info("ember-bazel-init: settle done, warm base ready")
 
 	// Hold PID 1. Exiting PID 1 panics the guest kernel before noded can snapshot
 	// the base or before a restored clone can answer its one query.
@@ -145,6 +168,7 @@ func buildArgv(expr string) []string {
 		"/usr/local/bin/bazel",
 		"--output_user_root=" + outputRoot,
 		heapArg,
+		egdArg,
 		// --max_idle_secs=0 disables the bazel server's idle-shutdown timer. The
 		// warm server IS the base snapshot; a restored clone resumes it possibly
 		// long after the snapshot was cut, and if the guest clock is corrected
@@ -160,23 +184,42 @@ func buildArgv(expr string) []string {
 	}
 }
 
-// warm runs the warming cquery and returns an error if it does not exit 0. Its
-// stderr is logged (the "Analyzed ... (N packages loaded ...)" line is the
-// baseline; a restored clone re-emitting "0 packages loaded" is the proof the
-// snapshot reused this analysis). No timeout here: warming an image on a cold CI
-// runner is legitimately minutes; BuildBase's own BootReadyTimeout is the outer
-// bound.
+// warm runs the warming cquery and returns an error if it does not exit 0. It
+// PIPES the bazel subprocess stdout and stderr straight through to PID 1's own
+// stdout/stderr (the guest console, which noded captures), so the warming phase
+// is visible in noded logs in real time; without this a stall (e.g. the JVM
+// blocking on entropy, or the client blocking connecting to the server over
+// loopback) is a blind zero-CPU hang with no output. Stderr is ALSO teed into an
+// in-memory capture so the "Analyzed ... (N packages loaded ...)" line can still
+// be grepped afterwards (the baseline; a restored clone re-emitting "0 packages
+// loaded" is the proof the snapshot reused this analysis). Wall-time checkpoints
+// (client started / exited) bracket the run so a hang's phase is obvious. No
+// timeout here: warming an image on a cold CI runner is legitimately minutes;
+// BuildBase's own BootReadyTimeout is the outer bound.
 func warm(ctx context.Context, logger *slog.Logger) error {
 	argv := buildArgv(warmExpr)
-	logger.Info("ember-bazel-init: warming", "expr", warmExpr, "argv", argv)
+	logger.Info("ember-bazel-init: warming client starting", "expr", warmExpr, "argv", argv)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // nosemgrep: no-shell-command-injection
 	cmd.Dir = workspaceDir
 	cmd.Env = append(os.Environ(), "HOME="+homeDir)
-	out, err := cmd.CombinedOutput()
+
+	// Stdout streams to the console only (bazel writes the label list there; it is
+	// large and not needed for the Analyzed grep). Stderr streams to the console
+	// AND a capture builder for the Analyzed line. Capturing stderr in memory is
+	// fine: bazel's stderr is progress lines, kilobytes, not the big label list.
+	var stderrCap strings.Builder
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrCap)
+
+	t0 := time.Now()
+	err := cmd.Run()
+	elapsed := time.Since(t0)
 	if err != nil {
-		logger.Error("ember-bazel-init: warming exited non-zero", "err", err, "tail", tail(out, stderrTail))
+		logger.Error("ember-bazel-init: warming client exited non-zero", "err", err, "elapsed", elapsed.String(), "tail", tail([]byte(stderrCap.String()), stderrTail))
 		return err
 	}
+	logger.Info("ember-bazel-init: warming client exited 0", "elapsed", elapsed.String())
+
 	// Warming succeeded (exit 0), but a flag typo can make cquery a silent no-op
 	// (e.g. an unrecognized target pattern that matches nothing, or a flag that
 	// changes --output so the "Analyzed" progress line never appears). If bazel
@@ -186,9 +229,9 @@ func warm(ctx context.Context, logger *slog.Logger) error {
 	// the line legitimately reports NON-zero packages loaded (this IS the cold
 	// analysis); the "0 packages loaded" invariant applies to restored CLONES,
 	// checked in handleQuery, not here.
-	analyzed := analyzedLineFromStderr(string(out))
+	analyzed := analyzedLineFromStderr(stderrCap.String())
 	if analyzed == "" {
-		logger.Warn("ember-bazel-init: warming exit 0 but no 'Analyzed' line found; the snapshot may capture an EMPTY analysis graph (check for a flag typo)", "tail", tail(out, stderrTail))
+		logger.Warn("ember-bazel-init: warming exit 0 but no 'Analyzed' line found; the snapshot may capture an EMPTY analysis graph (check for a flag typo)", "tail", tail([]byte(stderrCap.String()), stderrTail))
 	} else {
 		logger.Info("ember-bazel-init: warming output", "analyzed", analyzed)
 	}

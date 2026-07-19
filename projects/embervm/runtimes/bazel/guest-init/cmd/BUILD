@@ -13,6 +13,8 @@ go_library(
         "main.go",
         "mount_linux.go",
         "mount_other.go",
+        "net_linux.go",
+        "net_other.go",
         "vsock_linux.go",
         "vsock_other.go",
     ],
