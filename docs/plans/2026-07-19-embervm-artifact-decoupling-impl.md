@@ -12,11 +12,47 @@ live in the S3 store keyed by the seed's taxonomy, the control plane distributes
 and owns placement, and noded rolls are zero-downtime (surge handover, 1m50s drain
 budget, warmth preserved).
 
-**Architecture:** Eight PRs mapping to the seed's phases. Each PR is independently
-shippable and carries its own chart bump. PR-A (Phase 0) and PR-F (Phase 6, surge) have
-no dependency on the store work and can land early; PR-B through PR-E build the
-artifact pipeline (ROOTFS kind, pushed registry, build queue, restore-on-miss); PR-G is
-GC; PR-H (Phase 7) retires the chart-owned noded Deployment last.
+**Fleet reality (2026-07-19 second design session, ADR embervm/012):** the fleet is
+all four existing nodes. node-1/2/3 (the Intel Alder Lake-S etcd masters, ~12.3GiB
+allocatable / 12 vCPU each) join AMD Zen4 node-4 as Firecracker hosts; the
+etcd-co-location risk is explicitly accepted (ADR 012). Consequences for this plan:
+the remaining work targets 4 nodes, cpu_sku becomes mandatory-and-early (two vendor
+pools are real on day one), the FC taint is never applied (label-only, honest
+requests via CP-owned in-place resize), and an interim DaemonSet bridges noded onto
+all 4 nodes until the CP-managed per-node Deployments land.
+
+**Architecture:** Ten PRs. Each is independently shippable and carries its own chart
+bump. PR-A (Phase 0) is SHIPPED. PR-C (pushed registry + fleet bridge) leads the
+remaining work; PR-E (cpu_sku) and PR-I (CP-owned dynamic sizing) land before
+placement packs the masters; PR-B/PR-D complete the artifact pipeline; PR-F is surge
+rolls; PR-J is the HA control plane; PR-H (Phase 7) retires the interim DaemonSet;
+PR-G (GC) is last.
+
+**Landing order and dependencies (one line each):**
+
+1. **PR-A** (Phase 0 quick wins): SHIPPED; the taint runbook it added is now a
+   recorded option, never applied (ADR 012), and its tolerations are harmless no-ops.
+2. **PR-C** (pushed registry, registry persistence, FC labels, DaemonSet bridge):
+   no code dependency; deliberately first so the fleet exists and workload changes
+   stop rolling noded. (C before B is fine: the registry carries locally-baked
+   rootfs refs until the store kind exists.)
+3. **PR-E** (cpu_sku mandatory-and-early + grandfather rule): can parallel PR-C;
+   MUST be live before any snapshot placement targets a master (two vendor pools).
+4. **PR-I** (CP-owned dynamic sizing via in-place resize): depends on PR-C (the
+   DaemonSet puts noded on the masters); MUST be live before placement packs the
+   masters, since honest requests are what replaces the taint.
+5. **PR-B** (ROOTFS via store, delete init containers): depends on PR-A digest
+   keying; the bake tax is now paid 4x per roll, so the win quadrupled.
+6. **PR-D** (out-of-band builds, per-vendor builder pods): depends on PR-C (queue
+   over the registry view) and PR-E (builds keyed per (base_key, cpu_sku) pool).
+7. **PR-F** (surge rolls): depends on PR-C (readiness gate, instance identity);
+   applies surge semantics to the interim DaemonSet (maxSurge is per-node there).
+8. **PR-J** (HA control plane, multi-replica): gated on moving the op-log off the
+   single-writer SQLite RWO volume (ADR embervm/007 is the path); can parallel F.
+9. **PR-H** (CP-managed per-node Deployments): gates only on PR-C; replaces the
+   interim DaemonSet and deletes the chart-owned noded workload resource.
+10. **PR-G** (GC): last; needs the registry (C), sku keys (E), and store kinds (B)
+    to know what "referenced" means.
 
 **Tech Stack:** Go (noded: `projects/embervm/noded/`), Elixir (control plane:
 `projects/embervm/control/lib/embervm/`), protobuf additive-only
@@ -32,7 +68,11 @@ durable; build queue and registry state in op-log rows; rootfs artifacts digest-
 
 ## PR-A: Phase 0 quick wins (bake cache, drain budget + preStop build drain, taint)
 
-Branch: `feat/embervm-phase0-quick-wins`. No proto changes, no new components.
+**SHIPPED.** Branch: `feat/embervm-phase0-quick-wins`. No proto changes, no new
+components. Post-ADR-012 note: Task A3's taint is never applied (label-only fleet;
+honest requests via PR-I replace the scheduling fence). The tolerations shipped in
+A3 are harmless no-ops and stay; PR-C updates the README taint runbook to record
+"option, not step".
 
 ### Task A1: Digest-keyed rootfs bake cache
 
@@ -120,7 +160,11 @@ Branch: `feat/embervm-phase0-quick-wins`. No proto changes, no new components.
 
 ## PR-B: Phase 1, ROOTFS artifacts through the store
 
-Branch: `feat/embervm-rootfs-store`. Depends on PR-A (digest keying).
+Branch: `feat/embervm-rootfs-store`. Depends on PR-A (digest keying); lands after
+PR-C/E/I in the resequenced order. Fleet note: with noded on all 4 nodes, the
+init-container bake tax is paid 4x per roll (one bake per workload per node), so
+deleting the init containers is a 4x-per-roll win, not a single-node one. rootfs is
+arch-keyed and vendor-agnostic, so ONE baked artifact serves all four nodes.
 
 ### Task B1: ROOTFS artifact kind
 
@@ -169,9 +213,13 @@ action), watch a bake Job appear and the artifact land in the store.
 
 ---
 
-## PR-C: Phase 2, pushed registry
+## PR-C: Phase 2, pushed registry + fleet bridge (FIRST of the remaining PRs)
 
-Branch: `feat/embervm-pushed-registry`. Depends on PR-B.
+Branch: `feat/embervm-pushed-registry`. No dependency on PR-B: registry entries
+carry locally-baked rootfs refs until the store kind exists (the init containers
+keep baking under the DaemonSet in the interim; PR-B deletes them). This PR is
+first because it creates the fleet (noded on all 4 nodes) and detaches workload
+changes from noded rolls.
 
 ### Task C1: Registry verbs
 
@@ -198,15 +246,72 @@ Branch: `feat/embervm-pushed-registry`. Depends on PR-B.
   Phase 6 readiness gate landing early; traffic never reaches a pod with an empty
   registry)
 
+### Task C3: Persist the last-synced registry to the NVMe boot cache
+
+The never-warm-to-dead rule (ADR 012): a restarting noded whose control plane is
+briefly down must serve warm workloads from its cache instead of refusing
+everything.
+
+**Files:**
+- Modify: `projects/embervm/noded/server/registry.go` (+ tests): after every
+  applied `SyncRegistry`, write the registry table atomically (tmp + rename) to
+  `<nvmeRoot>/embervm-noded/registry.json` with a `stale: true` marker semantics
+  field; on boot, load it if present, mark the in-memory table STALE, and serve
+  warm-cache workloads from it while readiness stays gated on the FIRST live
+  `SyncRegistry` of this connection (a stale registry serves existing warmth, it
+  never admits new work); the live sync clears the stale mark and converges as in
+  C1
+- Modify: `projects/embervm/noded/config/config.go`: derive the registry cache path
+  from the existing nvmeRoot config (no new env var needed if derived; add
+  `EMBERVM_NODED_REGISTRY_CACHE` override for tests)
+
+Tests: restart-serves-warm-from-stale-cache, live-sync-clears-stale,
+corrupt-cache-file-boots-empty (never crash-loop on a bad cache).
+
+### Task C4: FC labels on all 4 nodes and the interim DaemonSet bridge
+
+The single node-pinned Deployment cannot reach the masters, and per-node Helm
+templating was rejected in the seed; the bridge until PR-H is a DaemonSet over the
+FC-labeled nodes. Accepted interim cost: DaemonSet rolling-update semantics until
+PR-F flips it to surge (DaemonSet maxSurge is per-node, exactly the semantics
+wanted) and PR-H replaces it entirely.
+
+**Files:**
+- Modify: `projects/embervm/chart/templates/noded-deployment.yaml` -> a DaemonSet
+  over `homelab.io/firecracker: "true"` (keep the file's pod template intact; only
+  the workload kind, selector, and strategy change). The "SINGLE-NODE ONLY"
+  ClusterIP caveat in values.yaml becomes real: add a HEADLESS noded Service and
+  feed per-pod endpoints into the control plane's node list
+  (`Embervm.Application.configured_nodes/0` seam) via EndpointSlice discovery, so
+  the NodeRegistry dials each daemon individually instead of a ClusterIP fan-out
+- Modify: `projects/embervm/chart/values.yaml`: retire the single `node.id: node-4`
+  shape in favor of the discovered list (the registry already takes a list); keep
+  an override list for tests/out-of-cluster daemons
+- Modify: `projects/embervm/README.md`: document the one-time operator action
+  `kubectl label nodes node-1 node-2 node-3 homelab.io/firecracker=true` (and
+  `embervm.io/serving=true` where serving redundancy is wanted); rewrite the taint
+  runbook section to "recorded option, not applied" per ADR 012
+- Guard: until PR-E lands, the control plane must not place snapshot-restoring
+  work on a node whose CpuVendor differs from the artifact's; the existing vendor
+  check covers the hard boundary, and Intel-pool warmth simply does not exist yet
+
+Tests: headless-discovery-feeds-node-list (Elixir), DaemonSet renders with the
+same pod template (helm template eyeball).
+
 Tests: reconnect-replays-registry (Elixir), converge-drops-stale-entry (Go). Chart
 bump, CI, review, merge. Verify: add a test workload's image in values; confirm no
-noded roll occurs and the registry push appears in noded logs.
+noded roll occurs and the registry push appears in noded logs; confirm 4 noded pods
+Ready and all 4 adopted in the control plane's node view.
 
 ---
 
 ## PR-D: Phase 3, out-of-band base builds (build queue)
 
-Branch: `feat/embervm-build-queue`. Depends on PR-C.
+Branch: `feat/embervm-build-queue`. Depends on PR-C (queue over the registry view)
+and PR-E (build keys). Fleet note: "separate builds" now means one build per
+(base_key, cpu_sku), i.e. per vendor pool: an Intel base built once on any master
+serves all three masters; node-4's AMD pool builds its own. Builds run in a
+builder-role pod, off the serving path, so a serving roll never kills a build.
 
 ### Task D1: Queue rows and store-first check
 
@@ -226,8 +331,9 @@ Branch: `feat/embervm-build-queue`. Depends on PR-C.
 - Create: `projects/embervm/chart/templates/noded-builder-deployment.yaml` (separate
   pod, same node pool via taint toleration, schedulable by SKU label once multi-node)
 - Modify: `base_builder.ex`: dispatch builds to a builder-role daemon on a
-  SKU-matching node with headroom (today: node-4's builder pod, no longer inline
-  with serving admission); serving Prime falls back to RestoreArtifact on miss
+  SKU-matching node with headroom (one builder claim per vendor pool: any master
+  for Intel keys, node-4 for AMD keys, no longer inline with serving admission);
+  serving Prime falls back to RestoreArtifact on miss
 
 Tests: enqueue-dedups-on-key, store-hit-skips-build (Elixir); builder-role surface
 test (Go). Chart bump, CI, review, merge. Verify: trigger a bazel-query warming and
@@ -235,9 +341,12 @@ roll noded mid-build; the build must survive the roll.
 
 ---
 
-## PR-E: Phase 4, cpu_sku everywhere + CPU template
+## PR-E: Phase 4, cpu_sku everywhere + CPU template (MOVED UP: mandatory and early)
 
-Branch: `feat/embervm-cpusku-gate`. Independent of PR-D (can parallel it).
+Branch: `feat/embervm-cpusku-gate`. Can parallel PR-C; MUST be live before any
+snapshot placement targets a master. Two vendor pools (Intel x3 sharing one
+template, AMD x1) are real the moment the DaemonSet lands, so the sku key stops
+being future-proofing and becomes the fleet's partition function.
 
 **Files:**
 - Modify: `projects/embervm/noded/fcvm/driver/`: pin the conservative fleet-wide
@@ -252,16 +361,76 @@ Branch: `feat/embervm-cpusku-gate`. Independent of PR-D (can parallel it).
   (`session_placement.ex`, `serving_placement.ex`): filter candidate nodes by
   snapshot cpu_sku compatibility
 
-Tests: mismatch-fails-loudly (one per path), miss-consults-store, placement-filters.
+**Grandfather rule (critical, prevents data loss; ADR 012):** unstamped legacy
+durable artifacts (session banks and stateful generations cut before stamping
+existed) stay node-pinned and restorable WHERE CUT. A restore does not need the
+template (the vCPU state is in the snapshot), so the mismatch gate must NEVER
+refuse a legacy (unstamped) artifact on the node that created it; such artifacts
+are simply never distributed cross-node. Implement as: missing sku stamp + artifact
+node-pin == this node -> allow with a log line; missing stamp + any other node ->
+refuse (never distribute); present stamp -> normal gate.
+
+**Template validation on real silicon (part of this PR's verify step):** boot +
+BuildBase + restore round-trip with the chosen conservative template on one Alder
+Lake-S master (hybrid P/E part: confirm the guest sees a homogeneous 6P+0E-style
+topology) and on Zen4 node-4, BEFORE the template name is hard-coded into the sku
+key. A key that never booted on its own pool is a liability with a version number.
+
+Tests: mismatch-fails-loudly (one per path), miss-consults-store, placement-filters,
+legacy-unstamped-restores-on-cutting-node, legacy-unstamped-refused-elsewhere.
 Note: changing the template invalidates existing base snapshots once; the build queue
 (PR-D) rebuilds them keyed under the new sku, old keys age out via GC (PR-G). Chart
 bump, CI, review, merge.
 
 ---
 
+## PR-I: CP-owned dynamic per-node sizing (in-place resize) (NEW, cross-cutting)
+
+Branch: `feat/embervm-dynamic-sizing`. Depends on PR-C (the DaemonSet puts noded on
+the masters); MUST be live before placement packs the masters, because honest
+scheduler-visible requests are what replaces the FC taint (ADR 012). Replaces fixed
+maxLiveVMs static sizing as the capacity model.
+
+**Files:**
+- Create: `projects/embervm/control/lib/embervm/node_sizer.ex`: the resize control
+  loop. Desired envelope per noded pod = daemon baseline + sum of
+  provisioned/committed guest memMib (and vcpus) on that node, plus bounded
+  headroom; reconciled against the live pod via the `pods/resize` subresource
+  (k8s 1.35 InPlacePodVerticalScaling) through the existing `k8s.ex` client,
+  adjusting request AND limit together. Policy: **grow-eager** (the sizer grows the
+  envelope BEFORE a placement commits, and the placement only proceeds once the
+  kubelet accepts the resize) / **shrink-lazy** (shrink only when the released
+  delta is large, never below live commitment; a memory limit decrease may require
+  a restart, so shrink defers to the next natural roll rather than forcing one)
+- Modify: `projects/embervm/control/lib/embervm/` placement modules
+  (`session_placement.ex`, `serving_placement.ex`, and the task dispatcher's node
+  choice): placement asks the sizer for capacity first; a resize the kubelet
+  reports Infeasible/Deferred is a **placement refusal** for that node (try the
+  next candidate, never overcommit past the accepted envelope)
+- Modify: `projects/embervm/chart/templates/rbac.yaml`: `pods/resize` (patch) plus
+  pods get/list/watch in the embervm namespace for the control plane SA
+- Modify: `projects/embervm/chart/values.yaml`: `noded.resources` shrinks to the
+  daemon-only baseline (the CP grows it live); delete the hand-computed 36Gi
+  ceiling arithmetic comment block; `noded.maxLiveVMs` is demoted to the pure
+  runaway backstop its comment always claimed (no longer a capacity model), raised
+  or left generous accordingly
+- Test assertions: grep the Go and Elixir test trees for `maxLiveVMs`/`36Gi`
+  assumptions and update in the same commit (repo rule: config values and their
+  test assertions move together)
+
+Tests: grow-before-place ordering, infeasible-resize-refuses-placement,
+shrink-deferred-below-threshold, envelope-arithmetic (baseline + guests +
+headroom). Chart bump, CI, review, merge. Verify: place a guest on a master and
+`kubectl get pod -o yaml` shows the noded pod's requests grown by the guest's
+memMib; `kubectl describe node` shows the allocation honestly.
+
+---
+
 ## PR-F: Phase 6, surge rolls (can land any time after PR-C)
 
-Branch: `feat/embervm-surge-rolls`.
+Branch: `feat/embervm-surge-rolls`. Rolls are RARE by construction after PR-C
+(workload/function changes never roll noded; only a noded binary/image change
+does), so this PR makes the rare event cheap: fast-or-zero-downtime, per node.
 
 **Files:**
 - Modify: `node.proto` + adoption handshake: the control plane issues an
@@ -274,9 +443,11 @@ Branch: `feat/embervm-surge-rolls`.
   becomes authoritative only after registry replay + adoption complete; xDS endpoint
   shift happens then (`endpoint_publisher.ex` / `serving_manager.ex`), old instance
   drains within the 110s budget
-- Modify: `projects/embervm/chart/templates/noded-deployment.yaml`: `Recreate` ->
-  `RollingUpdate` with `maxSurge: 1, maxUnavailable: 0`; delete the "never run two"
-  comment; readiness gate already landed in PR-C
+- Modify: `projects/embervm/chart/templates/noded-deployment.yaml` (the interim
+  DaemonSet after C4): updateStrategy `RollingUpdate` with `maxSurge: 1,
+  maxUnavailable: 0` (DaemonSet maxSurge is per-node: the new pod overlaps the old
+  on the SAME node, exactly the warm-handover semantics wanted); delete the "never
+  run two" comment; readiness gate already landed in PR-C
 - Preemption notice: SIGTERM/preemption reaches the control plane as an event (the
   existing draining NodeStatus flag published immediately on signal, verified, not
   polled)
@@ -288,9 +459,39 @@ uninterrupted, sessions pause-and-relight only.
 
 ---
 
+## PR-J: HA control plane (multi-replica) (NEW)
+
+Branch: `feat/embervm-cp-ha`. The fleet gives workloads node-level redundancy; the
+control plane must stop being the last single point of failure. Gated on moving
+the op-log off the single-writer SQLite RWO Longhorn volume (the chart's `opLog`
+block documents that constraint: Recreate + 1 replica exists BECAUSE SQLite is
+single-writer). ADR embervm/007 (sharded CP, pg op-log cells) is the recorded
+path; this PR implements its minimum: a Postgres-backed op-log and 2 replicas.
+
+**Files:**
+- Modify: `projects/embervm/control/lib/embervm/op_log/` storage backend: Postgres
+  (CNPG cluster or the shared pg per ADR 007's cell design) behind the existing
+  op-log API; migration path from the SQLite file (one-shot import on first boot
+  against an empty pg schema)
+- Modify: `projects/embervm/chart/templates/deployment.yaml` + `values.yaml`:
+  `replicas: 2`, drop `Recreate`, drop the op-log PVC once the pg backend is
+  authoritative (the oplog PVC was grandfathered by the component-rename plan;
+  retire it here)
+- Ownership: each noded gRPC stream lands on exactly one CP replica; NodeRegistry
+  adoption (op-log-recorded, per ADR 007's cell/ownership rows) decides which
+  replica owns which node, and a replica loss triggers re-adoption on the survivor
+  (the same reconnect path noded already exercises)
+
+Tests: two-replicas-single-owner-per-node, replica-loss-readopts,
+oplog-pg-round-trip. Chart bump, CI, review, merge. Verify: kill one CP pod during
+a live session invoke; the invoke retries onto the survivor without state loss.
+
+---
+
 ## PR-G: GC
 
-Branch: `feat/embervm-store-gc`.
+Branch: `feat/embervm-store-gc`. Last to land: GC needs the registry (PR-C), sku
+keys (PR-E), and store kinds (PR-B) to know what "referenced" means.
 
 **Files:**
 - Create: `projects/embervm/control/lib/embervm/artifact_gc.ex` (cron via the
@@ -300,6 +501,10 @@ Branch: `feat/embervm-store-gc`.
   from the op-log and deleted only when the owner is gone, never TTL'd
 - Lazy local eviction: durable artifacts evict from NVMe only under space pressure
   (seed resolved question 8), reconstructible evict freely after export-confirmed
+- Evict-time re-HEAD (ADR 012): before deleting a local DURABLE artifact, the
+  evictor re-confirms the S3 object still exists (HEAD at eviction time), never
+  trusting a stale export record; a failed HEAD aborts the eviction loudly
+  (noded store client: `projects/embervm/noded/store/` eviction path + test)
 
 Tests: pinned-survives, unreferenced-expires, durable-never-ttls. Chart bump, CI,
 review, merge.
@@ -308,12 +513,13 @@ review, merge.
 
 ## PR-H: Phase 7, control-plane-managed node deployments
 
-Branch: `feat/embervm-cp-node-deployments`. Depends on PR-C (clean after PR-B's init
-deletion); last to land.
+Branch: `feat/embervm-cp-node-deployments`. Gates only on PR-C (clean after PR-B's
+init deletion); replaces the interim DaemonSet bridge from C4. Near-last to land
+(before PR-G).
 
 **Files:**
 - Create: `projects/embervm/control/lib/embervm/node_deployer.ex`: reconciles one
-  noded Deployment per registered node (tainted node pool) via `k8s.ex`; pod template
+  noded Deployment per registered node (FC-labeled pool) via `k8s.ex`; pod template
   is PR-F's, unchanged, parameterized only by (image digest, node name, nvmeRoot);
   desired digest comes from chart-delivered control-plane config (Git stays the
   source of truth; a chart bump drives every roll, the control plane is the actuator
@@ -321,15 +527,20 @@ deletion); last to land.
   GC reaps forgotten nodes
 - Modify: `projects/embervm/chart/templates/rbac.yaml`: apps/deployments
   create/update/delete in the embervm namespace
-- Delete: `projects/embervm/chart/templates/noded-deployment.yaml` (the control plane
-  authors these now; ArgoCD treats them as untracked foreign resources, no OutOfSync
-  noise)
-- Bootstrap asymmetry: the control plane's own Deployment stays chart-owned and must
-  not tolerate the FC taint
+- Delete: `projects/embervm/chart/templates/noded-deployment.yaml` (the interim
+  DaemonSet; the control plane authors per-node Deployments now, and ArgoCD treats
+  them as untracked foreign resources, no OutOfSync noise)
+- Bootstrap asymmetry: the control plane's own Deployment stays chart-owned and
+  Helm/ArgoCD-delivered forever, never managed by node_deployer, so a wedged fleet
+  controller cannot take down the thing that repairs it. Note the scheduling half
+  of the original asymmetry (CP schedulable off FC nodes) is gone by construction:
+  with all four nodes FC-labeled and no taint (ADR 012), every node is an FC node,
+  so the asymmetry is purely about ownership, not placement
 
 Tests: reconcile-creates-per-node, digest-change-rolls-one-node-at-a-time,
 owner-refs-set. Chart bump, CI, review, merge. Verify: bump the noded image, watch
-the control plane roll node-4 with surge semantics end to end.
+the control plane roll all four nodes one at a time with surge semantics end to
+end (canary one master first).
 
 ---
 
@@ -341,7 +552,11 @@ the control plane roll node-4 with surge semantics end to end.
 - Proto changes are additive-only throughout; regenerate codegen in the same commit
   as the .proto change (three _HEX_DEPS/codegen touchpoints on the Elixir side per
   the R0 pattern).
-- PR-A and PR-F deliver the user-visible wins (fast rolls, zero-downtime rolls);
-  PR-B/C/D/E are the artifact pipeline; PR-G/H complete the steady state. Suggested
-  order: A, C, F for wall-clock impact, then B, D, E, G, H. (C before B is fine: the
-  pushed registry can carry baked-locally rootfs refs until the store kind exists.)
+- Final landing order (ADR 012 resequencing; dependency one-liners in the header):
+  **A (shipped), C, E, I, B, D, F, J, H, G.** E can parallel C; I gates the masters
+  actually taking guest placements; F and J can parallel each other after their
+  gates; H replaces the interim DaemonSet and gates only on C; G closes the loop.
+- Fleet guardrail during the sequence: between C landing (noded on all 4 nodes) and
+  E+I landing, the control plane must not place snapshot or bulk work on the
+  masters; the masters idle as registered-but-unpacked capacity until the sku gate
+  and the resize ledger are live.
