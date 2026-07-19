@@ -28,6 +28,13 @@
   --em-frost: #3d7ec2;
   --em-frost-dim: #b9d2ea;
   --em-amber: #f2b04e;
+  /* Success-green, distinct from the ember/frost/amber families: positive or
+   * neutral metrics (the bazel demo's proof line, savings cell, live latency)
+   * use these so a good result never borrows the ember red reserved for the
+   * "bazel says" error box. */
+  --em-good: #2f7d55;
+  --em-good-deep: #1f6042;
+  --em-good-dim: #bfe0cd;
   --em-on-color: #ffffff;
   --em-track: #eceade;
   --em-mono:

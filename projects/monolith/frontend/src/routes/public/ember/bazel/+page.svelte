@@ -16,7 +16,6 @@
   // Same-origin proxies only (public-tier rule 2): every call below goes
   // through /ember/bazel/api/*, never /api/... directly.
   import { onMount } from "svelte";
-  import { fade } from "svelte/transition";
   import "$lib/public/ember/ember.css";
 
   let { data } = $props();
@@ -300,18 +299,26 @@
     };
   });
 
-  // Highlight the proof marker inside analyzed_line for the badge. Falls
-  // back to the raw line (no highlight span) if the marker is missing,
-  // which would itself be the drift condition the backend logs a warning
-  // for (ember_public/bazel_core.py _check_drift).
+  // Highlight the proof marker inside analyzed_line for the proof line. Falls
+  // back to the raw line (no highlight span) if the marker is missing, which
+  // would itself be the drift condition the backend logs a warning for
+  // (ember_public/bazel_core.py _check_drift). The pill swallows the wrapping
+  // parens too when they are present, so it reads "(0 packages loaded, 0
+  // targets configured)" as one fragment, matching bazel's own line.
   let analyzedParts = $derived.by(() => {
     const line = result?.analyzed_line ?? "";
     const idx = line.indexOf(PROOF_MARKER);
     if (idx === -1) return { before: line, marker: "", after: "" };
+    let start = idx;
+    let end = idx + PROOF_MARKER.length;
+    if (line[start - 1] === "(" && line[end] === ")") {
+      start -= 1;
+      end += 1;
+    }
     return {
-      before: line.slice(0, idx),
-      marker: line.slice(idx, idx + PROOF_MARKER.length),
-      after: line.slice(idx + PROOF_MARKER.length),
+      before: line.slice(0, start),
+      marker: line.slice(start, end),
+      after: line.slice(end),
     };
   });
 
@@ -375,7 +382,7 @@
   <title>Ember Bazel Skyframe Query</title>
   <meta
     name="description"
-    content="Remote execution speeds up a Bazel build's action phase, not loading and analysis. This page removes that cost: Abseil (514 targets) was analyzed once, the warm Bazel server was snapshotted with Firecracker, and each query runs in its own throwaway copy: 13.8 s of cold analysis replaced by a roughly 450 ms round trip."
+    content="Bazel's analysis graph (Skyframe) lives only in server memory, so every cold start recomputes it. Here it was computed once for Abseil (514 targets), snapshotted with Firecracker, and every query restores a throwaway copy: cold analysis replaced by a sub-second round trip, proven by bazel's own zero-re-analysis line."
   />
 </svelte:head>
 
@@ -392,21 +399,64 @@
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Bazel Skyframe Query</h1>
       <p class="subtitle">
-        Remote execution and remote caching speed up the third phase of a Bazel
-        build: executing actions. They do nothing for the first two, loading and
-        analysis, which run on one machine, in one JVM heap, and are re-paid
-        every time a server starts cold. This page removes that cost.
+        Bazel's analysis graph (Skyframe) lives only in server memory, so
+        every cold start recomputes it: minutes on a large monorepo, and
+        remote execution can't help. Here it was computed once for
         <a class="inline-link" href="https://github.com/abseil/abseil-cpp"
           >Abseil</a
         >
-        (release 20240116.2, 514 targets) was analyzed once, the warm Bazel
-        server was snapshotted with Firecracker, and each query below runs in
-        its own throwaway copy of that snapshot: 13.8 seconds of cold analysis
-        replaced by a roughly 450 ms round trip.
+        (514 targets), snapshotted with Firecracker, and every query below
+        restores a throwaway copy.
       </p>
     </header>
 
     <section class="console-section">
+      <!-- Scoreboard: the core comparison as a 4-cell header banded across the
+           top edge of the console card. Two recorded baselines (cold, warm),
+           this session's live round trip (an em-dash until the first query),
+           and the all-time savings counter on its own green cell. Numbers are
+           tabular so digits do not jitter as the live cell ticks. -->
+      <div class="scoreboard">
+        <div class="score-cell">
+          <div
+            class="score-v score-cold"
+            title="measured on a warm dev machine, before the snapshot existed"
+          >
+            13.8 s
+          </div>
+          <div class="score-k">cold, recorded</div>
+        </div>
+        <div class="score-cell">
+          <div
+            class="score-v score-warm"
+            title="measured on a warm dev machine, before the snapshot existed"
+          >
+            0.31 s
+          </div>
+          <div class="score-k">warm, recorded</div>
+        </div>
+        <div class="score-cell">
+          <div
+            class="score-v score-live"
+            class:score-live-running={running}
+            title="end to end, includes restoring and destroying the copy; about 300 ms of it is bazel"
+          >
+            {#if running}
+              {ms(stopwatchMs)}
+            {:else if result?.wall_ms != null}
+              {ms(result.wall_ms)}
+            {:else}
+              &mdash;
+            {/if}
+          </div>
+          <div class="score-k">your query</div>
+        </div>
+        <div class="score-cell score-cell-save">
+          <div class="score-v score-save">{formatSavedTime(savedS)}</div>
+          <div class="score-k">skipped, all visitors</div>
+        </div>
+      </div>
+
       {#if turnstileSiteKey && !sessionReady}
         <div class="turnstile-slot">
           <p class="turnstile-hint">solve the check to query</p>
@@ -451,42 +501,9 @@
         {/each}
       </div>
 
-      <div class="stopwatch-row">
-        <span class="stopwatch-label">round trip</span>
-        <span class="stopwatch-value" class:stopwatch-live={running}>
-          {#key running ? "live" : (result?.wall_ms ?? "none")}
-            <span class="fade-swap" in:fade={{ duration: 220 }}>
-              {running ? ms(stopwatchMs) : ms(result?.wall_ms)}
-            </span>
-          {/key}
-        </span>
-      </div>
-
-      <!-- Compact always-on-screen comparison strip: the cold/warm recorded
-           baselines plus this session's live numbers, so the core comparison
-           (a query off the snapshot vs a cold analysis) stays visible while
-           querying without scrolling to the detailed section below. The two
-           baselines mirror the recorded-panel constants; "this query" is the
-           last run's round trip; "saved" is the all-time counter. -->
-      <div class="stat-strip">
-        <span class="stat-item"
-          ><span class="stat-key">cold</span> <span class="stat-val stat-cold">13.8 s</span></span
-        >
-        <span class="stat-sep">/</span>
-        <span class="stat-item"
-          ><span class="stat-key">warm</span> <span class="stat-val stat-warm">0.31 s</span></span
-        >
-        <span class="stat-sep">/</span>
-        <span class="stat-item"
-          ><span class="stat-key">this query</span>
-          <span class="stat-val stat-live">{running ? ms(stopwatchMs) : ms(result?.wall_ms)}</span></span
-        >
-        <span class="stat-sep">/</span>
-        <span class="stat-item"
-          ><span class="stat-key">saved so far</span>
-          <span class="stat-val stat-saved">{formatSavedTime(savedS)}</span></span
-        >
-      </div>
+      {#if !running && !result && !runError}
+        <p class="idle-hint">run a query or tap an example</p>
+      {/if}
 
       {#if runError}
         <div class="run-error">
@@ -497,19 +514,13 @@
 
       {#if result}
         {#if analyzedParts.before || analyzedParts.marker}
-          <div class="proof-badge">
-            <span class="proof-kicker"
-              ><span class="proof-check" aria-hidden="true">✓</span> proof of reuse</span
-            >
-            <p class="proof-line">
-              {analyzedParts.before}{#if analyzedParts.marker}<b class="proof-marker">{analyzedParts.marker}</b>{/if}{analyzedParts.after}
-            </p>
-            <p class="proof-caption">
-              Bazel printed this line itself. 0 packages loaded means this copy
-              did no re-analysis: the answer came straight out of the snapshot's
-              memory.
-            </p>
-          </div>
+          <p class="proof-line">
+            <span class="proof-check" aria-hidden="true">✓</span
+            >{analyzedParts.before}{#if analyzedParts.marker}<span class="proof-frag"
+                >{analyzedParts.marker}</span
+              >{/if}{analyzedParts.after} - no re-analysis, straight from the
+            snapshot's memory
+          </p>
         {/if}
 
         <div class="result-card">
@@ -579,52 +590,12 @@
       {/if}
     </section>
 
-    <section class="recorded-section">
-      <h2 class="h2">Cold, warm, and live</h2>
-      <p class="body">
-        The first two numbers were measured before the snapshot existed. The
-        third is what your query above actually did.
-      </p>
-
-      <!-- Hero: the all-time savings counter is the headline metric, so it
-           leads the section full-width with the largest number, styled with the
-           success-green accent (not the salmon error palette, which is reserved
-           for the BAZEL SAYS error box). -->
-      <div class="saved-hero">
-        <span class="saved-hero-value">{formatSavedTime(savedS)}</span>
-        <span class="saved-hero-label"
-          >analysis time skipped across all visitor queries</span
-        >
-      </div>
-
-      <div class="recorded-panel">
-        <div class="recorded-stat">
-          <span class="recorded-value recorded-cold">13.8 s</span>
-          <span class="recorded-name">cold: loading + analysis</span>
-          <span class="recorded-note">warm dev server, macOS, 10 cores, pre-snapshot</span>
-        </div>
-        <div class="recorded-stat">
-          <span class="recorded-value recorded-warm">0.31 s</span>
-          <span class="recorded-name">warm: cquery on an already-loaded server</span>
-          <span class="recorded-note">same machine, same run, cache hot</span>
-        </div>
-        <div class="recorded-stat">
-          <span class="recorded-value recorded-live">~450 ms</span>
-          <span class="recorded-name">live: one visitor query, end to end</span>
-          <span class="recorded-note"
-            >measured on the production node, includes restoring the copy and
-            destroying it after; about 300&nbsp;ms of it is inside bazel</span
-          >
-        </div>
-      </div>
-
-      <p class="recorded-footer">
-        Design doc: <a
-          href="https://github.com/jomcgi/homelab/blob/main/docs/decisions/embervm/010-bazel-skyframe-snapshot-query-demo.md"
-          >ADR embervm/010</a
-        >.
-      </p>
-    </section>
+    <p class="design-doc">
+      Design doc: <a
+        href="https://github.com/jomcgi/homelab/blob/main/docs/decisions/embervm/010-bazel-skyframe-snapshot-query-demo.md"
+        >ADR embervm/010</a
+      >.
+    </p>
   </main>
 </div>
 
@@ -632,17 +603,13 @@
   /* PAGE-WIDE COLOUR RULE (ADR embervm/010 demo pages): the ember red/salmon
      palette (--em-ember, --em-ember-deep, --em-ember-dim) is reserved
      EXCLUSIVELY for actual errors, i.e. the "bazel says" run-error box. Every
-     POSITIVE or NEUTRAL metric (the proof panel, the savings hero, the live
-     latency numbers, the highlighted proof fragment) uses these success/neutral
-     tokens instead, so a good result never reads as a failure. Brand/interactive
-     chrome (the run button, links, chip hovers, focus rings, the "Ember" word)
-     may still use ember: those are not success/failure signals. Defined once on
-     the page root so every descendant inherits; future demo pages should adopt
-     the same split. */
+     POSITIVE or NEUTRAL metric (the proof line, the savings cell, the live
+     latency number) uses the success-green tokens (--em-good*, defined in
+     ember.css) instead, so a good result never reads as a failure.
+     Brand/interactive chrome (the run button, links, chip hovers, focus rings,
+     the "Ember" word) may still use ember: those are not success/failure
+     signals. */
   .ember-site {
-    --em-good: #2f7d55;
-    --em-good-deep: #1f6042;
-    --em-good-dim: #bfe0cd;
     min-height: 100dvh;
   }
 
@@ -750,6 +717,74 @@
     margin-top: 8px;
   }
 
+  /* Scoreboard: banded across the top edge of the console card. Negative
+     margins pull it flush to the card's rounded corners (cancelling the
+     card's 18px/20px padding), a cream band with hairline-divided cells. */
+  .scoreboard {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    margin: -18px -20px 4px;
+    background: var(--em-ground);
+    border-bottom: 1px solid var(--em-line);
+    border-radius: 14px 14px 0 0;
+    overflow: hidden;
+  }
+
+  .score-cell {
+    padding: 11px 16px;
+    border-left: 1px solid var(--em-line);
+  }
+
+  .score-cell:first-child {
+    border-left: 0;
+  }
+
+  .score-cell-save {
+    background: var(--em-good-dim);
+  }
+
+  .score-v {
+    font-family: var(--em-mono);
+    font-weight: 700;
+    font-size: 17px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .score-k {
+    font-size: 12px;
+    color: var(--em-faint);
+    margin-top: 2px;
+  }
+
+  .score-cold {
+    color: var(--em-frost);
+  }
+
+  .score-warm {
+    color: var(--em-amber);
+  }
+
+  .score-live {
+    color: var(--em-ink);
+  }
+
+  .score-live-running {
+    /* the ticking live cell is a positive metric, so success-green while
+       running, not the ember red reserved for the error box */
+    color: var(--em-good-deep);
+  }
+
+  .score-save {
+    color: var(--em-good-deep);
+  }
+
+  .idle-hint {
+    margin: 0;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    color: var(--em-faint);
+  }
+
   .turnstile-slot {
     background: var(--em-ground);
     border: 1px solid var(--em-line);
@@ -845,86 +880,6 @@
     color: var(--em-ember-deep);
   }
 
-  .stopwatch-row {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding-top: 2px;
-  }
-
-  .stopwatch-label {
-    font-size: 13px;
-    color: var(--em-muted);
-  }
-
-  .stopwatch-value {
-    font-family: var(--em-mono);
-    font-size: 16px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    color: var(--em-ink);
-  }
-
-  .stopwatch-value.stopwatch-live {
-    /* the live round-trip counter is a metric, not an error: success-green while
-       running, not the ember red reserved for the error box */
-    color: var(--em-good);
-  }
-
-  .fade-swap {
-    display: inline-block;
-  }
-
-  /* No card chrome by design: an inline row of small mono figures that sits with
-     the round-trip readout so the comparison is always on screen. Colours reuse
-     the recorded-panel tokens (frost=cold, amber=warm, good-green=live/saved). */
-  .stat-strip {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 6px 10px;
-    font-family: var(--em-mono);
-    font-size: 12px;
-    color: var(--em-faint);
-  }
-
-  .stat-item {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 5px;
-  }
-
-  .stat-key {
-    color: var(--em-faint);
-  }
-
-  .stat-val {
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .stat-cold {
-    color: var(--em-frost);
-  }
-
-  .stat-warm {
-    color: var(--em-amber);
-  }
-
-  .stat-live {
-    /* the live latency is a positive metric (look how fast), so success-green,
-       not the ember red reserved for errors */
-    color: var(--em-good-deep);
-  }
-
-  .stat-saved {
-    color: var(--em-good-deep);
-  }
-
-  .stat-sep {
-    color: var(--em-line);
-  }
-
   .run-error {
     background: color-mix(in srgb, var(--em-ember-dim) 25%, var(--em-ground));
     border: 1px solid var(--em-ember-dim);
@@ -953,67 +908,30 @@
     word-break: break-word;
   }
 
-  /* Success accent: the proof panel is a positive result, so it uses the
-     page-level --em-good tokens (defined on .ember-site), never the ember
-     salmon reserved for the run-error box. */
-  .proof-badge {
-    background: color-mix(in srgb, var(--em-good-dim) 34%, var(--em-panel));
-    border: 1px solid var(--em-good-dim);
-    border-radius: 12px;
-    padding: 16px 18px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .proof-kicker {
-    font-family: var(--em-mono);
-    font-size: 11px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--em-good-deep);
-    font-weight: 600;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .proof-check {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 15px;
-    height: 15px;
-    border-radius: 999px;
-    background: var(--em-good);
-    color: var(--em-on-color);
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1;
-  }
-
+  /* Proof of reuse: a single compact green check line, not a panel. Positive
+     result, so it uses the page-level --em-good tokens (defined on
+     .ember-site), never the ember salmon reserved for the run-error box. The
+     "(0 packages loaded, ...)" fragment sits in a soft green pill. */
   .proof-line {
     margin: 0;
     font-family: var(--em-mono);
-    font-size: 13.5px;
-    line-height: 1.5;
-    color: var(--em-ink);
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--em-good);
     word-break: break-word;
   }
 
-  .proof-marker {
-    background: var(--em-good);
-    color: var(--em-on-color);
-    border-radius: 4px;
-    padding: 1px 6px;
+  .proof-check {
+    color: var(--em-good);
     font-weight: 700;
+    margin-right: 6px;
   }
 
-  .proof-caption {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--em-muted);
+  .proof-frag {
+    background: var(--em-good-dim);
+    color: var(--em-good-deep);
+    border-radius: 5px;
+    padding: 1px 7px;
   }
 
   .result-card {
@@ -1149,133 +1067,21 @@
     color: var(--em-muted);
   }
 
-  .recorded-section {
-    margin-top: 12px;
-  }
-
-  .h2 {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    margin: 0 0 10px;
-    font-size: 20px;
-    font-weight: 750;
-    letter-spacing: -0.015em;
-    color: var(--em-ink);
-  }
-
-  .h2::before {
-    content: "##";
-    font-family: var(--em-mono);
-    font-size: 14px;
-    font-weight: 400;
-    color: var(--em-ember);
-  }
-
-  .body {
-    margin: 0 0 14px;
-    font-size: 14.5px;
-    line-height: 1.55;
-    color: var(--em-muted);
-    max-width: 68ch;
-  }
-
-  .recorded-panel {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-    background: var(--eml-panel-warm, var(--em-panel));
-    border: 1px solid var(--em-line);
-    border-radius: 12px;
-    box-shadow: var(--em-shadow-soft);
-    padding: 18px;
-  }
-
-  .recorded-stat {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .recorded-value {
-    font-family: var(--em-mono);
-    font-size: 26px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .recorded-cold {
-    color: var(--em-frost);
-  }
-
-  .recorded-warm {
-    color: var(--em-amber);
-  }
-
-  .recorded-live {
-    /* live latency is a positive metric, so success-green, not the ember red
-       reserved for the error box */
-    color: var(--em-good-deep);
-  }
-
-  .recorded-name {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--em-ink);
-  }
-
-  .recorded-note {
-    font-size: 11.5px;
-    line-height: 1.4;
-    color: var(--em-faint);
-  }
-
-  /* Savings hero: the headline metric of the section, full-width above the
-     three recorded cards, with the largest number on the page and the
-     success-green accent (never the ember salmon, which is errors-only). */
-  .saved-hero {
-    margin-bottom: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 20px 22px;
-    background: color-mix(in srgb, var(--em-good-dim) 32%, var(--em-panel));
-    border: 1px solid var(--em-good-dim);
-    border-radius: 12px;
-    box-shadow: var(--em-shadow-soft);
-  }
-
-  .saved-hero-value {
-    font-family: var(--em-mono);
-    font-size: clamp(34px, 5vw, 46px);
-    font-weight: 800;
-    line-height: 1.05;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.02em;
-    color: var(--em-good-deep);
-  }
-
-  .saved-hero-label {
-    font-size: 13px;
-    line-height: 1.45;
-    color: var(--em-muted);
-    max-width: 54ch;
-  }
-
-  .recorded-footer {
-    margin: 12px 2px 0;
+  /* The only thing below the console card: a single small design-doc line. */
+  .design-doc {
+    margin: 0 2px;
     font-family: var(--em-mono);
     font-size: 12px;
     color: var(--em-faint);
   }
 
-  .recorded-footer a {
+  .design-doc a {
     color: var(--em-ember-deep);
     text-decoration: none;
     border-bottom: 1px solid var(--em-ember-dim);
   }
 
-  .recorded-footer a:hover {
+  .design-doc a:hover {
     border-bottom-color: var(--em-ember-deep);
   }
 
@@ -1288,9 +1094,23 @@
       padding: 4px 16px 48px;
       gap: 14px;
     }
+  }
 
-    .recorded-panel {
-      grid-template-columns: 1fr;
+  @media (max-width: 640px) {
+    /* Two-up scoreboard on narrow screens: four thin cells would clip the
+       tabular figures, so wrap to a 2x2 grid with a top hairline on the
+       second row. */
+    .scoreboard {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .score-cell:nth-child(3),
+    .score-cell:nth-child(4) {
+      border-top: 1px solid var(--em-line);
+    }
+
+    .score-cell:nth-child(3) {
+      border-left: 0;
     }
   }
 
