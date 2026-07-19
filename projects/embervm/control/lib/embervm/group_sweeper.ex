@@ -289,8 +289,43 @@ defmodule Embervm.GroupSweeper do
       |> idle_bank_pass(now)
       |> sweep_lifetime(now)
       |> sweep_banked_ttl(now)
+      |> gc_orphan_networks()
       |> write_group_status()
     end
+  end
+
+  # -- orphan group-network GC -------------------------------------------------
+
+  # Delete node-held group networks whose instance is terminal or absent. A
+  # teardown that dies before DeleteGroupNetwork (a failed bank, a dead channel
+  # mid-forced-roll, a noded that restarted and re-adopted its on-disk record)
+  # leaves the bridge record squatting the composite CIDR, and every later
+  # create fails with "cidr overlaps existing group" until an operator deletes
+  # the record by hand - three times on 2026-07-18/19 alone. Best-effort: an
+  # RPC failure just leaves the orphan for the next sweep.
+  defp gc_orphan_networks(state) do
+    for fact <- NodeCapacity.all(state.capacity_table),
+        net <- Map.get(fact, :group_networks, []) || [] do
+      instance_id = Map.get(net, :group_instance_id)
+
+      orphaned? =
+        case GroupStore.get(state.store, instance_id) do
+          {:ok, instance} -> GroupState.terminal?(instance.state)
+          {:error, _} -> true
+        end
+
+      if orphaned? and is_binary(instance_id) and instance_id != "" do
+        Logger.warning("embervm group: GC deleting orphan group network",
+          instance_id: instance_id,
+          node_id: fact.configured_id,
+          cidr: Map.get(net, :cidr)
+        )
+
+        _ = delete_network(state, %{instance_id: instance_id, node_id: fact.configured_id})
+      end
+    end
+
+    state
   end
 
   # -- status.group (Task 9) --------------------------------------------------
