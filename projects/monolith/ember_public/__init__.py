@@ -28,14 +28,19 @@ __all__ = ["register", "register_public"]
 
 
 def register_public(app: FastAPI) -> None:
-    """Register the demo-postgres router on the public app."""
+    """Register the demo-postgres and bazel-query routers on the public app."""
+    from ember_public.bazel_router import router as bazel_router
     from ember_public.router import router
 
     app.include_router(router)
+    app.include_router(bazel_router)
 
 
 def register(app: FastAPI) -> None:
-    """Register the demo-postgres router on the private app (same router)."""
+    """Register the demo-postgres and bazel-query routers on the private app
+    (same routers as the public app)."""
+    from ember_public.bazel_router import router as bazel_router
     from ember_public.router import router
 
     app.include_router(router)
+    app.include_router(bazel_router)

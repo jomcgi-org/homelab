@@ -5093,6 +5093,20 @@ py_test(
     ],
 )
 
+# Hand-registered (ember_public is gazelle-excluded): the bazel skyframe
+# query demo core (validation, session rate limit, semaphore, error mapping).
+py_test(
+    name = "ember_public_bazel_core_test",
+    srcs = ["ember_public/bazel_core_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
 py_test(
     name = "demos_loadtest_corpus_test",
     srcs = ["demos/loadtest_corpus_test.py"],
