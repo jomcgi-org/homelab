@@ -9,7 +9,10 @@ node deployments as the target), and resolved open questions 1 and 3. Second rev
 pass the same day resolved relay handover, placement authority, the drain budget
 (1m50s), GC policy, backfill scheduling, store durability delegation, the coarse CPU
 template, and the build queue's op-log home (resolved questions 3 to 10). The only
-remaining open question is the Phase 0 rootfs naming detail.
+remaining open question is the Phase 0 rootfs naming detail. Amended again 2026-07-19
+(second design session, recorded as ADR embervm/012): the fleet becomes all four
+existing nodes, sizing moves to CP-owned in-place resize, and the taint is dropped
+for label-only co-location; see the amendment section at the end.
 
 ## Problem
 
@@ -303,3 +306,65 @@ template is Phase 6's, unchanged.
 
 1. Does Phase 0's bake cache change the rootfs versioning story (rootfs-<tag>.ext4
    naming today implies tag-keyed, not digest-keyed)?
+   (Resolved in the impl plan, PR-A Task A1: digest-keyed.)
+
+## Amendment (2026-07-19, second design session): the fleet is the four existing nodes
+
+Recorded as ADR embervm/012 (fleet co-location and CP-managed dynamic sizing); this
+section supersedes the points below where they conflict with the text above. The
+decisions, all final:
+
+- **Fleet = all 4 existing nodes, no new hardware for a while.** node-1/2/3 are the
+  k3s control-plane/etcd masters, identical Intel Alder Lake-S parts (~12.3GiB
+  allocatable, 12 vCPU, ~4-6GiB free memory and ~8 idle cores each); node-4 is the
+  AMD Zen4 worker (62GiB, 16 vCPU, CPU-request-saturated at 93%). Firecracker guests
+  co-locate on the etcd masters. The etcd/quorum blast radius is EXPLICITLY ACCEPTED:
+  the cluster is GitOps-reconstructible and durable state lives in S3, so a quorum
+  loss is a reboot/rebuild, not data loss (full rationale and the trade-off in ADR
+  012). Phase 5's "second Firecracker node starts paying rent" language is
+  superseded: the second, third, and fourth FC nodes are the masters, already owned.
+- **CP-owned dynamic sizing via in-place pod resize replaces fixed maxLiveVMs
+  sizing.** Guests are cgroup-bounded inside noded's pod; the control plane resizes
+  noded's memory+cpu request AND limit (k8s 1.35 pods/resize) to reflect provisioned
+  guest capacity, so guest memory is scheduler-visible. Grow-eager / shrink-lazy;
+  resize-not-satisfiable is a placement refusal. New machinery: a CP resize control
+  loop plus pods/resize RBAC.
+- **No taint; label-only.** Because requests are honest, the scheduler bin-packs
+  guests and platform workloads together on the shared masters. All 4 nodes are
+  labeled FC; the PR-A taint is simply never applied (its tolerations are harmless
+  no-ops). This supersedes the "Taint FC nodes" ground rule and the Phase 0 taint
+  item above.
+- **cpu_sku is mandatory and early**, not a later phase: two vendor pools (Intel x3
+  sharing one template, AMD x1) are real the moment noded lands on the masters.
+  GRANDFATHER RULE: unstamped legacy durable artifacts (banks/generations cut before
+  stamping) stay node-pinned and restorable WHERE CUT; the mismatch gate never
+  refuses a legacy artifact on its cutting node, and such artifacts are never
+  distributed. Validate the chosen template on real Alder Lake-S (hybrid P/E part;
+  confirm homogeneous 6P+0E-style topology) and Zen4 silicon before hard-coding the
+  key.
+- **hostPath confirmed for the reconstructible cache** (not a local PV, not
+  Longhorn): noded gets the node-agent hostPath exception (privileged node
+  hypervisor daemon, same class as CSI/CNI plugins; HA lives at the S3+placement
+  layer; isolation is Firecracker's job). Per-pod ephemeral and Longhorn-replica-1
+  are both rejected (surge warm-handover, boot-blocking attach surface; details in
+  ADR 012). Longhorn stays tier-3-only.
+- **Evict-time re-HEAD for durable artifacts**: before deleting the local copy,
+  re-confirm the S3 object still exists at eviction time, never trust a stale
+  export record.
+- **Registry persists across noded restarts**: last-synced registry written to NVMe,
+  stale-marked, so a restarting noded serves warm workloads from cache even if the
+  control plane is briefly down (never warm-to-dead); SyncRegistry reconverges on
+  reconnect.
+- **Interim DaemonSet, then CP-managed Deployments.** The Phase 7 target
+  (control-plane-authored per-node Deployments, static Deployment deleted) stands;
+  until it lands, a DaemonSet over the FC-labeled nodes bridges noded onto all 4
+  nodes now, accepting plainer rolling-update semantics in the interim. The single
+  node-pinned Deployment cannot reach the masters and per-node Helm was already
+  rejected above.
+- **HA control plane**: the embervm control plane runs multi-replica (ADR 007's
+  sharded op-log is the prior art), and the fleet gives serving/session workloads
+  node-level redundancy.
+
+Rolls remain rare (workload/function changes never roll noded; only a binary/image
+change does) and fast-or-zero-downtime when they happen (surge, 110s drain,
+registry-replayed readiness).
