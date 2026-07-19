@@ -42,6 +42,10 @@
   let stopwatchMs = $state(0);
   let result = $state(null);
   let runError = $state("");
+  // A rejected query (wrong cquery) still ran against the warm snapshot, so the
+  // backend hands back the failed run's wall_ms. Hold it here so the scoreboard
+  // shows the timing even though `result` stays null on an error.
+  let errorWallMs = $state(null);
 
   // All-time "estimated cold analysis time skipped" counter (see
   // ember_public/bazel_router.py GET /savings). SSR-seeded so the counter
@@ -173,6 +177,7 @@
     // does not leave a stale success panel (and its green proof badge) rendered
     // underneath the error box. Filter text resets with it.
     result = null;
+    errorWallMs = null;
     filterText = "";
     startStopwatch();
     try {
@@ -221,6 +226,15 @@
         // rejection) shown verbatim: a typo'd query is a feature here, not
         // a bug, visitors see bazel's actual error text.
         runError = body.error;
+        // A query bazel actually evaluated and rejected still ran against the
+        // warm snapshot, so the backend returns its real wall_ms and credits
+        // the skipped cold analysis. Surface both: the failed run's timing
+        // lands in the "your query" cell and the shared counter ticks up. A
+        // pre-flight validation reject carries no wall_ms (nothing ran).
+        if (typeof body.wall_ms === "number" && body.wall_ms > 0) {
+          errorWallMs = body.wall_ms;
+          refetchSavings();
+        }
         return;
       }
       result = body;
@@ -446,6 +460,8 @@
               {ms(stopwatchMs)}
             {:else if result?.wall_ms != null}
               {ms(result.wall_ms)}
+            {:else if errorWallMs != null}
+              {ms(errorWallMs)}
             {:else}
               &mdash;
             {/if}
@@ -870,6 +886,19 @@
   .run-btn:disabled {
     opacity: 0.55;
     cursor: default;
+  }
+
+  /* Drop the generic blue UA focus ring left after a mouse click, but keep an
+     ember-colored ring for keyboard focus so tab navigation stays visible. */
+  .run-btn:focus,
+  .chip:focus {
+    outline: none;
+  }
+
+  .run-btn:focus-visible,
+  .chip:focus-visible {
+    outline: 2px solid var(--em-ember-deep);
+    outline-offset: 2px;
   }
 
   .chips {

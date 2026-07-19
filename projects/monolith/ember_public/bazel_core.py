@@ -208,9 +208,13 @@ async def run_query(expr: str) -> tuple[int, dict]:
         payload = resp.json()
         # A failed query rides back as a successful task carrying an `error` key
         # (the new guest contract). Remap to 422 so the router surfaces bazel's
-        # text to the browser instead of a stale "success" panel.
+        # text to the browser instead of a stale "success" panel. Preserve the
+        # guest's measured wall_ms: a wrong cquery still ran against the warm
+        # snapshot, so the router shows its timing and credits the skipped cold
+        # analysis. wall_ms is 0 for a pre-flight validation reject (no bazel
+        # run), which the router treats as no-credit.
         if payload.get("error"):
-            return 422, {"error": payload["error"]}
+            return 422, {"error": payload["error"], "wall_ms": payload.get("wall_ms")}
         _check_drift(payload.get("analyzed_line"))
         return 200, payload
 

@@ -92,9 +92,38 @@ def test_query_with_non_numeric_wall_ms_does_not_call_accrual(monkeypatch):
     assert called["n"] == 0
 
 
-def test_failed_query_does_not_accrue_savings(monkeypatch):
+def test_query_rejection_with_wall_ms_returns_200_and_accrues(monkeypatch):
+    # A wrong cquery bazel evaluated and rejected carries a real wall_ms: it
+    # rides back in-band as a 200 with {error, wall_ms}, and because bazel still
+    # ran against the warm snapshot, it credits the skipped cold analysis.
     async def fake_run_query(expr):
-        return 422, {"error": "ERROR: no such package"}
+        return 422, {"error": "ERROR: no such package", "wall_ms": 236}
+
+    monkeypatch.setattr(bazel_core, "run_query", fake_run_query)
+
+    recorded = {}
+
+    async def fake_record(wall_ms):
+        recorded["wall_ms"] = wall_ms
+        return 13.49
+
+    monkeypatch.setattr(bazel_core, "record_bazel_query_savings", fake_record)
+
+    client = _client()
+    resp = client.post("/api/ember/bazel/query", json={"expression": "deps(//nope)"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "no such package" in body["error"]
+    assert body["wall_ms"] == 236
+    assert recorded["wall_ms"] == 236
+
+
+def test_query_rejection_without_wall_ms_does_not_accrue(monkeypatch):
+    # A pre-flight validation reject (no bazel run) carries wall_ms 0: still
+    # returned in-band as a 200 error, but it credits nothing.
+    async def fake_run_query(expr):
+        return 422, {"error": "invalid expression", "wall_ms": 0}
 
     monkeypatch.setattr(bazel_core, "run_query", fake_run_query)
 
@@ -109,7 +138,32 @@ def test_failed_query_does_not_accrue_savings(monkeypatch):
     client = _client()
     resp = client.post("/api/ember/bazel/query", json={"expression": "deps(//nope)"})
 
-    assert resp.status_code == 422
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["error"] == "invalid expression"
+    assert called["n"] == 0
+
+
+def test_transport_error_stays_5xx_and_does_not_accrue(monkeypatch):
+    # A transport error (502) / timeout (504) is a real infra failure, not a
+    # visitor mistake, so it stays a 5xx and credits nothing.
+    async def fake_run_query(expr):
+        return 502, {"error": "could not reach the query workload"}
+
+    monkeypatch.setattr(bazel_core, "run_query", fake_run_query)
+
+    called = {"n": 0}
+
+    async def fake_record(wall_ms):
+        called["n"] += 1
+        return None
+
+    monkeypatch.setattr(bazel_core, "record_bazel_query_savings", fake_record)
+
+    client = _client()
+    resp = client.post("/api/ember/bazel/query", json={"expression": "deps(//nope)"})
+
+    assert resp.status_code == 502
     assert called["n"] == 0
 
 
@@ -130,7 +184,7 @@ def test_savings_endpoint_returns_cached_value(monkeypatch):
     assert body["as_of"]
 
     second = client.get("/api/ember/bazel/savings")
-    assert second.json()["total_analysis_s_saved"] == 128.0
+    assert second.json().get("total_analysis_s_saved") == 128.0
 
     # Second call within the 30s TTL must not re-read the DB.
     assert calls["n"] == 1

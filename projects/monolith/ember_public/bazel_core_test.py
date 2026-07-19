@@ -227,8 +227,9 @@ async def test_run_query_maps_guest_200_error_payload_to_422(monkeypatch):
     # New guest contract: a failed query (bad expression, bazel non-zero exit,
     # in-guest timeout) is a SUCCESSFUL task returning HTTP 200 with an `error`
     # key and no labels/analyzed_line, because EmberVM only relays successful-task
-    # responses verbatim. run_query must turn that into a 422 so the router raises
-    # HTTPException(422) and the browser shows bazel's real error text.
+    # responses verbatim. run_query must turn that into a 422 carrying bazel's
+    # error text AND the measured wall_ms, so the router can show the failed
+    # run's timing and credit the skipped cold analysis.
     async def fake_submit(name, *, body, guest_path, read_timeout, **kwargs):
         return _guest_response(
             200,
@@ -245,6 +246,7 @@ async def test_run_query_maps_guest_200_error_payload_to_422(monkeypatch):
 
     assert status == 422
     assert "no such target" in payload["error"]
+    assert payload["wall_ms"] == 210
 
 
 @pytest.mark.asyncio
