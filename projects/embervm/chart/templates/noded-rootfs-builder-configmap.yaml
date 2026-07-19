@@ -31,6 +31,28 @@ data:
     : "${GUEST_IMAGE:?GUEST_IMAGE required}"
     : "${BASE_ROOTFS_PATH:?BASE_ROOTFS_PATH required}"
     size="${ROOTFS_SIZE:-2G}"
+    # Registry reads (crane) can hit a transient DNS/network blip. Observed
+    # 2026-07-19: a `{:connect, :no_addresses}` blip while the control plane's
+    # base builder was pulling a freshly-rolled guest image left the workload
+    # unprovisioned until a manual control-plane restart. Bake-time crane calls
+    # get the same treatment here: without a retry a blip fails the initContainer,
+    # forcing a whole pod-restart cycle to re-bake. Bounded exponential backoff,
+    # diagnostics to stderr so a retried command-substitution still captures only
+    # the successful stdout.
+    retry() {
+      attempt=1
+      delay=3
+      until "$@"; do
+        if [ "$attempt" -ge 5 ]; then
+          echo "command still failing after $attempt attempts: $*" >&2
+          return 1
+        fi
+        echo "attempt $attempt failed: $* ; retrying in ${delay}s" >&2
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+      done
+    }
     base_dir="$(dirname "$BASE_ROOTFS_PATH")"
     mkdir -p "$base_dir"
     # The template-time path for THIS build is already materialized (a pod restart
@@ -56,7 +78,7 @@ data:
     # unchanged guest image resolves to the SAME cache file across builds
     # regardless of the per-build timestamp tag. This is the key the bake
     # short-circuits on.
-    digest="$(crane digest --platform "$platform" "$GUEST_IMAGE")"
+    digest="$(retry crane digest --platform "$platform" "$GUEST_IMAGE")"
     digest="${digest#sha256:}"
     short="${digest:0:12}"
     cache="$base_dir/rootfs-$short.ext4"
@@ -64,9 +86,15 @@ data:
       echo "rootfs cache hit $short for $GUEST_IMAGE"
     else
       echo "rootfs cache miss $short; building from $GUEST_IMAGE -> $cache"
-      rm -rf /work/root "$cache.tmp.$$"
-      mkdir -p /work/root
-      crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
+      # A failed crane export leaves /work/root partially extracted, so the
+      # retried attempt must start from a clean tree; reset it inside the unit.
+      export_rootfs() {
+        rm -rf /work/root
+        mkdir -p /work/root
+        crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
+      }
+      rm -f "$cache.tmp.$$"
+      retry export_rootfs
       mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache.tmp.$$" "$size"
       mv -f "$cache.tmp.$$" "$cache"
       echo "rootfs baked at $cache ($size)"

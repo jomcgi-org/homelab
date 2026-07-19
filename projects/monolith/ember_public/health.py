@@ -6,15 +6,18 @@ Sourced ENTIRELY from the cached control-plane status read
 the demo VM, since an asleep demo is healthy and a health probe that woke it
 would defeat the whole sleep story.
 
-Four unhealthy conditions (see docs/plans/2026-07-18-ember-public-pages-design.md
+Five unhealthy conditions (see docs/plans/2026-07-18-ember-public-pages-design.md
 "Health + alerting"), checked in order and short-circuited at the first hit:
 
 1. The control plane is unreachable or the demo is unconfigured.
 2. The workload reports a broken snapshot/volume pairing while banked.
-3. A transitional state (relighting/cold_booting/starting/banking) has
+3. The workload is stuck in a fault eviction (pair_broken) past the same 90s
+   window, a passive sign the wake path is broken (a benign ttl eviction is
+   never flagged). See docs/plans/2026-07-19-embervm-demo-postgres-provisioning-wedge-rca.md.
+4. A transitional state (relighting/cold_booting/starting/banking) has
    persisted past 90s (wakeTimeoutSeconds is 60s plus margin), a passive
    sign of a wedged cold boot.
-4. The most recent real query in the last 10 minutes failed or its connect
+5. The most recent real query in the last 10 minutes failed or its connect
    exceeded 60s, with no newer success superseding it.
 """
 
@@ -25,6 +28,11 @@ from time import monotonic
 from ember_public import core
 
 _TRANSITIONAL_STATES = frozenset({"relighting", "cold_booting", "starting", "banking"})
+
+# Eviction reasons that signal a fault (a broken snapshot/volume pairing), not
+# benign recycling. A `ttl` eviction (banked-TTL expiry) is normal and never
+# flags unhealthy; only a `pair_broken` eviction that fails to recover does.
+_FAULT_EVICTION_REASONS = frozenset({"pair_broken"})
 
 _STUCK_TRANSITION_S = 90.0
 _SLOW_WAKE_CONNECT_MS = 60000.0
@@ -45,6 +53,28 @@ async def demo_postgres_health() -> dict:
 
     if state == "banked" and status.get("pair_valid") is False:
         return {"ok": False, "detail": "banked with invalid snapshot/volume pairing"}
+
+    # A fault eviction (pair_broken) is normally recoverable: the next wake
+    # cold-boots from the volume. But a demo that stays evicted past the wake
+    # window is not re-banking or re-serving, a passive sign the wake path is
+    # broken (observed 2026-07-19: an unprovisioned base image failed every cold
+    # boot, so the demo sat evicted/pair_broken for hours while a bare
+    # /api/health read looked healthy once the last failed-query outcome aged
+    # out). Gated on the same stuck window as a transitional state so a brief
+    # warmth discard never flaps. A benign ttl eviction never lands here.
+    instance = status.get("instance") or {}
+    if (
+        state == "evicted"
+        and instance.get("terminal_reason") in _FAULT_EVICTION_REASONS
+    ):
+        changed_at = core.status_cache_state_changed_at()
+        if changed_at is not None:
+            stuck_for = monotonic() - changed_at
+            if stuck_for > _STUCK_TRANSITION_S:
+                return {
+                    "ok": False,
+                    "detail": f"evicted (pair_broken) for {stuck_for:.0f}s, wake path likely broken",
+                }
 
     if state in _TRANSITIONAL_STATES:
         changed_at = core.status_cache_state_changed_at()
