@@ -7,8 +7,9 @@ costs of the current coupling. Amended 2026-07-19 after review with Joe: added t
 storage-tier taxonomy, the rollout topology (surge rolls now, control-plane-managed
 node deployments as the target), and resolved open questions 1 and 3. Second review
 pass the same day resolved relay handover, placement authority, the drain budget
-(1m50s), GC policy, backfill scheduling, and store durability delegation (resolved
-questions 3 to 8).
+(1m50s), GC policy, backfill scheduling, store durability delegation, the coarse CPU
+template, and the build queue's op-log home (resolved questions 3 to 10). The only
+remaining open question is the Phase 0 rootfs naming detail.
 
 ## Problem
 
@@ -287,14 +288,18 @@ template is Phase 6's, unchanged.
    protects against. Reconstructible artifacts need no such care (worst case is a
    re-bake or re-warm).
 
+9. **cpu_sku goes coarse: pin a conservative fleet-wide Firecracker CPU template.**
+   Mask CPUID to a shared baseline (T2-family approach); none of the current workloads
+   (bazel, semgrep, python, postgres) need vendor-specific extensions, so the feature
+   cost is negligible. The sku key collapses to `(vendor, template)`: one snapshot
+   pool per vendor generation instead of per-SKU islands. The hard boundary that
+   remains is the vendor line itself; no template makes a snapshot restore across
+   Intel/AMD (MSR and microarchitectural state differ, not just instruction sets), so
+   cross-vendor warmth stays the R7 vendor-keyed problem.
+10. **Build queue state lives in op-log rows**: durable, replayable, consistent with
+    every other piece of control-plane state.
+
 ## Open questions
 
-1. cpu_sku granularity: vendor+family, or pin a conservative Firecracker CPU template
-   per fleet generation so snapshots stay portable across minor SKU differences at some
-   feature cost. This is quietly the most important R7 question: without a fleet-wide
-   template, each hardware generation fragments the snapshot pool into incompatible
-   SKU islands and "move warmth" silently becomes "rebuild warmth".
-2. Does Phase 0's bake cache change the rootfs versioning story (rootfs-<tag>.ext4
+1. Does Phase 0's bake cache change the rootfs versioning story (rootfs-<tag>.ext4
    naming today implies tag-keyed, not digest-keyed)?
-3. Where the build queue's state lives: op-log rows (durable, replayable, consistent
-   with everything else) is the presumptive answer.
