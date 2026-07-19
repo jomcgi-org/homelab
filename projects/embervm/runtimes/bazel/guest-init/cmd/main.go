@@ -145,6 +145,13 @@ func buildArgv(expr string) []string {
 		"/usr/local/bin/bazel",
 		"--output_user_root=" + outputRoot,
 		heapArg,
+		// --max_idle_secs=0 disables the bazel server's idle-shutdown timer. The
+		// warm server IS the base snapshot; a restored clone resumes it possibly
+		// long after the snapshot was cut, and if the guest clock is corrected
+		// FORWARD on restore (POST /shim/clock after a session relight) the server
+		// could see itself as long-idle and self-exit before serving the query,
+		// silently discarding the warm analysis graph. 0 means never idle-exit.
+		"--max_idle_secs=0",
 		"cquery", expr,
 		"--noenable_bzlmod",
 		"--distdir=" + distDir,
@@ -166,10 +173,24 @@ func warm(ctx context.Context, logger *slog.Logger) error {
 	cmd.Dir = workspaceDir
 	cmd.Env = append(os.Environ(), "HOME="+homeDir)
 	out, err := cmd.CombinedOutput()
-	logger.Info("ember-bazel-init: warming output", "analyzed", analyzedLineFromStderr(string(out)))
 	if err != nil {
 		logger.Error("ember-bazel-init: warming exited non-zero", "err", err, "tail", tail(out, stderrTail))
 		return err
+	}
+	// Warming succeeded (exit 0), but a flag typo can make cquery a silent no-op
+	// (e.g. an unrecognized target pattern that matches nothing, or a flag that
+	// changes --output so the "Analyzed" progress line never appears). If bazel
+	// analyzed nothing, the snapshot would capture a server with an EMPTY graph
+	// and every clone would then re-analyze from cold. Surface that here, at base
+	// build, instead of only discovering it at first query. Note: at WARMING time
+	// the line legitimately reports NON-zero packages loaded (this IS the cold
+	// analysis); the "0 packages loaded" invariant applies to restored CLONES,
+	// checked in handleQuery, not here.
+	analyzed := analyzedLineFromStderr(string(out))
+	if analyzed == "" {
+		logger.Warn("ember-bazel-init: warming exit 0 but no 'Analyzed' line found; the snapshot may capture an EMPTY analysis graph (check for a flag typo)", "tail", tail(out, stderrTail))
+	} else {
+		logger.Info("ember-bazel-init: warming output", "analyzed", analyzed)
 	}
 	return nil
 }

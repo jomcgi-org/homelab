@@ -33,11 +33,13 @@ spec:
   invocation:
     timeoutSeconds: {{ .Values.bazelQueryWorkload.timeoutSeconds }}
     retry:
-      # A guest non-2xx here is a visitor's bad query expression (bazel exits
-      # non-zero -> the guest returns 422 with bazel's error text), never a
-      # transient fault, so guest5xx/timeout are NOT retried. Only a transport
-      # failure (the Assign never reached the guest) is worth one more attempt.
-      maxAttempts: 1
+      # maxAttempts is TOTAL attempts, so 2 means one retry. A guest non-2xx here
+      # is a visitor's bad query expression (bazel exits non-zero -> the guest
+      # returns 422 with bazel's error text), never a transient fault, so
+      # guest5xx/timeout are NOT retried (they are absent from retryOn). Only a
+      # transport failure (the Assign never reached the guest, so the query never
+      # ran) is worth one more attempt.
+      maxAttempts: 2
       retryOn:
         - transport
     resultTtlSeconds: 600
