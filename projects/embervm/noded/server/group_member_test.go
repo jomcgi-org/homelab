@@ -211,6 +211,27 @@ func startFreshMember(t *testing.T, s *Server, port uint32, member string, index
 	return resp
 }
 
+// TestStartGroupMemberFreshResolvesFromPushedRegistry proves the
+// artifact-decoupling Phase 2 prod condition: with cfg.Images EMPTY, a composite
+// group member cold boot resolves its per-member rootfs from the
+// control-plane-PUSHED registry (by the member image_ref) instead of the config
+// table. A composite CR carries several member images under one workload, so this
+// resolution MUST be by image_ref, not by the group workload.
+func TestStartGroupMemberFreshResolvesFromPushedRegistry(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _, _ := newGroupMemberTestServer(t)
+
+	s.cfg.Images = map[string]config.Image{}
+	s.registry.sync([]workloadEntry{
+		{Workload: "image:src-a", ImageRef: "src-a", RootfsRef: "/rootfs/a", HarnessInit: "/init"},
+	})
+
+	resp := startFreshMember(t, s, port, "worker-0", 0)
+	if resp.GetVmId() == "" {
+		t.Fatal("StartGroupMember(fresh) resolved no VM from the pushed registry")
+	}
+}
+
 // TestStartGroupMemberFreshBootsOnGroupBridge proves a FRESH member cold-boots on the
 // group bridge (tap pinned), health-gates, carries its env, is reported in
 // group_member_vms, and bumps the network's member_count. No clock resync on FRESH.

@@ -345,6 +345,31 @@ func startFresh(t *testing.T, s *Server, port uint32) *nodev1.StartServingRespon
 	return resp
 }
 
+// TestStartServingFreshResolvesFromPushedRegistry proves the artifact-decoupling
+// Phase 2 prod condition: with cfg.Images EMPTY (the env parse retired), a serving
+// cold boot resolves its runtime rootfs from the control-plane-PUSHED registry
+// (by the runtime image_ref) instead of the config table. Without the
+// resolveImageByRef fix this fails "runtime image ... not provisioned".
+func TestStartServingFreshResolvesFromPushedRegistry(t *testing.T) {
+	_, port := healthServer(t, servingHealthPath)
+	s, _, _ := newServingTestServer(t)
+
+	// Prod condition: no config image table at all.
+	s.cfg.Images = map[string]config.Image{}
+	// The control plane pushed the runtime image identity keyed by image_ref.
+	s.registry.sync([]workloadEntry{
+		{Workload: "image:img-a", ImageRef: "img-a", RootfsRef: "/rootfs/a", HarnessInit: "/init"},
+	})
+
+	resp := startFresh(t, s, port)
+	if resp.GetVmId() == "" {
+		t.Fatal("StartServing(fresh) resolved no VM from the pushed registry")
+	}
+	if resp.GetIp() != "127.0.0.1" {
+		t.Errorf("ip = %q want 127.0.0.1", resp.GetIp())
+	}
+}
+
 func TestStartServingFresh(t *testing.T) {
 	_, port := healthServer(t, servingHealthPath)
 	s, fsn, fsd := newServingTestServer(t)

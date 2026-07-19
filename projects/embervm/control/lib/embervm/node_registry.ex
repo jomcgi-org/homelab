@@ -90,6 +90,10 @@ defmodule Embervm.NodeRegistry do
   @unknown_after_ms 5_000
   @down_after_ms 15_000
   @age_check_ms 1_000
+  # How often the node set is re-discovered from EndpointSlices (C4 interim: a
+  # poll-and-reconcile, not a live watch). 30s is well under the time a rolled
+  # pod's absence matters and cheap (a cached-read LIST).
+  @discover_interval_ms 30_000
 
   # Closed enum of node health states, the age-out machine's whole codomain
   # (evaluate_node_age computes exactly these). Exposed for the spec vocabulary
@@ -164,6 +168,17 @@ defmodule Embervm.NodeRegistry do
     GenServer.call(server, :tick)
   end
 
+  @doc """
+  Forces one synchronous node-set re-discovery + reconcile (the same code the
+  periodic `:discover` timer runs). Tests drive discovery deterministically through
+  this with an injected `discover_fun`; in production the timer fires it every
+  #{@discover_interval_ms}ms. A no-op when no `discover_fun` is configured.
+  """
+  @spec discover(GenServer.server()) :: :ok
+  def discover(server \\ __MODULE__) do
+    GenServer.call(server, :discover)
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -191,6 +206,16 @@ defmodule Embervm.NodeRegistry do
     # watch_startup drives the informer from init; tests set it false and drive
     # inject_status/1 + tick/1 explicitly so no background stream or timer fires.
     watch_startup = Keyword.get(opts, :watch_startup, true)
+    # Periodic node-set re-discovery (artifact-decoupling PR-C, C4). noded is a
+    # DaemonSet behind a headless Service; a roll changes pod IPs, so the node list
+    # is re-listed on an interval and reconciled (new pods get a streamer, vanished
+    # pods are torn down) instead of frozen at boot. The default reads
+    # EndpointSlices via Embervm.Application; tests inject a fake discover_fun and
+    # drive :discover synchronously. A nil discover_fun (the default when no
+    # discovery source is configured, e.g. a pinned single-node override or tests)
+    # disables re-discovery entirely, so the node set stays exactly the :nodes list.
+    discover_fun = Keyword.get(opts, :discover_fun, nil)
+    discover_interval = Keyword.get(opts, :discover_interval_ms, @discover_interval_ms)
 
     NodeCapacity.create(table)
 
@@ -232,6 +257,8 @@ defmodule Embervm.NodeRegistry do
       base_backoff_ms: base_backoff,
       max_backoff_ms: max_backoff,
       min_watch_ms: min_watch,
+      discover_fun: discover_fun,
+      discover_interval_ms: discover_interval,
       node_runtime: node_runtime,
       # The process notified once per drain rising edge with {:node_draining,
       # node_id, deadline_ms} so it can force-bank the node's live instances before
@@ -261,6 +288,7 @@ defmodule Embervm.NodeRegistry do
       end)
 
     schedule_age_check(state)
+    schedule_discover(state)
     {:noreply, state}
   end
 
@@ -323,6 +351,13 @@ defmodule Embervm.NodeRegistry do
     {:noreply, state}
   end
 
+  # Periodic node-set re-discovery, then re-arm the timer (C4 interim).
+  def handle_info(:discover, state) do
+    state = reconcile_discovered(state)
+    schedule_discover(state)
+    {:noreply, state}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
@@ -360,6 +395,10 @@ defmodule Embervm.NodeRegistry do
 
   def handle_call(:tick, _from, state) do
     {:reply, :ok, evaluate_ages(state)}
+  end
+
+  def handle_call(:discover, _from, state) do
+    {:reply, :ok, reconcile_discovered(state)}
   end
 
   # Best-effort: stop orphaned streamers from outliving the GenServer holding
@@ -881,6 +920,103 @@ defmodule Embervm.NodeRegistry do
     Process.send_after(self(), :age_check, state.age_check_ms)
   end
 
+  # Arm the next periodic re-discovery, but only when a discover_fun is configured
+  # (no source => the node set is the static :nodes list and never re-lists).
+  defp schedule_discover(%{discover_fun: nil}), do: :ok
+
+  defp schedule_discover(state) do
+    Process.send_after(self(), :discover, state.discover_interval_ms)
+    :ok
+  end
+
+  # Re-list the node set and reconcile it against the current runtime: START a
+  # streamer for any newly-discovered node id, and TEAR DOWN a node that has
+  # vanished from discovery (drop its capacity row, kill its streamer, forget its
+  # runtime). A node that is still present is left exactly as-is (its stream, health
+  # and backoff untouched), so a steady fleet costs nothing. This is the C4 interim
+  # bridge: a poll-and-reconcile, not a live EndpointSlice watch (PR-H replaces the
+  # seam with CP-managed per-node Deployments). A discover_fun that errors (returns
+  # a non-list) leaves the set unchanged rather than tearing every node down.
+  defp reconcile_discovered(%{discover_fun: nil} = state), do: state
+
+  defp reconcile_discovered(state) do
+    case safe_discover(state.discover_fun) do
+      {:ok, discovered} ->
+        desired = for %{id: id, address: address} <- discovered, into: %{}, do: {id, address}
+        current_ids = MapSet.new(Map.keys(state.node_runtime))
+        desired_ids = MapSet.new(Map.keys(desired))
+
+        state =
+          Enum.reduce(MapSet.difference(desired_ids, current_ids), state, fn id, acc ->
+            add_discovered_node(acc, id, desired[id])
+          end)
+
+        Enum.reduce(MapSet.difference(current_ids, desired_ids), state, fn id, acc ->
+          remove_discovered_node(acc, id)
+        end)
+
+      :error ->
+        state
+    end
+  end
+
+  defp safe_discover(discover_fun) do
+    case discover_fun.() do
+      nodes when is_list(nodes) -> {:ok, nodes}
+      _ -> :error
+    end
+  rescue
+    e ->
+      Logger.warning("embervm node registry: discovery raised: #{inspect(e)}")
+      :error
+  end
+
+  # Add a freshly-discovered node: seed its runtime (mirroring init's shape) and
+  # open its streamer, which pushes SyncRegistry + consumes WatchNode like any
+  # other node.
+  defp add_discovered_node(state, node_id, address) do
+    now = state.clock.()
+
+    rt = %{
+      configured_id: node_id,
+      address: address,
+      streamer: nil,
+      backoff_ms: state.base_backoff_ms,
+      watch_started_at: now,
+      last_status_at: nil,
+      started_at: now,
+      health: :starting,
+      draining: false
+    }
+
+    Logger.info("embervm node registry: discovered new node #{node_id} (#{address})")
+
+    state
+    |> put_in([:node_runtime, node_id], rt)
+    |> start_streamer(node_id)
+  end
+
+  # Remove a node that vanished from discovery: retract its capacity row, kill its
+  # streamer if any (forgetting the pid first so the ensuing DOWN is ignored), and
+  # drop its runtime so no reconnect timer resurrects it.
+  defp remove_discovered_node(state, node_id) do
+    Logger.info("embervm node registry: node #{node_id} vanished from discovery; tearing down")
+    state = retract_capacity(state, node_id)
+
+    state =
+      case state.node_runtime[node_id] do
+        %{streamer: {pid, _ref}} ->
+          state = forget_streamer(state, pid, node_id)
+          Process.exit(pid, :kill)
+          state
+
+        _ ->
+          state
+      end
+
+    %{state | node_runtime: Map.delete(state.node_runtime, node_id)}
+  end
+
   # -- default (production) seams --------------------------------------------
 
   # Plaintext h2c to the noded Service over the Mint adapter (no TLS, no castore;
@@ -949,25 +1085,52 @@ defmodule Embervm.NodeRegistry do
   defp registry_entries do
     identity = node_image_identity()
 
-    for name <- Embervm.WorkloadCatalog.all_names() do
-      entry =
-        case Embervm.WorkloadCatalog.fetch(name) do
-          {:ok, e} -> e
-          :error -> %{}
-        end
+    catalog_entries =
+      for name <- Embervm.WorkloadCatalog.all_names() do
+        entry =
+          case Embervm.WorkloadCatalog.fetch(name) do
+            {:ok, e} -> e
+            :error -> %{}
+          end
 
-      image_ref = entry[:image_ref] || ""
-      {rootfs_ref, harness_init} = Map.get(identity, image_ref, {"", ""})
+        image_ref = entry[:image_ref] || ""
+        {rootfs_ref, harness_init} = Map.get(identity, image_ref, {"", ""})
 
-      %RegistryEntry{
-        workload: name,
-        image_digest: "",
-        image_ref: image_ref,
-        rootfs_ref: rootfs_ref,
-        harness_init: harness_init,
-        sizing: %ResourceSpec{vcpus: entry[:vcpus] || 0, mem_mib: entry[:mem_mib] || 0}
-      }
-    end
+        %RegistryEntry{
+          workload: name,
+          image_digest: "",
+          image_ref: image_ref,
+          rootfs_ref: rootfs_ref,
+          harness_init: harness_init,
+          sizing: %ResourceSpec{vcpus: entry[:vcpus] || 0, mem_mib: entry[:mem_mib] || 0}
+        }
+      end
+
+    # Also emit one entry PER node-side image_ref in the identity map, keyed by the
+    # image_ref as a synthetic workload. This is what lets the daemon resolve a
+    # cold-boot's RUNTIME image (serving-fresh's runtime rootfs, a stateful boot
+    # image's runtime, a composite MEMBER image) by image_ref: those refs are not
+    # 1:1 with a Workload CR (a zip-lane serving workload carries no image_ref, and
+    # a composite CR carries several member images under one name), so the per-CR
+    # entries above cannot cover them. The daemon's getByImageRef index resolves any
+    # of them from these entries. Sizing is zero here (the per-BuildBase request or
+    # the per-CR entry carries the real sizing); these carry only the rootfs/harness
+    # identity keyed by image_ref. Entries the per-CR loop already produced for the
+    # same image_ref are harmless duplicates the daemon's convergence de-dupes by
+    # workload key (the synthetic key is the ref, distinct from a CR name).
+    identity_entries =
+      for {image_ref, {rootfs_ref, harness_init}} <- identity do
+        %RegistryEntry{
+          workload: "image:" <> image_ref,
+          image_digest: "",
+          image_ref: image_ref,
+          rootfs_ref: rootfs_ref,
+          harness_init: harness_init,
+          sizing: %ResourceSpec{vcpus: 0, mem_mib: 0}
+        }
+      end
+
+    catalog_entries ++ identity_entries
   end
 
   # Parse EMBERVM_NODE_IMAGE_IDENTITY (chart-rendered from the same values that
