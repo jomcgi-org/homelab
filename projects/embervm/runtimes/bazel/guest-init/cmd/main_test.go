@@ -89,6 +89,7 @@ func TestBuildArgvGolden(t *testing.T) {
 		"/usr/local/bin/bazel",
 		"--output_user_root=/tmp/bazel",
 		"--host_jvm_args=-Xmx1g",
+		"--max_idle_secs=0",
 		"cquery",
 		"deps(//absl/strings)",
 		"--noenable_bzlmod",
