@@ -454,6 +454,13 @@ defmodule Embervm.OpLog.StatefulProjectionTest do
   end
 
   # -- generation blessing (R7, ADR embervm/011) ------------------------------
+  #
+  # generation_blessed projects into the volume_blessing table, a SEPARATE
+  # table from volumes (see Embervm.OpLog.SQLite's comment on volume_blessing
+  # for why): a workload can be blessed BEFORE its FRESH boot's volume_created
+  # ever lands, and folding blessing into `volumes` would fabricate a phantom,
+  # node_id-less row that breaks the control plane's nil-means-no-volume-yet
+  # placement contract.
 
   defp blessed_op(ts, generation) do
     %Op{
@@ -466,26 +473,36 @@ defmodule Embervm.OpLog.StatefulProjectionTest do
     }
   end
 
-  test "generation_blessed upserts volumes.blessed_generation, workload-scoped (stateful_instance_id nil)", %{path: path} do
+  defp blessing_by_workload(server) do
+    {:ok, rows} = SQLite.load_volume_blessing(server)
+    Map.new(rows, &{&1.workload, &1})
+  end
+
+  test "generation_blessed upserts volume_blessing, workload-scoped (stateful_instance_id nil), never touching volumes",
+       %{path: path} do
     server = start_server(path)
 
     {:ok, _} = SQLite.append(server, blessed_op(90, 1))
+    blessing = blessing_by_workload(server)
+    assert blessing["scratch-postgres"].blessed_generation == 1
+
+    # A blessing landing before any volume_created never creates a volumes row
+    # (a workload's FIRST wake blesses before the daemon's FRESH boot has
+    # created the volume; volumes stays empty until volume_created lands).
     volumes = volume_by_workload(server)
-    assert volumes["scratch-postgres"].blessed_generation == 1
-    # A blessing landing before any volume_created creates the row (a workload's
-    # FIRST wake blesses before the daemon's FRESH boot has created the volume).
-    assert volumes["scratch-postgres"].generation == 0
+    assert volumes == %{}
 
     {:ok, ops} = SQLite.read_from(server, 0)
     blessed = Enum.find(ops, &(&1.kind == :generation_blessed))
     assert blessed.stateful_instance_id == nil
     assert blessed.workload == "scratch-postgres"
-    assert blessed.payload.generation == 1
+    assert blessed.payload["generation"] == 1
 
     :ok = GenServer.stop(server)
   end
 
-  test "generation_blessed after volume_created updates blessed_generation without disturbing the live generation", %{path: path} do
+  test "generation_blessed after volume_created updates the blessing ledger without disturbing the live generation",
+       %{path: path} do
     server = start_server(path)
 
     {:ok, _} = SQLite.append(server, volume_created_op(90, 3))
@@ -493,33 +510,50 @@ defmodule Embervm.OpLog.StatefulProjectionTest do
 
     volumes = volume_by_workload(server)
     assert volumes["scratch-postgres"].generation == 3
-    assert volumes["scratch-postgres"].blessed_generation == 4
+    assert blessing_by_workload(server)["scratch-postgres"].blessed_generation == 4
 
     :ok = GenServer.stop(server)
   end
 
-  test "a volume_created upsert after a blessing never clobbers blessed_generation", %{path: path} do
+  test "a volume_created upsert after a blessing never disturbs the separate blessing ledger", %{path: path} do
     server = start_server(path)
 
     {:ok, _} = SQLite.append(server, blessed_op(90, 1))
     {:ok, _} = SQLite.append(server, volume_created_op(91, 1))
 
-    volumes = volume_by_workload(server)
-    assert volumes["scratch-postgres"].blessed_generation == 1
-    assert volumes["scratch-postgres"].generation == 1
+    assert blessing_by_workload(server)["scratch-postgres"].blessed_generation == 1
+    assert volume_by_workload(server)["scratch-postgres"].generation == 1
 
     :ok = GenServer.stop(server)
   end
 
-  test "kill/restart rebuilds blessed_generation from the durable projection", %{path: path} do
+  test "kill/restart rebuilds the blessing ledger from the durable projection", %{path: path} do
     server = start_server(path)
     {:ok, _} = SQLite.append(server, volume_created_op(90, 1))
     {:ok, _} = SQLite.append(server, blessed_op(91, 2))
     :ok = GenServer.stop(server)
 
     server2 = start_server(path)
-    volumes = volume_by_workload(server2)
-    assert volumes["scratch-postgres"].blessed_generation == 2
+    assert blessing_by_workload(server2)["scratch-postgres"].blessed_generation == 2
+    :ok = GenServer.stop(server2)
+  end
+
+  test "a reopened op-log's read_from still round-trips the generation_blessed payload (string keys, value intact)",
+       %{path: path} do
+    server = start_server(path)
+    {:ok, _} = SQLite.append(server, blessed_op(90, 3))
+    :ok = GenServer.stop(server)
+
+    # Reopening simulates a control-plane restart reading the ops table fresh
+    # (the future replica-catch-up path, per Embervm.OpLog's moduledoc). The
+    # payload comes back through decode_payload/1, which ALWAYS yields
+    # string-keyed maps (even for an ETF-encoded payload written with atom
+    # keys), so a reader must use string keys here, matching every other op
+    # kind's read_from assertions in this suite (never `payload.generation`).
+    server2 = start_server(path)
+    {:ok, ops} = SQLite.read_from(server2, 0)
+    blessed = Enum.find(ops, &(&1.kind == :generation_blessed))
+    assert blessed.payload["generation"] == 3
     :ok = GenServer.stop(server2)
   end
 end

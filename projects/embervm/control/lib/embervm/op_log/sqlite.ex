@@ -291,8 +291,26 @@ defmodule Embervm.OpLog.SQLite do
       size_bytes INTEGER,
       allocated_bytes INTEGER,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      blessed_generation INTEGER
+      updated_at INTEGER NOT NULL
+    )
+    """,
+    # Generation-blessing ledger (R7, ADR embervm/011, standing decision 4): a
+    # SEPARATE table from `volumes`, keyed by workload the same way, because a
+    # workload can be blessed BEFORE it has a real volume row at all (the very
+    # first wake blesses generation 1 before the daemon's FRESH boot creates the
+    # volume). Folding this into `volumes` would make the very first blessing
+    # fabricate a phantom volume row with no node_id, which both defeats
+    # Embervm.StatefulStore.get_volume/2's nil-means-no-volume-yet contract and
+    # crashes the anchor_node placement logic that reads it. blessed_generation is
+    # the last generation THIS control plane's blessing ledger issued; quarantined
+    # is NOT persisted here (it is a live node-report-derived fact, re-derived on
+    # every NodeStatus refresh, exactly like a stateful instance's `healthy`).
+    """
+    CREATE TABLE IF NOT EXISTS volume_blessing (
+      workload TEXT PRIMARY KEY,
+      blessed_generation INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
     )
     """,
     # Composite-group instance projection (R5): the durable lifecycle + entry-
@@ -419,6 +437,11 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def load_volume_blessing(server \\ __MODULE__) do
+    GenServer.call(server, :load_volume_blessing)
+  end
+
+  @impl Embervm.OpLog
   def load_group_instances(server \\ __MODULE__) do
     GenServer.call(server, :load_group_instances)
   end
@@ -531,6 +554,10 @@ defmodule Embervm.OpLog.SQLite do
 
   def handle_call(:load_volumes, _from, state) do
     {:reply, do_load_volumes(state.conn), state}
+  end
+
+  def handle_call(:load_volume_blessing, _from, state) do
+    {:reply, do_load_volume_blessing(state.conn), state}
   end
 
   def handle_call(:load_group_instances, _from, state) do
@@ -1075,20 +1102,19 @@ defmodule Embervm.OpLog.SQLite do
 
   # generation_blessed (R7, ADR embervm/011): the control plane durably records
   # the generation it is about to issue for a workload's next writable attach,
-  # BEFORE dispatching the boot request carrying it. Upserted (not a plain
-  # UPDATE): a workload's FIRST wake is a FRESH boot whose volume_created has
-  # not landed yet (the daemon creates the volume only once the boot succeeds),
-  # so the very first blessing for a never-before-seen workload must create the
-  # volumes row rather than silently no-op against a WHERE clause matching
-  # nothing. A subsequent volume_created upsert (see that projection) merges
-  # over this row without disturbing blessed_generation, since it does not
-  # list that column in its own INSERT/UPDATE.
+  # BEFORE dispatching the boot request carrying it. Projects into the SEPARATE
+  # `volume_blessing` table, never `volumes` (see that table's comment): a
+  # workload's FIRST wake blesses before its FRESH boot's volume_created has
+  # landed, so writing into `volumes` here would fabricate a phantom,
+  # node_id-less volume row that breaks StatefulStore.get_volume/2's
+  # nil-means-no-volume-yet contract. Upserted (not a plain UPDATE) so a later
+  # blessing for the same workload updates rather than duplicates the row.
   defp project(conn, %Op{kind: :generation_blessed} = op, _seq) do
     payload = op.payload
 
     sql = """
-    INSERT INTO volumes (workload, generation, blessed_generation, created_at, updated_at)
-    VALUES (?, 0, ?, ?, ?)
+    INSERT INTO volume_blessing (workload, blessed_generation, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT(workload) DO UPDATE SET
       blessed_generation = excluded.blessed_generation,
       updated_at = excluded.updated_at
@@ -2213,7 +2239,7 @@ defmodule Embervm.OpLog.SQLite do
 
   defp do_load_volumes(conn) do
     sql = """
-    SELECT workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at, blessed_generation
+    SELECT workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at
     FROM volumes
     """
 
@@ -2227,7 +2253,7 @@ defmodule Embervm.OpLog.SQLite do
   defp collect_volumes(conn, stmt, acc) do
     case Sqlite3.step(conn, stmt) do
       {:row,
-       [workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at, blessed_generation]} ->
+       [workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at]} ->
         volume = %{
           workload: workload,
           node_id: node_id,
@@ -2235,11 +2261,40 @@ defmodule Embervm.OpLog.SQLite do
           size_bytes: size_bytes,
           allocated_bytes: allocated_bytes,
           created_at: created_at,
-          updated_at: updated_at,
-          blessed_generation: blessed_generation
+          updated_at: updated_at
         }
 
         collect_volumes(conn, stmt, [volume | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
+  defp do_load_volume_blessing(conn) do
+    sql = """
+    SELECT workload, blessed_generation, created_at, updated_at
+    FROM volume_blessing
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      rows = collect_volume_blessing(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, rows}
+    end
+  end
+
+  defp collect_volume_blessing(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [workload, blessed_generation, created_at, updated_at]} ->
+        row = %{
+          workload: workload,
+          blessed_generation: blessed_generation,
+          created_at: created_at,
+          updated_at: updated_at
+        }
+
+        collect_volume_blessing(conn, stmt, [row | acc])
 
       :done ->
         Enum.reverse(acc)
@@ -2890,8 +2945,7 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
          :ok <- migrate_ops_stateful_instance_id(conn),
-         :ok <- migrate_ops_group_instance_id(conn),
-         :ok <- migrate_volumes_blessed_generation(conn) do
+         :ok <- migrate_ops_group_instance_id(conn) do
       :ok
     end
   end
@@ -3000,23 +3054,6 @@ defmodule Embervm.OpLog.SQLite do
         conn,
         "CREATE INDEX IF NOT EXISTS ops_group_instance_id_idx ON ops(group_instance_id)"
       )
-    end
-  end
-
-  # R7 (ADR embervm/011): the additive nullable `volumes.blessed_generation`
-  # column, guarded the same way migrate_usage_request_count/1 guards
-  # `usage.request_count`. A fresh DB already built the column from the CREATE
-  # TABLE and skips the ALTER; an upgraded DB gets it added as NULL for every
-  # existing row, which reads back as "never blessed" (the moduledoc's
-  # grandfather rule in Embervm.StatefulStore), correctly reflecting that no
-  # generation_blessed op exists yet for a pre-R7 volume.
-  defp migrate_volumes_blessed_generation(conn) do
-    with {:ok, cols} <- table_columns(conn, "volumes") do
-      if "blessed_generation" in cols do
-        :ok
-      else
-        Sqlite3.execute(conn, "ALTER TABLE volumes ADD COLUMN blessed_generation INTEGER")
-      end
     end
   end
 
