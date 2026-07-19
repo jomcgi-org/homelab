@@ -48,7 +48,11 @@ seaweedfs:
         type: "persistentVolumeClaim"
         size: "100Gi"
         storageClass: "longhorn"
-        maxVolumes: 0
+        # Explicit slot count. Auto (0) derives max from disk capacity divided by
+        # the master's volumeSizeLimitMB (1000), which saturated at 106 slots with
+        # the disk only a third full; the embervm collection (newest) then had no
+        # writable volumes and every export failed. 130 leaves ~24 free slots.
+        maxVolumes: 130
     idx:
       type: "emptyDir"
     # Regenerate missing .idx files from .dat files on startup.
