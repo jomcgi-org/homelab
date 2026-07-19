@@ -55,7 +55,7 @@ spec:
         # repos on start, installs pre-receive hooks, starts git-daemon in the
         # background, and loops refreshing each repo on the configured interval.
         - name: supervisor
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}

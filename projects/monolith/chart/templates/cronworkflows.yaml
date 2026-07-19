@@ -64,7 +64,7 @@ spec:
     templates:
       - name: run
         container:
-          image: "{{ $.Values.jobs.image.repository }}:{{ $.Values.jobs.image.tag }}"
+          image: "{{ $.Values.jobs.image.repository }}@{{ $.Values.jobs.image.digest }}"
           args:
             {{- toYaml .args | nindent 12 }}
           env:

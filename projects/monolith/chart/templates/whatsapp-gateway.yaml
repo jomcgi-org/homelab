@@ -35,7 +35,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: whatsapp
-          image: "{{ .Values.whatsapp.image.repository }}:{{ .Values.whatsapp.image.tag }}"
+          image: "{{ .Values.whatsapp.image.repository }}@{{ .Values.whatsapp.image.digest }}"
           imagePullPolicy: {{ .Values.whatsapp.image.pullPolicy }}
           ports:
             - name: health

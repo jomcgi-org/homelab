@@ -72,7 +72,7 @@ spec:
         # RFC 1123 label that must be lowercase (the camelCase key runtimePython
         # would render build-runtimePython-rootfs, which the apiserver rejects).
         - name: build-{{ $name | kebabcase }}-rootfs
-          image: "{{ $.Values.rootfsBuilder.image.repository }}:{{ $.Values.rootfsBuilder.image.tag }}"
+          image: "{{ $.Values.rootfsBuilder.image.repository }}@{{ $.Values.rootfsBuilder.image.digest }}"
           command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
           env:
             - name: GUEST_IMAGE
@@ -109,7 +109,7 @@ spec:
       {{- end }}
       containers:
         - name: noded
-          image: "{{ .Values.noded.image.repository }}:{{ .Values.noded.image.tag }}"
+          image: "{{ .Values.noded.image.repository }}@{{ .Values.noded.image.digest }}"
           imagePullPolicy: {{ .Values.noded.image.pullPolicy }}
           securityContext:
             privileged: true
