@@ -986,8 +986,21 @@ defmodule Embervm.BaseBuilder do
     :ok
   end
 
+  # BuildBase legitimately runs for MINUTES (bazel warming + settle, the k3s
+  # airgap image import, cold-boot + WaitReady + snapshot), but elixir-grpc's Mint
+  # adapter defaults to a 10s per-call timeout (config :grpc, GRPC.Client.Adapters.Mint,
+  # timeout: 10_000). With no :timeout option the stub sent grpc-timeout "10S" on
+  # the HTTP/2 stream, so noded's gRPC server enforced the deadline at exactly
+  # boot+10s and SIGKILLed the warming VM (the bazel-query base is 6s warming + 10s
+  # settle, the first base to cross 10s; python/postgres/semgrep all went ready
+  # under 10s and never hit it). Worse, the Mint adapter then crashed on the cancel
+  # frame, swallowing the error so BaseBuilder never logged a failure and the
+  # Workload wedged in BaseBuilding. An explicit generous per-call timeout (10 min
+  # in ms) covers any realistic base build; BuildBase's own BootReadyTimeout is the
+  # real inner bound. This is the SLOW-path build only; the hot-path Prime/Assign
+  # calls keep the short default deliberately.
   defp default_build(channel, %BuildBaseRequest{} = request) do
-    NodeService.Stub.build_base(channel, request)
+    NodeService.Stub.build_base(channel, request, timeout: 600_000)
   end
 
   # EvictSnapshot the superseded base ref. Trace carries no workload (a base
