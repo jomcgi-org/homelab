@@ -115,6 +115,12 @@ func (s *Server) attachGeneration(workload string, blessedGeneration uint64) (ui
 // boots exactly like startStatefulCold. It is the only mode that may create the
 // volume; RELIGHT's fallback and COLD both require it to already exist.
 func (s *Server) startStatefulFresh(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32) (*nodev1.StartStatefulResponse, error) {
+	// A FRESH stateful boot is new-work placement (it may create the volume). A
+	// stale registry (boot cache, no live sync) must refuse it; RELIGHT and COLD
+	// operate on EXISTING state and stay allowed so existing warmth is served.
+	if err := s.refuseIfStale("StartStateful FRESH"); err != nil {
+		return nil, err
+	}
 	if !s.volumes.Exists(workload) {
 		if !req.GetCreateIfMissing() {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful volume for workload %q does not exist and create_if_missing is false", workload)

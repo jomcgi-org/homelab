@@ -313,6 +313,29 @@ func TestStartStatefulFreshResolvesFromPushedRegistry(t *testing.T) {
 	}
 }
 
+// TestStartStatefulFreshRefusedWhileStale proves a stale registry refuses a FRESH
+// stateful boot (new-work placement, may create a volume) with FailedPrecondition.
+func TestStartStatefulFreshRefusedWhileStale(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+	s.registry.mu.Lock()
+	s.registry.stale = true
+	s.registry.mu.Unlock()
+
+	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace:           &nodev1.Trace{Workload: "wl-state"},
+		Mode:            nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
+		BootImageRef:    "img-a",
+		Port:            port,
+		VolumeSizeBytes: 1 << 20,
+		VolumeMount:     "/var/lib/postgresql/data",
+		CreateIfMissing: true,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("FRESH StartStateful while stale: err = %v, want FailedPrecondition", err)
+	}
+}
+
 func TestStartStatefulFreshCreatesVolumeAndBoots(t *testing.T) {
 	port := tcpHealthServer(t)
 	s, _, fsd := newStatefulTestServer(t)

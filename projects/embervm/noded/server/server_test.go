@@ -1853,6 +1853,84 @@ func TestReconcileThenCapacityFilterHidesUnprovisioned(t *testing.T) {
 	}
 }
 
+// staleServer builds a minimal Server whose workload registry is STALE (a boot
+// cache load with no live sync). Same-package test, so it seeds the unexported
+// stale/synced flags directly, mirroring what loadCache does on boot.
+func staleServer(t *testing.T) *Server {
+	t.Helper()
+	s := New(Options{
+		Config: config.Config{Arch: "amd64", Node: "node-4", MaxLiveVMs: 8, SnapshotRoot: t.TempDir()},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	s.registry.mu.Lock()
+	s.registry.stale = true
+	s.registry.synced = false
+	s.registry.mu.Unlock()
+	return s
+}
+
+// TestStaleRegistryRefusesBuildBase proves a stale daemon refuses the coldest
+// placement (a base build) with FailedPrecondition, the airtight daemon-side
+// backstop that /readyz cannot provide on the CP's direct-dial path.
+func TestStaleRegistryRefusesBuildBase(t *testing.T) {
+	s := staleServer(t)
+	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		ImageRef: "img-a",
+		Trace:    &nodev1.Trace{Workload: "wl-a"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("BuildBase on a stale registry: err = %v, want FailedPrecondition", err)
+	}
+	if !strings.Contains(err.Error(), "stale") {
+		t.Errorf("error should name the stale registry, got %q", err.Error())
+	}
+
+	// Once a live sync clears the stale mark, the gate opens (it now fails for a
+	// DIFFERENT reason: no build driver configured, i.e. past the stale gate).
+	s.registry.sync([]workloadEntry{{Workload: "wl-a", ImageRef: "img-a", RootfsRef: "/rootfs/a"}})
+	_, err = s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		ImageRef: "img-a",
+		Trace:    &nodev1.Trace{Workload: "wl-a"},
+	})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("BuildBase after live sync: err = %v, want Unimplemented (past the stale gate)", err)
+	}
+}
+
+// TestStaleRegistryRefusesColdPrimeButServesWarm proves the "serve existing
+// warmth, never admit new work" invariant at the Prime seam: while stale, a Prime
+// for a workload with NO existing warm pool is refused (cold placement), but a
+// Prime that REFILLS an already-warm workload is allowed (existing warmth topped
+// up). The warm case is proven by the stale gate NOT firing (the call proceeds
+// past it to the driver, failing only because this minimal server has none).
+func TestStaleRegistryRefusesColdPrimeButServesWarm(t *testing.T) {
+	// A real fake driver/transport so Prime's liveVMCount and restore path run.
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	s.registry.mu.Lock()
+	s.registry.stale = true
+	s.registry.synced = false
+	s.registry.mu.Unlock()
+	// Register a READY base for two workloads so Prime gets past the base checks.
+	s.bases.readyBuild("snap-cold", "wl-cold", "img-a", "/shim/ready", 2048)
+	s.bases.readyBuild("snap-warm", "wl-warm", "img-a", "/shim/ready", 2048)
+	// Seed an EXISTING primed VM for wl-warm so it counts as already-warm.
+	s.vms.add(&vmEntry{id: "vm-warm-1", workload: "wl-warm", snapshotRef: "snap-warm", state: vmPrimed})
+
+	// Cold workload (no warm pool): the stale gate refuses.
+	_, err := s.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "snap-cold"})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("cold Prime on stale registry: err = %v, want FailedPrecondition/stale", err)
+	}
+
+	// Warm workload (existing primed VM): the stale gate does NOT fire, so the call
+	// proceeds past it and fails for a different reason (no transport/driver here),
+	// which is NOT the stale refusal. That proves warmth is still served.
+	_, err = s.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "snap-warm"})
+	if err != nil && strings.Contains(err.Error(), "stale") {
+		t.Errorf("warm-refill Prime must NOT be refused as stale, got %v", err)
+	}
+}
+
 // TestBaseKeyForDiffersAcrossVendor proves the same (workload, image_ref,
 // revision) keys a DIFFERENT base on each CPU vendor (R7, standing decision 1):
 // a Firecracker base built on Intel must never collide with (or be reported

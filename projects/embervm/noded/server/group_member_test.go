@@ -232,6 +232,28 @@ func TestStartGroupMemberFreshResolvesFromPushedRegistry(t *testing.T) {
 	}
 }
 
+// TestStartGroupMemberFreshRefusedWhileStale proves a stale registry refuses a
+// FRESH member cold boot (new-work placement) with FailedPrecondition.
+func TestStartGroupMemberFreshRefusedWhileStale(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _, _ := newGroupMemberTestServer(t)
+	s.registry.mu.Lock()
+	s.registry.stale = true
+	s.registry.mu.Unlock()
+
+	_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+		Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH,
+		GroupInstanceId: "grp-A",
+		MemberName:      "worker-0",
+		Ip:              "127.0.0.1",
+		HealthPort:      port,
+		Source:          "src-a",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("FRESH StartGroupMember while stale: err = %v, want FailedPrecondition", err)
+	}
+}
+
 // TestStartGroupMemberFreshBootsOnGroupBridge proves a FRESH member cold-boots on the
 // group bridge (tap pinned), health-gates, carries its env, is reported in
 // group_member_vms, and bumps the network's member_count. No clock resync on FRESH.
