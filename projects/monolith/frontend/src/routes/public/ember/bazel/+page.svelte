@@ -1,9 +1,9 @@
 <script>
-  // /ember/bazel: the frozen-Skyframe query exhibit (ADR embervm/010).
-  // A real Bazel server was warmed once, its Skyframe graph resident in the
-  // JVM heap after loading and analyzing Abseil (514 targets), then frozen
-  // as a Firecracker memory snapshot. Every query below runs in a disposable
-  // copy-on-write clone of that frozen brain: relight, one query, destroy.
+  // /ember/bazel: the warm-Skyframe query demo (ADR embervm/010).
+  // A Bazel server was warmed once, its Skyframe graph resident in the JVM heap
+  // after loading and analyzing Abseil (514 targets), then snapshotted with
+  // Firecracker. Every query below runs in its own throwaway copy of that
+  // snapshot: restore the copy, run one query, destroy it.
   //
   // Console flow mirrors /ember/postgres's EmberConsole: Turnstile-gated
   // session mint (sessionless when no site key, i.e. dev), a stopwatch that
@@ -214,7 +214,7 @@
         return;
       }
       if (body.busy) {
-        runError = "both clones are busy right now, try again in a moment";
+        runError = "both copies are busy right now, try again in a moment";
         return;
       }
       if (body.error) {
@@ -375,7 +375,7 @@
   <title>Ember Bazel Skyframe Query</title>
   <meta
     name="description"
-    content="Query a warm Bazel analysis graph frozen as a Firecracker memory snapshot. Each query runs in a disposable clone: relight, cquery, destroy. Bazel's own output proves zero re-analysis happened."
+    content="Bazel spends seconds to minutes analyzing a build graph before it can answer a query. This page skips that step: Abseil (514 targets) was analyzed once, the warm Bazel server was snapshotted with Firecracker, and each query runs in its own throwaway copy of that snapshot."
   />
 </svelte:head>
 
@@ -392,14 +392,15 @@
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Bazel Skyframe Query</h1>
       <p class="subtitle">
-        A real Bazel server was warmed once: loading and analysis of
+        Bazel spends seconds to minutes analyzing a build graph before it can
+        answer anything. This page skips that step:
         <a class="inline-link" href="https://github.com/abseil/abseil-cpp"
           >Abseil</a
         >
-        (release 20240116.2, 514 targets). That warm server was frozen as a
-        Firecracker memory snapshot. Every query below runs in a disposable
-        copy-on-write clone of that frozen brain: relight, one query,
-        destroy.
+        (release 20240116.2, 514 targets) was analyzed once, the warm Bazel
+        server was snapshotted with Firecracker, and each query below runs in
+        its own throwaway copy of that snapshot. One query per copy, then it is
+        destroyed.
       </p>
     </header>
 
@@ -460,10 +461,10 @@
       </div>
 
       <!-- Compact always-on-screen comparison strip: the cold/warm recorded
-           baselines plus this session's live numbers, so the core point (a
-           frozen brain answers in a fraction of a cold analysis) is visible
-           while querying without scrolling to the detailed section below. The
-           two baselines mirror the recorded-panel constants; "this query" is the
+           baselines plus this session's live numbers, so the core comparison
+           (a query off the snapshot vs a cold analysis) stays visible while
+           querying without scrolling to the detailed section below. The two
+           baselines mirror the recorded-panel constants; "this query" is the
            last run's round trip; "saved" is the all-time counter. -->
       <div class="stat-strip">
         <span class="stat-item"
@@ -496,17 +497,15 @@
         {#if analyzedParts.before || analyzedParts.marker}
           <div class="proof-badge">
             <span class="proof-kicker"
-              ><span class="proof-check" aria-hidden="true">✓</span> proof of reuse,
-              bazel's own words</span
+              ><span class="proof-check" aria-hidden="true">✓</span> proof of reuse</span
             >
             <p class="proof-line">
               {analyzedParts.before}{#if analyzedParts.marker}<b class="proof-marker">{analyzedParts.marker}</b>{/if}{analyzedParts.after}
             </p>
             <p class="proof-caption">
-              Zero packages loaded, zero targets configured: bazel's own
-              admission that no re-analysis happened. This clone answered
-              the query by reusing the Skyframe graph restored straight from
-              the frozen heap.
+              Bazel printed this line itself. 0 packages loaded means this copy
+              did no re-analysis: the answer came straight out of the snapshot's
+              memory.
             </p>
           </div>
         {/if}
@@ -581,9 +580,8 @@
     <section class="recorded-section">
       <h2 class="h2">Cold, warm, and live</h2>
       <p class="body">
-        Three numbers, three different things measured. The first two are a
-        recorded comparison from before the snapshot existed; the third is
-        what actually happens on your query above.
+        The first two numbers were measured before the snapshot existed. The
+        third is what your query above actually did.
       </p>
 
       <!-- Hero: the all-time savings counter is the headline metric, so it
@@ -593,8 +591,7 @@
       <div class="saved-hero">
         <span class="saved-hero-value">{formatSavedTime(savedS)}</span>
         <span class="saved-hero-label"
-          >estimated cold analysis time skipped, across every visitor's
-          query, all time</span
+          >analysis time skipped across all visitor queries</span
         >
       </div>
 
@@ -613,8 +610,8 @@
           <span class="recorded-value recorded-live">~450 ms</span>
           <span class="recorded-name">live: one visitor query, end to end</span>
           <span class="recorded-note"
-            >measured on the production node tonight, includes clone
-            relight and reap, ~300&nbsp;ms of it inside bazel</span
+            >measured on the production node, includes restoring the copy and
+            destroying it after; about 300&nbsp;ms of it is inside bazel</span
           >
         </div>
       </div>
