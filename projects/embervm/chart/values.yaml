@@ -748,9 +748,12 @@ noded:
   # serving/stateful/group VM before the deadline; only then does it drain
   # in-flight task Assigns and exit. terminationGracePeriodSeconds is set above it
   # (grace = drain + 30s), so a rollout never SIGKILLs mid-bank and never drops a
-  # running task. 120s is the v1 spot-instance preemption window.
+  # running task. 110s targets the 2m spot-instance preemption notice minus
+  # notification latency (ADR embervm/009 resolved-question 5); inside the budget,
+  # durable banks go first, serving banks second, in-flight builds finish-or-abort
+  # last.
   drain:
-    timeoutSeconds: 120
+    timeoutSeconds: 110
 
   # R1 zip lane: a BuildBase zip source is a runtime image plus a zip archive noded
   # fetches, sha256-verifies into memory, and hydrates into the build VM over vsock

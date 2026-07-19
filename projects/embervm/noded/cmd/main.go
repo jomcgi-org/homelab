@@ -283,6 +283,15 @@ func run(logger *slog.Logger) error {
 			logger.Info("all managed VMs drained; stopping")
 		}
 
+		// Builds are the last drain priority (durable banks first, serving banks
+		// second, builds finish-or-abort last; ADR embervm/009 resolved-question 5):
+		// let any in-flight BuildBase work finish within whatever budget the bank pass
+		// left, else abort it cleanly. Builds are reconstructible, so an abort only
+		// re-queues; the build VM is torn down and no half-written snapshot survives.
+		if aborted := srv.WaitForBuildsOrAbort(deadline); aborted > 0 {
+			logger.Warn("drain deadline reached with builds in flight; aborted and left re-queueable", "aborted", aborted)
+		}
+
 		// Now stop the server: in-flight task Assigns get a short grace, then hard stop.
 		done := make(chan struct{})
 		go func() { gs.GracefulStop(); close(done) }()

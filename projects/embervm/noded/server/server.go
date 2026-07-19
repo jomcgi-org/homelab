@@ -238,6 +238,17 @@ type Server struct {
 	draining            bool
 	drainDeadlineUnixMs int64
 
+	// activeBuilds tracks in-flight BuildBase work so a drain can finish-or-abort
+	// it inside the budget (artifact-decoupling Phase 0). Each entry's cancel tears
+	// its build context down: runBuild's deferred Release + RemoveBundle destroy the
+	// build VM, driveBuild marks the base re-queueable (failBuild, never READY), and
+	// no half-written snapshot survives (meta.json-last already covers the store
+	// side). buildsWG counts the same builds so the drain waits for a clean finish
+	// until the deadline before it cancels.
+	buildsMu     sync.Mutex
+	activeBuilds map[string]context.CancelFunc
+	buildsWG     sync.WaitGroup
+
 	// store is the off-node object-store client the R6 continuity verbs and the
 	// async export queue use. nil disables the store (no endpoint configured):
 	// ExportArtifact/RestoreArtifact refuse FAILED_PRECONDITION, exports are
@@ -365,6 +376,7 @@ func New(opts Options) *Server {
 		exported:        newExportedCache(),
 		exportDedupe:    make(map[string]struct{}),
 		subs:            make(map[chan struct{}]struct{}),
+		activeBuilds:    make(map[string]context.CancelFunc),
 	}
 	// VolumeRoot may be set directly on Options (mirroring how cmd/main.go wires
 	// every other stateful/serving knob explicitly) or left to fall back to
@@ -544,6 +556,15 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	}
 	s.signalChange()
 
+	// Register the build so a drain can finish-or-abort it inside the budget. The
+	// build runs under buildCtx (a cancelable child of the RPC ctx): a drain past
+	// the deadline cancels it, runBuild's deferred teardown destroys the build VM,
+	// and failBuild below leaves the base re-queueable.
+	buildCtx, cancelBuild := context.WithCancel(ctx)
+	defer cancelBuild()
+	s.registerBuild(baseKey, cancelBuild)
+	defer s.finishBuild(baseKey)
+
 	harnessInit := img.HarnessInit
 	if harnessInit == "" {
 		harnessInit = s.cfg.HarnessInit
@@ -556,7 +577,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		MemMib:      int(res.GetMemMib()),
 	})
 
-	sizeBytes, err := s.runBuild(ctx, bd, baseKey, readyPath, archive)
+	sizeBytes, err := s.runBuild(buildCtx, bd, baseKey, readyPath, archive)
 	if err != nil {
 		s.bases.failBuild(baseKey, err.Error())
 		s.signalChange()
@@ -1670,6 +1691,64 @@ func (s *Server) WaitForManagedDrain(ctx context.Context, deadline time.Time) in
 			return s.managedLiveVMCount()
 		}
 	}
+}
+
+// registerBuild records an in-flight build's cancel func so a drain can abort it,
+// and adds it to the wait group so a drain can wait for a clean finish. Paired
+// with finishBuild in driveBuild's defer.
+func (s *Server) registerBuild(baseKey string, cancel context.CancelFunc) {
+	s.buildsWG.Add(1)
+	s.buildsMu.Lock()
+	s.activeBuilds[baseKey] = cancel
+	s.buildsMu.Unlock()
+}
+
+// finishBuild deregisters a build once driveBuild returns (built, failed, or
+// aborted). It cancels the build context (releasing its resources on the normal
+// path too) and drops the wait-group count.
+func (s *Server) finishBuild(baseKey string) {
+	s.buildsMu.Lock()
+	cancel, ok := s.activeBuilds[baseKey]
+	delete(s.activeBuilds, baseKey)
+	s.buildsMu.Unlock()
+	if ok {
+		cancel()
+	}
+	s.buildsWG.Done()
+}
+
+// WaitForBuildsOrAbort is the last drain step (after the control plane has
+// force-banked durable and serving state via WaitForManagedDrain): in-flight
+// BuildBase work is allowed to FINISH if it fits the remaining budget, else it is
+// cleanly ABORTED at the deadline. Builds are reconstructible by definition (ADR
+// embervm/009 resolved-question 5: durable banks first, serving banks second,
+// abort builds on clock expiry), so aborting one only re-queues it: cancelling
+// the build context makes runBuild tear the build VM down (deferred Release +
+// RemoveBundle) and driveBuild mark the base re-queueable (failBuild, never
+// READY), so no half-written snapshot survives. Returns the number of builds that
+// had to be aborted (0 on a clean finish), for the shutdown log.
+func (s *Server) WaitForBuildsOrAbort(deadline time.Time) int {
+	done := make(chan struct{})
+	go func() {
+		s.buildsWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return 0
+	case <-time.After(time.Until(deadline)):
+	}
+	// Deadline reached with builds still in flight: cancel them all, then wait for
+	// their teardown (Release/RemoveBundle run on context.Background, so the abort
+	// itself is never cut short) before returning.
+	s.buildsMu.Lock()
+	aborted := len(s.activeBuilds)
+	for _, cancel := range s.activeBuilds {
+		cancel()
+	}
+	s.buildsMu.Unlock()
+	<-done
+	return aborted
 }
 
 func (s *Server) subscribe() chan struct{} {
