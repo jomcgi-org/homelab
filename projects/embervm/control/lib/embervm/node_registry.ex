@@ -88,6 +88,12 @@ defmodule Embervm.NodeRegistry do
   @down_after_ms 15_000
   @age_check_ms 1_000
 
+  # Closed enum of node health states, the age-out machine's whole codomain
+  # (evaluate_node_age computes exactly these). Exposed for the spec vocabulary
+  # sync test (ADR embervm/006 layer 1); nothing here reads it, so behavior is
+  # unchanged.
+  @health_states [:starting, :healthy, :unknown, :down]
+
   # Reconnect backoff, same shape as Embervm.WorkloadWatcher: a healthy
   # long-lived stream close reconnects immediately (reset to base); a fast or
   # errored close backs off exponentially so a wedged/flapping daemon is not
@@ -118,6 +124,10 @@ defmodule Embervm.NodeRegistry do
   def capacity(table \\ NodeCapacity.table()) do
     NodeCapacity.all(table)
   end
+
+  @doc "Closed enum of node health states, exposed for the spec vocabulary sync test (ADR embervm/006 layer 1)."
+  @spec health_states() :: [atom()]
+  def health_states, do: @health_states
 
   @doc """
   A snapshot of every configured node's health and last-known facts, for
