@@ -1159,6 +1159,35 @@ func TestNodeStatusReportsPrimedVMIDs(t *testing.T) {
 	}
 }
 
+// TestNodeStatusCarriesBudgetFields verifies the budget-agnostic daemon's
+// sensor output (Task 1.2) reaches NodeStatus: mem_budget_mib,
+// cpu_budget_millicores, and the now-real cpu_headroom_millicores (no longer
+// hard-coded 0) all read from the injected budget hooks rather than the
+// cgroup filesystem, mirroring how memHeadroom is already overridden in
+// tests for determinism.
+func TestNodeStatusCarriesBudgetFields(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newTestServer(t, drv, tr, 8)
+	srv.memBudget = func() uint64 { return 3584 }
+	srv.cpuBudget = func() uint64 { return 2000 }
+	srv.cpuHeadroom = func() uint64 { return 1500 }
+
+	ns, err := client.GetNodeStatus(context.Background(), &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetNodeStatus: %v", err)
+	}
+	if got, want := ns.GetMemBudgetMib(), uint64(3584); got != want {
+		t.Errorf("mem_budget_mib = %d, want %d", got, want)
+	}
+	if got, want := ns.GetCpuBudgetMillicores(), uint64(2000); got != want {
+		t.Errorf("cpu_budget_millicores = %d, want %d", got, want)
+	}
+	if got, want := ns.GetCpuHeadroomMillicores(), uint32(1500); got != want {
+		t.Errorf("cpu_headroom_millicores = %d, want %d (must no longer be hard-coded 0)", got, want)
+	}
+}
+
 // ---- R2 session verb tests -------------------------------------------------
 
 // sessionVMIDs / sessionSnapRefs extract the session facts from a NodeStatus.

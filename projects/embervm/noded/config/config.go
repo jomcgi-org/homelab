@@ -72,7 +72,20 @@ type Config struct {
 	// (primed + assigning). The control plane owns real concurrency; this only
 	// stops a runaway from exhausting the node. Prime returns RESOURCE_EXHAUSTED
 	// at the cap. Default 8. Zero or negative means unbounded (no backstop).
+	//
+	// After the budget-agnostic daemon (ADR embervm/005 item 4), no capacity
+	// decision may read MaxLiveVMs; it keeps only this runaway-backstop
+	// meaning. The real slot ceiling for a brick size-class is derived from
+	// MemBudgetMib/CpuBudgetMillicores (see server/budget.go), reported on
+	// NodeStatus for the control plane to consume.
 	MaxLiveVMs int
+
+	// DaemonReserveMib is subtracted from the cgroup memory.max ceiling
+	// before it is reported as NodeStatus.mem_budget_mib, covering the
+	// daemon's own RSS so the reported budget is guest-schedulable memory,
+	// not the raw pod cgroup limit. Env EMBERVM_NODED_DAEMON_RESERVE_MIB.
+	// Default 512.
+	DaemonReserveMib int
 
 	// SnapshotRoot is the directory holding FC bundle + base snapshots on the
 	// NVMe scratch disk. Maps to the driver's SnapshotRoot.
@@ -203,12 +216,15 @@ type Config struct {
 	GroupUnhealthyThreshold int
 
 	// StoreEndpoint is the base URL of the S3-API object store the continuity
-	// verbs (R6) move banked artifacts to and from. Default the in-cluster
-	// SeaweedFS S3 gateway (anonymous, standing decision 5). An EMPTY endpoint
-	// DISABLES the store entirely: exports are skipped, restore-on-miss is
-	// impossible, and ExportArtifact/RestoreArtifact refuse FAILED_PRECONDITION,
-	// so a build without a store (tests, a cluster without SeaweedFS) still runs
-	// with only local durability. Env EMBERVM_NODED_STORE_ENDPOINT.
+	// verbs (R6) move banked artifacts to and from. No in-code default: the
+	// in-cluster SeaweedFS S3 gateway (anonymous, standing decision 5) is set
+	// explicitly by the chart (values.yaml noded.store.endpoint), since a
+	// hardcoded .svc.cluster.local default here would silently break if the
+	// release name ever changes. An EMPTY endpoint DISABLES the store
+	// entirely: exports are skipped, restore-on-miss is impossible, and
+	// ExportArtifact/RestoreArtifact refuse FAILED_PRECONDITION, so a build
+	// without a store (tests, a cluster without SeaweedFS) still runs with
+	// only local durability. Env EMBERVM_NODED_STORE_ENDPOINT.
 	StoreEndpoint string
 	// StoreBucket is the single bucket every artifact key lives under (Fork 3).
 	// Default "embervm". Env EMBERVM_NODED_STORE_BUCKET.
@@ -235,6 +251,7 @@ func Load() (Config, error) {
 		CpuVendor:           os.Getenv("EMBERVM_NODED_CPU_VENDOR"),
 		BearerToken:         os.Getenv("EMBERVM_NODED_BEARER_TOKEN"),
 		MaxLiveVMs:          atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
+		DaemonReserveMib:    atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
 		SnapshotRoot:        os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
 		BinPath:             getenvDefault("EMBERVM_NODED_FIRECRACKER_BIN", "/opt/fc/firecracker"),
 		KernelImagePath:     getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
@@ -264,7 +281,7 @@ func Load() (Config, error) {
 		GroupProbeInterval:      5 * time.Second,
 		GroupUnhealthyThreshold: atoiDefault("EMBERVM_NODED_GROUP_UNHEALTHY_THRESHOLD", 3),
 
-		StoreEndpoint: getenvDefault("EMBERVM_NODED_STORE_ENDPOINT", "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"),
+		StoreEndpoint: os.Getenv("EMBERVM_NODED_STORE_ENDPOINT"),
 		StoreBucket:   getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
 
 		RequireBlessing: boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),

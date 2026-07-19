@@ -155,9 +155,28 @@ type Server struct {
 	newBuildDriver func(BuildDriverSpec) BuildDriver
 	logger         *slog.Logger
 
+	// budget is the cgroup v2 reader backing the four hooks below (ADR
+	// embervm/005 item 4): a brick's slot count and headroom are read from
+	// its own cgroup, never configured. Refresh() is called by
+	// StartBudgetLoop on the liveness cadence so CpuHeadroom has a live
+	// usage-rate delta; the mem hooks are cheap best-effort reads with no
+	// caching.
+	budget *budget
+
 	// memHeadroom reads free guest memory in MiB (cgroup v2, best-effort).
 	// Overridable in tests.
 	memHeadroom func() uint64
+	// memBudget reads the cgroup memory ceiling in MiB (memory.max minus the
+	// daemon RSS reserve). 0 means unknown (unlimited cgroup or read error),
+	// never a guess. Overridable in tests.
+	memBudget func() uint64
+	// cpuBudget reads the cgroup CPU ceiling in millicores from cpu.max. 0
+	// means unknown. Overridable in tests.
+	cpuBudget func() uint64
+	// cpuHeadroom reads the last-sampled CPU headroom in millicores (budget
+	// minus the observed usage rate across the two most recent Refresh
+	// calls). 0 until a second sample exists. Overridable in tests.
+	cpuHeadroom func() uint64
 
 	// httpClient fetches zip-lane archives from the in-cluster SeaweedFS read path
 	// over the pod network. Overridable in tests (a fake archive server).
@@ -411,7 +430,11 @@ func New(opts Options) *Server {
 	if s.groupClock == nil {
 		s.groupClock = &realGroupClock{}
 	}
-	s.memHeadroom = readMemHeadroomMib
+	s.budget = newBudget(uint64(opts.Config.DaemonReserveMib))
+	s.memHeadroom = s.budget.MemHeadroomMib
+	s.memBudget = s.budget.MemBudgetMib
+	s.cpuBudget = s.budget.CpuBudgetMillicores
+	s.cpuHeadroom = s.budget.CpuHeadroomMillicores
 	s.statefulResolveTimeout = defaultStatefulResolveTimeout
 	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
@@ -1511,7 +1534,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		CpuVendor:             s.cfg.CpuVendor,
 		Workloads:             caps,
 		MemHeadroomMib:        s.memHeadroom(),
-		CpuHeadroomMillicores: 0,
+		CpuHeadroomMillicores: uint32(s.cpuHeadroom()),
 		LiveVms:               uint32(live),
 		MaxLiveVms:            uint32(maxLive),
 		Draining:              s.isDraining(),
@@ -1531,6 +1554,8 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		GroupMemberVms:        groupMemberVMs,
 		GroupBundleSets:       s.groupBundleSetsStatus(),
 		StoreReachable:        s.storeReachableNow(),
+		MemBudgetMib:          s.memBudget(),
+		CpuBudgetMillicores:   s.cpuBudget(),
 	}
 }
 
@@ -2352,41 +2377,4 @@ func flattenHeaders(h http.Header) map[string]string {
 		out[k] = strings.Join(v, ",")
 	}
 	return out
-}
-
-// readMemHeadroomMib reports free guest memory in MiB from the cgroup v2 memory
-// controller (the pod cgroup that bounds the daemon and its child microVMs).
-// Best-effort: any error or an unlimited cgroup yields 0 (the max-live-VM cap is
-// the real backstop; headroom is an advisory hint until Task 11).
-func readMemHeadroomMib() uint64 {
-	maxRaw, err := os.ReadFile("/sys/fs/cgroup/memory.max")
-	if err != nil {
-		return 0
-	}
-	curRaw, err := os.ReadFile("/sys/fs/cgroup/memory.current")
-	if err != nil {
-		return 0
-	}
-	return parseMemHeadroomMib(string(maxRaw), string(curRaw))
-}
-
-// parseMemHeadroomMib computes (max-current) in MiB from cgroup v2 memory.max
-// and memory.current contents. "max" (unlimited) or a parse error yields 0.
-func parseMemHeadroomMib(maxRaw, curRaw string) uint64 {
-	maxStr := strings.TrimSpace(maxRaw)
-	if maxStr == "max" || maxStr == "" {
-		return 0
-	}
-	maxB, err := strconv.ParseInt(maxStr, 10, 64)
-	if err != nil {
-		return 0
-	}
-	curB, err := strconv.ParseInt(strings.TrimSpace(curRaw), 10, 64)
-	if err != nil {
-		return 0
-	}
-	if curB >= maxB {
-		return 0
-	}
-	return uint64(maxB-curB) / (1 << 20)
 }

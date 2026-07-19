@@ -144,8 +144,10 @@ root.
       (ADR embervm/003; designed, not built).
 - [ ] **EKS scale-out**: multi-daemon bricks and the EmberPool CRD
       (ADR embervm/005; designed, not built).
-- [ ] **CPU headroom reporting** from cgroups in NodeStatus (memory headroom
-      is reported today; CPU reports 0).
+- [x] **CPU headroom reporting** from cgroups in NodeStatus (R0 PR-1: the
+      budget-agnostic daemon reads mem_budget_mib / cpu_budget_millicores
+      from its own cgroup and reports real cpu_headroom_millicores, ADR
+      embervm/005 item 4, ADR embervm/013 section 7).
 
 ## Layout
 

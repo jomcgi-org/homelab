@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "server",
     srcs = [
+        "budget.go",
         "group.go",
         "group_member.go",
         "group_registry.go",
@@ -24,16 +25,17 @@ go_library(
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/volume",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
-        "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//codes",
-        "@org_golang_google_grpc//status",
-        "@org_golang_x_sys//unix",
+        "@org_golang_google_grpc//:go_default_library",
+        "@org_golang_google_grpc//codes:go_default_library",
+        "@org_golang_google_grpc//status:go_default_library",
+        "@org_golang_x_sys//unix:go_default_library",
     ],
 )
 
 go_test(
     name = "server_test",
     srcs = [
+        "budget_test.go",
         "drain_test.go",
         "group_member_test.go",
         "group_test.go",
@@ -50,10 +52,10 @@ go_test(
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/volume",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
-        "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//codes",
-        "@org_golang_google_grpc//credentials/insecure",
-        "@org_golang_google_grpc//status",
-        "@org_golang_google_grpc//test/bufconn",
+        "@org_golang_google_grpc//:go_default_library",
+        "@org_golang_google_grpc//codes:go_default_library",
+        "@org_golang_google_grpc//credentials/insecure:go_default_library",
+        "@org_golang_google_grpc//status:go_default_library",
+        "@org_golang_google_grpc//test/bufconn:go_default_library",
     ],
 )
