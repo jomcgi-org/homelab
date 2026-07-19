@@ -264,7 +264,7 @@ not the load-bearing wall.
 | -------- | --------- |
 | [ADR embervm/001](001-embervm-beam-firecracker-workload-orchestrator.md) | Class taxonomy, hit/miss invariant, isolation model the lanes must uphold |
 | [ADR embervm/005](005-embervm-eks-scale-out-metal-pool-bricks.md) | Brick model, size-class portfolio, EmberPool controller, R0 contracts |
-| [ADR embervm/012](012-fleet-colocation-cp-dynamic-sizing.md) | The resize tier on the fixed homelab fleet this ADR reconciles with |
+| [ADR embervm/012](012-fleet-colocation-cp-dynamic-sizing.md) | The co-located fixed homelab fleet whose capacity mechanism this ADR (section 7 as amended) sets to bricks |
 | [urunc](https://github.com/urunc-dev/urunc) | Evaluated and rejected as a component; OCI guest packaging worth watching |
 | [Hyperlight](https://github.com/hyperlight-dev/hyperlight) | The recorded task-class substrate option; CNCF sandbox, pre-1.0 |
 | [Hyperlight Wasm](https://opensource.microsoft.com/blog/2024/11/07/introducing-hyperlight-virtual-machine-based-security-for-functions-at-scale/) | Wasm component guests and the per-request isolation cost structure |
