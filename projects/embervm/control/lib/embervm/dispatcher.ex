@@ -239,6 +239,14 @@ defmodule Embervm.Dispatcher do
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       assign_fun: Keyword.get(opts, :assign_fun, &default_assign/2),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
+      # CP dynamic-sizing grow-eager seam (PR-I, ADR embervm/012): a MISS (prime a
+      # NEW task VM) commits new guest memory, so the sizer must grow the node's pod
+      # envelope FIRST; a resize the kubelet refuses is a placement refusal for that
+      # node (pick_node falls to the next candidate). A WARM hit reuses an already
+      # committed primed VM, so it never re-grows. The default consults
+      # Embervm.NodeSizer; when the sizer is disabled it returns {:error, :disabled}
+      # and the miss proceeds on the legacy maxLiveVMs backstop. Tests inject a fake.
+      reserve_fun: Keyword.get(opts, :reserve_fun, &default_reserve/2),
       get_request_fun:
         Keyword.get(opts, :get_request_fun, fn tid -> Embervm.TaskStore.get_request(task_store, tid) end),
       stale_after_ms: Keyword.get(opts, :stale_after_ms, @stale_after_ms),
@@ -548,13 +556,33 @@ defmodule Embervm.Dispatcher do
             {:ok, node_id.(warm), :warm, snapshot_ref_of(warm, wl)}
 
           true ->
-            # No warm VM anywhere: a miss needs node budget to prime one.
-            case Enum.find(candidates, &has_budget?/1) do
+            # No warm VM anywhere: a miss needs node budget to prime one AND, PR-I,
+            # a sizer grow the kubelet accepts. Walk the budgeted candidates and take
+            # the first whose grow is accepted (or whose sizer is disabled); a refused
+            # (:infeasible) candidate is skipped so we never overcommit a node whose
+            # pod could not grow. All refused / none budgeted -> :no_capacity.
+            case pick_miss_candidate(state, candidates, wl) do
               nil -> {:error, :no_capacity}
               f -> {:ok, node_id.(f), :miss, snapshot_ref_of(f, wl)}
             end
         end
     end
+  end
+
+  # Grow-eager candidate selection for a MISS: the first budgeted candidate the
+  # sizer will grow for. `reserve_fun.(node_id, wl)` returns :ok (grow accepted),
+  # {:error, :disabled} (sizer off -> proceed on legacy backstop), or {:error,
+  # :infeasible} (kubelet refused -> skip this node). Candidates are walked in the
+  # capacity-table order pick_node already established.
+  defp pick_miss_candidate(state, candidates, wl) do
+    candidates
+    |> Enum.filter(&has_budget?/1)
+    |> Enum.find(fn f ->
+      case state.reserve_fun.(f.configured_id, wl) do
+        {:error, :infeasible} -> false
+        _ -> true
+      end
+    end)
   end
 
   defp stale?(f, now, stale_after), do: now - (f.updated_at || 0) > stale_after
@@ -1305,5 +1333,15 @@ defmodule Embervm.Dispatcher do
 
   defp default_prime(channel, %PrimeRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.prime(channel, req)
+  end
+
+  # Default grow-eager seam (PR-I): grow the node's noded pod envelope via the CP
+  # dynamic sizer before a MISS primes a new VM. Any error (sizer not running / off)
+  # is treated as :disabled so the miss proceeds on the legacy maxLiveVMs backstop
+  # rather than refusing every node when the sizer is absent (e.g. in tests).
+  defp default_reserve(node_id, workload) do
+    Embervm.NodeSizer.reserve(node_id, workload)
+  catch
+    _kind, _reason -> {:error, :disabled}
   end
 end

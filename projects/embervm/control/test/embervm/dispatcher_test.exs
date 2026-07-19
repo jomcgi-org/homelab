@@ -45,7 +45,7 @@ defmodule Embervm.DispatcherTest do
         assign_fun: Keyword.get(opts, :assign_fun, fn _ch, _req -> {:ok, success_resp()} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}} end),
         start_sweep: false
-      ] ++ Keyword.take(opts, [:queue_depth_cap, :share_fraction, :stale_after_ms, :quota_config, :quota_table, :wall_clock])
+      ] ++ Keyword.take(opts, [:queue_depth_cap, :share_fraction, :stale_after_ms, :quota_config, :quota_table, :wall_clock, :reserve_fun])
 
     {:ok, disp} = Dispatcher.start_link(disp_opts)
 
@@ -254,6 +254,48 @@ defmodule Embervm.DispatcherTest do
     stats = Dispatcher.stats(ctx.name)
     assert stats.misses >= 1
     assert stats.warm_hits == 0
+  end
+
+  # -- grow-eager sizing gate (PR-I) ----------------------------------------
+
+  test "a miss whose sizer grow is infeasible is refused: task stays queued (no overcommit)" do
+    # The sizer refuses to grow the only candidate node, so the miss cannot prime a
+    # new VM there; with no other candidate the task denies :no_capacity and never
+    # primes/assigns (never overcommits past the accepted envelope).
+    ctx = start_stack(reserve_fun: fn _node, _wl -> {:error, :infeasible} end)
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 0, live: 0, max: 8)
+
+    tid = submit(ctx, "wl-a", "p1")
+
+    assert eventually(fn -> Dispatcher.stats(ctx.name).denials.no_capacity > 0 end)
+    Process.sleep(50)
+    assert state_of(ctx, tid) == :queued
+    assert Dispatcher.stats(ctx.name).misses == 0
+  end
+
+  test "a miss proceeds when the sizer accepts the grow (grow-before-place)" do
+    # The sizer accepts (returns :ok, meaning the kubelet grew the pod); only then
+    # does the miss prime + assign. Mirrors the default disabled behaviour but proves
+    # the accepted path drives to succeeded.
+    test = self()
+
+    ctx =
+      start_stack(
+        reserve_fun: fn node, "wl-a" ->
+          send(test, {:reserved, node})
+          :ok
+        end
+      )
+
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 0, live: 0, max: 8)
+
+    tid = submit(ctx, "wl-a", "p1")
+
+    assert_receive {:reserved, "node-4"}, 2_000
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+    assert Dispatcher.stats(ctx.name).misses >= 1
   end
 
   # -- fail-closed -----------------------------------------------------------

@@ -78,6 +78,42 @@ defmodule Embervm.SessionPlacementTest do
     assert first in ["node-a", "node-b"]
   end
 
+  # -- grow-eager sizing gate (PR-I) ----------------------------------------
+
+  test "node_for_create refuses a candidate the sizer reports infeasible and falls to the next" do
+    t = table()
+    put_node(t, "node-a", snapshot_ref: "base-a")
+    put_node(t, "node-b", snapshot_ref: "base-b")
+
+    # The rendezvous winner (whichever it is) is refused by the sizer; placement must
+    # fall to the OTHER eligible node rather than deny.
+    {:ok, winner, _} = SessionPlacement.node_for_create("wl", t)
+    other = Enum.find(["node-a", "node-b"], &(&1 != winner))
+
+    refuse_winner = fn node_id, "wl" ->
+      if node_id == winner, do: {:error, :infeasible}, else: :ok
+    end
+
+    assert {:ok, ^other, _} = SessionPlacement.node_for_create("wl", t, refuse_winner)
+  end
+
+  test "node_for_create denies :no_capacity when the sizer refuses EVERY candidate" do
+    t = table()
+    put_node(t, "node-a", snapshot_ref: "base-a")
+    put_node(t, "node-b", snapshot_ref: "base-b")
+
+    refuse_all = fn _node_id, _wl -> {:error, :infeasible} end
+    assert {:error, :no_capacity} = SessionPlacement.node_for_create("wl", t, refuse_all)
+  end
+
+  test "node_for_create proceeds when the sizer is disabled (legacy backstop only)" do
+    t = table()
+    put_node(t, "node-4", snapshot_ref: "base-wl")
+
+    disabled = fn _node_id, _wl -> {:error, :disabled} end
+    assert {:ok, "node-4", "base-wl"} = SessionPlacement.node_for_create("wl", t, disabled)
+  end
+
   # -- relight --------------------------------------------------------------
 
   test "node_for_relight resolves to the node reporting the session's snapshot" do

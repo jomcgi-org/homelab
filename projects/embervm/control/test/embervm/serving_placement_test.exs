@@ -75,6 +75,34 @@ defmodule Embervm.ServingPlacementTest do
     assert ServingPlacement.node_for_create("wl-a", t) == {:error, :no_capacity}
   end
 
+  # -- grow-eager sizing gate (PR-I) ----------------------------------------
+
+  test "node_for_create refuses a candidate the sizer reports infeasible and falls to the next", %{t: t} do
+    put_serving_node(t, "node-a", workloads: ready_workload("base-a"))
+    put_serving_node(t, "node-b", workloads: ready_workload("base-b"))
+
+    {:ok, winner, _} = ServingPlacement.node_for_create("wl-a", t)
+    other = Enum.find(["node-a", "node-b"], &(&1 != winner))
+
+    refuse_winner = fn node_id, "wl-a" ->
+      if node_id == winner, do: {:error, :infeasible}, else: :ok
+    end
+
+    assert {:ok, ^other, _} = ServingPlacement.node_for_create("wl-a", t, refuse_winner)
+  end
+
+  test "node_for_create denies :no_capacity when the sizer refuses every candidate", %{t: t} do
+    put_serving_node(t, "node-a", workloads: ready_workload("base-a"))
+    refuse_all = fn _node_id, _wl -> {:error, :infeasible} end
+    assert {:error, :no_capacity} = ServingPlacement.node_for_create("wl-a", t, refuse_all)
+  end
+
+  test "node_for_create proceeds when the sizer is disabled", %{t: t} do
+    put_serving_node(t, "node-4", workloads: ready_workload("base-a"))
+    disabled = fn _node_id, _wl -> {:error, :disabled} end
+    assert {:ok, "node-4", "base-a"} = ServingPlacement.node_for_create("wl-a", t, disabled)
+  end
+
   # -- node_for_relight ------------------------------------------------------
 
   test "node_for_relight resolves to the node still reporting the snapshot", %{t: t} do

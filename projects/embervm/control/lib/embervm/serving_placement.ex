@@ -59,13 +59,23 @@ defmodule Embervm.ServingPlacement do
   The rendezvous key is the WORKLOAD (mirroring SessionPlacement); with one serving
   node this is deterministic, and multi-node spreads a workload's cold starts
   across nodes without central state.
+
+  ## grow-eager sizing gate (PR-I, ADR embervm/012)
+
+  Mirrors `Embervm.SessionPlacement.node_for_create/3`: before returning a node,
+  placement asks the CP dynamic sizer to grow that node's noded pod envelope for the
+  new serving guest. A resize the kubelet reports Infeasible/Deferred is a placement
+  refusal (drop the candidate, try the next rendezvous candidate); `:ok` and
+  `{:error, :disabled}` let the candidate stand. The default seam consults
+  `Embervm.NodeSizer`; tests inject a fake.
   """
-  @spec node_for_create(String.t(), atom()) :: node_choice()
-  def node_for_create(workload, capacity_table \\ NodeCapacity.table()) do
+  @spec node_for_create(String.t(), atom(), (String.t(), String.t() -> :ok | {:error, atom()})) ::
+          node_choice()
+  def node_for_create(workload, capacity_table \\ NodeCapacity.table(), reserve_fun \\ &default_reserve/2) do
     NodeCapacity.all(capacity_table)
     |> Enum.filter(&serving_capable?/1)
     |> Enum.filter(&eligible_for_workload?(&1, workload))
-    |> rendezvous_pick(workload)
+    |> pick_with_sizing(workload, reserve_fun)
     |> case do
       nil ->
         {:error, :no_capacity}
@@ -171,15 +181,30 @@ defmodule Embervm.ServingPlacement do
     max > 0 and Map.get(fact, :live_vms, 0) < max
   end
 
-  # Rendezvous (highest-random-weight) hashing: the eligible node whose
-  # hash(workload, node_id) is maximal. With one eligible node this is that node;
-  # with N it distributes workloads across nodes and is STABLE under node-set
-  # changes. Empty list yields nil (the caller denies :no_capacity). Identical to
-  # SessionPlacement's rendezvous_pick.
-  defp rendezvous_pick([], _key), do: nil
+  # Walk the eligible serving-capable nodes in rendezvous order, asking the sizer to
+  # grow each candidate before accepting it (identical to SessionPlacement). The
+  # first candidate whose grow the kubelet accepts (or whose sizer is disabled) wins;
+  # a refused (:infeasible) candidate is dropped. Empty/all-refused yields nil.
+  defp pick_with_sizing([], _workload, _reserve_fun), do: nil
 
-  defp rendezvous_pick(facts, key) do
-    Enum.max_by(facts, fn fact -> weight(key, fact.configured_id) end)
+  defp pick_with_sizing(facts, workload, reserve_fun) do
+    facts
+    |> Enum.sort_by(fn fact -> weight(workload, fact.configured_id) end, :desc)
+    |> Enum.find(fn fact ->
+      case reserve_fun.(fact.configured_id, workload) do
+        {:error, :infeasible} -> false
+        _ -> true
+      end
+    end)
+  end
+
+  # Default sizing seam: grow the chosen node's envelope via the CP dynamic sizer.
+  # Any error (sizer not running / off) is treated as :disabled so placement
+  # proceeds on the legacy maxLiveVMs backstop, never refusing every node.
+  defp default_reserve(node_id, workload) do
+    Embervm.NodeSizer.reserve(node_id, workload)
+  catch
+    _kind, _reason -> {:error, :disabled}
   end
 
   defp weight(key, node_id) do
