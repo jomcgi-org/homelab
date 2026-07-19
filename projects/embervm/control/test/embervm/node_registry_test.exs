@@ -316,4 +316,83 @@ defmodule Embervm.NodeRegistryTest do
     assert_receive {:replayed, "node-4"}, 1_000
     eventually(fn -> length(Agent.get(syncs, & &1)) >= 2 end, 200)
   end
+
+  # -- periodic node re-discovery (artifact-decoupling PR-C, C4) --------------
+
+  test "re-discovery adds a newly-appeared node and tears down a vanished one" do
+    # A discover_fun the test flips: first it returns only node-a, then (after we
+    # add node-b's endpoint) both, then only node-b (node-a's pod rolled away).
+    {:ok, disc} = Agent.start_link(fn -> [%{id: "node-a", address: "a.test:9090"}] end)
+    on_exit(fn -> if Process.alive?(disc), do: Agent.stop(disc) end)
+
+    discover_fun = fn -> Agent.get(disc, & &1) end
+
+    # A watch that stays open (blocks) so a streamer per node persists and the
+    # node set is driven purely by discovery, not reconnects.
+    watch_fun = fn _ch, node_id, emit ->
+      emit.(node_status(node_id: node_id))
+
+      receive do
+        :never -> {:ok, :closed}
+      end
+    end
+
+    {reg, table} =
+      start_registry(
+        watch_startup: true,
+        nodes: [%{id: "node-a", address: "a.test:9090"}],
+        connect_fun: fn _addr -> {:ok, :fake_channel} end,
+        watch_fun: watch_fun,
+        sync_registry_fun: fn _ch, _id -> :ok end,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        discover_fun: discover_fun,
+        # Large age-out so the blocked watch does not age out during the test.
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000,
+        base_backoff_ms: 10,
+        max_backoff_ms: 10
+      )
+
+    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-a") end, 200)
+
+    # node-b appears in discovery: a forced re-discovery must add it (a streamer
+    # opens and its status publishes capacity).
+    Agent.update(disc, fn _ -> [%{id: "node-a", address: "a.test:9090"}, %{id: "node-b", address: "b.test:9090"}] end)
+    NodeRegistry.discover(reg)
+    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-b") end, 200)
+
+    # node-a's pod rolls away (drops from discovery): re-discovery tears it down,
+    # retracting its capacity row and forgetting its runtime.
+    Agent.update(disc, fn _ -> [%{id: "node-b", address: "b.test:9090"}] end)
+    NodeRegistry.discover(reg)
+    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-a") end, 200)
+
+    ids = table |> NodeRegistry.capacity() |> Enum.map(& &1.configured_id)
+    refute "node-a" in ids
+  end
+
+  test "a discover_fun that raises leaves the node set unchanged (no teardown storm)" do
+    {reg, _table} =
+      start_registry(
+        watch_startup: true,
+        nodes: [%{id: "node-a", address: "a.test:9090"}],
+        connect_fun: fn _addr -> {:ok, :fake_channel} end,
+        watch_fun: fn _ch, node_id, emit ->
+          emit.(node_status(node_id: node_id))
+          receive do: (:never -> {:ok, :closed})
+        end,
+        sync_registry_fun: fn _ch, _id -> :ok end,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        discover_fun: fn -> raise "boom" end,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-a") end, 200)
+    # A raising discovery must NOT tear the existing node down.
+    NodeRegistry.discover(reg)
+    assert Map.has_key?(NodeRegistry.status(reg), "node-a")
+  end
 end
