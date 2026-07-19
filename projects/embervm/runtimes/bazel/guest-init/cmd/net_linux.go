@@ -3,9 +3,9 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 
 	"golang.org/x/sys/unix"
 )
@@ -15,33 +15,59 @@ import (
 // only so InetAddress.getLocalHost() resolves without a DNS round trip.
 const guestHostname = "ember-bazel"
 
-// bringUpLoopback brings the loopback interface UP. A raw Firecracker boot leaves
-// `lo` DOWN, and the bazel client connects to the bazel SERVER over a gRPC socket
-// on 127.0.0.1; with lo down that connect blocks forever and the warming VM sits
-// at ZERO CPU with no output. This is best-effort by design: on failure it logs
-// LOUDLY to the console (so a still-hung warming is diagnosable) but does not
-// abort the boot.
+// loopbackUpFlags returns the interface flags with the up + running bits set. It
+// is the pure flag-math half of bringUpLoopback, split out so the OR is unit
+// tested without a socket (bringing an interface up is read-modify-write:
+// SIOCGIFFLAGS gives the current flags, we set IFF_UP|IFF_RUNNING, SIOCSIFFLAGS
+// writes them back, preserving any other bits the kernel already had).
+func loopbackUpFlags(cur uint16) uint16 {
+	return cur | unix.IFF_UP | unix.IFF_RUNNING
+}
+
+// bringUpLoopback brings the loopback interface UP via the SIOCSIFFLAGS ioctl. A
+// raw Firecracker boot leaves `lo` DOWN, and the bazel client connects to the
+// bazel SERVER over a gRPC socket on 127.0.0.1; with lo down that connect blocks
+// forever and the warming VM sits at ZERO CPU with no output. This is best-effort
+// by design: on failure it logs LOUDLY to the console (so a still-hung warming is
+// diagnosable) but does not abort the boot.
 //
-// It shells out to busybox rather than issuing the SIOCSIFFLAGS ioctl directly:
-// the vendored x/sys/unix has no generic Ifreq helper, so a raw ioctl would mean
-// hand-laying the ifreq union struct, which is fragile across arches; busybox
-// (already in the image) provides `ip` and `ifconfig` applets that do exactly
-// this. `ip link set lo up` is tried first, `ifconfig lo up` as a fallback.
+// It issues the ioctl directly rather than shelling out: Wolfi's busybox ships
+// NEITHER an `ip` nor an `ifconfig` applet (confirmed on the live guest:
+// `exec: "ip": executable file not found in $PATH`), so the exec path could never
+// work in this image. The vendored x/sys/unix DOES expose a type-safe Ifreq
+// wrapper (NewIfreq + IoctlIfreq, present since 2021), so no hand-laid ifreq union
+// struct is needed and the code is arch-portable.
 func bringUpLoopback(logger *slog.Logger) {
-	attempts := [][]string{
-		{"ip", "link", "set", "lo", "up"},
-		{"ifconfig", "lo", "up"},
+	if err := bringUpLoopbackIoctl(); err != nil {
+		logger.Error("ember-bazel-init: could NOT bring up loopback; bazel client may block connecting to the server on 127.0.0.1 (warming will hang)", "err", err)
+		return
 	}
-	for _, args := range attempts {
-		cmd := exec.Command(args[0], args[1:]...) // nosemgrep: no-shell-command-injection
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			logger.Info("ember-bazel-init: loopback up", "via", args[0])
-			return
-		}
-		logger.Warn("ember-bazel-init: loopback up attempt failed", "cmd", args, "err", err, "out", string(out))
+	logger.Info("ember-bazel-init: loopback up (ioctl)")
+}
+
+// bringUpLoopbackIoctl performs the read-modify-write on `lo`'s flags. A DGRAM
+// socket on AF_INET is the conventional handle for interface-flag ioctls (the
+// socket family is irrelevant; it is only a file descriptor to carry the ioctl).
+// CLOEXEC so the transient fd never leaks into the bazel subprocess.
+func bringUpLoopbackIoctl() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open ioctl socket: %w", err)
 	}
-	logger.Error("ember-bazel-init: could NOT bring up loopback; bazel client may block connecting to the server on 127.0.0.1 (warming will hang)")
+	defer unix.Close(fd)
+
+	ifr, err := unix.NewIfreq("lo")
+	if err != nil {
+		return fmt.Errorf("new ifreq lo: %w", err)
+	}
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("get lo flags: %w", err)
+	}
+	ifr.SetUint16(loopbackUpFlags(ifr.Uint16()))
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("set lo flags up: %w", err)
+	}
+	return nil
 }
 
 // setHostname sets the guest hostname when it is unset or the default. It pairs
