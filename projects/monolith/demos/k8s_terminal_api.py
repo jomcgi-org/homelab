@@ -480,14 +480,15 @@ class _TerminalSession:
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
         self.master_fd: int | None = None
-        self.proc: asyncio.subprocess.Process | None = None
+        self.child_pid: int | None = None
+        self.exit_code: int | None = None
         self.closed = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def spawn(self, kubeconfig: str, cols: int, rows: int) -> None:
+        # openpty here only to fail fast on fd exhaustion before forking; the
+        # real pair comes from pty.fork below.
         master_fd, slave_fd = pty.openpty()
-        self.master_fd = master_fd
-        self._resize(cols, rows)
         env = {
             "KUBECONFIG": kubeconfig,
             "TERM": "xterm-256color",
@@ -504,25 +505,26 @@ class _TerminalSession:
             "XDG_STATE_HOME": "/tmp/k8s-demo-home/.state",
         }
         _write_k9s_config()
-
-        def _become_tty_session() -> None:
-            # New session + make the PTY slave (stdin) the CONTROLLING terminal.
-            # start_new_session alone leaves the child with NO controlling tty,
-            # and k9s/tcell opens /dev/tty directly - "open /dev/tty: no such
-            # device or address", exit 1, the first live session's failure.
-            os.setsid()
-            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-
-        self.proc = await asyncio.create_subprocess_exec(
-            _K9S_BIN,
-            "--logoless",
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            env=env,
-            preexec_fn=_become_tty_session,
-        )
         os.close(slave_fd)
+        os.close(master_fd)
+
+        # pty.fork, not asyncio subprocess: k9s/tcell opens /dev/tty, which
+        # needs a CONTROLLING terminal. start_new_session gives the child a
+        # session with none (exit 1, "open /dev/tty: no such device"), and a
+        # preexec_fn doing setsid+TIOCSCTTY raised under the threaded server.
+        # pty.fork is built for exactly this: the child is a session leader
+        # with the slave as its controlling tty, and the parent holds the
+        # master. The child execs immediately (os._exit on any failure - no
+        # interpreter cleanup may run in a forked child).
+        pid, master_fd = pty.fork()
+        if pid == 0:
+            try:
+                os.execve(_K9S_BIN, [_K9S_BIN, "--logoless"], env)
+            finally:
+                os._exit(127)
+        self.child_pid = pid
+        self.master_fd = master_fd
+        self._resize(cols, rows)
 
     def _resize(self, cols: int, rows: int) -> None:
         if self.master_fd is None:
@@ -602,20 +604,34 @@ class _TerminalSession:
             with contextlib.suppress(Exception):
                 loop.remove_reader(fd)
 
+    async def _reap(self, timeout: float) -> int | None:
+        """waitpid the child (bounded); records + returns the exit code, or None."""
+        if self.child_pid is None:
+            return self.exit_code
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                pid, status = os.waitpid(self.child_pid, os.WNOHANG)
+            except ChildProcessError:
+                return self.exit_code
+            if pid == self.child_pid:
+                self.exit_code = os.waitstatus_to_exitcode(status)
+                return self.exit_code
+            await asyncio.sleep(0.1)
+        return None
+
     async def close(self) -> None:
         if self.closed.is_set():
             return
         self.closed.set()
-        if self.proc and self.proc.returncode is None:
+        if self.child_pid is not None and self.exit_code is None:
+            # pty.fork made the child a session leader, so pgid == pid.
             with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-            try:
-                await asyncio.wait_for(self.proc.wait(), timeout=_TERM_GRACE_S)
-            except TimeoutError:
+                os.killpg(self.child_pid, signal.SIGTERM)
+            if await self._reap(timeout=_TERM_GRACE_S) is None:
                 with contextlib.suppress(ProcessLookupError):
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
-                with contextlib.suppress(Exception):
-                    await self.proc.wait()
+                    os.killpg(self.child_pid, signal.SIGKILL)
+                await self._reap(timeout=_TERM_GRACE_S)
         if self.master_fd is not None:
             # Disarm the reader BEFORE closing: close() runs concurrently with
             # the (old) session's pump during a takeover, and a reader firing
@@ -674,7 +690,8 @@ async def k8s_terminal(websocket: WebSocket) -> None:
 
         # 3. Bridge until either side hangs up.
         await session.pump()
-        exit_code = session.proc.returncode if session.proc else None
+        await session._reap(timeout=1.0)
+        exit_code = session.exit_code
         with contextlib.suppress(Exception):
             await websocket.send_text(json.dumps({"type": "exit", "code": exit_code}))
     except WebSocketDisconnect:
