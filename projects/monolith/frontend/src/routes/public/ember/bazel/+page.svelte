@@ -585,6 +585,19 @@
         recorded comparison from before the snapshot existed; the third is
         what actually happens on your query above.
       </p>
+
+      <!-- Hero: the all-time savings counter is the headline metric, so it
+           leads the section full-width with the largest number, styled with the
+           success-green accent (not the salmon error palette, which is reserved
+           for the BAZEL SAYS error box). -->
+      <div class="saved-hero">
+        <span class="saved-hero-value">{formatSavedTime(savedS)}</span>
+        <span class="saved-hero-label"
+          >estimated cold analysis time skipped, across every visitor's
+          query, all time</span
+        >
+      </div>
+
       <div class="recorded-panel">
         <div class="recorded-stat">
           <span class="recorded-value recorded-cold">13.8 s</span>
@@ -606,14 +619,6 @@
         </div>
       </div>
 
-      <div class="saved-total">
-        <span class="saved-total-value">{formatSavedTime(savedS)}</span>
-        <span class="saved-total-label"
-          >estimated cold analysis time skipped, across every visitor's
-          query, all time</span
-        >
-      </div>
-
       <p class="recorded-footer">
         Design doc: <a
           href="https://github.com/jomcgi/homelab/blob/main/docs/decisions/embervm/010-bazel-skyframe-snapshot-query-demo.md"
@@ -625,7 +630,20 @@
 </div>
 
 <style>
+  /* PAGE-WIDE COLOUR RULE (ADR embervm/010 demo pages): the ember red/salmon
+     palette (--em-ember, --em-ember-deep, --em-ember-dim) is reserved
+     EXCLUSIVELY for actual errors, i.e. the "bazel says" run-error box. Every
+     POSITIVE or NEUTRAL metric (the proof panel, the savings hero, the live
+     latency numbers, the highlighted proof fragment) uses these success/neutral
+     tokens instead, so a good result never reads as a failure. Brand/interactive
+     chrome (the run button, links, chip hovers, focus rings, the "Ember" word)
+     may still use ember: those are not success/failure signals. Defined once on
+     the page root so every descendant inherits; future demo pages should adopt
+     the same split. */
   .ember-site {
+    --em-good: #2f7d55;
+    --em-good-deep: #1f6042;
+    --em-good-dim: #bfe0cd;
     min-height: 100dvh;
   }
 
@@ -849,7 +867,9 @@
   }
 
   .stopwatch-value.stopwatch-live {
-    color: var(--em-ember);
+    /* the live round-trip counter is a metric, not an error: success-green while
+       running, not the ember red reserved for the error box */
+    color: var(--em-good);
   }
 
   .fade-swap {
@@ -858,7 +878,7 @@
 
   /* No card chrome by design: an inline row of small mono figures that sits with
      the round-trip readout so the comparison is always on screen. Colours reuse
-     the recorded-panel tokens (frost=cold, amber=warm, ember-deep=live). */
+     the recorded-panel tokens (frost=cold, amber=warm, good-green=live/saved). */
   .stat-strip {
     display: flex;
     flex-wrap: wrap;
@@ -893,11 +913,13 @@
   }
 
   .stat-live {
-    color: var(--em-ember-deep);
+    /* the live latency is a positive metric (look how fast), so success-green,
+       not the ember red reserved for errors */
+    color: var(--em-good-deep);
   }
 
   .stat-saved {
-    color: var(--em-ember-deep);
+    color: var(--em-good-deep);
   }
 
   .stat-sep {
@@ -932,16 +954,10 @@
     word-break: break-word;
   }
 
-  /* Positive/success accent, scoped to this page: the shared ember palette has
-     only ember (red), frost (blue), and amber, and the proof badge previously
-     reused the ember-dim salmon, which reads as an ERROR next to the run-error
-     box (they shared a hue). A muted, warm-consistent green marks the proof as
-     clearly good. Kept local rather than added to ember.css so the token change
-     stays contained to the one place that needs it. */
+  /* Success accent: the proof panel is a positive result, so it uses the
+     page-level --em-good tokens (defined on .ember-site), never the ember
+     salmon reserved for the run-error box. */
   .proof-badge {
-    --em-good: #2f7d55;
-    --em-good-deep: #1f6042;
-    --em-good-dim: #bfe0cd;
     background: color-mix(in srgb, var(--em-good-dim) 34%, var(--em-panel));
     border: 1px solid var(--em-good-dim);
     border-radius: 12px;
@@ -1021,7 +1037,9 @@
   }
 
   .result-truncated {
-    color: var(--em-ember-deep);
+    /* an informational note (the label list was capped), not an error: neutral
+       faint tone, not the ember red reserved for the error box */
+    color: var(--em-faint);
   }
 
   .label-filter {
@@ -1196,7 +1214,9 @@
   }
 
   .recorded-live {
-    color: var(--em-ember-deep);
+    /* live latency is a positive metric, so success-green, not the ember red
+       reserved for the error box */
+    color: var(--em-good-deep);
   }
 
   .recorded-name {
@@ -1211,30 +1231,36 @@
     color: var(--em-faint);
   }
 
-  .saved-total {
-    margin-top: 14px;
+  /* Savings hero: the headline metric of the section, full-width above the
+     three recorded cards, with the largest number on the page and the
+     success-green accent (never the ember salmon, which is errors-only). */
+  .saved-hero {
+    margin-bottom: 14px;
     display: flex;
-    align-items: baseline;
-    gap: 10px;
-    flex-wrap: wrap;
-    padding: 12px 16px;
-    background: color-mix(in srgb, var(--em-ember-dim) 20%, var(--em-panel));
-    border: 1px solid var(--em-ember-dim);
-    border-radius: 10px;
+    flex-direction: column;
+    gap: 4px;
+    padding: 20px 22px;
+    background: color-mix(in srgb, var(--em-good-dim) 32%, var(--em-panel));
+    border: 1px solid var(--em-good-dim);
+    border-radius: 12px;
+    box-shadow: var(--em-shadow-soft);
   }
 
-  .saved-total-value {
+  .saved-hero-value {
     font-family: var(--em-mono);
-    font-size: 20px;
-    font-weight: 700;
+    font-size: clamp(34px, 5vw, 46px);
+    font-weight: 800;
+    line-height: 1.05;
     font-variant-numeric: tabular-nums;
-    color: var(--em-ember-deep);
+    letter-spacing: -0.02em;
+    color: var(--em-good-deep);
   }
 
-  .saved-total-label {
-    font-size: 12.5px;
-    line-height: 1.4;
+  .saved-hero-label {
+    font-size: 13px;
+    line-height: 1.45;
     color: var(--em-muted);
+    max-width: 54ch;
   }
 
   .recorded-footer {
