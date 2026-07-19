@@ -52,6 +52,33 @@ defmodule Embervm.WorkloadWatcher do
     * The watcher writes `status` ONLY, never `spec`.
     * Only events from the CURRENT streamer mutate state; a straggler event or
       result from a superseded streamer is ignored, so the RV never regresses.
+
+  ## periodic catalog resync to the BaseBuilder (self-heal, RCA H1)
+
+  `Embervm.BaseBuilder.reconcile/2` is a fire-and-forget `cast_if_alive` with no
+  internal re-assert: if a single cast is dropped (the BaseBuilder momentarily
+  down, a transient error, a restart race landing between the watcher's cast
+  and the builder coming back up), nothing re-drives that Workload's base build
+  and it stays unprovisioned indefinitely. This bit in production: a demo
+  Workload's base was never (re)cast after a registry blip during the rootfs
+  bake, and nothing noticed for hours (the incident this module's `@moduledoc`
+  omits no longer, RCA candidate H1).
+
+  The fix is a PERIODIC INTERNAL RESYNC, independent of the watch stream: every
+  `resync_interval_ms` (default 60s, `EMBERVM_WORKLOAD_RESYNC_INTERVAL_MS`) the
+  watcher re-casts `base_reconcile_fun` for every entry currently in
+  `Embervm.WorkloadCatalog`, exactly as if each had just been freshly LISTed.
+  This is intentionally NOT a relist: it does not touch the K8s API, the RV, or
+  the watch/streamer state at all, so it cannot race or interfere with the
+  list-then-watch state machine above; it only re-drives the base-build trigger
+  from whatever the catalog already holds. `BaseBuilder.reconcile/2` is
+  idempotent (an already-built-and-recorded base, or a build already
+  queued/in-flight for the same signature, is a no-op; see its `@moduledoc`),
+  so the redundant re-casts on every healthy tick cost nothing but a cheap
+  no-op cast; the value is entirely in the tick where a prior cast was lost,
+  which now self-heals within one interval instead of wedging forever. A
+  `resync_interval_ms` of `0` disables the timer (opt-out, e.g. for tests that
+  do not want a background tick).
   """
 
   use GenServer
@@ -77,6 +104,14 @@ defmodule Embervm.WorkloadWatcher do
   # :max_group_size app env or a start_link opt. A capacity guardrail: a group is a
   # set of live microVMs, so an unbounded member count is an unbounded resource claim.
   @default_max_group_size 4
+  # The periodic BaseBuilder catalog-resync cadence (see this module's
+  # @moduledoc, "periodic catalog resync to the BaseBuilder"), matching the
+  # session/serving/stateful reconcile cadences' order of magnitude but longer:
+  # this is a self-heal safety net for a dropped cast, not a hot adoption path,
+  # so a minute is plenty responsive without adding steady-state cast volume.
+  # Overridable via EMBERVM_WORKLOAD_RESYNC_INTERVAL_MS (Embervm.Application) or
+  # a start_link opt (tests); 0 disables the timer entirely.
+  @default_resync_interval_ms 60_000
   # A healthy watch lives for the apiserver's full `timeoutSeconds` (~5 min);
   # a watch that ends far sooner is a signal of trouble, not a normal cycle. So
   # only a watch that stayed open at least this long earns an IMMEDIATE
@@ -117,6 +152,20 @@ defmodule Embervm.WorkloadWatcher do
   @spec reconcile_now(GenServer.server()) :: :ok
   def reconcile_now(server \\ __MODULE__) do
     GenServer.call(server, :reconcile_now)
+  end
+
+  @doc """
+  Forces one periodic BaseBuilder resync pass synchronously (see this module's
+  @moduledoc, "periodic catalog resync to the BaseBuilder"): re-casts every
+  currently-cataloged Workload's build descriptor to `base_reconcile_fun`, the
+  same work the `:resync_bases` timer does on its own cadence. Tests use this
+  to drive the self-heal deterministically instead of waiting on a real timer;
+  it never touches the watch/streamer state or the K8s API, so (like
+  `reconcile_now/1`) it is also a safe operational nudge in production.
+  """
+  @spec resync_bases_now(GenServer.server()) :: :ok
+  def resync_bases_now(server \\ __MODULE__) do
+    GenServer.call(server, :resync_bases_now)
   end
 
   # -- GenServer callbacks -----------------------------------------------------
@@ -160,6 +209,14 @@ defmodule Embervm.WorkloadWatcher do
       Keyword.get(opts, :max_group_size) ||
         Application.get_env(:embervm, :max_group_size, @default_max_group_size)
 
+    # The periodic BaseBuilder resync cadence: a start_link opt (tests) or the
+    # app-env key Embervm.Application populates from
+    # EMBERVM_WORKLOAD_RESYNC_INTERVAL_MS, falling back to the compile-time
+    # default. 0 disables the timer.
+    resync_interval_ms =
+      Keyword.get(opts, :resync_interval_ms) ||
+        Application.get_env(:embervm, :workload_resync_interval_ms, @default_resync_interval_ms)
+
     WorkloadCatalog.create(table)
 
     state = %{
@@ -191,12 +248,27 @@ defmodule Embervm.WorkloadWatcher do
       # Set true when a watch delivered a terminal ERROR (RV expired): the next
       # watch end must resync via LIST rather than blindly re-watching a
       # resourceVersion the apiserver no longer knows.
-      needs_relist: false
+      needs_relist: false,
+      resync_interval_ms: resync_interval_ms
     }
 
     # watch_startup drives the informer from init; tests set it false and drive
     # reconcile_now/1 explicitly so no background watch or timer ever fires.
     if watch_startup, do: send(self(), :start)
+
+    # Arm the periodic BaseBuilder resync timer (see this module's @moduledoc,
+    # "periodic catalog resync to the BaseBuilder"). Armed via a message sent
+    # from init/1, exactly like :start above, NEVER a direct call here: this
+    # runs while Embervm.Application's children list is still being
+    # constructed, before Finch has started, and this same pattern is what
+    # keeps that path Finch-free (see Embervm.Application's boot-ordering
+    # note). base_reconcile_fun casts (see cast_if_alive), so even if this
+    # fires before Finch is up it cannot crash boot. watch_startup gates it
+    # exactly like :start so watcher unit tests (watch_startup: false) never
+    # get a background timer either; a 0 interval also disables it
+    # independent of watch_startup, for a test that wants the watch but not
+    # the resync tick.
+    if watch_startup and resync_interval_ms > 0, do: Process.send_after(self(), :resync_bases, resync_interval_ms)
 
     {:ok, state}
   end
@@ -241,6 +313,23 @@ defmodule Embervm.WorkloadWatcher do
 
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
 
+  # The periodic BaseBuilder resync tick (see this module's @moduledoc,
+  # "periodic catalog resync to the BaseBuilder", RCA H1): re-cast every
+  # currently-cataloged Workload's build descriptor to base_reconcile_fun,
+  # self-healing a cast the BaseBuilder never received (it was momentarily
+  # down, hit a transient error, or the cast landed in a restart race).
+  # Touches ONLY the catalog table and the BaseBuilder cast; it never calls the
+  # K8s API, never re-derives the RV, and never disturbs the watch/streamer
+  # state above, so it cannot race or interfere with the list-then-watch state
+  # machine. Reschedules itself unconditionally (even if the resync work
+  # itself raised, though catalog_resync/1 is defensive so that should not
+  # happen) so a single bad tick never silently ends the self-heal loop.
+  def handle_info(:resync_bases, state) do
+    catalog_resync(state)
+    if state.resync_interval_ms > 0, do: Process.send_after(self(), :resync_bases, state.resync_interval_ms)
+    {:noreply, state}
+  end
+
   @impl true
   def handle_call(:reconcile_now, _from, state) do
     # Fail-open on a LIST error: keep the last-known-good catalog either way.
@@ -250,6 +339,11 @@ defmodule Embervm.WorkloadWatcher do
         {:error, s} -> s
       end
 
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:resync_bases_now, _from, state) do
+    catalog_resync(state)
     {:reply, :ok, state}
   end
 
@@ -407,6 +501,46 @@ defmodule Embervm.WorkloadWatcher do
     end
   end
 
+  # -- periodic BaseBuilder resync ---------------------------------------------
+
+  # Re-cast every currently-cataloged Workload's build descriptor to
+  # base_reconcile_fun (see this module's @moduledoc, "periodic catalog resync
+  # to the BaseBuilder"). Reads ONLY WorkloadCatalog (never the K8s API), so a
+  # tick can never race the list-then-watch state machine, and iterates the
+  # catalog fresh each call so a name dropped between ticks (a delete swept by
+  # a LIST/WATCH reconcile) is simply absent, never re-cast. A name whose
+  # fetch races a concurrent drop (vanishingly unlikely: this GenServer is the
+  # sole writer to its own table) is skipped rather than crashing the tick.
+  # BaseBuilder.reconcile/2 is idempotent (see its @moduledoc): an
+  # already-built-and-recorded base, or a build already queued/in-flight for
+  # the identical signature, is a no-op there, so re-casting a healthy
+  # Workload costs one cheap no-op cast; the payoff is entirely in the tick
+  # where an EARLIER cast for this same Workload was lost, which now
+  # self-heals within one interval instead of wedging forever.
+  defp catalog_resync(state) do
+    state.table
+    |> WorkloadCatalog.all_names()
+    |> Enum.each(fn name -> resync_one(state, name) end)
+  end
+
+  # Re-cast a single cataloged name, guarded exactly like catalog_cr/2: ONE bad
+  # entry (a fetch racing a concurrent drop, or a build_desc/base_reconcile_fun
+  # that raises) must never crash this GenServer or abort the rest of the
+  # tick, since a bad entry sitting in the catalog would otherwise permanently
+  # wedge the self-heal for every OTHER, healthy Workload too.
+  defp resync_one(state, name) do
+    case WorkloadCatalog.fetch(state.table, name) do
+      {:ok, entry} -> state.base_reconcile_fun.(build_desc(entry))
+      :error -> :ok
+    end
+  catch
+    kind, reason ->
+      Logger.warning(
+        "embervm workload watcher: periodic resync crashed on #{inspect(name)}, skipping: " <>
+          inspect({kind, reason})
+      )
+  end
+
   # -- reconcile ---------------------------------------------------------------
 
   # LIST the whole collection and reconcile the catalog to match. Accepts the
@@ -470,6 +604,7 @@ defmodule Embervm.WorkloadWatcher do
             catalog_entry(
               name,
               namespace,
+              generation,
               spec,
               class,
               floor,
@@ -489,7 +624,7 @@ defmodule Embervm.WorkloadWatcher do
           # so the two merge-patches never clobber each other's conditions
           # array, and hands the build descriptor to the builder.
           write_valid_status(state, namespace, name, generation)
-          state.base_reconcile_fun.(build_desc(name, namespace, generation, spec, entry))
+          state.base_reconcile_fun.(build_desc(entry))
 
         {:error, reason_code, message} ->
           # Never serve an invalid CR: drop it from the catalog (it may have
@@ -536,24 +671,19 @@ defmodule Embervm.WorkloadWatcher do
     end
   end
 
-  # The build descriptor handed to the BaseBuilder for a valid Workload: the spec
-  # fields that shape the base plus the identity to write status back under.
-  # init_env is read from source.image.initEnv (the frozen guest contract's
-  # baked env); the rest reuse the already-parsed catalog entry.
-  defp build_desc(name, namespace, generation, spec, entry) do
-    # init_env is the guest's baked env. The image lane reads source.image.initEnv;
-    # the zip lane passes the handler symbol as EMBER_HANDLER (the runtime shim
-    # reads it to import the adopter's handler). A zip CR has no initEnv block.
-    init_env =
-      case entry.zip do
-        nil -> get_in(spec, ["source", "image", "initEnv"]) || %{}
-        %{handler: handler} -> %{"EMBER_HANDLER" => handler}
-      end
-
+  # The build descriptor handed to the BaseBuilder for a valid Workload: the
+  # spec fields that shape the base plus the identity to write status back
+  # under. Built ENTIRELY from the already-parsed catalog entry (including
+  # entry.init_env, computed once in catalog_entry/11) so this same function
+  # faithfully rebuilds the identical descriptor both on a fresh LIST/WATCH
+  # event AND from the periodic BaseBuilder resync (see this module's
+  # @moduledoc, "periodic catalog resync"), which reads only the catalog and
+  # never re-fetches the CR.
+  defp build_desc(entry) do
     %{
-      name: name,
-      namespace: namespace,
-      generation: generation,
+      name: entry.name,
+      namespace: entry.namespace,
+      generation: entry.generation,
       # class lets the BaseBuilder mark a serving base's BuildBase so noded also
       # produces the cold-boot handler artifact (D-R3.11.2). Task/session bases carry
       # class but never set the serving flag.
@@ -565,7 +695,7 @@ defmodule Embervm.WorkloadWatcher do
       ready_path: entry.ready_path,
       vcpus: entry.vcpus,
       mem_mib: entry.mem_mib,
-      init_env: init_env
+      init_env: entry.init_env
     }
   end
 
@@ -1261,6 +1391,7 @@ defmodule Embervm.WorkloadWatcher do
   defp catalog_entry(
          name,
          namespace,
+         generation,
          spec,
          class,
          floor,
@@ -1274,9 +1405,26 @@ defmodule Embervm.WorkloadWatcher do
     invocation = Map.get(spec, "invocation") || %{}
     source = parse_source(spec)
 
+    # The guest's baked env. The image lane reads source.image.initEnv; the zip
+    # lane passes the handler symbol as EMBER_HANDLER (the runtime shim reads it
+    # to import the adopter's handler). A zip CR has no initEnv block. Stored on
+    # the entry (not recomputed at build_desc time) so the periodic BaseBuilder
+    # resync can rebuild the identical build descriptor from the catalog alone.
+    init_env =
+      case source.zip do
+        nil -> get_in(spec, ["source", "image", "initEnv"]) || %{}
+        %{handler: handler} -> %{"EMBER_HANDLER" => handler}
+      end
+
     %{
       name: name,
       namespace: namespace,
+      # Carried so the periodic BaseBuilder resync (see this module's
+      # @moduledoc, "periodic catalog resync") can rebuild the exact same
+      # build descriptor build_desc/1 sends on a fresh LIST/WATCH event,
+      # purely from the catalog, without re-fetching the CR.
+      generation: generation,
+      init_env: init_env,
       class: class,
       # Stateful-class volume + L4 config (nil except for the stateful class),
       # carried so the StatefulStore/TcpActivator (Tasks 7/8) read listenPort,
