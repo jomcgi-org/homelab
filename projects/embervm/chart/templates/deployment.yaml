@@ -96,6 +96,31 @@ spec:
             - name: EMBERVM_RUNTIME_IMAGES
               value: {{ printf "%s=%s:%s" .Values.runtimePython.runtime .Values.runtimePython.guestImage.repository .Values.runtimePython.guestImage.tag | quote }}
             {{- end }}
+            {{- if .Values.workloads }}
+            # Artifact-decoupling Phase 2: node-side image identity (rootfs ref +
+            # harness init) keyed by IMAGE REF, rendered from the SAME workloads +
+            # guestImage values that once fed the daemon's retired
+            # EMBERVM_NODED_IMAGES table (which keyed on the same ref). The control
+            # plane now owns this table and PUSHES it to each daemon over
+            # SyncRegistry (Embervm.NodeRegistry reads this env, joins it to the
+            # WorkloadCatalog by the CR's source.image.ref, and stamps rootfs +
+            # harness + sizing into each RegistryEntry). Keying by image_ref (not the
+            # workloads values key) is deliberate: the values key is the
+            # rootfs-builder key, while image_ref is the CR's stable join key
+            # (source.image.ref == guestImage.repository:tag). Format:
+            # comma-separated `imageRef=rootfsRef|harnessInit`.
+            - name: EMBERVM_NODE_IMAGE_IDENTITY
+              {{- $ids := list }}
+              {{- range $name, $wl := .Values.workloads }}
+              {{- $top := index $.Values $name }}
+              {{- if and $top $top.guestImage $top.guestImage.repository }}
+              {{- $ref := printf "%s:%s" $top.guestImage.repository $top.guestImage.tag }}
+              {{- $rootfs := include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) }}
+              {{- $ids = append $ids (printf "%s=%s|%s" $ref $rootfs ($wl.harnessInit | default "")) }}
+              {{- end }}
+              {{- end }}
+              value: {{ join "," $ids | quote }}
+            {{- end }}
             {{- if .Values.auth.allowedServiceAccounts }}
             # TokenReview allow-list: ServiceAccount usernames permitted to
             # submit tasks. Empty means deny-all (fail-closed) in the control

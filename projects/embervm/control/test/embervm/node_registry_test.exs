@@ -270,4 +270,50 @@ defmodule Embervm.NodeRegistryTest do
     # The wedged streamer was killed and a fresh connection opened (recovery).
     eventually(fn -> Agent.get(connects, & &1) >= 2 end, 200)
   end
+
+  # -- registry replay on (re)connect (artifact-decoupling Phase 2) ----------
+
+  test "pushes SyncRegistry on every (re)connect, before consuming the watch stream" do
+    {:ok, syncs} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(syncs), do: Agent.stop(syncs) end)
+    test_pid = self()
+
+    # Record each replay (channel, node_id) and let the streamer proceed. The
+    # sync_registry_fun is the seam the production default reads the catalog and
+    # calls SyncRegistry through; here we just assert it fires on each connect.
+    sync_registry_fun = fn :fake_channel, node_id ->
+      Agent.update(syncs, &[node_id | &1])
+      send(test_pid, {:replayed, node_id})
+      :ok
+    end
+
+    connect_fun = fn _address -> {:ok, :fake_channel} end
+
+    # Emit one status then close cleanly so the registry reconnects: a second
+    # connect must trigger a SECOND replay (the re-converge on reconnect).
+    watch_fun = fn :fake_channel, node_id, emit ->
+      emit.(node_status(node_id: node_id))
+      {:ok, :closed}
+    end
+
+    {_reg, _table} =
+      start_registry(
+        watch_startup: true,
+        connect_fun: connect_fun,
+        watch_fun: watch_fun,
+        sync_registry_fun: sync_registry_fun,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        base_backoff_ms: 10,
+        max_backoff_ms: 10,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    # The first connect replayed the registry.
+    assert_receive {:replayed, "node-4"}, 1_000
+    # The clean-close reconnect replayed it AGAIN (re-converge on every connect).
+    assert_receive {:replayed, "node-4"}, 1_000
+    eventually(fn -> length(Agent.get(syncs, & &1)) >= 2 end, 200)
+  end
 end

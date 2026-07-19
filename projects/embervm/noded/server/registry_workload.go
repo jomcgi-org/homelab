@@ -19,6 +19,10 @@ import (
 type workloadEntry struct {
 	Workload    string `json:"workload"`
 	ImageDigest string `json:"imageDigest"`
+	// ImageRef is the OCI ref a BuildBase resolves against to find this entry's
+	// node-side rootfs/harness (the join key the retired EMBERVM_NODED_IMAGES
+	// table keyed on). getByImageRef indexes on it.
+	ImageRef    string `json:"imageRef"`
 	RootfsRef   string `json:"rootfsRef"`
 	HarnessInit string `json:"harnessInit"`
 	VCPUs       uint32 `json:"vcpus"`
@@ -30,6 +34,7 @@ func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 	return workloadEntry{
 		Workload:    e.GetWorkload(),
 		ImageDigest: e.GetImageDigest(),
+		ImageRef:    e.GetImageRef(),
 		RootfsRef:   e.GetRootfsRef(),
 		HarnessInit: e.GetHarnessInit(),
 		VCPUs:       e.GetSizing().GetVcpus(),
@@ -139,6 +144,23 @@ func (r *workloadRegistry) get(workload string) (workloadEntry, bool) {
 	defer r.mu.Unlock()
 	e, ok := r.entries[workload]
 	return e, ok
+}
+
+// getByImageRef returns the entry whose ImageRef matches imageRef (the BuildBase
+// join). An empty imageRef never matches, so a caller that has no image_ref
+// (e.g. the zip lane's runtime is resolved separately) falls through cleanly.
+func (r *workloadRegistry) getByImageRef(imageRef string) (workloadEntry, bool) {
+	if imageRef == "" {
+		return workloadEntry{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if e.ImageRef == imageRef {
+			return e, true
+		}
+	}
+	return workloadEntry{}, false
 }
 
 // isSynced reports whether a live SyncRegistry has been applied this process

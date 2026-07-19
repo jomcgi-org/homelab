@@ -183,22 +183,14 @@ spec:
             # version the control plane starts blessing (never a mixed state).
             - name: EMBERVM_NODED_REQUIRE_BLESSING
               value: {{ .Values.noded.requireBlessing | quote }}
-            # Node-side image identity table (image_ref -> {rootfsPath, harnessInit}),
-            # rendered as JSON. Derived from noded.workloads + each workload's pinned
-            # guestImage so the ref here MATCHES the rootfs-builder GUEST_IMAGE and the
-            # Workload CR's source.image.ref exactly (BuildBase looks this map up by
-            # that ref; a mismatch fails FAILED_PRECONDITION). Explicit noded.images
-            # entries merge in as overrides. Empty (no workloads) => BuildBase denies.
-            - name: EMBERVM_NODED_IMAGES
-              {{- $imgs := deepCopy (.Values.noded.images | default dict) }}
-              {{- range $name, $wl := .Values.workloads }}
-              {{- $top := index $.Values $name }}
-              {{- if and $top $top.guestImage $top.guestImage.repository }}
-              {{- $ref := printf "%s:%s" $top.guestImage.repository $top.guestImage.tag }}
-              {{- $_ := set $imgs $ref (dict "rootfsPath" (include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top)) "harnessInit" $wl.harnessInit) }}
-              {{- end }}
-              {{- end }}
-              value: {{ $imgs | toJson | quote }}
+            # Artifact-decoupling Phase 2: the node-side image identity table that
+            # USED to be rendered here as EMBERVM_NODED_IMAGES is retired. The daemon
+            # boots with an EMPTY workload registry and the control plane PUSHES it
+            # over SyncRegistry on connect (rootfs ref, harness init, sizing keyed by
+            # workload), so image identity lives on the CP side now (see the control
+            # plane's EMBERVM_NODE_IMAGE_IDENTITY). Readiness gates on that replay
+            # (the /readyz probe below), so Service traffic never reaches a pod with
+            # an empty registry.
             {{- if .Values.noded.bearerTokenSecret.enabled }}
             # Static bearer token gating the gRPC surface. When unset the daemon
             # runs open and warns; a Cilium/Linkerd policy is defence-in-depth.
@@ -208,9 +200,14 @@ spec:
                   name: {{ .Values.noded.bearerTokenSecret.name }}
                   key: {{ .Values.noded.bearerTokenSecret.key }}
             {{- end }}
+          # Readiness gates on the control-plane registry replay (artifact-
+          # decoupling Phase 2): /readyz is 200 only AFTER the first live
+          # SyncRegistry, so the noded Service never routes to a pod with an empty
+          # (or merely stale-cache) registry. Liveness stays on /healthz (always
+          # 200 once the process is up) so a not-yet-synced pod is not restarted.
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: health
             initialDelaySeconds: 2
             periodSeconds: 10

@@ -457,7 +457,16 @@ var _ nodev1.NodeServiceServer = (*Server)(nil)
 // (identity, true) when either source knows the workload/image, (zero, false)
 // otherwise, which BuildBase maps to FAILED_PRECONDITION.
 func (s *Server) resolveImage(workload, imageRef string) (config.Image, bool) {
-	if e, ok := s.registry.get(workload); ok {
+	// Prefer the workload-keyed entry when it carries a rootfs (the authoritative
+	// per-workload identity). Fall back to the image_ref join (the entry whose
+	// ImageRef matches this BuildBase's ref), which is the stable bridge for a
+	// workload whose CR name the entry is keyed by but whose BuildBase names the
+	// image by ref. Finally fall back to the legacy cfg.Images table (empty after
+	// Phase 2, kept so a test that seeds it still resolves).
+	if e, ok := s.registry.get(workload); ok && e.RootfsRef != "" {
+		return config.Image{RootfsPath: e.RootfsRef, HarnessInit: e.HarnessInit}, true
+	}
+	if e, ok := s.registry.getByImageRef(imageRef); ok {
 		return config.Image{RootfsPath: e.RootfsRef, HarnessInit: e.HarnessInit}, true
 	}
 	img, ok := s.cfg.Images[imageRef]

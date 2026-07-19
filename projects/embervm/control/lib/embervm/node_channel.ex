@@ -34,9 +34,10 @@ defmodule Embervm.NodeChannel do
   serialized through this GenServer, so a thundering herd of first-dispatch workers
   triggers exactly one connect (the rest read the freshly cached channel).
 
-  R0 note: `EMBERVM_NODED_IMAGES` is empty, so no real Prime/Assign succeeds yet
-  (there is no base to restore); this channel is exercised end to end only once
-  guest-image provisioning lands (Task 14+). Until then it dials, caches, and
+  Registry note (artifact-decoupling Phase 2): the daemon boots with an EMPTY
+  workload registry and the control plane PUSHES it over SyncRegistry on connect
+  (see `Embervm.NodeRegistry`), so a real Prime/Assign only succeeds once that
+  replay lands and a base is built. Until then this channel dials, caches, and
   serves the health-gated daemon connection without carrying real task traffic.
   """
 

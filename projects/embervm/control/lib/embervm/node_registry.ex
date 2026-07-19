@@ -73,12 +73,15 @@ defmodule Embervm.NodeRegistry do
     GroupNetwork,
     NodeService,
     NodeStatus,
+    RegistryEntry,
+    ResourceSpec,
     ServingSnapshot,
     ServingVm,
     SessionSnapshot,
     SessionVm,
     StatefulBundle,
     StatefulVm,
+    SyncRegistryRequest,
     Volume,
     WatchNodeRequest,
     WorkloadCapacity
@@ -171,6 +174,12 @@ defmodule Embervm.NodeRegistry do
     connect_fun = Keyword.get(opts, :connect_fun, &default_connect/1)
     watch_fun = Keyword.get(opts, :watch_fun, &default_watch/3)
     disconnect_fun = Keyword.get(opts, :disconnect_fun, &default_disconnect/1)
+    # Artifact-decoupling Phase 2: the on-(re)connect registry replay seam. The
+    # default reads the control plane's workload view (WorkloadCatalog + the
+    # chart-delivered node-side image identity) and pushes SyncRegistry over the
+    # just-connected channel. Tests inject a fake to assert the replay fires (and
+    # with what entries) without a real daemon or catalog.
+    sync_registry_fun = Keyword.get(opts, :sync_registry_fun, &default_sync_registry/2)
     clock = Keyword.get(opts, :clock, &default_clock/0)
     reassign_fun = Keyword.get(opts, :reassign_fun, &default_reassign/1)
     unknown_after = Keyword.get(opts, :unknown_after_ms, @unknown_after_ms)
@@ -215,6 +224,7 @@ defmodule Embervm.NodeRegistry do
       connect_fun: connect_fun,
       watch_fun: watch_fun,
       disconnect_fun: disconnect_fun,
+      sync_registry_fun: sync_registry_fun,
       reassign_fun: reassign_fun,
       unknown_after_ms: unknown_after,
       down_after_ms: down_after,
@@ -776,6 +786,7 @@ defmodule Embervm.NodeRegistry do
     connect_fun = state.connect_fun
     watch_fun = state.watch_fun
     disconnect_fun = state.disconnect_fun
+    sync_registry_fun = state.sync_registry_fun
 
     {pid, ref} =
       spawn_monitor(fn ->
@@ -785,6 +796,18 @@ defmodule Embervm.NodeRegistry do
           case connect_fun.(address) do
             {:ok, channel} ->
               try do
+                # Artifact-decoupling Phase 2: on EVERY (re)connect, before we
+                # start consuming the WatchNode stream, PUSH the authoritative
+                # workload registry to the daemon (SyncRegistry). A freshly
+                # (re)started noded boots with an empty (or stale-cache) registry
+                # and gates readiness on this replay, so pushing it here is what
+                # opens the daemon for new work: a daemon that missed incremental
+                # Register/Deregister while disconnected re-converges to truth on
+                # reconnect. A push failure is logged and non-fatal (the daemon
+                # simply stays not-ready and the next reconnect retries); we still
+                # enter the watch so capacity facts flow either way.
+                sync_registry_fun.(channel, configured_id)
+
                 watch_fun.(channel, configured_id, fn status ->
                   send(owner, {:node_status, streamer, status})
                 end)
@@ -890,6 +913,92 @@ defmodule Embervm.NodeRegistry do
 
       {:error, reason} ->
         {:error, {:watch, reason}}
+    end
+  end
+
+  # Push the authoritative workload registry to the just-connected daemon
+  # (artifact-decoupling Phase 2). Builds the entry set from the control plane's
+  # workload view and calls SyncRegistry over the channel. A push failure is
+  # logged and swallowed (non-fatal): the daemon stays not-ready until the next
+  # reconnect retries, which is strictly safer than crashing the streamer.
+  defp default_sync_registry(channel, node_id) do
+    entries = registry_entries()
+
+    case NodeService.Stub.sync_registry(channel, %SyncRegistryRequest{entries: entries}) do
+      {:ok, %{entry_count: n}} ->
+        Logger.info("embervm node registry: replayed #{n} workload registry entries to #{node_id}")
+        :ok
+
+      other ->
+        Logger.warning("embervm node registry: SyncRegistry to #{node_id} failed: #{inspect(other)}")
+        :ok
+    end
+  end
+
+  # Build the authoritative RegistryEntry set from the control plane's workload
+  # view: the WorkloadCatalog (the op-log-backed catalog TaskStore/dispatcher
+  # read) supplies each workload's name, image_ref and sizing, and the
+  # chart-delivered node-side image identity (EMBERVM_NODE_IMAGE_IDENTITY, keyed by
+  # image_ref) supplies the rootfs_ref + harness_init that USED to live in the
+  # daemon's EMBERVM_NODED_IMAGES table. The join is by image_ref (the CR's
+  # source.image.ref), the stable bridge between the per-workload catalog entry and
+  # the per-image identity map. A workload whose image_ref the identity map does
+  # not know still gets an entry (empty rootfs/harness), so the CP stays
+  # authoritative for the SET of workloads regardless; the daemon then falls back
+  # to its configured defaults for the missing node-side facts.
+  defp registry_entries do
+    identity = node_image_identity()
+
+    for name <- Embervm.WorkloadCatalog.all_names() do
+      entry =
+        case Embervm.WorkloadCatalog.fetch(name) do
+          {:ok, e} -> e
+          :error -> %{}
+        end
+
+      image_ref = entry[:image_ref] || ""
+      {rootfs_ref, harness_init} = Map.get(identity, image_ref, {"", ""})
+
+      %RegistryEntry{
+        workload: name,
+        image_digest: "",
+        image_ref: image_ref,
+        rootfs_ref: rootfs_ref,
+        harness_init: harness_init,
+        sizing: %ResourceSpec{vcpus: entry[:vcpus] || 0, mem_mib: entry[:mem_mib] || 0}
+      }
+    end
+  end
+
+  # Parse EMBERVM_NODE_IMAGE_IDENTITY (chart-rendered from the same values that
+  # once fed EMBERVM_NODED_IMAGES). Format: comma-separated
+  # `imageRef=rootfsRef|harnessInit` triples; harnessInit may be empty. An unset
+  # or malformed env yields an empty map (every workload then gets empty node-side
+  # identity, and the daemon uses its defaults).
+  defp node_image_identity do
+    case System.get_env("EMBERVM_NODE_IMAGE_IDENTITY") do
+      nil ->
+        %{}
+
+      raw ->
+        raw
+        |> String.split(",", trim: true)
+        |> Enum.reduce(%{}, fn pair, acc ->
+          case String.split(pair, "=", parts: 2) do
+            [name, rest] ->
+              {rootfs, harness} =
+                case String.split(rest, "|", parts: 2) do
+                  [r, h] -> {String.trim(r), String.trim(h)}
+                  [r] -> {String.trim(r), ""}
+                end
+
+              n = String.trim(name)
+              if n != "", do: Map.put(acc, n, {rootfs, harness}), else: acc
+
+            _ ->
+              acc
+          end
+        end)
     end
   end
 

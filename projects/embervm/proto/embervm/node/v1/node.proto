@@ -1119,13 +1119,22 @@ message GetNodeStatusRequest {
 // daemon interprets these node-side facts (a rootfs path is on-disk, an
 // image_digest is opaque); the control plane owns their values.
 message RegistryEntry {
-  // workload is the CR name this entry is for and the registry key: SyncRegistry
+  // workload is the CR name this entry is for and the registry KEY: SyncRegistry
   // converges on the set of workloads, Deregister removes by this name.
   string workload = 1;
   // image_digest is the resolved OCI digest of the workload's guest image (the
   // identity BuildBase records and the store keys rootfs artifacts under). Opaque
   // to the daemon beyond equality.
   string image_digest = 2;
+  // image_ref is the OCI reference (repository:tag or digest) the workload's
+  // BuildBase names its image by. It is the JOIN KEY the daemon resolves a
+  // BuildBase's image_ref against to find this entry's node-side rootfs/harness:
+  // the control plane's node-side image identity map is keyed by image_ref (it is
+  // what the retired EMBERVM_NODED_IMAGES table keyed on), and the workload CR's
+  // source.image.ref equals this, so image_ref is the stable bridge between the
+  // per-workload registry entry and the per-BuildBase request. Empty for the zip
+  // lane (which resolves by runtime_image_ref through the same map).
+  string image_ref = 6;
   // rootfs_ref is the node-side reference to the base rootfs the guest boots
   // read-only. It is the digest-keyed on-disk ext4 the rootfs builder / store
   // restore produced (PR-A/PR-B), the same value the retired EMBERVM_NODED_IMAGES
