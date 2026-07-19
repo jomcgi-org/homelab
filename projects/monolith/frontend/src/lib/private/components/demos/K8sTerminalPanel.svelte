@@ -204,28 +204,33 @@
       fontFamily: "var(--font-mono, monospace)",
       fontSize: 13,
       theme: {
-        background: "#f7f8fa",
-        foreground: "#1a1f28",
-        cursor: "#33507a",
-        cursorAccent: "#f7f8fa",
-        selectionBackground: "#c9d8ee",
-        black: "#1a1f28",
-        red: "#a4372e",
-        green: "#1e6a3c",
-        yellow: "#8a5a00",
-        blue: "#33507a",
-        magenta: "#6b4a7a",
-        cyan: "#1a6a72",
-        white: "#e8ebef",
-        brightBlack: "#656e7c",
-        brightRed: "#c04a3f",
-        brightGreen: "#2a8a50",
-        brightYellow: "#a87200",
-        brightBlue: "#4a6a9a",
-        brightMagenta: "#8a62a0",
-        brightCyan: "#2a8a94",
-        brightWhite: "#ffffff",
+        // Maximum-contrast light theme: pure white ground, near-black ink,
+        // deep saturated ANSI so every color stays legible on white.
+        background: "#ffffff",
+        foreground: "#0a0a0a",
+        cursor: "#1746a2",
+        cursorAccent: "#ffffff",
+        selectionBackground: "#b9d3f5",
+        selectionForeground: "#0a0a0a",
+        black: "#000000",
+        red: "#b3261e",
+        green: "#0f6d33",
+        yellow: "#7a5200",
+        blue: "#1746a2",
+        magenta: "#7a2f8a",
+        cyan: "#0d6e78",
+        white: "#3a3a3a",
+        brightBlack: "#4a4a4a",
+        brightRed: "#8f1c16",
+        brightGreen: "#0a5528",
+        brightYellow: "#5f4000",
+        brightBlue: "#123a86",
+        brightMagenta: "#5f2470",
+        brightCyan: "#0a5860",
+        brightWhite: "#000000",
       },
+      fontWeight: 500,
+      fontWeightBold: 700,
     });
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
@@ -533,7 +538,7 @@
 
   .terminal-card {
     position: relative;
-    background: #f7f8fa;
+    background: #ffffff;
     border: 1px solid var(--line);
     border-radius: 10px;
     min-height: 420px;
@@ -589,7 +594,8 @@
     padding: 16px 20px;
     font-family: var(--font-mono, monospace);
     font-size: 13px;
-    color: #1e6a3c;
+    color: #0a0a0a;
+    font-weight: 500;
     overflow-y: auto;
     max-height: 420px;
   }
