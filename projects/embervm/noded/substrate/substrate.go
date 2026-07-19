@@ -121,6 +121,14 @@ type SnapshotRef struct {
 	// Node and Arch pin where the snapshot can be restored (non-portable).
 	Node string
 	Arch string
+	// Vendor pins the CPUID vendor ("amd", "intel") this snapshot was captured
+	// on (R7, standing decisions 1 and 11): Firecracker restore never crosses
+	// the AMD/Intel boundary, so a restore whose ref.Vendor mismatches the
+	// node's own vendor fails closed exactly like an Arch mismatch does. A ref
+	// with an empty Vendor is a legacy (pre-R7) snapshot; the daemon treats it
+	// as vendor "amd" (the node-4 alias) so an existing on-disk base or bundle
+	// never re-exports or false-mismatches merely for predating vendor keying.
+	Vendor string
 	// SizeBytes is the on-disk bundle size, used for capacity reporting.
 	SizeBytes int64
 	// Base reports whether this is a warm base template rather than a per-thread

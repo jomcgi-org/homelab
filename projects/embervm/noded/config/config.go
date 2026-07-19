@@ -9,12 +9,15 @@
 package config
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -47,6 +50,14 @@ type Config struct {
 	// Arch is the host CPU architecture; FC guests are arch-affine. Defaults to
 	// runtime.GOARCH when EMBERVM_NODED_ARCH is unset.
 	Arch string
+	// CpuVendor is the CPUID vendor this node reports ("amd", "intel"), used to
+	// key vendor-bound warmth (R7, standing decisions 1 and 11): Firecracker
+	// snapshot restore never crosses the AMD/Intel boundary, so bases, sessions,
+	// serving/stateful bundles, and group sets are keyed and validated per vendor
+	// exactly like Arch is today. Detected from /proc/cpuinfo's vendor_id line
+	// when EMBERVM_NODED_CPU_VENDOR is unset; override for tests and darwin
+	// (where /proc/cpuinfo does not exist).
+	CpuVendor string
 	// BearerToken, when set, gates every gRPC call: the caller must present
 	// "authorization: Bearer <token>" in call metadata. Empty runs the daemon
 	// open and logs a startup warning (mirrors fc-invoke's fail-loud-not-silent
@@ -195,6 +206,7 @@ func Load() (Config, error) {
 		HealthAddr:          getenvDefault("EMBERVM_NODED_HEALTH_ADDR", ":8080"),
 		Node:                os.Getenv("EMBERVM_NODED_NODE"),
 		Arch:                os.Getenv("EMBERVM_NODED_ARCH"),
+		CpuVendor:           os.Getenv("EMBERVM_NODED_CPU_VENDOR"),
 		BearerToken:         os.Getenv("EMBERVM_NODED_BEARER_TOKEN"),
 		MaxLiveVMs:          atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
 		SnapshotRoot:        os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
@@ -235,6 +247,9 @@ func Load() (Config, error) {
 	}
 	if c.Arch == "" {
 		c.Arch = runtime.GOARCH
+	}
+	if c.CpuVendor == "" {
+		c.CpuVendor = detectCPUVendor()
 	}
 	if c.VolumeRoot == "" && c.SnapshotRoot != "" {
 		// Default alongside the snapshot root but as a SIBLING directory, not
@@ -309,6 +324,65 @@ func loadImages() (map[string]Image, error) {
 		return map[string]Image{}, nil
 	}
 	return table, nil
+}
+
+// vendorUnsafe strips anything but letters/digits from an unrecognised
+// vendor_id string so detectCPUVendor's best-effort fallback token is still
+// filesystem- and store-key-safe.
+var vendorUnsafe = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// cpuinfoPath is the standard Linux procfs path detectCPUVendor reads.
+// Overridable only via detectCPUVendorFrom (tests), never at runtime: a real
+// daemon always reads the real path or EMBERVM_NODED_CPU_VENDOR wins first.
+const cpuinfoPath = "/proc/cpuinfo"
+
+// detectCPUVendor reads /proc/cpuinfo's vendor_id line and maps it to the short
+// vendor token the R7 warmth keys use ("amd", "intel"). Missing /proc/cpuinfo
+// (non-Linux, e.g. darwin dev machines and CI) or a missing vendor_id line
+// yields "": the daemon still starts, but every restore/base-key vendor check
+// treats an empty node vendor as never matching a stamped ref, which is
+// deliberately fail-closed rather than a silent guess. EMBERVM_NODED_CPU_VENDOR
+// overrides this entirely (checked by the caller before detectCPUVendor is ever
+// invoked), which is how non-Linux dev loops set a vendor without a real
+// /proc/cpuinfo; tests instead call detectCPUVendorFrom with a fixture path.
+func detectCPUVendor() string {
+	return detectCPUVendorFrom(cpuinfoPath)
+}
+
+// detectCPUVendorFrom is detectCPUVendor's testable core: it reads path's
+// vendor_id line (the /proc/cpuinfo format) and maps it to the short vendor
+// token. GenuineIntel -> "intel", AuthenticAMD -> "amd", anything else
+// recognisable -> a lowercase best-effort token derived from the raw vendor_id
+// with everything but letters/digits stripped. A missing file or a missing
+// vendor_id line yields "".
+func detectCPUVendorFrom(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "vendor_id") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		raw := strings.TrimSpace(parts[1])
+		switch raw {
+		case "GenuineIntel":
+			return "intel"
+		case "AuthenticAMD":
+			return "amd"
+		default:
+			return strings.ToLower(vendorUnsafe.ReplaceAllString(raw, ""))
+		}
+	}
+	return ""
 }
 
 // getenvDefault returns the named env var, or def when unset or empty.

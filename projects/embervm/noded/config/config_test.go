@@ -7,12 +7,71 @@ import (
 	"time"
 )
 
+func TestDetectCPUVendorFromFixture(t *testing.T) {
+	tests := []struct {
+		name     string
+		cpuinfo  string
+		wantVend string
+	}{
+		{
+			name:     "intel",
+			cpuinfo:  "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\n",
+			wantVend: "intel",
+		},
+		{
+			name:     "amd",
+			cpuinfo:  "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 23\n",
+			wantVend: "amd",
+		},
+		{
+			name:     "unrecognised vendor lowercased and sanitised",
+			cpuinfo:  "processor\t: 0\nvendor_id\t: Some Other_Vendor!\n",
+			wantVend: "someothervendor",
+		},
+		{
+			name:     "missing vendor_id line",
+			cpuinfo:  "processor\t: 0\ncpu family\t: 6\n",
+			wantVend: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "cpuinfo")
+			if err := os.WriteFile(path, []byte(tt.cpuinfo), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := detectCPUVendorFrom(path)
+			if got != tt.wantVend {
+				t.Errorf("detectCPUVendorFrom(%q) = %q, want %q", tt.name, got, tt.wantVend)
+			}
+		})
+	}
+}
+
+func TestDetectCPUVendorMissingFile(t *testing.T) {
+	if got := detectCPUVendorFrom(filepath.Join(t.TempDir(), "does-not-exist")); got != "" {
+		t.Errorf("detectCPUVendorFrom(missing) = %q, want empty", got)
+	}
+}
+
+func TestLoadCpuVendorEnvOverride(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_CPU_VENDOR", "intel")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.CpuVendor != "intel" {
+		t.Errorf("CpuVendor = %q, want intel (env override)", c.CpuVendor)
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	// t.Setenv clears everything else via a clean slate per key; unset the ones
 	// that would leak from the runner by setting them empty.
 	for _, k := range []string{
 		"EMBERVM_NODED_LISTEN_ADDR", "EMBERVM_NODED_HEALTH_ADDR", "EMBERVM_NODED_NODE",
-		"NODE_NAME", "EMBERVM_NODED_ARCH", "EMBERVM_NODED_BEARER_TOKEN",
+		"NODE_NAME", "EMBERVM_NODED_ARCH", "EMBERVM_NODED_CPU_VENDOR", "EMBERVM_NODED_BEARER_TOKEN",
 		"EMBERVM_NODED_MAX_LIVE_VMS", "EMBERVM_NODED_IMAGES", "EMBERVM_NODED_IMAGES_FILE",
 		"EMBERVM_NODED_BOOT_READY_TIMEOUT", "EMBERVM_NODED_RESTORE_READY_TIMEOUT",
 		"EMBERVM_NODED_DRAIN_TIMEOUT",

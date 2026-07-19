@@ -92,6 +92,20 @@ func testDriver(t *testing.T) *Driver {
 	}, &fakeLauncher{}, nil)
 }
 
+// testDriverWithVendor mirrors testDriver but stamps a CPU vendor, for the R7
+// vendor-mismatch tests (mirroring the arch-mismatch tests above).
+func testDriverWithVendor(t *testing.T, vendor string) *Driver {
+	t.Helper()
+	return New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
+		Node:            "node-4",
+		Arch:            "amd64",
+		Vendor:          vendor,
+	}, &fakeLauncher{}, nil)
+}
+
 func TestDriverClaimBootsMicroVM(t *testing.T) {
 	d := testDriver(t)
 	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "t1", Repo: "homelab"})
@@ -196,6 +210,71 @@ func TestDriverClaimRejectsArchMismatch(t *testing.T) {
 	_, err := d.Claim(context.Background(), substrate.ClaimSpec{Arch: "arm64"})
 	if err == nil {
 		t.Fatal("claim should reject an arch-mismatched spec")
+	}
+}
+
+// TestDriverRestoreRejectsVendorMismatch proves a restore whose ref.Vendor
+// disagrees with the node's own CPU vendor fails closed exactly like an Arch
+// mismatch (R7, standing decisions 1 and 11).
+func TestDriverRestoreRejectsVendorMismatch(t *testing.T) {
+	d := testDriverWithVendor(t, "intel")
+	_, err := d.Restore(context.Background(), substrate.SnapshotRef{ThreadID: "x", Arch: "amd64", Node: "node-4", Vendor: "amd"})
+	if err == nil {
+		t.Fatal("restore should reject a vendor-mismatched snapshot (non-portable across CPU vendor)")
+	}
+}
+
+// TestDriverRestoreAllowsLegacyEmptyVendorOnAMD proves standing decision 11's
+// node-4 alias: a pre-R7 snapshot with an empty Vendor restores cleanly on an
+// AMD node (aliased to "amd") without a mismatch error, so an existing base or
+// bundle never needlessly fails merely for predating vendor keying.
+func TestDriverRestoreAllowsLegacyEmptyVendorOnAMD(t *testing.T) {
+	d := testDriverWithVendor(t, "amd")
+	ctx := context.Background()
+	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "t-legacy"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	ref, err := d.Snapshot(ctx, h)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	ref.Vendor = "" // simulate a pre-R7 snapshot with no vendor stamped
+	if err := d.Release(ctx, h); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if _, err := d.Restore(ctx, ref); err != nil {
+		t.Fatalf("restore of a legacy empty-vendor ref on an amd node should succeed (node-4 alias): %v", err)
+	}
+}
+
+// TestDriverRestoreRejectsLegacyEmptyVendorOnIntel proves the node-4 alias is
+// AMD-specific: a pre-R7 (empty-vendor) snapshot restored on an Intel node still
+// fails closed, since aliasing legacy refs to "amd" must never let one silently
+// cross onto the Intel tier.
+func TestDriverRestoreRejectsLegacyEmptyVendorOnIntel(t *testing.T) {
+	d := testDriverWithVendor(t, "intel")
+	_, err := d.Restore(context.Background(), substrate.SnapshotRef{ThreadID: "x", Arch: "amd64", Node: "node-4", Vendor: ""})
+	if err == nil {
+		t.Fatal("restore of a legacy empty-vendor ref on an intel node should fail (alias is amd-only)")
+	}
+}
+
+// TestDriverSnapshotStampsVendor proves Snapshot stamps the node's own vendor
+// into the produced ref, mirroring how it stamps Arch.
+func TestDriverSnapshotStampsVendor(t *testing.T) {
+	ctx := context.Background()
+	d := testDriverWithVendor(t, "intel")
+	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "t-vendor-stamp"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	ref, err := d.Snapshot(ctx, h)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if ref.Vendor != "intel" {
+		t.Fatalf("snapshot ref Vendor = %q, want intel", ref.Vendor)
 	}
 }
 

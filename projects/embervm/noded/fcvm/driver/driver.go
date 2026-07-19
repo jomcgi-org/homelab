@@ -78,6 +78,12 @@ type Config struct {
 	// Node and Arch pin where snapshots may be restored.
 	Node string
 	Arch string
+	// Vendor is the node's CPUID vendor ("amd", "intel"), stamped into every
+	// SnapshotRef this driver produces and checked on every restore exactly
+	// like Arch (R7, standing decisions 1 and 11): Firecracker snapshots never
+	// cross the AMD/Intel boundary. Empty behaves like an unset Arch check
+	// (skipped), which only happens pre-R7 or in a test build.
+	Vendor string
 }
 
 func (c Config) withDefaults() Config {
@@ -200,6 +206,32 @@ func newID(prefix string) string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return prefix + "-" + hex.EncodeToString(b[:])
+}
+
+// legacyVendorAlias is the vendor a ref with an empty Vendor is treated as (the
+// node-4 alias, standing decision 11): every snapshot captured before vendor
+// keying shipped predates any vendor other than node-4's, so an empty ref
+// vendor is read as "amd" rather than "unset", and never re-exports or
+// false-mismatches merely for predating this field.
+const legacyVendorAlias = "amd"
+
+// vendorMismatch reports whether a SnapshotRef's vendor conflicts with the
+// node's own vendor, mirroring the arch mismatch checks above. An empty
+// refVendor is aliased to legacyVendorAlias before comparing (a pre-R7
+// snapshot). An empty nodeVendor skips the check entirely (an undetected node
+// vendor, e.g. a non-Linux test build), matching how an empty d.cfg.Arch skips
+// the arch check. It returns the vendor string used for the comparison so the
+// caller's error message reports what actually mismatched (the aliased value,
+// not a blank one).
+func vendorMismatch(refVendor, nodeVendor string) (bool, string) {
+	if nodeVendor == "" {
+		return false, refVendor
+	}
+	effective := refVendor
+	if effective == "" {
+		effective = legacyVendorAlias
+	}
+	return effective != nodeVendor, effective
 }
 
 // threadDir is the bundle directory for a thread.
@@ -687,6 +719,9 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		if ref.Arch != "" && d.cfg.Arch != "" && ref.Arch != d.cfg.Arch {
 			return substrate.Handle{}, fmt.Errorf("driver: base arch mismatch: ref %q != node %q", ref.Arch, d.cfg.Arch)
 		}
+		if vmis, refVendor := vendorMismatch(ref.Vendor, d.cfg.Vendor); vmis {
+			return substrate.Handle{}, fmt.Errorf("driver: base vendor mismatch: ref %q != node %q (snapshots non-portable across CPU vendor)", refVendor, d.cfg.Vendor)
+		}
 		snap := d.baseSnapfile(ref.ID)
 		if _, err := os.Stat(snap); err != nil {
 			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
@@ -972,6 +1007,7 @@ func (d *Driver) Snapshot(ctx context.Context, h substrate.Handle) (substrate.Sn
 		ThreadID:  h.ThreadID,
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
+		Vendor:    d.cfg.Vendor,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}
 	return ref, nil
@@ -983,6 +1019,9 @@ func (d *Driver) Snapshot(ctx context.Context, h substrate.Handle) (substrate.Sn
 func (d *Driver) Restore(ctx context.Context, ref substrate.SnapshotRef) (substrate.Handle, error) {
 	if ref.Arch != "" && d.cfg.Arch != "" && ref.Arch != d.cfg.Arch {
 		return substrate.Handle{}, fmt.Errorf("driver: arch mismatch on restore: ref %q != node %q", ref.Arch, d.cfg.Arch)
+	}
+	if vmis, refVendor := vendorMismatch(ref.Vendor, d.cfg.Vendor); vmis {
+		return substrate.Handle{}, fmt.Errorf("driver: vendor mismatch on restore: ref %q != node %q (snapshots non-portable across CPU vendor)", refVendor, d.cfg.Vendor)
 	}
 	if ref.Node != "" && d.cfg.Node != "" && ref.Node != d.cfg.Node {
 		return substrate.Handle{}, fmt.Errorf("driver: node mismatch on restore: ref %q != node %q", ref.Node, d.cfg.Node)
@@ -1042,6 +1081,7 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		ID:        baseKey,
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
+		Vendor:    d.cfg.Vendor,
 		Base:      true,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
@@ -1123,6 +1163,7 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 		ID:        snapshotRef,
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
+		Vendor:    d.cfg.Vendor,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
@@ -1226,6 +1267,7 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 		ID:        snapshotRef,
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
+		Vendor:    d.cfg.Vendor,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
@@ -1407,6 +1449,7 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 		ID:        snapshotRef,
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
+		Vendor:    d.cfg.Vendor,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
@@ -1534,6 +1577,7 @@ func (d *Driver) ResolveStatefulCommit(ctx context.Context, token string) (subst
 		ID:        ref,
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
+		Vendor:    d.cfg.Vendor,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
@@ -1891,6 +1935,7 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 		ID:        filepath.Join("group", setID, memberName),
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
+		Vendor:    d.cfg.Vendor,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
