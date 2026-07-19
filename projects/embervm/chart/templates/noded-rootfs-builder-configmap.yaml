@@ -5,6 +5,15 @@
 # noded-deployment.yaml) runs this same script with its own GUEST_IMAGE and
 # BASE_ROOTFS_PATH, baking the guest filesystem into a read-only ext4 image the
 # workload's microVMs boot from. Ported from the fc-invoke rootfs-builder.
+#
+# Digest-keyed cache (artifact-decoupling Phase 0): the ext4 is baked ONCE per
+# guest CONTENT DIGEST into a content-addressed cache file, and the template-time
+# BASE_ROOTFS_PATH (the path the noded EMBERVM_NODED_IMAGES entry attaches) is an
+# instant hardlink to that cache file. The guest image TAG is a per-build
+# timestamp (apko stamps STABLE_IMAGE_TAG on every CI build), so a tag-keyed name
+# changed on every roll even when the image bytes were identical, re-paying the
+# 4-5 minute crane-export + mkfs.ext4 tax each time. Keying the bake on the digest
+# makes an unchanged guest image a cache hit (hardlink only, no bake).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,30 +23,28 @@ metadata:
 data:
   build-base-rootfs.sh: |
     #!/bin/bash
-    # crane exports the guest filesystem for this node's architecture and
-    # mkfs.ext4 bakes it into an ext4 image on the mounted nvme disk, so no human
-    # on node-4 with sudo is needed to place a rootfs.
+    # crane resolves the guest image to its arch-specific content digest, bakes the
+    # ext4 once per digest into a content-addressed cache file on the mounted nvme
+    # disk, and hardlinks the template-time BASE_ROOTFS_PATH to it, so no human on
+    # node-4 with sudo is needed to place a rootfs.
     set -euo pipefail
     : "${GUEST_IMAGE:?GUEST_IMAGE required}"
     : "${BASE_ROOTFS_PATH:?BASE_ROOTFS_PATH required}"
     size="${ROOTFS_SIZE:-2G}"
     base_dir="$(dirname "$BASE_ROOTFS_PATH")"
     mkdir -p "$base_dir"
-    # BASE_ROOTFS_PATH is now DIGEST-VERSIONED (rootfs-<guest-tag>.ext4), so each
-    # guest image version has its OWN immutable file. Skip if this version's file
-    # already exists (a pod restart on an unchanged image, or a co-scheduled builder
-    # for a workload that shares this guest image). CRUCIAL: never overwrite or delete
-    # any other rootfs-*.ext4 here -- a banked session snapshot embeds the host path
-    # of the rootfs it was born on, so clobbering it corrupts that session's restore
-    # (the EXT4 checksum bug). Old versions are reaped out-of-band once no base or
-    # session references them; this builder only ever ADDS the current version.
+    # The template-time path for THIS build is already materialized (a pod restart
+    # on the same chart version, or a co-scheduled builder for a workload sharing
+    # this guest image): the hardlink is already placed, nothing to do. CRUCIAL:
+    # never overwrite or delete any other rootfs-*.ext4 here -- a banked session
+    # snapshot embeds the host path of the rootfs it was born on, so clobbering it
+    # corrupts that session's restore (the EXT4 checksum bug). This builder only
+    # ever ADDS names (a digest cache file and hardlinks to it); old files are
+    # reaped out-of-band once no base or session references them.
     if [ -f "$BASE_ROOTFS_PATH" ]; then
-      echo "base rootfs already present for this guest version: $BASE_ROOTFS_PATH"
+      echo "base rootfs already present for this build: $BASE_ROOTFS_PATH"
       exit 0
     fi
-    echo "building base rootfs from $GUEST_IMAGE -> $BASE_ROOTFS_PATH"
-    rm -rf /work/root "$BASE_ROOTFS_PATH.tmp"
-    mkdir -p /work/root
     # Pull the guest filesystem for THIS node's architecture (the builder image
     # is multi-arch, so uname reflects the node); guest images are multi-arch.
     case "$(uname -m)" in
@@ -45,8 +52,28 @@ data:
       aarch64 | arm64) platform=linux/arm64 ;;
       *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
     esac
-    crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
-    mkfs.ext4 -q -F -L embervmbase -d /work/root "$BASE_ROOTFS_PATH.tmp" "$size"
-    mv -f "$BASE_ROOTFS_PATH.tmp" "$BASE_ROOTFS_PATH"
-    echo "base rootfs built at $BASE_ROOTFS_PATH ($size)"
+    # Content-address the rootfs by the arch-specific manifest digest so an
+    # unchanged guest image resolves to the SAME cache file across builds
+    # regardless of the per-build timestamp tag. This is the key the bake
+    # short-circuits on.
+    digest="$(crane digest --platform "$platform" "$GUEST_IMAGE")"
+    digest="${digest#sha256:}"
+    short="${digest:0:12}"
+    cache="$base_dir/rootfs-$short.ext4"
+    if [ -f "$cache" ]; then
+      echo "rootfs cache hit $short for $GUEST_IMAGE"
+    else
+      echo "rootfs cache miss $short; building from $GUEST_IMAGE -> $cache"
+      rm -rf /work/root "$cache.tmp.$$"
+      mkdir -p /work/root
+      crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
+      mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache.tmp.$$" "$size"
+      mv -f "$cache.tmp.$$" "$cache"
+      echo "rootfs baked at $cache ($size)"
+    fi
+    # Materialize the template-time path noded attaches as a hardlink to the cache
+    # file: instant, no data copy, and both names are immutable inodes, so a
+    # snapshot that embedded either path restores against byte-identical content.
+    ln -f "$cache" "$BASE_ROOTFS_PATH"
+    echo "linked $BASE_ROOTFS_PATH -> $cache"
 {{- end }}
