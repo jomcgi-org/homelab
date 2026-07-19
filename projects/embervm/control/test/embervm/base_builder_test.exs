@@ -647,4 +647,68 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.report_base_refs(builder, "snap1", sessions: 0)
     assert_receive {:evicted, "snap1"}, 1_000
   end
+
+  # -- discovery-fed node set (artifact-decoupling PR-C, C4) -------------------
+
+  test "add_node/3 re-drives a workload held with no node so its base finally builds" do
+    # Under EndpointSlice discovery the builder is SEEDED EMPTY at boot (it cannot
+    # touch Finch at construction), so a workload admitted before any node is
+    # discovered is held {:pending, :no_node}. When NodeRegistry's discovery later
+    # calls add_node, the held workload must re-drive and build.
+    agent = start_recorder()
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap-late", "sha256:late")} end
+
+    builder =
+      start_builder(nodes: [], status_writer: recording_status_writer(agent), build_fun: build_fun)
+
+    # Admitted with NO node: held pending, no build, Ready=False no_node.
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_eventually(fn ->
+      case latest(agent, "w") do
+        nil -> false
+        s -> match?(%{"status" => "False"}, condition(s, "Ready")) and s["snapshotRef"] == nil
+      end
+    end)
+
+    # A node is discovered: the held workload re-drives and its base builds.
+    :ok = BaseBuilder.add_node(builder, "node-4", "node-4:9090")
+
+    assert_eventually(fn ->
+      case latest(agent, "w") do
+        nil -> false
+        s -> s["snapshotRef"] == "snap-late"
+      end
+    end)
+
+    st = BaseBuilder.status(builder)
+    assert st.workloads["w"].node_id == "node-4"
+    assert st.workloads["w"].built
+  end
+
+  test "remove_node/2 unpins a workload placed on the vanished node" do
+    agent = start_recorder()
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    builder =
+      start_builder(nodes: [@node], status_writer: recording_status_writer(agent), build_fun: build_fun)
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_eventually(fn ->
+      case latest(agent, "w") do
+        nil -> false
+        s -> s["snapshotRef"] == "snap1"
+      end
+    end)
+
+    # The node vanishes from discovery: the workload is unpinned (node_id -> nil)
+    # so a later add re-places it, and the node is dropped from the placement set.
+    :ok = BaseBuilder.remove_node(builder, "node-4")
+
+    assert_eventually(fn ->
+      st = BaseBuilder.status(builder)
+      st.workloads["w"].node_id == nil and not Map.has_key?(st.nodes, "node-4")
+    end)
+  end
 end

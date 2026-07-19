@@ -461,4 +461,45 @@ defmodule Embervm.NodeRegistryTest do
     assert Map.has_key?(NodeRegistry.status(reg), "node-a")
     assert NodeRegistry.status(reg)["node-a"].address == "new-ip:9090"
   end
+
+  test "discovery feeds node add/remove to the BaseBuilder (so BuildBase can place)" do
+    # Under discovery the app seeds BaseBuilder EMPTY at boot (it cannot touch Finch
+    # at construction), so discovery MUST push each node to the BaseBuilder or
+    # BuildBase never places a build. This mirrors the NodeChannel propagation.
+    {:ok, disc} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(disc), do: Agent.stop(disc) end)
+
+    {:ok, bb} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(bb), do: Agent.stop(bb) end)
+
+    {reg, _table} =
+      start_registry(
+        watch_startup: true,
+        # Seed EMPTY, exactly as the app does under discovery.
+        nodes: [],
+        connect_fun: fn _addr -> {:ok, :fake_channel} end,
+        watch_fun: fn _ch, node_id, emit ->
+          emit.(node_status(node_id: node_id))
+          receive do: (:never -> {:ok, :closed})
+        end,
+        sync_registry_fun: fn _ch, _id -> :ok end,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        discover_fun: fn -> Agent.get(disc, & &1) end,
+        channel_updater_fun: fn _id, _addr -> :ok end,
+        base_builder_updater_fun: fn msg -> Agent.update(bb, &[msg | &1]) end,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    # A node appears: the BaseBuilder is told to ADD it (with its address).
+    Agent.update(disc, fn _ -> [%{id: "node-a", address: "a.test:9090"}] end)
+    NodeRegistry.discover(reg)
+    eventually(fn -> {:add, "node-a", "a.test:9090"} in Agent.get(bb, & &1) end, 200)
+
+    # The node vanishes: the BaseBuilder is told to REMOVE it.
+    Agent.update(disc, fn _ -> [] end)
+    NodeRegistry.discover(reg)
+    eventually(fn -> {:remove, "node-a"} in Agent.get(bb, & &1) end, 200)
+  end
 end

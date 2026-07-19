@@ -224,6 +224,15 @@ defmodule Embervm.NodeRegistry do
     channel_updater_fun =
       Keyword.get(opts, :channel_updater_fun, &default_channel_update/2)
 
+    # How a discovered node add/remove is propagated to Embervm.BaseBuilder, which
+    # (like NodeChannel) is seeded with an EMPTY node list at boot under discovery
+    # and must learn the fleet so BuildBase can PLACE builds. Without this, a
+    # discovery-configured control plane would never build any base (every workload
+    # holds {:pending, :no_node}). Default calls the singleton BaseBuilder; tests
+    # inject a fake to assert the propagation without a running BaseBuilder.
+    base_builder_updater_fun =
+      Keyword.get(opts, :base_builder_updater_fun, &default_base_builder_update/1)
+
     NodeCapacity.create(table)
 
     now = clock.()
@@ -267,6 +276,7 @@ defmodule Embervm.NodeRegistry do
       discover_fun: discover_fun,
       discover_interval_ms: discover_interval,
       channel_updater_fun: channel_updater_fun,
+      base_builder_updater_fun: base_builder_updater_fun,
       node_runtime: node_runtime,
       # The process notified once per drain rising edge with {:node_draining,
       # node_id, deadline_ms} so it can force-bank the node's live instances before
@@ -296,6 +306,13 @@ defmodule Embervm.NodeRegistry do
       end)
 
     schedule_age_check(state)
+    # Run the FIRST discovery immediately (not after the 30s interval): the app
+    # seeds an EMPTY node list at construction (discovery cannot touch Finch there,
+    # ADR embervm/012 boot ordering), so the fleet only populates once this fires.
+    # By handle_continue time the supervisor has started Finch (NodeRegistry sits
+    # after Finch in the rest_for_one chain), so the K8s list is safe here. A
+    # discover_fun that is nil (pinned override / tests) makes this a no-op.
+    state = reconcile_discovered(state)
     schedule_discover(state)
     {:noreply, state}
   end
@@ -1026,6 +1043,37 @@ defmodule Embervm.NodeRegistry do
     :ok
   end
 
+  # Propagate a discovered node add/remove to the BaseBuilder, swallowing any error
+  # (a BaseBuilder that is not running, a slow call): the fleet still gets WatchNode
+  # capacity via our own streamers, and the next discover tick re-notifies. Never
+  # crash the reconcile on a BaseBuilder hiccup.
+  defp safe_base_builder_update(nil, _msg), do: :ok
+
+  defp safe_base_builder_update(updater, msg) do
+    updater.(msg)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm node registry: base builder update #{inspect(msg)} failed: #{inspect(e)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("embervm node registry: base builder update #{inspect(msg)} exited: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  # Default: add/remove the node on the singleton Embervm.BaseBuilder so BuildBase
+  # placement learns the discovered fleet.
+  defp default_base_builder_update({:add, node_id, address}) do
+    Embervm.BaseBuilder.add_node(node_id, address)
+    :ok
+  end
+
+  defp default_base_builder_update({:remove, node_id}) do
+    Embervm.BaseBuilder.remove_node(node_id)
+    :ok
+  end
+
   # Add a freshly-discovered node (or re-add one at a NEW address after a roll):
   # seed its runtime (mirroring init's shape), propagate the address to the
   # Prime/Assign channel holder so the hot path dials the current endpoint, and
@@ -1048,17 +1096,21 @@ defmodule Embervm.NodeRegistry do
 
     Logger.info("embervm node registry: discovered node #{node_id} (#{address})")
     safe_channel_update(state.channel_updater_fun, node_id, address)
+    safe_base_builder_update(state.base_builder_updater_fun, {:add, node_id, address})
 
     state
     |> put_in([:node_runtime, node_id], rt)
     |> start_streamer(node_id)
   end
 
-  # Remove a node that vanished from discovery: retract its capacity row, kill its
-  # streamer if any (forgetting the pid first so the ensuing DOWN is ignored), and
-  # drop its runtime so no reconnect timer resurrects it.
+  # Remove a node that vanished from discovery: retract its capacity row, tell the
+  # BaseBuilder to drop it, kill its streamer if any (forgetting the pid first so
+  # the ensuing DOWN is ignored), and drop its runtime so no reconnect resurrects
+  # it. (NodeChannel needs no explicit removal: it lazy-dials and invalidates a
+  # dead channel on the next transport error, so a stale map entry is harmless.)
   defp remove_discovered_node(state, node_id) do
     Logger.info("embervm node registry: node #{node_id} vanished from discovery; tearing down")
+    safe_base_builder_update(state.base_builder_updater_fun, {:remove, node_id})
     state = retract_capacity(state, node_id)
 
     state =
