@@ -294,6 +294,25 @@ func startFreshStateful(t *testing.T, s *Server, port uint32, workload string) *
 	return resp
 }
 
+// TestStartStatefulFreshResolvesFromPushedRegistry proves the artifact-decoupling
+// Phase 2 prod condition: with cfg.Images EMPTY, a stateful cold boot resolves its
+// runtime rootfs from the control-plane-PUSHED registry (by the base's runtime
+// image_ref) instead of the config table.
+func TestStartStatefulFreshResolvesFromPushedRegistry(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+
+	s.cfg.Images = map[string]config.Image{}
+	s.registry.sync([]workloadEntry{
+		{Workload: "image:img-a", ImageRef: "img-a", RootfsRef: "/rootfs/a", HarnessInit: "/init"},
+	})
+
+	resp := startFreshStateful(t, s, port, "wl-state")
+	if resp.GetVmId() == "" {
+		t.Fatal("StartStateful(fresh) resolved no VM from the pushed registry")
+	}
+}
+
 func TestStartStatefulFreshCreatesVolumeAndBoots(t *testing.T) {
 	port := tcpHealthServer(t)
 	s, _, fsd := newStatefulTestServer(t)

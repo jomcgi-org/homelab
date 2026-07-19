@@ -473,6 +473,39 @@ func (s *Server) resolveImage(workload, imageRef string) (config.Image, bool) {
 	return img, ok
 }
 
+// resolveImageByRef resolves a RUNTIME image identity strictly by its image_ref
+// (rootfs path + harness init), for the cold-boot paths that name a runtime image
+// directly rather than a workload: serving-fresh (the serving-image inventory's
+// runtimeImageRef), stateful cold-boot (the base's imageDigest, which IS the
+// runtime ref), and a composite group member FRESH (member.image_ref). These are
+// NOT keyed by the serving/stateful/group WORKLOAD (a zip-lane serving workload's
+// own registry entry carries no image_ref, and a composite CR carries multiple
+// member images under one workload), so they must resolve by the runtime ref
+// through the pushed registry's image_ref index, falling back to the legacy
+// cfg.Images table (empty after Phase 2, kept for tests that seed it).
+func (s *Server) resolveImageByRef(imageRef string) (config.Image, bool) {
+	if e, ok := s.registry.getByImageRef(imageRef); ok {
+		return config.Image{RootfsPath: e.RootfsRef, HarnessInit: e.HarnessInit}, true
+	}
+	img, ok := s.cfg.Images[imageRef]
+	return img, ok
+}
+
+// imageProvisioned reports whether a runtime image_ref is still provisioned on
+// this node (the pushed registry knows it by image_ref, or the legacy cfg.Images
+// table does). It gates the NodeStatus capacity filters: a READY base or a
+// serving image whose runtime rootfs is no longer provisioned is NOT advertised,
+// so the control plane never places a wake that would FAILED_PRECONDITION at
+// cold-boot resolution. This mirrors resolveImageByRef's resolution exactly, so
+// "advertised" and "cold-bootable" stay in lockstep. Crucially, with the pushed
+// registry as the source, an empty cfg.Images (the Phase 2 prod condition) no
+// longer wrongly hides every base: a base whose runtime the control plane pushed
+// is provisioned and reported.
+func (s *Server) imageProvisioned(imageRef string) bool {
+	_, ok := s.resolveImageByRef(imageRef)
+	return ok
+}
+
 // ---- BuildBase -------------------------------------------------------------
 
 // BuildBase resolves the image to its node-side rootfs, cold-boots a guest,
@@ -1667,7 +1700,7 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 		// place a wake that fails FAILED_PRECONDITION. BUILDING/FAILED are reported as-is
 		// so the control plane sees progress. Mirrors the serving-image filter below.
 		if b.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
-			if _, ok := s.cfg.Images[b.imageDigest]; !ok {
+			if !s.imageProvisioned(b.imageDigest) {
 				continue
 			}
 		}
@@ -1695,7 +1728,7 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 		// (D-R3.11.3); this makes them harmless to placement. When more than one base
 		// is provisioned (a brief runtime transition), any is cold-bootable, so the
 		// residual nondeterminism cannot cause a 503.
-		if _, ok := s.cfg.Images[si.runtimeImageRef]; !ok {
+		if !s.imageProvisioned(si.runtimeImageRef) {
 			continue
 		}
 		c := get(si.workload)
@@ -1962,13 +1995,19 @@ func (s *Server) ReconcileBasesFromDisk() {
 			continue
 		}
 		// Restore the runtime image ref persisted at build (writeBaseImageRef). A base
-		// whose ref file is missing (built before this was persisted) or whose runtime
-		// image is no longer provisioned (a superseded image tag after a deploy) is not
-		// cold-bootable: a stateful cold boot resolves the rootfs via imageDigest ->
-		// cfg.Images. GC it here so superseded snapshots do not accumulate on node NVMe
-		// (D-R3.11.3) and are never reported to the control plane.
+		// whose ref file is MISSING (built before this was persisted) is not
+		// cold-bootable and is GC'd here. We do NOT gate GC on whether the runtime is
+		// "provisioned": at boot the pushed workload registry is not yet synced (the
+		// control plane replays it only after we connect), so treating an unprovisioned
+		// runtime as "GC the base" would DESTROY every valid warm base on a daemon
+		// restart (the artifact-decoupling Phase 2 prod condition, where cfg.Images is
+		// empty and the registry arrives asynchronously). Instead we register the base
+		// READY and let the NodeStatus capacity filter (imageProvisioned) decide whether
+		// to ADVERTISE it once the registry has synced, so an unprovisioned base is
+		// simply not placed, never deleted. Reclaiming truly-superseded bases is the
+		// PR-G GC's job (D-R3.11.3), not a boot-time reconcile side effect.
 		imageRef := s.readBaseImageRef(baseKey)
-		if _, provisioned := s.cfg.Images[imageRef]; imageRef == "" || !provisioned {
+		if imageRef == "" {
 			if err := os.RemoveAll(filepath.Join(root, baseKey)); err == nil {
 				gc++
 			}

@@ -392,7 +392,7 @@ func (s *Server) groupMemberMAC(groupInstanceID, memberName string, memberIndex 
 // composite member start failed with "not a ready base"; a composite cluster could
 // not boot at all until this resolved the image directly.
 func (s *Server) resolveGroupMemberBoot(source string) (rootfsPath, harnessInit string, err error) {
-	img, ok := s.cfg.Images[source]
+	img, ok := s.resolveImageByRef(source)
 	if !ok {
 		return "", "", status.Errorf(codes.FailedPrecondition, "noded: group member source %q is not a provisioned image on this node", source)
 	}

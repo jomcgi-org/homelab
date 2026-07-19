@@ -73,7 +73,7 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving image %q not provisioned on this node (no cold-boot handler artifact built)", servingImageRef)
 	}
-	img, ok := s.cfg.Images[simg.runtimeImageRef]
+	img, ok := s.resolveImageByRef(simg.runtimeImageRef)
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q for serving image %q not provisioned on this node", simg.runtimeImageRef, servingImageRef)
 	}

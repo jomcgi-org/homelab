@@ -265,7 +265,7 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: boot image %q is not a ready base on this node", bootImageRef)
 	}
-	img, ok := s.cfg.Images[base.imageDigest]
+	img, ok := s.resolveImageByRef(base.imageDigest)
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q for boot image %q not provisioned on this node", base.imageDigest, bootImageRef)
 	}

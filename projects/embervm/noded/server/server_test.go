@@ -1763,39 +1763,93 @@ var (
 	_ transport     = (*fakeTransport)(nil)
 )
 
-// TestReconcileBasesFromDiskRestoresRefAndGCsSuperseded proves the base
+// TestReconcileBasesFromDiskRestoresRefAndGCsRefless proves the base
 // disk-reconcile restores each base's runtime image ref from the persisted
-// imageref file (so a stateful cold boot resolves the rootfs after a daemon
-// restart) and GCs bases whose ref is missing or no longer provisioned
-// (D-R3.11.3), so superseded snapshots neither accumulate on node NVMe nor get
-// advertised to the control plane as bootable.
-func TestReconcileBasesFromDiskRestoresRefAndGCsSuperseded(t *testing.T) {
+// imageref file and ADOPTS it READY, regardless of whether that runtime is
+// currently provisioned. Artifact-decoupling Phase 2: at boot the pushed workload
+// registry is NOT yet synced (the control plane replays it only after connect) and
+// cfg.Images is empty, so GC-on-unprovisioned would DESTROY every valid warm base
+// on a restart. Instead a base with a present ref is adopted READY (the NodeStatus
+// capacity filter, imageProvisioned, decides advertisement once the registry syncs;
+// reclaiming truly-superseded bases is PR-G's job). Only a base with a MISSING ref
+// file (unbootable, cannot resolve a rootfs at all) is GC'd here.
+func TestReconcileBasesFromDiskRestoresRefAndGCsRefless(t *testing.T) {
 	dir := t.TempDir()
 	s := New(Options{
 		Config: config.Config{
 			Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: dir,
-			Images: map[string]config.Image{"img-current": {RootfsPath: "/rootfs/cur"}},
+			// Prod condition: cfg.Images empty (env parse retired). The reconcile must
+			// NOT depend on it to keep a valid on-disk base.
+			Images: map[string]config.Image{},
 		},
 	})
 
 	basesDir := filepath.Join(dir, "bases")
-	writeReconcileBase(t, basesDir, "wl-a__current", "img-current") // provisioned -> adopted
-	writeReconcileBase(t, basesDir, "wl-a__stale", "img-old")       // superseded ref -> GC'd
+	writeReconcileBase(t, basesDir, "wl-a__current", "img-current") // ref present -> adopted READY
+	writeReconcileBase(t, basesDir, "wl-a__stale", "img-old")       // ref present -> adopted READY
 	writeReconcileBase(t, basesDir, "wl-b__noref", "")              // no imageref -> GC'd
 
 	s.ReconcileBasesFromDisk()
 
-	got, ok := s.bases.get("wl-a__current")
-	if !ok || got.imageDigest != "img-current" || got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
-		t.Fatalf("current base = %+v ok=%v; want adopted READY with imageDigest img-current", got, ok)
+	// Both bases with a persisted ref are adopted READY even with an empty
+	// cfg.Images (they are not wrongly wiped before the registry syncs).
+	for _, key := range []string{"wl-a__current", "wl-a__stale"} {
+		got, ok := s.bases.get(key)
+		if !ok || got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+			t.Errorf("base %q = %+v ok=%v; want adopted READY (not wiped before registry sync)", key, got, ok)
+		}
+		if _, err := os.Stat(filepath.Join(basesDir, key)); err != nil {
+			t.Errorf("base dir %q should survive on disk, got stat err %v", key, err)
+		}
 	}
-	for _, gcKey := range []string{"wl-a__stale", "wl-b__noref"} {
-		if _, ok := s.bases.get(gcKey); ok {
-			t.Errorf("base %q should have been GC'd from the registry", gcKey)
+	// The refless base (unbootable) is still GC'd.
+	if _, ok := s.bases.get("wl-b__noref"); ok {
+		t.Error("refless base should have been GC'd from the registry")
+	}
+	if _, err := os.Stat(filepath.Join(basesDir, "wl-b__noref")); !os.IsNotExist(err) {
+		t.Error("refless base dir should have been removed from disk")
+	}
+}
+
+// TestReconcileThenCapacityFilterHidesUnprovisioned proves the two-stage contract:
+// ReconcileBasesFromDisk adopts a base READY even when its runtime is not yet
+// provisioned, and the NodeStatus capacity filter then HIDES it until the pushed
+// registry knows its runtime (image_ref), so an unadvertised base is never placed
+// but also never deleted. Once the registry is synced, the base is advertised.
+func TestReconcileThenCapacityFilterHidesUnprovisioned(t *testing.T) {
+	dir := t.TempDir()
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: dir,
+			Images: map[string]config.Image{},
+		},
+	})
+	basesDir := filepath.Join(dir, "bases")
+	writeReconcileBase(t, basesDir, "wl-a__current", "img-current")
+	s.ReconcileBasesFromDisk()
+
+	// Before any registry sync: the base is adopted but NOT advertised (its runtime
+	// is unprovisioned), so no capacity entry names it as bootable.
+	caps := s.workloadCapacities(map[string][]string{})
+	for _, c := range caps {
+		if c.GetSnapshotRef() == "wl-a__current" {
+			t.Fatal("base should not be advertised before its runtime is provisioned")
 		}
-		if _, err := os.Stat(filepath.Join(basesDir, gcKey)); !os.IsNotExist(err) {
-			t.Errorf("base dir %q should have been removed from disk", gcKey)
+	}
+
+	// After the control plane pushes the runtime identity, the base is advertised.
+	s.registry.sync([]workloadEntry{
+		{Workload: "image:img-current", ImageRef: "img-current", RootfsRef: "/rootfs/cur"},
+	})
+	caps = s.workloadCapacities(map[string][]string{})
+	advertised := false
+	for _, c := range caps {
+		if c.GetSnapshotRef() == "wl-a__current" && c.GetBaseState() == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+			advertised = true
 		}
+	}
+	if !advertised {
+		t.Error("base should be advertised READY once its runtime is provisioned via the pushed registry")
 	}
 }
 
