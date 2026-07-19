@@ -66,6 +66,27 @@ rate-limited at Envoy (120/min) and by a daily 3600 vCPU-second quota.
 The full threat model is in
 [ADR embervm/001](../../docs/decisions/embervm/001-embervm-beam-firecracker-workload-orchestrator.md).
 
+## Node taint (one-time operator action)
+
+FC nodes carry guest memory, so general workloads must never compete for it.
+The chart gives noded and the serving relay a toleration for the FC-node taint
+(`embervm.jomcgi.dev/node=true:NoSchedule`); the taint itself is applied to the
+node by hand, once, because a node taint is node-lifecycle config (the same
+class as joining the node), not a GitOps-managed resource, so the "never
+kubectl-mutate managed resources" rule does not apply.
+
+**Ordering matters: tolerations first, taint second, never the reverse.** Apply
+the taint only AFTER the chart version carrying the tolerations is live,
+otherwise Kubernetes evicts noded and the relay off the node the moment it is
+tainted. Once the tolerations are rolled out:
+
+```bash
+kubectl taint nodes node-4 embervm.jomcgi.dev/node=true:NoSchedule
+```
+
+To remove it (e.g. reclaiming the node): `kubectl taint nodes node-4
+embervm.jomcgi.dev/node=true:NoSchedule-`.
+
 ## Roadmap
 
 The milestone log with full candour, including post-ship defects and what
