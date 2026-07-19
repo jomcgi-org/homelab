@@ -752,12 +752,12 @@ noded:
     # guest path is a tmpfs, so one read-only rootfs file backs every microVM.
     kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
 
-  # Explicit node-side image identity overrides (image_ref -> {rootfsPath,
-  # harnessInit}). Normally empty: the table is DERIVED from the top-level
-  # `workloads` map + each workload's `<name>.guestImage` (see
-  # noded-deployment.yaml), so the ref matches the rootfs-builder and the Workload
-  # CR automatically. Entries here merge on top.
-  images: {}
+  # (Artifact-decoupling Phase 2: the node-side image identity table that USED to
+  # be rendered into the daemon's EMBERVM_NODED_IMAGES env from `noded.images` +
+  # the `workloads` map is retired. The control plane now owns image identity and
+  # PUSHES it to each daemon over SyncRegistry, rendered into the control plane's
+  # EMBERVM_NODE_IMAGE_IDENTITY env from the SAME `workloads` values. No
+  # noded-side images value remains.)
 
   # Graceful-drain budget (R6 bounded preemption, ADR embervm/009): on SIGTERM the
   # daemon publishes a drain deadline (now + this) via NodeStatus and HOLDS the
