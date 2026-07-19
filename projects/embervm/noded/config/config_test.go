@@ -197,39 +197,62 @@ func TestLoadServingOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadImagesInline(t *testing.T) {
+// TestLoadImagesAlwaysEmpty proves the artifact-decoupling Phase 2 retirement of
+// the EMBERVM_NODED_IMAGES env parse: even when the (now-ignored) env is set, the
+// resolved Images table is empty. Workload identity is PUSHED over SyncRegistry,
+// not parsed here.
+func TestLoadImagesAlwaysEmpty(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_IMAGES", `{"ghcr.io/x/echo:1":{"rootfsPath":"/x"}}`)
 	t.Setenv("EMBERVM_NODED_IMAGES_FILE", "")
-	t.Setenv("EMBERVM_NODED_IMAGES", `{"ghcr.io/x/echo:1":{"rootfsPath":"/disks/nvme-02/echo/rootfs.ext4","harnessInit":"/usr/local/bin/echo-init"}}`)
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	img, ok := c.Images["ghcr.io/x/echo:1"]
-	if !ok {
-		t.Fatalf("image not parsed: %v", c.Images)
-	}
-	if img.RootfsPath != "/disks/nvme-02/echo/rootfs.ext4" {
-		t.Errorf("RootfsPath = %q", img.RootfsPath)
-	}
-	if img.HarnessInit != "/usr/local/bin/echo-init" {
-		t.Errorf("HarnessInit = %q", img.HarnessInit)
+	if len(c.Images) != 0 {
+		t.Errorf("Images = %v, want empty (env parse retired)", c.Images)
 	}
 }
 
-func TestLoadImagesFilePrecedence(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "images.json")
-	if err := os.WriteFile(path, []byte(`{"img:2":{"rootfsPath":"/from/file"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("EMBERVM_NODED_IMAGES_FILE", path)
-	t.Setenv("EMBERVM_NODED_IMAGES", `{"img:2":{"rootfsPath":"/from/inline"}}`)
+// TestLoadRegistryCacheDerivedFromNvmeRoot proves the registry cache path is
+// derived alongside SnapshotRoot: SnapshotRoot is <nvmeRoot>/embervm-noded/
+// snapshots, so the cache lands at <nvmeRoot>/embervm-noded/registry.json.
+func TestLoadRegistryCacheDerivedFromNvmeRoot(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_REGISTRY_CACHE", "")
+	t.Setenv("EMBERVM_NODED_SNAPSHOT_ROOT", "/disks/nvme-02/embervm-noded/snapshots")
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := c.Images["img:2"].RootfsPath; got != "/from/file" {
-		t.Errorf("file should take precedence over inline, got %q", got)
+	if want := "/disks/nvme-02/embervm-noded/registry.json"; c.RegistryCachePath != want {
+		t.Errorf("RegistryCachePath = %q, want %q", c.RegistryCachePath, want)
+	}
+}
+
+// TestLoadRegistryCacheOverride proves EMBERVM_NODED_REGISTRY_CACHE wins over the
+// derived path (the test/out-of-tree override).
+func TestLoadRegistryCacheOverride(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_REGISTRY_CACHE", "/tmp/custom/registry.json")
+	t.Setenv("EMBERVM_NODED_SNAPSHOT_ROOT", "/disks/nvme-02/embervm-noded/snapshots")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.RegistryCachePath != "/tmp/custom/registry.json" {
+		t.Errorf("RegistryCachePath = %q, want the override", c.RegistryCachePath)
+	}
+}
+
+// TestLoadRegistryCacheDisabledWithoutNvmeRoot proves that with neither the
+// override nor a SnapshotRoot set, persistence is disabled (empty path).
+func TestLoadRegistryCacheDisabledWithoutNvmeRoot(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_REGISTRY_CACHE", "")
+	t.Setenv("EMBERVM_NODED_SNAPSHOT_ROOT", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.RegistryCachePath != "" {
+		t.Errorf("RegistryCachePath = %q, want empty (no NVMe root)", c.RegistryCachePath)
 	}
 }
 
@@ -237,13 +260,5 @@ func TestLoadRejectsBadDuration(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_DRAIN_TIMEOUT", "not-a-duration")
 	if _, err := Load(); err == nil {
 		t.Error("Load should reject a malformed duration")
-	}
-}
-
-func TestLoadRejectsBadImagesJSON(t *testing.T) {
-	t.Setenv("EMBERVM_NODED_IMAGES_FILE", "")
-	t.Setenv("EMBERVM_NODED_IMAGES", `{not json`)
-	if _, err := Load(); err == nil {
-		t.Error("Load should reject malformed images JSON")
 	}
 }

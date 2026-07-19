@@ -60,7 +60,7 @@ func run(logger *slog.Logger) error {
 	logger.Info("embervm-noded starting",
 		"listen", cfg.ListenAddr, "health", cfg.HealthAddr,
 		"node", cfg.Node, "arch", cfg.Arch,
-		"maxLiveVMs", cfg.MaxLiveVMs, "images", len(cfg.Images))
+		"maxLiveVMs", cfg.MaxLiveVMs, "registryCache", cfg.RegistryCachePath)
 
 	self, err := os.Executable()
 	if err != nil {
@@ -235,7 +235,7 @@ func run(logger *slog.Logger) error {
 	// not warrant gRPC health-checking machinery).
 	health := &http.Server{
 		Addr:              cfg.HealthAddr,
-		Handler:           healthHandler(),
+		Handler:           healthHandler(srv),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -339,12 +339,29 @@ func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 	}, nil)
 }
 
-// healthHandler answers 200 on /healthz for kubelet probes.
-func healthHandler() http.Handler {
+// healthHandler answers the kubelet probes. /healthz is LIVENESS: it is 200 as
+// soon as the process is up (the daemon is alive and should not be restarted).
+// /readyz is READINESS: it is 200 only AFTER the control plane has replayed the
+// workload registry over SyncRegistry (artifact-decoupling Phase 2). Gating
+// readiness on the registry replay means Service traffic never reaches a pod with
+// an empty registry: a freshly (re)started noded is live but not ready until it
+// has been told what it can serve. A daemon serving a STALE boot-cache registry
+// is deliberately NOT ready (it serves existing warmth but admits no new work, ADR
+// embervm/012); only a live sync flips it ready.
+func healthHandler(srv *server.Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if srv.RegistrySynced() {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ready"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("registry not synced"))
 	})
 	return mux
 }

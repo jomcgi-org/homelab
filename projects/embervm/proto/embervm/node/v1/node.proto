@@ -93,6 +93,41 @@ service NodeService {
   // reported so the control plane reconciles rather than rebuilding).
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
 
+  // -- Workload registry verbs (artifact-decoupling Phase 2, ADDITIVE) -------
+  //
+  // The daemon holds NO workload table of its own (config.go carries only node
+  // substrate paths now, never an image identity table). The control plane
+  // PUSHES the workload registry over these three verbs, so a daemon boots with
+  // an EMPTY registry and does not admit work until the control plane has
+  // replayed the authoritative set on (re)connect. This retires the
+  // EMBERVM_NODED_IMAGES env table: image identity (rootfs ref, harness init,
+  // sizing) now arrives over the wire, keyed by workload, from the control
+  // plane's op-log-backed workload view. The verbs are additive: a daemon that
+  // never receives one keeps its (empty) registry, and every pre-existing RPC is
+  // byte-for-byte unchanged.
+
+  // SyncRegistry pushes the AUTHORITATIVE full workload set. The daemon converges
+  // its in-memory registry to EXACTLY the pushed entries: an entry present locally
+  // but absent from the push is DROPPED, an entry present in the push is
+  // added-or-updated. This is the reconcile primitive the control plane calls once
+  // per daemon (re)connect after the adoption handshake, so a daemon that missed
+  // an incremental Register/Deregister while disconnected re-converges to truth.
+  // Idempotent under replay: applying the same set twice is a no-op. The response
+  // echoes the resulting entry count for the control plane's own correlation.
+  rpc SyncRegistry(SyncRegistryRequest) returns (SyncRegistryResponse);
+
+  // RegisterWorkload adds-or-updates ONE registry entry, an incremental
+  // optimization over a full SyncRegistry when a single workload is provisioned.
+  // Idempotent: re-registering the same entry overwrites in place. The control
+  // plane still owns convergence via SyncRegistry; this only shortens the common
+  // single-workload path.
+  rpc RegisterWorkload(RegisterWorkloadRequest) returns (RegisterWorkloadResponse);
+
+  // DeregisterWorkload removes ONE registry entry by workload name, the
+  // incremental counterpart of RegisterWorkload. Idempotent: deregistering an
+  // absent workload is a no-op (the desired end-state already holds).
+  rpc DeregisterWorkload(DeregisterWorkloadRequest) returns (DeregisterWorkloadResponse);
+
   // -- Session verbs (R2) ----------------------------------------------------
   //
   // These four verbs are the stateful-session lifecycle vocabulary, ADDITIVE to
@@ -1072,6 +1107,74 @@ message WatchNodeRequest {
 
 message GetNodeStatusRequest {
   string node_id = 1;
+}
+
+// ---- Workload registry (artifact-decoupling Phase 2) -----------------------
+
+// RegistryEntry is the node-side identity of ONE workload the daemon can build a
+// base for and prime/serve, pushed by the control plane over SyncRegistry /
+// RegisterWorkload. It carries exactly what the retired EMBERVM_NODED_IMAGES env
+// table carried per image (rootfs path, harness init) plus the resolved image
+// digest and the base VM sizing, keyed by workload rather than by image ref. The
+// daemon interprets these node-side facts (a rootfs path is on-disk, an
+// image_digest is opaque); the control plane owns their values.
+message RegistryEntry {
+  // workload is the CR name this entry is for and the registry key: SyncRegistry
+  // converges on the set of workloads, Deregister removes by this name.
+  string workload = 1;
+  // image_digest is the resolved OCI digest of the workload's guest image (the
+  // identity BuildBase records and the store keys rootfs artifacts under). Opaque
+  // to the daemon beyond equality.
+  string image_digest = 2;
+  // rootfs_ref is the node-side reference to the base rootfs the guest boots
+  // read-only. It is the digest-keyed on-disk ext4 the rootfs builder / store
+  // restore produced (PR-A/PR-B), the same value the retired EMBERVM_NODED_IMAGES
+  // table's rootfsPath held. Empty means the daemon falls back to its
+  // configured/default rootfs resolution.
+  string rootfs_ref = 3;
+  // harness_init is the in-guest PID-1 init path the kernel boots into for this
+  // workload. Empty falls back to the daemon-global HarnessInit (config.go).
+  string harness_init = 4;
+  // sizing is the base VM resource shape (vcpus, mem) the workload's base is built
+  // at, mirroring the Workload CR resources block. A zero ResourceSpec means the
+  // daemon defers to the per-BuildBase request resources (wire-compatible).
+  ResourceSpec sizing = 5;
+}
+
+// SyncRegistryRequest carries the AUTHORITATIVE full workload set the daemon must
+// converge to. Entries not present are dropped; entries present are
+// added-or-updated (see rpc SyncRegistry).
+message SyncRegistryRequest {
+  repeated RegistryEntry entries = 1;
+  Trace trace = 2;
+}
+
+// SyncRegistryResponse echoes the resulting registry size after convergence, for
+// the control plane's correlation and logging. entry_count == len(entries).
+message SyncRegistryResponse {
+  uint32 entry_count = 1;
+}
+
+// RegisterWorkloadRequest adds-or-updates one registry entry incrementally.
+message RegisterWorkloadRequest {
+  RegistryEntry entry = 1;
+  Trace trace = 2;
+}
+
+// RegisterWorkloadResponse echoes the resulting registry size after the add.
+message RegisterWorkloadResponse {
+  uint32 entry_count = 1;
+}
+
+// DeregisterWorkloadRequest removes one registry entry by workload name.
+message DeregisterWorkloadRequest {
+  string workload = 1;
+  Trace trace = 2;
+}
+
+// DeregisterWorkloadResponse echoes the resulting registry size after the removal.
+message DeregisterWorkloadResponse {
+  uint32 entry_count = 1;
 }
 
 // WorkloadCapacity is the daemon's per-workload capacity view: how many primed

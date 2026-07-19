@@ -163,8 +163,13 @@ type Server struct {
 	// over the pod network. Overridable in tests (a fake archive server).
 	httpClient *http.Client
 
-	vms          *vmRegistry
-	bases        *baseRegistry
+	vms   *vmRegistry
+	bases *baseRegistry
+	// registry is the control-plane-pushed workload table (artifact-decoupling
+	// Phase 2). The daemon boots with it empty (or a STALE boot-cache load) and
+	// admits no new work until the control plane replays it over SyncRegistry
+	// (readiness gate). It replaces the retired EMBERVM_NODED_IMAGES config table.
+	registry     *workloadRegistry
 	sessionVMs   *sessionRegistry
 	sessionSnap  *sessionSnapshotRegistry
 	servingVMs   *servingRegistry
@@ -356,6 +361,7 @@ func New(opts Options) *Server {
 		logger:          logger,
 		vms:             newVMRegistry(),
 		bases:           newBaseRegistry(),
+		registry:        newWorkloadRegistry(opts.Config.RegistryCachePath),
 		sessionVMs:      newSessionRegistry(),
 		sessionSnap:     newSessionSnapshotRegistry(),
 		servingVMs:      newServingRegistry(),
@@ -424,6 +430,15 @@ func New(opts Options) *Server {
 			})
 		}
 	}
+	// Load the last-synced workload registry from NVMe and mark it STALE (ADR
+	// embervm/012, never warm-to-dead): a restarted daemon serves the warm pool it
+	// already knew from the cached table while it waits for the control plane to
+	// reconnect and replay, but readiness stays gated on the FIRST live SyncRegistry
+	// so no NEW work is admitted against a stale table. A missing or corrupt cache
+	// boots an empty registry (persistCache/loadCache never crash-loop).
+	if s.registry.loadCache() {
+		logger.Info("workload registry loaded from cache (stale until first live sync)", "entries", s.registry.count())
+	}
 	// The fetch timeout is the per-attempt bound; a per-request context (below)
 	// enforces the same budget so a slow filer cannot pin a build.
 	s.httpClient = &http.Client{Timeout: opts.Config.ArchiveFetchTimeout}
@@ -431,6 +446,23 @@ func New(opts Options) *Server {
 }
 
 var _ nodev1.NodeServiceServer = (*Server)(nil)
+
+// resolveImage resolves a workload's node-side image identity (rootfs path,
+// harness init) for a BuildBase. It consults the CONTROL-PLANE-PUSHED workload
+// registry first (keyed by workload, carrying rootfs_ref + harness_init from the
+// SyncRegistry entry), which is the artifact-decoupling authority now that
+// EMBERVM_NODED_IMAGES is retired. It falls back to the legacy image_ref-keyed
+// cfg.Images table (always empty after Phase 2, but kept so the resolution is a
+// superset and a test that still seeds cfg.Images keeps working). Returns
+// (identity, true) when either source knows the workload/image, (zero, false)
+// otherwise, which BuildBase maps to FAILED_PRECONDITION.
+func (s *Server) resolveImage(workload, imageRef string) (config.Image, bool) {
+	if e, ok := s.registry.get(workload); ok {
+		return config.Image{RootfsPath: e.RootfsRef, HarnessInit: e.HarnessInit}, true
+	}
+	img, ok := s.cfg.Images[imageRef]
+	return img, ok
+}
 
 // ---- BuildBase -------------------------------------------------------------
 
@@ -460,9 +492,9 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 		return nil, status.Error(codes.InvalidArgument, "noded: image_ref required")
 	}
 	workload := req.GetTrace().GetWorkload()
-	img, ok := s.cfg.Images[imageRef]
+	img, ok := s.resolveImage(workload, imageRef)
 	if !ok {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: image %q not provisioned on this node", imageRef)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: image %q (workload %q) not provisioned on this node", imageRef, workload)
 	}
 	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor)
 	// The control plane records the resolved image identity; without an OCI pull
@@ -491,9 +523,9 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 		return nil, status.Error(codes.InvalidArgument, "noded: zip.archive_sha256 required")
 	}
 	workload := req.GetTrace().GetWorkload()
-	img, ok := s.cfg.Images[runtimeRef]
+	img, ok := s.resolveImage(workload, runtimeRef)
 	if !ok {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q not provisioned on this node", runtimeRef)
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q (workload %q) not provisioned on this node", runtimeRef, workload)
 	}
 	// Idempotency key is (runtime image digest, archive sha256): a re-registration
 	// of the SAME archive on the SAME runtime is a no-op hit. The runtime ref is
@@ -1269,6 +1301,55 @@ func (s *Server) evictServingSnapshot(ref string) (*nodev1.EvictSnapshotResponse
 	s.servingSnap.remove(ref)
 	s.signalChange()
 	return &nodev1.EvictSnapshotResponse{}, nil
+}
+
+// ---- Workload registry (artifact-decoupling Phase 2) -----------------------
+
+// SyncRegistry converges the daemon's in-memory workload registry to EXACTLY the
+// pushed set (entries absent are dropped, entries present are added-or-updated),
+// marks the registry synced (clearing the readiness gate), and clears any stale
+// boot-cache mark. Idempotent under replay. The control plane calls this once per
+// (re)connect after the adoption handshake so a daemon that missed incremental
+// pushes while disconnected re-converges to truth.
+func (s *Server) SyncRegistry(_ context.Context, req *nodev1.SyncRegistryRequest) (*nodev1.SyncRegistryResponse, error) {
+	entries := make([]workloadEntry, 0, len(req.GetEntries()))
+	for _, e := range req.GetEntries() {
+		entries = append(entries, entryFromProto(e))
+	}
+	n := s.registry.sync(entries)
+	s.logger.Info("workload registry synced", "entries", n)
+	// A sync can flip the daemon ready; wake any WatchNode observers so the
+	// control plane sees the new registry-derived facts promptly.
+	s.signalChange()
+	return &nodev1.SyncRegistryResponse{EntryCount: uint32(n)}, nil
+}
+
+// RegisterWorkload adds-or-updates one registry entry incrementally. It does not
+// clear the readiness gate (only a full SyncRegistry is the authoritative replay
+// the gate waits for). Idempotent.
+func (s *Server) RegisterWorkload(_ context.Context, req *nodev1.RegisterWorkloadRequest) (*nodev1.RegisterWorkloadResponse, error) {
+	entry := req.GetEntry()
+	if entry == nil || entry.GetWorkload() == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: entry.workload required")
+	}
+	n := s.registry.register(entryFromProto(entry))
+	s.signalChange()
+	return &nodev1.RegisterWorkloadResponse{EntryCount: uint32(n)}, nil
+}
+
+// DeregisterWorkload removes one registry entry by workload name. Idempotent on
+// an absent workload.
+func (s *Server) DeregisterWorkload(_ context.Context, req *nodev1.DeregisterWorkloadRequest) (*nodev1.DeregisterWorkloadResponse, error) {
+	n := s.registry.deregister(req.GetWorkload())
+	s.signalChange()
+	return &nodev1.DeregisterWorkloadResponse{EntryCount: uint32(n)}, nil
+}
+
+// RegistrySynced reports whether the daemon has received its registry replay
+// (the readiness gate: traffic never reaches a pod with an empty registry). The
+// daemon entrypoint's /readyz probe reads it.
+func (s *Server) RegistrySynced() bool {
+	return s.registry.isSynced()
 }
 
 // ---- Node status -----------------------------------------------------------

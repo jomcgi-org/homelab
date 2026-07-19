@@ -3,14 +3,18 @@
 // loader, reshaped for the fork: there is NO workload table here. Concurrency,
 // egress posture, and warm-pool sizing are the control plane's concern now and
 // arrive per-call over the gRPC contract; the daemon reads only node-side
-// substrate paths, a node-level backstop cap, and a small image->rootfs identity
-// table (the one thing the gRPC BuildBase request deliberately does not carry:
-// "Node-side image identity (rootfs path, harness init) is daemon configuration").
+// substrate paths and a node-level backstop cap.
+//
+// Artifact-decoupling Phase 2: the image->rootfs identity table that USED to live
+// here (EMBERVM_NODED_IMAGES) is retired. Workload identity (rootfs ref, harness
+// init, sizing) is now PUSHED by the control plane over the SyncRegistry verb, so
+// the daemon boots with an EMPTY registry and readiness gates on the first replay.
+// The only registry-related config left here is the NVMe cache PATH the daemon
+// persists the last-synced table to (never-warm-to-dead, ADR embervm/012).
 package config
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -123,11 +127,23 @@ type Config struct {
 	// this is only a size backstop. Default 512 MiB.
 	ArchiveMaxBytes int64
 
-	// Images maps a gRPC BuildBase image_ref to its node-side identity. Parsed
-	// from EMBERVM_NODED_IMAGES (inline JSON object) or _FILE (path, precedence).
-	// Empty is valid: BuildBase for an unknown image fails FAILED_PRECONDITION,
-	// which is correct until the control plane provisions images (Task 11+).
+	// Images maps a gRPC BuildBase image_ref to its node-side identity. It is now
+	// ALWAYS EMPTY at load time (artifact-decoupling Phase 2 retired the
+	// EMBERVM_NODED_IMAGES env parse): workload identity is PUSHED by the control
+	// plane over SyncRegistry and held in the server's in-memory workload registry,
+	// which the image-resolution paths consult first. The field is retained (empty)
+	// so the legacy image_ref-keyed resolution fallbacks compile unchanged until a
+	// later PR migrates every consumer to the pushed registry.
 	Images map[string]Image
+
+	// RegistryCachePath is where the daemon persists the last control-plane-pushed
+	// workload registry (never-warm-to-dead, ADR embervm/012). On boot the daemon
+	// loads it (marked STALE: serves existing warmth, admits no new work) and the
+	// first live SyncRegistry clears the stale mark. Derived from the NVMe root
+	// (alongside SnapshotRoot) as <nvmeRoot>/embervm-noded/registry.json when unset
+	// and SnapshotRoot is set; override with EMBERVM_NODED_REGISTRY_CACHE (tests).
+	// Empty disables persistence entirely (a daemon with no NVMe root).
+	RegistryCachePath string
 
 	// PodIP is noded's own routable pod IP (injected via the Downward API as
 	// EMBERVM_NODED_POD_IP / status.podIP). Serving endpoints are projected as
@@ -300,42 +316,21 @@ func Load() (Config, error) {
 		c.ArchiveMaxBytes = n
 	}
 
-	images, err := loadImages()
-	if err != nil {
-		return Config{}, err
+	// Artifact-decoupling Phase 2: the workload registry is PUSHED, not parsed from
+	// env. Images always starts empty; the pushed table (server.workloadRegistry)
+	// is the authority the image-resolution paths consult.
+	c.Images = map[string]Image{}
+
+	// Registry cache path: explicit override, else derive alongside SnapshotRoot
+	// under the NVMe root (SnapshotRoot is <nvmeRoot>/embervm-noded/snapshots, so
+	// its parent is <nvmeRoot>/embervm-noded). Empty when neither is set (no NVMe
+	// root: persistence disabled, the daemon simply always waits for a live sync).
+	c.RegistryCachePath = os.Getenv("EMBERVM_NODED_REGISTRY_CACHE")
+	if c.RegistryCachePath == "" && c.SnapshotRoot != "" {
+		c.RegistryCachePath = filepath.Join(filepath.Dir(c.SnapshotRoot), "registry.json")
 	}
-	c.Images = images
 
 	return c, nil
-}
-
-// loadImages parses the image identity table from EMBERVM_NODED_IMAGES_FILE (if
-// set, takes precedence) or EMBERVM_NODED_IMAGES (inline JSON object). An absent
-// or empty source yields an empty map without error.
-func loadImages() (map[string]Image, error) {
-	var raw []byte
-	source := "EMBERVM_NODED_IMAGES"
-	if filePath := os.Getenv("EMBERVM_NODED_IMAGES_FILE"); filePath != "" {
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("reading EMBERVM_NODED_IMAGES_FILE %q: %w", filePath, err)
-		}
-		raw = data
-		source = "file " + filePath
-	} else if inline := os.Getenv("EMBERVM_NODED_IMAGES"); inline != "" {
-		raw = []byte(inline)
-	}
-	if len(raw) == 0 {
-		return map[string]Image{}, nil
-	}
-	var table map[string]Image
-	if err := json.Unmarshal(raw, &table); err != nil {
-		return nil, fmt.Errorf("parsing images JSON from %s: %w", source, err)
-	}
-	if table == nil {
-		return map[string]Image{}, nil
-	}
-	return table, nil
 }
 
 // vendorUnsafe strips anything but letters/digits from an unrecognised
