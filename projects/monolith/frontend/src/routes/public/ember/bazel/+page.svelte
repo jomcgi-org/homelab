@@ -514,13 +514,17 @@
 
       {#if result}
         {#if analyzedParts.before || analyzedParts.marker}
-          <p class="proof-line">
-            <span class="proof-check" aria-hidden="true">✓</span
-            >{analyzedParts.before}{#if analyzedParts.marker}<span class="proof-frag"
-                >{analyzedParts.marker}</span
-              >{/if}{analyzedParts.after} - no re-analysis, straight from the
-            snapshot's memory
-          </p>
+          <div class="proof">
+            <p class="proof-line">
+              <span class="proof-check" aria-hidden="true">✓</span
+              >{analyzedParts.before}{#if analyzedParts.marker}<span
+                  class="proof-frag">{analyzedParts.marker}</span
+                >{/if}{analyzedParts.after}
+            </p>
+            <p class="proof-caption">
+              no re-analysis, straight from the snapshot's memory
+            </p>
+          </div>
         {/if}
 
         <div class="result-card">
@@ -908,10 +912,17 @@
     word-break: break-word;
   }
 
-  /* Proof of reuse: a single compact green check line, not a panel. Positive
-     result, so it uses the page-level --em-good tokens (defined on
-     .ember-site), never the ember salmon reserved for the run-error box. The
-     "(0 packages loaded, ...)" fragment sits in a soft green pill. */
+  /* Proof of reuse: two compact green lines, not a panel. Positive result, so
+     it uses the --em-good tokens (defined in ember.css), never the ember salmon
+     reserved for the run-error box. Line 1 is bazel's own Analyzed sentence
+     with the "(0 packages loaded, ...)" fragment in a soft green pill; line 2
+     is the smaller muted gloss beneath it. */
+  .proof {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
   .proof-line {
     margin: 0;
     font-family: var(--em-mono);
@@ -932,6 +943,13 @@
     color: var(--em-good-deep);
     border-radius: 5px;
     padding: 1px 7px;
+  }
+
+  .proof-caption {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--em-faint);
   }
 
   .result-card {
