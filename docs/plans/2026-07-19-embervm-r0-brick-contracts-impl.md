@@ -5,10 +5,11 @@
 **Goal:** Implement the remaining "build now (R0)" interface contracts from
 [ADR embervm/005](../decisions/embervm/005-embervm-eks-scale-out-metal-pool-bricks.md)
 so that brick-tier capacity (multi-daemon Deployments, EmberPool count vector)
-becomes a values change on EKS-day instead of a rewrite, and so the resize
-tier decided in [ADR embervm/012](../decisions/embervm/012-fleet-colocation-cp-dynamic-sizing.md)
-has the budget-agnostic daemon it assumes. Sizing rules and the substrate-lane
-taxonomy are recorded in
+becomes a values change on EKS-day instead of a rewrite; bricks are the
+capacity unit on BOTH tiers (ADR 013 section 7 as amended, 2026-07-19); the
+resize tier is retired, and these three PRs are now the direct prerequisites
+of the homelab brick capacity PR, not EKS-day insurance. Sizing rules and the
+substrate-lane taxonomy are recorded in
 [ADR embervm/013](../decisions/embervm/013-substrate-lanes-brick-sizing-capacity-tiers.md).
 
 **What is already done or tracked elsewhere (do not duplicate):**
@@ -56,8 +57,8 @@ advisory `readMemHeadroomMib()` (`noded/server/server.go:2357-2371`), and
 `CpuHeadroomMillicores` is hard-coded 0 (`server.go:1514`, the README
 roadmap gap). After this PR the daemon reads its ceiling from its own cgroup
 at start and on refresh, so static, resize, and brick tiers are deployment
-choices against one binary (ADR 005 item 4; the precondition for ADR 012's
-resize loop, where the CP moves the cgroup and the daemon must notice).
+choices against one binary (ADR 005 item 4; the reader now feeds the
+per-size-class slot ceiling (bricks), not a resize loop).
 
 ### Task 1.1: cgroup budget reader
 
@@ -315,7 +316,7 @@ later, not archaeology. Nothing in this PR makes scaling decisions.
   the same tiers as OTel gauges on the existing telemetry path)
 - Modify: `projects/embervm/control/config/runtime.exs` (a
   `desired_capacity` config seam: today a static map read at boot, the
-  slot the EmberPool controller or resize loop later writes; unset means
+  slot the brick-count controller later writes; unset means
   "no opinion", and nothing acts on it yet)
 - Modify: `projects/embervm/README.md` (roadmap: mark the R0 contracts
   landed, pointing at ADR 005/013 and this plan)
@@ -326,8 +327,7 @@ later, not archaeology. Nothing in this PR makes scaling decisions.
    instance for budget/headroom, so SigNoz can graph demand vs capacity
    before any controller exists.
 2. The knob is deliberately inert: a typed config value plus a log line at
-   boot. Acting on it is the EKS-day EmberPool controller or the ADR 012
-   resize loop, out of scope here.
+   boot. Acting on it is the brick-count controller, out of scope here.
 
 **Tests:** `gauges-emitted-per-tier`, `desired-capacity-parses-and-noops`.
 

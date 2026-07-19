@@ -1,7 +1,7 @@
 # ADR 013: Substrate Lanes, Brick Sizing, and the Capacity Tier Ladder
 
 **Author:** Joe McGinley
-**Status:** Accepted
+**Status:** Accepted (amended 2026-07-19: section 7 tier ladder collapsed to bricks on both tiers)
 **Created:** 2026-07-19
 **Refines:** [001-embervm-beam-firecracker-workload-orchestrator](001-embervm-beam-firecracker-workload-orchestrator.md), [005-embervm-eks-scale-out-metal-pool-bricks](005-embervm-eks-scale-out-metal-pool-bricks.md), [012-fleet-colocation-cp-dynamic-sizing](012-fleet-colocation-cp-dynamic-sizing.md)
 
@@ -135,22 +135,40 @@ healthy (many nearly-full small bricks). The dispatcher's capacity ledger
 tracks per-brick headroom, not per-node or per-class aggregates, and refill
 placement selects a brick, not a node.
 
-### 7. The capacity tier ladder: resize on fixed fleets, bricks on autoscaled ones
+### 7. Bricks everywhere: one capacity unit, two Pending-brick consumers
 
-The budget-agnostic daemon (reads its ceiling from its own cgroup; ADR 005)
-is the shared contract that makes the capacity mechanism a **deployment
-choice per environment, one binary, no code fork**:
+(Amended 2026-07-19. The tier ladder this section originally recorded,
+resize on fixed fleets and bricks on autoscaled ones, is collapsed. CP-owned
+in-place resize is dropped entirely, on both tiers.)
 
-| Environment | Mechanism | Why |
-| ----------- | --------- | --- |
-| Fixed fleet (homelab, ADR 012) | CP-owned in-place resize of per-node daemons | No autoscaler to signal; continuous honest requests are finer-grained than brick quantization; resize-not-satisfiable doubles as placement refusal |
-| Autoscaled pool (EKS, ADR 005) | Fixed-size brick Deployments, EmberPool count vector | A Pending brick is the only signal Karpenter converts into a node; a Deferred resize signals nothing |
+**Fixed-size size-class bricks are the single capacity unit everywhere.** The
+budget-agnostic daemon (reads its ceiling from its own cgroup; ADR 005)
+remains the shared contract, now with a simpler consequence: a brick's slot
+count per size-class is derived from its own cgroup budget, not configured,
+so one binary serves every environment and `maxLiveVMs` is the brick's
+cgroup-derived slot ceiling, never a control-plane knob.
 
-This resolves the apparent 005/012 contradiction: neither supersedes the
-other; the tier is selected by whether node capacity is elastic.
+The fleet capacity signal on both tiers is a **brick count vector per
+size-class**, set by the single-writer EmberPool-style controller (ADR 005).
+kube-scheduler places bricks; the control plane places VMs into brick slots
+by selecting a brick with contiguous headroom (section 6). The only tier
+difference is what consumes a Pending brick:
 
-Demand composition for the brick tier restates ADR 005's discipline as the
-EmberPool controller's operating rule: **forecast as little as possible,
+| Environment | Pending-brick consumer | Semantics |
+| ----------- | ---------------------- | --------- |
+| Autoscaled pool (EKS, ADR 005) | Karpenter | A Pending brick becomes a node |
+| Fixed fleet (homelab, ADR 012) | Nobody | A Pending brick IS the fleet-full signal: refuse placement, page a human |
+
+What this buys: no CP cross-node placement engine beyond find-a-brick-with-a-
+free-slot, no resize loop, no pods/resize RBAC, no grow-eager/shrink-lazy
+policy, and no second capacity code path to keep honest. What it costs is
+stated plainly and accepted eyes-open: brick quantization waste on a
+four-node fleet where continuous resize would have been finer-grained. The
+single simplest mechanism is chosen over the finer one, and over a
+bricks-plus-resize-refinement synthesis, deliberately.
+
+Demand composition is unchanged and now applies on both tiers, restated as
+the EmberPool controller's operating rule: **forecast as little as possible,
 consume known load exactly**. Per-workload provisioned-concurrency floors are
 arithmetic (they sum to a deterministic base per class); committed-future
 load (cron firings, queued tasks with declared sizes) is read off the
@@ -197,7 +215,7 @@ graph TB
 | Hyperlight as a new class now | Its semantics are task semantics; a new class adds taxonomy for a cost structure change, and no workload demands it yet |
 | Per-workload Deployments + HPA as the capacity unit | Fragments the warm pool into workload-bound reservations, adds N actuators fighting the single-writer EmberPool controller, and HPA's CPU signal is wrong for VM-slot demand |
 | All-small brick portfolio | A brick must hold the largest VM of its class; serving/session VMs exceed a small brick's budget |
-| Bricks on the homelab today | On a fixed fleet the resize tier (ADR 012) is strictly finer-grained and the Pending-pod autoscaler signal has no consumer |
+| CP-owned in-place resize on the fixed fleet (this ADR's original section 7 ladder) | Superseded 2026-07-19: bricks on the homelab were originally rejected here as coarser than resize; that is inverted. Two capacity mechanisms for one platform is the real cost; resize adds a control loop, pods/resize RBAC, and a shrink-may-restart hazard to buy granularity a small fleet does not need. The Pending brick, unconsumed, is itself the fleet-full signal |
 
 ---
 
@@ -221,7 +239,7 @@ not the load-bearing wall.
 | Hyperlight pre-1.0 API churn invalidates the recorded design | Medium | Low | Nothing is built; revisit the option against upstream state when demand appears |
 | A Rust brick daemon adds a toolchain to the repo | Medium | Low | Gated on demand; the gRPC contract keeps it a leaf, not a dependency of noded |
 | 4-8x sizing rule mis-fits the real VM size distribution | Medium | Medium | Sizes are values-level knobs on the budget-agnostic daemon; revisit with occupancy data from the ledger |
-| Tier ladder drifts into two daemon code paths | Low | High | The budget-agnostic contract is the guard: one binary, budget always read from the cgroup, tier chosen by deployment |
+| Brick quantization strands capacity on the small fixed fleet | Medium | Medium | Sizes are values-level knobs on the budget-agnostic daemon; a Pending brick pages a human instead of silently overcommitting; revisit sizes with occupancy data from the per-brick ledger |
 | Per-request serving class built speculatively | Low | Medium | Explicit demand gate recorded here; the class does not exist until a workload needs per-request hardware boundaries |
 
 ---

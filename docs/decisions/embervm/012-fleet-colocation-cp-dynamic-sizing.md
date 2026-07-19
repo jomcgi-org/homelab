@@ -1,7 +1,7 @@
 # ADR 012: Fleet Co-Location on the etcd Masters and CP-Managed Dynamic Sizing
 
 **Author:** Joe McGinley
-**Status:** Accepted
+**Status:** Accepted (amended 2026-07-19: dynamic sizing retired; bricks are the capacity unit per ADR 013 section 7 as amended)
 **Created:** 2026-07-19
 **Refines:** [009-roadmap-extension-continuity-before-tenancy](009-roadmap-extension-continuity-before-tenancy.md), [011-distribution-longhorn-fencing-cp-rollouts](011-distribution-longhorn-fencing-cp-rollouts.md)
 
@@ -58,35 +58,38 @@ which bounds, but does not eliminate, the pressure a runaway can put on a
 master. Anyone importing this design into a cluster whose etcd is precious
 must not import this clause.
 
-### Guest capacity becomes scheduler-visible: cgroup-bounded guests plus CP-owned in-place resize
+### Guest capacity becomes scheduler-visible: size-class bricks with cgroup-derived slot ceilings
 
-Firecracker VMs are noded's child processes and live inside noded's pod
-cgroup, so the pod's resource envelope already bounds them physically. What
-was missing is the scheduler's view: a fixed noded request with a huge limit
-(the current 256Mi request / 36Gi ceiling) makes guest memory invisible to
-bin-packing, which was tolerable on a dedicated node and is not tolerable on
-shared masters.
+(Amended 2026-07-19; the original text here committed to a CP-owned in-place
+resize loop. That mechanism is retired, unbuilt, in favor of the brick model
+on both tiers; see ADR 013 section 7 as amended. The draft resize
+implementation, PR #3715, is closed unmerged and shelved.)
 
-The control plane closes that gap with Kubernetes in-place pod resize
-(InPlacePodVerticalScaling, the pods/resize subresource, stable in the
-cluster's 1.35): a CP resize control loop adjusts each noded pod's memory and
-CPU request AND limit to reflect the guest capacity it has provisioned or
-committed on that node. Guest memory is thereby honest in the scheduler's
-ledger. The policy is grow-eager / shrink-lazy: grow aggressively ahead of
-placement (an in-place grow is cheap and safe), shrink reluctantly (lowering
-memory in place may require a pod restart, which is exactly the disruption
-this platform exists to avoid). A resize the kubelet cannot satisfy is a
-placement refusal: the control plane treats resize-not-satisfiable as
-"this node cannot take the workload" and places elsewhere, rather than
-overcommitting.
+Firecracker VMs are noded's child processes and live inside their brick
+pod's cgroup, so the pod's resource envelope already bounds them physically.
+The scheduler's view is made honest not by resizing pods but by the brick
+shape itself: noded ships as fixed-size size-class brick Deployments (small
+for dense task packing, large sized to hold 1 to 2 serving/session VMs, ADR
+013 section 5) with static, honest requests. kube-scheduler bin-packs bricks
+across the four nodes exactly as it packs any workload. The control plane
+sets a brick count vector per size-class and places VMs into brick slots,
+selecting a brick with contiguous headroom (ADR 013 section 6). Each brick
+is budget-agnostic: it reads its ceiling from its own cgroup, and
+maxLiveVMs becomes the brick's cgroup-derived slot ceiling per size-class,
+not a control-plane-resized knob and not a values-file capacity model.
 
-This replaces fixed static sizing (maxLiveVMs as a capacity model, the
-hand-computed 36Gi ceiling arithmetic) with a live capacity ledger owned by
-the thing that already owns placement. New machinery this commits to: the
-resize control loop, pods/resize RBAC for the control plane, and the
-refusal-on-unsatisfiable policy.
+A brick the scheduler cannot place stays Pending, and on this fixed fleet
+that IS the capacity edge: the controller treats an unsatisfiable count
+increase as fleet-full, the dispatcher refuses placement, and a human is
+paged, rather than overcommitting. No resize loop, no pods/resize RBAC, and
+no grow-eager/shrink-lazy policy exists on any tier.
 
-Because guest memory is scheduler-visible, **no hard FC taint is needed**.
+This replaces both the hand-computed 36Gi ceiling arithmetic and the resize
+loop this ADR originally committed to. What is given up relative to resize
+is brick quantization waste on a small fleet, accepted deliberately (ADR 013
+section 7).
+
+Because brick requests are honest by construction, **no hard FC taint is needed**.
 All four nodes are labeled as FC nodes and the scheduler bin-packs guests and
 platform workloads together on honest requests, with the disposable priority
 class as the pressure valve. The taint machinery PR-A shipped is simply never
@@ -160,9 +163,10 @@ engineered rather than endured.
 
 ### Control-plane-managed deployments, with a DaemonSet bridge
 
-The target is unchanged from the seed: the control plane authors one noded
-Deployment per registered node and owns roll choreography; the chart's static
-noded Deployment is deleted. Until that lands, the interim bridge is a
+The target is amended from the seed: the control plane authors size-class
+brick Deployments over the FC-labeled pool (not one Deployment per node;
+kube-scheduler owns node assignment) and owns roll choreography; the chart's
+static noded workload resource is deleted. Until that lands, the interim bridge is a
 DaemonSet over the FC-labeled nodes, which gets noded onto all four nodes
 now. The bridge accepts plainer rolling-update semantics in the interim; the
 single node-pinned Deployment cannot reach the masters and a per-node Helm
@@ -212,17 +216,19 @@ What is given up:
   by the GitOps-plus-S3 recovery model. This is the headline trade and it is
   accepted eyes-open, not incidentally.
 - Exclusive-node simplicity. Without a taint, correctness of co-existence
-  rests on the resize loop keeping requests honest; a bug there overcommits a
-  master rather than being caught by a scheduling fence.
-- In-place shrink is not free. Memory shrink may require a restart, so
-  released capacity is reclaimed lazily; the ledger can run temporarily fat.
+  rests on brick requests being honest, which they are by construction
+  (fixed size, cgroup bounded); the residual failure mode is quantization
+  waste stranding capacity, not overcommit.
+- Brick quantization is not free. Capacity moves in brick-sized steps; a
+  mostly-empty brick holds its full envelope until the controller lowers the
+  count and a brick drains.
 - Legacy durable artifacts never gain mobility. Grandfathered banks stay
   pinned to their cutting node for life; only newly stamped artifacts
   participate in distribution.
 
 What stays true:
 
-- The hit/miss invariant (ADR 009): resize, registry push, export, restore
+- The hit/miss invariant (ADR 009): brick scaling, registry push, export, restore
   are lifecycle actions; the request hot path is untouched.
 - Vendor-bound warmth and single-writer fencing (ADR 011) are unchanged;
   this ADR adds nodes to the pools, not exceptions to the rules.

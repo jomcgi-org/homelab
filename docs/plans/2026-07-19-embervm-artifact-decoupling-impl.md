@@ -28,6 +28,17 @@ placement packs the masters; PR-B/PR-D complete the artifact pipeline; PR-F is s
 rolls; PR-J is the HA control plane; PR-H (Phase 7) retires the interim DaemonSet;
 PR-G (GC) is last.
 
+**Amended 2026-07-19:** CP-owned in-place resize is dropped (ADR 013 section 7 as
+amended). PR-I is SHELVED; draft PR #3715 closed unmerged. PR-H is reshaped: the
+control plane manages size-class brick Deployments (not per-node Deployments),
+including the brick-count controller and slot-based placement; it absorbs the
+capacity role PR-I held. PR-F's instance identity is pod_uid (no CP-issued
+instance_id handshake). PR-B (rootfs via S3 store) is the distribution enabler for
+brick utilization and lands beside the brick capacity PR. Landing order: A (shipped),
+C (shipped), then {generic-scratch, R0 PR-1/2, PR-E, demo-fix} in parallel, R0 PR-3,
+brick-capacity (ex-H) with B and D beside it, then F, J, G. The R0 brick-contracts
+plan's PR-1/2/3 are prerequisites of the brick-capacity PR.
+
 **Landing order and dependencies (one line each):**
 
 1. **PR-A** (Phase 0 quick wins): SHIPPED; the taint runbook it added is now a
@@ -386,6 +397,9 @@ bump, CI, review, merge.
 
 ## PR-I: CP-owned dynamic per-node sizing (in-place resize) (NEW, cross-cutting)
 
+**SHELVED (2026-07-19 amendment, #3715 closed unmerged); superseded by the brick
+capacity PR.**
+
 Branch: `feat/embervm-dynamic-sizing`. Depends on PR-C (the DaemonSet puts noded on
 the masters); MUST be live before placement packs the masters, because honest
 scheduler-visible requests are what replaces the FC taint (ADR 012). Replaces fixed
@@ -512,6 +526,9 @@ review, merge.
 ---
 
 ## PR-H: Phase 7, control-plane-managed node deployments
+
+**Reshaped by the 2026-07-19 amendment: size-class brick Deployments plus count
+controller plus slot placement; see ADR 013 section 7 as amended.**
 
 Branch: `feat/embervm-cp-node-deployments`. Gates only on PR-C (clean after PR-B's
 init deletion); replaces the interim DaemonSet bridge from C4. Near-last to land
