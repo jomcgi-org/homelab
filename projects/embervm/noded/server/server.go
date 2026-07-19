@@ -1492,6 +1492,7 @@ func (s *Server) volumesStatus() []*nodev1.Volume {
 			AllocatedBytes:     v.AllocatedBytes,
 			Attached:           v.Attached,
 			ExportedGeneration: exportedGen,
+			GenerationBlessed:  v.GenerationBlessed,
 		})
 	}
 	return out

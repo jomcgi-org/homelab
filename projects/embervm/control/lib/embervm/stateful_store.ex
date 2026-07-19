@@ -52,6 +52,37 @@ defmodule Embervm.StatefulStore do
   instance whose pair is broken (reason `pair_broken`). This module owns the
   primitive only; a later task owns the sweep cadence that calls it.
 
+  ## generation blessing and quarantine (R7, ADR embervm/011)
+
+  Standing decision 4 inverts who issues a volume's generation: the control
+  plane is now the SOLE issuer (`bless_generation/3`), and the daemon records
+  what it is told rather than inventing a value. `next_blessed_generation/2`
+  reads the volume row's `blessed_generation` (the last value THIS control
+  plane blessed, durable via the `generation_blessed` op) and returns one past
+  it; `bless_generation/3` appends that op BEFORE the caller dispatches the
+  boot request (see `Embervm.StatefulManager.plan_wake/2`'s ordering comment:
+  op-log-before-dispatch is the fence, a crash between the two leaves a
+  harmlessly-unused blessed number, never a hole).
+
+  A volume is QUARANTINED when a node reports its generation has moved PAST
+  the last value this control plane blessed, with `generation_blessed: false`
+  on the wire (a self-bump the daemon made outside the blessing ledger, e.g. a
+  legacy noded that has not yet enabled `EMBERVM_NODED_REQUIRE_BLESSING`, or a
+  split-brain write). `upsert_volume/3` derives `quarantined` on every node
+  refresh: true when the reported generation exceeds `blessed_generation` AND
+  the node's own `generation_blessed` fact is false; a node reporting
+  `generation_blessed: true` at or below the blessed watermark clears it. Once
+  quarantined, `Embervm.StatefulManager.plan_wake/2` parks the wake rather than
+  placing it (fail closed, no auto-heal in v1: resolution is a runbook
+  decision). A volume that has NEVER been blessed (no CP generation-blessing op
+  ever landed, e.g. every pre-R7 volume) has `blessed_generation` nil and is
+  NEVER quarantined by this alone: `quarantined?/2` treats nil as "not yet
+  under CP governance" rather than "behind it", so an existing volume is
+  grandfathered the first time it is reported (adoption seeds the ledger from
+  that eager first NodeStatus in `Embervm.StatefulManager.plan_wake/2` before
+  any quarantine check runs), never punished retroactively for predating
+  blessing.
+
   ## unpublish is ETS-only (a decision)
 
   Unlike `ServingStore.unpublish/3`, which is durable (`serving_unpublished` ->
@@ -78,6 +109,7 @@ defmodule Embervm.StatefulStore do
   """
 
   use GenServer
+  require Logger
 
   alias Embervm.OpLog.Op
   alias Embervm.StatefulState
@@ -310,11 +342,71 @@ defmodule Embervm.StatefulStore do
   written by the op-log's `volume_created` projection; this is the live-fact
   primitive Task 8 drives from NodeStatus scrapes, the way `set_health/2` /
   `touch_active/3` update lossy node facts). Merges the given fields over any
-  existing row (or inserts a fresh one). Returns the merged volume row.
+  existing row (or inserts a fresh one). When `fields` carries
+  `generation_blessed` (R7, the node's per-volume wire fact), also derives and
+  merges `quarantined` per the moduledoc's rule (a reported generation past the
+  last CP-blessed one, with `generation_blessed: false`, quarantines; anything
+  else clears it). Returns the merged volume row.
   """
   @spec upsert_volume(GenServer.server(), String.t(), map()) :: map()
   def upsert_volume(store \\ __MODULE__, workload, fields) do
     GenServer.call(store, {:upsert_volume, workload, fields})
+  end
+
+  @doc """
+  The next generation this control plane should bless for `workload`'s volume:
+  one past the volume row's durable `blessed_generation` (nil/absent reads as 0,
+  so the very first blessing for a never-blessed volume is 1). A PURE ETS read;
+  it does not append anything (see `bless_generation/3`).
+  """
+  @spec next_blessed_generation(GenServer.server(), String.t()) :: pos_integer()
+  def next_blessed_generation(store \\ __MODULE__, workload) do
+    GenServer.call(store, {:next_blessed_generation, workload})
+  end
+
+  @doc """
+  Durably records that this control plane is about to issue `generation` as
+  `workload`'s next writable-attach generation (R7, ADR embervm/011): appends
+  the `generation_blessed` op (write-through) and, only on success, bumps the
+  ETS volume row's `blessed_generation` to `generation` and clears
+  `quarantined` (a fresh CP-issued blessing is by definition not behind
+  itself). MUST be called BEFORE the caller dispatches the boot request
+  carrying this value as `blessed_generation` (the op-log-before-dispatch
+  fence; see `Embervm.StatefulManager.plan_wake/2`). Returns `{:ok, volume}` or
+  `{:error, reason}` on an append failure (the caller must not dispatch a boot
+  whose blessing never durably landed).
+  """
+  @spec bless_generation(GenServer.server(), String.t(), pos_integer()) :: {:ok, map()} | {:error, term()}
+  def bless_generation(store \\ __MODULE__, workload, generation) do
+    GenServer.call(store, {:bless_generation, workload, generation})
+  end
+
+  @doc """
+  Whether `workload`'s volume is currently quarantined (R7): a node reported a
+  generation past this control plane's last blessed one with
+  `generation_blessed: false` on the wire. False for an unknown volume (nothing
+  to quarantine) and false for a volume that has never been blessed (see the
+  moduledoc's grandfather note). A PURE ETS read of the flag `upsert_volume/3`
+  derives; this never recomputes it.
+  """
+  @spec quarantined?(GenServer.server(), String.t()) :: boolean()
+  def quarantined?(store \\ __MODULE__, workload) do
+    GenServer.call(store, {:quarantined?, workload})
+  end
+
+  @doc """
+  Seeds `workload`'s blessed-generation watermark to `generation` WITHOUT
+  appending an op-log entry, iff the volume has never been blessed
+  (`blessed_generation` nil/absent). This is the adoption grandfather path (R7):
+  the FIRST NodeStatus report for a pre-R7 (or otherwise never-blessed) volume
+  seeds the ledger from the node's own eager report rather than quarantining a
+  volume that predates blessing entirely. A no-op (returns the existing row
+  unchanged) once a volume has ever been blessed, so it can never roll a real
+  watermark backward or paper over a genuine post-blessing divergence.
+  """
+  @spec seed_blessed_generation_if_unset(GenServer.server(), String.t(), non_neg_integer()) :: map() | nil
+  def seed_blessed_generation_if_unset(store \\ __MODULE__, workload, generation) do
+    GenServer.call(store, {:seed_blessed_generation_if_unset, workload, generation})
   end
 
   @doc """
@@ -470,6 +562,13 @@ defmodule Embervm.StatefulStore do
       generation: vol.generation || 0,
       size_bytes: vol.size_bytes,
       allocated_bytes: vol.allocated_bytes,
+      # blessed_generation is durable (the generation_blessed op projection);
+      # quarantined is NOT (it is derived from a node's live report, see
+      # derive_quarantine/2), so a rebuild always starts un-quarantined and lets
+      # the next NodeStatus refresh re-derive it, exactly like `healthy` for a
+      # stateful instance.
+      blessed_generation: Map.get(vol, :blessed_generation),
+      quarantined: false,
       updated_at: vol.updated_at
     }
   end
@@ -631,12 +730,84 @@ defmodule Embervm.StatefulStore do
           generation: 0,
           size_bytes: nil,
           allocated_bytes: nil,
+          blessed_generation: nil,
+          quarantined: false,
           updated_at: ts
         }
 
-    merged = base |> Map.merge(fields) |> Map.put(:workload, workload) |> Map.put(:updated_at, ts)
+    merged =
+      base
+      |> Map.merge(fields)
+      |> Map.put(:workload, workload)
+      |> Map.put(:updated_at, ts)
+      |> derive_quarantine(fields)
+
+    log_quarantine_transition(base, merged, workload)
+
     :ets.insert(state.volumes, {workload, merged})
     {:reply, merged, state}
+  end
+
+  def handle_call({:next_blessed_generation, workload}, _from, state) do
+    current = (fetch_volume(state, workload) || %{}) |> Map.get(:blessed_generation, 0) || 0
+    {:reply, current + 1, state}
+  end
+
+  def handle_call({:bless_generation, workload, generation}, _from, state) do
+    ts = state.clock.()
+
+    op = %Op{
+      kind: :generation_blessed,
+      tenant: "homelab",
+      # No per-request caller crosses this boundary (the wake plan issues the
+      # blessing internally); the op's principal records the workload's
+      # synthesized system owner, matching every other stateful lifecycle op.
+      principal: "system:stateful:#{workload}",
+      workload: workload,
+      ts: ts,
+      payload: %{generation: generation}
+    }
+
+    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      {:ok, _seq} ->
+        base = fetch_volume(state, workload) || %{workload: workload, generation: 0}
+
+        merged =
+          base
+          |> Map.put(:blessed_generation, generation)
+          |> Map.put(:quarantined, false)
+          |> Map.put(:workload, workload)
+          |> Map.put(:updated_at, ts)
+
+        :ets.insert(state.volumes, {workload, merged})
+        {:reply, {:ok, merged}, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:quarantined?, workload}, _from, state) do
+    quarantined? = (fetch_volume(state, workload) || %{}) |> Map.get(:quarantined, false) || false
+    {:reply, quarantined?, state}
+  end
+
+  def handle_call({:seed_blessed_generation_if_unset, workload, generation}, _from, state) do
+    case fetch_volume(state, workload) do
+      %{blessed_generation: bg} = volume when is_integer(bg) ->
+        {:reply, volume, state}
+
+      volume ->
+        merged =
+          (volume || %{workload: workload, generation: generation})
+          |> Map.put(:blessed_generation, generation)
+          |> Map.put(:quarantined, false)
+          |> Map.put(:workload, workload)
+          |> Map.put(:updated_at, state.clock.())
+
+        :ets.insert(state.volumes, {workload, merged})
+        {:reply, merged, state}
+    end
   end
 
   def handle_call({:create_volume, workload, fields}, _from, state) do
@@ -1086,6 +1257,48 @@ defmodule Embervm.StatefulStore do
       [] -> nil
     end
   end
+
+  # Derive the merged volume row's `quarantined` flag from the node fact carried
+  # in THIS upsert's `fields` (not the merged row: `generation_blessed` is a
+  # per-report wire fact, never a durable ETS field of its own, so it must be
+  # read off the incoming report). Quarantined iff the report says the volume is
+  # NOT blessed (`generation_blessed == false` on the wire) AND its generation is
+  # STRICTLY PAST the last generation this control plane blessed. A volume never
+  # blessed at all (`blessed_generation` nil) never quarantines here (the
+  # moduledoc's grandfather rule: nil means "not yet under CP governance", not
+  # "behind it"). Absent `generation_blessed` in `fields` (an upsert that carries
+  # no fresh node report, e.g. bump_volume_ets's real-time mirror) leaves the
+  # existing `quarantined` value untouched.
+  defp derive_quarantine(merged, fields) do
+    case Map.get(fields, :generation_blessed) do
+      nil ->
+        merged
+
+      blessed_on_wire ->
+        blessed_gen = Map.get(merged, :blessed_generation)
+        reported_gen = Map.get(merged, :generation, 0)
+
+        quarantined? =
+          not blessed_on_wire and is_integer(blessed_gen) and reported_gen > blessed_gen
+
+        Map.put(merged, :quarantined, quarantined?)
+    end
+  end
+
+  # Structured warning on a false -> true quarantine transition ONLY (Task 16's
+  # alert wiring reads this event name; a simple Logger.warning is all this
+  # task owns, per the plan). Never logs on an already-quarantined or a
+  # never-quarantined report, so a workload stuck quarantined does not spam.
+  defp log_quarantine_transition(%{quarantined: was}, %{quarantined: true} = merged, workload) when was != true do
+    Logger.warning("embervm stateful volume quarantined: unblessed generation reported past the last blessed one",
+      event: :generation_quarantined,
+      workload: workload,
+      generation: Map.get(merged, :generation),
+      blessed_generation: Map.get(merged, :blessed_generation)
+    )
+  end
+
+  defp log_quarantine_transition(_base, _merged, _workload), do: :ok
 
   # Bump the ETS volume row's pair-key generation to the value an attach (a
   # cold/fresh boot or a relight) just booted the volume at, in REAL TIME. Every

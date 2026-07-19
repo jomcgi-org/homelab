@@ -412,4 +412,86 @@ defmodule Embervm.StatefulStoreTest do
     assert sf_b.state == :banked
     assert sf_b.snapshot_generation == 2
   end
+
+  # -- generation blessing (R7, ADR embervm/011, standing decision 4) ---------
+
+  test "next_blessed_generation is 1 for a never-blessed workload and increments monotonically", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 1
+
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 1)
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 2
+
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 2)
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 3
+  end
+
+  test "bless_generation durably appends generation_blessed and updates the volume row", %{path: path} do
+    {op_log, store} = start_pair(path)
+
+    assert {:ok, volume} = StatefulStore.bless_generation(store, "wl-a", 1)
+    assert volume.blessed_generation == 1
+    refute volume.quarantined
+
+    {:ok, [op]} = SQLite.read_from(op_log, 0)
+    assert op.kind == :generation_blessed
+    assert op.workload == "wl-a"
+    assert op.payload.generation == 1
+
+    # A rebuild sees the durable blessed_generation.
+    {:ok, store2} = StatefulStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
+    assert StatefulStore.get_volume(store2, "wl-a").blessed_generation == 1
+  end
+
+  test "upsert_volume quarantines a report past the last blessed generation with generation_blessed: false", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 4, generation_blessed: false})
+    assert StatefulStore.quarantined?(store, "wl-a")
+    assert StatefulStore.get_volume(store, "wl-a").quarantined
+
+    # A report agreeing with the blessed watermark (or claiming the CURRENT
+    # generation IS blessed) clears it.
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 3, generation_blessed: false})
+    refute StatefulStore.quarantined?(store, "wl-a")
+
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 4)
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 4, generation_blessed: true})
+    refute StatefulStore.quarantined?(store, "wl-a")
+  end
+
+  test "a never-blessed volume (blessed_generation nil) never quarantines from a report alone", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 5})
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 5, generation_blessed: false})
+    refute StatefulStore.quarantined?(store, "wl-a")
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 9, generation_blessed: false})
+    refute StatefulStore.quarantined?(store, "wl-a")
+  end
+
+  test "quarantined? is false for an unknown workload", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    refute StatefulStore.quarantined?(store, "no-such-workload")
+  end
+
+  test "seed_blessed_generation_if_unset seeds a never-blessed volume from its first eager report and never rolls a real watermark backward", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 7})
+
+    seeded = StatefulStore.seed_blessed_generation_if_unset(store, "wl-a", 7)
+    assert seeded.blessed_generation == 7
+    refute seeded.quarantined
+
+    # A once-blessed volume is never touched by the seed path again, even if a
+    # caller passes a different value.
+    unchanged = StatefulStore.seed_blessed_generation_if_unset(store, "wl-a", 99)
+    assert unchanged.blessed_generation == 7
+
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-b", 2)
+    still_blessed = StatefulStore.seed_blessed_generation_if_unset(store, "wl-b", 1)
+    assert still_blessed.blessed_generation == 2
+  end
 end

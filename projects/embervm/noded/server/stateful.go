@@ -44,13 +44,15 @@ const (
 // StartStateful brings up the stateful VM with the workload's volume attached
 // writable, attaching a tap NIC exactly as StartServing does, and health-gates
 // by TCP CONNECT to {ip, port} (serving/probe_tcp.go's TCPProber), not HTTP: the
-// stateful contract is opaque L4 (decision 4). Every mode bumps the volume's
-// generation ledger BEFORE the VM boots (volume.Manager.BumpGeneration), so any
-// writable attach the daemon witnesses is unconditionally reflected in the pair
-// key even if the boot that follows fails; there is no un-bump. A readiness
-// failure DESTROYS the VM, releases the tap, and DETACHES the volume (but never
-// rolls the generation back) and returns FAILED_PRECONDITION: there is no
-// half-alive endpoint a caller could observe or publish.
+// stateful contract is opaque L4 (decision 4). Every mode advances the volume's
+// generation ledger BEFORE the VM boots (via attachGeneration: RecordBlessed
+// when the request carries a nonzero blessed_generation, R7 ADR embervm/011,
+// or the legacy self-bump otherwise), so any writable attach the daemon
+// witnesses is unconditionally reflected in the pair key even if the boot that
+// follows fails; there is no un-bump. A readiness failure DESTROYS the VM,
+// releases the tap, and DETACHES the volume (but never rolls the generation
+// back) and returns FAILED_PRECONDITION: there is no half-alive endpoint a
+// caller could observe or publish.
 func (s *Server) StartStateful(ctx context.Context, req *nodev1.StartStatefulRequest) (*nodev1.StartStatefulResponse, error) {
 	if s.servingNet == nil || s.servingDriver == nil || s.statefulDriver == nil || s.volumes == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: stateful not configured")
@@ -80,6 +82,32 @@ func (s *Server) StartStateful(ctx context.Context, req *nodev1.StartStatefulReq
 	default:
 		return nil, status.Error(codes.InvalidArgument, "noded: StartStateful mode must be FRESH, RELIGHT, or COLD")
 	}
+}
+
+// attachGeneration resolves the generation a writable attach records, per R7
+// standing decision 4 (the control plane becomes the sole issuer). A nonzero
+// blessedGeneration on the request is recorded via volume.Manager.RecordBlessed
+// (the CP-issued value, never invented here). Zero means the legacy self-bump
+// lane: allowed only while s.cfg.RequireBlessing is false, and rejected
+// FAILED_PRECONDITION once it is true (the chart flips RequireBlessing in the
+// same version the control plane starts blessing, so a mixed state cannot
+// outlive the roll).
+func (s *Server) attachGeneration(workload string, blessedGeneration uint64) (uint64, error) {
+	if blessedGeneration > 0 {
+		gen, err := s.volumes.RecordBlessed(workload, blessedGeneration)
+		if err != nil {
+			return 0, status.Errorf(codes.Internal, "noded: record blessed generation for %q: %v", workload, err)
+		}
+		return gen, nil
+	}
+	if s.cfg.RequireBlessing {
+		return 0, status.Errorf(codes.FailedPrecondition, "noded: writable attach for %q requires a blessed_generation (EMBERVM_NODED_REQUIRE_BLESSING is set)", workload)
+	}
+	gen, err := s.volumes.BumpGeneration(workload)
+	if err != nil {
+		return 0, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)
+	}
+	return gen, nil
 }
 
 // startStatefulFresh creates the workload's volume if absent (refusing
@@ -179,9 +207,9 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 			s.volumes.Detach(workload)
 		}
 	}()
-	gen, err := s.volumes.BumpGeneration(workload)
+	gen, err := s.attachGeneration(workload, req.GetBlessedGeneration())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)
+		return nil, err
 	}
 
 	// Re-acquire the SAME tap IP the bundle was banked with, exactly as serving
@@ -262,9 +290,9 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 			s.volumes.Detach(workload)
 		}
 	}()
-	gen, err := s.volumes.BumpGeneration(workload)
+	gen, err := s.attachGeneration(workload, req.GetBlessedGeneration())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)
+		return nil, err
 	}
 
 	tap, ip, err := s.servingNet.AllocateTap(ctx)

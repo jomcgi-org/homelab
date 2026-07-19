@@ -786,6 +786,14 @@ noded:
     endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
     bucket: embervm
 
+  # R7 (ADR embervm/011, standing decision 4): the control plane becomes the
+  # sole issuer of volume generations. true rejects a writable attach carrying
+  # blessed_generation == 0 (a legacy self-bump) FAILED_PRECONDITION; this chart
+  # deploys BOTH the control plane and noded, so setting this true here lands
+  # in the exact version the control plane starts blessing, never a mixed
+  # CP/noded state.
+  requireBlessing: true
+
   # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
   # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it
   # does not overcommit node scheduling, exactly like fc-invoke's 50Gi cap.

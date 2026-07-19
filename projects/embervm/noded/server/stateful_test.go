@@ -404,6 +404,78 @@ func TestStartStatefulGenerationBumpedBeforeBootAndNotRolledBackOnFailure(t *tes
 	}
 }
 
+// TestStartStatefulBlessedGenerationRecordedVerbatim proves a nonzero
+// blessed_generation on the request (R7, ADR embervm/011) is recorded onto
+// the ledger EXACTLY as issued, not self-bumped, and the volume reads blessed
+// afterward.
+func TestStartStatefulBlessedGenerationRecordedVerbatim(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+
+	resp, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace:             &nodev1.Trace{Workload: "wl-state"},
+		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
+		BootImageRef:      "img-a",
+		Port:              port,
+		VolumeSizeBytes:   1 << 20,
+		VolumeMount:       "/data",
+		CreateIfMissing:   true,
+		BlessedGeneration: 7,
+	})
+	if err != nil {
+		t.Fatalf("StartStateful(fresh, blessed): %v", err)
+	}
+	if resp.GetGeneration() != 7 {
+		t.Errorf("generation = %d want 7 (the control-plane-issued blessed_generation, recorded verbatim)", resp.GetGeneration())
+	}
+	if !s.volumes.GenerationBlessed("wl-state") {
+		t.Error("volume should read as blessed after a blessed FRESH attach")
+	}
+	ns := s.nodeStatus()
+	if len(ns.GetVolumes()) != 1 || !ns.GetVolumes()[0].GetGenerationBlessed() {
+		t.Errorf("NodeStatus volumes = %+v want one volume with generation_blessed=true", ns.GetVolumes())
+	}
+}
+
+// TestStartStatefulUnblessedRejectedWhenRequireBlessingSet proves that once
+// the daemon's EMBERVM_NODED_REQUIRE_BLESSING flag is on, a writable attach
+// carrying blessed_generation == 0 is refused FAILED_PRECONDITION rather than
+// falling back to a legacy self-bump.
+func TestStartStatefulUnblessedRejectedWhenRequireBlessingSet(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+	s.cfg.RequireBlessing = true
+
+	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Trace:           &nodev1.Trace{Workload: "wl-state"},
+		Mode:            nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
+		BootImageRef:    "img-a",
+		Port:            port,
+		VolumeSizeBytes: 1 << 20,
+		VolumeMount:     "/data",
+		CreateIfMissing: true,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unblessed attach with RequireBlessing set: got %v want FailedPrecondition", err)
+	}
+}
+
+// TestStartStatefulUnblessedAllowedWhenRequireBlessingUnset proves the legacy
+// self-bump lane still works while RequireBlessing is false (the default
+// during a rollout where the control plane has not yet started blessing).
+func TestStartStatefulUnblessedAllowedWhenRequireBlessingUnset(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, _ := newStatefulTestServer(t)
+
+	resp := startFreshStateful(t, s, port, "wl-state")
+	if resp.GetGeneration() != 1 {
+		t.Errorf("generation = %d want 1 (legacy self-bump)", resp.GetGeneration())
+	}
+	if s.volumes.GenerationBlessed("wl-state") {
+		t.Error("a legacy self-bumped attach must not read as blessed")
+	}
+}
+
 // TestStartStatefulRelightMatchedGeneration proves RELIGHT with a matching
 // stamped generation resumes the bundle (was_relight=true, no cold_boot_reason).
 func TestStartStatefulRelightMatchedGeneration(t *testing.T) {

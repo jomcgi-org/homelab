@@ -196,6 +196,15 @@ type Config struct {
 	// StoreBucket is the single bucket every artifact key lives under (Fork 3).
 	// Default "embervm". Env EMBERVM_NODED_STORE_BUCKET.
 	StoreBucket string
+
+	// RequireBlessing rejects any writable stateful attach (FRESH/RELIGHT/COLD)
+	// carrying blessed_generation == 0 with FAILED_PRECONDITION, once the
+	// control plane has started issuing blessed generations (R7, ADR
+	// embervm/011, standing decision 4). Defaults false so a rollout can land
+	// the control-plane side first; the chart flips this true in the SAME
+	// version so a mixed CP/noded state cannot outlive the roll. Env
+	// EMBERVM_NODED_REQUIRE_BLESSING.
+	RequireBlessing bool
 }
 
 // Load resolves configuration from the environment, applying defaults for all
@@ -240,6 +249,8 @@ func Load() (Config, error) {
 
 		StoreEndpoint: getenvDefault("EMBERVM_NODED_STORE_ENDPOINT", "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"),
 		StoreBucket:   getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
+
+		RequireBlessing: boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),
 	}
 
 	if c.Node == "" {
@@ -399,6 +410,17 @@ func atoiDefault(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+// boolDefault returns the named env var parsed as a bool, or def when unset or
+// unparseable.
+func boolDefault(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return def

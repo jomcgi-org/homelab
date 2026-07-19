@@ -610,7 +610,6 @@ defmodule Embervm.StatefulManager do
   # another workload's wake; the worker reports the RPC result and finish_wake
   # completes the durable transition + publish on this process.
   defp start_wake(state, workload) do
-    owner = self()
     entry = catalog_entry(state, workload)
 
     # Stamp the wake phase's start + the cold bool into the tracing bundle now
@@ -622,6 +621,51 @@ defmodule Embervm.StatefulManager do
     plan = plan_wake(state, workload)
     cold = match?({:cold, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan)
     state = stamp_wake_trace(state, workload, %{wake_start: wake_start, cold: cold})
+
+    # Generation blessing (R7, ADR embervm/011, standing decision 4): every plan
+    # that will dispatch a WRITABLE attach (every arm except a bare {:error, _})
+    # gets the next blessed generation issued and durably recorded HERE, on this
+    # serialized process, BEFORE the boot request is built or dispatched. This is
+    # the fence: bless_generation/3 appends the op-log entry first and only then
+    # returns, so a crash between the append and the RPC leaves an unused (never
+    # dispatched) blessed number, which is harmless; blessing AFTER dispatch would
+    # instead risk a boot the op-log never witnessed, a real fence hole. A
+    # bless_generation failure (an op-log append error) fails the wake outright
+    # rather than dispatching an unblessed attach.
+    case bless_wake_generation(state, workload, plan) do
+      {:ok, blessed_generation} ->
+        start_wake_dispatch(state, workload, entry, plan, blessed_generation)
+
+      :none ->
+        start_wake_dispatch(state, workload, entry, plan, 0)
+
+      {:error, reason} ->
+        send(self(), {:wake_done, workload, {:error, {:bless_generation, reason}}})
+        state
+    end
+  end
+
+  # Whether `plan` will dispatch a writable attach at all (every arm except
+  # {:error, _}), and if so, issue + durably record the next blessed generation
+  # for the workload via StatefulStore.bless_generation/3. Returns `:none` for a
+  # plan that dispatches nothing (the {:error, _} arm: the wake already failed in
+  # plan_wake/2, e.g. :volume_node_gone, so there is no attach to bless).
+  defp bless_wake_generation(_state, _workload, {:error, _reason}), do: :none
+
+  defp bless_wake_generation(state, workload, _plan) do
+    next = StatefulStore.next_blessed_generation(state.store, workload)
+
+    case StatefulStore.bless_generation(state.store, workload, next) do
+      {:ok, _volume} -> {:ok, next}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Dispatches the wake worker for `plan`, threading `blessed_generation` (0 for
+  # the {:error, _} arm, which never reaches a request builder) into every
+  # StartStatefulRequest this wake sends.
+  defp start_wake_dispatch(state, workload, entry, plan, blessed_generation) do
+    owner = self()
 
     # Stamp the wake's start (for the adoption stuck-check + park_full age) and arm the
     # wake-worker bound: if the worker has not reported a {:wake_done} by then,
@@ -638,7 +682,7 @@ defmodule Embervm.StatefulManager do
             # from here, or an unreadable ledger) it falls back to a cold boot
             # from THIS ref rather than failing the call outright.
             fallback_ref = boot_image_ref(state, node_id, workload)
-            req = relight_request(entry, snapshot_ref, fallback_ref)
+            req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
             spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, req) end)
 
           {:error, reason} ->
@@ -657,7 +701,7 @@ defmodule Embervm.StatefulManager do
         case StatefulStore.mark(state.store, instance.instance_id, :relight) do
           {:ok, _} ->
             fallback_ref = boot_image_ref(state, node_id, workload)
-            req = relight_request(entry, snapshot_ref, fallback_ref)
+            req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
 
             spawn_wake(owner, workload, fn ->
               _ = restore_bundle(state, node_id, workload, snapshot_ref)
@@ -669,7 +713,7 @@ defmodule Embervm.StatefulManager do
         end
 
       {:cold, node_id, boot_ref, mode, reason} ->
-        req = cold_request(state, entry, workload, boot_ref, mode)
+        req = cold_request(state, entry, workload, boot_ref, mode, blessed_generation)
         spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, boot_ref, mode, reason, req) end)
 
       # Restore-on-miss (R6): the volume itself is gone but a (vol.img, gen) pair is
@@ -679,7 +723,7 @@ defmodule Embervm.StatefulManager do
       # for a truly-absent volume the daemon fails closed on (data fails closed).
       {:restore_volume_then_cold, wl, node_id, volume} ->
         boot_ref = boot_image_ref(state, node_id, wl)
-        req = cold_request(state, entry, wl, boot_ref, :cold)
+        req = cold_request(state, entry, wl, boot_ref, :cold, blessed_generation)
         reason = cold_reason(volume)
 
         spawn_wake(owner, workload, fn ->
@@ -749,6 +793,23 @@ defmodule Embervm.StatefulManager do
   defp plan_wake(state, workload) do
     volume = StatefulStore.get_volume(state.store, workload)
 
+    cond do
+      StatefulStore.quarantined?(state.store, workload) ->
+        # R7, ADR embervm/011, standing decision 4: a node has reported a
+        # generation past the last one this control plane blessed, with
+        # generation_blessed: false. Fail closed -- park, never place a wake
+        # (relight OR cold) against a volume whose current generation this
+        # control plane cannot vouch for. No auto-heal: resolution (bless-and-
+        # adopt, or discard) is a manual runbook decision.
+        Logger.warning("embervm stateful wake refused: volume quarantined (unblessed generation)", workload: workload)
+        {:error, :volume_quarantined}
+
+      true ->
+        plan_wake_unquarantined(state, workload, volume)
+    end
+  end
+
+  defp plan_wake_unquarantined(state, workload, volume) do
     case banked_instance(state, workload) do
       nil ->
         # No bundle to resume: a genuine FRESH first boot (no volume yet, reason
@@ -979,7 +1040,7 @@ defmodule Embervm.StatefulManager do
   # therefore unconditionally %{} here, with no secret read at all -- not even
   # a wasted one -- keeping a relight's K8s footprint identical to before this
   # feature.
-  defp relight_request(entry, snapshot_ref, fallback_ref) do
+  defp relight_request(entry, snapshot_ref, fallback_ref, blessed_generation) do
     cfg = stateful_cfg(entry)
 
     %StartStatefulRequest{
@@ -992,7 +1053,12 @@ defmodule Embervm.StatefulManager do
       volume_mount: cfg.volume_mount_path,
       create_if_missing: false,
       resources: resource_spec(entry),
-      mmds_env: %{}
+      mmds_env: %{},
+      # blessed_generation (R7, ADR embervm/011): the generation this control
+      # plane already durably blessed for this attach in bless_wake_generation/3,
+      # BEFORE this request was built. The daemon records it verbatim rather than
+      # self-bumping.
+      blessed_generation: blessed_generation
     }
   end
 
@@ -1001,7 +1067,7 @@ defmodule Embervm.StatefulManager do
   # its decoded key/values (R4, D-R4.PR-7.1: MMDS-lite over boot-args). Absent
   # secretRef leaves mmds_env at %{} (no K8s call at all, matching the
   # zero-new-runtime-RBAC baseline for a workload that declares none).
-  defp cold_request(state, entry, workload, boot_ref, mode) do
+  defp cold_request(state, entry, workload, boot_ref, mode, blessed_generation) do
     cfg = stateful_cfg(entry)
 
     %StartStatefulRequest{
@@ -1017,7 +1083,10 @@ defmodule Embervm.StatefulManager do
       # branch selection).
       create_if_missing: mode == :fresh,
       resources: resource_spec(entry),
-      mmds_env: cold_boot_mmds_env(state, entry, workload)
+      mmds_env: cold_boot_mmds_env(state, entry, workload),
+      # blessed_generation (R7, ADR embervm/011): see relight_request/4's note;
+      # identical contract for a FRESH/COLD writable attach.
+      blessed_generation: blessed_generation
     }
   end
 
@@ -1745,6 +1814,15 @@ defmodule Embervm.StatefulManager do
   # workload's volume).
   defp refresh_volume_facts(state, facts) do
     for f <- facts, v <- Map.get(f, :volumes, []) || [] do
+      # R7 grandfather seed (ADR embervm/011): a volume this control plane has
+      # NEVER blessed (blessed_generation nil, e.g. every pre-R7 volume, or a
+      # brand-new one adopted before its first bless_generation call landed)
+      # gets its ledger seeded from THIS eager first report before quarantine is
+      # derived below, so it is never punished for predating blessing. A no-op
+      # once the volume has ever been blessed (seed_blessed_generation_if_unset
+      # only acts on an unset watermark).
+      _ = StatefulStore.seed_blessed_generation_if_unset(state.store, v.workload, v.generation)
+
       StatefulStore.upsert_volume(state.store, v.workload, %{
         node_id: f.configured_id,
         generation: v.generation,
@@ -1755,7 +1833,10 @@ defmodule Embervm.StatefulManager do
         # decide restore-on-miss (a lost local bundle whose snapshot_generation
         # equals this can be recovered from the store) even after the local bundle
         # fact is gone. 0/absent when no store copy exists.
-        exported_generation: Map.get(v, :exported_generation, 0)
+        exported_generation: Map.get(v, :exported_generation, 0),
+        # generation_blessed (R7): the node's per-report wire fact, feeding
+        # StatefulStore's quarantine derivation (see its moduledoc).
+        generation_blessed: Map.get(v, :generation_blessed, false)
       })
     end
 

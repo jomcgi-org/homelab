@@ -624,7 +624,12 @@ defmodule Embervm.NodeRegistry do
         # restore-on-miss planner reads it to know a lost volume can be restored to
         # this generation, and the remote GC guard reads it to skip a re-export when
         # it already equals the live generation.
-        exported_generation: v.exported_generation
+        exported_generation: v.exported_generation,
+        # generation_blessed (R7, ADR embervm/011): true when the node's CURRENT
+        # generation for this volume was recorded via a control-plane-issued
+        # blessing, false for a self-bumped (unblessed) generation. Feeds
+        # Embervm.StatefulManager.refresh_volume_facts/2's quarantine derivation.
+        generation_blessed: v.generation_blessed
       }
     end
   end
