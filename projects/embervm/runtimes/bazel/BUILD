@@ -26,9 +26,19 @@ platform_transition_filegroup(
 
 tar(
     name = "guest_init_tar_amd64",
-    srcs = [":guest_init_amd64_bin"],
+    srcs = [
+        ":guest_init_amd64_bin",
+        "etc/hosts",
+    ],
     mtree = [
         "./usr/local/bin/ember-bazel-init type=file content=$(execpath :guest_init_amd64_bin) mode=0755 uid=0 gid=0",
+        # Bake /etc/hosts (127.0.0.1 localhost + the guest hostname) into the
+        # read-only rootfs. /etc is read-only at boot so guest-init cannot write
+        # it; the JVM's InetAddress.getLocalHost() resolves against this instead
+        # of stalling on a lookup. Layered here (not via apko's base baselayout)
+        # so the localhost + hostname mapping is explicit and versioned with the
+        # runtime.
+        "./etc/hosts type=file content=$(execpath etc/hosts) mode=0644 uid=0 gid=0",
     ],
 )
 
@@ -40,9 +50,14 @@ platform_transition_filegroup(
 
 tar(
     name = "guest_init_tar_arm64",
-    srcs = [":guest_init_arm64_bin"],
+    srcs = [
+        ":guest_init_arm64_bin",
+        "etc/hosts",
+    ],
     mtree = [
         "./usr/local/bin/ember-bazel-init type=file content=$(execpath :guest_init_arm64_bin) mode=0755 uid=0 gid=0",
+        # See guest_init_tar_amd64: /etc/hosts baked into the read-only rootfs.
+        "./etc/hosts type=file content=$(execpath etc/hosts) mode=0644 uid=0 gid=0",
     ],
 )
 
