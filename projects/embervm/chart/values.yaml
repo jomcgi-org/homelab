@@ -474,10 +474,10 @@ hotImageDemo:
 # provisions its base and enables an initContainer that bakes it.
 workloads:
   sandbox:
-    rootfsPath: /disks/nvme-02/embervm-noded/sandbox/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox/rootfs.ext4
     harnessInit: /usr/local/bin/sandbox-guest-init
   semgrep:
-    rootfsPath: /disks/nvme-02/embervm-noded/semgrep/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/semgrep/rootfs.ext4
     harnessInit: /usr/local/bin/semgrep-guest-init
   # R1 zip lane (ADR embervm/002): the runtime-python base image the zip lane
   # layers an adopter's archive onto. Its PID-1 guest-init mounts a tmpfs over
@@ -485,7 +485,7 @@ workloads:
   # The key must match the top-level `runtimePython` block below (the deployment
   # ranges over `workloads` and looks the guest image up by the same key).
   runtimePython:
-    rootfsPath: /disks/nvme-02/embervm-noded/runtime-python/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/runtime-python/rootfs.ext4
     harnessInit: /usr/local/bin/ember-runtime-guest-init
   # R4 scratch-postgres stateful base (ADR embervm/001, D-R4.PR-11.1). Its PID-1
   # ember-postgres-init mounts the writable volume, decodes POSTGRES_PASSWORD from
@@ -496,7 +496,7 @@ workloads:
   # .repository is set, so gating the CR/secret on scratchPostgres.enabled keeps
   # the base build wired whenever the image is pinned.
   scratchPostgres:
-    rootfsPath: /disks/nvme-02/embervm-noded/scratch-postgres/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-postgres/rootfs.ext4
     harnessInit: /usr/local/bin/ember-postgres-init
   # R5 scratch-k8s composite consumer (ADR embervm/001, plan Task 10). A composite
   # group has TWO guest images (a k3s server + k3s agents), so it registers as TWO
@@ -506,10 +506,10 @@ workloads:
   # ember-k3s-init (the role is data: EMBER_GROUP_ROLE). The keys match the
   # top-level scratchK8sServer / scratchK8sAgent guestImage blocks below.
   scratchK8sServer:
-    rootfsPath: /disks/nvme-02/embervm-noded/scratch-k8s-server/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-k8s-server/rootfs.ext4
     harnessInit: /usr/local/bin/ember-k3s-init
   scratchK8sAgent:
-    rootfsPath: /disks/nvme-02/embervm-noded/scratch-k8s-agent/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-k8s-agent/rootfs.ext4
     harnessInit: /usr/local/bin/ember-k3s-init
   # Bazel Skyframe query demo base (ADR embervm/010). Its PID-1 ember-bazel-init
   # mounts a large tmpfs at /tmp, runs the warming `bazel cquery //absl/...`
@@ -518,7 +518,7 @@ workloads:
   # must match the top-level `bazelQuery` block below (the deployment ranges over
   # `workloads` and looks the guest image up by the same key).
   bazelQuery:
-    rootfsPath: /disks/nvme-02/embervm-noded/bazel-query/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/bazel-query/rootfs.ext4
     harnessInit: /usr/local/bin/ember-bazel-init
 
 # The python sandbox guest image, Bazel-pinned (helm_chart images="sandbox.guestImage")
@@ -748,7 +748,7 @@ noded:
   # baked into the image at /opt/fc, so the node only provides /dev/kvm and the
   # nvme scratch dir (see projects/platform/firecracker-node).
   firecracker:
-    nvmeRoot: /disks/nvme-02
+    nvmeRoot: /var/lib/embervm/scratch
     guestOomScoreAdj: 1000
     bootReadyTimeout: 60s
     # Shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable
