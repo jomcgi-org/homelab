@@ -248,6 +248,14 @@ defmodule Embervm.OpLog do
   # its pair-validity view from on boot. A volume row lives until volume_deleted,
   # outliving every instance by design. A projection read, never the raw ops log.
   @callback load_volumes(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every generation-blessing row from the durable `volume_blessing`
+  # projection (R7, ADR embervm/011): the per-workload `blessed_generation`
+  # watermark this control plane's blessing ledger issued. A SEPARATE
+  # projection from load_volumes/1 (see the `volume_blessing` table's comment
+  # in Embervm.OpLog.SQLite for why a shared table would corrupt
+  # StatefulStore.get_volume/2's nil-means-no-volume-yet contract). A
+  # projection read, never the raw ops log.
+  @callback load_volume_blessing(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every group-instance row from the durable `group_instances` projection
   # (R5), for the future GroupStore's boot/adoption rebuild, exactly mirroring
   # load_stateful_instances/1. One row per composite group. A projection read,

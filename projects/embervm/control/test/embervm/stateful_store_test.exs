@@ -426,21 +426,28 @@ defmodule Embervm.StatefulStoreTest do
     assert StatefulStore.next_blessed_generation(store, "wl-a") == 3
   end
 
-  test "bless_generation durably appends generation_blessed and updates the volume row", %{path: path} do
+  test "bless_generation durably appends generation_blessed and updates the blessing ledger, separate from the volume row",
+       %{path: path} do
     {op_log, store} = start_pair(path)
 
-    assert {:ok, volume} = StatefulStore.bless_generation(store, "wl-a", 1)
-    assert volume.blessed_generation == 1
-    refute volume.quarantined
+    assert {:ok, fact} = StatefulStore.bless_generation(store, "wl-a", 1)
+    assert fact.blessed_generation == 1
+    refute fact.quarantined
+
+    # No real volume row was created by blessing alone (the whole point: a
+    # workload's first wake blesses before its FRESH boot's volume_created
+    # lands), so get_volume/2 still reads nil.
+    assert StatefulStore.get_volume(store, "wl-a") == nil
 
     {:ok, [op]} = SQLite.read_from(op_log, 0)
     assert op.kind == :generation_blessed
     assert op.workload == "wl-a"
-    assert op.payload.generation == 1
+    assert op.payload["generation"] == 1
 
-    # A rebuild sees the durable blessed_generation.
+    # A rebuild sees the durable blessed_generation via next_blessed_generation.
     {:ok, store2} = StatefulStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
-    assert StatefulStore.get_volume(store2, "wl-a").blessed_generation == 1
+    assert StatefulStore.next_blessed_generation(store2, "wl-a") - 1 == 1
+    assert StatefulStore.get_volume(store2, "wl-a") == nil
   end
 
   test "upsert_volume quarantines a report past the last blessed generation with generation_blessed: false", %{path: path} do
@@ -449,7 +456,6 @@ defmodule Embervm.StatefulStoreTest do
 
     StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 4, generation_blessed: false})
     assert StatefulStore.quarantined?(store, "wl-a")
-    assert StatefulStore.get_volume(store, "wl-a").quarantined
 
     # A report agreeing with the blessed watermark (or claiming the CURRENT
     # generation IS blessed) clears it.

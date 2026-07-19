@@ -213,8 +213,11 @@ defmodule Embervm.StatefulManagerTest do
 
     {req, blessed_ops} = Agent.get(captured, & &1)
     assert req.blessed_generation == 1
-    assert Enum.any?(blessed_ops, &(&1.payload.generation == 1))
-    assert StatefulStore.get_volume(ctx.store, "wl-a").blessed_generation == 1
+    assert Enum.any?(blessed_ops, &(&1.payload["generation"] == 1))
+    # The blessing ledger lives separately from the volume row (see
+    # StatefulStore's moduledoc); next_blessed_generation/2 - 1 reads the last
+    # blessed value without a dedicated accessor.
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") - 1 == 1
 
     # A second wake (destroy + rewake) issues the NEXT blessed generation, strictly
     # monotonic, never repeating or resetting.
@@ -230,7 +233,7 @@ defmodule Embervm.StatefulManagerTest do
     stateful_node(ctx, "node-4")
 
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
-    assert StatefulStore.get_volume(ctx.store, "wl-a").blessed_generation == 1
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") - 1 == 1
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
 
     # Simulate a node report of a self-bumped generation the control plane never
