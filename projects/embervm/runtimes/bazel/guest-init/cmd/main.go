@@ -43,6 +43,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -142,15 +143,26 @@ func run(logger *slog.Logger) error {
 	}
 
 	// The warming client has exited. Let the JVM settle (idle GC, any lazily
-	// spawned worker threads quiesce) before the snapshot is cut.
+	// spawned worker threads quiesce) before the snapshot is cut. A per-second tick
+	// loop (instead of one time.After(settleDelay)) is instrumentation: if the
+	// ticks never print, in-guest timers are broken; if they print and later lines
+	// vanish, the pause/console theory revives. Every branch logs so the settle
+	// window can never be a silent gap.
 	logger.Info("ember-bazel-init: settling before ready", "settle", settleDelay.String())
-	select {
-	case <-time.After(settleDelay):
-	case <-ctx.Done():
-		return waitForShutdown(ctx, serveErr, logger)
+	for i := 1; i <= int(settleDelay.Seconds()); i++ {
+		select {
+		case <-time.After(time.Second):
+			logger.Info("ember-bazel-init: settle tick", "i", i)
+		case <-ctx.Done():
+			logger.Warn("ember-bazel-init: settle interrupted by signal")
+			return waitForShutdown(ctx, serveErr, logger)
+		}
 	}
+	// Log the flip on BOTH sides of ready.Store, so a snapshot pause landing
+	// between the store and a single log line cannot hide the transition.
+	logger.Info("ember-bazel-init: ready flipping")
 	ready.Store(true)
-	logger.Info("ember-bazel-init: settle done, warm base ready")
+	logger.Info("ember-bazel-init: ready flipped, warm base ready")
 
 	// Hold PID 1. Exiting PID 1 panics the guest kernel before noded can snapshot
 	// the base or before a restored clone can answer its one query.
@@ -212,7 +224,14 @@ func warm(ctx context.Context, logger *slog.Logger) error {
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrCap)
 
 	t0 := time.Now()
-	err := cmd.Run()
+	// Start (not Run) so the client PID is logged the moment it launches: if the
+	// process never even starts, that is a different failure than a mid-run stall.
+	if err := cmd.Start(); err != nil {
+		logger.Error("ember-bazel-init: warming client failed to start", "err", err)
+		return err
+	}
+	logger.Info("ember-bazel-init: bazel client started", "pid", cmd.Process.Pid)
+	err := cmd.Wait()
 	elapsed := time.Since(t0)
 	if err != nil {
 		logger.Error("ember-bazel-init: warming client exited non-zero", "err", err, "elapsed", elapsed.String(), "tail", tail([]byte(stderrCap.String()), stderrTail))
@@ -263,8 +282,19 @@ func newMux(ready func() bool, logger *slog.Logger) *http.ServeMux {
 	mux.HandleFunc("GET /shim/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	// Log the FIRST /shim/ready poll received and the FIRST answered 200 (once
+	// each, never per-poll: noded's WaitReady polls continuously and that would
+	// spam). This shows whether WaitReady is reaching the guest at all, and the
+	// moment it first observes readiness (which is when BuildBase cuts the snapshot).
+	var firstPoll, firstReady sync.Once
 	mux.HandleFunc("GET /shim/ready", func(w http.ResponseWriter, _ *http.Request) {
+		firstPoll.Do(func() {
+			logger.Info("ember-bazel-init: first /shim/ready poll received")
+		})
 		if ready() {
+			firstReady.Do(func() {
+				logger.Info("ember-bazel-init: first /shim/ready answered 200")
+			})
 			w.WriteHeader(http.StatusOK)
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
