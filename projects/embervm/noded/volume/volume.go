@@ -26,11 +26,17 @@ import (
 	"sync"
 )
 
-// volFile / genFile are the two files under a workload's volume directory: the
-// raw sparse block device backing file, and the generation ledger.
+// volFile / genFile / blessedFile are the files under a workload's volume
+// directory: the raw sparse block device backing file, the generation ledger,
+// and the blessed-generation marker (R7, ADR embervm/011). blessedFile holds
+// the last generation the control plane's blessing ledger issued for this
+// volume; it lags genFile whenever a self-bump happens without a matching
+// CP-issued blessed_generation (the unblessed case a fresh control plane
+// quarantines on adoption).
 const (
-	volFile = "vol.img"
-	genFile = "gen"
+	volFile     = "vol.img"
+	genFile     = "gen"
+	blessedFile = "genblessed"
 )
 
 // Manager owns the on-disk volume layout under root and the in-process
@@ -59,6 +65,10 @@ func (m *Manager) volPath(workload string) string {
 
 func (m *Manager) genPath(workload string) string {
 	return filepath.Join(m.dir(workload), genFile)
+}
+
+func (m *Manager) blessedPath(workload string) string {
+	return filepath.Join(m.dir(workload), blessedFile)
 }
 
 // Exists reports whether a workload's volume file is already on disk.
@@ -192,6 +202,82 @@ func (m *Manager) Generation(workload string) (uint64, error) {
 	return n, nil
 }
 
+// RecordBlessed records a writable attach whose generation the control plane
+// issued (R7, ADR embervm/011, standing decision 4): it writes gen to BOTH the
+// generation ledger and the blessed marker, so GenerationBlessed reports true
+// for this attach. Unlike BumpGeneration, the caller supplies the value (the
+// control plane's blessing ledger is the sole issuer); the daemon never
+// invents or increments it here. gen MUST be strictly greater than the
+// ledger's current value or this errors: a blessed generation that did not
+// advance the ledger would let a stale bundle falsely re-match, which the
+// pairing mechanism must never allow. Same durability discipline as
+// writeGeneration (temp + rename, no un-bump on a later boot failure).
+func (m *Manager) RecordBlessed(workload string, gen uint64) (uint64, error) {
+	cur, err := m.Generation(workload)
+	if err != nil {
+		return 0, err
+	}
+	if gen <= cur {
+		return 0, fmt.Errorf("volume: blessed generation %d for %q must exceed current ledger generation %d", gen, workload, cur)
+	}
+	if err := m.writeGeneration(workload, gen); err != nil {
+		return 0, fmt.Errorf("volume: record blessed generation for %q: %w", workload, err)
+	}
+	if err := m.writeBlessed(workload, gen); err != nil {
+		return 0, fmt.Errorf("volume: record blessed marker for %q: %w", workload, err)
+	}
+	return gen, nil
+}
+
+// GenerationBlessed reports whether a workload's CURRENT generation (per
+// genFile) matches the last generation the control plane's blessing ledger
+// recorded (per blessedFile). False whenever the two diverge: a legacy
+// self-bump (BumpGeneration, never touching the blessed marker) advances
+// genFile past blessedFile, so a volume that has EVER self-bumped since its
+// last blessing reads unblessed until the control plane blesses again. An
+// absent blessed marker (a volume that has never been blessed, including
+// every volume created before R7) also reads false: fail closed, never
+// fabricate a blessing the control plane never issued.
+func (m *Manager) GenerationBlessed(workload string) bool {
+	cur, err := m.Generation(workload)
+	if err != nil {
+		return false
+	}
+	blessed, err := m.readBlessed(workload)
+	if err != nil {
+		return false
+	}
+	return blessed == cur
+}
+
+func (m *Manager) readBlessed(workload string) (uint64, error) {
+	b, err := os.ReadFile(m.blessedPath(workload))
+	if err != nil {
+		return 0, fmt.Errorf("volume: read blessed marker for %q: %w", workload, err)
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("volume: malformed blessed marker for %q: %w", workload, err)
+	}
+	return n, nil
+}
+
+func (m *Manager) writeBlessed(workload string, gen uint64) error {
+	dir := m.dir(workload)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("volume: mkdir %q: %w", dir, err)
+	}
+	path := m.blessedPath(workload)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(gen, 10)), 0o600); err != nil {
+		return fmt.Errorf("volume: write blessed marker temp file %q: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("volume: publish blessed marker %q: %w", path, err)
+	}
+	return nil
+}
+
 // writeGeneration durably persists a generation value: write to a temp file in
 // the same directory, then os.Rename into place. rename(2) is atomic within a
 // filesystem, so a crash mid-write never leaves a torn ledger (the reader sees
@@ -270,11 +356,12 @@ func (m *Manager) Delete(workload string) error {
 // projection shape (mirrors nodev1.Volume without importing the proto here, so
 // this package stays independent of the gRPC contract; the server maps it).
 type Inventory struct {
-	Workload       string
-	Generation     uint64
-	SizeBytes      uint64
-	AllocatedBytes uint64
-	Attached       bool
+	Workload          string
+	Generation        uint64
+	SizeBytes         uint64
+	AllocatedBytes    uint64
+	Attached          bool
+	GenerationBlessed bool
 }
 
 // Scan walks VolumeRoot for every workload's volume directory and returns its
@@ -318,11 +405,12 @@ func (m *Manager) Scan() ([]Inventory, error) {
 			continue
 		}
 		out = append(out, Inventory{
-			Workload:       workload,
-			Generation:     gen,
-			SizeBytes:      size,
-			AllocatedBytes: alloc,
-			Attached:       m.IsAttached(workload),
+			Workload:          workload,
+			Generation:        gen,
+			SizeBytes:         size,
+			AllocatedBytes:    alloc,
+			Attached:          m.IsAttached(workload),
+			GenerationBlessed: m.GenerationBlessed(workload),
 		})
 	}
 	return out, nil

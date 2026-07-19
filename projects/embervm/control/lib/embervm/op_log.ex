@@ -145,6 +145,15 @@ defmodule Embervm.OpLog do
     :stateful_destroyed,
     :stateful_failed,
     :stateful_stats,
+    # generation_blessed (R7, ADR embervm/011, standing decision 4): the control
+    # plane durably records the volume generation it is ABOUT to issue for a
+    # workload's next writable attach, appended BEFORE the boot request carrying
+    # that value is dispatched (the fence: a crash between the two leaves a
+    # harmlessly-unused blessed number, the reverse order would leave a hole).
+    # Projects into the `volumes.blessed_generation` column. Carries
+    # `{generation}`; stateful_instance_id is nil (it is workload-scoped, like
+    # volume_created/volume_deleted, not instance-scoped).
+    :generation_blessed,
     # Composite-group lifecycle (R5). Additive to the closed enum, mirroring the R4
     # stateful kinds: a composite group is a set of member microVMs that live, bank,
     # relight, and die as ONE unit (ADR embervm/001) and project into the

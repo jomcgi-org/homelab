@@ -452,4 +452,74 @@ defmodule Embervm.OpLog.StatefulProjectionTest do
 
     :ok = GenServer.stop(server)
   end
+
+  # -- generation blessing (R7, ADR embervm/011) ------------------------------
+
+  defp blessed_op(ts, generation) do
+    %Op{
+      kind: :generation_blessed,
+      tenant: "t1",
+      principal: "p1",
+      workload: "scratch-postgres",
+      ts: ts,
+      payload: %{generation: generation}
+    }
+  end
+
+  test "generation_blessed upserts volumes.blessed_generation, workload-scoped (stateful_instance_id nil)", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, blessed_op(90, 1))
+    volumes = volume_by_workload(server)
+    assert volumes["scratch-postgres"].blessed_generation == 1
+    # A blessing landing before any volume_created creates the row (a workload's
+    # FIRST wake blesses before the daemon's FRESH boot has created the volume).
+    assert volumes["scratch-postgres"].generation == 0
+
+    {:ok, ops} = SQLite.read_from(server, 0)
+    blessed = Enum.find(ops, &(&1.kind == :generation_blessed))
+    assert blessed.stateful_instance_id == nil
+    assert blessed.workload == "scratch-postgres"
+    assert blessed.payload.generation == 1
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "generation_blessed after volume_created updates blessed_generation without disturbing the live generation", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, volume_created_op(90, 3))
+    {:ok, _} = SQLite.append(server, blessed_op(91, 4))
+
+    volumes = volume_by_workload(server)
+    assert volumes["scratch-postgres"].generation == 3
+    assert volumes["scratch-postgres"].blessed_generation == 4
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "a volume_created upsert after a blessing never clobbers blessed_generation", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, blessed_op(90, 1))
+    {:ok, _} = SQLite.append(server, volume_created_op(91, 1))
+
+    volumes = volume_by_workload(server)
+    assert volumes["scratch-postgres"].blessed_generation == 1
+    assert volumes["scratch-postgres"].generation == 1
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "kill/restart rebuilds blessed_generation from the durable projection", %{path: path} do
+    server = start_server(path)
+    {:ok, _} = SQLite.append(server, volume_created_op(90, 1))
+    {:ok, _} = SQLite.append(server, blessed_op(91, 2))
+    :ok = GenServer.stop(server)
+
+    server2 = start_server(path)
+    volumes = volume_by_workload(server2)
+    assert volumes["scratch-postgres"].blessed_generation == 2
+    :ok = GenServer.stop(server2)
+  end
 end

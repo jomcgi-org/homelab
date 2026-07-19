@@ -202,6 +202,23 @@ defmodule Embervm.StatefulSweeper do
     GenServer.call(server, :sweep, :infinity)
   end
 
+  @doc """
+  Whether `workload`'s volume is eligible to have any of its artifacts (its
+  banked STATEFUL bundle, or in a later rung its VOLUME snapshot/backup)
+  planned for export (R7, ADR embervm/011, standing decision 4): false while
+  the volume is quarantined (`StatefulStore.quarantined?/2`), true otherwise
+  (including an unknown workload, which has no volume to quarantine). No
+  ExportArtifact planning exists in this control plane yet (Task 10 lands the
+  Longhorn-backed snapshot/backup planning); this predicate is the guard
+  future export-planning call sites (and `eager_evict_broken_pairs`'s bundle
+  eviction, see `do_sweep/1`) must consult FIRST, so quarantine enforcement
+  lands before there is anything to enforce it against.
+  """
+  @spec export_allowed?(GenServer.server(), String.t()) :: boolean()
+  def export_allowed?(store \\ StatefulStore, workload) do
+    not StatefulStore.quarantined?(store, workload)
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true

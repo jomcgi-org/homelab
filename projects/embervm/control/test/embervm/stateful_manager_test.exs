@@ -176,6 +176,126 @@ defmodule Embervm.StatefulManagerTest do
     assert row.state == "serving"
   end
 
+  # -- generation blessing (R7, ADR embervm/011, standing decision 4) ---------
+
+  test "plan_wake issues a monotonic blessed generation, durably op-logged BEFORE the boot request carries it" do
+    {:ok, captured} = Agent.start_link(fn -> nil end)
+    {:ok, op_log_ref} = Agent.start_link(fn -> nil end)
+
+    ctx =
+      start_stack(
+        start_stateful_fun: fn _ch, req ->
+          # The op-log-before-dispatch fence, asserted from inside the dispatched
+          # RPC itself: by the time this seam runs, the generation_blessed op for
+          # req.blessed_generation must ALREADY be durable
+          # (bless_wake_generation/3 appends and awaits the op-log BEFORE
+          # start_wake_dispatch/5 builds this request), never the reverse.
+          {:ok, ops} = SQLite.read_from(Agent.get(op_log_ref, & &1), 0)
+          blessed_ops = Enum.filter(ops, &(&1.kind == :generation_blessed))
+          Agent.update(captured, fn _ -> {req, blessed_ops} end)
+
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-woken",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: req.blessed_generation,
+             was_relight: false
+           }}
+        end
+      )
+
+    Agent.update(op_log_ref, fn _ -> ctx.op_log end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+
+    {req, blessed_ops} = Agent.get(captured, & &1)
+    assert req.blessed_generation == 1
+    assert Enum.any?(blessed_ops, &(&1.payload.generation == 1))
+    assert StatefulStore.get_volume(ctx.store, "wl-a").blessed_generation == 1
+
+    # A second wake (destroy + rewake) issues the NEXT blessed generation, strictly
+    # monotonic, never repeating or resetting.
+    StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+    {req2, _blessed_ops2} = Agent.get(captured, & &1)
+    assert req2.blessed_generation == 2
+  end
+
+  test "an unblessed report (generation past the last blessed one, generation_blessed=false) quarantines the volume and parks the next wake" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+    assert StatefulStore.get_volume(ctx.store, "wl-a").blessed_generation == 1
+    refute StatefulStore.quarantined?(ctx.store, "wl-a")
+
+    # Simulate a node report of a self-bumped generation the control plane never
+    # blessed (generation 2, blessed_generation still 1): the daemon self-bumped
+    # outside the ledger.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2, generation_blessed: false})
+    assert StatefulStore.quarantined?(ctx.store, "wl-a")
+
+    # A quarantined volume's next wake must park (never place): destroy the live
+    # instance and rewake, which anchors to the volume's node and must refuse.
+    StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert {:error, {:wake_failed, :volume_quarantined}} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+  end
+
+  test "a node report that agrees with the last blessed generation (or reports generation_blessed=true) never quarantines" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+
+    # Same generation the CP blessed, reported unblessed on the wire: not PAST the
+    # watermark, so no quarantine (an exact-match report is the normal case right
+    # after a blessed attach, before the daemon's own blessed marker write lands
+    # in a subsequent scrape).
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 1, generation_blessed: false})
+    refute StatefulStore.quarantined?(ctx.store, "wl-a")
+
+    # A report claiming the reported generation IS blessed clears any prior
+    # quarantine.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2, generation_blessed: false})
+    assert StatefulStore.quarantined?(ctx.store, "wl-a")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2, generation_blessed: true})
+    refute StatefulStore.quarantined?(ctx.store, "wl-a")
+  end
+
+  test "a never-blessed volume (pre-R7, blessed_generation nil) is grandfathered on its first report, not quarantined" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    # A pre-R7 volume: created via the durable volume_created op with no blessing
+    # ledger entry at all (blessed_generation stays nil/absent).
+    {:ok, _} = StatefulStore.create_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 5})
+    refute StatefulStore.quarantined?(ctx.store, "wl-a")
+
+    # A node reporting generation 5 unblessed must NOT quarantine: nil means "not
+    # yet under CP governance", never "behind it" (the moduledoc's grandfather
+    # rule) -- distinct from a volume the CP has already blessed at least once.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 5, generation_blessed: false})
+    refute StatefulStore.quarantined?(ctx.store, "wl-a")
+  end
+
+  test "export is never planned for a quarantined volume's artifacts" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2, generation_blessed: false})
+    assert StatefulStore.quarantined?(ctx.store, "wl-a")
+
+    refute Embervm.StatefulSweeper.export_allowed?(ctx.store, "wl-a")
+  end
+
   # -- mmds_env (R4, D-R4.PR-7.1: MMDS-lite over boot-args) --------------------
 
   test "a FRESH/COLD wake with a secretRef reads the secret and populates mmds_env" do

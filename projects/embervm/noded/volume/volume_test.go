@@ -133,6 +133,84 @@ func TestGenerationUnreadableMalformedLedger(t *testing.T) {
 	}
 }
 
+// TestRecordBlessedAdvancesLedgerAndMarksBlessed proves a CP-issued blessed
+// generation (R7, ADR embervm/011) both advances the generation ledger to the
+// exact value the control plane issued and marks the volume blessed, unlike a
+// legacy BumpGeneration which never touches the blessed marker.
+func TestRecordBlessedAdvancesLedgerAndMarksBlessed(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if m.GenerationBlessed("wl-a") {
+		t.Error("a freshly created volume must not read as blessed (no blessing ever issued)")
+	}
+
+	gen, err := m.RecordBlessed("wl-a", 3)
+	if err != nil {
+		t.Fatalf("RecordBlessed: %v", err)
+	}
+	if gen != 3 {
+		t.Errorf("RecordBlessed = %d want 3", gen)
+	}
+	got, err := m.Generation("wl-a")
+	if err != nil {
+		t.Fatalf("Generation: %v", err)
+	}
+	if got != 3 {
+		t.Errorf("generation ledger = %d want 3 after RecordBlessed", got)
+	}
+	if !m.GenerationBlessed("wl-a") {
+		t.Error("GenerationBlessed should be true immediately after RecordBlessed")
+	}
+}
+
+// TestRecordBlessedRejectsNonAdvancingGeneration proves RecordBlessed refuses
+// a blessed generation that does not strictly exceed the ledger's current
+// value: a stale or repeated blessing must never let a bundle falsely re-match.
+func TestRecordBlessedRejectsNonAdvancingGeneration(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := m.RecordBlessed("wl-a", 5); err != nil {
+		t.Fatalf("RecordBlessed: %v", err)
+	}
+	if _, err := m.RecordBlessed("wl-a", 5); err == nil {
+		t.Error("RecordBlessed with a generation equal to the current ledger value should error")
+	}
+	if _, err := m.RecordBlessed("wl-a", 4); err == nil {
+		t.Error("RecordBlessed with a generation below the current ledger value should error")
+	}
+}
+
+// TestBumpGenerationLeavesBlessedMarkerBehind proves the legacy self-bump path
+// (BumpGeneration) advances the generation ledger WITHOUT touching the
+// blessed marker, so a volume that was blessed and then self-bumps reads
+// unblessed again (the exact "unblessed report" the control plane quarantines
+// on adoption).
+func TestBumpGenerationLeavesBlessedMarkerBehind(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl-a", 1<<20); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := m.RecordBlessed("wl-a", 3); err != nil {
+		t.Fatalf("RecordBlessed: %v", err)
+	}
+	if !m.GenerationBlessed("wl-a") {
+		t.Fatal("expected blessed immediately after RecordBlessed")
+	}
+	if _, err := m.BumpGeneration("wl-a"); err != nil {
+		t.Fatalf("BumpGeneration: %v", err)
+	}
+	if m.GenerationBlessed("wl-a") {
+		t.Error("a self-bump past the last blessed generation must read as unblessed")
+	}
+}
+
 // TestAttachSingletonLockRefusal proves the singleton writable-attach
 // invariant: a second Attach for the same workload while the first is still
 // held is refused.

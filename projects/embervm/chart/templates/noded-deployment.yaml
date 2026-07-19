@@ -174,6 +174,15 @@ spec:
               value: {{ .Values.noded.store.endpoint | quote }}
             - name: EMBERVM_NODED_STORE_BUCKET
               value: {{ .Values.noded.store.bucket | quote }}
+            # R7 (ADR embervm/011, standing decision 4): the control plane becomes
+            # the sole issuer of volume generations. false accepts a legacy
+            # blessed_generation == 0 self-bump (the default, so this PR can land
+            # both sides in one chart version without a wedge); true rejects an
+            # unblessed writable attach FAILED_PRECONDITION. The CP and noded ship
+            # from this ONE chart, so flipping this true here lands in the same
+            # version the control plane starts blessing (never a mixed state).
+            - name: EMBERVM_NODED_REQUIRE_BLESSING
+              value: {{ .Values.noded.requireBlessing | quote }}
             # Node-side image identity table (image_ref -> {rootfsPath, harnessInit}),
             # rendered as JSON. Derived from noded.workloads + each workload's pinned
             # guestImage so the ref here MATCHES the rootfs-builder GUEST_IMAGE and the
