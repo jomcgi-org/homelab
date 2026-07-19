@@ -267,6 +267,29 @@ type queryResult struct {
 	WallMs       int64  `json:"wall_ms"`
 }
 
+// queryError is the JSON body returned for a FAILED query (bad expression,
+// bazel non-zero exit, or in-guest timeout). It is returned with HTTP 200, not a
+// non-2xx: EmberVM's task pipeline relays only a SUCCESSFUL-task guest response
+// verbatim to the caller; a guest non-2xx is treated as a failed task and
+// replaced with the pipeline's own dead-letter envelope, so bazel's real error
+// text would never reach the backend or the visitor. A visitor's typo'd query is
+// a successful DEMO run whose payload happens to carry the failure, hence 200.
+// It carries NO labels/analyzed_line, so the edge discriminates success from
+// failure on the presence of the "error" key.
+type queryError struct {
+	Error    string `json:"error"`
+	ExitCode int    `json:"exit_code"`
+	WallMs   int64  `json:"wall_ms"`
+}
+
+// queryErrorBody marshals a queryError. Split out so the failure-payload shape is
+// unit-tested and every failure path (validation, non-zero exit, timeout) emits
+// an identical envelope.
+func queryErrorBody(errText string, exitCode int, wallMs int64) []byte {
+	body, _ := json.Marshal(queryError{Error: errText, ExitCode: exitCode, WallMs: wallMs})
+	return body
+}
+
 // queryRequest is the POST /query body.
 type queryRequest struct {
 	Expression string `json:"expression"`
@@ -307,18 +330,24 @@ func newMux(ready func() bool, logger *slog.Logger) *http.ServeMux {
 }
 
 // handleQuery serves one visitor cquery. A restored clone serves exactly one of
-// these and is then destroyed by Assign. A bad expression (validation failure or
-// a bazel non-zero exit, which a visitor's typo'd query is the normal cause of)
-// returns 422 carrying bazel's real error text, so the demo surfaces the actual
-// query error rather than a generic 5xx.
+// these and is then destroyed by Assign.
+//
+// EVERY visitor-facing failure (a malformed body, a validation rejection, a bazel
+// non-zero exit from a typo'd query, or the in-guest timeout) is returned as HTTP
+// 200 with a queryError payload, NOT a non-2xx. The reason is the EmberVM task
+// pipeline: it relays a successful-task guest response verbatim, but replaces a
+// guest non-2xx with its own dead-letter envelope, so bazel's real error text
+// would never reach the backend. A bad visitor query is a SUCCESSFUL demo run
+// whose payload carries the failure. The edge (bazel_core.run_query) turns an
+// error-key payload back into a 422 for the browser.
 func handleQuery(w http.ResponseWriter, r *http.Request, logger *slog.Logger) {
 	var req queryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "malformed request body: "+err.Error())
+		writeJSON(w, http.StatusOK, queryErrorBody("malformed request body: "+err.Error(), -1, 0))
 		return
 	}
 	if err := validateExpr(req.Expression); err != nil {
-		writeErr(w, http.StatusUnprocessableEntity, "invalid expression: "+err.Error())
+		writeJSON(w, http.StatusOK, queryErrorBody("invalid expression: "+err.Error(), -1, 0))
 		return
 	}
 
@@ -337,14 +366,19 @@ func handleQuery(w http.ResponseWriter, r *http.Request, logger *slog.Logger) {
 	wallMs := time.Since(t0).Milliseconds()
 
 	if ctx.Err() == context.DeadlineExceeded {
-		writeErr(w, http.StatusUnprocessableEntity, "query exceeded "+queryTimeout.String()+" time budget")
+		writeJSON(w, http.StatusOK, queryErrorBody("query exceeded "+queryTimeout.String()+" time budget", -1, wallMs))
 		return
 	}
 	if err != nil {
 		// A visitor's bad query (unknown target, syntax error) exits non-zero;
-		// surface bazel's stderr tail so they see the real error, as a 422 (the
-		// input was the problem, not the server).
-		writeErr(w, http.StatusUnprocessableEntity, tail([]byte(stderr.String()), stderrTail))
+		// surface bazel's stderr tail so they see the real error. Still HTTP 200
+		// (a successful demo run) so the pipeline relays it instead of dead-lettering.
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		writeJSON(w, http.StatusOK, queryErrorBody(tail([]byte(stderr.String()), stderrTail), exitCode, wallMs))
 		return
 	}
 
@@ -361,23 +395,18 @@ func handleQuery(w http.ResponseWriter, r *http.Request, logger *slog.Logger) {
 		AnalyzedLine: analyzed,
 		WallMs:       wallMs,
 	})
-	// Explicit Content-Length so the response is fixed-length framed, not chunked:
-	// the vsock transport surfaced chunked bodies as malformed-encoding resets on
-	// the daemon side (see shim.Server.invokeHandler for the same defence).
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	writeJSON(w, http.StatusOK, body)
 }
 
-// writeErr writes a plain-text error body with an explicit Content-Length (same
-// fixed-length-framing reason as handleQuery's success path).
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	b := []byte(msg)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+// writeJSON writes a JSON body with an explicit Content-Length so the response is
+// fixed-length framed, not chunked: the vsock transport surfaced chunked bodies
+// as malformed-encoding resets on the daemon side (see shim.Server.invokeHandler
+// for the same defence).
+func writeJSON(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
-	_, _ = w.Write(b)
+	_, _ = w.Write(body)
 }
 
 // validateExpr is the guest's independent gate on the visitor expression (ADR

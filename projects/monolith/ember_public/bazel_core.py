@@ -178,8 +178,16 @@ async def run_query(expr: str) -> tuple[int, dict]:
 
     - transport failure -> 502
     - timeout -> 504
-    - guest 422 (bad query) -> passed through, error text from the guest body
-    - guest 200 -> forwarded verbatim, with a drift check on analyzed_line
+    - guest 200 with an `error` key (a failed query: bad expression, bazel
+      non-zero exit, or in-guest timeout) -> remapped to 422 with that error
+      text. The guest returns 200 for these because EmberVM's task pipeline
+      relays only a successful-task guest response verbatim and dead-letters a
+      guest non-2xx, so a bad visitor query must ride back as a successful task
+      whose payload carries the failure. The router turns this 422 into an
+      HTTPException so the browser shows bazel's real error.
+    - guest 200 (success) -> forwarded verbatim, with a drift check on analyzed_line
+    - legacy guest 422 -> passed through (kept during the deploy overlap, before
+      the new guest image with the 200+error contract is rolled out everywhere)
     """
     body = json.dumps({"expression": expr}).encode()
     try:
@@ -198,10 +206,16 @@ async def run_query(expr: str) -> tuple[int, dict]:
 
     if resp.status_code == 200:
         payload = resp.json()
+        # A failed query rides back as a successful task carrying an `error` key
+        # (the new guest contract). Remap to 422 so the router surfaces bazel's
+        # text to the browser instead of a stale "success" panel.
+        if payload.get("error"):
+            return 422, {"error": payload["error"]}
         _check_drift(payload.get("analyzed_line"))
         return 200, payload
 
     if resp.status_code == 422:
+        # Legacy guest that still returns 422 directly (pre-rollout overlap).
         return 422, {"error": resp.text}
 
     logger.warning(
