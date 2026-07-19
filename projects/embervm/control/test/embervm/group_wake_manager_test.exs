@@ -567,6 +567,31 @@ defmodule Embervm.GroupWakeManagerTest do
     assert_receive {:force_rolled, "grp-a"}, 1_000
   end
 
+  test "adoption leaves a :banking instance alone (the sweeper owns the bank)" do
+    # Mid-bank the node still reports live members; without the banking skip the
+    # adopt_live branch force-flips banking -> running and the sweeper's
+    # bank_ready record dies on {:illegal_transition, :running, :bank_ready}
+    # (the 2026-07-19 bank_record_failed wedge).
+    ctx = start_stack()
+    instance_id = "g-banking"
+    _ = seed_banked(ctx, instance_id)
+    # Back to running, then into :banking (running -> banking), the mid-bank state.
+    {:ok, _} = GroupStore.mark(ctx.store, instance_id, :relight)
+    {:ok, _} = GroupStore.transition(ctx.store, instance_id, :relight_ready, :group_relit, %{}, %{})
+    {:ok, _} = GroupStore.publish(ctx.store, instance_id, "10.0.0.9", 30_010)
+    {:ok, _} = GroupStore.mark(ctx.store, instance_id, :bank)
+    assert {:ok, %{state: :banking}} = GroupStore.get(ctx.store, instance_id)
+
+    seed_node(ctx, %{
+      group_member_vms: [%{vm_id: "vm-l", group_instance_id: instance_id, member_name: "leader", ip: "10.101.0.10", healthy: true}]
+    })
+
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    {:ok, inst} = GroupStore.get(ctx.store, instance_id)
+    assert inst.state == :banking
+  end
+
   test "adoption rolls a dead create (:creating with no in-flight wake) terminal" do
     # A :creating instance with no wake in flight is a dead create (a CP restart
     # mid-create, or a lost bound timer): it can never finish, and adopting its

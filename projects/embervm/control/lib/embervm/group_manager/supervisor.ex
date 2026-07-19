@@ -134,7 +134,18 @@ defmodule Embervm.GroupManager.Supervisor do
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
          {:ok, node_id} <- anchor_node(capacity_table),
          {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, opts) do
-      GroupManager.bank_group(pid)
+      case GroupManager.bank_group(pid) do
+        {:ok, _} = ok ->
+          ok
+
+        {:error, _reason} = error ->
+          # Terminate the owner on a failed bank, mirroring create_group: a
+          # registered child left behind refuses every later wake as
+          # :already_live at the DynamicSupervisor layer (the invisible-wedge
+          # class), while a fresh wake respawns an owner cleanly.
+          _ = DynamicSupervisor.terminate_child(@dyn_sup, pid)
+          error
+      end
     end
   end
 

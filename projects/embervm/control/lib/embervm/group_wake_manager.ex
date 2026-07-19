@@ -771,6 +771,18 @@ defmodule Embervm.GroupWakeManager do
       Map.has_key?(state.waking, instance.workload) ->
         state
 
+      # A `banking` instance is MID-BANK: the sweeper owns its transition. The
+      # members are still node-reported live for most of the bank (they are
+      # paused+snapshotted one by one), so without this skip the adopt_live
+      # branch below force-flips banking -> running mid-bank and the sweeper's
+      # bank_ready record then dies on {:illegal_transition, :running,
+      # :bank_ready}, failing the instance AFTER noded already destroyed the
+      # VMs (the 2026-07-19 bank_record_failed wedge). A bank that truly died
+      # mid-flight resolves on a LATER pass: once the node stops reporting the
+      # members, the complete-set/casualty branches below handle it.
+      instance.state == :banking ->
+        state
+
       # A `creating` instance with NO in-flight wake is a dead create: its owning
       # worker is gone (a CP restart mid-create, or a bound-expired wake whose
       # teardown was lost). It can never finish, and adopting whatever members DID

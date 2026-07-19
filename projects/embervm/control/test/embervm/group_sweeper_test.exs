@@ -653,6 +653,59 @@ defmodule Embervm.GroupSweeperTest do
     assert status_map["group"]["members"] == %{"live" => 0, "degraded" => 0}
   end
 
+  test "orphan network GC: a node-reported network for a TERMINAL instance is deleted" do
+    ctx = start_stack()
+    group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
+    group_node(ctx, "node-4")
+    id = running_group(ctx, "gi-orphan", "grp-a")
+
+    # The instance goes terminal WITHOUT a network teardown (the failed-bank /
+    # dead-channel shapes), while the node still reports its group network.
+    {:ok, _} = GroupStore.transition(ctx.store, id, :destroy, :group_destroyed, %{reason: "test"}, %{})
+
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      configured_id: "node-4",
+      node_id: "node-4",
+      serving_subnet_cidr: "10.98.0.0/24",
+      max_live_vms: 8,
+      live_vms: 0,
+      workloads: %{},
+      group_member_vms: [],
+      group_bundle_sets: [],
+      group_networks: [%{group_instance_id: id, cidr: "10.101.0.0/24", bridge: "emg1", member_count: 0}]
+    })
+
+    set_scrape(ctx, reading("group-5410", 0, 3))
+    GroupSweeper.sweep(ctx.sweeper)
+
+    assert [req] = delete_net_calls(ctx)
+    assert req.group_instance_id == id
+  end
+
+  test "orphan network GC: a LIVE instance's network is never touched" do
+    ctx = start_stack()
+    group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
+    group_node(ctx, "node-4")
+    id = running_group(ctx, "gi-live", "grp-a")
+
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      configured_id: "node-4",
+      node_id: "node-4",
+      serving_subnet_cidr: "10.98.0.0/24",
+      max_live_vms: 8,
+      live_vms: 0,
+      workloads: %{},
+      group_member_vms: [],
+      group_bundle_sets: [],
+      group_networks: [%{group_instance_id: id, cidr: "10.101.0.0/24", bridge: "emg1", member_count: 2}]
+    })
+
+    set_scrape(ctx, reading("group-5410", 1, 3))
+    GroupSweeper.sweep(ctx.sweeper)
+
+    assert delete_net_calls(ctx) == []
+  end
+
   test "a status-write failure never crashes the sweep" do
     ctx = start_stack()
     group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
