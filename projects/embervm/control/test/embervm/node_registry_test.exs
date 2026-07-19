@@ -204,6 +204,10 @@ defmodule Embervm.NodeRegistryTest do
         watch_startup: true,
         connect_fun: connect_fun,
         watch_fun: watch_fun,
+        # Stub the registry replay: the real default dials NodeService.Stub over
+        # the fake channel, which is not a real gRPC channel. The replay is not
+        # under test here (see the dedicated reconnect-replays-registry test).
+        sync_registry_fun: fn :fake_channel, _id -> :ok end,
         disconnect_fun: fn :fake_channel -> :ok end,
         # Small backoff so the reconnect fires quickly; large age-out so the
         # real-time ticks do not race the assertions.
@@ -249,6 +253,9 @@ defmodule Embervm.NodeRegistryTest do
         watch_startup: true,
         connect_fun: connect_fun,
         watch_fun: watch_fun,
+        # Stub the registry replay: the real default dials NodeService.Stub over
+        # the fake channel (not a real gRPC channel); the replay is not under test.
+        sync_registry_fun: fn :fake_channel, _id -> :ok end,
         disconnect_fun: fn :fake_channel -> :ok end,
         reassign_fun: fn id -> send(test_pid, {:reassigned, id}) end,
         # Small age-out windows and backoff so the wedge is detected and the kill

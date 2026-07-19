@@ -1112,9 +1112,13 @@ defmodule Embervm.NodeRegistry do
 
   # Push the authoritative workload registry to the just-connected daemon
   # (artifact-decoupling Phase 2). Builds the entry set from the control plane's
-  # workload view and calls SyncRegistry over the channel. A push failure is
-  # logged and swallowed (non-fatal): the daemon stays not-ready until the next
-  # reconnect retries, which is strictly safer than crashing the streamer.
+  # workload view and calls SyncRegistry over the channel. The WHOLE body is
+  # wrapped so a failure NEVER crashes the streamer: a returned {:error, _} is
+  # logged, and a RAISED error (a WorkloadCatalog ETS table that does not exist yet
+  # during early boot -> ArgumentError, or a bad channel value in a test)
+  # or an EXIT is caught and logged too. The daemon simply stays not-ready and the
+  # next reconnect retries; crashing the streamer here would take down capacity
+  # reporting for the node, which is strictly worse than a missed replay.
   defp default_sync_registry(channel, node_id) do
     entries = registry_entries()
 
@@ -1127,6 +1131,14 @@ defmodule Embervm.NodeRegistry do
         Logger.warning("embervm node registry: SyncRegistry to #{node_id} failed: #{inspect(other)}")
         :ok
     end
+  rescue
+    e ->
+      Logger.warning("embervm node registry: SyncRegistry to #{node_id} raised: #{inspect(e)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("embervm node registry: SyncRegistry to #{node_id} exited: #{inspect({kind, reason})}")
+      :ok
   end
 
   # Build the authoritative RegistryEntry set from the control plane's workload
