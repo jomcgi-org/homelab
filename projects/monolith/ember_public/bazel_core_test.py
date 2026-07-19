@@ -223,6 +223,31 @@ async def test_run_query_forwards_guest_422_with_error_text(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_query_maps_guest_200_error_payload_to_422(monkeypatch):
+    # New guest contract: a failed query (bad expression, bazel non-zero exit,
+    # in-guest timeout) is a SUCCESSFUL task returning HTTP 200 with an `error`
+    # key and no labels/analyzed_line, because EmberVM only relays successful-task
+    # responses verbatim. run_query must turn that into a 422 so the router raises
+    # HTTPException(422) and the browser shows bazel's real error text.
+    async def fake_submit(name, *, body, guest_path, read_timeout, **kwargs):
+        return _guest_response(
+            200,
+            {
+                "error": "ERROR: no such target '//absl/stringsm'",
+                "exit_code": 1,
+                "wall_ms": 210,
+            },
+        )
+
+    monkeypatch.setattr(bazel_core.embervm_client, "submit", fake_submit)
+
+    status, payload = await bazel_core.run_query("deps(//absl/stringsm)")
+
+    assert status == 422
+    assert "no such target" in payload["error"]
+
+
+@pytest.mark.asyncio
 async def test_run_query_maps_timeout_to_504(monkeypatch):
     async def fake_submit(name, *, body, guest_path, read_timeout, **kwargs):
         raise EmberVMTimeout("read timed out")

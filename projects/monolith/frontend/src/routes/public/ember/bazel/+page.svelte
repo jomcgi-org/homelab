@@ -24,9 +24,16 @@
   const API = "/ember/bazel/api";
 
   const DEFAULT_EXPR = "deps(//absl/strings)";
+  // Known-good cquery expressions offered as one-click chips. Each is verified
+  // against the backend charset validator (bazel_core.validate_expr) and is a
+  // real Abseil target/pattern, so a click always returns a result, never an
+  // error. Clicking populates the input AND runs (respecting the cooldown).
   const EXAMPLES = [
+    { label: "deps", expr: "deps(//absl/strings)" },
     { label: "cc_library kinds", expr: 'kind("cc_library", //absl/...)' },
     { label: "somepath", expr: "somepath(//absl/base, //absl/time)" },
+    { label: "reverse deps", expr: "rdeps(//absl/..., //absl/base:config)" },
+    { label: "package labels", expr: "//absl/hash/..." },
   ];
 
   const PROOF_MARKER = "0 packages loaded, 0 targets configured";
@@ -163,6 +170,11 @@
     if (running) return;
     running = true;
     runError = "";
+    // Clear the previous result/proof/labels up front so a new run that errors
+    // does not leave a stale success panel (and its green proof badge) rendered
+    // underneath the error box. Filter text resets with it.
+    result = null;
+    filterText = "";
     startStopwatch();
     try {
       const resp = await fetch(`${API}/query`, {
@@ -457,7 +469,10 @@
       {#if result}
         {#if analyzedParts.before || analyzedParts.marker}
           <div class="proof-badge">
-            <span class="proof-kicker">proof of reuse, bazel's own words</span>
+            <span class="proof-kicker"
+              ><span class="proof-check" aria-hidden="true">✓</span> proof of reuse,
+              bazel's own words</span
+            >
             <p class="proof-line">
               {analyzedParts.before}{#if analyzedParts.marker}<b class="proof-marker">{analyzedParts.marker}</b>{/if}{analyzedParts.after}
             </p>
@@ -843,9 +858,18 @@
     word-break: break-word;
   }
 
+  /* Positive/success accent, scoped to this page: the shared ember palette has
+     only ember (red), frost (blue), and amber, and the proof badge previously
+     reused the ember-dim salmon, which reads as an ERROR next to the run-error
+     box (they shared a hue). A muted, warm-consistent green marks the proof as
+     clearly good. Kept local rather than added to ember.css so the token change
+     stays contained to the one place that needs it. */
   .proof-badge {
-    background: color-mix(in srgb, var(--em-ember-dim) 35%, var(--em-panel));
-    border: 1px solid var(--em-ember-dim);
+    --em-good: #2f7d55;
+    --em-good-deep: #1f6042;
+    --em-good-dim: #bfe0cd;
+    background: color-mix(in srgb, var(--em-good-dim) 34%, var(--em-panel));
+    border: 1px solid var(--em-good-dim);
     border-radius: 12px;
     padding: 16px 18px;
     display: flex;
@@ -858,8 +882,25 @@
     font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--em-ember-deep);
+    color: var(--em-good-deep);
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .proof-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 999px;
+    background: var(--em-good);
+    color: var(--em-on-color);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
   }
 
   .proof-line {
@@ -872,7 +913,7 @@
   }
 
   .proof-marker {
-    background: var(--em-ember);
+    background: var(--em-good);
     color: var(--em-on-color);
     border-radius: 4px;
     padding: 1px 6px;

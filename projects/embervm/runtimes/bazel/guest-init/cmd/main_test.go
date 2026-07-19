@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -178,5 +179,63 @@ func TestTruncate(t *testing.T) {
 	}
 	if len(s) != maxOutput {
 		t.Fatalf("truncate(big) len = %d, want %d", len(s), maxOutput)
+	}
+}
+
+// TestQueryErrorBody covers the failure-payload shape. A bad visitor query (a
+// bazel non-zero exit, an in-guest timeout, or a validation rejection) is a
+// SUCCESSFUL demo run whose payload carries the failure, so handleQuery returns
+// HTTP 200 with this body and NO labels/analyzed_line. EmberVM's task pipeline
+// only relays a successful-task guest response verbatim; a guest non-2xx would be
+// dead-lettered and the visitor would never see bazel's error. So the body must
+// carry the error text, the exit code, and wall_ms, and must NOT carry a labels
+// or analyzed_line key (their presence is the success discriminator on the edge).
+func TestQueryErrorBody(t *testing.T) {
+	raw := queryErrorBody("ERROR: no such target '//absl/stringsm'", 1, 240)
+
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("queryErrorBody produced invalid JSON: %v", err)
+	}
+	if got["error"] != "ERROR: no such target '//absl/stringsm'" {
+		t.Fatalf("error = %v, want the stderr text", got["error"])
+	}
+	// JSON numbers decode to float64 through any.
+	if got["exit_code"].(float64) != 1 {
+		t.Fatalf("exit_code = %v, want 1", got["exit_code"])
+	}
+	if got["wall_ms"].(float64) != 240 {
+		t.Fatalf("wall_ms = %v, want 240", got["wall_ms"])
+	}
+	if _, ok := got["labels"]; ok {
+		t.Fatalf("error body must NOT carry a labels key: %v", got)
+	}
+	if _, ok := got["analyzed_line"]; ok {
+		t.Fatalf("error body must NOT carry an analyzed_line key: %v", got)
+	}
+}
+
+// TestQuerySuccessBodyHasNoError guards the success discriminator from the other
+// side: a successful query's body carries labels + analyzed_line and NO error
+// key, so the edge (bazel_core.run_query) can branch on error-presence alone.
+func TestQuerySuccessBodyHasNoError(t *testing.T) {
+	raw, err := json.Marshal(queryResult{
+		Labels:       "//absl/strings:strings\n",
+		Truncated:    false,
+		AnalyzedLine: "Analyzed 3 targets (0 packages loaded, 0 targets configured).",
+		WallMs:       120,
+	})
+	if err != nil {
+		t.Fatalf("marshal queryResult: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, ok := got["error"]; ok {
+		t.Fatalf("success body must NOT carry an error key: %v", got)
+	}
+	if got["labels"] == "" || got["analyzed_line"] == "" {
+		t.Fatalf("success body must carry labels + analyzed_line: %v", got)
 	}
 }
