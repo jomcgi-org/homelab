@@ -101,9 +101,13 @@ defmodule Embervm.DrainCoordinator do
         safety_margin_ms: state.safety_margin_ms
       })
 
-      # Stateful and group first (the two classes the R6 invariant names), then
-      # sessions and serving. Each call is prompt (starts async workers, returns a
-      # count); the ordering only affects which class's workers are enqueued first.
+      # Priority order inside the drain budget (ADR embervm/009 resolved-question 5):
+      # durable banks first (stateful, group, session are all durable snapshots),
+      # serving banks second. In-flight builds are the last priority and are handled
+      # by noded itself, not this coordinator: they are reconstructible, so noded
+      # finishes-or-aborts them on the drain clock after this force-bank pass. Each
+      # call is prompt (starts async workers, returns a count); the ordering decides
+      # which class's workers are enqueued first, so durable state wins the budget.
       counts = %{
         stateful: drain_class(state, :stateful, node_id),
         group: drain_class(state, :group, node_id),

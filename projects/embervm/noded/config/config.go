@@ -103,7 +103,8 @@ type Config struct {
 	// stateful/group) VM has left the registry (the control plane force-banks
 	// them, R6) or this budget elapses; only then does it drain in-flight Assigns
 	// and stop. The pod's terminationGracePeriodSeconds must exceed it (chart sets
-	// drain + 30s). Default 120s (the R6 bounded-preemption window).
+	// drain + 30s). Default 110s: the 2m spot-instance preemption notice minus
+	// notification latency (ADR embervm/009 resolved-question 5).
 	DrainTimeout time.Duration
 
 	// EgressSidecarAddr is the pod-local egress-proxy sidecar TCP address. The
@@ -227,7 +228,7 @@ func Load() (Config, error) {
 		GuestOomScoreAdj:    atoiDefault("EMBERVM_NODED_GUEST_OOM_SCORE_ADJ", 1000),
 		BootReadyTimeout:    60 * time.Second,
 		RestoreReadyTimeout: 2 * time.Second,
-		DrainTimeout:        120 * time.Second,
+		DrainTimeout:        110 * time.Second,
 		EgressSidecarAddr:   getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
 		ArchiveFetchTimeout: 60 * time.Second,
 		ArchiveMaxBytes:     512 << 20,
