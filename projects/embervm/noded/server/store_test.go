@@ -211,10 +211,19 @@ func (d *diskScanStatefulDriver) ScanStatefulBundles() []substrate.StatefulBundl
 // restored bundle dir exactly as a startup disk rescan would, matching prod.
 func newStoreTestServer(t *testing.T, fs *fakeStore) *Server {
 	t.Helper()
+	return newStoreTestServerWithVendor(t, fs, "amd")
+}
+
+// newStoreTestServerWithVendor mirrors newStoreTestServer but lets a test pick
+// the node's own CPU vendor. The legacy-alias short-circuit in enqueueIfMissing
+// is gated to nodes whose OWN vendor is the legacy alias ("amd"), so testing
+// that gate needs a server whose vendor is something else (e.g. "intel").
+func newStoreTestServerWithVendor(t *testing.T, fs *fakeStore, vendor string) *Server {
+	t.Helper()
 	root := t.TempDir()
 	volRoot := t.TempDir()
 	s := New(Options{
-		Config:         config.Config{Arch: "amd64", Node: "node-4", CpuVendor: "amd", SnapshotRoot: root, VolumeRoot: volRoot},
+		Config:         config.Config{Arch: "amd64", Node: "node-4", CpuVendor: vendor, SnapshotRoot: root, VolumeRoot: volRoot},
 		Driver:         &fakeDriver{},
 		StatefulDriver: newDiskScanStatefulDriver(root),
 		Transport:      &fakeTransport{},
@@ -662,5 +671,42 @@ func TestRestoreArtifactLegacyAliasResolves(t *testing.T) {
 	// The vendor-keyed prefix was never populated; the legacy prefix served it.
 	if fs.has("stateful/amd/scratch-postgres/legacy-1") {
 		t.Fatal("legacy restore should read the legacy prefix directly, not populate the new vendor-keyed one")
+	}
+}
+
+// TestEnqueueIfMissingLegacyAliasGatedToAMDNode proves the enqueueIfMissing
+// legacy short-circuit is gated to the node's OWN vendor being the legacy alias
+// ("amd"): an Intel node whose vendor-keyed prefix is absent must still enqueue
+// its OWN export even when a same-workload/ref legacy (pre-R7, necessarily AMD)
+// artifact happens to exist in the store. Without the gate, the Intel node would
+// wrongly mark that unrelated AMD artifact as satisfying its own export and skip
+// uploading, silently losing the Intel node's durability.
+func TestEnqueueIfMissingLegacyAliasGatedToAMDNode(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServerWithVendor(t, fs, "intel")
+	ctx := context.Background()
+	s.startExportQueue(ctx)
+
+	// Seed the store with an artifact under the LEGACY (un-vendored) prefix, as
+	// if a pre-R7 AMD node had exported it. The intel node's own vendor-keyed
+	// prefix ("stateful/intel/scratch-postgres/r1") is deliberately left empty.
+	legacyPrefix := "stateful/scratch-postgres/r1"
+	legacySrc := t.TempDir()
+	writeBundleFiles(t, legacySrc, map[string]string{"snapfile": "amd-snap"})
+	if _, _, err := fs.Export(ctx, legacyPrefix, legacySrc, []string{"snapfile"}, 9, 0); err != nil {
+		t.Fatalf("seed legacy export: %v", err)
+	}
+
+	// This node's own local bundle for the same workload/ref, not yet exported.
+	dir := filepath.Join(s.cfg.SnapshotRoot, "stateful", "r1")
+	writeBundleFiles(t, dir, map[string]string{"snapfile": "intel-snap", "memfile": "intel-mem"})
+	s.statefulBundles.add(statefulBundleEntry{snapshotRef: "r1", workload: "scratch-postgres", generation: 1})
+
+	s.enqueueIfMissing(ctx, &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: "r1"})
+	waitForExport(t, fs, "stateful/intel/scratch-postgres/r1")
+
+	// The unrelated legacy (AMD) artifact must be untouched by this node's export.
+	if got, _, err := fs.Restore(ctx, legacyPrefix, t.TempDir()); err != nil || got == 0 {
+		t.Fatalf("legacy artifact should be untouched, restore err=%v bytes=%d", err, got)
 	}
 }

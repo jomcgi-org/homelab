@@ -658,7 +658,11 @@ func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) 
 	// (this node's own artifact, exported before vendor keying shipped) is
 	// already exported; treat it as present so the reconcile sweep never
 	// re-exports it under the new layout for content it already has off node.
-	if legacy := legacyArtifactPrefix(ref); legacy != "" {
+	// Gated on the node itself being the alias vendor: the legacy layout can
+	// only ever hold node-4 (amd) artifacts, so a node of any other vendor must
+	// never claim a legacy copy as its own durable export (it would silently
+	// skip exporting its own artifact).
+	if legacy := legacyArtifactPrefix(ref); legacy != "" && s.cfg.CpuVendor == legacyVendorAlias {
 		if legacyPresent, legacyGen, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
 			s.exported.mark(prefix, legacyGen)
 			return
