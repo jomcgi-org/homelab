@@ -17,7 +17,8 @@ Gating mirrors core.py's demo-postgres helpers:
     bazel flag (e.g. --output=starlark, which is code execution) through the
     single `expression` argv element.
   - check_and_record_query: a per-session token bucket, one query per
-    _RATE_LIMIT_WINDOW_S seconds.
+    _RATE_LIMIT_WINDOW_S seconds, keyed on a salted hash of the session
+    cookie rather than the cookie itself.
   - try_acquire_query_slot / release_query_slot: a module-level semaphore
     sized to the workload's `cap` (2), so a burst of visitors cannot pile
     more concurrent tasks onto the workload than it has clones for.
@@ -26,8 +27,10 @@ Gating mirrors core.py's demo-postgres helpers:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
 import re
 from time import monotonic
 
@@ -69,13 +72,28 @@ def validate_expr(expr: str) -> str | None:
 
 # ---------------------------------------------------------------------------
 # Per-session rate limit: one query per _RATE_LIMIT_WINDOW_S seconds. Keyed on
-# the opaque session tag, bounded by pruning stale entries on access (mirrors
-# core.py's _insert_bucket pattern).
+# a salted hash of the session cookie, not the raw cookie value, so a visitor
+# who rotates or grows an oversized cookie cannot grow this dict unboundedly
+# (mirrors core.py's demo_pg_session_tag). Bounded further by pruning stale
+# entries on access.
 # ---------------------------------------------------------------------------
 
 _RATE_LIMIT_WINDOW_S = 3.0
 _RATE_LIMIT_PRUNE_AGE_S = 3600.0
 _rate_bucket: dict[str, float] = {}
+
+
+# Optional salt mixed into the rate-limit key so it is not a bare sha256 of
+# the cookie value (mirrors chat_public.sessions.IP_HASH_SALT). No default:
+# an empty salt is acceptable for dev/test; production injects one via
+# BAZEL_QUERY_SESSION_SALT.
+_SESSION_SALT = os.environ.get("BAZEL_QUERY_SESSION_SALT", "")
+
+
+def _session_tag(session_cookie: str) -> str:
+    """Hash the session cookie into a short, bounded, opaque rate-limit key
+    so a rotated or oversized cookie cannot grow _rate_bucket unboundedly."""
+    return hashlib.sha256((_SESSION_SALT + session_cookie).encode()).hexdigest()[:16]
 
 
 def _prune_rate_bucket(now: float) -> None:
@@ -88,17 +106,17 @@ def _prune_rate_bucket(now: float) -> None:
         del _rate_bucket[tag]
 
 
-def check_and_record_query(session_tag: str) -> bool:
-    """True if this query is allowed; records the attempt either way.
-
-    A rejected attempt does not reset the visitor's own window (mirrors
+def check_and_record_query(session_cookie: str) -> bool:
+    """True if this query is allowed; records ONLY an allowed attempt (a
+    rejected attempt does not reset the visitor's own window, mirroring
     core.check_and_record_insert)."""
+    tag = _session_tag(session_cookie)
     now = monotonic()
     _prune_rate_bucket(now)
-    last = _rate_bucket.get(session_tag)
+    last = _rate_bucket.get(tag)
     if last is not None and (now - last) < _RATE_LIMIT_WINDOW_S:
         return False
-    _rate_bucket[session_tag] = now
+    _rate_bucket[tag] = now
     return True
 
 

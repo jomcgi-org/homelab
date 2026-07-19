@@ -40,6 +40,7 @@
       "path": "/ember/postgres",
       "static_initial": true
     },
+    { "id": "ember-bazel", "path": "/ember/bazel" },
     { "id": "docs", "path": "/docs" },
     { "id": "docs-slug", "path": "/docs/agents" },
     { "id": "cv", "path": "/cv" },
