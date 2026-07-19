@@ -459,6 +459,32 @@
         </span>
       </div>
 
+      <!-- Compact always-on-screen comparison strip: the cold/warm recorded
+           baselines plus this session's live numbers, so the core point (a
+           frozen brain answers in a fraction of a cold analysis) is visible
+           while querying without scrolling to the detailed section below. The
+           two baselines mirror the recorded-panel constants; "this query" is the
+           last run's round trip; "saved" is the all-time counter. -->
+      <div class="stat-strip">
+        <span class="stat-item"
+          ><span class="stat-key">cold</span> <span class="stat-val stat-cold">13.8 s</span></span
+        >
+        <span class="stat-sep">/</span>
+        <span class="stat-item"
+          ><span class="stat-key">warm</span> <span class="stat-val stat-warm">0.31 s</span></span
+        >
+        <span class="stat-sep">/</span>
+        <span class="stat-item"
+          ><span class="stat-key">this query</span>
+          <span class="stat-val stat-live">{running ? ms(stopwatchMs) : ms(result?.wall_ms)}</span></span
+        >
+        <span class="stat-sep">/</span>
+        <span class="stat-item"
+          ><span class="stat-key">saved so far</span>
+          <span class="stat-val stat-saved">{formatSavedTime(savedS)}</span></span
+        >
+      </div>
+
       {#if runError}
         <div class="run-error">
           <span class="run-error-label">bazel says:</span>
@@ -511,7 +537,11 @@
               <li>
                 <span class="label-target">{item.target}</span>
                 {#if item.configHash}
-                  <span class="label-config-badge">{item.configHash}</span>
+                  <span
+                    class="label-config-badge"
+                    title="the target's configuration hash; source files have none"
+                    >{item.configHash}</span
+                  >
                 {/if}
               </li>
             {:else}
@@ -519,12 +549,8 @@
             {/each}
           </ul>
 
-          <div class="result-footer-row">
-            <p class="result-footer">
-              the badge is the target's configuration hash; source files have
-              none
-            </p>
-            {#if labelPageCount > 1}
+          {#if labelPageCount > 1}
+            <div class="result-footer-row">
               <div class="pager">
                 <button
                   class="pager-btn"
@@ -546,8 +572,8 @@
                   &#8250;
                 </button>
               </div>
-            {/if}
-          </div>
+            </div>
+          {/if}
         </div>
       {/if}
     </section>
@@ -830,6 +856,54 @@
     display: inline-block;
   }
 
+  /* No card chrome by design: an inline row of small mono figures that sits with
+     the round-trip readout so the comparison is always on screen. Colours reuse
+     the recorded-panel tokens (frost=cold, amber=warm, ember-deep=live). */
+  .stat-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 10px;
+    font-family: var(--em-mono);
+    font-size: 12px;
+    color: var(--em-faint);
+  }
+
+  .stat-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+  }
+
+  .stat-key {
+    color: var(--em-faint);
+  }
+
+  .stat-val {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-cold {
+    color: var(--em-frost);
+  }
+
+  .stat-warm {
+    color: var(--em-amber);
+  }
+
+  .stat-live {
+    color: var(--em-ember-deep);
+  }
+
+  .stat-saved {
+    color: var(--em-ember-deep);
+  }
+
+  .stat-sep {
+    color: var(--em-line);
+  }
+
   .run-error {
     background: color-mix(in srgb, var(--em-ember-dim) 25%, var(--em-ground));
     border: 1px solid var(--em-ember-dim);
@@ -1018,16 +1092,10 @@
 
   .result-footer-row {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
-  }
-
-  .result-footer {
-    margin: 0;
-    font-size: 11px;
-    color: var(--em-faint);
   }
 
   .pager {
