@@ -162,3 +162,14 @@ root.
 Everything builds in Bazel, including the Elixir control plane via a hermetic
 OTP toolchain with pinned hex dependencies. Images are apko-based; noded
 ships dual-arch.
+
+## Scratch disk (FC nodes)
+
+noded's `firecracker.nvmeRoot` (chart value) points at the logical path
+`/var/lib/embervm/scratch`, not a device-specific mount. Any node labeled
+`homelab.io/firecracker=true` MUST bind-mount its real scratch disk at that
+path (fstab entry or a systemd `.mount` unit) before it is labeled, since the
+DaemonSet hostPath is uniform across nodes but the physical device differs
+per node. Use a separate disk from the etcd WAL disk per ADR embervm/012.
+On EKS the same logical path is satisfied by Karpenter's
+`instanceStorePolicy` RAID0.

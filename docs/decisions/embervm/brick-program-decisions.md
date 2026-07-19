@@ -1,0 +1,11 @@
+# EmberVM brick-program decisions (autonomous run log)
+
+Running log of decisions made during the autonomous brick-model implementation. Fable is the decision-maker for forks encountered mid-run; Joe is escalated only when Fable is stuck or needs him. Formal architecture rationale lives in the ADRs (docs/decisions/embervm/); this file is the lightweight running log.
+
+## 2026-07-19
+
+- **Capacity model: bricks everywhere, drop in-place resize.** Fixed-size T-shirt bricks are the single capacity unit on both tiers; the control plane moves per-size-class counts, kube-scheduler bin-packs them. A Pending brick is the fleet-full signal (Karpenter adds a node on EKS; refuse placement and page on the fixed homelab). Recorded in ADR 012/013 (amended, PR #3720). In-place resize (PR-I, draft #3715) shelved. Decider: Joe.
+- **Cutover shape: both size-classes at once.** The DaemonSet to brick cutover ships small and large together (node-4 already runs serving/session workloads needing a large brick). Decider: Joe.
+- **Instance identity: pod_uid.** Registry and ledger keyed by the kubelet pod UID; retires the seed's control-plane-issued instance_id anchor. Decider: Joe.
+- **Scratch disk: generic logical path (Option B).** noded scratch path renamed from the device-specific /disks/nvme-02 to /var/lib/embervm/scratch; operators bind-mount each node's real device there. Tier-portable (matches Karpenter instanceStorePolicy RAID0 on EKS). Decider: Joe.
+- **Brick-count controller location: inside the brick capacity PR**, not R0 PR-3 (single writer plus the Deployments it scales is one review and rollback unit). Decider: Fable.
