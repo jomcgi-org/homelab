@@ -133,7 +133,7 @@ defmodule Embervm.PlacementTest do
       ready =
         brick(instance_id: "n/ready", mem_headroom_mib: 16_000, mem_budget_mib: 16_384, workloads: advertising("wl"))
 
-      for key <- ~w(a b c d e f) do
+      for _key <- ~w(a b c d e f) do
         assert Placement.pick_ready([not_ready, ready], "wl", 4_000).instance_id == "n/ready"
       end
     end
