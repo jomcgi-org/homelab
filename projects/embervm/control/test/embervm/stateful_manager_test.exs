@@ -1282,6 +1282,12 @@ defmodule Embervm.StatefulManagerTest do
   # Put ONE per-instance capacity fact (keyed by {node, pod_uid}) for a co-located
   # brick, carrying the fields WakeInstance.select reads.
   defp put_brick(ctx, node_id, pod_uid, opts) do
+    # free_slots (BrickLedger.to_brick) = max(max_live_vms - live_vms, 0), and a cold
+    # pick requires free_slots > 0 (a full instance cannot take a new VM). Default to a
+    # free slot (max_live_vms 4, live_vms 0) so a brick this fixture expects the cold
+    # path to select is not filtered out on SLOTS - a too-small brick must be excluded
+    # on MEM, not because the fixture forgot to give it a slot. Overridable to model a
+    # genuinely full instance.
     NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
       node_id: node_id,
       configured_id: node_id,
@@ -1291,13 +1297,13 @@ defmodule Embervm.StatefulManagerTest do
       size_class: Keyword.get(opts, :size_class, "8gi"),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 8_000),
       mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 8_192),
-      live_vms: 0,
-      max_live_vms: 4,
+      live_vms: Keyword.get(opts, :live_vms, 0),
+      max_live_vms: Keyword.get(opts, :max_live_vms, 4),
       workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}},
       stateful_vms: [],
       stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
       volumes: Keyword.get(opts, :volumes, []),
-      store_reachable: false
+      store_reachable: Keyword.get(opts, :store_reachable, false)
     })
   end
 
