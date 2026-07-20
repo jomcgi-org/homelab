@@ -892,9 +892,18 @@ noded:
 # netns), which the 16Gi class covers.
 bricks:
   enabled: false
+  # Per-class DESIRED replica count the Embervm.BrickController reconciles the
+  # brick Deployments to (and the value each renders at first create). A MAP keyed
+  # by size-class label, not a per-class list field, so a deploy-values overlay can
+  # set one class (PR-3b's canary: `desiredReplicas: {2gi: 1}`) without restating
+  # the whole classes list. Empty (the default) means every class is zero, so with
+  # bricks.enabled=true but no desired set, the Deployments render at 0 replicas.
+  # Rendered into the control plane as EMBERVM_BRICK_CLASSES; ArgoCD ignores
+  # Deployment /spec/replicas fleet-wide, so the controller (not this value) is the
+  # ongoing authority after first create.
+  desiredReplicas: {}
   classes:
     - name: 2gi
-      replicas: 0
       resources:
         requests:
           cpu: "1"
@@ -902,7 +911,6 @@ bricks:
         limits:
           memory: 2Gi
     - name: 4gi
-      replicas: 0
       resources:
         requests:
           cpu: "2"
@@ -910,7 +918,6 @@ bricks:
         limits:
           memory: 4Gi
     - name: 8gi
-      replicas: 0
       resources:
         requests:
           cpu: "2"
@@ -918,7 +925,6 @@ bricks:
         limits:
           memory: 8Gi
     - name: 16gi
-      replicas: 0
       resources:
         requests:
           cpu: "2"

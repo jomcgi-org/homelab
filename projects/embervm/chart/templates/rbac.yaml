@@ -58,6 +58,26 @@ rules:
       - secrets
     verbs:
       - get
+  # BrickController (brick-capacity PR-3): reconcile per-size-class brick
+  # Deployment replica counts. It reads each brick Deployment's /scale
+  # subresource and PATCHes spec.replicas on it; `deployments get` lets it
+  # confirm a brick Deployment exists before scaling (a not-yet-rendered class
+  # 404s harmlessly otherwise). Scale-only: it never updates the full Deployment
+  # object, so no `update` on `deployments` itself. ArgoCD's fleet-wide
+  # ignoreDifferences on /spec/replicas keeps these writes from showing as drift.
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+  - apiGroups:
+      - apps
+    resources:
+      - deployments/scale
+    verbs:
+      - get
+      - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -319,6 +319,30 @@ defmodule Embervm.K8s do
     end
   end
 
+  @doc """
+  Sets a Deployment's replica count via a JSON merge patch to its `/scale`
+  subresource (`apps/v1 .../deployments/<name>/scale`), the narrow write the
+  `Embervm.BrickController` uses to grow/shrink a size-class brick pool. A merge
+  patch on `/scale` touches only `spec.replicas` and needs only the
+  `deployments/scale` `patch` verb, never a full-object update. Returns `:ok` on
+  200, `{:error, {:apiserver_status, status}}` for any non-200 (e.g. 403 from a
+  missing RBAC verb, 404 for a not-yet-rendered brick Deployment), mirroring
+  `patch_workload_status/3` so the caller treats a scale miss the same way.
+  """
+  @spec scale_deployment(String.t(), String.t(), non_neg_integer()) :: :ok | {:error, term()}
+  def scale_deployment(namespace, name, replicas) do
+    path =
+      "/apis/apps/v1/namespaces/#{URI.encode(namespace)}/deployments/#{URI.encode(name)}/scale"
+
+    body = :json.encode(%{"spec" => %{"replicas" => replicas}}) |> :erlang.iolist_to_binary()
+
+    case do_request(:patch, path, body, "application/merge-patch+json") do
+      {:ok, 200, _resp_body} -> :ok
+      {:ok, status, _resp_body} -> {:error, {:apiserver_status, status}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   # TokenReview create returns 201 (some clusters 200); anything else is an
   # API-server error we surface without trusting the token.
   defp parse_review(status, body) when status in [200, 201] do
