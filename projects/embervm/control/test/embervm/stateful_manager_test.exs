@@ -78,7 +78,7 @@ defmodule Embervm.StatefulManagerTest do
         capacity_table: cap_table,
         catalog_table: cat_table,
         clock: Keyword.get(opts, :clock, fn -> 1_000 end),
-        channel_fun: fn _node -> {:ok, :ch} end,
+        channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_stateful_fun: start_stateful_fun,
         stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, fn _ch, _req -> {:ok, %Embervm.Node.V1.StopStatefulResponse{}} end),
@@ -118,6 +118,10 @@ defmodule Embervm.StatefulManagerTest do
   end
 
   defp stateful_workload(ctx, name, extra \\ %{}) do
+    # `:resources` promotes to the TOP-LEVEL entry (where resource_spec/1 reads
+    # mem_mib/vcpus); everything else merges into the stateful cfg.
+    {resources, extra} = Map.pop(extra, :resources)
+
     stateful_cfg =
       Map.merge(
         %{
@@ -134,7 +138,10 @@ defmodule Embervm.StatefulManagerTest do
         extra
       )
 
-    WorkloadCatalog.upsert(ctx.cat_table, name, %{class: "stateful", namespace: "embervm-workloads", stateful: stateful_cfg})
+    entry = %{class: "stateful", namespace: "embervm-workloads", stateful: stateful_cfg}
+    entry = if resources, do: Map.put(entry, :resources, resources), else: entry
+
+    WorkloadCatalog.upsert(ctx.cat_table, name, entry)
   end
 
   defp stateful_node(ctx, node_id, opts \\ []) do
@@ -1268,5 +1275,109 @@ defmodule Embervm.StatefulManagerTest do
 
     # No restore was attempted (store unreachable), and no wake was blocked.
     assert Agent.get(restore_calls, & &1) == []
+  end
+
+  # -- instance-aware dial (brick co-location foundation, Step 4) ----------------
+
+  # Put ONE per-instance capacity fact (keyed by {node, pod_uid}) for a co-located
+  # brick, carrying the fields WakeInstance.select reads.
+  defp put_brick(ctx, node_id, pod_uid, opts) do
+    NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      pod_uid: pod_uid,
+      instance_id: "#{node_id}/#{pod_uid}",
+      serving_subnet_cidr: "10.88.0.0/24",
+      size_class: Keyword.get(opts, :size_class, "8gi"),
+      mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 8_000),
+      mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 8_192),
+      live_vms: 0,
+      max_live_vms: 4,
+      workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}},
+      stateful_vms: [],
+      stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
+      volumes: Keyword.get(opts, :volumes, []),
+      store_reachable: false
+    })
+  end
+
+  test "a relight dials the bundle-OWNING co-located instance's instance_id, not the node name" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    relit_fun = fn _ch, _req ->
+      {:ok, %StartStatefulResponse{vm_id: "vm-relit", ip: "10.88.0.5", port: 5432, generation: 3, was_relight: true}}
+    end
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    ctx = start_stack(start_stateful_fun: relit_fun, channel_fun: capture_channel)
+    stateful_workload(ctx, "wl-a")
+
+    # Two co-located bricks on node-4. pod-b banked the bundle on disk; pod-a is a
+    # too-small 2Gi brick. A node-name dial could hit either; instance selection
+    # must pin the relight to pod-b (the owner).
+    put_brick(ctx, "node-4", "pod-a",
+      size_class: "2gi",
+      mem_headroom_mib: 100,
+      mem_budget_mib: 2_048,
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10}]
+    )
+
+    put_brick(ctx, "node-4", "pod-b",
+      stateful_bundles: [%{snapshot_ref: "stateful/stf-banked", workload: "wl-a", generation: 3, size_bytes: 10, created_at_unix_ms: 1}],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10}]
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(dialed, & &1) == ["node-4/pod-b"]
+  end
+
+  test "a cold wake dials a mem-eligible co-located instance and skips a too-small classed brick" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    cold_fun = fn _ch, _req ->
+      {:ok, %StartStatefulResponse{vm_id: "vm-cold", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    # A large workload (4000 MiB) so the 2Gi brick is ineligible.
+    ctx = start_stack(start_stateful_fun: cold_fun, channel_fun: capture_channel)
+    stateful_workload(ctx, "wl-a", %{resources: %{vcpus: 2, mem_mib: 4_000}})
+
+    put_brick(ctx, "node-4", "pod-small", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048)
+    put_brick(ctx, "node-4", "pod-big", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+
+    # Fresh first boot (no volume): a cold wake places on a mem-eligible instance.
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(dialed, & &1) == ["node-4/pod-big"]
+  end
+
+  test "a cold wake with no eligible instance fails cleanly rather than dialing a too-small brick" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    ctx = start_stack(channel_fun: capture_channel)
+    stateful_workload(ctx, "wl-a", %{resources: %{vcpus: 2, mem_mib: 4_000}})
+
+    # The node's only instance is a too-small 2Gi classed brick.
+    put_brick(ctx, "node-4", "pod-small", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048)
+
+    assert {:error, {:wake_failed, :no_eligible_instance}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    # No dial happened: the wake failed at selection, never sending a StartStateful.
+    assert Agent.get(dialed, & &1) == []
+    assert Agent.get(ctx.starts, & &1) == 0
   end
 end

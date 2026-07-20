@@ -675,20 +675,30 @@ defmodule Embervm.StatefulManager do
 
     case plan do
       {:relight, instance, node_id, snapshot_ref} ->
-        case StatefulStore.mark(state.store, instance.instance_id, :relight) do
-          {:ok, _} ->
-            # boot_image_ref rides even a RELIGHT: if the daemon discovers the
-            # generation pair is actually broken (a mismatch we could not see
-            # from here, or an unreadable ledger) it falls back to a cold boot
-            # from THIS ref rather than failing the call outright.
-            fallback_ref = boot_image_ref(state, node_id, workload)
-            req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
-            spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, req) end)
+        # Instance selection (Step 4): a relight MUST land on the instance that
+        # BANKED this bundle on disk (per-instance-on-disk, PR-2.5), so dial the
+        # bundle-owning instance's instance_id, not the bare node name. No owning
+        # instance on the node -> a mem-eligible one; none at all -> fail cleanly.
+        case dial_instance(state, workload, entry, node_id, warmth_ref: snapshot_ref) do
+          {:ok, dial_id} ->
+            case StatefulStore.mark(state.store, instance.instance_id, :relight) do
+              {:ok, _} ->
+                # boot_image_ref rides even a RELIGHT: if the daemon discovers the
+                # generation pair is actually broken (a mismatch we could not see
+                # from here, or an unreadable ledger) it falls back to a cold boot
+                # from THIS ref rather than failing the call outright.
+                fallback_ref = boot_image_ref(state, node_id, workload)
+                req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
+                spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, dial_id, req) end)
+
+              {:error, reason} ->
+                # The instance moved off banked concurrently: report a wake failure
+                # so the parked callers error and the next connection retries.
+                send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+            end
 
           {:error, reason} ->
-            # The instance moved off banked concurrently: report a wake failure
-            # so the parked callers error and the next connection retries.
-            send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+            send(self(), {:wake_done, workload, {:error, reason}})
         end
 
       # Restore-on-miss (R6): the local bundle is gone but its store copy is
@@ -698,23 +708,43 @@ defmodule Embervm.StatefulManager do
       # vanished) degrades to the daemon's cold-boot fallback via the boot_image_ref
       # that rides the relight request (fail-open warmth).
       {:restore_then_relight, instance, node_id, snapshot_ref} ->
-        case StatefulStore.mark(state.store, instance.instance_id, :relight) do
-          {:ok, _} ->
-            fallback_ref = boot_image_ref(state, node_id, workload)
-            req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
+        # A restore-on-miss relight targets the SAME instance a warm relight would:
+        # the bundle-owning instance when one still reports it, else a mem-eligible
+        # cold candidate the restore lands the bundle onto (warmth_ref matches
+        # nothing when the local bundle is gone, so this falls to the cold pick).
+        case dial_instance(state, workload, entry, node_id, warmth_ref: snapshot_ref) do
+          {:ok, dial_id} ->
+            case StatefulStore.mark(state.store, instance.instance_id, :relight) do
+              {:ok, _} ->
+                fallback_ref = boot_image_ref(state, node_id, workload)
+                req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
 
-            spawn_wake(owner, workload, fn ->
-              _ = restore_bundle(state, node_id, workload, snapshot_ref)
-              run_relight(state, instance, node_id, req)
-            end)
+                spawn_wake(owner, workload, fn ->
+                  _ = restore_bundle(state, node_id, workload, snapshot_ref)
+                  run_relight(state, instance, node_id, dial_id, req)
+                end)
+
+              {:error, reason} ->
+                send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+            end
 
           {:error, reason} ->
-            send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+            send(self(), {:wake_done, workload, {:error, reason}})
         end
 
       {:cold, node_id, boot_ref, mode, reason} ->
-        req = cold_request(state, entry, workload, boot_ref, mode, blessed_generation)
-        spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, boot_ref, mode, reason, req) end)
+        # A cold boot has no owning bundle: select a mem-eligible instance on the
+        # node (a too-small classed brick is skipped; the DS wildcard is always
+        # eligible), and fail cleanly if none has room rather than dialling a
+        # too-small one.
+        case dial_instance(state, workload, entry, node_id, []) do
+          {:ok, dial_id} ->
+            req = cold_request(state, entry, workload, boot_ref, mode, blessed_generation)
+            spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req) end)
+
+          {:error, select_reason} ->
+            send(self(), {:wake_done, workload, {:error, select_reason}})
+        end
 
       # Restore-on-miss (R6): the volume itself is gone but a (vol.img, gen) pair is
       # exported. Restore the VOLUME inside the wake worker FIRST, then cold-boot at
@@ -722,14 +752,20 @@ defmodule Embervm.StatefulManager do
       # restore, no create). A restore failure degrades to a plain cold boot, which
       # for a truly-absent volume the daemon fails closed on (data fails closed).
       {:restore_volume_then_cold, wl, node_id, volume} ->
-        boot_ref = boot_image_ref(state, node_id, wl)
-        req = cold_request(state, entry, wl, boot_ref, :cold, blessed_generation)
-        reason = cold_reason(volume)
+        case dial_instance(state, wl, entry, node_id, []) do
+          {:ok, dial_id} ->
+            boot_ref = boot_image_ref(state, node_id, wl)
+            req = cold_request(state, entry, wl, boot_ref, :cold, blessed_generation)
+            reason = cold_reason(volume)
 
-        spawn_wake(owner, workload, fn ->
-          _ = restore_volume(state, node_id, wl, volume)
-          run_cold(state, wl, node_id, boot_ref, :cold, reason, req)
-        end)
+            spawn_wake(owner, workload, fn ->
+              _ = restore_volume(state, node_id, wl, volume)
+              run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req)
+            end)
+
+          {:error, select_reason} ->
+            send(self(), {:wake_done, workload, {:error, select_reason}})
+        end
 
       {:error, reason} ->
         send(self(), {:wake_done, workload, {:error, reason}})
@@ -1030,6 +1066,28 @@ defmodule Embervm.StatefulManager do
     |> Enum.find(&(&1.state == :banked))
   end
 
+  # Select the SPECIFIC instance on the resolved anchor node to dial (Step 4):
+  # prefer the instance that banked this workload's bundle (its stateful_bundles
+  # report `warmth_ref`), else a mem-eligible instance sized for the workload's
+  # mem_mib, else `{:error, :no_eligible_instance}`. Returns the dial key
+  # (instance_id, or the node name for a legacy fact without one) so the caller
+  # dials by instance_id instead of the collapsing node-name alias. `opts` may
+  # carry `:warmth_ref` (the snapshot_ref a relight must land on); a cold boot omits
+  # it and goes straight to the mem-eligible pick.
+  defp dial_instance(state, workload, entry, node_id, opts) do
+    %ResourceSpec{mem_mib: need_mib} = resource_spec(entry)
+
+    Embervm.WakeInstance.select(
+      node_id,
+      [
+        table: state.capacity_table,
+        workload: workload,
+        need_mib: need_mib,
+        warmth_key: :stateful_bundles
+      ] ++ opts
+    )
+  end
+
   # -- request builders --------------------------------------------------------
 
   # RELIGHT never carries mmds_env (R4, D-R4.PR-7.1): a relight resumes the
@@ -1141,8 +1199,8 @@ defmodule Embervm.StatefulManager do
 
   # -- wake RPC workers ---------------------------------------------------------
 
-  defp run_relight(state, instance, node_id, req) do
-    case safe_start_stateful(state, node_id, req) do
+  defp run_relight(state, instance, node_id, dial_id, req) do
+    case safe_start_stateful(state, dial_id, req) do
       {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
       when is_binary(vm_id) and vm_id != "" ->
         {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}
@@ -1161,8 +1219,8 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  defp run_cold(state, workload, node_id, boot_ref, mode, reason, req) do
-    case safe_start_stateful(state, node_id, req) do
+  defp run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req) do
+    case safe_start_stateful(state, dial_id, req) do
       {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
       when is_binary(vm_id) and vm_id != "" ->
         attrs = %{

@@ -61,8 +61,8 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id} <- anchor_node(capacity_table),
-         {:ok, pid} <- start_child(workload, entry, node_id, opts) do
+         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, nil),
+         {:ok, pid} <- start_child(workload, entry, node_id, dial_id, opts) do
       result = GroupManager.create_group(pid)
       # On a failed create the group is torn down to failed; retire the process so a
       # later retry spawns a fresh one (a live create keeps the process for Task 7/8's
@@ -98,8 +98,8 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id} <- anchor_node(capacity_table),
-         {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, opts) do
+         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id),
+         {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, dial_id, opts) do
       result = GroupManager.wake_group(pid)
 
       case result do
@@ -132,8 +132,8 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id} <- anchor_node(capacity_table),
-         {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, opts) do
+         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id),
+         {:ok, pid} <- start_or_get_child(workload, instance_id, entry, node_id, dial_id, opts) do
       case GroupManager.bank_group(pid) do
         {:ok, _} = ok ->
           ok
@@ -164,8 +164,8 @@ defmodule Embervm.GroupManager.Supervisor do
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     with {:ok, entry} <- GroupManager.catalog_group(catalog_table, workload),
-         {:ok, node_id} <- anchor_node(capacity_table) do
-      _ = start_or_get_child(workload, instance_id, entry, node_id, opts)
+         {:ok, node_id, dial_id} <- anchor_instance(capacity_table, entry, workload, instance_id) do
+      _ = start_or_get_child(workload, instance_id, entry, node_id, dial_id, opts)
       :ok
     else
       _ -> :ok
@@ -183,9 +183,9 @@ defmodule Embervm.GroupManager.Supervisor do
 
   # -- internals -------------------------------------------------------------
 
-  defp start_child(workload, entry, node_id, opts) do
+  defp start_child(workload, entry, node_id, dial_id, opts) do
     instance_id = mint_instance_id(opts)
-    do_start_child(workload, instance_id, entry, node_id, opts)
+    do_start_child(workload, instance_id, entry, node_id, dial_id, opts)
   end
 
   # Start a child bound to a SPECIFIC (already-existing) instance_id, or return the
@@ -193,8 +193,8 @@ defmodule Embervm.GroupManager.Supervisor do
   # instance already exists, and a registered owner is reused). A registered pid for
   # a DIFFERENT instance_id is still returned (one live process per workload; the
   # registry key is the workload, and the class is a group-level singleton).
-  defp start_or_get_child(workload, instance_id, entry, node_id, opts) do
-    case do_start_child(workload, instance_id, entry, node_id, opts) do
+  defp start_or_get_child(workload, instance_id, entry, node_id, dial_id, opts) do
+    case do_start_child(workload, instance_id, entry, node_id, dial_id, opts) do
       {:ok, pid} ->
         {:ok, pid}
 
@@ -209,7 +209,7 @@ defmodule Embervm.GroupManager.Supervisor do
     end
   end
 
-  defp do_start_child(workload, instance_id, entry, node_id, opts) do
+  defp do_start_child(workload, instance_id, entry, node_id, dial_id, opts) do
     child_opts =
       [
         instance_id: instance_id,
@@ -217,6 +217,10 @@ defmodule Embervm.GroupManager.Supervisor do
         principal: group_principal(workload),
         entry: entry,
         node_id: node_id,
+        # The channel dial key (Step 4): the specific instance on node_id the group's
+        # member RPCs dial, distinct from the durable node_id. Defaults to node_id in
+        # the GroupManager when absent, so a test/legacy caller is unaffected.
+        dial_id: dial_id,
         name: {:via, Registry, {@registry, workload}}
       ] ++ Keyword.take(opts, group_manager_opt_keys())
 
@@ -262,16 +266,63 @@ defmodule Embervm.GroupManager.Supervisor do
   # system:stateful:<workload> attribution), the op-log owner for its lifecycle ops.
   defp group_principal(workload), do: "system:group:#{workload}"
 
-  # Pick the anchor node for a fresh group: the first node reporting a
-  # stateful/serving-capable subnet with live-VM budget (rendezvous-hashed with one
-  # node is trivially that node; a real placement is Task 7's concern). No node is
-  # {:error, :no_capacity}.
-  defp anchor_node(capacity_table) do
+  # Pick the anchor node for a group AND the specific instance on it to dial
+  # (brick co-location foundation, Step 4). The node is the first group-capable node
+  # (rendezvous-hashed with one node is trivially that node; a real placement is a
+  # later concern); the dial_id is the instance on that node to send member RPCs to.
+  #
+  # `group_instance_id` (nil for a fresh CREATE, the banked instance id for a
+  # wake/bank/adopt) drives warmth selection: a relight MUST land on the instance
+  # that banked the group's SET on disk (per-instance-on-disk, PR-2.5), matched by
+  # the reported `group_bundle_sets` row whose `group_instance_id` equals it. A cold
+  # CREATE has no owning set, so it falls to a mem-eligible instance sized for the
+  # group's total member memory. Returns {:ok, node_id, dial_id} or
+  # {:error, :no_capacity} (no group-capable node) / {:error, :no_eligible_instance}
+  # (a node exists but no instance on it can host the group).
+  defp anchor_instance(capacity_table, entry, workload, group_instance_id) do
     NodeCapacity.all(capacity_table)
     |> Enum.filter(&group_capable?/1)
     |> case do
-      [] -> {:error, :no_capacity}
-      [fact | _] -> {:ok, fact.configured_id}
+      [] ->
+        {:error, :no_capacity}
+
+      [fact | _] ->
+        node_id = fact.configured_id
+
+        select_opts =
+          [
+            table: capacity_table,
+            workload: workload,
+            need_mib: group_mem_mib(entry)
+          ] ++ warmth_opts(group_instance_id)
+
+        case Embervm.WakeInstance.select(node_id, select_opts) do
+          {:ok, dial_id} -> {:ok, node_id, dial_id}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  # Warmth selection for a wake/bank/adopt (the banked instance's set): match the
+  # node's group_bundle_sets by the group_instance_id the set is keyed on. A fresh
+  # CREATE (nil id) carries no warmth, so it goes straight to the mem-eligible pick.
+  defp warmth_opts(group_instance_id) when is_binary(group_instance_id) and group_instance_id != "" do
+    [warmth_key: :group_bundle_sets, warmth_match_field: :group_instance_id, warmth_ref: group_instance_id]
+  end
+
+  defp warmth_opts(_group_instance_id), do: []
+
+  # The group's total member memory (MiB): a composite group's members are all
+  # co-located on the anchor instance, so the instance must fit their sum. Reads
+  # each member's mem_mib from the catalog group entry (512 default), summing to the
+  # cold-selection need. 0 members reads as 512 so an entry with no member sizing
+  # still needs the baseline.
+  defp group_mem_mib(entry) do
+    members = get_in(entry, [:group, :members]) || []
+
+    case Enum.reduce(members, 0, fn m, acc -> acc + (Map.get(m, :mem_mib) || 512) end) do
+      0 -> 512
+      total -> total
     end
   end
 
