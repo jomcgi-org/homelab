@@ -29,13 +29,19 @@ defmodule Embervm.BrickLedger do
   pre-brick behaviour. Once real size-classed bricks exist beside it (PR-3), a
   request for a concrete class prefers those but still falls back to the wildcard.
 
-  ## PR-1: populated but UNREAD
+  ## how the dispatcher reads this (PR-2)
 
-  In the inert first PR nothing calls `pick/4` or `by_class/1`; the placement
-  consumers (dispatcher/pool/session/serving/stateful/group) still run their
-  pre-brick node selection. This module exists so the data shape and the selection
-  primitive land, tested, one PR ahead of the rewrite that reads them. Deleting
-  `prefer_newest_per_node` and routing every consumer through `pick/4` is PR-2.
+  The task dispatcher (`Embervm.Dispatcher.pick_node/2`) is the one placement path
+  that was actually brick-broken: it collapsed each node to its newest instance
+  (`prefer_newest_per_node`), which under co-located bricks would pin all of a
+  node's work to one brick. PR-2 deleted that collapse and now tie-breaks its own
+  warm- and miss-tier candidate sublists through `choose/2` (the deterministic
+  sticky selection `pick/4` is built on). Warmth stays the dispatcher's own
+  two-tier decision; this module stays warmth-agnostic. The other consumers were
+  left as-is: session/serving placement already rendezvous-hash over per-instance
+  facts (so they spread across co-located bricks for free), and stateful/group are
+  volume-/node-anchored and never select among instances. `pick/4` and `by_class/1`
+  remain UNREAD until a workload actually declares a size-class requirement (PR-3+).
   """
 
   alias Embervm.NodeCapacity
@@ -110,10 +116,34 @@ defmodule Embervm.BrickLedger do
   @spec pick(String.t(), non_neg_integer(), term(), atom()) ::
           {:ok, brick()} | {:error, :fleet_full}
   def pick(size_class, need_mib, key, table \\ NodeCapacity.table()) do
-    case candidates(size_class, need_mib, table) do
-      [] -> {:error, :fleet_full}
-      cands -> {:ok, Enum.at(cands, :erlang.phash2(key, length(cands)))}
+    case choose(candidates(size_class, need_mib, table), key) do
+      nil -> {:error, :fleet_full}
+      brick -> {:ok, brick}
     end
+  end
+
+  @doc """
+  Deterministically choose one entry from an ALREADY-FILTERED candidate list,
+  keyed by `key`. Sorts by `:instance_id` so the order is stable regardless of the
+  caller's list order, then hashes `key` across it (`:erlang.phash2/2`, always
+  0..n-1 so the index is in-bounds). Same key sticks to the same entry as long as
+  it stays a candidate; distinct keys spread across the list. Returns `nil` for an
+  empty list.
+
+  This is the selection primitive `pick/4` uses after applying the class/headroom/
+  slot filter. The task dispatcher reuses it directly to tie-break its OWN warm-
+  and miss-tier candidate sublists (which carry warmth/prime-budget facts the
+  ledger deliberately does not model): it stops picking an arbitrary first match
+  and spreads deterministically across co-located bricks instead, without the
+  ledger having to learn about inventory. Accepts any map carrying `:instance_id`
+  (a brick from this module or a raw capacity fact from the dispatcher).
+  """
+  @spec choose([map()], term()) :: map() | nil
+  def choose([], _key), do: nil
+
+  def choose(candidates, key) do
+    sorted = Enum.sort_by(candidates, fn c -> Map.get(c, :instance_id, "") end)
+    Enum.at(sorted, :erlang.phash2(key, length(sorted)))
   end
 
   # A brick serves a request when its class matches (exact, or it is a wildcard/
