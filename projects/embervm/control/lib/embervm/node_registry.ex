@@ -1203,32 +1203,29 @@ defmodule Embervm.NodeRegistry do
     }
   end
 
-  # Remove an instance from the registry: retract its capacity row, drop BOTH its
-  # NodeChannel keys (instance_id + node-name alias), tell the BaseBuilder to drop
-  # it, kill its streamer if any (forgetting the pid first so the ensuing DOWN is
-  # ignored), and drop its runtime so no reconnect resurrects it. Used both by
-  # two-signal expiry and by a re-registration re-point.
+  # Remove an instance from the registry: retract its capacity row, drop its OWN
+  # NodeChannel key (the instance_id, NOT the shared node-name alias, see below),
+  # tell the BaseBuilder to drop it, kill its streamer if any (forgetting the pid
+  # first so the ensuing DOWN is ignored), and drop its runtime so no reconnect
+  # resurrects it. Used both by two-signal expiry and by a re-registration re-point.
   #
   # NodeChannel removal (dual-key, brick co-location foundation Step 1): add_instance
-  # registered this instance's address under both its instance_id and its node-name
-  # alias, so expiry must remove both. Leaving the node-name alias behind would keep
-  # a legacy wake dialing the dead pod's IP until a transport error invalidated it;
-  # under co-location a same-node replacement instance would then have its alias
-  # clobbered by this stale one on a re-registration race. Removing both keeps the
-  # map consistent (no alias without a live instance). Done while the runtime entry
-  # still exists so channel_keys/1 can read the instance_id + node name.
+  # registered this instance's address under BOTH its instance_id and its node-name
+  # alias, but expiry removes ONLY the instance_id. The instance_id is unique to this
+  # instance, so removing it is always correct. The node-name alias ("node-4") is a
+  # SHARED, last-writer-wins key across a node's co-located instances (add_instance's
+  # unconditional update_address overwrites it): removing it here on ONE instance's
+  # expiry would CLOBBER a still-live sibling that currently owns the alias, so a
+  # legacy stateful/serving/session/group wake for that node would get :unknown_node
+  # until the sibling re-registered. So the alias is managed solely by registration
+  # (last-writer), exactly as pre-PR where expire_instance never touched NodeChannel.
+  # The only residual is that the alias may transiently point at a just-expired owner
+  # until the next registration re-points it (acceptable; the pre-PR behaviour). Step
+  # 4 removes the node-name alias entirely once the wakes migrate to instance_id.
   defp expire_instance(state, instance_id) do
     Logger.info("embervm node registry: instance #{instance_id} expired; tearing down")
 
-    case state.node_runtime[instance_id] do
-      nil ->
-        :ok
-
-      rt ->
-        for key <- channel_keys(rt) do
-          safe_channel_remove(state.channel_remover_fun, key)
-        end
-    end
+    safe_channel_remove(state.channel_remover_fun, instance_id)
 
     safe_base_builder_update(state.base_builder_updater_fun, {:remove, instance_id})
     state = retract_capacity(state, instance_id)
@@ -1279,10 +1276,11 @@ defmodule Embervm.NodeRegistry do
     :ok
   end
 
-  # Propagate an instance expiry to the Prime/Assign channel holder by dropping one
-  # key (expire_instance calls this once per key in channel_keys/1). Swallowing any
-  # error mirrors safe_channel_update: a NodeChannel that is not running, or a slow
-  # call, must never crash expiry.
+  # Propagate an instance expiry to the Prime/Assign channel holder by dropping the
+  # expiring instance's OWN key (its instance_id; expire_instance deliberately leaves
+  # the shared node-name alias to registration's last-writer). Swallowing any error
+  # mirrors safe_channel_update: a NodeChannel that is not running, or a slow call,
+  # must never crash expiry.
   defp safe_channel_remove(nil, _key), do: :ok
 
   defp safe_channel_remove(remover, key) do
