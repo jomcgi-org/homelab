@@ -1497,6 +1497,32 @@ message EvictArtifactResponse {
   uint64 bytes_freed = 1;
 }
 
+// CpuSku is a node's full CPU-restore identity (PR-E, ADR embervm/012): the
+// CPUID vendor PLUS the Firecracker CPU template in force. Vendor alone
+// (cpu_vendor, R7) was the hard boundary while the fleet was single-template;
+// once a vendor pool can run more than one template over its lifetime, the
+// template half of the pair is what actually determines whether a memory
+// snapshot restores correctly (Firecracker validates CPU state against the
+// template at LoadSnapshot, not just the raw vendor ID). Both fields empty is
+// the pre-PR-E behavior (a daemon that never sets this message); a warmth
+// artifact stamped with an unset CpuSku is a GRANDFATHERED legacy artifact,
+// never refused for a missing stamp (see the grandfather rule on the restore
+// paths that validate this against a stamped artifact's own sku).
+message CpuSku {
+  // vendor is the CPUID vendor ("amd", "intel"), identical in meaning to the
+  // standalone cpu_vendor field below (kept for backward wire-compatibility;
+  // this is the superset that also carries the template).
+  string vendor = 1;
+  // template names the conservative fleet-wide Firecracker CPU template this
+  // node boots guests with (e.g. a T2-family name for Intel; AMD has no FC
+  // CPUID-masking template today, so an AMD node's template is a fixed
+  // logical name identifying its vendor-default profile, not an FC wire
+  // value). The template, not just the vendor, is what a memory snapshot's
+  // restore is validated against: two nodes of the same vendor running
+  // different templates are NOT restore-compatible.
+  string template = 2;
+}
+
 // NodeStatus is the whole capacity fact set: per-workload primed slots and base
 // states, node-level memory/cpu headroom, and the draining flag. A draining
 // daemon reports draining=true and the control plane stops new assignments
@@ -1644,4 +1670,15 @@ message NodeStatus {
   // this budget minus the observed usage-rate delta sampled across
   // refreshes, rather than hard-coded 0.
   uint64 cpu_budget_millicores = 27;
+
+  // -- CPU-sku fact (PR-E, additive) -------------------------------------------
+  // cpu_sku is this node's full CPU-restore identity: vendor plus the CPU
+  // template in force (standing decision from the artifact-decoupling plan:
+  // cpu_sku = (vendor, template)). It supersedes cpu_vendor (field 24, kept
+  // unchanged for wire compatibility) as the key the control plane filters
+  // placement candidates on and the daemon validates every snapshot-restoring
+  // path against, fail-closed on a mismatch, per the grandfather rule for
+  // artifacts stamped before this field existed (CpuSku doc comment above).
+  // Unset on a daemon that predates PR-E.
+  CpuSku cpu_sku = 28;
 }

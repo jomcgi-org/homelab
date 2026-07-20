@@ -55,6 +55,27 @@ func TestDetectCPUVendorMissingFile(t *testing.T) {
 	}
 }
 
+// TestDefaultCPUTemplatePerVendor unit-tests defaultCPUTemplate directly: a
+// known vendor resolves its conservative fleet default; an unknown/empty
+// vendor resolves "" (a template can never be more specific than an unknown
+// vendor).
+func TestDefaultCPUTemplatePerVendor(t *testing.T) {
+	cases := []struct {
+		vendor string
+		want   string
+	}{
+		{"amd", "amd-default"},
+		{"intel", "t2-conservative"},
+		{"", ""},
+		{"unknownvendor", ""},
+	}
+	for _, tc := range cases {
+		if got := defaultCPUTemplate(tc.vendor); got != tc.want {
+			t.Errorf("defaultCPUTemplate(%q) = %q, want %q", tc.vendor, got, tc.want)
+		}
+	}
+}
+
 func TestLoadCpuVendorEnvOverride(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_CPU_VENDOR", "intel")
 	c, err := Load()
@@ -63,6 +84,45 @@ func TestLoadCpuVendorEnvOverride(t *testing.T) {
 	}
 	if c.CpuVendor != "intel" {
 		t.Errorf("CpuVendor = %q, want intel (env override)", c.CpuVendor)
+	}
+}
+
+// TestLoadCpuTemplateDefaultsPerVendor proves CpuTemplate resolves to the
+// conservative per-vendor default (PR-E) when EMBERVM_NODED_CPU_TEMPLATE is
+// unset and CpuVendor is known, for both fleet vendors.
+func TestLoadCpuTemplateDefaultsPerVendor(t *testing.T) {
+	cases := []struct {
+		vendor       string
+		wantTemplate string
+	}{
+		{"amd", "amd-default"},
+		{"intel", "t2-conservative"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.vendor, func(t *testing.T) {
+			t.Setenv("EMBERVM_NODED_CPU_VENDOR", tc.vendor)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.CpuTemplate != tc.wantTemplate {
+				t.Errorf("CpuTemplate = %q, want %q (default for %s)", c.CpuTemplate, tc.wantTemplate, tc.vendor)
+			}
+		})
+	}
+}
+
+// TestLoadCpuTemplateEnvOverride proves EMBERVM_NODED_CPU_TEMPLATE overrides
+// the per-vendor default.
+func TestLoadCpuTemplateEnvOverride(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_CPU_VENDOR", "intel")
+	t.Setenv("EMBERVM_NODED_CPU_TEMPLATE", "t2s-custom")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.CpuTemplate != "t2s-custom" {
+		t.Errorf("CpuTemplate = %q, want t2s-custom (env override)", c.CpuTemplate)
 	}
 }
 

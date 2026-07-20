@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,10 +29,10 @@ import (
 // (the fake would then need it too), so the seam declares the sentinel it cares
 // about via a small predicate the store satisfies.
 type artifactStore interface {
-	Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64) (bytesMoved int64, skipped bool, err error)
+	Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string) (bytesMoved int64, skipped bool, err error)
 	Restore(ctx context.Context, prefix, localDir string) (bytesMoved int64, generation uint64, err error)
 	DeleteArtifact(ctx context.Context, prefix string) error
-	Present(ctx context.Context, prefix string) (bool, uint64, error)
+	Present(ctx context.Context, prefix string) (present bool, generation uint64, cpuVendor, cpuTemplate string, err error)
 	Reachable(ctx context.Context) bool
 }
 
@@ -67,6 +68,45 @@ func artifactKindStr(kind nodev1.ArtifactKind) string {
 // snapshot-restore validation there) so neither imports the other for one
 // string constant.
 const legacyVendorAlias = "amd"
+
+// cpuSkuMismatch is the PR-E fail-closed gate: it reports whether a stamped
+// artifact's cpu_sku conflicts with this node's own, plus the two strings a
+// caller's error message reports (got: what the artifact carried, want: what
+// this node is).
+//
+// Grandfather rule (ADR embervm/012; a missing stamp must NEVER be refused,
+// refusing a grandfathered artifact is data loss):
+//   - stampedVendor == "" AND stampedTemplate == "" (no stamp at all: the
+//     artifact was exported before PR-E) -> UNSTAMPED, always compatible,
+//     never a mismatch, regardless of this node's own sku.
+//   - a stamp is present (either field non-empty) and differs from this
+//     node's own vendor or template -> MISMATCH, refused loudly.
+//   - a stamp is present and matches this node's own vendor AND template ->
+//     compatible.
+//
+// This node's own sku being unresolved (nodeVendor == "", an undetected
+// vendor) skips the check entirely regardless of the artifact's stamp,
+// mirroring how an empty node vendor already skips the vendor-only check: a
+// node that cannot state its own identity cannot judge a mismatch, so it
+// never refuses on this basis (the existing vendor-mismatch gate in
+// resolveRestorePrefix, unchanged, is the layer that already requires a vendor
+// to reach this far in the request-vendor case; this is the artifact-stamp
+// layer, checked independently against the LOCAL node config).
+func cpuSkuMismatch(stampedVendor, stampedTemplate, nodeVendor, nodeTemplate string) (mismatch bool, got, want string) {
+	want = nodeVendor + "/" + nodeTemplate
+	if nodeVendor == "" {
+		return false, stampedVendor + "/" + stampedTemplate, want
+	}
+	if stampedVendor == "" && stampedTemplate == "" {
+		// UNSTAMPED: grandfathered legacy artifact, always compatible.
+		return false, "", want
+	}
+	got = stampedVendor + "/" + stampedTemplate
+	if stampedVendor != nodeVendor || stampedTemplate != nodeTemplate {
+		return true, got, want
+	}
+	return false, got, want
+}
 
 // artifactVendorSegment reports whether kind is one of the vendor-bound kinds
 // (BASE, SESSION, SERVING, STATEFUL, GROUP_SET) that carries a vendor segment in
@@ -187,7 +227,7 @@ func enumerateArtifactFiles(localDir string) ([]string, error) {
 	var files []string
 	walkErr := filepath.WalkDir(localDir, func(path string, d os.DirEntry, werr error) error {
 		if werr != nil {
-			return werr
+			return fmt.Errorf("walk %q: %w", path, werr)
 		}
 		if d.IsDir() {
 			return nil
@@ -251,7 +291,7 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: local artifact %q absent or empty (nothing to export)", prefix)
 	}
 	generation := s.artifactGeneration(ref)
-	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli())
+	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: export artifact %q: %v", prefix, err)
 	}
@@ -279,11 +319,23 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	if localDir == "" {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: artifact kind %s not restorable on this node", ref.GetKind())
 	}
+	// Sku gate (PR-E, grandfather rule): read the stamped meta.json BEFORE moving
+	// any bytes and refuse a PRESENT-BUT-MISMATCHED cpu_sku loudly. A stamp
+	// missing entirely (both fields "") is a legacy/UNSTAMPED artifact and is
+	// NEVER refused here (grandfathered-compatible); refusing it would be data
+	// loss, exactly the failure mode this rule exists to prevent. A present
+	// stamp that matches this node's own sku, or that the node cannot judge
+	// (its own vendor/template undetected), also passes.
+	present, gen, stampedVendor, stampedTemplate, perr := s.store.Present(ctx, prefix)
+	if perr == nil && present {
+		if mismatch, got, want := cpuSkuMismatch(stampedVendor, stampedTemplate, s.cfg.CpuVendor, s.cfg.CpuTemplate); mismatch {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: cpu_sku mismatch on restore: artifact stamped %q != node %q", got, want)
+		}
+	}
 	// Idempotency: if the artifact is already present locally with a checksum
 	// matching the store's marker, the restore is a no-op (the store Export's own
 	// same-checksum compare is the authority; re-check presence cheaply first).
 	if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
-		present, gen, perr := s.store.Present(ctx, prefix)
 		if perr == nil && present {
 			// A local copy exists; treat as already-restored (skipped). The
 			// content-level equality lives in Export's checksum compare on the next
@@ -327,8 +379,8 @@ func (s *Server) resolveRestorePrefix(ctx context.Context, ref *nodev1.ArtifactR
 		return "", status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
 	}
 	if legacy := legacyArtifactPrefix(ref); legacy != "" && vendor == legacyVendorAlias {
-		if present, _, err := s.store.Present(ctx, prefix); err == nil && !present {
-			if legacyPresent, _, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
+		if present, _, _, _, err := s.store.Present(ctx, prefix); err == nil && !present {
+			if legacyPresent, _, _, _, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
 				return legacy, nil
 			}
 		}
@@ -591,7 +643,7 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 		// The artifact vanished (evicted before the export ran); nothing to do.
 		return
 	}
-	_, skipped, err := s.store.Export(ctx, job.key, localDir, files, generation, time.Now().UnixMilli())
+	_, skipped, err := s.store.Export(ctx, job.key, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
 	if err != nil {
 		s.logger.Warn("noded: async export failed (will retry on reconcile)", "artifact", job.key, "err", err)
 		return
@@ -663,12 +715,12 @@ func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) 
 	// never claim a legacy copy as its own durable export (it would silently
 	// skip exporting its own artifact).
 	if legacy := legacyArtifactPrefix(ref); legacy != "" && s.cfg.CpuVendor == legacyVendorAlias {
-		if legacyPresent, legacyGen, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
+		if legacyPresent, legacyGen, _, _, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
 			s.exported.mark(prefix, legacyGen)
 			return
 		}
 	}
-	present, gen, err := s.store.Present(ctx, prefix)
+	present, gen, _, _, err := s.store.Present(ctx, prefix)
 	if err == nil && present {
 		if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME {
 			if cur := s.artifactGeneration(ref); cur == gen {

@@ -106,6 +106,21 @@ func testDriverWithVendor(t *testing.T, vendor string) *Driver {
 	}, &fakeLauncher{}, nil)
 }
 
+// testDriverWithSku mirrors testDriverWithVendor but stamps a full cpu_sku
+// (vendor, template), for the PR-E cpu_sku mismatch/grandfather tests.
+func testDriverWithSku(t *testing.T, vendor, template string) *Driver {
+	t.Helper()
+	return New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
+		Node:            "node-4",
+		Arch:            "amd64",
+		Vendor:          vendor,
+		Template:        template,
+	}, &fakeLauncher{}, nil)
+}
+
 func TestDriverClaimBootsMicroVM(t *testing.T) {
 	d := testDriver(t)
 	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "t1", Repo: "homelab"})
@@ -275,6 +290,121 @@ func TestDriverSnapshotStampsVendor(t *testing.T) {
 	}
 	if ref.Vendor != "intel" {
 		t.Fatalf("snapshot ref Vendor = %q, want intel", ref.Vendor)
+	}
+}
+
+// TestDriverSnapshotStampsTemplate proves Snapshot stamps the node's own CPU
+// template into the produced ref (PR-E), mirroring how it stamps Vendor. Run
+// for both fleet vendors: the template pin must be correct-by-construction on
+// Intel even though no live Intel silicon can exercise it yet.
+func TestDriverSnapshotStampsTemplate(t *testing.T) {
+	for _, tc := range []struct{ vendor, template string }{
+		{"amd", "amd-default"},
+		{"intel", "t2-conservative"},
+	} {
+		t.Run(tc.vendor, func(t *testing.T) {
+			ctx := context.Background()
+			d := testDriverWithSku(t, tc.vendor, tc.template)
+			h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "t-sku-stamp-" + tc.vendor})
+			if err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+			ref, err := d.Snapshot(ctx, h)
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			if ref.Vendor != tc.vendor {
+				t.Fatalf("snapshot ref Vendor = %q, want %q", ref.Vendor, tc.vendor)
+			}
+			if ref.Template != tc.template {
+				t.Fatalf("snapshot ref Template = %q, want %q", ref.Template, tc.template)
+			}
+		})
+	}
+}
+
+// TestDriverRestoreAllowsUnstampedTemplateGrandfathered proves the PR-E
+// grandfather rule at the driver layer: a ref with an EMPTY Template (a legacy
+// artifact cut before template stamping existed, or one from a pre-PR-E
+// daemon) restores cleanly regardless of the node's own template, and is NEVER
+// refused for the missing stamp. Refusing a grandfathered artifact would be
+// data loss, the exact failure this rule exists to prevent. Checked for both
+// fleet vendors.
+func TestDriverRestoreAllowsUnstampedTemplateGrandfathered(t *testing.T) {
+	for _, tc := range []struct{ vendor, template string }{
+		{"amd", "amd-default"},
+		{"intel", "t2-conservative"},
+	} {
+		t.Run(tc.vendor, func(t *testing.T) {
+			d := testDriverWithSku(t, tc.vendor, tc.template)
+			ctx := context.Background()
+			h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "t-grandfathered-" + tc.vendor})
+			if err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+			ref, err := d.Snapshot(ctx, h)
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			ref.Template = "" // simulate a pre-PR-E snapshot with no template stamped
+			if err := d.Release(ctx, h); err != nil {
+				t.Fatalf("Release: %v", err)
+			}
+			if _, err := d.Restore(ctx, ref); err != nil {
+				t.Fatalf("restore of an unstamped-template ref should succeed (grandfathered): %v", err)
+			}
+		})
+	}
+}
+
+// TestDriverRestoreAllowsMatchedSku proves a restore whose ref carries the
+// SAME (vendor, template) as the node succeeds, for both fleet vendors: a
+// present-and-matching stamp is the ordinary, non-legacy compatible case.
+func TestDriverRestoreAllowsMatchedSku(t *testing.T) {
+	for _, tc := range []struct{ vendor, template string }{
+		{"amd", "amd-default"},
+		{"intel", "t2-conservative"},
+	} {
+		t.Run(tc.vendor, func(t *testing.T) {
+			d := testDriverWithSku(t, tc.vendor, tc.template)
+			ctx := context.Background()
+			h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "t-matched-" + tc.vendor})
+			if err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+			ref, err := d.Snapshot(ctx, h)
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			if err := d.Release(ctx, h); err != nil {
+				t.Fatalf("Release: %v", err)
+			}
+			if _, err := d.Restore(ctx, ref); err != nil {
+				t.Fatalf("restore of a matched-sku ref should succeed: %v", err)
+			}
+		})
+	}
+}
+
+// TestDriverRestoreRejectsMismatchedTemplate proves a PRESENT-but-mismatched
+// template is refused fail-closed (loudly), never a silent wrong-template
+// boot, exactly like a vendor mismatch. Checked for both fleet vendors: the
+// mismatch gate must be correct-by-construction on the Intel pool even without
+// live silicon to exercise it.
+func TestDriverRestoreRejectsMismatchedTemplate(t *testing.T) {
+	for _, tc := range []struct{ vendor, nodeTemplate, refTemplate string }{
+		{"amd", "amd-default", "amd-other"},
+		{"intel", "t2-conservative", "t2s-experimental"},
+	} {
+		t.Run(tc.vendor, func(t *testing.T) {
+			d := testDriverWithSku(t, tc.vendor, tc.nodeTemplate)
+			_, err := d.Restore(context.Background(), substrate.SnapshotRef{
+				ThreadID: "x", Arch: "amd64", Node: "node-4", Vendor: tc.vendor, Template: tc.refTemplate,
+			})
+			if err == nil {
+				t.Fatalf("restore should reject a template-mismatched snapshot (%s: %q != %q)", tc.vendor, tc.refTemplate, tc.nodeTemplate)
+			}
+		})
 	}
 }
 

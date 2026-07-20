@@ -84,6 +84,21 @@ type Config struct {
 	// cross the AMD/Intel boundary. Empty behaves like an unset Arch check
 	// (skipped), which only happens pre-R7 or in a test build.
 	Vendor string
+	// Template names the Firecracker CPU template this node boots guests with
+	// (PR-E, ADR embervm/012), stamped alongside Vendor into every SnapshotRef
+	// this driver produces and checked on every restore. Empty behaves like an
+	// unset Vendor check (skipped), which only happens pre-PR-E or in a test
+	// build.
+	//
+	// This is a LOGICAL identity/versioning label only in this PR: it is NOT
+	// yet wired into PutMachineConfig's wire-level cpu_template (Firecracker's
+	// real CPUID-masking parameter, Intel-only; AMD FC has no equivalent
+	// today). Wiring an unverified value into the live boot path is exactly
+	// the risk the plan's verify step (boot + BuildBase + restore round-trip
+	// per vendor, on real silicon) exists to catch before it is load-bearing;
+	// until that verify step runs on the Alder Lake-S masters, this field only
+	// drives the sku stamp/mismatch/grandfather gate, never the FC API call.
+	Template string
 }
 
 func (c Config) withDefaults() Config {
@@ -232,6 +247,25 @@ func vendorMismatch(refVendor, nodeVendor string) (bool, string) {
 		effective = legacyVendorAlias
 	}
 	return effective != nodeVendor, effective
+}
+
+// templateMismatch reports whether a SnapshotRef's CPU template conflicts with
+// the node's own (PR-E, ADR embervm/012's grandfather rule). UNLIKE
+// vendorMismatch, an empty refTemplate is NEVER aliased to a guessed value: it
+// is read as UNSTAMPED (a legacy artifact cut before template stamping
+// existed, or one this same daemon cut pre-PR-E) and is ALWAYS compatible,
+// regardless of the node's own template, because refusing a grandfathered
+// artifact for a missing stamp is data loss. A NON-EMPTY refTemplate that
+// differs from the node's own is a hard mismatch. An empty nodeTemplate skips
+// the check entirely (an undetected/unconfigured node template), mirroring how
+// an empty nodeVendor already skips the vendor check. It returns the template
+// string used for the comparison so the caller's error message reports what
+// actually mismatched.
+func templateMismatch(refTemplate, nodeTemplate string) (bool, string) {
+	if nodeTemplate == "" || refTemplate == "" {
+		return false, refTemplate
+	}
+	return refTemplate != nodeTemplate, refTemplate
 }
 
 // threadDir is the bundle directory for a thread.
@@ -722,6 +756,9 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		if vmis, refVendor := vendorMismatch(ref.Vendor, d.cfg.Vendor); vmis {
 			return substrate.Handle{}, fmt.Errorf("driver: base vendor mismatch: ref %q != node %q (snapshots non-portable across CPU vendor)", refVendor, d.cfg.Vendor)
 		}
+		if tmis, refTemplate := templateMismatch(ref.Template, d.cfg.Template); tmis {
+			return substrate.Handle{}, fmt.Errorf("driver: base cpu_sku mismatch: template %q != node %q (snapshots non-portable across CPU template)", refTemplate, d.cfg.Template)
+		}
 		snap := d.baseSnapfile(ref.ID)
 		if _, err := os.Stat(snap); err != nil {
 			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
@@ -1008,6 +1045,7 @@ func (d *Driver) Snapshot(ctx context.Context, h substrate.Handle) (substrate.Sn
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
 		Vendor:    d.cfg.Vendor,
+		Template:  d.cfg.Template,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}
 	return ref, nil
@@ -1022,6 +1060,9 @@ func (d *Driver) Restore(ctx context.Context, ref substrate.SnapshotRef) (substr
 	}
 	if vmis, refVendor := vendorMismatch(ref.Vendor, d.cfg.Vendor); vmis {
 		return substrate.Handle{}, fmt.Errorf("driver: vendor mismatch on restore: ref %q != node %q (snapshots non-portable across CPU vendor)", refVendor, d.cfg.Vendor)
+	}
+	if tmis, refTemplate := templateMismatch(ref.Template, d.cfg.Template); tmis {
+		return substrate.Handle{}, fmt.Errorf("driver: cpu_sku mismatch on restore: template %q != node %q (snapshots non-portable across CPU template)", refTemplate, d.cfg.Template)
 	}
 	if ref.Node != "" && d.cfg.Node != "" && ref.Node != d.cfg.Node {
 		return substrate.Handle{}, fmt.Errorf("driver: node mismatch on restore: ref %q != node %q", ref.Node, d.cfg.Node)
@@ -1082,6 +1123,7 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
 		Vendor:    d.cfg.Vendor,
+		Template:  d.cfg.Template,
 		Base:      true,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
@@ -1164,6 +1206,7 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
 		Vendor:    d.cfg.Vendor,
+		Template:  d.cfg.Template,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
@@ -1268,6 +1311,7 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
 		Vendor:    d.cfg.Vendor,
+		Template:  d.cfg.Template,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
@@ -1450,6 +1494,7 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
 		Vendor:    d.cfg.Vendor,
+		Template:  d.cfg.Template,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
@@ -1578,6 +1623,7 @@ func (d *Driver) ResolveStatefulCommit(ctx context.Context, token string) (subst
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
 		Vendor:    d.cfg.Vendor,
+		Template:  d.cfg.Template,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
@@ -1936,6 +1982,7 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 		Node:      d.cfg.Node,
 		Arch:      d.cfg.Arch,
 		Vendor:    d.cfg.Vendor,
+		Template:  d.cfg.Template,
 		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }

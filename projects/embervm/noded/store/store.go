@@ -66,10 +66,18 @@ type FileMeta struct {
 // written LAST on export. Files maps each artifact file's base name to its size
 // and checksum; Generation carries the volume generation for a VOLUME artifact
 // (0 for kinds with no generation); CreatedAtUnixMs records when the export ran.
+// CpuVendor and CpuTemplate (PR-E) stamp the exporting node's cpu_sku onto the
+// artifact; both are omitempty so an artifact exported before PR-E landed
+// serializes with NEITHER field present, which is exactly the grandfather
+// rule's UNSTAMPED case (never a present-but-empty string, which JSON cannot
+// distinguish from "not stamped" anyway, but omitempty keeps old fixtures and
+// new code honest about the same thing).
 type Meta struct {
 	Files           map[string]FileMeta `json:"files"`
 	Generation      uint64              `json:"generation"`
 	CreatedAtUnixMs int64               `json:"createdAtUnixMs"`
+	CpuVendor       string              `json:"cpuVendor,omitempty"`
+	CpuTemplate     string              `json:"cpuTemplate,omitempty"`
 }
 
 // Store is the S3-API object-store client. It is safe for concurrent use (the
@@ -217,8 +225,11 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 // and bytesMoved=0 without re-uploading (idempotent per checksum). Otherwise it
 // PUTs each file, then PUTs meta.json, and returns the sum of the uploaded file
 // sizes. files are base names resolved against localDir; a missing local file is
-// an error (an incomplete artifact must not be exported as complete).
-func (s *Store) Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64) (bytesMoved int64, skipped bool, err error) {
+// an error (an incomplete artifact must not be exported as complete). cpuVendor
+// and cpuTemplate (PR-E) stamp the exporting node's cpu_sku into meta.json;
+// either or both empty stamps the artifact UNSTAMPED for that half of the sku
+// (the pre-PR-E / grandfathered shape), never a placeholder value.
+func (s *Store) Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string) (bytesMoved int64, skipped bool, err error) {
 	if s == nil {
 		return 0, false, ErrNotPresent
 	}
@@ -226,6 +237,8 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 		Files:           make(map[string]FileMeta, len(files)),
 		Generation:      generation,
 		CreatedAtUnixMs: nowMs,
+		CpuVendor:       cpuVendor,
+		CpuTemplate:     cpuTemplate,
 	}
 	var totalSize int64
 	for _, name := range files {
@@ -369,27 +382,31 @@ func (s *Store) DeleteArtifact(ctx context.Context, prefix string) error {
 	var firstErr error
 	for name := range meta.Files {
 		if derr := s.Delete(ctx, prefix+"/"+name); derr != nil && firstErr == nil {
-			firstErr = derr
+			firstErr = fmt.Errorf("delete artifact file %q: %w", name, derr)
 		}
 	}
-	return firstErr
+	return firstErr // nosemgrep: no-bare-error-return (already wrapped with fmt.Errorf above; the rule cannot see through the deferred-assignment indirection)
 }
 
 // Present reports whether the store holds a complete artifact at prefix (a
-// readable meta.json) and its generation. A missing marker is (false, 0, nil):
-// absence is not an error, it is the answer.
-func (s *Store) Present(ctx context.Context, prefix string) (bool, uint64, error) {
+// readable meta.json), its generation, and its stamped cpu_sku (PR-E: cpuVendor,
+// cpuTemplate, either or both "" for an artifact exported before PR-E or by a
+// node with an undetected vendor, the grandfathered/UNSTAMPED case). A missing
+// marker is (false, 0, "", "", nil): absence is not an error, it is the answer.
+// Callers validate the returned sku BEFORE Restore moves any bytes, so a
+// mismatched-sku artifact is refused without a wasted network copy.
+func (s *Store) Present(ctx context.Context, prefix string) (present bool, generation uint64, cpuVendor, cpuTemplate string, err error) {
 	if s == nil {
-		return false, 0, nil
+		return false, 0, "", "", nil
 	}
 	present, meta, err := s.getMeta(ctx, prefix)
 	if err != nil {
-		return false, 0, err
+		return false, 0, "", "", err
 	}
 	if !present {
-		return false, 0, nil
+		return false, 0, "", "", nil
 	}
-	return true, meta.Generation, nil
+	return true, meta.Generation, meta.CpuVendor, meta.CpuTemplate, nil
 }
 
 // Reachable is a cheap liveness probe against the bucket root with a short

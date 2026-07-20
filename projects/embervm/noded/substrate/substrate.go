@@ -129,6 +129,17 @@ type SnapshotRef struct {
 	// as vendor "amd" (the node-4 alias) so an existing on-disk base or bundle
 	// never re-exports or false-mismatches merely for predating vendor keying.
 	Vendor string
+	// Template names the Firecracker CPU template this snapshot was captured
+	// under (PR-E, ADR embervm/012), the other half of cpu_sku alongside
+	// Vendor. A ref with an EMPTY Template is an UNSTAMPED legacy artifact
+	// under the grandfather rule: never refused for the missing stamp,
+	// restorable exactly where it was cut. A NON-EMPTY Template that differs
+	// from the node's own is a hard mismatch, refused fail-closed exactly like
+	// Vendor. Unlike Vendor there is no legacy alias for Template: an empty
+	// Template reads as "unstamped", never aliased to a guessed value, because
+	// guessing a template (unlike guessing node-4's vendor, a real historical
+	// fact) has no safe default.
+	Template string
 	// SizeBytes is the on-disk bundle size, used for capacity reporting.
 	SizeBytes int64
 	// Base reports whether this is a warm base template rather than a per-thread
