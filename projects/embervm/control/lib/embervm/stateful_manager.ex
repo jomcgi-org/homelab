@@ -720,7 +720,11 @@ defmodule Embervm.StatefulManager do
                 req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
 
                 spawn_wake(owner, workload, fn ->
-                  _ = restore_bundle(state, node_id, workload, snapshot_ref)
+                  # Restore onto the SAME instance the boot dials (dial_id), not the
+                  # node-name alias: PR-2.5 made banked bundles per-instance ON DISK,
+                  # so restoring onto an arbitrary co-located instance while the boot
+                  # runs on another leaves the boot's local disk empty (cold-fails).
+                  _ = restore_bundle(state, dial_id, node_id, workload, snapshot_ref)
                   run_relight(state, instance, node_id, dial_id, req)
                 end)
 
@@ -759,7 +763,10 @@ defmodule Embervm.StatefulManager do
             reason = cold_reason(volume)
 
             spawn_wake(owner, workload, fn ->
-              _ = restore_volume(state, node_id, wl, volume)
+              # Restore onto the boot's instance (dial_id), not the node-name alias
+              # (see the relight-with-restore note above): the cold boot reads the
+              # volume from dial_id's local disk.
+              _ = restore_volume(state, dial_id, node_id, wl, volume)
               run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req)
             end)
 
@@ -2019,10 +2026,16 @@ defmodule Embervm.StatefulManager do
   # falls through to the relight, which the daemon degrades to a cold boot via the
   # boot_image_ref that rides the request (fail-open warmth). Idempotent on the
   # daemon side, so a re-run of a partially-restored artifact is safe.
-  defp restore_bundle(state, node_id, workload, snapshot_ref) do
+  # `dial_id` is the SELECTED instance's dial key (Step 4): the restore RPC must land
+  # the bundle on the same instance the subsequent boot dials, since bundles are
+  # per-instance on disk (PR-2.5). `node_id` is the node-name anchor kept only for the
+  # VENDOR stamp: RestoreVendor resolves the node's CPU vendor via NodeCapacity.fetch,
+  # which keys on the node name (an instance_id string would not resolve); the vendor
+  # is identical across a node's instances, so this is correct.
+  defp restore_bundle(state, dial_id, node_id, workload, snapshot_ref) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: snapshot_ref}
 
-    case safe_restore_artifact(state, node_id, ref) do
+    case safe_restore_artifact(state, dial_id, node_id, ref) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_STATEFUL, snapshot_ref, resp)
         :ok
@@ -2043,10 +2056,10 @@ defmodule Embervm.StatefulManager do
   # (vol.img, gen) pair, then record :artifact_restored. Best-effort, same as
   # restore_bundle: a failure degrades to a plain cold boot (which the daemon fails
   # closed on for a truly-absent volume).
-  defp restore_volume(state, node_id, workload, _volume) do
+  defp restore_volume(state, dial_id, node_id, workload, _volume) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload, ref: workload}
 
-    case safe_restore_artifact(state, node_id, ref) do
+    case safe_restore_artifact(state, dial_id, node_id, ref) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_VOLUME, workload, resp)
         :ok
@@ -2061,11 +2074,14 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  defp safe_restore_artifact(state, node_id, %ArtifactRef{} = ref) do
+  # Dial the restore on `dial_id` (the boot's instance, Step 4) but stamp the vendor
+  # off `node_id` (the node-name anchor RestoreVendor can resolve). Invalidation on a
+  # dead transport is also keyed on `dial_id` (the channel we actually dialled).
+  defp safe_restore_artifact(state, dial_id, node_id, %ArtifactRef{} = ref) do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
     req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       # The `artifact_restore` span (Task 11): a child span around the
       # RestoreArtifact RPC (the restore-on-miss read path). Carries the artifact
       # identity up front and stamps bytes-moved/skipped from the response, so the
@@ -2078,7 +2094,7 @@ defmodule Embervm.StatefulManager do
                            "ember.artifact_ref" => ref.ref
                          }
                        } do
-        result = restore_rpc(state, node_id, channel, req)
+        result = restore_rpc(state, dial_id, channel, req)
         stamp_restore_span(result)
         result
       end
@@ -2086,13 +2102,14 @@ defmodule Embervm.StatefulManager do
   end
 
   # The RestoreArtifact RPC with transport-death channel invalidation. Extracted so
-  # the `artifact_restore` span wraps exactly the call and its result.
-  defp restore_rpc(state, node_id, channel, req) do
+  # the `artifact_restore` span wraps exactly the call and its result. Invalidates by
+  # `dial_id` (the instance the channel was dialled on, Step 4).
+  defp restore_rpc(state, dial_id, channel, req) do
     try do
       case state.restore_artifact_fun.(channel, req) do
         {:error, reason} = err ->
           if Embervm.NodeChannel.transport_dead?(reason) do
-            _ = state.invalidate_fun.(node_id, channel)
+            _ = state.invalidate_fun.(dial_id, channel)
           end
 
           err
@@ -2104,7 +2121,7 @@ defmodule Embervm.StatefulManager do
       e -> {:error, {:restore_artifact_raised, e}}
     catch
       :exit, reason ->
-        _ = state.invalidate_fun.(node_id, channel)
+        _ = state.invalidate_fun.(dial_id, channel)
         {:error, {:restore_artifact_raised, {:exit, reason}}}
 
       kind, reason ->

@@ -485,11 +485,48 @@ defmodule Embervm.GroupWakeManager do
          when is_binary(node_id) and is_binary(set_id) and set_id != "" <-
            GroupStore.get(state.store, instance_id),
          false <- set_local?(state, node_id, instance_id),
-         true <- store_reachable?(state, node_id) do
-      restore_set(state, node_id, workload, set_id)
+         true <- store_reachable?(state, node_id),
+         # Instance selection (Step 4): the restore must land the set on the SAME
+         # instance the delegated GroupManager boot dials, since bundle sets are
+         # per-instance on disk (PR-2.5). Resolve the boot's instance with the
+         # IDENTICAL WakeInstance.select the Supervisor's anchor_instance uses (same
+         # table, workload key, and need_mib), so both pick the same dial_id (the set
+         # is not local here, so warmth matches nothing and both take the deterministic
+         # cold pick). A no-eligible-instance result skips the restore (the delegated
+         # wake fails/fresh-boots as it would without a restore).
+         {:ok, dial_id} <- select_restore_instance(state, node_id, workload) do
+      restore_set(state, dial_id, node_id, workload, set_id)
       :ok
     else
       _ -> :ok
+    end
+  end
+
+  # Resolve the instance the delegated boot will dial (see maybe_restore_set), keyed
+  # identically to Embervm.GroupManager.Supervisor.anchor_instance: the workload as
+  # the deterministic choose key and the group's total member memory as need_mib. The
+  # set is absent locally on this path, so there is no warmth owner to prefer.
+  defp select_restore_instance(state, node_id, workload) do
+    Embervm.WakeInstance.select(node_id,
+      table: state.capacity_table,
+      workload: workload,
+      need_mib: group_mem_mib(state, workload)
+    )
+  end
+
+  # The group's total member memory (MiB), mirroring
+  # Embervm.GroupManager.Supervisor.group_mem_mib so the restore-instance pick matches
+  # the boot-instance pick. 512 default per member and as the floor.
+  defp group_mem_mib(state, workload) do
+    members =
+      case WorkloadCatalog.fetch(state.catalog_table, workload) do
+        {:ok, %{group: %{members: members}}} when is_list(members) -> members
+        _ -> []
+      end
+
+    case Enum.reduce(members, 0, fn m, acc -> acc + (Map.get(m, :mem_mib) || 512) end) do
+      0 -> 512
+      total -> total
     end
   end
 
@@ -522,11 +559,15 @@ defmodule Embervm.GroupWakeManager do
     end
   end
 
-  defp restore_set(state, node_id, workload, set_id) do
+  # `dial_id` is the boot's selected instance (Step 4): restore the set onto it, not
+  # the node-name alias. `node_id` is kept for the vendor stamp only (see the
+  # stateful/serving restore notes: RestoreVendor keys on the node name, and the
+  # vendor is identical across a node's instances).
+  defp restore_set(state, dial_id, node_id, workload, set_id) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: workload, ref: set_id}
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: workload}}
 
-    case safe_restore_artifact(state, node_id, req) do
+    case safe_restore_artifact(state, dial_id, node_id, req) do
       {:ok, resp} ->
         record_restore(state, workload, set_id, resp)
         :ok
@@ -542,10 +583,13 @@ defmodule Embervm.GroupWakeManager do
     end
   end
 
-  defp safe_restore_artifact(state, node_id, %RestoreArtifactRequest{artifact: ref} = req) do
+  # Dial the restore on `dial_id` (the boot's instance, Step 4) but stamp the vendor
+  # off `node_id` (the node-name anchor RestoreVendor can resolve). Transport-death
+  # invalidation is keyed on `dial_id` (the channel we actually dialled).
+  defp safe_restore_artifact(state, dial_id, node_id, %RestoreArtifactRequest{artifact: ref} = req) do
     req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       # The `artifact_restore` span (Task 11): a child span around the
       # RestoreArtifact RPC (the restore-on-miss read path). A group set is always
       # kind GROUP_SET; bytes-moved/skipped stamped from the response.
@@ -557,7 +601,7 @@ defmodule Embervm.GroupWakeManager do
                            "ember.artifact_ref" => ref.ref
                          }
                        } do
-        result = restore_rpc(state, node_id, channel, req)
+        result = restore_rpc(state, dial_id, channel, req)
         stamp_restore_span(result)
         result
       end
@@ -565,13 +609,14 @@ defmodule Embervm.GroupWakeManager do
   end
 
   # The RestoreArtifact RPC with transport-death channel invalidation. Extracted so
-  # the `artifact_restore` span wraps exactly the call and its result.
-  defp restore_rpc(state, node_id, channel, req) do
+  # the `artifact_restore` span wraps exactly the call and its result. Invalidates by
+  # `dial_id` (the instance the channel was dialled on, Step 4).
+  defp restore_rpc(state, dial_id, channel, req) do
     try do
       case state.restore_artifact_fun.(channel, req) do
         {:error, reason} = err ->
           if Embervm.NodeChannel.transport_dead?(reason) do
-            _ = state.invalidate_fun.(node_id, channel)
+            _ = state.invalidate_fun.(dial_id, channel)
           end
 
           err
@@ -583,7 +628,7 @@ defmodule Embervm.GroupWakeManager do
       e -> {:error, {:restore_artifact_raised, e}}
     catch
       :exit, reason ->
-        _ = state.invalidate_fun.(node_id, channel)
+        _ = state.invalidate_fun.(dial_id, channel)
         {:error, {:restore_artifact_raised, {:exit, reason}}}
 
       kind, reason ->
