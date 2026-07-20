@@ -61,10 +61,17 @@ defmodule Embervm.DispatcherTest do
 
   defp put_facts(ctx, wl, opts \\ []) do
     node = Keyword.get(opts, :node, "node-4")
+    # By default a fact keys by its bare node name (one instance per node, the
+    # DS-only fleet). A test placing TWO co-located bricks on one node passes a
+    # distinct :key (the {node, pod_uid} instance tuple) and :instance_id so the
+    # two facts do not collide in ETS and the dispatcher keys inventory per brick.
+    key = Keyword.get(opts, :key, node)
+    instance_id = Keyword.get(opts, :instance_id, node)
 
-    NodeCapacity.put(ctx.cap_table, node, %{
+    NodeCapacity.put(ctx.cap_table, key, %{
       node_id: node,
       configured_id: node,
+      instance_id: instance_id,
       workloads: %{
         wl => %{
           free_primed_slots: Keyword.get(opts, :free, 0),
@@ -146,6 +153,34 @@ defmodule Embervm.DispatcherTest do
 
     assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
     assert {:ok, %{status_code: 200, body: "ok"}} = TaskStore.get_result(ctx.store, tid)
+    assert Dispatcher.stats(ctx.name).warm_hits >= 1
+  end
+
+  test "a warm vm on a co-located, non-newest brick is found (no prefer-newest collapse)" do
+    # Two bricks share node-4 (brick-capacity: a node legitimately holds several
+    # instances). Brick A is the NEWEST instance (higher updated_at) but holds no
+    # warm VM; brick B is older but has a primed VM deposited. The removed
+    # prefer_newest_per_node collapse kept only the newest instance PER NODE, which
+    # would have dropped B and forced a miss on A. With the collapse gone both
+    # bricks are candidates, so dispatch warms on B (warm_hits >= 1). If the
+    # collapse were still present this would be a miss and warm_hits would be 0.
+    ctx = start_stack(stale_after_ms: 60_000)
+    put_catalog(ctx, "wl-a", cap: 10)
+
+    put_facts(ctx, "wl-a",
+      key: {"node-4", "a"},
+      instance_id: "node-4/a",
+      updated_at: 1_000_000,
+      live: 1,
+      max: 8
+    )
+
+    put_facts(ctx, "wl-a", key: {"node-4", "b"}, instance_id: "node-4/b", updated_at: 990_000)
+    Dispatcher.deposit(ctx.name, "node-4/b", "wl-a", "vm-b")
+
+    tid = submit(ctx, "wl-a", "p1")
+
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
     assert Dispatcher.stats(ctx.name).warm_hits >= 1
   end
 

@@ -97,7 +97,7 @@ defmodule Embervm.Dispatcher do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{NodeCapacity, WorkloadCatalog}
+  alias Embervm.{BrickLedger, NodeCapacity, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
     AssignRequest,
@@ -539,28 +539,34 @@ defmodule Embervm.Dispatcher do
         {:error, :no_capacity}
 
       true ->
-        # Placement keys on the INSTANCE id ("node/pod_uid"), so a surge roll's two
-        # instances on one node are distinct pools (R0 PR-2). Prefer the NEWEST
-        # registered healthy instance per node so, when the old draining instance
-        # and its fresh replacement briefly coexist, placement goes to the fresh one
-        # while the old one empties. A draining instance never reaches here (its
-        # capacity row is dropped fail-closed), but preferring newest also handles
-        # the surge window before the old one flips to draining.
-        node_id = fn f -> instance_id_of(f) end
-        candidates = prefer_newest_per_node(candidates)
+        # Placement keys on the INSTANCE id ("node/pod_uid"), so two instances on
+        # one node (co-located bricks, or a surge roll's old + fresh pod) are
+        # DISTINCT candidate pools (R0 PR-2, brick-capacity). We deliberately do
+        # NOT collapse a node to one instance: each brick is its own capacity unit,
+        # so all of a node's healthy instances stay candidates. Warmth stays a
+        # two-tier decision here (prefer a brick that already holds a primed VM
+        # over a miss that must prime one); within each tier BrickLedger.choose is
+        # the deterministic sticky tie-break (sorted by instance_id, hashed on the
+        # workload) so misses spread across same-node bricks instead of hot-spotting
+        # the first one, and the choice is stable run to run. A draining instance
+        # never reaches here (its capacity row is dropped fail-closed); the removed
+        # prefer-newest also covered the seconds-wide surge window before the old
+        # pod flips to draining, so we accept a rare, self-healing chance of picking
+        # a pod about to drain rather than keep node-keyed grouping (wrong under
+        # bricks).
+        warm_candidates =
+          Enum.filter(candidates, fn f -> inventory_ready?(state, instance_id_of(f), wl) end)
 
-        warm = Enum.find(candidates, fn f -> inventory_ready?(state, node_id.(f), wl) end)
-
-        cond do
-          warm != nil ->
-            {:ok, node_id.(warm), :warm, snapshot_ref_of(warm, wl)}
-
-          true ->
+        case BrickLedger.choose(warm_candidates, wl) do
+          nil ->
             # No warm VM anywhere: a miss needs node budget to prime one.
-            case Enum.find(candidates, &has_budget?/1) do
+            case BrickLedger.choose(Enum.filter(candidates, &has_budget?/1), wl) do
               nil -> {:error, :no_capacity}
-              f -> {:ok, node_id.(f), :miss, snapshot_ref_of(f, wl)}
+              f -> {:ok, instance_id_of(f), :miss, snapshot_ref_of(f, wl)}
             end
+
+          warm ->
+            {:ok, instance_id_of(warm), :warm, snapshot_ref_of(warm, wl)}
         end
     end
   end
@@ -570,20 +576,6 @@ defmodule Embervm.Dispatcher do
   # configured_id for a fact map that predates instance keying (defensive; the
   # registry always sets instance_id now).
   defp instance_id_of(f), do: Map.get(f, :instance_id) || f.configured_id
-
-  # Keep only the NEWEST (most recently updated) healthy instance per NODE, so a
-  # surge roll never splits placement across the draining old pod and its fresh
-  # replacement. Grouped by node_id (the K8s node name, shared across a node's
-  # instances); within a node the instance with the greatest updated_at wins (the
-  # fresh pod's facts are stamped later than the old one's last pre-drain status).
-  # Order across nodes is otherwise preserved (a stable pick).
-  defp prefer_newest_per_node(candidates) do
-    candidates
-    |> Enum.group_by(fn f -> f.node_id end)
-    |> Enum.flat_map(fn {_node, insts} ->
-      [Enum.max_by(insts, fn f -> Map.get(f, :updated_at, 0) end)]
-    end)
-  end
 
   defp stale?(f, now, stale_after), do: now - (f.updated_at || 0) > stale_after
   defp f_draining?(f), do: Map.get(f, :draining, false) == true

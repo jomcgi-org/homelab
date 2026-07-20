@@ -114,4 +114,37 @@ defmodule Embervm.BrickLedgerTest do
       assert chosen |> Enum.uniq() |> length() > 1
     end
   end
+
+  describe "choose/2 (the selection primitive the dispatcher reuses)" do
+    # entry maps mimic what the dispatcher passes: raw capacity facts, keyed by
+    # :instance_id, NOT bricks derived from the ledger.
+    defp entry(id), do: %{instance_id: id, node_id: "n"}
+
+    test "empty list yields nil" do
+      assert BrickLedger.choose([], "k") == nil
+    end
+
+    test "single candidate is always chosen (output-equivalence, one-per-node)" do
+      only = entry("node-4/a")
+      assert BrickLedger.choose([only], "wl-a") == only
+      assert BrickLedger.choose([only], "wl-b") == only
+    end
+
+    test "is deterministic and sticky for a given key" do
+      cands = for id <- ["node-4/a", "node-5/b", "node-6/c"], do: entry(id)
+      first = BrickLedger.choose(cands, "wl-a")
+      assert first == BrickLedger.choose(cands, "wl-a")
+    end
+
+    test "order-independent: choice does not depend on input list order" do
+      cands = for id <- ["node-4/a", "node-5/b", "node-6/c"], do: entry(id)
+      assert BrickLedger.choose(cands, "wl-a") == BrickLedger.choose(Enum.reverse(cands), "wl-a")
+    end
+
+    test "spreads distinct keys across candidates" do
+      cands = for id <- ["node-4/a", "node-4/b", "node-4/c"], do: entry(id)
+      chosen = for k <- 1..60, do: BrickLedger.choose(cands, "wl-#{k}").instance_id
+      assert chosen |> Enum.uniq() |> length() > 1
+    end
+  end
 end
