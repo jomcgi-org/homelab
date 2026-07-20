@@ -185,6 +185,18 @@ type Config struct {
 	// Empty (an out-of-cluster run with no Downward API) collapses the control
 	// plane to node-scoped keying, matching the pre-dial-home behaviour.
 	PodUID string
+	// SizeClass is this instance's T-shirt brick size-class label ("2gi",
+	// "4gi", "8gi", "16gi"), injected by the brick Deployment via
+	// EMBERVM_NODED_SIZE_CLASS. It is a pure LABEL the daemon reports as
+	// NodeStatus.size_class; the control plane's BrickLedger buckets
+	// per-instance headroom by it and places whole VMs onto a brick of the
+	// matching class (ADR embervm/013 bricks-everywhere). EMPTY on the legacy
+	// DaemonSet (which the control plane treats as the wildcard class, so
+	// DS-only placement is unchanged) and on any out-of-cluster run. The
+	// daemon never sizes itself from this; the pod's own resource requests are
+	// what actually bound it, and the cgroup budget reader (NodeStatus fields
+	// 26/27) reports the real ceiling.
+	SizeClass string
 	// ControlPlaneURL is the control plane's HTTP base URL the daemon dials home to
 	// (EMBERVM_NODED_CONTROL_PLANE_URL, e.g. "http://embervm.embervm.svc:8080").
 	// On start and on a jittered interval the daemon POSTs its identity
@@ -311,6 +323,7 @@ func Load() (Config, error) {
 		// Dial-home registration (R0 PR-2): the daemon advertises its identity to
 		// the control plane instead of being discovered via EndpointSlices.
 		PodUID:                os.Getenv("EMBERVM_POD_UID"),
+		SizeClass:             os.Getenv("EMBERVM_NODED_SIZE_CLASS"),
 		ControlPlaneURL:       os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),
 		ControlPlaneTokenPath: getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 		RegisterInterval:      30 * time.Second,

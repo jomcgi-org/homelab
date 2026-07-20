@@ -53,6 +53,26 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
+Size-class BRICK labels (brick-capacity, ADR embervm/013). A brick is a noded
+Deployment, so it SHARES noded's app.kubernetes.io/name (the pods are noded pods)
+but carries a DISTINCT component ("noded-brick") plus its size-class label. That
+keeps every brick class's selector disjoint from the DaemonSet's (component=noded)
+and from every other class, so no two controllers ever fight over a pod. Input
+dict: (dict "ctx" $ "class" $class.name).
+*/}}
+{{- define "embervm.brick.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "embervm.noded.name" .ctx }}
+app.kubernetes.io/instance: {{ .ctx.Release.Name }}
+app.kubernetes.io/component: noded-brick
+embervm.jomcgi.dev/size-class: {{ .class | quote }}
+{{- end -}}
+
+{{- define "embervm.brick.labels" -}}
+{{ include "embervm.brick.selectorLabels" (dict "ctx" .ctx "class" .class) }}
+app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
+{{- end -}}
+
+{{/*
 The per-node serving Envoy tier (R3, PR-3) is a DaemonSet in this one chart. Like
 noded it uses a DISTINCT app.kubernetes.io/name ("<name>-serving-envoy") so its
 selector is disjoint from the control plane and noded, and carries a component

@@ -543,6 +543,15 @@ defmodule Embervm.NodeRegistry do
       # that has not yet stamped pod_uid on its status still keys consistently.
       pod_uid: rt.pod_uid,
       instance_id: rt.instance_id,
+      # Brick fact (brick-capacity PR-1, additive): the daemon-reported T-shirt
+      # size-class label ("2gi"/"4gi"/"8gi"/"16gi") this instance was deployed
+      # as. Embervm.BrickLedger buckets per-instance headroom by it and (from
+      # PR-2) pick_brick/3 selects a brick of the matching class. EMPTY on the
+      # legacy DaemonSet and any daemon that predates the field, which the
+      # ledger treats as the wildcard class (matches every request) so DS-only
+      # placement is unchanged. Nothing reads this in PR-1 (the ledger is
+      # populated but unread until the placement rewrite).
+      size_class: s.size_class,
       workloads: workloads,
       mem_headroom_mib: s.mem_headroom_mib,
       cpu_headroom_millicores: s.cpu_headroom_millicores,
