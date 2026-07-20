@@ -552,6 +552,9 @@ py_library(
             # the demo-postgres core, public-safe by construction (never imports
             # demos/sandbox.client; EMBERVM_URL read directly from the environment).
             "ember_public/**/*.py",
+            # Semgrep demo (ember_public.semgrep_router): only client.py + the
+            # package __init__ ship; the rest is pruned below (private-only).
+            "semgrep_scan/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
