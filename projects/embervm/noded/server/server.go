@@ -507,7 +507,10 @@ func (s *Server) resolveImage(workload, imageRef string) (config.Image, bool) {
 // through the pushed registry's image_ref index, falling back to the legacy
 // cfg.Images table (empty after Phase 2, kept for tests that seed it).
 func (s *Server) resolveImageByRef(imageRef string) (config.Image, bool) {
-	if e, ok := s.registry.getByImageRef(imageRef); ok {
+	// getByImageRef already skips empty-RootfsRef entries (tag-skew guard), but
+	// assert the invariant here too so this resolution boundary never yields an
+	// empty rootfs path to a cold boot, mirroring the by-workload guard above.
+	if e, ok := s.registry.getByImageRef(imageRef); ok && e.RootfsRef != "" {
 		return config.Image{RootfsPath: e.RootfsRef, HarnessInit: e.HarnessInit}, true
 	}
 	img, ok := s.cfg.Images[imageRef]
