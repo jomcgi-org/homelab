@@ -75,6 +75,15 @@ tracing:
 # runaway backstop, not any pool floor.
 noded:
   maxLiveVMs: 16
+  # Node-provisioning contract (ADR embervm/012 storage-tiers amendment): only
+  # node-4 is mapped. node-1/2/3 (the etcd masters) are intentionally ABSENT:
+  # their scratch disks have not been decided yet, so a FC label on those nodes
+  # today fails closed (no bind-mount, noded FailedMount) rather than silently
+  # landing scratch on the root disk. Add an entry here only once a node's real
+  # device is chosen.
+  scratchPrep:
+    nodeMap:
+      node-4: /disks/nvme-02
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs

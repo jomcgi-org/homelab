@@ -1,0 +1,113 @@
+{{- if .Values.noded.scratchPrep.enabled }}
+# Node-provisioning contract actuator (ADR embervm/012 storage-tiers amendment;
+# brick decisions log 2026-07-19 "Scratch mechanism"): noded's hostPath expects
+# a uniform logical path (noded.firecracker.nvmeRoot, /var/lib/embervm/scratch,
+# type Directory) to already exist and hold each node's real scratch device. On
+# EKS Karpenter userData satisfies that at instance bootstrap; on this fixed
+# fleet of pet nodes there is no bootstrap script, so this privileged DaemonSet
+# is the actuator instead. It runs on every FC-labeled node, looks up that
+# node's real device from the scratch-prep-nodemap ConfigMap, and bind-mounts it
+# onto the logical path INSIDE THE HOST mount namespace via nsenter (a bind done
+# in the pod's own mount namespace would not be visible to the kubelet, which
+# resolves hostPath against the host).
+#
+# Fails CLOSED by construction: a node with no ConfigMap entry (node-1/2/3 today
+# per deploy/values.yaml, whose real scratch disks are not yet decided) never
+# bind-mounts anything, so noded's hostPath (type: Directory) on that node keeps
+# refusing to mount and noded stays FailedMount there. This is correct: it is
+# the same failure the outage exposed, made loud and diagnosable instead of
+# silently landing scratch data on the node's root disk.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "embervm.scratchPrep.fullname" . }}
+  labels:
+    {{- include "embervm.scratchPrep.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "embervm.scratchPrep.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "embervm.scratchPrep.labels" . | nindent 8 }}
+    spec:
+      hostPID: true
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      # Same FC-node selector as noded (homelab.io/firecracker=true): scratch-prep
+      # only needs to run where noded needs the logical path satisfied.
+      nodeSelector:
+        {{- toYaml .Values.noded.nodeSelector | nindent 8 }}
+      {{- with .Values.noded.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: scratch-prep
+          image: "{{ .Values.noded.scratchPrep.image.repository }}@{{ .Values.noded.scratchPrep.image.digest }}"
+          imagePullPolicy: {{ .Values.noded.scratchPrep.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              SRC=$(cat "/config/$NODE_NAME" 2>/dev/null || true)
+              if [ -z "$SRC" ]; then
+                echo "scratch-prep: no scratch source mapped for $NODE_NAME, refusing to guess: sleeping (fail-closed, noded on this node stays FailedMount)"
+                exec sleep infinity
+              fi
+              if ! nsenter -t 1 -m -- mountpoint -q "$SRC"; then
+                echo "scratch-prep: $SRC is not a mountpoint on $NODE_NAME, refusing to bind an unmounted path"
+                exit 1
+              fi
+              nsenter -t 1 -m -- mkdir -p /var/lib/embervm/scratch
+              if ! nsenter -t 1 -m -- mountpoint -q /var/lib/embervm/scratch; then
+                nsenter -t 1 -m -- mount --bind "$SRC" /var/lib/embervm/scratch
+              fi
+              if ! nsenter -t 1 -m -- grep -qF "$SRC /var/lib/embervm/scratch none bind 0 0" /etc/fstab 2>/dev/null; then
+                nsenter -t 1 -m -- sh -c "echo '$SRC /var/lib/embervm/scratch none bind 0 0' >> /etc/fstab"
+              fi
+              echo "scratch-prep: $SRC bound at /var/lib/embervm/scratch on $NODE_NAME"
+              exec sleep infinity
+          # Readiness IS the contract's liveness signal: only Ready once the
+          # bind-mount actually exists in the host namespace, so `kubectl get
+          # daemonset` on this chart tells an operator whether every FC node's
+          # scratch contract is satisfied without reading logs.
+          readinessProbe:
+            exec:
+              command:
+                - nsenter
+                - -t
+                - "1"
+                - -m
+                - --
+                - mountpoint
+                - -q
+                - /var/lib/embervm/scratch
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 32Mi
+          volumeMounts:
+            - name: nodemap
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: nodemap
+          configMap:
+            name: {{ .Release.Name }}-scratch-prep-nodemap
+{{- end }}

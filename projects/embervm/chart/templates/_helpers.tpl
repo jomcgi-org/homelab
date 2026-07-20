@@ -78,6 +78,32 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
+Node-provisioning contract actuator (ADR embervm/012 storage-tiers amendment):
+the scratch-prep DaemonSet is a THIRD workload in this chart. Like noded and the
+serving Envoy it uses a DISTINCT app.kubernetes.io/name ("<name>-scratch-prep")
+so its selector is disjoint from every other workload's, and carries a component
+label to disambiguate self-documentingly.
+*/}}
+{{- define "embervm.scratchPrep.name" -}}
+{{- printf "%s-scratch-prep" (include "embervm.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "embervm.scratchPrep.fullname" -}}
+{{- printf "%s-scratch-prep" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "embervm.scratchPrep.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "embervm.scratchPrep.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: scratch-prep
+{{- end -}}
+
+{{- define "embervm.scratchPrep.labels" -}}
+{{ include "embervm.scratchPrep.selectorLabels" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
 The stable per-node serving address the edge Envoy Gateway sees. v1 is one node
 so a ClusterIP Service suffices; the name is release-derived like every other
 service name here (survives a release rename).

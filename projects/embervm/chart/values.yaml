@@ -775,6 +775,33 @@ noded:
   drain:
     timeoutSeconds: 110
 
+  # Node-provisioning contract (ADR embervm/012 storage-tiers amendment; brick
+  # decisions log 2026-07-19 "Scratch mechanism"): who satisfies the logical
+  # scratch path noded's hostPath expects (firecracker.nvmeRoot above) is a
+  # node-bootstrap concern, not noded's. On EKS, Karpenter userData mounts
+  # instance-store NVMe there at boot. On the homelab (pet nodes with no
+  # bootstrap script), this scratch-prep DaemonSet is the actuator: it
+  # bind-mounts each FC node's real scratch device onto the logical path,
+  # running the mount in the HOST namespace via nsenter so it survives the pod.
+  # Disable on EKS once Karpenter userData carries this (the two are mutually
+  # exclusive actuators of the same contract, never both).
+  scratchPrep:
+    enabled: true
+    image:
+      # Pinned at build time by helm_chart(images={"scratchPrep.image":
+      # ".../scratch-prep:image.info"}).
+      repository: ghcr.io/jomcgi/homelab/projects/embervm/scratch-prep
+      tag: latest
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      pullPolicy: IfNotPresent
+    # node name -> real scratch device mountpoint. A node carrying the FC label
+    # with NO entry here fails closed: the DaemonSet pod logs "no scratch source
+    # mapped" and sleeps, the bind-mount never happens, and noded on that node
+    # stays FailedMount (never silently falls back to the node's root disk).
+    # Cluster-specific mapping lives in deploy/values.yaml; this default is
+    # empty so a bare `helm template` never assumes a device that may not exist.
+    nodeMap: {}
+
   # R1 zip lane: a BuildBase zip source is a runtime image plus a zip archive noded
   # fetches, sha256-verifies into memory, and hydrates into the build VM over vsock
   # (POST /shim/hydrate) after boot; the runtime shim unpacks it guest-side, and

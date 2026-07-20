@@ -9,7 +9,11 @@ spec:
     # Chart from OCI registry (pushed by CI via Bazel helm_push)
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith-public
+<<<<<<< HEAD
       targetRevision: 0.89.226
+=======
+      targetRevision: 0.89.227
+>>>>>>> 9415989b7 (fix(embervm): scratch-prep DaemonSet satisfies the node scratch-path contract (restore node-4))
       helm:
         releaseName: monolith-public
         valueFiles:
