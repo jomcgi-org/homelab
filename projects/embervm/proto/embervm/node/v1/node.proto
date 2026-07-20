@@ -1681,4 +1681,10 @@ message NodeStatus {
   // artifacts stamped before this field existed (CpuSku doc comment above).
   // Unset on a daemon that predates PR-E.
   CpuSku cpu_sku = 28;
+  // pod_uid is the daemon pod's kubelet UID (downward API metadata.uid),
+  // reported so the control plane keys its registry and capacity ledger by
+  // (node, pod_uid): the instance identity that lets two noded instances on
+  // one node (a surge roll) be represented distinctly. Empty on the static
+  // EMBERVM_NODE_ADDRESS override path (falls back to bare node-name keying).
+  string pod_uid = 29;
 }
