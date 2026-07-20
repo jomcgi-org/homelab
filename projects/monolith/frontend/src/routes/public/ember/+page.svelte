@@ -128,14 +128,14 @@
       desc: "Snapshots and built boot images are recorded to S3: sessions restore after preemption, and a new node pulls ready images instead of rebuilding them. Workloads outlive the machine they ran on.",
     },
     {
-      done: true,
-      name: "R7 agents",
-      desc: "AI agents as first-class consumers: each agent session gets its own microVM sandbox, banked between turns.",
+      done: false,
+      name: "R7 distribution",
+      desc: "Workloads stop belonging to one machine: a wake restores the snapshot onto whichever node has room, and capacity is pre-provisioned across the fleet ahead of demand. In progress.",
     },
     {
       done: false,
-      name: "R8 packaging",
-      desc: "Extract the orchestrator from this cluster and open-source it.",
+      name: "R8 elasticity",
+      desc: "Horizontal scale on cheap spot instances: the fleet grows and shrinks with demand, and preemption is routine rather than an outage, because every workload is a durable snapshot that wakes wherever there is room. Declare a workload in one resource; the orchestrator finds it a machine.",
     },
   ];
 </script>
