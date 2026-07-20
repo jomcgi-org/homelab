@@ -108,13 +108,19 @@ type Config struct {
 	// stateful bundles, group sets, per-thread bundles, checkpoints, group
 	// networks). Derived in Load, never read from env. For a BRICK (a sized
 	// instance, SizeClass and PodUID both set) it nests under
-	// SnapshotRoot/instances/<pod_uid> so two bricks co-located on one node never
-	// clobber each other's warmth; for the legacy DaemonSet (empty SizeClass) it
-	// equals SnapshotRoot, keeping the flat pre-brick layout byte-for-byte so the
-	// DS pod repaths nothing. Bases stay on SnapshotRoot; VolumeRoot (durable
-	// data) and RegistryCachePath are instance-agnostic and unchanged. The driver
-	// falls back to SnapshotRoot when this is empty, so a Config built directly
-	// (tests) without deriving it keeps the flat layout.
+	// SnapshotRoot/i/<short-uid> (see instanceSegment) so two bricks co-located
+	// on one node never clobber each other's warmth; for the legacy DaemonSet
+	// (empty SizeClass) it equals SnapshotRoot, keeping the flat pre-brick layout
+	// byte-for-byte so the DS pod repaths nothing. The per-instance segment is
+	// kept DELIBERATELY SHORT (i/<12 hex>, not instances/<36-char uuid>) because
+	// the firecracker unix API/restore/vsock sockets nest a per-op thread-<hex>
+	// dir under it, and the full socket path must stay under the 108-byte
+	// sockaddr_un SUN_LEN limit; the long layout overflowed it and every VM op on
+	// a brick failed with "path must be shorter than SUN_LEN". Bases stay on
+	// SnapshotRoot; VolumeRoot (durable data) and RegistryCachePath are
+	// instance-agnostic and unchanged. The driver falls back to SnapshotRoot when
+	// this is empty, so a Config built directly (tests) without deriving it keeps
+	// the flat layout.
 	WarmthRoot string
 	// BinPath is the firecracker binary (baked into the image at /opt/fc).
 	BinPath string
@@ -384,14 +390,16 @@ func Load() (Config, error) {
 	}
 
 	// Per-instance warmth root (brick-capacity). A brick (SizeClass + PodUID both
-	// set) nests warmth under SnapshotRoot/instances/<pod_uid>; every other case
-	// (the legacy DaemonSet with no SizeClass, or an out-of-cluster run with no
-	// PodUID) keeps warmth flat at SnapshotRoot, byte-for-byte the pre-brick
-	// layout. Only derived when SnapshotRoot is set (an unset root disables the
-	// driver entirely, so WarmthRoot stays empty too).
+	// set) nests warmth under SnapshotRoot/i/<short-uid> (instanceSegment); every
+	// other case (the legacy DaemonSet with no SizeClass, or an out-of-cluster run
+	// with no PodUID) keeps warmth flat at SnapshotRoot, byte-for-byte the
+	// pre-brick layout. The segment is kept short so the firecracker
+	// thread-<hex>/{api,restore,vsock}.sock paths nested under it stay under the
+	// 108-byte sockaddr_un SUN_LEN limit. Only derived when SnapshotRoot is set (an
+	// unset root disables the driver entirely, so WarmthRoot stays empty too).
 	if c.SnapshotRoot != "" {
 		if c.SizeClass != "" && c.PodUID != "" {
-			c.WarmthRoot = filepath.Join(c.SnapshotRoot, "instances", c.PodUID)
+			c.WarmthRoot = filepath.Join(c.SnapshotRoot, InstanceWarmthSubdir, instanceSegment(c.PodUID))
 		} else {
 			c.WarmthRoot = c.SnapshotRoot
 		}
@@ -444,6 +452,87 @@ func Load() (Config, error) {
 	}
 
 	return c, nil
+}
+
+// PruneStaleInstanceWarmth removes per-instance (brick) warmth directories under
+// SnapshotRoot/i/ that do NOT belong to this daemon's own pod UID, reclaiming the
+// regenerable snapshot state left behind by evicted or rolled-out co-located
+// bricks (nothing GCs dead-instance warmth today, so orphan dirs accumulate).
+// It is deliberately narrow and fail-soft:
+//
+//   - It ONLY touches SnapshotRoot/i/<segment> entries. It never removes bases/
+//     (node-shared rootfs snapshots), the VolumeRoot (durable data, a separate
+//     root entirely), or the daemon's OWN live warmth segment.
+//   - It is a no-op unless this instance is itself a brick (SizeClass + PodUID
+//     both set): the legacy DaemonSet's warmth is flat at SnapshotRoot with no
+//     i/ subtree to sweep, so there is nothing (and nothing safe) to prune.
+//   - A missing i/ directory, an unreadable entry, or a failed removal is logged
+//     via removeErr (if non-nil) and skipped, never fatal: warmth is regenerable,
+//     so a boot must not block on a GC hiccup.
+//
+// It returns the list of segments it removed (for logging/tests). removeErr, when
+// non-nil, is called once per entry that could not be removed.
+func PruneStaleInstanceWarmth(c Config, removeErr func(segment string, err error)) []string {
+	if c.SnapshotRoot == "" || c.SizeClass == "" || c.PodUID == "" {
+		return nil
+	}
+	instancesDir := filepath.Join(c.SnapshotRoot, InstanceWarmthSubdir)
+	entries, err := os.ReadDir(instancesDir)
+	if err != nil {
+		// A missing i/ dir (first brick on this node, or nothing warmed yet) is the
+		// common case and not an error worth surfacing; any other read error is
+		// reported through removeErr with an empty segment so a caller can log it.
+		if !os.IsNotExist(err) && removeErr != nil {
+			removeErr("", err)
+		}
+		return nil
+	}
+	ownSegment := instanceSegment(c.PodUID)
+	var removed []string
+	for _, e := range entries {
+		if e.Name() == ownSegment {
+			continue // never reap our own live warmth
+		}
+		if err := os.RemoveAll(filepath.Join(instancesDir, e.Name())); err != nil {
+			if removeErr != nil {
+				removeErr(e.Name(), err)
+			}
+			continue
+		}
+		removed = append(removed, e.Name())
+	}
+	return removed
+}
+
+// InstanceWarmthSubdir is the single-letter parent directory under SnapshotRoot
+// that per-instance (brick) warmth roots nest inside: SnapshotRoot/i/<short-uid>.
+// It is intentionally one byte ("i", not "instances") to keep the firecracker
+// unix socket paths nested under it (thread-<hex>/{api,restore,vsock}.sock) well
+// under the 108-byte sockaddr_un SUN_LEN limit. GC scans this directory to reap
+// dead-instance warmth (see PruneStaleInstanceWarmth).
+const InstanceWarmthSubdir = "i"
+
+// instanceSegmentLen is how many hex characters of the pod UID the per-instance
+// warmth segment keeps. Kubernetes pod UIDs are RFC 4122 v4 UUIDs (36 chars with
+// hyphens, 32 hex nibbles = 128 bits); 10 hex chars is 40 bits, collision-safe
+// for the handful (single digits) of noded instances that ever co-locate on one
+// node, while keeping the worst-case firecracker socket path comfortably under
+// the 108-byte SUN_LEN limit (98 bytes with the longest fleet snapshot root).
+// Deterministic: the same pod UID always maps to the same segment, so a restarted
+// daemon reattaches to its own warmth rather than orphaning it.
+const instanceSegmentLen = 10
+
+// instanceSegment derives the short, deterministic per-instance warmth path
+// segment from a pod UID. It strips the UUID hyphens (so the 12 kept characters
+// are all entropy-bearing hex, not layout punctuation) and lowercases; a UID
+// shorter than instanceSegmentLen is used whole. The result is filesystem-safe
+// and stable across restarts of the same pod.
+func instanceSegment(podUID string) string {
+	s := strings.ToLower(strings.ReplaceAll(podUID, "-", ""))
+	if len(s) > instanceSegmentLen {
+		s = s[:instanceSegmentLen]
+	}
+	return s
 }
 
 // vendorUnsafe strips anything but letters/digits from an unrecognised

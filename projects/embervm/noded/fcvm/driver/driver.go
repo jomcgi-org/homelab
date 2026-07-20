@@ -78,10 +78,11 @@ type Config struct {
 	SnapshotRoot string
 	// WarmthRoot is the root for per-INSTANCE warmth (sessions/serving/stateful
 	// bundles/group sets/per-thread bundles/checkpoints/group networks): a brick
-	// nests it under SnapshotRoot/instances/<pod_uid>; the legacy DaemonSet leaves
-	// it equal to SnapshotRoot (flat, unchanged). Bases stay on SnapshotRoot.
-	// Empty falls back to SnapshotRoot (see warmthRoot), so a driver built from a
-	// Config that never derived it keeps the flat pre-brick layout.
+	// nests it under SnapshotRoot/i/<short-uid> (a SHORT segment so the nested
+	// firecracker thread-<hex>/*.sock paths stay under SUN_LEN); the legacy
+	// DaemonSet leaves it equal to SnapshotRoot (flat, unchanged). Bases stay on
+	// SnapshotRoot. Empty falls back to SnapshotRoot (see warmthRoot), so a driver
+	// built from a Config that never derived it keeps the flat pre-brick layout.
 	WarmthRoot string
 	// Node and Arch pin where snapshots may be restored.
 	Node string
@@ -278,7 +279,7 @@ func templateMismatch(refTemplate, nodeTemplate string) (bool, string) {
 
 // warmthRoot is the root for per-INSTANCE warmth (sessions, serving, stateful
 // bundles, group sets, per-thread bundles, checkpoints, group networks). For a
-// brick it is SnapshotRoot/instances/<pod_uid> (set by config.Load); for the
+// brick it is SnapshotRoot/i/<short-uid> (set by config.Load); for the
 // legacy DaemonSet it equals SnapshotRoot. Falls back to SnapshotRoot when unset
 // so a driver built from a Config that never derived WarmthRoot (tests) keeps the
 // flat pre-brick layout. Bases (baseDir) deliberately do NOT go through here:

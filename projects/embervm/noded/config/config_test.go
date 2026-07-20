@@ -323,12 +323,15 @@ func TestLoadRejectsBadDuration(t *testing.T) {
 	}
 }
 
-// TestLoadWarmthRootDerivation proves the per-instance warmth root (brick-capacity
-// PR-2.5): a brick (SizeClass + PodUID both set) nests warmth under
-// SnapshotRoot/instances/<pod_uid>; every other case keeps warmth flat at
+// TestLoadWarmthRootDerivation proves the per-instance warmth root (brick-capacity):
+// a brick (SizeClass + PodUID both set) nests warmth under SnapshotRoot/i/<short-uid>
+// (the SHORT segment, kept under SUN_LEN); every other case keeps warmth flat at
 // SnapshotRoot so the legacy DaemonSet repaths nothing.
 func TestLoadWarmthRootDerivation(t *testing.T) {
 	root := "/scratch/embervm-noded/snapshots"
+	// A realistic k8s pod UID (RFC 4122 v4); the segment is its first 10 hex chars
+	// with hyphens stripped: "a1b2c3d4e5".
+	const uid = "a1b2c3d4-e5f6-4788-9abc-def012345678"
 	cases := []struct {
 		name      string
 		snapshot  string
@@ -336,10 +339,10 @@ func TestLoadWarmthRootDerivation(t *testing.T) {
 		podUID    string
 		want      string
 	}{
-		{"brick nests per pod_uid", root, "8gi", "pod-123", root + "/instances/pod-123"},
-		{"legacy DS stays flat (no size class)", root, "", "pod-123", root},
+		{"brick nests per short uid", root, "8gi", uid, root + "/i/a1b2c3d4e5"},
+		{"legacy DS stays flat (no size class)", root, "", uid, root},
 		{"size class but no pod_uid stays flat", root, "8gi", "", root},
-		{"no snapshot root yields empty", "", "8gi", "pod-123", ""},
+		{"no snapshot root yields empty", "", "8gi", uid, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,4 +362,127 @@ func TestLoadWarmthRootDerivation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestInstanceSegmentDeterministicAndDistinct proves the per-instance segment is
+// deterministic (same UID -> same segment, so a restarted daemon reattaches to
+// its own warmth) and distinct across co-located UIDs (no clobber).
+func TestInstanceSegmentDeterministicAndDistinct(t *testing.T) {
+	const a = "a1b2c3d4-e5f6-4788-9abc-def012345678"
+	const b = "f9e8d7c6-b5a4-4300-8fed-cba987654321"
+	if instanceSegment(a) != instanceSegment(a) {
+		t.Error("instanceSegment not deterministic")
+	}
+	if instanceSegment(a) == instanceSegment(b) {
+		t.Errorf("distinct UIDs collided: %q", instanceSegment(a))
+	}
+	if got := instanceSegment(a); got != "a1b2c3d4e5" {
+		t.Errorf("instanceSegment(%q) = %q, want a1b2c3d4e5", a, got)
+	}
+	// A UID shorter than the cap is used whole (no panic, no padding).
+	if got := instanceSegment("short"); got != "short" {
+		t.Errorf("instanceSegment(short) = %q, want short", got)
+	}
+}
+
+// TestWorstCaseSocketPathUnderSunLen is the regression guard for the bug this PR
+// fixes: on a brick, the LONGEST firecracker unix socket path (a per-op
+// thread-<16hex> bundle dir under the per-instance warmth root, holding
+// restore.sock) MUST stay under the 108-byte sockaddr_un SUN_LEN limit, or every
+// VM operation fails with "path must be shorter than SUN_LEN". We reconstruct the
+// exact worst-case path the driver builds and assert it is comfortably under the
+// limit.
+func TestWorstCaseSocketPathUnderSunLen(t *testing.T) {
+	// The real production NVMe scratch snapshot root (the longest root in the
+	// fleet), a realistic pod UID, and the longest per-op thread id (thread- +
+	// 16 hex chars = 8 random bytes) with the longest socket basename.
+	const snapshotRoot = "/var/lib/embervm/scratch/embervm-noded/snapshots"
+	const podUID = "a1b2c3d4-e5f6-4788-9abc-def012345678"
+	const threadDir = "thread-0123456789abcdef" // driver: "thread-" + 16 hex
+	const longestSock = "restore.sock"          // > api.sock, vsock.sock
+
+	t.Setenv("EMBERVM_NODED_SNAPSHOT_ROOT", snapshotRoot)
+	t.Setenv("EMBERVM_NODED_SIZE_CLASS", "16gi")
+	t.Setenv("EMBERVM_POD_UID", podUID)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	worst := filepath.Join(c.WarmthRoot, threadDir, longestSock)
+	// SUN_LEN is 108 on Linux; a NUL terminator eats one byte, so the usable path
+	// is <= 107. We assert a hard margin (< 100) so a future root/threadid tweak
+	// cannot silently creep back over the cliff.
+	if len(worst) >= 108 {
+		t.Fatalf("worst-case socket path OVERFLOWS SUN_LEN: %d bytes: %q", len(worst), worst)
+	}
+	if len(worst) >= 100 {
+		t.Errorf("worst-case socket path %d bytes (want < 100 for margin): %q", len(worst), worst)
+	}
+	t.Logf("worst-case brick socket path is %d bytes: %q", len(worst), worst)
+}
+
+// TestPruneStaleInstanceWarmth proves the startup GC reaps orphan per-instance
+// warmth (other pods' i/<seg> dirs) while never touching our own segment, bases/,
+// or anything outside i/; and that it is a no-op for the legacy DaemonSet.
+func TestPruneStaleInstanceWarmth(t *testing.T) {
+	const ownUID = "a1b2c3d4-e5f6-4788-9abc-def012345678"
+	ownSeg := instanceSegment(ownUID)
+
+	t.Run("brick reaps other segments, keeps own and bases", func(t *testing.T) {
+		root := t.TempDir()
+		instancesDir := filepath.Join(root, InstanceWarmthSubdir)
+		mkdir := func(p string) {
+			if err := os.MkdirAll(p, 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mkdir(filepath.Join(instancesDir, ownSeg))
+		mkdir(filepath.Join(instancesDir, "deadbeef0000")) // orphan
+		mkdir(filepath.Join(instancesDir, "cafef00d1111")) // orphan
+		basesDir := filepath.Join(root, "bases", "somekey")
+		mkdir(basesDir)
+
+		c := Config{SnapshotRoot: root, SizeClass: "8gi", PodUID: ownUID}
+		removed := PruneStaleInstanceWarmth(c, func(seg string, err error) {
+			t.Errorf("unexpected removeErr(%q, %v)", seg, err)
+		})
+		if len(removed) != 2 {
+			t.Errorf("removed = %v, want 2 orphans", removed)
+		}
+		if _, err := os.Stat(filepath.Join(instancesDir, ownSeg)); err != nil {
+			t.Errorf("own segment must survive GC: %v", err)
+		}
+		if _, err := os.Stat(basesDir); err != nil {
+			t.Errorf("bases/ must NEVER be touched by GC: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(instancesDir, "deadbeef0000")); !os.IsNotExist(err) {
+			t.Errorf("orphan segment should be gone, stat err = %v", err)
+		}
+	})
+
+	t.Run("legacy DS is a no-op", func(t *testing.T) {
+		root := t.TempDir()
+		// Even if an i/ dir somehow exists, a non-brick (empty SizeClass) never sweeps.
+		if err := os.MkdirAll(filepath.Join(root, InstanceWarmthSubdir, "deadbeef0000"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		c := Config{SnapshotRoot: root, SizeClass: "", PodUID: ownUID}
+		if removed := PruneStaleInstanceWarmth(c, nil); removed != nil {
+			t.Errorf("legacy DS GC removed %v, want nil", removed)
+		}
+		if _, err := os.Stat(filepath.Join(root, InstanceWarmthSubdir, "deadbeef0000")); err != nil {
+			t.Errorf("non-brick must not touch i/: %v", err)
+		}
+	})
+
+	t.Run("missing i/ dir is not an error", func(t *testing.T) {
+		root := t.TempDir()
+		c := Config{SnapshotRoot: root, SizeClass: "8gi", PodUID: ownUID}
+		if removed := PruneStaleInstanceWarmth(c, func(seg string, err error) {
+			t.Errorf("unexpected removeErr(%q, %v) for missing dir", seg, err)
+		}); removed != nil {
+			t.Errorf("removed = %v, want nil for missing i/", removed)
+		}
+	})
 }
