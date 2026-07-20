@@ -62,6 +62,17 @@ type Config struct {
 	// when EMBERVM_NODED_CPU_VENDOR is unset; override for tests and darwin
 	// (where /proc/cpuinfo does not exist).
 	CpuVendor string
+	// CpuTemplate names the conservative fleet-wide Firecracker CPU template
+	// this node boots guests with (PR-E, ADR embervm/012): the daemon stamps
+	// (CpuVendor, CpuTemplate) as this node's cpu_sku into every snapshot it
+	// cuts, and validates a restoring artifact's stamped cpu_sku against its
+	// own on every restore path, fail-closed on a mismatch exactly like
+	// CpuVendor. Defaults per-vendor via defaultCPUTemplate (a T2-family name
+	// for Intel, a fixed AMD default profile name; AMD has no FC CPUID-masking
+	// template today) when EMBERVM_NODED_CPU_TEMPLATE is unset and CpuVendor is
+	// known; empty when CpuVendor is empty (an undetected vendor skips the sku
+	// check entirely, same as an empty CpuVendor skips the vendor check).
+	CpuTemplate string
 	// BearerToken, when set, gates every gRPC call: the caller must present
 	// "authorization: Bearer <token>" in call metadata. Empty runs the daemon
 	// open and logs a startup warning (mirrors fc-invoke's fail-loud-not-silent
@@ -249,6 +260,7 @@ func Load() (Config, error) {
 		Node:                os.Getenv("EMBERVM_NODED_NODE"),
 		Arch:                os.Getenv("EMBERVM_NODED_ARCH"),
 		CpuVendor:           os.Getenv("EMBERVM_NODED_CPU_VENDOR"),
+		CpuTemplate:         os.Getenv("EMBERVM_NODED_CPU_TEMPLATE"),
 		BearerToken:         os.Getenv("EMBERVM_NODED_BEARER_TOKEN"),
 		MaxLiveVMs:          atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
 		DaemonReserveMib:    atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
@@ -295,6 +307,9 @@ func Load() (Config, error) {
 	}
 	if c.CpuVendor == "" {
 		c.CpuVendor = detectCPUVendor()
+	}
+	if c.CpuTemplate == "" {
+		c.CpuTemplate = defaultCPUTemplate(c.CpuVendor)
 	}
 	if c.VolumeRoot == "" && c.SnapshotRoot != "" {
 		// Default alongside the snapshot root but as a SIBLING directory, not
@@ -407,6 +422,40 @@ func detectCPUVendorFrom(path string) string {
 		}
 	}
 	return ""
+}
+
+// intelDefaultCPUTemplate and amdDefaultCPUTemplate are the conservative
+// fleet-wide Firecracker CPU templates chosen per vendor (PR-E). Both names
+// are config values, not computed: the template's correctness is NOT yet
+// proven on real silicon (that boot + BuildBase + restore round-trip per
+// vendor is the plan's separate verify step, still outstanding on the
+// Alder Lake-S masters and Zen4 node-4) and must run BEFORE either name is
+// treated as load-bearing rather than a placeholder identity label.
+// "t2-conservative" names Intel's intended T2-family baseline (a
+// homogeneous, no-AVX512 CPUID mask, chosen for the masters' hybrid P/E
+// topology, but unverified pending that drill). AMD Firecracker has no
+// CPUID-masking template today, so "amd-default" is a fixed logical profile
+// name, not an FC wire value: it exists purely so node-4's cpu_sku has a
+// non-empty template half, matching Intel's shape, for the mismatch gate to
+// compare uniformly across vendors.
+const (
+	intelDefaultCPUTemplate = "t2-conservative"
+	amdDefaultCPUTemplate   = "amd-default"
+)
+
+// defaultCPUTemplate resolves the conservative fleet-wide template for a known
+// vendor. An unknown or empty vendor returns "" (an undetected vendor already
+// skips the vendor check entirely; a template can never be more specific than
+// an unknown vendor).
+func defaultCPUTemplate(vendor string) string {
+	switch vendor {
+	case "intel":
+		return intelDefaultCPUTemplate
+	case "amd":
+		return amdDefaultCPUTemplate
+	default:
+		return ""
+	}
 }
 
 // getenvDefault returns the named env var, or def when unset or empty.

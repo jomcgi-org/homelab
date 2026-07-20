@@ -180,7 +180,7 @@ func TestExportWritesMetaLast(t *testing.T) {
 	})
 	prefix := "stateful/scratch-postgres/state-abc"
 
-	moved, skipped, err := s.Export(ctx, prefix, dir, names, 7, 111)
+	moved, skipped, err := s.Export(ctx, prefix, dir, names, 7, 111, "", "")
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -222,12 +222,12 @@ func TestExportSkipsUnchanged(t *testing.T) {
 	})
 	prefix := "session/sandbox-session/sess-1"
 
-	if _, skipped, err := s.Export(ctx, prefix, dir, names, 0, 1); err != nil || skipped {
+	if _, skipped, err := s.Export(ctx, prefix, dir, names, 0, 1, "", ""); err != nil || skipped {
 		t.Fatalf("first Export = (skipped=%v, %v), want (false, nil)", skipped, err)
 	}
 	putsAfterFirst := len(fake.putOrderCopy())
 
-	moved, skipped, err := s.Export(ctx, prefix, dir, names, 0, 2)
+	moved, skipped, err := s.Export(ctx, prefix, dir, names, 0, 2, "", "")
 	if err != nil {
 		t.Fatalf("second Export: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestRestoreRoundTrip(t *testing.T) {
 	srcDir, names := writeLocalArtifact(t, contents)
 	prefix := "stateful/scratch-postgres/state-xyz"
 
-	if _, _, err := s.Export(ctx, prefix, srcDir, names, 9, 42); err != nil {
+	if _, _, err := s.Export(ctx, prefix, srcDir, names, 9, 42, "", ""); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 
@@ -293,7 +293,7 @@ func TestRestoreChecksumMismatchLeavesNoCorruptFile(t *testing.T) {
 	ctx := context.Background()
 	srcDir, names := writeLocalArtifact(t, map[string]string{"snapfile": "good-bytes"})
 	prefix := "session/sandbox-session/sess-corrupt"
-	if _, _, err := s.Export(ctx, prefix, srcDir, names, 0, 1); err != nil {
+	if _, _, err := s.Export(ctx, prefix, srcDir, names, 0, 1, "", ""); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 	// Corrupt the stored object WITHOUT updating meta.json, so the restore's
@@ -322,7 +322,7 @@ func TestDeleteArtifactRemovesMetaFirst(t *testing.T) {
 	ctx := context.Background()
 	srcDir, names := writeLocalArtifact(t, map[string]string{"snapfile": "a", "memfile": "b"})
 	prefix := "serving/hot-image-demo/serv-1"
-	if _, _, err := s.Export(ctx, prefix, srcDir, names, 0, 1); err != nil {
+	if _, _, err := s.Export(ctx, prefix, srcDir, names, 0, 1, "", ""); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 
@@ -355,7 +355,7 @@ func TestPresentPartialWriteInvisible(t *testing.T) {
 	if err := s.Put(ctx, prefix+"/snapfile", strings.NewReader(string(body)), int64(len(body))); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	present, gen, err := s.Present(ctx, prefix)
+	present, gen, _, _, err := s.Present(ctx, prefix)
 	if err != nil {
 		t.Fatalf("Present: %v", err)
 	}
@@ -374,10 +374,10 @@ func TestPresentReportsGeneration(t *testing.T) {
 	ctx := context.Background()
 	srcDir, names := writeLocalArtifact(t, map[string]string{"vol.img": "volbytes", "gen": "12"})
 	prefix := "volume/scratch-postgres"
-	if _, _, err := s.Export(ctx, prefix, srcDir, names, 12, 1); err != nil {
+	if _, _, err := s.Export(ctx, prefix, srcDir, names, 12, 1, "", ""); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
-	present, gen, err := s.Present(ctx, prefix)
+	present, gen, _, _, err := s.Present(ctx, prefix)
 	if err != nil {
 		t.Fatalf("Present: %v", err)
 	}

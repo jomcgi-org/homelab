@@ -1559,7 +1559,20 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		StoreReachable:        s.storeReachableNow(),
 		MemBudgetMib:          s.memBudget(),
 		CpuBudgetMillicores:   s.cpuBudget(),
+		CpuSku:                s.cpuSku(),
 	}
+}
+
+// cpuSku builds this node's full CPU-restore identity (PR-E): vendor plus the
+// CPU template in force. Nil when CpuVendor is unset (an undetected vendor
+// reports no sku at all, matching how it already skips the vendor-only check;
+// a wire-unset CpuSku is exactly the pre-PR-E behavior a daemon that never set
+// this field produces).
+func (s *Server) cpuSku() *nodev1.CpuSku {
+	if s.cfg.CpuVendor == "" {
+		return nil
+	}
+	return &nodev1.CpuSku{Vendor: s.cfg.CpuVendor, Template: s.cfg.CpuTemplate}
 }
 
 // servingVMsStatus projects the live serving-VM registry into the NodeStatus message

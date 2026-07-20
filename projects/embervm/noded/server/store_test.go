@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
@@ -38,8 +41,10 @@ type fakeStore struct {
 }
 
 type fakeArtifact struct {
-	files map[string]string
-	gen   uint64
+	files       map[string]string
+	gen         uint64
+	cpuVendor   string
+	cpuTemplate string
 }
 
 func newFakeStore() *fakeStore {
@@ -50,7 +55,7 @@ func newFakeStore() *fakeStore {
 	}
 }
 
-func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []string, generation uint64, _ int64) (int64, bool, error) {
+func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []string, generation uint64, _ int64, cpuVendor, cpuTemplate string) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.exportCalls[prefix]++
@@ -69,7 +74,7 @@ func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []s
 	if existing, ok := f.arts[prefix]; ok && sameStringMap(existing.files, got) {
 		return 0, true, nil
 	}
-	f.arts[prefix] = fakeArtifact{files: got, gen: generation}
+	f.arts[prefix] = fakeArtifact{files: got, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate}
 	f.order = append(f.order, prefix)
 	return total, false, nil
 }
@@ -105,14 +110,14 @@ func (f *fakeStore) DeleteArtifact(_ context.Context, prefix string) error {
 	return nil
 }
 
-func (f *fakeStore) Present(_ context.Context, prefix string) (bool, uint64, error) {
+func (f *fakeStore) Present(_ context.Context, prefix string) (bool, uint64, string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	art, ok := f.arts[prefix]
 	if !ok {
-		return false, 0, nil
+		return false, 0, "", "", nil
 	}
-	return true, art.gen, nil
+	return true, art.gen, art.cpuVendor, art.cpuTemplate, nil
 }
 
 func (f *fakeStore) Reachable(_ context.Context) bool {
@@ -132,6 +137,16 @@ func (f *fakeStore) has(prefix string) bool {
 	defer f.mu.Unlock()
 	_, ok := f.arts[prefix]
 	return ok
+}
+
+// seedArtifact directly places an artifact in the fake store under prefix with
+// the given files and cpu_sku stamp, bypassing Export, so cpu_sku gate tests
+// can construct an UNSTAMPED (both "") or a specific-sku artifact precisely,
+// including one this node never wrote itself.
+func (f *fakeStore) seedArtifact(prefix string, files map[string]string, generation uint64, cpuVendor, cpuTemplate string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.arts[prefix] = fakeArtifact{files: files, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate}
 }
 
 // errFakeNotPresent stands in for store.ErrNotPresent in these in-package tests
@@ -224,6 +239,25 @@ func newStoreTestServerWithVendor(t *testing.T, fs *fakeStore, vendor string) *S
 	volRoot := t.TempDir()
 	s := New(Options{
 		Config:         config.Config{Arch: "amd64", Node: "node-4", CpuVendor: vendor, SnapshotRoot: root, VolumeRoot: volRoot},
+		Driver:         &fakeDriver{},
+		StatefulDriver: newDiskScanStatefulDriver(root),
+		Transport:      &fakeTransport{},
+		Store:          fs,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	s.memHeadroom = func() uint64 { return 0 }
+	return s
+}
+
+// newStoreTestServerWithSku mirrors newStoreTestServer but lets a test pick the
+// node's own (vendor, template) cpu_sku, for the PR-E mismatch/grandfather gate
+// tests.
+func newStoreTestServerWithSku(t *testing.T, fs *fakeStore, vendor, template string) *Server {
+	t.Helper()
+	root := t.TempDir()
+	volRoot := t.TempDir()
+	s := New(Options{
+		Config:         config.Config{Arch: "amd64", Node: "node-4", CpuVendor: vendor, CpuTemplate: template, SnapshotRoot: root, VolumeRoot: volRoot},
 		Driver:         &fakeDriver{},
 		StatefulDriver: newDiskScanStatefulDriver(root),
 		Transport:      &fakeTransport{},
@@ -473,6 +507,123 @@ func TestRestoreArtifactAbsentFails(t *testing.T) {
 	}
 }
 
+// TestRestoreArtifactUnstampedSkuGrandfathered proves the PR-E grandfather
+// rule at the RestoreArtifact seam: an artifact stamped with NO cpu_sku at all
+// (exported before PR-E landed) restores successfully regardless of the
+// node's own (vendor, template), because refusing an UNSTAMPED artifact is
+// data loss, the exact failure this rule exists to prevent.
+func TestRestoreArtifactUnstampedSkuGrandfathered(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServerWithSku(t, fs, "intel", "t2-conservative")
+	ctx := context.Background()
+
+	prefix := "stateful/intel/scratch-postgres/legacy-1"
+	fs.seedArtifact(prefix, map[string]string{"snapfile": "snap", "memfile": "mem"}, 3, "", "")
+
+	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: "legacy-1"},
+		Vendor:   "intel",
+	})
+	if err != nil {
+		t.Fatalf("restore of an unstamped (grandfathered) artifact should succeed: %v", err)
+	}
+	if resp.GetGeneration() != 3 {
+		t.Fatalf("restored generation = %d, want 3", resp.GetGeneration())
+	}
+}
+
+// TestRestoreArtifactMatchedSkuRestores proves an artifact stamped with the
+// SAME (vendor, template) as the node restores successfully, for both fleet
+// vendors: a present-and-matching stamp is the ordinary, non-legacy
+// compatible case.
+func TestRestoreArtifactMatchedSkuRestores(t *testing.T) {
+	for _, tc := range []struct{ vendor, template string }{
+		{"amd", "amd-default"},
+		{"intel", "t2-conservative"},
+	} {
+		t.Run(tc.vendor, func(t *testing.T) {
+			fs := newFakeStore()
+			s := newStoreTestServerWithSku(t, fs, tc.vendor, tc.template)
+			ctx := context.Background()
+
+			prefix := "stateful/" + tc.vendor + "/scratch-postgres/matched-1"
+			fs.seedArtifact(prefix, map[string]string{"snapfile": "snap", "memfile": "mem"}, 5, tc.vendor, tc.template)
+
+			resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
+				Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: "matched-1"},
+				Vendor:   tc.vendor,
+			})
+			if err != nil {
+				t.Fatalf("restore of a matched-sku artifact should succeed: %v", err)
+			}
+			if resp.GetGeneration() != 5 {
+				t.Fatalf("restored generation = %d, want 5", resp.GetGeneration())
+			}
+		})
+	}
+}
+
+// TestRestoreArtifactMismatchedSkuRefusesLoudly proves a PRESENT-but-
+// mismatched cpu_sku (same vendor, different template) is refused
+// FAILED_PRECONDITION, loudly, never a silent wrong-sku boot. Checked for
+// both fleet vendors: the mismatch gate must be correct-by-construction on
+// the Intel pool even without live silicon to exercise it.
+func TestRestoreArtifactMismatchedSkuRefusesLoudly(t *testing.T) {
+	for _, tc := range []struct{ vendor, nodeTemplate, artifactTemplate string }{
+		{"amd", "amd-default", "amd-other"},
+		{"intel", "t2-conservative", "t2s-experimental"},
+	} {
+		t.Run(tc.vendor, func(t *testing.T) {
+			fs := newFakeStore()
+			s := newStoreTestServerWithSku(t, fs, tc.vendor, tc.nodeTemplate)
+			ctx := context.Background()
+
+			prefix := "stateful/" + tc.vendor + "/scratch-postgres/mismatch-1"
+			fs.seedArtifact(prefix, map[string]string{"snapfile": "snap", "memfile": "mem"}, 2, tc.vendor, tc.artifactTemplate)
+
+			_, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
+				Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: "mismatch-1"},
+				Vendor:   tc.vendor,
+			})
+			if err == nil {
+				t.Fatalf("restore of a mismatched-sku artifact should be refused (%s: %q != %q)", tc.vendor, tc.artifactTemplate, tc.nodeTemplate)
+			}
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("mismatch error code = %v, want FailedPrecondition", status.Code(err))
+			}
+		})
+	}
+}
+
+// TestCpuSkuMismatchGrandfatherRule unit-tests cpuSkuMismatch directly against
+// every grandfather-rule case: unstamped always compatible, matched
+// compatible, mismatched refused, and an unresolved node sku never refusing.
+func TestCpuSkuMismatchGrandfatherRule(t *testing.T) {
+	cases := []struct {
+		name                           string
+		stampedVendor, stampedTemplate string
+		nodeVendor, nodeTemplate       string
+		wantMismatch                   bool
+	}{
+		{"unstamped always compatible (amd node)", "", "", "amd", "amd-default", false},
+		{"unstamped always compatible (intel node)", "", "", "intel", "t2-conservative", false},
+		{"matched sku compatible (amd)", "amd", "amd-default", "amd", "amd-default", false},
+		{"matched sku compatible (intel)", "intel", "t2-conservative", "intel", "t2-conservative", false},
+		{"mismatched template refused (amd)", "amd", "amd-other", "amd", "amd-default", true},
+		{"mismatched template refused (intel)", "intel", "t2s-experimental", "intel", "t2-conservative", true},
+		{"mismatched vendor refused", "amd", "amd-default", "intel", "t2-conservative", true},
+		{"unresolved node sku never refuses", "intel", "t2-conservative", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mismatch, _, _ := cpuSkuMismatch(tc.stampedVendor, tc.stampedTemplate, tc.nodeVendor, tc.nodeTemplate)
+			if mismatch != tc.wantMismatch {
+				t.Errorf("cpuSkuMismatch(%q,%q,%q,%q) = %v, want %v", tc.stampedVendor, tc.stampedTemplate, tc.nodeVendor, tc.nodeTemplate, mismatch, tc.wantMismatch)
+			}
+		})
+	}
+}
+
 // TestEvictArtifactRemote proves EvictArtifact(remote=true) removes the store
 // copy and is idempotent.
 func TestEvictArtifactRemote(t *testing.T) {
@@ -648,7 +799,7 @@ func TestRestoreArtifactLegacyAliasResolves(t *testing.T) {
 	legacyPrefix := "stateful/scratch-postgres/legacy-1"
 	dir := filepath.Join(s.cfg.SnapshotRoot, "stateful", "legacy-1")
 	writeBundleFiles(t, dir, map[string]string{"snapfile": "snap", "memfile": "mem"})
-	if _, _, err := fs.Export(ctx, legacyPrefix, dir, []string{"snapfile", "memfile"}, 7, 0); err != nil {
+	if _, _, err := fs.Export(ctx, legacyPrefix, dir, []string{"snapfile", "memfile"}, 7, 0, "", ""); err != nil {
 		t.Fatalf("seed legacy export: %v", err)
 	}
 	if err := os.RemoveAll(dir); err != nil {
@@ -693,7 +844,7 @@ func TestEnqueueIfMissingLegacyAliasGatedToAMDNode(t *testing.T) {
 	legacyPrefix := "stateful/scratch-postgres/r1"
 	legacySrc := t.TempDir()
 	writeBundleFiles(t, legacySrc, map[string]string{"snapfile": "amd-snap"})
-	if _, _, err := fs.Export(ctx, legacyPrefix, legacySrc, []string{"snapfile"}, 9, 0); err != nil {
+	if _, _, err := fs.Export(ctx, legacyPrefix, legacySrc, []string{"snapfile"}, 9, 0, "", ""); err != nil {
 		t.Fatalf("seed legacy export: %v", err)
 	}
 
