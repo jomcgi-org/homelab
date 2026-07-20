@@ -443,8 +443,34 @@ defmodule Embervm.NodeRegistryTest do
     # Same instance (node+pod_uid), NEW address.
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "new-ip:9090"})
     eventually(fn -> "new-ip:9090" in Agent.get(dialed, & &1) end, 200)
-    eventually(fn -> {"node-4/uid-1", "new-ip:9090"} in Agent.get(chan, & &1) end, 200)
+    # NodeChannel is re-pointed under the NODE NAME key (what every dispatch consumer
+    # looks up), not the instance_id, so a node-name lookup after a re-registration
+    # resolves the new address rather than dialing the dead old endpoint.
+    eventually(fn -> {"node-4", "new-ip:9090"} in Agent.get(chan, & &1) end, 200)
     assert NodeRegistry.status(reg)["node-4/uid-1"].address == "new-ip:9090"
+  end
+
+  test "dial-home registration keys NodeChannel by NODE NAME (what dispatch consumers look up), not instance_id" do
+    # The dispatch outage this guards against: NodeChannel keyed by instance_id
+    # ("node-4/<pod_uid>") left every consumer's node-name lookup (PoolManager.refill_node/2
+    # on facts.configured_id "node-4", and stateful/session/serving/group placement)
+    # returning :unknown_node, so the CP could dispatch NO work behind healthy pods.
+    {:ok, chan} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          channel_updater_fun: fn id, addr -> Agent.update(chan, &[{id, addr} | &1]) end
+        )
+      )
+
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.42.1.24:9090"})
+
+    # Addressable by the bare node name (the key PoolManager/placement use).
+    eventually(fn -> {"node-4", "10.42.1.24:9090"} in Agent.get(chan, & &1) end, 200)
+    # And NEVER keyed by the instance_id "node-4/uid-1" (that key is invisible to consumers).
+    refute {"node-4/uid-1", "10.42.1.24:9090"} in Agent.get(chan, & &1)
   end
 
   test "registration feeds instance add to the BaseBuilder (so BuildBase can place)" do

@@ -1074,9 +1074,20 @@ defmodule Embervm.NodeRegistry do
   end
 
   # Seed a newly-registered instance's runtime, propagate its address to the
-  # Prime/Assign channel holder and the BaseBuilder (both keyed by INSTANCE id so a
-  # surge pod gets its own channel), and open its streamer. Mirrors the static seed
-  # shape so age-out and streamer plumbing treat a registered instance identically.
+  # Prime/Assign channel holder (keyed by NODE NAME, see below) and the BaseBuilder
+  # (keyed by INSTANCE id), and open its streamer. Mirrors the static seed shape so
+  # age-out and streamer plumbing treat a registered instance identically.
+  #
+  # NodeChannel keying (single-instance bridge): the registry's own tables are keyed
+  # by instance_id ("node/pod_uid") for future multi-brick, but NodeChannel is the
+  # DISPATCH channel and every consumer addresses it by NODE NAME: PoolManager.refill_node/2
+  # keys on facts.configured_id ("node-4"), and stateful/session/serving/group placement
+  # resolve to a node-name anchor and dispatch by node-name. Keying NodeChannel by
+  # instance_id here left NodeChannel.get("node-4") returning :unknown_node, so the CP
+  # could dispatch NO work behind healthy pods. For today's one-instance-per-node fleet
+  # we point NodeChannel at norm.node (the node name) so every consumer's lookup hits.
+  # The brick-capacity placement PR will migrate NodeChannel AND all consumers to
+  # instance_id keying for multi-instance; this is the single-instance-correct bridge.
   defp add_instance(state, norm, now) do
     rt =
       seed_runtime(
@@ -1091,7 +1102,7 @@ defmodule Embervm.NodeRegistry do
       "embervm node registry: registered instance #{rt.instance_id} (node #{norm.node}, pod #{norm.pod_uid}, #{norm.address})"
     )
 
-    safe_channel_update(state.channel_updater_fun, rt.instance_id, norm.address)
+    safe_channel_update(state.channel_updater_fun, norm.node, norm.address)
     safe_base_builder_update(state.base_builder_updater_fun, {:add, rt.instance_id, norm.address})
 
     state
@@ -1178,10 +1189,16 @@ defmodule Embervm.NodeRegistry do
       :ok
   end
 
-  # Default: point the singleton Embervm.NodeChannel at the instance's address
-  # (the Prime/Assign hot path dials per instance_id, so a surge pod is distinct).
-  defp default_channel_update(instance_id, address) do
-    Embervm.NodeChannel.update_address(instance_id, address)
+  # Default: point the singleton Embervm.NodeChannel at the node's address, keyed by
+  # NODE NAME (not instance_id). Every dispatch consumer (PoolManager.refill_node/2 on
+  # facts.configured_id, plus stateful/session/serving/group placement) looks up the
+  # channel by node-name, so the propagation must match. On a re-registration at a new
+  # address, update_address unconditionally erases the channel cached under this same
+  # node-name key and re-points it, so no stale endpoint survives. (Multi-instance
+  # per node is not reachable until the brick-capacity placement PR migrates NodeChannel
+  # and all consumers to instance_id keying; this node-name keying is that bridge.)
+  defp default_channel_update(node_name, address) do
+    Embervm.NodeChannel.update_address(node_name, address)
     :ok
   end
 
