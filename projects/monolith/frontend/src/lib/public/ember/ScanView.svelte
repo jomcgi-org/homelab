@@ -259,6 +259,26 @@
     highlightedLine = f.line;
   }
 
+  // Rule ids are dot-separated paths whose specificity increases left to
+  // right (etc.semgrep.rules.pro-javascript....express-child-process), so
+  // the inline flag chip keeps whole trailing segments within its width
+  // budget and drops the registry-boilerplate prefix behind an ellipsis.
+  // The findings list below still shows the full id.
+  const FLAG_ID_BUDGET = 28;
+
+  function shortRuleId(id) {
+    if (!id || id.length <= FLAG_ID_BUDGET) return id;
+    const segs = id.split(".");
+    let out = segs.pop() ?? "";
+    while (
+      segs.length > 0 &&
+      out.length + segs[segs.length - 1].length + 1 <= FLAG_ID_BUDGET
+    ) {
+      out = `${segs.pop()}.${out}`;
+    }
+    return `…${out}`;
+  }
+
   let sortedFindings = $derived.by(() => {
     const order = { ERROR: 0, WARNING: 1, INFO: 2 };
     return [...findings].sort(
@@ -325,7 +345,7 @@
                 class:err={finding.severity === "ERROR"}
                 class:warn={finding.severity !== "ERROR"}
               >
-                {finding.rule_id}
+                {shortRuleId(finding.rule_id)}
               </span>
             {/if}
           </div>
@@ -598,6 +618,9 @@
     border-radius: 4px;
     color: var(--em-on-color);
     white-space: nowrap;
+    max-width: 172px;
+    overflow: hidden;
+    text-overflow: ellipsis;
     opacity: 0;
     translate: 8px 0;
     transition:
