@@ -99,8 +99,23 @@ type Config struct {
 	DaemonReserveMib int
 
 	// SnapshotRoot is the directory holding FC bundle + base snapshots on the
-	// NVMe scratch disk. Maps to the driver's SnapshotRoot.
+	// NVMe scratch disk. Maps to the driver's SnapshotRoot. Bases (the
+	// node-SHARED rootfs snapshots under SnapshotRoot/bases) always live here,
+	// even for a brick: the same base rootfs is never rebuilt per instance.
 	SnapshotRoot string
+	// WarmthRoot is the root for per-INSTANCE warmth: the regenerable snapshot
+	// state a fresh instance rebuilds rather than shares (sessions, serving,
+	// stateful bundles, group sets, per-thread bundles, checkpoints, group
+	// networks). Derived in Load, never read from env. For a BRICK (a sized
+	// instance, SizeClass and PodUID both set) it nests under
+	// SnapshotRoot/instances/<pod_uid> so two bricks co-located on one node never
+	// clobber each other's warmth; for the legacy DaemonSet (empty SizeClass) it
+	// equals SnapshotRoot, keeping the flat pre-brick layout byte-for-byte so the
+	// DS pod repaths nothing. Bases stay on SnapshotRoot; VolumeRoot (durable
+	// data) and RegistryCachePath are instance-agnostic and unchanged. The driver
+	// falls back to SnapshotRoot when this is empty, so a Config built directly
+	// (tests) without deriving it keeps the flat layout.
+	WarmthRoot string
 	// BinPath is the firecracker binary (baked into the image at /opt/fc).
 	BinPath string
 	// KernelImagePath is the guest kernel (baked at /opt/fc), shared by every VM.
@@ -366,6 +381,20 @@ func Load() (Config, error) {
 		// and must stay outside any bundle-GC policy scoped to SnapshotRoot's
 		// bases/sessions/serving/stateful subtree.
 		c.VolumeRoot = filepath.Join(filepath.Dir(c.SnapshotRoot), filepath.Base(c.SnapshotRoot)+"-volumes")
+	}
+
+	// Per-instance warmth root (brick-capacity). A brick (SizeClass + PodUID both
+	// set) nests warmth under SnapshotRoot/instances/<pod_uid>; every other case
+	// (the legacy DaemonSet with no SizeClass, or an out-of-cluster run with no
+	// PodUID) keeps warmth flat at SnapshotRoot, byte-for-byte the pre-brick
+	// layout. Only derived when SnapshotRoot is set (an unset root disables the
+	// driver entirely, so WarmthRoot stays empty too).
+	if c.SnapshotRoot != "" {
+		if c.SizeClass != "" && c.PodUID != "" {
+			c.WarmthRoot = filepath.Join(c.SnapshotRoot, "instances", c.PodUID)
+		} else {
+			c.WarmthRoot = c.SnapshotRoot
+		}
 	}
 
 	if err := parseDuration("EMBERVM_NODED_BOOT_READY_TIMEOUT", &c.BootReadyTimeout); err != nil {

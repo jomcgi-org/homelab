@@ -2037,17 +2037,23 @@ func (s *Server) snapshotDiskUsage() (freeBytes, usedBytes uint64) {
 }
 
 // snapshotSessionsDir is the directory holding banked session bundles. It prefers
-// the session driver's own SessionsDir (the single source of truth for the path);
-// when no session driver is wired (task-only tests) it derives it from the config
-// snapshot root, and returns "" if neither is available.
+// the session driver's own SessionsDir (the single source of truth for the path,
+// which resolves under the per-instance warmth root); when no session driver is
+// wired (task-only tests) it derives it from the config warmth root (WarmthRoot
+// when set, else SnapshotRoot, mirroring driver.warmthRoot), and returns "" if
+// neither is available.
 func (s *Server) snapshotSessionsDir() string {
 	if s.sessionDriver != nil {
 		return s.sessionDriver.SessionsDir()
 	}
-	if s.cfg.SnapshotRoot == "" {
+	warmth := s.cfg.WarmthRoot
+	if warmth == "" {
+		warmth = s.cfg.SnapshotRoot
+	}
+	if warmth == "" {
 		return ""
 	}
-	return filepath.Join(s.cfg.SnapshotRoot, "sessions")
+	return filepath.Join(warmth, "sessions")
 }
 
 // ---- startup base reconciliation -------------------------------------------

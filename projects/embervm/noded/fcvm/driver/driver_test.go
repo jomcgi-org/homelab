@@ -1184,3 +1184,54 @@ func TestDriverGCStatefulCheckpointsAndReuse(t *testing.T) {
 		t.Fatalf("reuse commit produced an invalid bundle: %+v", ref)
 	}
 }
+
+// TestWarmthRootLayout proves the per-instance warmth split (brick-capacity
+// PR-2.5): a brick (WarmthRoot derived to SnapshotRoot/instances/<pod_uid>) nests
+// every WARMTH dir under WarmthRoot while bases stay node-shared on SnapshotRoot;
+// a Config with no WarmthRoot (the legacy DaemonSet, and every existing test)
+// falls back to SnapshotRoot so the flat pre-brick layout is byte-for-byte
+// unchanged.
+func TestWarmthRootLayout(t *testing.T) {
+	const root = "/scratch/embervm-noded/snapshots"
+
+	brick := New(Config{SnapshotRoot: root, WarmthRoot: root + "/instances/pod-x"}, &fakeLauncher{}, nil)
+	warmth := root + "/instances/pod-x"
+	brickWant := map[string]string{
+		"sessions":             warmth + "/sessions",
+		"serving":              warmth + "/serving",
+		"stateful":             warmth + "/stateful",
+		"group":                warmth + "/group",
+		"stateful-checkpoints": warmth + "/stateful-checkpoints",
+		"group_networks":       warmth + "/group_networks",
+	}
+	got := map[string]string{
+		"sessions":             brick.SessionsDir(),
+		"serving":              brick.ServingDir(),
+		"stateful":             brick.StatefulDir(),
+		"group":                brick.GroupSetsDir(),
+		"stateful-checkpoints": brick.CheckpointsDir(),
+		"group_networks":       brick.GroupNetworksDir(),
+	}
+	for k, want := range brickWant {
+		if got[k] != want {
+			t.Errorf("brick %s dir = %q, want %q", k, got[k], want)
+		}
+	}
+	// A per-thread bundle also nests under the warmth root.
+	if d := brick.threadDir("thread-1"); d != warmth+"/thread-1" {
+		t.Errorf("brick threadDir = %q, want %q", d, warmth+"/thread-1")
+	}
+	// Bases stay NODE-SHARED on SnapshotRoot, never under the instance warmth root.
+	if b := brick.baseDir("base-key"); b != root+"/bases/base-key" {
+		t.Errorf("brick baseDir = %q, want %q (bases must not move per-instance)", b, root+"/bases/base-key")
+	}
+
+	// No WarmthRoot: warmthRoot() falls back to SnapshotRoot (flat, pre-brick).
+	ds := New(Config{SnapshotRoot: root}, &fakeLauncher{}, nil)
+	if d := ds.SessionsDir(); d != root+"/sessions" {
+		t.Errorf("DS SessionsDir = %q, want flat %q", d, root+"/sessions")
+	}
+	if d := ds.StatefulDir(); d != root+"/stateful" {
+		t.Errorf("DS StatefulDir = %q, want flat %q", d, root+"/stateful")
+	}
+}

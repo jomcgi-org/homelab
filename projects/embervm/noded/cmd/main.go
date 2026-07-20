@@ -341,6 +341,7 @@ func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 		VCPUs:             x.vcpus,
 		MemMib:            x.memMib,
 		SnapshotRoot:      cfg.SnapshotRoot,
+		WarmthRoot:        cfg.WarmthRoot,
 		Node:              cfg.Node,
 		Arch:              cfg.Arch,
 		Vendor:            cfg.CpuVendor,
