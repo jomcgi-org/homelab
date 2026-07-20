@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,69 @@ import (
 // without threading a new knob through every other Config consumer; mirrors
 // how parseMemHeadroomMib already isolates the parsing logic for injection.
 var budgetFsRoot = "/sys/fs/cgroup"
+
+// selfCgroupPath is the path the reader parses to discover the daemon's OWN
+// cgroup v2 directory (the "0::<path>" line of /proc/self/cgroup). A package
+// var so tests can point it at a fixture file, mirroring budgetFsRoot.
+//
+// Why this exists: the noded container runs privileged (chart _noded-pod.tpl),
+// so on containerd it inherits the HOST cgroup namespace. There, plain
+// budgetFsRoot ("/sys/fs/cgroup") is the host ROOT cgroup, which has no
+// memory.max at all, so every capacity read returned 0 ("unknown"). The pod's
+// real leaf cgroup (e.g. .../cri-containerd-<id>.scope) does carry memory.max,
+// and /proc/self/cgroup names it. Under a PRIVATE cgroup namespace the line is
+// "0::/" and budgetFsRoot already IS the pod's cgroup, so resolution falls
+// back to budgetFsRoot and behaves exactly as before.
+var selfCgroupPath = "/proc/self/cgroup"
+
+// cgroupDir resolves the directory whose cgroup v2 controller files (memory.max,
+// cpu.max, ...) describe THIS daemon's cgroup. It parses selfCgroupPath for the
+// "0::<path>" entry and joins <path> under budgetFsRoot. It degrades gracefully:
+//   - a "0::/" self-path (private cgroupns) or an unreadable/absent
+//     /proc/self/cgroup falls back to budgetFsRoot;
+//   - a joined dir that lacks memory.max (e.g. the host-root join does not
+//     exist, or a fixture wrote files at budgetFsRoot itself) also falls back
+//     to budgetFsRoot.
+//
+// The result is correct under BOTH host and private cgroup namespaces without a
+// namespace probe: the join is only preferred when it actually carries the
+// controller files.
+func cgroupDir() string {
+	rel := parseSelfCgroupV2Path(readSelfCgroup())
+	if rel == "" || rel == "/" {
+		return budgetFsRoot
+	}
+	joined := filepath.Join(budgetFsRoot, rel)
+	if _, err := os.Stat(filepath.Join(joined, "memory.max")); err != nil {
+		// The self-path does not resolve to a cgroup dir with controller files
+		// under this root; fall back rather than read nothing.
+		return budgetFsRoot
+	}
+	return joined
+}
+
+// readSelfCgroup returns the contents of selfCgroupPath, or "" on error (which
+// cgroupDir treats as the budgetFsRoot fallback).
+func readSelfCgroup() string {
+	raw, err := os.ReadFile(selfCgroupPath)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// parseSelfCgroupV2Path extracts the <path> from the cgroup v2 "0::<path>" line
+// of /proc/self/cgroup contents. Returns "" when no such line exists (a pure
+// cgroup v1 host, which this daemon does not target). The leading "0::" marks
+// the unified (v2) hierarchy; its path is relative to the cgroup v2 mount.
+func parseSelfCgroupV2Path(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		if rest, ok := strings.CutPrefix(line, "0::"); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
+}
 
 // budget is the daemon's self-reported resource ceiling and real headroom,
 // read from its own cgroup v2 controller files rather than static config
@@ -45,6 +109,12 @@ type budget struct {
 	// can pin the sample instant and assert an exact usage-rate delta instead
 	// of racing sub-microsecond wall-clock jitter between two time.Now calls.
 	now func() time.Time
+
+	// memBudgetOverride, when set, replaces MemBudgetMib as the source
+	// SlotCeiling divides. Test-only seam so the ceiling arithmetic can be
+	// asserted against fixed budgets without a fixture cgroup filesystem; nil
+	// in production, where SlotCeiling reads the real budget.
+	memBudgetOverride func() uint64
 }
 
 // newBudget constructs a reader with the given daemon-RSS reserve.
@@ -55,7 +125,8 @@ func newBudget(reserveMib uint64) *budget {
 // MemBudgetMib returns memory.max minus the reserve, in MiB. Unlimited or
 // unreadable cgroups report 0 (unknown).
 func (b *budget) MemBudgetMib() uint64 {
-	maxRaw, err := os.ReadFile(budgetFsRoot + "/memory.max")
+	dir := cgroupDir()
+	maxRaw, err := os.ReadFile(filepath.Join(dir, "memory.max"))
 	if err != nil {
 		return 0
 	}
@@ -66,11 +137,12 @@ func (b *budget) MemBudgetMib() uint64 {
 // semantics to the retired readMemHeadroomMib, folded in here so the daemon
 // has one cgroup reader instead of two.
 func (b *budget) MemHeadroomMib() uint64 {
-	maxRaw, err := os.ReadFile(budgetFsRoot + "/memory.max")
+	dir := cgroupDir()
+	maxRaw, err := os.ReadFile(filepath.Join(dir, "memory.max"))
 	if err != nil {
 		return 0
 	}
-	curRaw, err := os.ReadFile(budgetFsRoot + "/memory.current")
+	curRaw, err := os.ReadFile(filepath.Join(dir, "memory.current"))
 	if err != nil {
 		return 0
 	}
@@ -81,11 +153,51 @@ func (b *budget) MemHeadroomMib() uint64 {
 // expressed as millicores. Unlimited ("max" quota) or unreadable cgroups
 // report 0 (unknown).
 func (b *budget) CpuBudgetMillicores() uint64 {
-	raw, err := os.ReadFile(budgetFsRoot + "/cpu.max")
+	raw, err := os.ReadFile(filepath.Join(cgroupDir(), "cpu.max"))
 	if err != nil {
 		return 0
 	}
 	return parseCpuBudgetMillicores(string(raw))
+}
+
+// minSlotWorkloadMib is the smallest guest footprint a live-VM slot is assumed
+// to hold, used only to turn the memory budget into a slot ceiling. It is a
+// floor for the divisor, not a real per-workload size (workloads are sized from
+// the registry): dividing the budget by it yields the MOST slots a brick could
+// ever host, which is the honest ceiling maxLiveVMs must not exceed. Set to a
+// conservative small-guest size so the ceiling errs high (the configured
+// MaxLiveVMs backstop and real per-VM Claim accounting are the tighter caps);
+// 512 MiB keeps a 2gi/512-reserve brick at 3 slots rather than the configured
+// default of 8/16.
+const minSlotWorkloadMib = 512
+
+// SlotCeiling returns the brick's cgroup-derived live-VM slot ceiling per ADR
+// embervm/013 section 7 ("maxLiveVMs is the brick's cgroup-derived slot
+// ceiling, never a control-plane knob"): floor(MemBudgetMib /
+// minSlotWorkloadMib), clamped so it never EXCEEDS the configured backstop
+// (configured stays an upper bound). When the budget is unknown (0, an
+// unlimited or unreadable cgroup) the ceiling is unknown too, so the configured
+// backstop is used unchanged: an environment that cannot observe its cgroup
+// keeps exactly the pre-budget behavior rather than collapsing to zero slots.
+func (b *budget) SlotCeiling(configured uint64) uint64 {
+	budgetMib := b.MemBudgetMib()
+	if b.memBudgetOverride != nil {
+		budgetMib = b.memBudgetOverride()
+	}
+	if budgetMib == 0 {
+		return configured
+	}
+	derived := budgetMib / minSlotWorkloadMib
+	if derived == 0 {
+		// A budget smaller than one slot still hosts at least one VM (the
+		// backstop and Claim accounting gate the real limit); never advertise
+		// a zero ceiling that would wedge a small brick out of all placement.
+		derived = 1
+	}
+	if configured > 0 && derived > configured {
+		return configured
+	}
+	return derived
 }
 
 // CpuHeadroomMillicores returns the last computed CPU headroom: budget minus
@@ -103,13 +215,14 @@ func (b *budget) CpuHeadroomMillicores() uint64 {
 // observed without a daemon restart. Mem fields are cheap best-effort reads
 // and are NOT cached; only the CPU side needs a two-sample delta.
 func (b *budget) Refresh() {
-	cpuMaxRaw, err := os.ReadFile(budgetFsRoot + "/cpu.max")
+	dir := cgroupDir()
+	cpuMaxRaw, err := os.ReadFile(filepath.Join(dir, "cpu.max"))
 	if err != nil {
 		return
 	}
 	budgetMilli := parseCpuBudgetMillicores(string(cpuMaxRaw))
 
-	statRaw, err := os.ReadFile(budgetFsRoot + "/cpu.stat")
+	statRaw, err := os.ReadFile(filepath.Join(dir, "cpu.stat"))
 	if err != nil {
 		return
 	}

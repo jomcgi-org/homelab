@@ -327,7 +327,8 @@ func newTestServer(t *testing.T, drv *fakeDriver, tr *fakeTransport, maxLive int
 		Transport: tr,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 } // deterministic, no cgroup read
+	s.memHeadroom = func() uint64 { return 0 }                           // deterministic, no cgroup read
+	s.slotCeiling = func(configured uint64) uint64 { return configured } // report configured max, no host cgroup read
 
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()
@@ -372,6 +373,7 @@ func newSessionTestServer(t *testing.T, drv *fakeDriver, tr *fakeTransport, maxL
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	s.memHeadroom = func() uint64 { return 0 }
+	s.slotCeiling = func(configured uint64) uint64 { return configured }
 
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()

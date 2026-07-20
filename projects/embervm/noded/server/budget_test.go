@@ -167,6 +167,154 @@ func TestParseCpuUsageUsec(t *testing.T) {
 	}
 }
 
+// withSelfCgroup points selfCgroupPath at a fixture /proc/self/cgroup file for
+// the duration of the test.
+func withSelfCgroup(t *testing.T, content string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "self-cgroup")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write self-cgroup fixture: %v", err)
+	}
+	orig := selfCgroupPath
+	selfCgroupPath = path
+	t.Cleanup(func() { selfCgroupPath = orig })
+}
+
+func TestParseSelfCgroupV2Path(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		// Host cgroup namespace: the pod's leaf scope under kubepods.
+		{"0::/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podabc.slice/cri-containerd-def.scope\n", "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podabc.slice/cri-containerd-def.scope"},
+		// Private cgroup namespace: root path, resolution falls back to budgetFsRoot.
+		{"0::/\n", "/"},
+		// Legacy v1 lines present but no v2 unified line.
+		{"12:memory:/kubepods\n11:cpu:/kubepods\n", ""},
+		// v2 line among v1 lines.
+		{"1:name=systemd:/foo\n0::/leaf.scope\n", "/leaf.scope"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := parseSelfCgroupV2Path(c.raw); got != c.want {
+			t.Errorf("parseSelfCgroupV2Path(%q) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+}
+
+// TestCgroupDirResolvesHostNsPath proves the host-cgroupns case: /proc/self/cgroup
+// names a leaf scope under budgetFsRoot, and cgroupDir resolves the reader to
+// that leaf (where memory.max actually lives), NOT the controller-file-less
+// root the privileged container's plain /sys/fs/cgroup points at.
+func TestCgroupDirResolvesHostNsPath(t *testing.T) {
+	root := t.TempDir()
+	orig := budgetFsRoot
+	budgetFsRoot = root
+	t.Cleanup(func() { budgetFsRoot = orig })
+
+	// The host root has NO memory.max (the real bug), the pod leaf does.
+	leaf := filepath.Join(root, "kubepods.slice", "cri-containerd-abc.scope")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatalf("mkdir leaf: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "memory.max"), []byte("2147483648\n"), 0o644); err != nil {
+		t.Fatalf("write leaf memory.max: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "memory.current"), []byte("536870912\n"), 0o644); err != nil {
+		t.Fatalf("write leaf memory.current: %v", err)
+	}
+	withSelfCgroup(t, "0::/kubepods.slice/cri-containerd-abc.scope\n")
+
+	if got, want := cgroupDir(), leaf; got != want {
+		t.Fatalf("cgroupDir() = %q, want leaf %q", got, want)
+	}
+
+	b := newBudget(512)
+	// 2 GiB - 512 MiB reserve = 1536, the exact 2gi-brick expectation.
+	if got, want := b.MemBudgetMib(), uint64(2048-512); got != want {
+		t.Errorf("MemBudgetMib() host-ns = %d, want %d", got, want)
+	}
+	if got, want := b.MemHeadroomMib(), uint64(2048-512); got != want {
+		t.Errorf("MemHeadroomMib() host-ns = %d, want %d", got, want)
+	}
+}
+
+// TestCgroupDirFallsBackOnRootSelfPath proves the private-cgroupns case: a
+// "0::/" self-path means budgetFsRoot IS already the pod's cgroup, so cgroupDir
+// returns budgetFsRoot unchanged and the reader behaves exactly as before the
+// resolution was added.
+func TestCgroupDirFallsBackOnRootSelfPath(t *testing.T) {
+	root := t.TempDir()
+	orig := budgetFsRoot
+	budgetFsRoot = root
+	t.Cleanup(func() { budgetFsRoot = orig })
+	if err := os.WriteFile(filepath.Join(root, "memory.max"), []byte("4294967296\n"), 0o644); err != nil {
+		t.Fatalf("write root memory.max: %v", err)
+	}
+	withSelfCgroup(t, "0::/\n")
+
+	if got, want := cgroupDir(), root; got != want {
+		t.Fatalf("cgroupDir() on 0::/ = %q, want budgetFsRoot %q", got, want)
+	}
+	b := newBudget(512)
+	if got, want := b.MemBudgetMib(), uint64(4096-512); got != want {
+		t.Errorf("MemBudgetMib() private-ns fallback = %d, want %d", got, want)
+	}
+}
+
+// TestCgroupDirFallsBackWhenJoinedDirLacksControllers proves the graceful-
+// degradation path: a host-ns self-path whose joined dir does NOT exist (or has
+// no memory.max) under this root falls back to budgetFsRoot rather than reading
+// nothing. This is also why the pre-existing budget_test fixtures (files written
+// at budgetFsRoot itself) keep working with an unset selfCgroupPath.
+func TestCgroupDirFallsBackWhenJoinedDirLacksControllers(t *testing.T) {
+	root := t.TempDir()
+	orig := budgetFsRoot
+	budgetFsRoot = root
+	t.Cleanup(func() { budgetFsRoot = orig })
+	if err := os.WriteFile(filepath.Join(root, "memory.max"), []byte("4294967296\n"), 0o644); err != nil {
+		t.Fatalf("write root memory.max: %v", err)
+	}
+	// Self-path names a leaf that does not exist under root.
+	withSelfCgroup(t, "0::/kubepods.slice/nonexistent.scope\n")
+
+	if got, want := cgroupDir(), root; got != want {
+		t.Fatalf("cgroupDir() with missing leaf = %q, want fallback %q", got, want)
+	}
+}
+
+func TestSlotCeiling(t *testing.T) {
+	cases := []struct {
+		name       string
+		budgetMib  uint64
+		configured uint64
+		want       uint64
+	}{
+		// 2gi brick, 512 reserve -> 1536 budget -> floor(1536/512)=3 slots,
+		// clamped under the configured default of 8 (the whole point: not 8/16).
+		{"2gi-brick", 1536, 8, 3},
+		// 4gi brick -> 3584 budget -> 7 slots, still under configured 8.
+		{"4gi-brick", 3584, 8, 7},
+		// 16gi brick -> derived exceeds configured 8, so configured clamps it.
+		{"large-brick-clamped", 15872, 8, 8},
+		// Unknown budget (unlimited/unreadable cgroup) -> configured unchanged.
+		{"unknown-budget", 0, 8, 8},
+		// Budget smaller than one slot still reports at least 1.
+		{"sub-slot-budget", 256, 8, 1},
+		// Configured 0 (unbounded backstop) -> report the derived ceiling.
+		{"unbounded-config", 1536, 0, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := newBudget(0)
+			b.memBudgetOverride = func() uint64 { return c.budgetMib }
+			if got := b.SlotCeiling(c.configured); got != c.want {
+				t.Errorf("SlotCeiling(%d) with budget %d = %d, want %d", c.configured, c.budgetMib, got, c.want)
+			}
+		})
+	}
+}
+
 func TestParseMemBudgetMib(t *testing.T) {
 	cases := []struct {
 		maxRaw     string
