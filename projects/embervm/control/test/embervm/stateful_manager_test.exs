@@ -1140,14 +1140,15 @@ defmodule Embervm.StatefulManagerTest do
   # -- restore-on-miss (R6, Task 8) -------------------------------------------
 
   # Records every RestoreArtifact call the manager issues, returning a successful
-  # response. `kind`/`ref`/`workload` are pulled off the ArtifactRef so a test can
-  # assert exactly what was restored.
+  # response. `kind`/`ref`/`workload` are pulled off the ArtifactRef; `vendor` is
+  # pulled off the REQUEST (that is where noded reads it, req.GetVendor()), so a test
+  # can assert exactly what was restored and with which vendor.
   defp recording_restore_fun do
     {:ok, calls} = Agent.start_link(fn -> [] end)
 
     fun = fn _ch, req ->
       art = req.artifact
-      Agent.update(calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload, vendor: art.vendor} | &1])
+      Agent.update(calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload, vendor: req.vendor} | &1])
       {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 4096, skipped: false, generation: 3}}
     end
 
@@ -1180,8 +1181,9 @@ defmodule Embervm.StatefulManagerTest do
     assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
 
     # RestoreArtifact was called for the STATEFUL bundle, before the relight landed.
-    # Bug B: STATEFUL is vendor-bound, so the ref carries the anchor node's cpu_vendor
-    # ("amd"), which noded needs to compose the vendor-keyed store prefix.
+    # Bug B: STATEFUL is vendor-bound, so the REQUEST carries the anchor node's
+    # cpu_vendor ("amd"), which noded reads (req.GetVendor()) to compose the
+    # vendor-keyed store prefix.
     assert [%{kind: :ARTIFACT_KIND_STATEFUL, ref: "stateful/stf-banked", workload: "wl-a", vendor: "amd"}] =
              Agent.get(restore_calls, & &1)
 
@@ -1222,7 +1224,7 @@ defmodule Embervm.StatefulManagerTest do
 
     assert {:ok, %{ip: "10.88.0.7", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
 
-    # Bug B: VOLUME is vendor-portable, so its restore ref leaves vendor EMPTY even
+    # Bug B: VOLUME is vendor-portable, so its restore request leaves vendor EMPTY even
     # though the anchor node reports "amd" (noded keys volumes without a vendor segment).
     assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "wl-a", workload: "wl-a", vendor: ""}] = Agent.get(restore_calls, & &1)
 
