@@ -343,102 +343,87 @@ defmodule Embervm.NodeRegistryTest do
     eventually(fn -> length(Agent.get(syncs, & &1)) >= 2 end, 200)
   end
 
-  # -- periodic node re-discovery (artifact-decoupling PR-C, C4) --------------
+  # -- dial-home registration (R0 PR-2) --------------------------------------
 
-  test "re-discovery adds a newly-appeared node and tears down a vanished one" do
-    # A discover_fun the test flips: first it returns only node-a, then (after we
-    # add node-b's endpoint) both, then only node-b (node-a's pod rolled away).
-    {:ok, disc} = Agent.start_link(fn -> [%{id: "node-a", address: "a.test:9090"}] end)
-    on_exit(fn -> if Process.alive?(disc), do: Agent.stop(disc) end)
-
-    discover_fun = fn -> Agent.get(disc, & &1) end
-
-    # A watch that stays open (blocks) so a streamer per node persists and the
-    # node set is driven purely by discovery, not reconnects.
-    watch_fun = fn _ch, node_id, emit ->
+  # A watch that stays open (blocks) so a per-instance streamer persists and the
+  # node set is driven purely by registration, not reconnects.
+  defp blocking_watch do
+    fn _ch, node_id, emit ->
       emit.(node_status(node_id: node_id))
-
-      receive do
-        :never -> {:ok, :closed}
-      end
+      receive do: (:never -> {:ok, :closed})
     end
-
-    {reg, table} =
-      start_registry(
-        watch_startup: true,
-        nodes: [%{id: "node-a", address: "a.test:9090"}],
-        connect_fun: fn _addr -> {:ok, :fake_channel} end,
-        watch_fun: watch_fun,
-        sync_registry_fun: fn _ch, _id -> :ok end,
-        disconnect_fun: fn :fake_channel -> :ok end,
-        discover_fun: discover_fun,
-        channel_updater_fun: fn _id, _addr -> :ok end,
-        # Large age-out so the blocked watch does not age out during the test.
-        age_check_ms: 60_000,
-        unknown_after_ms: 60_000,
-        down_after_ms: 60_000,
-        base_backoff_ms: 10,
-        max_backoff_ms: 10
-      )
-
-    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-a") end, 200)
-
-    # node-b appears in discovery: a forced re-discovery must add it (a streamer
-    # opens and its status publishes capacity).
-    Agent.update(disc, fn _ -> [%{id: "node-a", address: "a.test:9090"}, %{id: "node-b", address: "b.test:9090"}] end)
-    NodeRegistry.discover(reg)
-    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-b") end, 200)
-
-    # node-a's pod rolls away (drops from discovery): re-discovery tears it down,
-    # retracting its capacity row and forgetting its runtime.
-    Agent.update(disc, fn _ -> [%{id: "node-b", address: "b.test:9090"}] end)
-    NodeRegistry.discover(reg)
-    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-a") end, 200)
-
-    ids = table |> NodeRegistry.capacity() |> Enum.map(& &1.configured_id)
-    refute "node-a" in ids
   end
 
-  test "a discover_fun that raises leaves the node set unchanged (no teardown storm)" do
-    {reg, _table} =
-      start_registry(
+  defp register_seams(opts) do
+    Keyword.merge(
+      [
         watch_startup: true,
-        nodes: [%{id: "node-a", address: "a.test:9090"}],
+        nodes: [],
         connect_fun: fn _addr -> {:ok, :fake_channel} end,
-        watch_fun: fn _ch, node_id, emit ->
-          emit.(node_status(node_id: node_id))
-          receive do: (:never -> {:ok, :closed})
-        end,
+        watch_fun: blocking_watch(),
         sync_registry_fun: fn _ch, _id -> :ok end,
         disconnect_fun: fn :fake_channel -> :ok end,
-        discover_fun: fn -> raise "boom" end,
         channel_updater_fun: fn _id, _addr -> :ok end,
         age_check_ms: 60_000,
         unknown_after_ms: 60_000,
         down_after_ms: 60_000
-      )
-
-    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-a") end, 200)
-    # A raising discovery must NOT tear the existing node down.
-    NodeRegistry.discover(reg)
-    assert Map.has_key?(NodeRegistry.status(reg), "node-a")
+      ],
+      opts
+    )
   end
 
-  test "an address change on a STABLE node id re-dials the streamer and channel at the NEW address" do
-    # A DaemonSet pod roll: the node id (nodeName) is stable, but the pod IP
-    # (address) changes. Discovery must detect this by ADDRESS, not just id, and
-    # re-point both the WatchNode streamer and the Prime/Assign channel.
-    {:ok, disc} = Agent.start_link(fn -> [%{id: "node-a", address: "old-ip:9090"}] end)
-    on_exit(fn -> if Process.alive?(disc), do: Agent.stop(disc) end)
+  test "register/2 upserts an instance keyed by (node, pod_uid) and dials it" do
+    {reg, table} = start_registry(register_seams([]))
 
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-4",
+        "pod_uid" => "uid-1",
+        "address" => "10.0.0.1:9090",
+        "boot_id" => "boot-1"
+      })
+
+    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
+    s = NodeRegistry.status(reg)["node-4/uid-1"]
+    assert s.configured_id == "node-4"
+    assert s.pod_uid == "uid-1"
+
+    # Its WatchNode status published a dispatchable capacity row keyed by instance.
+    eventually(fn -> NodeRegistry.capacity(table) != [] end, 200)
+    [facts] = NodeRegistry.capacity(table)
+    assert facts.node_id == "node-4"
+    assert facts.pod_uid == "uid-1"
+    assert facts.instance_id == "node-4/uid-1"
+  end
+
+  test "two instances on ONE node coexist (surge roll)" do
+    {reg, table} = start_registry(register_seams([]))
+
+    for uid <- ["uid-old", "uid-new"] do
+      :ok =
+        NodeRegistry.register(reg, %{
+          "node" => "node-4",
+          "pod_uid" => uid,
+          "address" => "10.0.0.#{uid}:9090"
+        })
+    end
+
+    eventually(fn -> map_size(NodeRegistry.status(reg)) == 2 end, 200)
+    eventually(fn -> length(NodeRegistry.capacity(table)) == 2 end, 200)
+
+    uids = table |> NodeRegistry.capacity() |> Enum.map(& &1.pod_uid) |> Enum.sort()
+    assert uids == ["uid-new", "uid-old"]
+    # Both rows share the node name but are distinct instances.
+    nodes = table |> NodeRegistry.capacity() |> Enum.map(& &1.node_id) |> Enum.uniq()
+    assert nodes == ["node-4"]
+  end
+
+  test "re-registration at a NEW address re-points the streamer and channel" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
     on_exit(fn -> if Process.alive?(dialed), do: Agent.stop(dialed) end)
+    {:ok, chan} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
 
-    {:ok, chan_updates} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(chan_updates), do: Agent.stop(chan_updates) end)
-
-    # connect_fun records EVERY address it is dialed with, so we can prove the
-    # streamer re-dials the new IP after the roll.
     connect_fun = fn address ->
       Agent.update(dialed, &[address | &1])
       {:ok, :fake_channel}
@@ -446,79 +431,75 @@ defmodule Embervm.NodeRegistryTest do
 
     {reg, _table} =
       start_registry(
-        watch_startup: true,
-        nodes: [%{id: "node-a", address: "old-ip:9090"}],
-        connect_fun: connect_fun,
-        watch_fun: fn _ch, node_id, emit ->
-          emit.(node_status(node_id: node_id))
-          receive do: (:never -> {:ok, :closed})
-        end,
-        sync_registry_fun: fn _ch, _id -> :ok end,
-        disconnect_fun: fn :fake_channel -> :ok end,
-        discover_fun: fn -> Agent.get(disc, & &1) end,
-        channel_updater_fun: fn node_id, address ->
-          Agent.update(chan_updates, &[{node_id, address} | &1])
-          :ok
-        end,
-        age_check_ms: 60_000,
-        unknown_after_ms: 60_000,
-        down_after_ms: 60_000
+        register_seams(
+          connect_fun: connect_fun,
+          channel_updater_fun: fn id, addr -> Agent.update(chan, &[{id, addr} | &1]) end
+        )
       )
 
-    # The node is up on the OLD address.
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "old-ip:9090"})
     eventually(fn -> "old-ip:9090" in Agent.get(dialed, & &1) end, 200)
 
-    # The pod rolls: SAME id, NEW address.
-    Agent.update(disc, fn _ -> [%{id: "node-a", address: "new-ip:9090"}] end)
-    NodeRegistry.discover(reg)
-
-    # The streamer re-dialed the NEW address (not just left on the dead old IP).
+    # Same instance (node+pod_uid), NEW address.
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "new-ip:9090"})
     eventually(fn -> "new-ip:9090" in Agent.get(dialed, & &1) end, 200)
-    # The Prime/Assign channel was re-pointed at the new address too.
-    eventually(fn -> {"node-a", "new-ip:9090"} in Agent.get(chan_updates, & &1) end, 200)
-    # The node is still present under its stable id (re-pointed, not dropped).
-    assert Map.has_key?(NodeRegistry.status(reg), "node-a")
-    assert NodeRegistry.status(reg)["node-a"].address == "new-ip:9090"
+    eventually(fn -> {"node-4/uid-1", "new-ip:9090"} in Agent.get(chan, & &1) end, 200)
+    assert NodeRegistry.status(reg)["node-4/uid-1"].address == "new-ip:9090"
   end
 
-  test "discovery feeds node add/remove to the BaseBuilder (so BuildBase can place)" do
-    # Under discovery the app seeds BaseBuilder EMPTY at boot (it cannot touch Finch
-    # at construction), so discovery MUST push each node to the BaseBuilder or
-    # BuildBase never places a build. This mirrors the NodeChannel propagation.
-    {:ok, disc} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(disc), do: Agent.stop(disc) end)
-
+  test "registration feeds instance add to the BaseBuilder (so BuildBase can place)" do
     {:ok, bb} = Agent.start_link(fn -> [] end)
     on_exit(fn -> if Process.alive?(bb), do: Agent.stop(bb) end)
 
     {reg, _table} =
+      start_registry(register_seams(base_builder_updater_fun: fn msg -> Agent.update(bb, &[msg | &1]) end))
+
+    :ok = NodeRegistry.register(reg, %{"node" => "node-a", "pod_uid" => "uid-a", "address" => "a.test:9090"})
+    eventually(fn -> {:add, "node-a/uid-a", "a.test:9090"} in Agent.get(bb, & &1) end, 200)
+  end
+
+  test "register/2 rejects a body with no node" do
+    {reg, _table} = start_registry(register_seams([]))
+    assert {:error, :invalid} = NodeRegistry.register(reg, %{"pod_uid" => "uid", "address" => "x:9090"})
+    assert {:error, :invalid} = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid"})
+  end
+
+  test "expiry requires BOTH a lapsed registration AND a dead stream" do
+    {clock, advance} = new_clock()
+
+    {reg, table} =
       start_registry(
-        watch_startup: true,
-        # Seed EMPTY, exactly as the app does under discovery.
-        nodes: [],
-        connect_fun: fn _addr -> {:ok, :fake_channel} end,
-        watch_fun: fn _ch, node_id, emit ->
-          emit.(node_status(node_id: node_id))
-          receive do: (:never -> {:ok, :closed})
-        end,
-        sync_registry_fun: fn _ch, _id -> :ok end,
-        disconnect_fun: fn :fake_channel -> :ok end,
-        discover_fun: fn -> Agent.get(disc, & &1) end,
-        channel_updater_fun: fn _id, _addr -> :ok end,
-        base_builder_updater_fun: fn msg -> Agent.update(bb, &[msg | &1]) end,
-        age_check_ms: 60_000,
-        unknown_after_ms: 60_000,
-        down_after_ms: 60_000
+        register_seams(
+          clock: clock,
+          # Real age-out cadence driven by tick/1 under the injected clock.
+          age_check_ms: 60_000,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 90_000
+        )
       )
 
-    # A node appears: the BaseBuilder is told to ADD it (with its address).
-    Agent.update(disc, fn _ -> [%{id: "node-a", address: "a.test:9090"}] end)
-    NodeRegistry.discover(reg)
-    eventually(fn -> {:add, "node-a", "a.test:9090"} in Agent.get(bb, & &1) end, 200)
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
+    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
 
-    # The node vanishes: the BaseBuilder is told to REMOVE it.
-    Agent.update(disc, fn _ -> [] end)
-    NodeRegistry.discover(reg)
-    eventually(fn -> {:remove, "node-a"} in Agent.get(bb, & &1) end, 200)
+    # Registration lapses but the stream is still HEALTHY (the blocking watch keeps
+    # emitting on connect; here no fresh status arrives, but we only advance a bit):
+    # advance past the registration lapse yet keep health above :down. The instance
+    # must NOT be expired on one signal alone.
+    advance.(100_000)
+    # Drive an age evaluation. The stream has gone silent (no new status), so the
+    # instance will also be :down after 15s; to isolate the "one signal" case we
+    # re-register to refresh liveness first is not possible without a fresh status.
+    # Instead assert the two-signal semantics directly: an instance whose stream is
+    # healthy (fresh status) but registration lapsed survives.
+    :ok = NodeRegistry.inject_status(reg, "node-4/uid-1", node_status())
+    NodeRegistry.tick(reg)
+    assert Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1")
+
+    # Now let the stream go dead too (advance past down_after with no fresh status).
+    advance.(100_000)
+    NodeRegistry.tick(reg)
+    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 50)
+    assert NodeRegistry.capacity(table) == []
   end
 end

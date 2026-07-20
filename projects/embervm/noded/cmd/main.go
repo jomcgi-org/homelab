@@ -257,6 +257,13 @@ func run(logger *slog.Logger) error {
 		errCh <- gs.Serve(lis)
 	}()
 
+	// Dial-home registration (R0 PR-2): now that the gRPC surface is up, advertise
+	// this instance's identity to the control plane so it adopts us without ever
+	// listing pods. Started AFTER Serve so the control plane never dials an address
+	// that is not yet listening; the loop stops re-advertising once draining and
+	// exits on ctx cancellation. A no-op when no control-plane URL is configured.
+	srv.RunRegisterLoop(ctx)
+
 	select {
 	case err := <-errCh:
 		return err

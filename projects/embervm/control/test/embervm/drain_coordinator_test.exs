@@ -57,6 +57,17 @@ defmodule Embervm.DrainCoordinatorTest do
     assert finished.serving == 4
   end
 
+  test "an instance-scoped drain (4-tuple) records the pod_uid on the ops", %{pid: pid} do
+    send(pid, {:node_draining, "node-4", "uid-old", 1_700_000_120_000})
+
+    assert_receive {:op, :node_drain_started, started}
+    assert started.node_id == "node-4"
+    assert started.pod_uid == "uid-old"
+
+    assert_receive {:op, :node_drain_finished, finished}
+    assert finished.pod_uid == "uid-old"
+  end
+
   test "a class whose drain raises is skipped, the others still drain", %{pid: _pid} do
     test = self()
 

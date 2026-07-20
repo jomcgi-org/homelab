@@ -70,14 +70,26 @@ defmodule Embervm.DrainCoordinator do
   end
 
   @impl true
+  # NodeRegistry sends the drain edge scoped to the INSTANCE (node + pod_uid, R0
+  # PR-2): a surge roll drains only the old pod. The sweepers key their live VMs by
+  # NODE (the daemon reports VMs per node, and today there is one instance per
+  # node), so force-bank is still dispatched per node; pod_uid is recorded on the
+  # op and span so an instance-scoped drain is auditable and a future
+  # instance-granular sweeper can consume it. The legacy 3-tuple (no pod_uid) is
+  # still accepted for a NodeRegistry that predates this change.
+  def handle_info({:node_draining, node_id, pod_uid, deadline_ms}, state) do
+    handle_drain(state, node_id, pod_uid, deadline_ms)
+    {:noreply, state}
+  end
+
   def handle_info({:node_draining, node_id, deadline_ms}, state) do
-    handle_drain(state, node_id, deadline_ms)
+    handle_drain(state, node_id, "", deadline_ms)
     {:noreply, state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp handle_drain(state, node_id, deadline_ms) do
+  defp handle_drain(state, node_id, pod_uid, deadline_ms) do
     # The `node_drain` ROOT span (Task 11): a timer-driven fan-out with no caller
     # trace, so a root, mirroring the forced_roll span shape. Bounds the whole
     # force-bank dispatch and carries the per-class banked counts as attributes so
@@ -87,16 +99,19 @@ defmodule Embervm.DrainCoordinator do
                      %{
                        attributes: %{
                          "ember.node_id" => node_id,
+                         "ember.pod_uid" => pod_uid,
                          "ember.drain_deadline_ms" => deadline_ms
                        }
                      } do
-      Logger.info("embervm drain: node draining, force-banking all classes",
+      Logger.info("embervm drain: instance draining, force-banking all classes",
         node_id: node_id,
+        pod_uid: pod_uid,
         deadline_ms: deadline_ms
       )
 
       append_op(state, :node_drain_started, %{
         node_id: node_id,
+        pod_uid: pod_uid,
         deadline_ms: deadline_ms,
         safety_margin_ms: state.safety_margin_ms
       })
@@ -122,9 +137,10 @@ defmodule Embervm.DrainCoordinator do
         "ember.serving_banked" => counts.serving
       })
 
-      Logger.info("embervm drain: force-bank dispatched", Keyword.new(Map.put(counts, :node_id, node_id)))
+      finished = counts |> Map.put(:node_id, node_id) |> Map.put(:pod_uid, pod_uid)
+      Logger.info("embervm drain: force-bank dispatched", Keyword.new(finished))
 
-      append_op(state, :node_drain_finished, Map.put(counts, :node_id, node_id))
+      append_op(state, :node_drain_finished, finished)
       :ok
     end
   end

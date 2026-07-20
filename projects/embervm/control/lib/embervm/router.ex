@@ -91,6 +91,16 @@ defmodule Embervm.Router do
     handle_nodes(conn)
   end
 
+  # POST /v1/nodes/register (NODE auth ONLY): the dial-home registration a noded
+  # instance POSTs on start and on a jittered interval, advertising its identity
+  # {node, pod_uid, address, boot_id} so the control plane adopts it without ever
+  # listing pods (ADR embervm/005, R0 PR-2). Authenticated in-handler against the
+  # noded ServiceAccount (NOT the task-submit allow-list), so a node can register
+  # without being able to submit tasks.
+  post "/v1/nodes/register" do
+    handle_node_register(conn)
+  end
+
   post "/v1/tasks/:id/redrive" do
     handle_redrive(conn, id)
   end
@@ -199,10 +209,20 @@ defmodule Embervm.Router do
   # `session_token_route?/1` names explicitly (a closed allow-list, not a prefix,
   # so a new management route is never accidentally opened).
   defp authenticate(%Plug.Conn{path_info: ["v1" | _]} = conn, _opts) do
-    if session_token_route?(conn), do: conn, else: do_authenticate(conn)
+    if in_handler_auth_route?(conn), do: conn, else: do_authenticate(conn)
   end
 
   defp authenticate(conn, _opts), do: conn
+
+  # Routes that authenticate IN-HANDLER rather than via the management-auth plug,
+  # because their bearer token is not a task-submit ServiceAccount token: the
+  # session-token routes (verified against Embervm.SessionStore) and the node
+  # dial-home registration (verified against the noded ServiceAccount, NOT the
+  # submit allow-list). Running management auth on them would 401 a valid token.
+  defp in_handler_auth_route?(conn), do: session_token_route?(conn) or node_register_route?(conn)
+
+  defp node_register_route?(%Plug.Conn{method: "POST", path_info: ["v1", "nodes", "register"]}), do: true
+  defp node_register_route?(_conn), do: false
 
   # The routes whose bearer token is a SESSION token (verified in-handler against
   # Embervm.SessionStore), NOT a management ServiceAccount token: POST
@@ -553,6 +573,89 @@ defmodule Embervm.Router do
     _ -> nil
   catch
     _, _ -> nil
+  end
+
+  # -- node dial-home registration (R0 PR-2) ---------------------------------
+
+  # POST /v1/nodes/register. Authenticates the caller as the noded ServiceAccount
+  # (a valid TokenReview whose username matches the configured noded SA), NOT via
+  # the task-submit allow-list, then upserts the instance in the NodeRegistry.
+  # Registration is advertisement, so a valid-but-malformed body is accepted as a
+  # benign no-op (200) rather than 400: the daemon keeps re-advertising and the
+  # WatchNode stream is the real liveness signal. A missing/invalid token is 401.
+  defp handle_node_register(conn) do
+    case authorize_node(conn) do
+      :ok ->
+        case read_capped_body(conn) do
+          {:ok, body, conn} ->
+            reg = decode_registration(body)
+            _ = Embervm.NodeRegistry.register(reg)
+            send_json(conn, 200, %{registered: true})
+
+          {:error, :too_large} ->
+            send_json(conn, 413, %{error: "registration body too large", retryable: false})
+
+          {:error, _} ->
+            send_json(conn, 400, %{error: "could not read registration body", retryable: true})
+        end
+
+      {:error, status, payload} ->
+        send_json(conn, status, payload)
+    end
+  end
+
+  # Node auth: the bearer token must TokenReview to a ServiceAccount username that
+  # equals the configured noded SA (:noded_service_account app env, rendered from
+  # the chart). We accept both {:ok, username} (the SA also happens to be
+  # submit-allow-listed) and {:error, {:forbidden, username}} (a valid token that
+  # is simply not on the submit allow-list, the normal case for a node), because
+  # node identity is orthogonal to task-submit rights. An unset configured SA
+  # ("") accepts ANY valid ServiceAccount token (a permissive fallback for a
+  # cluster that has not pinned the SA yet); it never accepts an invalid token.
+  defp authorize_node(conn) do
+    authenticator = Application.get_env(:embervm, :authenticator, Embervm.Auth)
+    expected = Application.get_env(:embervm, :noded_service_account, "")
+
+    with {:ok, token} <- bearer_token(conn),
+         {:ok, username} <- node_username(authenticator.authenticate(token)) do
+      if expected == "" or username == expected do
+        :ok
+      else
+        {:error, 403, %{error: "not the noded service account", retryable: false}}
+      end
+    else
+      {:error, :no_token} ->
+        {:error, 401, %{error: "missing bearer token", retryable: false}}
+
+      _ ->
+        {:error, 401, %{error: "node authentication failed", retryable: true}}
+    end
+  end
+
+  # Both an allow-listed success and a forbidden-but-verified result carry the
+  # TokenReview username, which is all node auth needs; every other shape is a
+  # genuine auth failure.
+  defp node_username({:ok, username}), do: {:ok, username}
+  defp node_username({:error, {:forbidden, username}}), do: {:ok, username}
+  defp node_username(_), do: :error
+
+  # Decode the registration JSON into a string-keyed map, tolerating a malformed
+  # body (yields %{} the registry rejects as invalid, still a benign 200).
+  defp decode_registration(body) do
+    case safe_decode(body) do
+      %{} = map -> map
+      _ -> %{}
+    end
+  end
+
+  defp safe_decode(""), do: %{}
+
+  defp safe_decode(body) do
+    :json.decode(body)
+  rescue
+    _ -> %{}
+  catch
+    _, _ -> %{}
   end
 
   defp handle_redrive(conn, task_id) do

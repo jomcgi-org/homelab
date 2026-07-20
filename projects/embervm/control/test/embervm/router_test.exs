@@ -201,6 +201,7 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :stateful_store_mod)
       Application.delete_env(:embervm, :workload_catalog_mod)
       Application.delete_env(:embervm, :stateful_manager_mod)
+      Application.delete_env(:embervm, :noded_service_account)
     end)
 
     :ok
@@ -246,6 +247,58 @@ defmodule Embervm.RouterTest do
   defp auth(token), do: [{"authorization", "Bearer " <> token}]
 
   defp json(body), do: :json.decode(body)
+
+  # -- node dial-home registration (R0 PR-2) ---------------------------------
+
+  defp reg_body(overrides \\ %{}) do
+    Map.merge(
+      %{"node" => "node-4", "pod_uid" => unique("uid"), "address" => "10.0.0.9:9090", "boot_id" => "boot-1"},
+      overrides
+    )
+    |> :json.encode()
+    |> :erlang.iolist_to_binary()
+  end
+
+  test "POST /v1/nodes/register with the noded SA token is 200" do
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    resp = req(:post, "/v1/nodes/register", auth("good"), reg_body())
+    assert resp.status == 200
+    assert json(resp.body)["registered"] == true
+  end
+
+  test "POST /v1/nodes/register without a token is 401" do
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    resp = req(:post, "/v1/nodes/register", [], reg_body())
+    assert resp.status == 401
+  end
+
+  test "POST /v1/nodes/register with a valid token that is NOT the noded SA is 403" do
+    # good2 authenticates as "principal-2", not the configured noded SA.
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    resp = req(:post, "/v1/nodes/register", auth("good2"), reg_body())
+    assert resp.status == 403
+  end
+
+  test "POST /v1/nodes/register accepts a forbidden-but-valid token as the noded SA" do
+    # A node token that TokenReviews to the noded SA but is NOT on the task-submit
+    # allow-list surfaces as {:error, {:forbidden, username}}; node auth accepts it.
+    Application.put_env(:embervm, :noded_service_account, "system:serviceaccount:embervm:node")
+
+    defmodule NodeAuth do
+      def authenticate("node-token"), do: {:error, {:forbidden, "system:serviceaccount:embervm:node"}}
+      def authenticate(_), do: {:error, :unauthenticated}
+    end
+
+    Application.put_env(:embervm, :authenticator, NodeAuth)
+    resp = req(:post, "/v1/nodes/register", auth("node-token"), reg_body())
+    assert resp.status == 200
+  end
+
+  test "POST /v1/nodes/register with a malformed body is still 200 (advertisement, benign)" do
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    resp = req(:post, "/v1/nodes/register", auth("good"), "not json")
+    assert resp.status == 200
+  end
 
   # -- auth ------------------------------------------------------------------
 

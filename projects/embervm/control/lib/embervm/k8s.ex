@@ -239,84 +239,15 @@ defmodule Embervm.K8s do
   end
 
   @doc """
-  Lists the noded pod endpoints backing the headless noded Service by reading its
-  EndpointSlices (artifact-decoupling PR-C, C4). Now that noded is a DaemonSet
-  behind a HEADLESS Service, the control plane dials each daemon INDIVIDUALLY (one
-  WatchNode stream + one SyncRegistry push per pod), so it must discover per-pod
-  IPs rather than a single ClusterIP. EndpointSlices are the discovery source: the
-  apiserver labels each with `kubernetes.io/service-name=<service>`, and each
-  carries `endpoints[].addresses` plus a `targetRef` naming the backing pod.
-
-  Returns `{:ok, [%{id, address}]}` where `id` is the endpoint's node name (the
-  stable per-node identity; falls back to the pod name, then the IP) and `address`
-  is `"<ip>:<grpc_port>"`, exactly the shape `Embervm.NodeRegistry`/`NodeChannel`
-  consume. `publishNotReadyAddresses: true` on the Service means a not-yet-ready
-  (unsynced) pod IS listed, which is required: the control plane must dial a fresh
-  pod to push the registry that makes it ready. A missing EndpointSlice (Service
-  not up yet) returns `{:ok, []}`, so a boot before the DaemonSet is scheduled
-  simply discovers nothing and the next reconcile picks them up.
-
-  `service` is the noded Service name, `namespace` the release namespace, and
-  `grpc_port` the daemon's gRPC port. Requires `list` on
-  `endpointslices.discovery.k8s.io` (granted in the chart RBAC).
-  """
-  @spec list_noded_endpoints(String.t(), String.t(), non_neg_integer()) ::
-          {:ok, [%{id: String.t(), address: String.t()}]} | {:error, term()}
-  def list_noded_endpoints(service, namespace, grpc_port) do
-    label = URI.encode_query([{"labelSelector", "kubernetes.io/service-name=#{service}"}])
-    path = "/apis/discovery.k8s.io/v1/namespaces/#{URI.encode(namespace)}/endpointslices?" <> label
-
-    case do_request(:get, path, nil, nil) do
-      {:ok, 200, resp_body} ->
-        decoded = :json.decode(resp_body)
-        items = Map.get(decoded, "items", [])
-        {:ok, endpoints_from_slices(items, grpc_port)}
-
-      {:ok, status, _resp_body} ->
-        {:error, {:apiserver_status, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @doc """
   The pod's own namespace, read from the projected ServiceAccount `namespace`
-  file. Falls back to `default` when the file is absent (local `mix`, ExUnit),
-  where EndpointSlice discovery is never exercised anyway.
+  file. Falls back to `default` when the file is absent (local `mix`, ExUnit).
+  Read by `get_secret/2` for the R4 MMDS-lite seam.
   """
   @spec namespace() :: String.t()
   def namespace do
     case File.read(@namespace_file) do
       {:ok, ns} -> String.trim(ns)
       {:error, _} -> "default"
-    end
-  end
-
-  @doc false
-  # Flatten a list of EndpointSlice objects into [%{id, address}]. Each slice's
-  # `endpoints[]` carries `addresses` (the pod IPs) and optionally a `targetRef`
-  # (the pod) and `nodeName` (the host). We key each endpoint by its node name
-  # (the stable per-node identity a DaemonSet gives one pod per node), falling back
-  # to the pod name then the IP so an id is always present. An endpoint with no
-  # address is skipped. Ports come from the slice's `ports[]`, but noded exposes a
-  # single named gRPC port so we address by the known grpc_port for determinism.
-  # Public (rather than private) so it can be unit-tested directly, since the
-  # listing path itself needs a live apiserver (mirrors frame_ndjson/2).
-  @spec endpoints_from_slices([map()], non_neg_integer()) :: [%{id: String.t(), address: String.t()}]
-  def endpoints_from_slices(items, grpc_port) do
-    for slice <- items,
-        endpoint <- Map.get(slice, "endpoints", []),
-        address <- Map.get(endpoint, "addresses", []),
-        address not in [nil, ""] do
-      node_name = Map.get(endpoint, "nodeName")
-      pod_name = get_in(endpoint, ["targetRef", "name"])
-      # Key by node name (the stable per-node identity), else pod name, else the
-      # IP, which is always present (the comprehension guards address non-empty).
-      id =
-        Enum.find([node_name, pod_name, address], address, fn c -> is_binary(c) and c != "" end)
-
-      %{id: id, address: "#{address}:#{grpc_port}"}
     end
   end
 
