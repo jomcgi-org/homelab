@@ -25,6 +25,36 @@
   // ---------------------------------------------------------------------
   const EXAMPLES = [
     {
+      language: "javascript",
+      label: "command injection across functions",
+      code: `const express = require("express");
+const { exec } = require("child_process");
+
+const app = express();
+
+function buildCommand(req) {
+  return "convert " + req.query.file + " out.png";
+}
+
+app.get("/convert", (req, res) => {
+  exec(buildCommand(req), () => res.send("ok"));
+});
+`,
+    },
+    {
+      language: "javascript",
+      label: "code injection via eval",
+      code: `const express = require("express");
+
+const app = express();
+
+app.get("/calc", (req, res) => {
+  const result = eval(req.query.expr);
+  res.send(String(result));
+});
+`,
+    },
+    {
       language: "python",
       label: "command injection across functions",
       code: `import os
@@ -61,36 +91,6 @@ def user():
     db = sqlite3.connect("app.db")
     row = db.execute(f"SELECT * FROM users WHERE name = '{name}'").fetchone()
     return str(row)
-`,
-    },
-    {
-      language: "javascript",
-      label: "command injection across functions",
-      code: `const express = require("express");
-const { exec } = require("child_process");
-
-const app = express();
-
-function buildCommand(req) {
-  return "convert " + req.query.file + " out.png";
-}
-
-app.get("/convert", (req, res) => {
-  exec(buildCommand(req), () => res.send("ok"));
-});
-`,
-    },
-    {
-      language: "javascript",
-      label: "code injection via eval",
-      code: `const express = require("express");
-
-const app = express();
-
-app.get("/calc", (req, res) => {
-  const result = eval(req.query.expr);
-  res.send(String(result));
-});
 `,
     },
   ];
@@ -391,15 +391,15 @@ app.get("/calc", (req, res) => {
               <button
                 type="button"
                 class="lang-btn"
-                class:active={language === "python"}
-                onclick={() => setLanguage("python")}>python</button
+                class:active={language === "javascript"}
+                onclick={() => setLanguage("javascript")}
+                >javascript</button
               >
               <button
                 type="button"
                 class="lang-btn"
-                class:active={language === "javascript"}
-                onclick={() => setLanguage("javascript")}
-                >javascript</button
+                class:active={language === "python"}
+                onclick={() => setLanguage("python")}>python</button
               >
             </div>
             <div class="example-picker">
