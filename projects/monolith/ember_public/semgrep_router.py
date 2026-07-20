@@ -124,8 +124,8 @@ async def semgrep_scan_endpoint(body: SemgrepScanRequest, request: Request) -> d
         "errors": result.get("errors", []),
         "scan_ms": scan_ms,
         "queued_ms": queued_ms,
-        "saved_ms": semgrep_core.saved_ms(int(scan_ms)),
-        "baseline_ms": semgrep_core.HOSTED_SCAN_MEDIAN_MS,
+        "saved_ms": semgrep_core.saved_ms(),
+        "cold_start_ms": semgrep_core.COLD_START_MS,
     }
 
 

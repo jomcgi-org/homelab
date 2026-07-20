@@ -21,7 +21,10 @@ from ember_public.models import DemoSgSavings
 
 logger = logging.getLogger(__name__)
 
-HOSTED_SCAN_MEDIAN_MS = 11_000
+# Cold start = what the daemon pays building the warm base at startup: boot
+# VM + start engine + load 1,600 rules to ready. Measured on node-4, daemon
+# log 2026-07-20: `warm base built key=semgrep took=6.85s`.
+COLD_START_MS = 6_850
 MAX_LINES = 200
 MAX_CHARS = 8_000
 LANGUAGES = {"python": "snippet.py", "javascript": "snippet.js"}
@@ -101,8 +104,11 @@ QUEUE = _make_queue(
 )
 
 
-def saved_ms(scan_ms: int) -> int:
-    return max(0, HOSTED_SCAN_MEDIAN_MS - scan_ms)
+def saved_ms() -> int:
+    """Per-scan saving is exactly the skipped cold start: scan time itself
+    is paid on both the warm and cold paths, so the credit doesn't depend
+    on scan_ms."""
+    return COLD_START_MS
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +133,7 @@ def record_demo_sg_savings_core(session: Session, *, scan_ms: int) -> dict:
 
     row.scans += 1
     row.actual_ms += scan_ms
-    row.saved_ms += saved_ms(scan_ms)
+    row.saved_ms += saved_ms()
     session.commit()
     return {"scans": row.scans, "actual_ms": row.actual_ms, "saved_ms": row.saved_ms}
 

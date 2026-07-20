@@ -157,7 +157,7 @@ def test_scan_success_passes_through_findings_and_accrues_savings(monkeypatch):
     assert len(body["findings"]) == 1
     assert body["findings"][0]["rule_id"] == "python.lang.security.some-rule"
     assert body["errors"] == []
-    assert body["baseline_ms"] == semgrep_core.HOSTED_SCAN_MEDIAN_MS
+    assert body["cold_start_ms"] == semgrep_core.COLD_START_MS
     assert "scan_ms" in body and "queued_ms" in body and "saved_ms" in body
     assert "scan_ms" in recorded
 

@@ -58,11 +58,8 @@ async def test_queue_rejects_when_full():
         t.cancel()
 
 
-def test_savings_delta_uses_baseline():
-    assert (
-        semgrep_core.saved_ms(scan_ms=1000) == semgrep_core.HOSTED_SCAN_MEDIAN_MS - 1000
-    )
-    assert semgrep_core.saved_ms(scan_ms=999_999) == 0  # never negative
+def test_savings_delta_is_the_cold_start_constant():
+    assert semgrep_core.saved_ms() == semgrep_core.COLD_START_MS
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +91,7 @@ def test_demo_sg_savings_first_credit_creates_row(_savings_db):
     assert totals == {
         "scans": 1,
         "actual_ms": 900,
-        "saved_ms": semgrep_core.HOSTED_SCAN_MEDIAN_MS - 900,
+        "saved_ms": semgrep_core.COLD_START_MS,
     }
 
 
@@ -104,14 +101,5 @@ def test_demo_sg_savings_accumulates_across_scans(_savings_db):
     assert totals == {
         "scans": 2,
         "actual_ms": 2000,
-        "saved_ms": (semgrep_core.HOSTED_SCAN_MEDIAN_MS - 900)
-        + (semgrep_core.HOSTED_SCAN_MEDIAN_MS - 1100),
+        "saved_ms": semgrep_core.COLD_START_MS * 2,
     }
-
-
-def test_demo_sg_savings_never_credits_negative_even_if_scan_ms_exceeds_baseline(
-    _savings_db,
-):
-    huge_scan_ms = semgrep_core.HOSTED_SCAN_MEDIAN_MS + 5_000
-    totals = semgrep_core.record_demo_sg_savings_core(_savings_db, scan_ms=huge_scan_ms)
-    assert totals == {"scans": 1, "actual_ms": huge_scan_ms, "saved_ms": 0}
