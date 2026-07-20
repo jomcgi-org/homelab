@@ -1,15 +1,19 @@
 defmodule Embervm.RestoreVendor do
   @moduledoc """
-  Stamps the CPUID vendor onto a restore-on-miss `ArtifactRef` (R7, ADR
-  embervm/011).
+  Stamps the CPUID vendor onto a restore-on-miss `RestoreArtifactRequest`
+  (R7, ADR embervm/011).
 
   noded's `resolveRestorePrefix` composes the store read prefix for a restore as
   `<kind>/<vendor>/<workload>/<ref>` for every vendor-bound artifact kind, and
   REJECTS the restore with `InvalidArgument: "vendor required to restore this
-  artifact kind"` when `ArtifactRef.vendor` is empty. Every restore-on-miss call
-  site in the control plane (stateful/serving/session/group wake planners) must
-  therefore resolve the anchor node's vendor and stamp it before the RPC, or the
-  daemon fails the restore closed and the wake needlessly degrades to a cold boot.
+  artifact kind"` when the vendor is empty. The vendor rides the REQUEST, not the
+  `ArtifactRef`: the proto is `RestoreArtifactRequest{artifact, trace, vendor}`
+  (`vendor = 3`), and noded reads `req.GetVendor()` (server/store.go), never
+  `ref.vendor` (the `ArtifactRef` has no `vendor` field). Every restore-on-miss
+  call site in the control plane (stateful/serving/session/group wake planners)
+  must therefore resolve the anchor node's vendor and set `req.vendor` before the
+  RPC, or the daemon fails the restore closed and the wake needlessly degrades to a
+  cold boot.
 
   ## which kinds are vendor-bound
 
@@ -33,18 +37,18 @@ defmodule Embervm.RestoreVendor do
   alias Embervm.NodeCapacity
 
   @doc """
-  Return `ref` with its `vendor` set to the anchor `node_key`'s reported CPU vendor
-  for a vendor-bound kind, or unchanged (empty vendor) for a `VOLUME`. `node_key` is
-  whatever the caller anchors the restore on (a node-name string or an instance
-  tuple), resolved through `NodeCapacity.fetch/2`. `table` is the capacity table the
-  caller holds.
+  Return `req` with its `vendor` set to the anchor `node_key`'s reported CPU vendor
+  when the request's artifact kind is vendor-bound, or unchanged (empty vendor) for a
+  `VOLUME`. The kind is read off `req.artifact.kind`. `node_key` is whatever the
+  caller anchors the restore on (a node-name string or an instance tuple), resolved
+  through `NodeCapacity.fetch/2`. `table` is the capacity table the caller holds.
   """
   @spec stamp(atom(), String.t() | {String.t(), String.t()}, struct()) :: struct()
-  def stamp(table, node_key, %{kind: kind} = ref) do
+  def stamp(table, node_key, %{artifact: %{kind: kind}} = req) do
     if vendor_bound?(kind) do
-      %{ref | vendor: NodeCapacity.vendor_for(table, node_key)}
+      %{req | vendor: NodeCapacity.vendor_for(table, node_key)}
     else
-      ref
+      req
     end
   end
 

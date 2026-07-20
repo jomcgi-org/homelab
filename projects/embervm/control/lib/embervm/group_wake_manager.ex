@@ -543,8 +543,7 @@ defmodule Embervm.GroupWakeManager do
   end
 
   defp safe_restore_artifact(state, node_id, %RestoreArtifactRequest{artifact: ref} = req) do
-    ref = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, ref)
-    req = %{req | artifact: ref}
+    req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
 
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
       # The `artifact_restore` span (Task 11): a child span around the

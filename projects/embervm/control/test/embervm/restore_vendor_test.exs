@@ -1,15 +1,16 @@
 defmodule Embervm.RestoreVendorTest do
   @moduledoc """
   `Embervm.RestoreVendor` stamps the anchor node's CPUID vendor onto a
-  restore-on-miss ArtifactRef (Bug B). noded's resolveRestorePrefix REJECTS a
-  vendor-bound restore whose ref has an empty vendor; every vendor-bound kind
-  (all but VOLUME) must therefore carry the node's reported vendor. VOLUME is
-  vendor-portable and stays empty.
+  restore-on-miss `RestoreArtifactRequest` (Bug B). noded's resolveRestorePrefix
+  REJECTS a vendor-bound restore whose REQUEST has an empty vendor (the vendor
+  rides `RestoreArtifactRequest.vendor`, field 3, read as `req.GetVendor()`, NOT
+  the ArtifactRef); every vendor-bound kind (all but VOLUME) must therefore carry
+  the node's reported vendor. VOLUME is vendor-portable and stays empty.
   """
   use ExUnit.Case, async: true
 
   alias Embervm.{NodeCapacity, RestoreVendor}
-  alias Embervm.Node.V1.ArtifactRef
+  alias Embervm.Node.V1.{ArtifactRef, RestoreArtifactRequest, Trace}
 
   defp table do
     t = :"rv_test_#{System.unique_integer([:positive])}"
@@ -26,6 +27,13 @@ defmodule Embervm.RestoreVendorTest do
       cpu_vendor: vendor,
       updated_at: 1
     })
+  end
+
+  defp request(kind) do
+    %RestoreArtifactRequest{
+      artifact: %ArtifactRef{kind: kind, workload: "wl-a", ref: "snap"},
+      trace: %Trace{workload: "wl-a"}
+    }
   end
 
   test "vendor_bound? is true for every kind except VOLUME" do
@@ -50,31 +58,28 @@ defmodule Embervm.RestoreVendorTest do
     assert NodeCapacity.vendor_for(t, "node-nope") == ""
   end
 
-  test "stamp sets the anchor vendor on a vendor-bound ref" do
+  test "stamp sets the anchor vendor on the REQUEST for a vendor-bound kind" do
     t = table()
     put_node(t, "node-4", "amd")
 
-    ref = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: "wl-a", ref: "snap"}
-    stamped = RestoreVendor.stamp(t, "node-4", ref)
-    assert stamped.vendor == "amd"
+    stamped = RestoreVendor.stamp(t, "node-4", request(:ARTIFACT_KIND_STATEFUL))
+    assert %RestoreArtifactRequest{vendor: "amd"} = stamped
   end
 
-  test "stamp leaves a VOLUME ref's vendor empty (vendor-portable)" do
+  test "stamp leaves a VOLUME request's vendor empty (vendor-portable)" do
     t = table()
     put_node(t, "node-4", "amd")
 
-    ref = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: "wl-a", ref: "wl-a"}
-    stamped = RestoreVendor.stamp(t, "node-4", ref)
-    assert stamped.vendor == ""
+    stamped = RestoreVendor.stamp(t, "node-4", request(:ARTIFACT_KIND_VOLUME))
+    assert %RestoreArtifactRequest{vendor: ""} = stamped
   end
 
   test "stamp yields an empty vendor when the anchor reports none (pre-R7 daemon), not a crash" do
     t = table()
     put_node(t, "node-4", "")
 
-    ref = %ArtifactRef{kind: :ARTIFACT_KIND_SERVING, workload: "wl-a", ref: "snap"}
-    stamped = RestoreVendor.stamp(t, "node-4", ref)
+    stamped = RestoreVendor.stamp(t, "node-4", request(:ARTIFACT_KIND_SERVING))
     # noded maps an empty vendor to the node-4 legacy alias, so this still restores.
-    assert stamped.vendor == ""
+    assert %RestoreArtifactRequest{vendor: ""} = stamped
   end
 end
