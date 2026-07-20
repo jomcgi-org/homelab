@@ -388,6 +388,15 @@ func (m *Manager) AllocateTap(ctx context.Context) (tap string, ip net.IP, err e
 		return "", nil, err
 	}
 	tap = TapNameForIP(ip)
+	// Idempotent create: best-effort delete any stale tap of this name first.
+	// The allocator just handed us this IP exclusively (allocate() marks it used),
+	// so a device already bearing its deterministic name is orphaned, not live: a
+	// prior VM whose setup failed AFTER tap creation (e.g. a downstream volume
+	// attach) and left the device behind. Without this, the leaked tap makes
+	// `ip tuntap add` fail EBUSY and wedges every retry (observed 2026-07-20: a
+	// leaked emtap left demo-postgres unable to relight and 503'd jomcgi.dev/health).
+	// Deleting an absent tap is a tolerated error.
+	_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
 	for _, argv := range tapSetupArgs(tap, m.bridge) {
 		if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
 			// Roll back: delete whatever tap fragment exists, release the IP.
@@ -411,6 +420,12 @@ func (m *Manager) AllocateTapForIP(ctx context.Context, ip net.IP) (tap string, 
 		return "", err
 	}
 	tap = TapNameForIP(ip)
+	// Idempotent create: best-effort delete any stale tap of this name first. The
+	// relight just reserve()'d this exact IP (D-R3.4.1 pin) and reserve errors on a
+	// live conflict, so a device already bearing its name is orphaned, not live, and
+	// recreating over it would fail EBUSY and wedge every retry (see AllocateTap).
+	// Deleting an absent tap is a tolerated error.
+	_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
 	for _, argv := range tapSetupArgs(tap, m.bridge) {
 		if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
 			_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
