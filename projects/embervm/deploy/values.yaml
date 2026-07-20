@@ -92,6 +92,24 @@ noded:
     nodeMap:
       node-4: /disks/nvme-02
 
+# Size-class BRICK cutover, canary step 1 (brick-capacity PR-3b, decisions.md
+# 2026-07-19). Flips bricks on for the FIRST real co-location beside the legacy
+# noded DaemonSet on node-4. Deep-merged over the chart's bricks block, so this
+# overlay only adds the two keys and the chart's classes ladder (2/4/8/16Gi)
+# stands. desiredReplicas lists ONLY 2gi, so the small brick renders at 1 replica
+# and the other three classes render at 0 (an unlisted class defaults to 0): one
+# live 2gi brick pod plus three empty Deployments. Small-first is deliberate: it
+# adds only +1 core to node-4 during the DS overlap and exercises the whole path
+# (PR-2 dispatcher spread, PR-2.5 per-instance warmth, PR-3a BrickController
+# reconcile + dial-home size_class) before the large 16gi brick lands in a
+# follow-up. No chart bump: this is the $values git ref, read straight from git;
+# ArgoCD ignores Deployment /spec/replicas fleet-wide so the controller (not this
+# value) owns the count after first create.
+bricks:
+  enabled: true
+  desiredReplicas:
+    2gi: 1
+
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
 # into this namespace's Secret. listenPort (5400) + embervmNamespace default from
