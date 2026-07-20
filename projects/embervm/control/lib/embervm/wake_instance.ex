@@ -122,36 +122,24 @@ defmodule Embervm.WakeInstance do
   end
 
   # A mem-eligible cold candidate on the node, then a deterministic sticky pick
-  # keyed by the workload. Eligibility folds the DS-wildcard-always-eligible rule
-  # (below) over the node's bricks: a wildcard/zero-budget instance is never mem-
-  # gated (it is the big burst-envelope DS reporting `mem_headroom_mib = 0` under no
-  # cgroup limit), while a CLASSED brick with a real budget must clear
-  # `mem_headroom_mib >= need_mib`. `BrickLedger.candidates/3` gates EVERY brick on
-  # headroom (correct for the dispatcher, where a wildcard reports a real budget),
-  # so the wake path applies the rule itself rather than reusing that filter, which
-  # would wrongly exclude a zero-headroom wildcard.
+  # keyed by the workload. Eligibility is the SHARED `Embervm.Placement.eligible?/2`
+  # predicate (the one source of truth every NEW-placement path uses, Step 5): a
+  # free slot AND either the DS wildcard/zero-budget brick (always mem-eligible, the
+  # big burst envelope reporting `mem_headroom_mib = 0` under no cgroup limit) or a
+  # CLASSED brick with `mem_headroom_mib >= need_mib`. We scope the node's bricks
+  # first, then delegate the filter+`choose` to `Placement.pick/3` so the wake and
+  # dispatcher/session miss tiers can never drift on the memory gate.
+  # `BrickLedger.candidates/3` is deliberately NOT used: it gates EVERY brick on
+  # headroom, wrongly excluding a zero-headroom wildcard on the still-DS-only fleet.
   defp cold_instance(table, node_id, workload, need_mib) do
     table
     |> BrickLedger.bricks()
-    |> Enum.filter(fn brick -> brick.node_id == node_id and wake_eligible?(brick, need_mib) end)
-    |> BrickLedger.choose(workload)
+    |> Enum.filter(fn brick -> brick.node_id == node_id end)
+    |> Embervm.Placement.pick(workload, need_mib)
     |> case do
       nil -> {:error, :no_eligible_instance}
       brick -> {:ok, dial_id_from_brick(brick)}
     end
-  end
-
-  # A brick can serve a cold wake when it has a free live-VM slot AND either it is
-  # the wildcard/zero-budget DS (always mem-eligible) or it is a classed brick with
-  # the headroom for the workload's need.
-  defp wake_eligible?(brick, need_mib) do
-    brick.free_slots > 0 and (wildcard?(brick) or brick.mem_headroom_mib >= need_mib)
-  end
-
-  # The always-mem-eligible DS: an empty size-class (the legacy wildcard) OR a
-  # zero/absent memory budget (no cgroup limit, the big burst envelope).
-  defp wildcard?(brick) do
-    brick.size_class == "" or brick.mem_budget_mib == 0
   end
 
   # Every per-instance capacity fact on `node_id` (co-located bricks + the DS

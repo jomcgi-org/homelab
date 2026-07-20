@@ -410,7 +410,7 @@ defmodule Embervm.Dispatcher do
         bump_denial(state, :cap)
 
       true ->
-        case pick_node(state, wl) do
+        case pick_node(state, wl, entry) do
           {:error, kind} ->
             bump_denial(state, kind)
 
@@ -518,9 +518,10 @@ defmodule Embervm.Dispatcher do
   #     wedged, and we must not trust an old fact);
   #   * otherwise -> :no_capacity (no base for wl anywhere, or every candidate is
   #     at its node live-VM cap so a miss cannot prime).
-  defp pick_node(state, wl) do
+  defp pick_node(state, wl, entry) do
     now = state.clock.()
     facts = NodeCapacity.all(state.capacity_table)
+    need_mib = Map.get(entry, :mem_mib) || 0
 
     # Nodes that carry a base for this workload at all (fresh or not), used to
     # distinguish "stale" from "no base anywhere".
@@ -554,13 +555,30 @@ defmodule Embervm.Dispatcher do
         # pod flips to draining, so we accept a rare, self-healing chance of picking
         # a pod about to drain rather than keep node-keyed grouping (wrong under
         # bricks).
+        #
+        # SIZE-AWARE MISS TIER (Step 5): the WARM tier is left unchanged (a brick
+        # that already holds a primed VM for wl is by construction big enough to run
+        # it, and we must not refuse a warm hit). The MISS tier, which places a BRAND-
+        # NEW VM, is additionally gated on `Embervm.Placement.mem_eligible?/2` so a
+        # miss never primes onto a brick too small to boot the workload: a wildcard/
+        # zero-budget DS is always eligible (inert on the DS-only fleet), a classed
+        # brick needs `mem_headroom_mib >= mem_mib`. No eligible brick -> the existing
+        # :no_capacity path (never a too-small placement).
         warm_candidates =
           Enum.filter(candidates, fn f -> inventory_ready?(state, instance_id_of(f), wl) end)
 
         case BrickLedger.choose(warm_candidates, wl) do
           nil ->
-            # No warm VM anywhere: a miss needs node budget to prime one.
-            case BrickLedger.choose(Enum.filter(candidates, &has_budget?/1), wl) do
+            # No warm VM anywhere: a miss needs a brick that both has node budget to
+            # prime (has_budget?, the free-slot check) AND is mem-eligible for the
+            # workload's mem_mib (the size gate). We filter the raw facts (not brick
+            # maps) so the chosen fact still carries its `workloads` for snapshot_ref_of.
+            miss_candidates =
+              Enum.filter(candidates, fn f ->
+                has_budget?(f) and Embervm.Placement.mem_eligible?(f, need_mib)
+              end)
+
+            case BrickLedger.choose(miss_candidates, wl) do
               nil -> {:error, :no_capacity}
               f -> {:ok, instance_id_of(f), :miss, snapshot_ref_of(f, wl)}
             end

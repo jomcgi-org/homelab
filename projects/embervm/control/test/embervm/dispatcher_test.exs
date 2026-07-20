@@ -41,7 +41,7 @@ defmodule Embervm.DispatcherTest do
         catalog_table: cat_table,
         depth_table: depth_table,
         clock: fn -> 1_000_000 end,
-        channel_fun: fn _node -> {:ok, :ch} end,
+        channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         assign_fun: Keyword.get(opts, :assign_fun, fn _ch, _req -> {:ok, success_resp()} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}} end),
         start_sweep: false
@@ -80,7 +80,12 @@ defmodule Embervm.DispatcherTest do
           primed_vm_ids: Keyword.get(opts, :primed_ids, [])
         }
       },
-      mem_headroom_mib: 4096,
+      # Default: no size_class / zero mem_budget => a WILDCARD brick (always
+      # mem-eligible), which keeps every pre-Step-5 test inert. A size-aware test
+      # overrides size_class + mem_budget + mem_headroom to model a classed brick.
+      size_class: Keyword.get(opts, :size_class, ""),
+      mem_headroom_mib: Keyword.get(opts, :mem_headroom, 4096),
+      mem_budget_mib: Keyword.get(opts, :mem_budget, 0),
       cpu_headroom_millicores: 4000,
       live_vms: Keyword.get(opts, :live, 0),
       max_live_vms: Keyword.get(opts, :max, 8),
@@ -95,6 +100,7 @@ defmodule Embervm.DispatcherTest do
       namespace: "embervm",
       cap: Keyword.get(opts, :cap, 10),
       floor: Keyword.get(opts, :floor, 0),
+      mem_mib: Keyword.get(opts, :mem_mib, 0),
       invoke_path: "/",
       timeout_ms: 5_000,
       result_ttl_ms: 60_000,
@@ -289,6 +295,76 @@ defmodule Embervm.DispatcherTest do
     stats = Dispatcher.stats(ctx.name)
     assert stats.misses >= 1
     assert stats.warm_hits == 0
+  end
+
+  # -- size-aware miss placement (Step 5) ------------------------------------
+
+  test "a miss with a too-small co-located brick + a big brick primes on the big one" do
+    parent = self()
+
+    # The channel_fun records which INSTANCE the miss worker dialed, so we can assert
+    # the miss never landed on the too-small 2Gi brick (pick_node passes the chosen
+    # instance_id as ctx.node_id, which the worker dials via channel_fun).
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        prime_fun: fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-big"}} end,
+        channel_fun: fn node ->
+          send(parent, {:dialed, node})
+          {:ok, :ch}
+        end
+      )
+
+    # A 4Gi-need workload; a 2Gi brick (100 MiB headroom) cannot boot it, an 8Gi brick can.
+    put_catalog(ctx, "wl-a", cap: 10, mem_mib: 4_000)
+
+    put_facts(ctx, "wl-a",
+      key: {"node-4", "small"},
+      instance_id: "node-4/small",
+      size_class: "2gi",
+      mem_budget: 2_048,
+      mem_headroom: 100,
+      free: 0,
+      live: 0,
+      max: 8
+    )
+
+    put_facts(ctx, "wl-a",
+      key: {"node-4", "big"},
+      instance_id: "node-4/big",
+      size_class: "8gi",
+      mem_budget: 8_192,
+      mem_headroom: 8_000,
+      free: 0,
+      live: 0,
+      max: 8
+    )
+
+    tid = submit(ctx, "wl-a", "p1")
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+    assert_receive {:dialed, "node-4/big"}, 2_000
+    refute_received {:dialed, "node-4/small"}
+  end
+
+  test "a miss where the ONLY brick is too small denies :no_capacity (never a bad placement)" do
+    ctx = start_stack(stale_after_ms: 60_000)
+    put_catalog(ctx, "wl-a", cap: 10, mem_mib: 4_000)
+
+    put_facts(ctx, "wl-a",
+      key: {"node-4", "small"},
+      instance_id: "node-4/small",
+      size_class: "2gi",
+      mem_budget: 2_048,
+      mem_headroom: 100,
+      free: 0,
+      live: 0,
+      max: 8
+    )
+
+    tid = submit(ctx, "wl-a", "p1")
+    # Never dispatched: stays queued, denial is :no_capacity (not a too-small prime).
+    assert eventually(fn -> Dispatcher.stats(ctx.name).denials.no_capacity >= 1 end)
+    assert state_of(ctx, tid) == :queued
   end
 
   # -- fail-closed -----------------------------------------------------------

@@ -267,6 +267,16 @@ defmodule Embervm.BaseBuilder do
     # every zip build is held with a clear "runtime not configured" condition.
     runtime_images = Keyword.get(opts, :runtime_images, %{})
 
+    # Per-instance capacity facts (Step 5): placement reads each registered
+    # instance's mem_budget_mib / size_class / node_id from here so a base is built
+    # on an instance big enough to boot the guest, and the biggest-budget instance is
+    # preferred (the DS wildcard first, else the largest classed brick), instead of
+    # blindly pinning the first-registered instance. Defaults to the shared registry
+    # table; tests that assert pure placement leave it empty, and placement fails OPEN
+    # (treats a budget-unknown instance as eligible) so a builder with no capacity view
+    # still places, keeping its behaviour identical to the pre-Step-5 List.first pick.
+    capacity_table = Keyword.get(opts, :capacity_table, Embervm.NodeCapacity.table())
+
     node_ids = Enum.map(nodes, & &1.id)
 
     node_addr = for %{id: id, address: address} <- nodes, into: %{}, do: {id, address}
@@ -289,6 +299,7 @@ defmodule Embervm.BaseBuilder do
       disconnect_fun: disconnect_fun,
       evict_fun: evict_fun,
       runtime_images: runtime_images,
+      capacity_table: capacity_table,
       status_writer: status_writer,
       clock: clock,
       base_backoff_ms: base_backoff,
@@ -386,7 +397,7 @@ defmodule Embervm.BaseBuilder do
   # configured yet means we cannot build: record the intent and report it.
   defp reconcile_desc(state, %{name: name} = desc) do
     prev = Map.get(state.workloads, name)
-    node_id = placement(state, prev)
+    node_id = placement(state, prev, Map.get(desc, :mem_mib) || 0)
 
     w = merge_desc(prev, desc, node_id)
     state = put_in(state.workloads[name], w)
@@ -457,7 +468,7 @@ defmodule Embervm.BaseBuilder do
   # uses. A workload already placed or already built is left untouched.
   defp redrive_pending_workload(state, name) do
     w = Map.get(state.workloads, name)
-    node_id = placement(state, %{node_id: nil})
+    node_id = placement(state, %{node_id: nil}, (w && w.mem_mib) || 0)
 
     cond do
       w == nil or node_id == nil ->
@@ -538,11 +549,122 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  # Placement: in R0 every Workload's base is built on the single configured
-  # node; a Workload keeps whichever node it was first placed on. Returns nil
-  # when no node is configured. Multi-node placement is Task 11's job.
-  defp placement(_state, %{node_id: node_id}) when is_binary(node_id), do: node_id
-  defp placement(state, _prev), do: List.first(state.node_ids)
+  # Placement (Step 5, brick co-location): pick the registered INSTANCE a workload's
+  # base builds on. `state.node_ids` are instance_ids (NodeRegistry registers each
+  # noded pod by its instance_id, node_registry.ex default_base_builder_update), so
+  # under co-located bricks a node holds several. The old `List.first(state.node_ids)`
+  # blindly pinned the first-registered instance, which Fable found live pinned ALL
+  # workloads to the one 2Gi brick, starving the DS/16Gi bricks of bases and wedging
+  # the fleet at :no_capacity.
+  #
+  # Instead: among the instances that can actually BUILD this workload (mem_budget_mib
+  # big enough to boot a `need_mib` guest, OR a wildcard/zero-budget instance that is
+  # always eligible), pick the one with the LARGEST budget (the DS wildcard ranks
+  # first as the full-node envelope, else the biggest classed brick) so a small brick
+  # never captures a base it cannot build. Bases are NODE-SHARED (baseDir =
+  # SnapshotRoot/bases, served by any co-located instance), so we only need ONE build
+  # per node; picking a single best instance yields exactly one (node, workload) build.
+  #
+  # STICKY (no thrash): a workload keeps its current pin as long as that instance is
+  # still registered AND still eligible AND no STRICTLY-larger eligible instance has
+  # since registered. It re-places only when its instance expired/deregistered, became
+  # ineligible, or a bigger eligible instance appeared. Determinism: ties (equal rank)
+  # break on instance_id, so the choice is stable run to run.
+  #
+  # Fail-OPEN when capacity is unknown: an instance with no capacity fact (a builder
+  # seeded before WatchNode populated facts, or a test with no table) is treated as an
+  # eligible wildcard, so placement still returns a node and is behaviour-identical to
+  # the pre-Step-5 pick on a fleet with no per-instance budgets reported.
+  defp placement(state, prev, need_mib) do
+    case eligible_build_instances(state, need_mib) do
+      [] ->
+        nil
+
+      instances ->
+        best = Enum.max_by(instances, &build_rank/1)
+        keep_or_replace(prev, instances, best)
+    end
+  end
+
+  # Keep the workload's current pin when it is still an eligible candidate and no
+  # strictly-larger one exists; otherwise move to the best. Comparing on build_rank
+  # (not identity) means an equal-rank newcomer never steals a healthy pin.
+  defp keep_or_replace(%{node_id: node_id}, instances, best) when is_binary(node_id) do
+    case Enum.find(instances, fn i -> i.instance_id == node_id end) do
+      nil -> best.instance_id
+      current -> if build_rank(best) > build_rank(current), do: best.instance_id, else: node_id
+    end
+  end
+
+  defp keep_or_replace(_prev, _instances, best), do: best.instance_id
+
+  # The registered instances that can BUILD `need_mib`, each as a compact map
+  # (instance_id + the fields the rank/eligibility read). An instance with no capacity
+  # fact is a fail-open wildcard (budget/class unknown => always eligible). Node-shared
+  # bases mean we keep at most one instance per node_id (the highest-ranked), so the
+  # best pick is naturally one build per node.
+  defp eligible_build_instances(state, need_mib) do
+    state.node_ids
+    |> Enum.map(fn iid -> instance_build_facts(state, iid) end)
+    |> Enum.filter(fn i -> build_eligible?(i, need_mib) end)
+    |> dedupe_per_node()
+  end
+
+  # Compact build-facts for a registered instance_id: its reported size_class /
+  # mem_budget_mib / node_id, or wildcard defaults (size_class "", budget 0) when no
+  # capacity fact is found (fail-open). node_id falls back to the instance_id itself so
+  # dedupe_per_node still groups sanely for a fact-less id.
+  defp instance_build_facts(state, instance_id) do
+    case find_capacity_fact(state.capacity_table, instance_id) do
+      {:ok, f} ->
+        %{
+          instance_id: instance_id,
+          node_id: Map.get(f, :node_id) || instance_id,
+          size_class: Map.get(f, :size_class, ""),
+          mem_budget_mib: Map.get(f, :mem_budget_mib, 0)
+        }
+
+      :error ->
+        %{instance_id: instance_id, node_id: instance_id, size_class: "", mem_budget_mib: 0}
+    end
+  end
+
+  # Look up the capacity fact whose derived instance_id matches (the registry stamps
+  # :instance_id = "node/pod_uid" into each fact). Returns :error when the table is
+  # absent/empty or no fact carries that instance_id, which makes placement fail-open.
+  defp find_capacity_fact(table, instance_id) do
+    table
+    |> Embervm.NodeCapacity.all()
+    |> Enum.find(fn f -> Map.get(f, :instance_id) == instance_id end)
+    |> case do
+      nil -> :error
+      f -> {:ok, f}
+    end
+  end
+
+  # An instance can build the workload when it is a wildcard (empty class or zero
+  # budget: the full-node envelope, always able to boot) or its budget covers need.
+  defp build_eligible?(i, need_mib) do
+    Embervm.Placement.wildcard?(i) or i.mem_budget_mib >= need_mib
+  end
+
+  # Rank for "largest-budget eligible": the DS wildcard ranks above every classed
+  # brick (rank tuple {1, budget}); classed bricks rank by budget ({0, budget}). Higher
+  # is better; max_by picks the biggest. (A zero-budget wildcard still beats a classed
+  # brick because its first tuple element is 1.)
+  defp build_rank(i) do
+    if Embervm.Placement.wildcard?(i), do: {1, i.mem_budget_mib}, else: {0, i.mem_budget_mib}
+  end
+
+  # Bases are node-shared, so at most one instance per node_id needs to build: keep the
+  # highest-ranked instance per node (ties break on instance_id for determinism).
+  defp dedupe_per_node(instances) do
+    instances
+    |> Enum.group_by(& &1.node_id)
+    |> Enum.map(fn {_node, group} ->
+      Enum.max_by(group, fn i -> {build_rank(i), i.instance_id} end)
+    end)
+  end
 
   # Fold a fresh desc into the workload's build state, preserving the built base
   # (built_signature/snapshot_ref/digest/superseded) across spec edits so a

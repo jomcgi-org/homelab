@@ -378,7 +378,18 @@ defmodule Embervm.SessionManager do
              :ok <- check_workload_cap(state, workload, entry),
              :ok <- check_quota(state, principal),
              {:ok, node_id, snapshot_ref} <- pick_node(state, workload),
-             {:ok, vm_id} <- claim_or_prime(state, node_id, workload, snapshot_ref) do
+             {:ok, dial_id} <- dial_instance(state, workload, entry, node_id),
+             {:ok, vm_id} <- claim_or_prime(state, dial_id, workload, snapshot_ref) do
+          # SIZE-AWARE CREATE (Step 5): pick_node resolves the NODE (rendezvous over
+          # ready nodes with budget); dial_instance then selects the mem-eligible
+          # INSTANCE on it (a too-small classed brick is skipped, the DS wildcard is
+          # always eligible) so claim/prime lands the VM on a brick big enough to boot
+          # the workload. The session ROW still records the NODE name (node_id), not
+          # dial_id: relight/drain read it node-scoped via NodeCapacity.fetch (which
+          # matches on :node_id), and a node-local snapshot is restorable on its owning
+          # node regardless of which co-located instance banked it. On the single-
+          # instance fleet dial_id resolves to the node's sole instance, so claim/prime
+          # is output-equivalent to the old node-name dial: inert today.
           register_and_start(state, workload, principal, entry, node_id, vm_id)
         else
           {:error, reason} ->
@@ -451,6 +462,23 @@ defmodule Embervm.SessionManager do
   # node + its base snapshot_ref (for Prime on a claim miss).
   defp pick_node(state, workload) do
     SessionPlacement.node_for_create(workload, state.capacity_table)
+  end
+
+  # Select the SPECIFIC instance on the resolved node to dial for claim/prime
+  # (Step 5, mirroring ServingManager.dial_instance): a mem-eligible instance sized
+  # for the workload's mem_mib, so a NEW session VM never primes onto a brick too
+  # small to boot it (a too-small classed brick is skipped; the DS wildcard is
+  # always eligible). No `:warmth_key` is passed because a fresh session has nothing
+  # banked to prefer, so WakeInstance.select goes straight to the mem-eligible cold
+  # pick and returns the dial key (instance_id, or the node name for a legacy fact).
+  # No eligible instance -> {:error, :no_eligible_instance}, which the create `with`
+  # turns into a denial rather than a too-small placement.
+  defp dial_instance(state, workload, entry, node_id) do
+    Embervm.WakeInstance.select(node_id,
+      table: state.capacity_table,
+      workload: workload,
+      need_mib: Map.get(entry, :mem_mib) || 512
+    )
   end
 
   # Claim a primed VM from the dispatcher's inventory, or Prime one on a miss (the
