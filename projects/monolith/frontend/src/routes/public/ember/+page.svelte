@@ -508,7 +508,7 @@
         <a class="anchor" href="#live-exhibits">See it run</a>
       </h2>
       <p class="body">
-        Three exhibits run on the live system, through the same wake path
+        Four exhibits run on the live system, through the same wake path
         production uses.
       </p>
       <div class="doors">
@@ -539,6 +539,15 @@
             (kernel, memory, device state) comes back in ~22&nbsp;ms.
           </p>
           <span class="go">ember/firecracker</span>
+        </a>
+        <a class="door" href="/ember/semgrep">
+          <span class="k">workload demo</span>
+          <h3>Semgrep</h3>
+          <p>
+            The CI security scanner, warm in a microVM, scanning your snippet
+            in about a second.
+          </p>
+          <span class="go">ember/semgrep</span>
         </a>
       </div>
     </section>
