@@ -135,7 +135,7 @@
     {
       done: false,
       name: "R8 elasticity",
-      desc: "Horizontal scale on cheap spot instances: the fleet grows and shrinks with demand, and preemption is routine rather than an outage, because every workload is a durable snapshot that wakes wherever there is room. Declare a workload in one resource; the orchestrator finds it a machine.",
+      desc: "Capacity becomes fixed-size bricks: each a plain pod owning a slice of VMs, so the Kubernetes scheduler bin-packs them and a Pending brick is the autoscaler's signal to buy a spot node. The fleet grows and shrinks with demand, and preemption is routine rather than an outage, because every workload is a durable snapshot that wakes wherever there is room.",
     },
   ];
 </script>
