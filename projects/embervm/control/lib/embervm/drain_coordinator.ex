@@ -6,7 +6,7 @@ defmodule Embervm.DrainCoordinator do
   noded has no lifecycle authority: on SIGTERM it only sets `draining` and publishes
   a deadline on its NodeStatus, then holds the gRPC surface up. The control plane is
   what actually evacuates state. NodeRegistry watches that stream and, on the drain
-  RISING edge, sends this coordinator `{:node_draining, node_id, deadline_ms}`. This
+  RISING edge, sends this coordinator `{:node_draining, node_id, pod_uid, deadline_ms}`. This
   coordinator then asks each class sweeper to force-bank its live instances on that
   node (stateful with COMMIT-despite-parked semantics, groups as whole bundle sets,
   sessions and serving via their bank verbs), so a routine noded roll never
