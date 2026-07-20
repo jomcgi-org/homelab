@@ -168,12 +168,22 @@ func legacyArtifactPrefix(ref *nodev1.ArtifactRef) string {
 }
 
 // artifactLocalDir resolves the on-disk directory holding a ref's files. It
-// mirrors the driver's per-kind bundle layout under SnapshotRoot (bases/,
-// sessions/, serving/, stateful/, group/<set_id>/) and the volume manager's
-// VolumeRoot/<workload>. Returns "" when the kind is unknown or the relevant
-// substrate is not configured, which the caller maps to FAILED_PRECONDITION.
+// mirrors the driver's per-kind bundle layout: BASES are node-shared under
+// SnapshotRoot/bases, while the WARMTH kinds (sessions/, serving/, stateful/,
+// group/<set_id>/) live under WarmthRoot, which for a brick nests at
+// SnapshotRoot/instances/<pod_uid> and for the legacy DaemonSet equals
+// SnapshotRoot (the driver's warmthRoot fallback is mirrored here). Volumes live
+// under the volume manager's VolumeRoot/<workload>. Returns "" when the kind is
+// unknown or the relevant substrate is not configured, which the caller maps to
+// FAILED_PRECONDITION.
 func (s *Server) artifactLocalDir(ref *nodev1.ArtifactRef) string {
 	root := s.cfg.SnapshotRoot
+	// Warmth root, mirroring driver.warmthRoot: WarmthRoot when set, else
+	// SnapshotRoot (a Config that never derived WarmthRoot keeps the flat layout).
+	warmth := s.cfg.WarmthRoot
+	if warmth == "" {
+		warmth = s.cfg.SnapshotRoot
+	}
 	switch ref.GetKind() {
 	case nodev1.ArtifactKind_ARTIFACT_KIND_BASE:
 		if root == "" {
@@ -181,25 +191,25 @@ func (s *Server) artifactLocalDir(ref *nodev1.ArtifactRef) string {
 		}
 		return filepath.Join(root, "bases", ref.GetRef())
 	case nodev1.ArtifactKind_ARTIFACT_KIND_SESSION:
-		if root == "" {
+		if warmth == "" {
 			return ""
 		}
-		return filepath.Join(root, "sessions", ref.GetRef())
+		return filepath.Join(warmth, "sessions", ref.GetRef())
 	case nodev1.ArtifactKind_ARTIFACT_KIND_SERVING:
-		if root == "" {
+		if warmth == "" {
 			return ""
 		}
-		return filepath.Join(root, "serving", ref.GetRef())
+		return filepath.Join(warmth, "serving", ref.GetRef())
 	case nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL:
-		if root == "" {
+		if warmth == "" {
 			return ""
 		}
-		return filepath.Join(root, "stateful", ref.GetRef())
+		return filepath.Join(warmth, "stateful", ref.GetRef())
 	case nodev1.ArtifactKind_ARTIFACT_KIND_GROUP_SET:
-		if root == "" {
+		if warmth == "" {
 			return ""
 		}
-		return filepath.Join(root, "group", ref.GetRef())
+		return filepath.Join(warmth, "group", ref.GetRef())
 	case nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME:
 		if s.volumes == nil {
 			return ""

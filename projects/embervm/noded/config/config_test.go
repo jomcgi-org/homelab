@@ -322,3 +322,41 @@ func TestLoadRejectsBadDuration(t *testing.T) {
 		t.Error("Load should reject a malformed duration")
 	}
 }
+
+// TestLoadWarmthRootDerivation proves the per-instance warmth root (brick-capacity
+// PR-2.5): a brick (SizeClass + PodUID both set) nests warmth under
+// SnapshotRoot/instances/<pod_uid>; every other case keeps warmth flat at
+// SnapshotRoot so the legacy DaemonSet repaths nothing.
+func TestLoadWarmthRootDerivation(t *testing.T) {
+	root := "/scratch/embervm-noded/snapshots"
+	cases := []struct {
+		name      string
+		snapshot  string
+		sizeClass string
+		podUID    string
+		want      string
+	}{
+		{"brick nests per pod_uid", root, "8gi", "pod-123", root + "/instances/pod-123"},
+		{"legacy DS stays flat (no size class)", root, "", "pod-123", root},
+		{"size class but no pod_uid stays flat", root, "8gi", "", root},
+		{"no snapshot root yields empty", "", "8gi", "pod-123", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("EMBERVM_NODED_SNAPSHOT_ROOT", tc.snapshot)
+			t.Setenv("EMBERVM_NODED_SIZE_CLASS", tc.sizeClass)
+			t.Setenv("EMBERVM_POD_UID", tc.podUID)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.WarmthRoot != tc.want {
+				t.Errorf("WarmthRoot = %q, want %q", c.WarmthRoot, tc.want)
+			}
+			// Bases stay node-shared on SnapshotRoot regardless.
+			if c.SnapshotRoot != tc.snapshot {
+				t.Errorf("SnapshotRoot = %q, want %q (bases must not move)", c.SnapshotRoot, tc.snapshot)
+			}
+		})
+	}
+}

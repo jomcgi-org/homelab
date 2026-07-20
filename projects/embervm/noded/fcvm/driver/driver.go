@@ -74,7 +74,15 @@ type Config struct {
 	VCPUs  int
 	MemMib int
 	// SnapshotRoot is the directory holding per-thread bundles (/disks/nvme-02).
+	// Node-SHARED base rootfs snapshots (SnapshotRoot/bases) always live here.
 	SnapshotRoot string
+	// WarmthRoot is the root for per-INSTANCE warmth (sessions/serving/stateful
+	// bundles/group sets/per-thread bundles/checkpoints/group networks): a brick
+	// nests it under SnapshotRoot/instances/<pod_uid>; the legacy DaemonSet leaves
+	// it equal to SnapshotRoot (flat, unchanged). Bases stay on SnapshotRoot.
+	// Empty falls back to SnapshotRoot (see warmthRoot), so a driver built from a
+	// Config that never derived it keeps the flat pre-brick layout.
+	WarmthRoot string
 	// Node and Arch pin where snapshots may be restored.
 	Node string
 	Arch string
@@ -268,9 +276,23 @@ func templateMismatch(refTemplate, nodeTemplate string) (bool, string) {
 	return refTemplate != nodeTemplate, refTemplate
 }
 
-// threadDir is the bundle directory for a thread.
+// warmthRoot is the root for per-INSTANCE warmth (sessions, serving, stateful
+// bundles, group sets, per-thread bundles, checkpoints, group networks). For a
+// brick it is SnapshotRoot/instances/<pod_uid> (set by config.Load); for the
+// legacy DaemonSet it equals SnapshotRoot. Falls back to SnapshotRoot when unset
+// so a driver built from a Config that never derived WarmthRoot (tests) keeps the
+// flat pre-brick layout. Bases (baseDir) deliberately do NOT go through here:
+// they stay node-shared on SnapshotRoot.
+func (d *Driver) warmthRoot() string {
+	if d.cfg.WarmthRoot != "" {
+		return d.cfg.WarmthRoot
+	}
+	return d.cfg.SnapshotRoot
+}
+
+// threadDir is the bundle directory for a thread (per-instance warmth).
 func (d *Driver) threadDir(threadID string) string {
-	return filepath.Join(d.cfg.SnapshotRoot, threadID)
+	return filepath.Join(d.warmthRoot(), threadID)
 }
 
 func (d *Driver) snapfilePath(threadID string) string {
@@ -660,7 +682,7 @@ func (d *Driver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifac
 // snapshot root so a session bundle is never confused with a base or a per-thread
 // bundle, and so the daemon can rescan exactly this dir on start to report its
 // banked-session inventory. Callers own its 0700 permission and daemon-ownership.
-func (d *Driver) SessionsDir() string { return filepath.Join(d.cfg.SnapshotRoot, "sessions") }
+func (d *Driver) SessionsDir() string { return filepath.Join(d.warmthRoot(), "sessions") }
 
 // sessionDir is the bundle directory for one banked session snapshot, keyed by an
 // opaque session snapshot_ref. It sits under sessions/ so it is never confused
@@ -679,7 +701,7 @@ func (d *Driver) sessionMemfile(ref string) string {
 // under the serving/ prefix of the snapshot root (a sibling of bases/ and sessions/).
 // The daemon rescans exactly this dir on start to report its banked-serving
 // inventory. Callers own its 0700 permission and daemon-ownership.
-func (d *Driver) ServingDir() string { return filepath.Join(d.cfg.SnapshotRoot, "serving") }
+func (d *Driver) ServingDir() string { return filepath.Join(d.warmthRoot(), "serving") }
 
 // servingDir is the bundle directory for one banked serving snapshot, keyed by an
 // opaque serving snapshot_ref. It sits under serving/ so it is never confused with a
@@ -1378,7 +1400,7 @@ func (d *Driver) RemoveServingBundle(snapshotRef string) error {
 // bases/, sessions/, and serving/). The daemon rescans exactly this dir on
 // start via ScanStatefulBundles. Callers own its 0700 permission and
 // daemon-ownership.
-func (d *Driver) StatefulDir() string { return filepath.Join(d.cfg.SnapshotRoot, "stateful") }
+func (d *Driver) StatefulDir() string { return filepath.Join(d.warmthRoot(), "stateful") }
 
 // statefulDir is the bundle directory for one banked stateful snapshot, keyed
 // by an opaque snapshot_ref.
@@ -1512,7 +1534,7 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 // can NEVER mistake a temp for a committed bundle (ADR embervm/008, guarantee 1).
 // GCStatefulCheckpoints sweeps it on start. Callers own its 0700 daemon-ownership.
 func (d *Driver) CheckpointsDir() string {
-	return filepath.Join(d.cfg.SnapshotRoot, "stateful-checkpoints")
+	return filepath.Join(d.warmthRoot(), "stateful-checkpoints")
 }
 
 func (d *Driver) checkpointTmpDir(token string) string {
@@ -1783,7 +1805,7 @@ func (d *Driver) ScanStatefulBundles() []substrate.StatefulBundleInfo {
 // records, under the group_networks/ prefix of the snapshot root. The daemon
 // rescans exactly this dir on start via ScanGroupNetworks.
 func (d *Driver) GroupNetworksDir() string {
-	return filepath.Join(d.cfg.SnapshotRoot, "group_networks")
+	return filepath.Join(d.warmthRoot(), "group_networks")
 }
 
 // groupNetworkRecordPath is the config.json path for one group-network record,
@@ -1889,7 +1911,7 @@ func (d *Driver) ScanGroupNetworks() []substrate.GroupNetworkRecord {
 // under the group/ prefix of the snapshot root (a sibling of bases/, sessions/,
 // serving/, and stateful/). The daemon rescans exactly this dir on start via
 // ScanGroupBundleSets. Callers own its 0700 permission and daemon-ownership.
-func (d *Driver) GroupSetsDir() string { return filepath.Join(d.cfg.SnapshotRoot, "group") }
+func (d *Driver) GroupSetsDir() string { return filepath.Join(d.warmthRoot(), "group") }
 
 // groupMemberDir is the bundle directory for one banked member snapshot, keyed by
 // the opaque set_id and the member_name: group/<set_id>/<member_name>/.
