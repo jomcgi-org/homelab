@@ -33,8 +33,10 @@ metadata:
 spec:
   # replicas is only the value at FIRST create: the BrickController (PR-3) owns it
   # thereafter, and ArgoCD ignores Deployment /spec/replicas fleet-wide (the HPA
-  # ignoreDifferences rule) so the controller's scaling never shows as drift.
-  replicas: {{ $class.replicas | default 0 }}
+  # ignoreDifferences rule) so the controller's scaling never shows as drift. Both
+  # this create-value and the controller's target read the same bricks.desiredReplicas
+  # map (default 0 for an unlisted class).
+  replicas: {{ index $ctx.Values.bricks.desiredReplicas $class.name | default 0 }}
   selector:
     # embervm.brick.selectorLabels renders app.kubernetes.io/component: noded-brick
     # plus the size-class label inside the include (the rule's regex cannot see

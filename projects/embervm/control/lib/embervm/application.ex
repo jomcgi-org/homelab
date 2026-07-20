@@ -60,6 +60,13 @@ defmodule Embervm.Application do
     # Application.get_env default (60s) fires.
     put_workload_resync_config()
 
+    # Brick capacity (PR-3): the per-size-class desired replica counts + the brick
+    # Deployment name prefix from the chart env into app-env BEFORE the supervisor
+    # starts, so Embervm.BrickController reads them at init. Absent env (bricks
+    # disabled) leaves both UNSET, so the controller's Application.get_env defaults
+    # (an empty class list, an empty prefix) fire and it reconciles nothing.
+    put_brick_config()
+
     children = [
       # The sync-wait waiter registry + park-count ETS owner come FIRST: every
       # terminal task-state write in TaskStore calls Embervm.SyncWait.notify,
@@ -141,6 +148,13 @@ defmodule Embervm.Application do
       # during downtime are skipped, not replayed. After the watcher (reads the
       # catalog's triggers) and TaskStore (submits into it).
       Embervm.Trigger.Cron,
+      # The brick controller (brick-capacity PR-3): reconciles each size-class
+      # brick Deployment's replica count to its desired value and flags a class
+      # fleet-full when desired outruns registered. AFTER Finch (it PATCHes the
+      # apiserver /scale subresource through it) and after the node registry (it
+      # reads registered bricks from the capacity ledger). Inert while
+      # bricks.enabled=false renders no classes into its config.
+      {Embervm.BrickController, brick_controller_opts()},
       # Session lifecycle (R2). The SessionStore (ETS hot set over the durable
       # `sessions` projection, rebuilt on boot) comes first; the SessionRegistry
       # (session_id -> live Embervm.Session pid) and the SessionSupervisor
@@ -820,6 +834,64 @@ defmodule Embervm.Application do
       nil -> :ok
       ms -> Application.put_env(:embervm, :workload_resync_interval_ms, ms)
     end
+  end
+
+  # Brick capacity (PR-3): the size-class desired-replica list + the brick
+  # Deployment name prefix from the chart env into app-env. Unset (bricks
+  # disabled) leaves both keys absent, so Embervm.BrickController's own
+  # Application.get_env defaults fire (empty class list + empty prefix = inert).
+  defp put_brick_config do
+    case brick_classes_env() do
+      nil -> :ok
+      classes -> Application.put_env(:embervm, :brick_classes, classes)
+    end
+
+    case trimmed_env("EMBERVM_BRICK_DEPLOYMENT_PREFIX") do
+      "" -> :ok
+      prefix -> Application.put_env(:embervm, :brick_deployment_prefix, prefix)
+    end
+  end
+
+  # BrickController reads all of its inputs from Application env at init, so no
+  # start options are threaded here (the test suite injects its own).
+  defp brick_controller_opts, do: []
+
+  # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired"} objects) into a
+  # list of %{name, desired}. nil when unset, malformed, or empty, so the
+  # controller's empty-list default fires (it reconciles nothing). A class missing
+  # a binary name or a non-negative integer desired is dropped, never crashing boot.
+  defp brick_classes_env do
+    case trimmed_env("EMBERVM_BRICK_CLASSES") do
+      "" ->
+        nil
+
+      raw ->
+        case safe_json_decode(raw) do
+          list when is_list(list) ->
+            parsed =
+              for %{"name" => name, "desired" => desired} <- list,
+                  is_binary(name),
+                  is_integer(desired),
+                  desired >= 0 do
+                %{name: name, desired: desired}
+              end
+
+            if parsed == [], do: nil, else: parsed
+
+          _ ->
+            nil
+        end
+    end
+  end
+
+  # :json.decode raises on malformed input; a bad EMBERVM_BRICK_CLASSES must leave
+  # the controller inert, not crash the whole control plane at boot.
+  defp safe_json_decode(raw) do
+    :json.decode(raw)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
   end
 
   defp workload_resync_interval_ms_env do

@@ -730,6 +730,19 @@ defmodule Embervm.Router do
           retryable: false
         })
 
+      # Brick capacity (PR-3): no brick of the workload's size class has room and
+      # the class is flagged fleet-full (desired outran registered past the dwell),
+      # so placement is TERMINALLY denied rather than parked. 503 (not the 429 the
+      # soft caps use): on the fixed homelab this is a hard capacity wall; on EKS
+      # Karpenter adds a node, so the client may retry after backing off.
+      :fleet_full ->
+        send_json(conn, 503, %{
+          error: "fleet at capacity for the workload's size class",
+          reason: "fleet_full",
+          workload: workload,
+          retryable: true
+        })
+
       other ->
         send_json(conn, 500, %{error: "session create failed", reason: inspect(other), workload: workload, retryable: true})
     end
