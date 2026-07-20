@@ -141,6 +141,9 @@ defmodule Embervm.StatefulManagerTest do
     NodeCapacity.put(ctx.cap_table, node_id, %{
       configured_id: node_id,
       node_id: node_id,
+      # CPU-vendor fact (Bug B): stamped onto a vendor-bound restore ref (STATEFUL),
+      # left off a VOLUME restore (vendor-portable).
+      cpu_vendor: Keyword.get(opts, :cpu_vendor, "amd"),
       serving_subnet_cidr: "10.88.0.0/24",
       max_live_vms: 4,
       live_vms: 0,
@@ -1144,7 +1147,7 @@ defmodule Embervm.StatefulManagerTest do
 
     fun = fn _ch, req ->
       art = req.artifact
-      Agent.update(calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload} | &1])
+      Agent.update(calls, &[%{kind: art.kind, ref: art.ref, workload: art.workload, vendor: art.vendor} | &1])
       {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 4096, skipped: false, generation: 3}}
     end
 
@@ -1177,7 +1180,9 @@ defmodule Embervm.StatefulManagerTest do
     assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
 
     # RestoreArtifact was called for the STATEFUL bundle, before the relight landed.
-    assert [%{kind: :ARTIFACT_KIND_STATEFUL, ref: "stateful/stf-banked", workload: "wl-a"}] =
+    # Bug B: STATEFUL is vendor-bound, so the ref carries the anchor node's cpu_vendor
+    # ("amd"), which noded needs to compose the vendor-keyed store prefix.
+    assert [%{kind: :ARTIFACT_KIND_STATEFUL, ref: "stateful/stf-banked", workload: "wl-a", vendor: "amd"}] =
              Agent.get(restore_calls, & &1)
 
     # The SAME banked instance relit in place (a warm relight, not a fresh boot).
@@ -1217,7 +1222,9 @@ defmodule Embervm.StatefulManagerTest do
 
     assert {:ok, %{ip: "10.88.0.7", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
 
-    assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "wl-a", workload: "wl-a"}] = Agent.get(restore_calls, & &1)
+    # Bug B: VOLUME is vendor-portable, so its restore ref leaves vendor EMPTY even
+    # though the anchor node reports "amd" (noded keys volumes without a vendor segment).
+    assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "wl-a", workload: "wl-a", vendor: ""}] = Agent.get(restore_calls, & &1)
 
     live = Enum.reject(StatefulStore.list(ctx.store, "wl-a"), &Embervm.StatefulState.terminal?(&1.state))
     assert [inst] = live

@@ -95,6 +95,41 @@ defmodule Embervm.NodeChannelTest do
     assert {:error, :unknown_node} = NodeChannel.get(pid, "not-configured-#{System.unique_integer([:positive])}")
   end
 
+  test "update_address adds a previously-unknown key so get/1 resolves it (dual-key add)" do
+    # The registry (Bug A fix) registers an instance under BOTH its instance_id and
+    # its node-name alias via update_address; a key unknown at init must become
+    # dialable rather than staying :unknown_node.
+    nid = node_id()
+    {_dials, connect} = counting_connect()
+    pid = start(nid, connect)
+
+    alias_key = "#{nid}/uid-1"
+    assert {:error, :unknown_node} = NodeChannel.get(pid, alias_key)
+
+    :ok = NodeChannel.update_address(pid, alias_key, "addr")
+    assert {:ok, _chan} = NodeChannel.get(pid, alias_key)
+  end
+
+  test "remove_address drops the key and its cached channel so get/1 falls back to :unknown_node" do
+    # Instance expiry (Bug A fix) removes both keys; a removed key must no longer
+    # resolve, so no stale alias keeps dialing a torn-down pod's address.
+    nid = node_id()
+    {_dials, connect} = counting_connect()
+    pid = start(nid, connect)
+
+    assert {:ok, _chan} = NodeChannel.get(pid, nid)
+    :ok = NodeChannel.remove_address(pid, nid)
+    assert {:error, :unknown_node} = NodeChannel.get(pid, nid)
+  end
+
+  test "remove_address on an unknown key is a no-op" do
+    nid = node_id()
+    {_dials, connect} = counting_connect()
+    pid = start(nid, connect)
+
+    assert :ok = NodeChannel.remove_address(pid, "never-known-#{System.unique_integer([:positive])}")
+  end
+
   describe "transport_dead?/1" do
     test "a transport death WRAPPED as an RPCError (status 2, connection closed) is dead" do
       # The exact shape the Mint gRPC adapter synthesises when a replaced noded pod's

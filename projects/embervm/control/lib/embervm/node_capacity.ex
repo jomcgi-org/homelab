@@ -128,4 +128,22 @@ defmodule Embervm.NodeCapacity do
       end
     end
   end
+
+  @doc """
+  The CPUID vendor ("amd"/"intel") the anchor `key` currently reports, for stamping
+  `RestoreArtifactRequest.artifact.vendor` on a restore-on-miss (R7, ADR
+  embervm/011). `key` is whatever the caller anchors on (a bare node-name string or
+  an instance tuple), resolved through `fetch/2`; the vendor is a NODE-scoped fact
+  shared across a node's instances. Returns `""` when the node is not dispatchable
+  (no facts) or its daemon reports no vendor (pre-R7): noded's resolveRestorePrefix
+  maps an empty vendor to the node-4 legacy alias, so an empty vendor still restores
+  the legacy un-vendored prefix rather than failing closed. Never raises.
+  """
+  @spec vendor_for(atom(), {String.t(), String.t()} | String.t()) :: String.t()
+  def vendor_for(table \\ @table, key) do
+    case fetch(table, key) do
+      {:ok, facts} -> Map.get(facts, :cpu_vendor, "") || ""
+      :error -> ""
+    end
+  end
 end

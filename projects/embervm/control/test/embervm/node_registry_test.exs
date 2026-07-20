@@ -64,6 +64,7 @@ defmodule Embervm.NodeRegistryTest do
       mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 3584),
       cpu_budget_millicores: Keyword.get(opts, :cpu_budget_millicores, 2000),
       draining: Keyword.get(opts, :draining, false),
+      cpu_vendor: Keyword.get(opts, :cpu_vendor, ""),
       build_error: ""
     }
   end
@@ -96,6 +97,16 @@ defmodule Embervm.NodeRegistryTest do
     snapshot = NodeRegistry.status(reg)
     assert snapshot["node-4"].health == :healthy
     assert snapshot["node-4"].dispatchable
+  end
+
+  test "registry projects the CPU-vendor fact (Bug B: restore-on-miss vendor keying)" do
+    {clock, _advance} = new_clock()
+    {reg, table} = start_registry(clock: clock)
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status(cpu_vendor: "amd"))
+
+    assert [facts] = NodeRegistry.capacity(table)
+    assert facts.cpu_vendor == "amd"
   end
 
   test "registry projects budget facts (R0 PR-1: mem/cpu budget from the daemon's own cgroup)" do
@@ -450,11 +461,14 @@ defmodule Embervm.NodeRegistryTest do
     assert NodeRegistry.status(reg)["node-4/uid-1"].address == "new-ip:9090"
   end
 
-  test "dial-home registration keys NodeChannel by NODE NAME (what dispatch consumers look up), not instance_id" do
-    # The dispatch outage this guards against: NodeChannel keyed by instance_id
-    # ("node-4/<pod_uid>") left every consumer's node-name lookup (PoolManager.refill_node/2
-    # on facts.configured_id "node-4", and stateful/session/serving/group placement)
-    # returning :unknown_node, so the CP could dispatch NO work behind healthy pods.
+  test "dial-home registration DUAL-KEYS NodeChannel: instance_id (dispatcher) AND node-name alias (legacy wakes)" do
+    # Bug A fix (brick co-location foundation Step 1). Two consumer classes address
+    # NodeChannel differently: the dispatcher (PR-2) resolves pick_node to an
+    # instance_id ("node-4/uid-1") and calls get("node-4/uid-1"); the legacy wakes
+    # (PoolManager.refill_node/2 on facts.configured_id "node-4", plus
+    # stateful/session/serving/group placement) call get("node-4"). A single-key
+    # registration starved one class or the other. So registration points BOTH keys
+    # at the instance's address; both lookups resolve.
     {:ok, chan} = Agent.start_link(fn -> [] end)
     on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
 
@@ -467,10 +481,67 @@ defmodule Embervm.NodeRegistryTest do
 
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.42.1.24:9090"})
 
-    # Addressable by the bare node name (the key PoolManager/placement use).
+    # Both keys resolve to the instance's address: the node-name alias (legacy wakes)
+    # AND the instance_id (dispatcher). Neither class is starved.
     eventually(fn -> {"node-4", "10.42.1.24:9090"} in Agent.get(chan, & &1) end, 200)
-    # And NEVER keyed by the instance_id "node-4/uid-1" (that key is invisible to consumers).
-    refute {"node-4/uid-1", "10.42.1.24:9090"} in Agent.get(chan, & &1)
+    eventually(fn -> {"node-4/uid-1", "10.42.1.24:9090"} in Agent.get(chan, & &1) end, 200)
+  end
+
+  test "a node-scoped instance (empty pod_uid) keys NodeChannel exactly once (keys collapse)" do
+    # When pod_uid is empty the instance_id IS the node name, so channel_keys/1
+    # de-dups to a single key: the static/pinned single-daemon override registers
+    # NodeChannel once, not twice under the same key.
+    {:ok, chan} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          channel_updater_fun: fn id, addr -> Agent.update(chan, &[{id, addr} | &1]) end
+        )
+      )
+
+    :ok = NodeRegistry.register(reg, %{"node" => "node-9", "address" => "10.42.9.1:9090"})
+
+    eventually(fn -> {"node-9", "10.42.9.1:9090"} in Agent.get(chan, & &1) end, 200)
+    updates = Enum.filter(Agent.get(chan, & &1), &match?({"node-9", "10.42.9.1:9090"}, &1))
+    assert length(updates) == 1
+  end
+
+  test "instance expiry REMOVES both NodeChannel keys (no stale alias after an instance dies)" do
+    # The dual-key add must be matched by a dual-key remove: expire_instance drops
+    # both the instance_id and the node-name alias from NodeChannel, so no stale key
+    # keeps a legacy wake dialing a torn-down pod's IP (and, under co-location, so a
+    # same-node replacement's alias is not shadowed by a dead one).
+    {clock, advance} = new_clock()
+    {:ok, removed} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(removed), do: Agent.stop(removed) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          channel_remover_fun: fn key -> Agent.update(removed, &[key | &1]) end,
+          age_check_ms: 60_000,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 90_000
+        )
+      )
+
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
+    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
+
+    # Drive both expiry signals: registration lapses (advance past expire_after) AND
+    # the stream goes dead (advance past down_after with no fresh status).
+    advance.(100_000)
+    NodeRegistry.tick(reg)
+    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 50)
+
+    # Both keys were removed from NodeChannel.
+    keys = Agent.get(removed, & &1)
+    assert "node-4/uid-1" in keys
+    assert "node-4" in keys
   end
 
   test "registration feeds instance add to the BaseBuilder (so BuildBase can place)" do

@@ -1183,6 +1183,7 @@ defmodule Embervm.SessionManager do
   end
 
   defp safe_restore_artifact(state, node_id, %ArtifactRef{} = ref) do
+    ref = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, ref)
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
 
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do

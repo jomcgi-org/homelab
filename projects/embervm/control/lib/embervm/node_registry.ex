@@ -243,6 +243,15 @@ defmodule Embervm.NodeRegistry do
     channel_updater_fun =
       Keyword.get(opts, :channel_updater_fun, &default_channel_update/2)
 
+    # How an expired instance's keys are REMOVED from the Prime/Assign channel
+    # holder. Under the dual-key registration an instance is added to NodeChannel
+    # under both its instance_id and its node-name alias; on expiry both must be
+    # dropped so no stale alias keeps pointing at a torn-down pod's address. Keyed
+    # like channel_updater_fun (one call per key). Default calls the singleton
+    # NodeChannel; tests inject a fake to assert both removals fire.
+    channel_remover_fun =
+      Keyword.get(opts, :channel_remover_fun, &default_channel_remove/1)
+
     # How a registered instance's add/remove is propagated to Embervm.BaseBuilder,
     # which (like NodeChannel) is seeded EMPTY at boot under dial-home and must
     # learn the fleet so BuildBase can PLACE builds. Without this, a control plane
@@ -277,6 +286,7 @@ defmodule Embervm.NodeRegistry do
       min_watch_ms: min_watch,
       expire_after_ms: expire_after,
       channel_updater_fun: channel_updater_fun,
+      channel_remover_fun: channel_remover_fun,
       base_builder_updater_fun: base_builder_updater_fun,
       node_runtime: node_runtime,
       # The process notified once per drain rising edge with {:node_draining,
@@ -552,6 +562,18 @@ defmodule Embervm.NodeRegistry do
       # placement is unchanged. Nothing reads this in PR-1 (the ledger is
       # populated but unread until the placement rewrite).
       size_class: s.size_class,
+      # CPU-vendor fact (R7, ADR embervm/011, additive): the CPUID vendor this node
+      # reports ("amd"/"intel"), from cpu_sku.vendor when the daemon sets the richer
+      # CpuSku (field 28) and falling back to the standalone cpu_vendor (field 24)
+      # for a daemon that predates it. The restore-on-miss wake planners
+      # (stateful/serving/session/group managers) read this to stamp
+      # RestoreArtifactRequest.artifact.vendor for the vendor-bound artifact kinds,
+      # so noded's resolveRestorePrefix composes the vendor-keyed store prefix
+      # instead of rejecting the restore InvalidArgument "vendor required". Empty on
+      # a daemon that sets neither field (pre-R7), which noded treats as node-4's
+      # vendor alias (standing decision 11), so an unset vendor still restores the
+      # legacy un-vendored prefix rather than failing closed.
+      cpu_vendor: cpu_vendor_from_status(s),
       workloads: workloads,
       mem_headroom_mib: s.mem_headroom_mib,
       cpu_headroom_millicores: s.cpu_headroom_millicores,
@@ -780,6 +802,16 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp session_snapshots_from_status(_s), do: []
+
+  # The node's CPUID vendor for restore-on-miss vendor keying (R7, ADR embervm/011).
+  # Prefers the richer CpuSku.vendor (field 28) when the daemon reports it, falls
+  # back to the standalone cpu_vendor (field 24) for a daemon that predates CpuSku,
+  # and yields "" when the daemon sets neither (pre-R7, which noded maps to the
+  # node-4 vendor alias). Matched structurally on the CpuSku struct so this module
+  # needs no compile-time alias of it.
+  defp cpu_vendor_from_status(%NodeStatus{cpu_sku: %{vendor: v}}) when is_binary(v) and v != "", do: v
+  defp cpu_vendor_from_status(%NodeStatus{cpu_vendor: v}) when is_binary(v), do: v
+  defp cpu_vendor_from_status(_s), do: ""
 
   # -- age-out state machine --------------------------------------------------
 
@@ -1053,6 +1085,16 @@ defmodule Embervm.NodeRegistry do
   defp instance_id_of(node, ""), do: node
   defp instance_id_of(node, pod_uid), do: node <> "/" <> pod_uid
 
+  # The NodeChannel keys this instance is registered under: its instance_id
+  # ("node/pod_uid", what the dispatcher's pick_node resolves to) and, when it
+  # differs, the node-name alias ("node", what the legacy stateful/serving/session/
+  # group wakes still resolve to). For a node-scoped instance (empty pod_uid) the
+  # instance_id IS the node name, so the two collapse to a single key. Add and
+  # remove drive off this same list so registration stays consistent on both edges.
+  defp channel_keys(rt) do
+    Enum.uniq([rt.instance_id, rt.configured_id])
+  end
+
   # Apply one registration: upsert the instance keyed by {node, pod_uid}. Three
   # cases, all event-driven (no polling): a NEW instance seeds its runtime, joins
   # the NodeChannel/BaseBuilder fleet and opens a streamer; a KNOWN instance whose
@@ -1083,20 +1125,27 @@ defmodule Embervm.NodeRegistry do
   end
 
   # Seed a newly-registered instance's runtime, propagate its address to the
-  # Prime/Assign channel holder (keyed by NODE NAME, see below) and the BaseBuilder
+  # Prime/Assign channel holder (under BOTH keys, see below) and the BaseBuilder
   # (keyed by INSTANCE id), and open its streamer. Mirrors the static seed shape so
   # age-out and streamer plumbing treat a registered instance identically.
   #
-  # NodeChannel keying (single-instance bridge): the registry's own tables are keyed
-  # by instance_id ("node/pod_uid") for future multi-brick, but NodeChannel is the
-  # DISPATCH channel and every consumer addresses it by NODE NAME: PoolManager.refill_node/2
-  # keys on facts.configured_id ("node-4"), and stateful/session/serving/group placement
-  # resolve to a node-name anchor and dispatch by node-name. Keying NodeChannel by
-  # instance_id here left NodeChannel.get("node-4") returning :unknown_node, so the CP
-  # could dispatch NO work behind healthy pods. For today's one-instance-per-node fleet
-  # we point NodeChannel at norm.node (the node name) so every consumer's lookup hits.
-  # The brick-capacity placement PR will migrate NodeChannel AND all consumers to
-  # instance_id keying for multi-instance; this is the single-instance-correct bridge.
+  # NodeChannel keying (DUAL-KEY, brick co-location foundation Step 1): the
+  # registry's own tables are keyed by instance_id ("node/pod_uid"). NodeChannel is
+  # the DISPATCH channel and has two classes of consumer, keyed differently:
+  #   * the dispatcher (PR-2) resolves pick_node to an INSTANCE_ID ("node-4/<uid>")
+  #     and calls NodeChannel.get("node-4/<uid>");
+  #   * the legacy wakes (PoolManager.refill_node/2 on facts.configured_id, plus
+  #     stateful/session/serving/group placement) still resolve to a NODE-NAME anchor
+  #     and call NodeChannel.get("node-4").
+  # A single-key registration therefore starved one class or the other (keying only
+  # by node-name left the dispatcher's get(instance_id) at :unknown_node, so EVERY
+  # assign died {:no_channel, :unknown_node}; keying only by instance_id would break
+  # the legacy wakes). So we register the SAME address under BOTH keys: the
+  # instance_id and, when it differs, the node-name alias. Both resolve to this
+  # instance's address; expire_instance removes both so no stale alias survives. The
+  # node-name alias is deliberately kept until the wakes migrate to instance_id
+  # keying (a later step) and stays #3732-safe: it maps a constructed node name to a
+  # real instance's address rather than into an instance-keyed map with no entry.
   defp add_instance(state, norm, now) do
     rt =
       seed_runtime(
@@ -1111,7 +1160,10 @@ defmodule Embervm.NodeRegistry do
       "embervm node registry: registered instance #{rt.instance_id} (node #{norm.node}, pod #{norm.pod_uid}, #{norm.address})"
     )
 
-    safe_channel_update(state.channel_updater_fun, norm.node, norm.address)
+    for key <- channel_keys(rt) do
+      safe_channel_update(state.channel_updater_fun, key, norm.address)
+    end
+
     safe_base_builder_update(state.base_builder_updater_fun, {:add, rt.instance_id, norm.address})
 
     state
@@ -1151,14 +1203,33 @@ defmodule Embervm.NodeRegistry do
     }
   end
 
-  # Remove an instance from the registry: retract its capacity row, tell the
-  # BaseBuilder to drop it, kill its streamer if any (forgetting the pid first so
-  # the ensuing DOWN is ignored), and drop its runtime so no reconnect resurrects
-  # it. Used both by two-signal expiry and by a re-registration re-point.
-  # (NodeChannel needs no explicit removal: it lazy-dials and invalidates a dead
-  # channel on the next transport error, so a stale map entry is harmless.)
+  # Remove an instance from the registry: retract its capacity row, drop BOTH its
+  # NodeChannel keys (instance_id + node-name alias), tell the BaseBuilder to drop
+  # it, kill its streamer if any (forgetting the pid first so the ensuing DOWN is
+  # ignored), and drop its runtime so no reconnect resurrects it. Used both by
+  # two-signal expiry and by a re-registration re-point.
+  #
+  # NodeChannel removal (dual-key, brick co-location foundation Step 1): add_instance
+  # registered this instance's address under both its instance_id and its node-name
+  # alias, so expiry must remove both. Leaving the node-name alias behind would keep
+  # a legacy wake dialing the dead pod's IP until a transport error invalidated it;
+  # under co-location a same-node replacement instance would then have its alias
+  # clobbered by this stale one on a re-registration race. Removing both keeps the
+  # map consistent (no alias without a live instance). Done while the runtime entry
+  # still exists so channel_keys/1 can read the instance_id + node name.
   defp expire_instance(state, instance_id) do
     Logger.info("embervm node registry: instance #{instance_id} expired; tearing down")
+
+    case state.node_runtime[instance_id] do
+      nil ->
+        :ok
+
+      rt ->
+        for key <- channel_keys(rt) do
+          safe_channel_remove(state.channel_remover_fun, key)
+        end
+    end
+
     safe_base_builder_update(state.base_builder_updater_fun, {:remove, instance_id})
     state = retract_capacity(state, instance_id)
 
@@ -1198,16 +1269,40 @@ defmodule Embervm.NodeRegistry do
       :ok
   end
 
-  # Default: point the singleton Embervm.NodeChannel at the node's address, keyed by
-  # NODE NAME (not instance_id). Every dispatch consumer (PoolManager.refill_node/2 on
-  # facts.configured_id, plus stateful/session/serving/group placement) looks up the
-  # channel by node-name, so the propagation must match. On a re-registration at a new
-  # address, update_address unconditionally erases the channel cached under this same
-  # node-name key and re-points it, so no stale endpoint survives. (Multi-instance
-  # per node is not reachable until the brick-capacity placement PR migrates NodeChannel
-  # and all consumers to instance_id keying; this node-name keying is that bridge.)
-  defp default_channel_update(node_name, address) do
-    Embervm.NodeChannel.update_address(node_name, address)
+  # Default: point the singleton Embervm.NodeChannel at the instance's address under
+  # one key (add_instance calls this once per key in channel_keys/1: the instance_id
+  # for the dispatcher, the node-name alias for the legacy wakes). On a
+  # re-registration at a new address, update_address unconditionally erases the
+  # channel cached under this key and re-points it, so no stale endpoint survives.
+  defp default_channel_update(key, address) do
+    Embervm.NodeChannel.update_address(key, address)
+    :ok
+  end
+
+  # Propagate an instance expiry to the Prime/Assign channel holder by dropping one
+  # key (expire_instance calls this once per key in channel_keys/1). Swallowing any
+  # error mirrors safe_channel_update: a NodeChannel that is not running, or a slow
+  # call, must never crash expiry.
+  defp safe_channel_remove(nil, _key), do: :ok
+
+  defp safe_channel_remove(remover, key) do
+    remover.(key)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm node registry: channel removal for #{key} failed: #{inspect(e)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("embervm node registry: channel removal for #{key} exited: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  # Default: drop the key from the singleton Embervm.NodeChannel (erasing any cached
+  # channel), so a subsequent get/1 returns :unknown_node rather than dialing a
+  # torn-down pod's address.
+  defp default_channel_remove(key) do
+    Embervm.NodeChannel.remove_address(key)
     :ok
   end
 
