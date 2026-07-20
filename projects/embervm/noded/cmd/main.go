@@ -62,6 +62,16 @@ func run(logger *slog.Logger) error {
 		"node", cfg.Node, "arch", cfg.Arch,
 		"maxLiveVMs", cfg.MaxLiveVMs, "registryCache", cfg.RegistryCachePath)
 
+	// Startup GC of orphan per-instance (brick) warmth: reap SnapshotRoot/i/<seg>
+	// dirs left by evicted/rolled-out co-located bricks whose pod UID is not ours.
+	// Fail-soft (warmth is regenerable) and narrow: bases/ and the VolumeRoot are
+	// never touched, and this is a no-op on the legacy DaemonSet (flat warmth).
+	if removed := config.PruneStaleInstanceWarmth(cfg, func(segment string, err error) {
+		logger.Warn("startup GC: could not remove stale instance warmth", "segment", segment, "err", err)
+	}); len(removed) > 0 {
+		logger.Info("startup GC: reaped stale instance warmth", "count", len(removed), "segments", removed)
+	}
+
 	self, err := os.Executable()
 	if err != nil {
 		return err
