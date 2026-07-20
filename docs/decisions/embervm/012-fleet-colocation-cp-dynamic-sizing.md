@@ -141,6 +141,19 @@ The seed's tier taxonomy stands. The clarifications this ADR records:
   its RWO semantics break the shared surge cache, and the attach lifecycle
   adds a boot-blocking failure surface in front of data that is by definition
   reconstructible.
+- A third alternative, local PersistentVolumes via the static provisioner, is
+  rejected after re-examination under the brick model (2026-07-19). A local PV
+  is exclusively claimed by one PVC, but scratch is a node-scoped cache shared
+  by every brick on the node and by the surge pair during a roll; per-pod
+  claims via generic ephemeral volumes restore the fetch tax through the
+  provisioner's clean-on-release lifecycle, and per-node claims contradict the
+  uniform brick spec. The hostPath's logical path, /var/lib/embervm/scratch, is
+  instead a node-provisioning contract carried by the firecracker node label:
+  Karpenter userData mounts instance-store NVMe there at bootstrap on EKS, and
+  a scratch-prep DaemonSet bind-mounts each pet node's real device there on the
+  homelab. A node advertising the label without satisfying the contract fails
+  closed at pod mount time (hostPath type Directory), never silently onto the
+  root disk.
 - **Longhorn remains only for tier 3**, the live pg volumes, where
   attach-as-fence earns its keep (ADR 011).
 - **Durable-tier eviction gains re-HEAD verification**: before deleting a

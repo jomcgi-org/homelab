@@ -1,0 +1,32 @@
+# Runtime image for the embervm scratch-prep DaemonSet. This is the node-
+# provisioning contract's homelab-side actuator (docs/decisions/embervm/012, the
+# storage-tiers amendment): it bind-mounts each pet node's real scratch device
+# onto the uniform logical path /var/lib/embervm/scratch that noded's hostPath
+# expects, running the mount inside the HOST mount namespace via nsenter so the
+# bind survives the pod's own lifecycle.
+#
+# LEAN and PRIVILEGED by necessity: the only tool this image needs is nsenter
+# (util-linux) plus a POSIX shell to invoke it. mount/mountpoint/mkdir/grep all
+# run INSIDE the host namespace via nsenter, using the HOST's own binaries, not
+# this image's, so this image carries no mount tooling of its own. Runs as root
+# (uid 0): privileged + hostPID is required to nsenter into PID 1's namespaces,
+# so the repo's non-root convention does not apply here, same exception noded
+# itself takes for driving Firecracker.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - util-linux
+
+archs:
+  - x86_64
+  - aarch64
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+entrypoint:
+  command: /bin/sh

@@ -45,6 +45,13 @@ helm_chart(
         # rootfs-builder GUEST_IMAGE, and the Workload CR's source.image.ref all
         # resolve to the same pinned digest.
         "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
+        # Node-provisioning contract (ADR embervm/012 storage-tiers amendment): the
+        # scratch-prep DaemonSet image (nsenter-only, no repo code). MUST be a
+        # DISTINCT top-level key, not noded.scratchPrep.image: helm_images_values
+        # emits one YAML block per dotted key, so nesting under the noded.* prefix
+        # already claimed by "noded.image" above would collapse to the last on
+        # parse (duplicate-key, D14a.6), silently dropping one pin.
+        "scratchPrep.image": "//projects/embervm/scratch-prep:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],
