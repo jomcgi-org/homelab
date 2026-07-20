@@ -92,32 +92,20 @@ noded:
     nodeMap:
       node-4: /disks/nvme-02
 
-# Size-class BRICK cutover, canary step 1 (brick-capacity PR-3b, decisions.md
-# 2026-07-19). Flips bricks on for the FIRST real co-location beside the legacy
-# noded DaemonSet on node-4. Deep-merged over the chart's bricks block, so this
-# overlay only adds the two keys and the chart's classes ladder (2/4/8/16Gi)
-# stands. desiredReplicas lists ONLY 2gi, so the small brick renders at 1 replica
-# and the other three classes render at 0 (an unlisted class defaults to 0): one
-# live 2gi brick pod plus three empty Deployments. Small-first is deliberate: it
-# adds only +1 core to node-4 during the DS overlap and exercises the whole path
-# (PR-2 dispatcher spread, PR-2.5 per-instance warmth, PR-3a BrickController
-# reconcile + dial-home size_class) before the large 16gi brick lands in a
-# follow-up. No chart bump: this is the $values git ref, read straight from git;
-# ArgoCD ignores Deployment /spec/replicas fleet-wide so the controller (not this
-# value) owns the count after first create.
+# Size-class BRICK cutover REVERTED to the known-good single-instance DS fleet
+# (foundation plan Step 0, docs/plans/2026-07-20-embervm-brick-colocation-foundation.md).
+# The PR-3b canary (2gi+16gi co-located on node-4) exposed foundation bugs that
+# make co-location non-functional today: SUN_LEN socket-path overflow on the
+# PR-2.5 per-instance warmth root (firecracker cannot bind its API socket, so
+# EVERY VM op on EVERY brick fails), node-keyed wake addressing collapsing
+# co-located instances, BaseBuilder capturing the whole fleet's base provisioning
+# on one undersized brick, and absent memory facts. bricks.enabled=false removes
+# the brick Deployments so the registry expires the brick instances, BaseBuilder
+# un-pins and re-places every workload on the DS (flat warmth root, no SUN_LEN),
+# and bases rebuild. Re-canary at plan Step 6 once Steps 1-5 land. No chart bump
+# ($values git ref).
 bricks:
-  enabled: true
-  desiredReplicas:
-    2gi: 1
-    # Canary step 2 (large): the 16gi brick node-4's serving/session workloads
-    # actually need (a ~10Gi composite group's bridge fits only the 16gi class).
-    # Added after the 2gi brick verified healthy (co-located beside the DS,
-    # dial-home + registry connected/healthy/dispatchable, per-instance warmth
-    # bases built with no clobber, no :fleet_full past the 5m window). Staged
-    # second so node-4 absorbed +1 core then +2 cores rather than +3 at once
-    # during the DS overlap. Projected node-4 load with both bricks: ~83% CPU /
-    # ~81% memory requests, no Pending. Reverts by removing this line.
-    16gi: 1
+  enabled: false
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
