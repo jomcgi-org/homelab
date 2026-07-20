@@ -424,6 +424,16 @@ py3_image(
 _PUBLIC_PRUNE_EXCLUDE = [
     # Standard excludes (mirror :monolith_backend / :main).
     "**/*_test.py",
+    # Semgrep: the public tier ships only semgrep_scan/client.py (+ __init__)
+    # for the ember demo; the MCP tool, App reporting, PR router, full-scan
+    # and perf surfaces are private-only.
+    "semgrep_scan/mcp.py",
+    "semgrep_scan/module.py",
+    "semgrep_scan/report.py",
+    "semgrep_scan/full_scan.py",
+    "semgrep_scan/router.py",
+    "semgrep_scan/cohorts.py",
+    "semgrep_scan/perf_*.py",
     "**/test_*.py",
     "*/tests/**/*.py",
     "shared/testing/**/*.py",
@@ -610,6 +620,10 @@ py_venv_binary(
             # below; main_public_imports_test enforces they stay out of the closure.
             "faas/**/*.py",
             "ember_public/**/*.py",
+            # Semgrep demo (ember_public.semgrep_router): only client.py + the
+            # package __init__ ship; mcp/report/full_scan/router/perf stay
+            # pruned below (private-tier surfaces).
+            "semgrep_scan/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
