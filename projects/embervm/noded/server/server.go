@@ -177,6 +177,12 @@ type Server struct {
 	// minus the observed usage rate across the two most recent Refresh
 	// calls). 0 until a second sample exists. Overridable in tests.
 	cpuHeadroom func() uint64
+	// slotCeiling maps the configured MaxLiveVMs backstop to the brick's
+	// cgroup-derived live-VM slot ceiling (floor(MemBudgetMib/minWorkload),
+	// clamped to the configured value). The reported MaxLiveVms is this
+	// ceiling, so a 2gi brick advertises a handful of slots rather than the
+	// configured default. Overridable in tests.
+	slotCeiling func(configured uint64) uint64
 
 	// httpClient fetches zip-lane archives from the in-cluster SeaweedFS read path
 	// over the pod network. Overridable in tests (a fake archive server).
@@ -435,6 +441,7 @@ func New(opts Options) *Server {
 	s.memBudget = s.budget.MemBudgetMib
 	s.cpuBudget = s.budget.CpuBudgetMillicores
 	s.cpuHeadroom = s.budget.CpuHeadroomMillicores
+	s.slotCeiling = s.budget.SlotCeiling
 	s.statefulResolveTimeout = defaultStatefulResolveTimeout
 	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
@@ -1515,6 +1522,12 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	if maxLive < 0 {
 		maxLive = 0
 	}
+	// The reported MaxLiveVms is the brick's cgroup-derived slot ceiling (ADR
+	// embervm/013 section 7), with the configured backstop as an upper clamp:
+	// a size-class brick advertises a budget-honest slot count, never the raw
+	// configured default. When the cgroup budget is unknown the ceiling equals
+	// the configured backstop, preserving pre-budget behavior.
+	maxLive = int(s.slotCeiling(uint64(maxLive)))
 	// Session and serving VMs both count against the node live-VM total alongside
 	// task-pool VMs (all three classes Claim through the same driver, but this sum
 	// names the invariant at the call site).
