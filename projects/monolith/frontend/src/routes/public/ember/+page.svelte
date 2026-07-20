@@ -186,8 +186,6 @@
         </span>
       </p>
       <p class="stats">
-        <span>four cluster nodes</span>
-        <span class="sep">·</span>
         <span><b>{bestWake} ms</b> best wake</span>
         <span class="sep">·</span>
         <span><b>~{vmRestore} ms</b> VM restore</span>
@@ -345,7 +343,7 @@
             >CONTROL PLANE · ELIXIR/OTP</text
           >
           <rect class="lane" x="420" y="18" width="286" height="264" rx="10" />
-          <text x="432" y="38" class="lane-label">EACH NODE (×4)</text>
+          <text x="432" y="38" class="lane-label">EACH FIRECRACKER NODE</text>
 
           <rect x="14" y="74" width="100" height="44" rx="8" class="box" />
           <text x="64" y="93" text-anchor="middle" class="node-label"
