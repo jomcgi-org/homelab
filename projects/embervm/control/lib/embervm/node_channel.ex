@@ -95,6 +95,21 @@ defmodule Embervm.NodeChannel do
   end
 
   @doc """
+  Drop `node_id` from the address map entirely and erase any cached channel, so a
+  subsequent `get/1` returns `{:error, :unknown_node}` rather than re-dialing a
+  dead endpoint. Used by `Embervm.NodeRegistry` when an instance expires: under the
+  dual-key registration (brick co-location foundation, Step 1) an instance is
+  registered under BOTH its instance_id (`"node/pod_uid"`) and its node-name alias,
+  and both must be removed on expiry so no stale alias points at a torn-down pod's
+  address. Idempotent: removing an unknown key is a no-op. Synchronous so the caller
+  knows the map no longer resolves the key before it drops its own runtime entry.
+  """
+  @spec remove_address(GenServer.server(), String.t()) :: :ok
+  def remove_address(server \\ __MODULE__, node_id) do
+    GenServer.call(server, {:remove_address, node_id})
+  end
+
+  @doc """
   Whether `error` means the CHANNEL's transport is dead (so the cached channel
   must be invalidated and re-dialed), as opposed to a server-returned gRPC status
   that rode a HEALTHY channel (which must NOT tear the shared channel down, per
@@ -167,6 +182,23 @@ defmodule Embervm.NodeChannel do
         safe_disconnect(state, channel)
     end
 
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:remove_address, node_id}, _from, state) do
+    # Erase any cached channel first (unconditional: the endpoint is going away),
+    # then drop the address so get/1 falls through to {:error, :unknown_node}.
+    case :persistent_term.get(pt_key(node_id), :undefined) do
+      :undefined ->
+        :ok
+
+      channel ->
+        :persistent_term.erase(pt_key(node_id))
+        safe_disconnect(state, channel)
+    end
+
+    state = %{state | node_addr: Map.delete(state.node_addr, node_id)}
     {:reply, :ok, state}
   end
 
