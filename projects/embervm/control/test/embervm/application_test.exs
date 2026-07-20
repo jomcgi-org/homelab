@@ -1,13 +1,14 @@
 defmodule Embervm.ApplicationTest do
   @moduledoc """
-  Boot-ordering regression for the noded node-list seed (artifact-decoupling
-  PR-C, C4). `Embervm.Application.configured_nodes/0` seeds BaseBuilder /
-  NodeRegistry / NodeChannel at children-CONSTRUCTION time, which runs BEFORE any
-  supervised child (including Finch) is started. It therefore MUST NOT touch Finch
-  / the K8s API: doing so raised `(ArgumentError) unknown registry: Embervm.Finch`
-  and crash-looped the whole control plane in prod. These tests pin the contract:
-  under discovery config, the seed is EMPTY and Finch-free (post-Finch discovery
-  populates the fleet); the explicit-address override still seeds statically.
+  Boot-ordering regression for the noded node-list seed. Under dial-home
+  registration (R0 PR-2) `Embervm.Application.configured_nodes/0` seeds
+  BaseBuilder / NodeRegistry / NodeChannel at children-CONSTRUCTION time, which
+  runs BEFORE any supervised child (including Finch) is started. It therefore MUST
+  NOT touch Finch / the K8s API: doing so raised `(ArgumentError) unknown
+  registry: Embervm.Finch` and crash-looped the whole control plane in prod. These
+  tests pin the contract: without a pinned override the seed is EMPTY and
+  Finch-free (dial-home registration populates the fleet post-Finch); the
+  explicit-address override still seeds statically.
 
   Finch is NOT started in ExUnit, so if configured_nodes/0 called it these tests
   would RAISE rather than return, which is exactly the regression they guard.
@@ -19,7 +20,7 @@ defmodule Embervm.ApplicationTest do
   setup do
     # Snapshot and restore the env vars these tests toggle, so they never leak.
     saved =
-      for k <- ~w(EMBERVM_NODED_SERVICE EMBERVM_NODE_ADDRESS EMBERVM_NODE_ID EMBERVM_NODED_GRPC_PORT) do
+      for k <- ~w(EMBERVM_NODE_ADDRESS EMBERVM_NODE_ID) do
         {k, System.get_env(k)}
       end
 
@@ -33,9 +34,8 @@ defmodule Embervm.ApplicationTest do
     :ok
   end
 
-  test "configured_nodes/0 seeds EMPTY (and does not touch Finch) under discovery config" do
-    # Discovery is the active source: a headless Service name, no pinned override.
-    System.put_env("EMBERVM_NODED_SERVICE", "embervm-embervm-noded")
+  test "configured_nodes/0 seeds EMPTY (and does not touch Finch) with no pinned override" do
+    # No pinned override: the fleet arrives via dial-home registration post-Finch.
     System.delete_env("EMBERVM_NODE_ADDRESS")
 
     # Must NOT raise (a Finch call here would raise "unknown registry:

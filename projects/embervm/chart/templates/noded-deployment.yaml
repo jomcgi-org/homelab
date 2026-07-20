@@ -139,6 +139,22 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            # The pod's own UID (Downward API metadata.uid), the daemon's INSTANCE
+            # identity. Reported as NodeStatus.pod_uid and advertised in the
+            # dial-home registration, so the control plane keys its registry and
+            # capacity ledger by (node, pod_uid): two noded instances on one node
+            # during a surge roll never alias (R0 PR-2, ADR embervm/005).
+            - name: EMBERVM_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            # Dial-home registration target: the control plane's HTTP base URL the
+            # daemon POSTs {node, pod_uid, address, boot_id} to on start and on a
+            # jittered interval. Rendered from the control-plane Service name +
+            # http port so it survives a rename. The daemon presents its projected
+            # ServiceAccount token (auto-mounted at the default path) as the bearer.
+            - name: EMBERVM_NODED_CONTROL_PLANE_URL
+              value: {{ printf "http://%s.%s.svc:%v" (include "embervm.fullname" .) .Release.Namespace .Values.service.port | quote }}
             - name: EMBERVM_NODED_MAX_LIVE_VMS
               value: {{ .Values.noded.maxLiveVMs | quote }}
             # R5 composite-group supernet: noded carves a /24 per group out of this

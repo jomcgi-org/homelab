@@ -85,24 +85,28 @@ spec:
               value: {{ mul .Values.opLog.sweepIntervalSeconds 1000 | quote }}
             - name: EMBERVM_OPLOG_JOURNAL_HORIZON_MS
               value: {{ mul .Values.opLog.journalHorizonDays 86400 1000 | quote }}
-            # Node discovery for Embervm.NodeRegistry (artifact-decoupling PR-C,
-            # C4). noded is a DaemonSet behind a HEADLESS Service, so the control
-            # plane discovers every daemon's individual pod endpoint via
-            # EndpointSlice discovery and dials each one. EMBERVM_NODED_SERVICE
-            # names the headless Service (release-name-derived, survives a rename);
-            # EMBERVM_NODED_GRPC_PORT is the daemon gRPC port.
+            # Node membership for Embervm.NodeRegistry. Dial-home registration
+            # (R0 PR-2, ADR embervm/005): each noded instance POSTs its identity to
+            # /v1/nodes/register and the control plane adopts it keyed by
+            # (node, pod_uid). The control plane never lists-and-watches daemon pods
+            # (the retired EndpointSlice discovery), so there is no service/port
+            # discovery env here anymore.
             {{- if .Values.node.address }}
             # Explicit single-node override (tests / out-of-cluster daemon): a
-            # pinned address wins over discovery. Retained as an escape hatch.
+            # pinned address seeds the registry statically instead of dial-home.
+            # Retained as an escape hatch.
             - name: EMBERVM_NODE_ID
               value: {{ .Values.node.id | quote }}
             - name: EMBERVM_NODE_ADDRESS
               value: {{ .Values.node.address | quote }}
-            {{- else if .Values.noded.enabled }}
-            - name: EMBERVM_NODED_SERVICE
-              value: {{ include "embervm.noded.fullname" . | quote }}
-            - name: EMBERVM_NODED_GRPC_PORT
-              value: {{ .Values.noded.grpcPort | quote }}
+            {{- end }}
+            {{- if .Values.noded.enabled }}
+            # The noded ServiceAccount username the control plane authenticates the
+            # dial-home POST against (a valid TokenReview whose username equals this,
+            # NOT the task-submit allow-list). Rendered from the release namespace +
+            # noded SA name so it survives a rename.
+            - name: EMBERVM_NODED_SERVICE_ACCOUNT
+              value: {{ printf "system:serviceaccount:%s:%s" .Release.Namespace (include "embervm.noded.serviceAccountName" .) | quote }}
             {{- end }}
             {{- if and .Values.runtimePython .Values.runtimePython.guestImage .Values.runtimePython.guestImage.repository }}
             # R1 zip lane (ADR embervm/002): the zip-lane runtime name -> pinned

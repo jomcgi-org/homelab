@@ -69,10 +69,17 @@ The full threat model is in
 ## Node labelling (one-time operator action)
 
 noded is a DaemonSet over the FC node pool: it runs one daemon per node carrying
-the label `homelab.io/firecracker=true`, and the control plane discovers each
-daemon's pod endpoint (via EndpointSlices) and dials it individually. Growing the
-fleet is therefore a LABEL, not a values edit: label a node and a noded pod
-schedules onto it; the control plane discovers it on its next (re)start.
+the label `homelab.io/firecracker=true`. Each daemon DIALS HOME (R0 PR-2, ADR
+embervm/005): on start and on a jittered interval it POSTs its identity
+(`{node, pod_uid, address, boot_id}`) to the control plane's `/v1/nodes/register`
+route, and the control plane adopts it keyed by `(node, pod_uid)` and dials the
+advertised address for `WatchNode`. The control plane never lists-and-watches
+daemon pods (the retired EndpointSlice discovery), so it needs no discovery RBAC.
+Growing the fleet is therefore a LABEL, not a values edit: label a node, a noded
+pod schedules onto it, and it registers itself within one interval. Because the
+registry key is the pod UID, two noded instances on one node during a surge roll
+are simultaneously representable (the draining old instance and the fresh one
+never alias).
 
 A node label is node-lifecycle config (the same class as joining the node), not a
 GitOps-managed resource, so the "never kubectl-mutate managed resources" rule

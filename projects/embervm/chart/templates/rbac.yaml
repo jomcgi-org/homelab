@@ -14,14 +14,11 @@
 #                                       MMDS-lite boot-args seam). NEW runtime
 #                                       RBAC introduced by the mmds_env wiring;
 #                                       every prior R0-R4 PR needed zero.
-#   endpointslices (list)               artifact-decoupling PR-C, C4:
-#                                       Embervm.K8s.list_noded_endpoints discovers
-#                                       every noded DaemonSet pod behind the
-#                                       headless Service so the control plane dials
-#                                       each daemon individually (per-pod WatchNode
-#                                       + SyncRegistry). Missing this list verb
-#                                       makes discovery return [] and the control
-#                                       plane finds NO nodes (silent no-dispatch).
+#
+# The EndpointSlice list verb was RETIRED in R0 PR-2 (dial-home registration):
+# the control plane no longer discovers daemons by listing pods; each noded
+# instance POSTs its identity to /v1/nodes/register, so no discovery.k8s.io RBAC
+# is needed.
 #
 # ClusterRole (not Role) because tokenreviews.authentication.k8s.io is cluster-
 # scoped, and the watcher may observe Workloads (and now their Secrets) across
@@ -61,12 +58,6 @@ rules:
       - secrets
     verbs:
       - get
-  - apiGroups:
-      - discovery.k8s.io
-    resources:
-      - endpointslices
-    verbs:
-      - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

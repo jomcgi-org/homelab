@@ -39,6 +39,13 @@ defmodule Embervm.Application do
     Application.put_env(:embervm, :quota, quota_config())
     Application.put_env(:embervm, :usage_admins, usage_admins())
 
+    # The noded ServiceAccount username the router authenticates dial-home
+    # registrations against (R0 PR-2), from EMBERVM_NODED_SERVICE_ACCOUNT. Set
+    # BEFORE the supervisor starts so the Router (reads it per request) sees it.
+    # Empty ("") accepts any valid ServiceAccount token (a permissive fallback for
+    # a cluster that has not pinned the SA); it never accepts an invalid token.
+    Application.put_env(:embervm, :noded_service_account, trimmed_env("EMBERVM_NODED_SERVICE_ACCOUNT"))
+
     # Composite-group (R5) capacity from the chart env into app-env BEFORE the
     # supervisor starts, so Embervm.WorkloadWatcher (reads them at init) sees an
     # operator's override of compositeTcpPortRange / maxGroupSize. Absent or
@@ -95,7 +102,7 @@ defmodule Embervm.Application do
       # it) and after WorkloadWatcher; it dials the daemon directly over its own
       # Mint gRPC connection, so it does not depend on the Finch pool. With no node
       # wired (empty address), it supervises an empty node list and does nothing.
-      {Embervm.NodeRegistry, [nodes: configured_nodes()] ++ node_discovery_opts()},
+      {Embervm.NodeRegistry, nodes: configured_nodes()},
       # The shared per-node gRPC channel holder (Task 11): one long-lived, reused
       # Mint channel per node for the Prime/Assign hot path (unlike NodeRegistry/
       # BaseBuilder, which each own their own channel and can afford a per-op
@@ -282,7 +289,8 @@ defmodule Embervm.Application do
       # open and banks nothing, mirroring StatefulSweeper's no-op default.
       {Embervm.GroupSweeper, group_sweeper_opts()},
       # The drain coordinator (R6 Continuity, ADR embervm/009): NodeRegistry sends it
-      # {:node_draining, node_id, deadline_ms} on the drain rising edge, and it fans
+      # {:node_draining, node_id, pod_uid, deadline_ms} on the drain rising edge (the
+      # drain scopes to the INSTANCE, R0 PR-2), and it fans
       # out drain_node/2 to the four class sweepers to force-bank the node's live
       # instances within the bounded-preemption window. Placed AFTER all four sweepers
       # it drives (so under :rest_for_one a sweeper restart does not orphan it) and
@@ -353,29 +361,19 @@ defmodule Embervm.Application do
     end
   end
 
-  # The configured node daemons the registry consumes WatchNode from. v1 wires
-  # exactly one, from chart values (EMBERVM_NODE_ID + EMBERVM_NODE_ADDRESS); the
-  # registry interface takes a LIST so multi-node needs no reshaping here. An
-  # empty address (no daemon wired yet) yields an empty list, so the registry
-  # supervises nothing rather than crash-looping on a bad dial. The id falls back
-  # to the address when unset, purely for correlation labels.
+  # The STATIC node-daemon seed the registry starts with. Under dial-home (R0
+  # PR-2) the fleet arrives via NodeRegistry.register/2 (a POST from each noded
+  # instance), so this is usually the EMPTY list; the only static entry is an
+  # explicit EMBERVM_NODE_ADDRESS override (a single pinned daemon for tests /
+  # out-of-cluster, which cannot dial home). The id falls back to the address when
+  # unset, purely for correlation labels.
   #
-  # The node list the three node consumers (BaseBuilder, NodeRegistry, NodeChannel)
-  # are SEEDED with at children-construction time (artifact-decoupling PR-C, C4).
-  #
-  # CRITICAL: this runs while the supervisor children list is being BUILT, which is
-  # BEFORE any child (including Finch, Embervm.K8s.finch_child_spec/0) is started.
-  # So it MUST NOT touch Finch / the K8s API: EndpointSlice discovery cannot run
-  # here (Finch.request would raise "unknown registry: Embervm.Finch" and crash
-  # Application.start into a CrashLoopBackOff). Discovery therefore runs POST-start,
-  # driven by NodeRegistry's periodic discover_fun (which fires promptly after boot,
-  # once Finch is up) and reconciled out to NodeChannel and BaseBuilder as nodes
-  # appear. Here we return only the STATIC source:
-  #
-  #   * an explicit EMBERVM_NODE_ADDRESS override: a single pinned daemon (tests,
-  #     out-of-cluster), which needs no discovery and is safe to seed at boot; or
-  #   * otherwise the EMPTY list. The three consumers start empty and are populated
-  #     by post-Finch discovery. The empty seed is what makes boot Finch-free.
+  # CRITICAL (ADR embervm/012 boot ordering): this runs while the supervisor
+  # children list is being BUILT, BEFORE any child (including Finch) is started, so
+  # it MUST NOT touch Finch / the K8s API. Under dial-home it never does: it reads
+  # only env vars. The old EndpointSlice discovery (which needed Finch post-start)
+  # is retired; registration is the only path that dials, and it runs only when the
+  # router accepts a POST, well after Finch is up.
   # Public (@doc false) so the boot-ordering regression test can assert it is
   # Finch-free at construction; not part of the module's real API.
   @doc false
@@ -386,70 +384,9 @@ defmodule Embervm.Application do
     cond do
       address != "" and id != "" -> [%{id: id, address: address}]
       address != "" -> [%{id: address, address: address}]
-      # Discovery source: seed EMPTY. NodeRegistry's discover_fun populates all
-      # three consumers post-Finch (never at construction, never via Finch here).
+      # No pinned override: seed EMPTY. Instances arrive via dial-home
+      # registration (NodeRegistry.register/2), never via a boot-time K8s call.
       true -> []
-    end
-  end
-
-  # EndpointSlice-discovered noded endpoints, or [] when discovery is not
-  # configured or finds nothing. EMBERVM_NODED_SERVICE names the headless Service;
-  # EMBERVM_NODED_GRPC_PORT is the daemon gRPC port (default 9090). This is ONLY
-  # ever called POST-start (from NodeRegistry's discover_fun), when Finch is up.
-  #
-  # Defense in depth: the ENTIRE body is wrapped so a transient Finch/API error, or
-  # any raise (e.g. Finch not yet registered on a race, or an apiserver blip), can
-  # NEVER crash the caller: it yields [] (log + idle) and the next discover tick
-  # retries. A raise here previously crashed Application.start; it must not recur.
-  defp discovered_nodes do
-    service = trimmed_env("EMBERVM_NODED_SERVICE")
-
-    if service == "" do
-      []
-    else
-      namespace = Embervm.K8s.namespace()
-      grpc_port = configured_noded_grpc_port()
-
-      case Embervm.K8s.list_noded_endpoints(service, namespace, grpc_port) do
-        {:ok, nodes} ->
-          nodes
-
-        {:error, reason} ->
-          Logger.warning("embervm: noded endpoint discovery failed (#{inspect(reason)}); starting with no nodes")
-          []
-      end
-    end
-  rescue
-    e ->
-      Logger.warning("embervm: noded endpoint discovery raised (#{inspect(e)}); starting with no nodes")
-      []
-  catch
-    kind, reason ->
-      Logger.warning("embervm: noded endpoint discovery exited (#{inspect({kind, reason})}); starting with no nodes")
-      []
-  end
-
-  defp configured_noded_grpc_port do
-    case trimmed_env("EMBERVM_NODED_GRPC_PORT") do
-      "" -> 9090
-      raw -> String.to_integer(raw)
-    end
-  end
-
-  # NodeRegistry opts that arm PERIODIC EndpointSlice re-discovery (C4 interim): a
-  # discover_fun that re-lists the noded pods so a DaemonSet roll that changes a pod
-  # IP is picked up without a control-plane restart. Only supplied when discovery is
-  # the active source (a headless Service name configured, no pinned single-node
-  # override); a pinned override or no service name leaves discover_fun unset, so
-  # the node set is the static list and never re-lists (tests, out-of-cluster).
-  defp node_discovery_opts do
-    address = trimmed_env("EMBERVM_NODE_ADDRESS")
-    service = trimmed_env("EMBERVM_NODED_SERVICE")
-
-    if address == "" and service != "" do
-      [discover_fun: fn -> discovered_nodes() end]
-    else
-      []
     end
   end
 

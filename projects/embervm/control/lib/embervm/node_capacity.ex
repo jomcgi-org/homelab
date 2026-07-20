@@ -21,6 +21,19 @@ defmodule Embervm.NodeCapacity do
   empty table) is looking at the correct, safe answer with no extra
   interpretation. "No capacity facts means no dispatch" is the empty read, not a
   branch a reader has to remember to write.
+
+  ## keyed by INSTANCE, not node (R0 PR-2)
+
+  The row key is the `{node_id, pod_uid}` INSTANCE tuple, not the node name.
+  Dial-home registration (ADR embervm/005) makes two noded instances on one node
+  simultaneously representable (a surge roll, ADR embervm/012: the draining old
+  instance and the fresh one), so capacity, liveness, and dispatch are per
+  instance. Every facts map still carries `:node_id` (the K8s node name, shared
+  across a node's instances) and `:pod_uid`, plus a derived `:instance_id`
+  string (`"node/pod_uid"`) the dispatcher/NodeChannel/BaseBuilder key their own
+  string-keyed maps on. Node-scoped facts (vendor/template, serving subnet,
+  snapshots, volumes) survive an instance turnover because they are re-reported
+  by whichever instance owns the node's substrate.
   """
 
   @table :embervm_node_capacity
@@ -42,21 +55,22 @@ defmodule Embervm.NodeCapacity do
   end
 
   @doc """
-  Writes one dispatchable node's capacity facts, keyed by the CONFIGURED node id
-  (the registry's stable per-node key, used identically by `drop/2` and
-  `fetch/2`); the daemon-reported id is carried inside the facts map as
-  `:node_id`. Only called by the registry for a node it has already decided is
-  dispatchable, so a row's mere presence is the dispatchable signal.
+  Writes one dispatchable INSTANCE's capacity facts, keyed by the
+  `{node_id, pod_uid}` tuple (the registry's stable per-instance key, used
+  identically by `drop/2` and `fetch/2`); the node name and pod UID are also
+  carried inside the facts map (`:node_id`, `:pod_uid`, `:instance_id`). Only
+  called by the registry for an instance it has already decided is dispatchable,
+  so a row's mere presence is the dispatchable signal.
   """
-  @spec put(atom(), String.t(), map()) :: true
-  def put(table \\ @table, node_id, facts) do
-    :ets.insert(table, {node_id, facts})
+  @spec put(atom(), {String.t(), String.t()}, map()) :: true
+  def put(table \\ @table, instance_key, facts) do
+    :ets.insert(table, {instance_key, facts})
   end
 
-  @doc "Removes a node's capacity facts (it is no longer dispatchable)."
-  @spec drop(atom(), String.t()) :: true
-  def drop(table \\ @table, node_id) do
-    :ets.delete(table, node_id)
+  @doc "Removes an instance's capacity facts (it is no longer dispatchable)."
+  @spec drop(atom(), {String.t(), String.t()}) :: true
+  def drop(table \\ @table, instance_key) do
+    :ets.delete(table, instance_key)
   end
 
   @doc """
@@ -76,17 +90,41 @@ defmodule Embervm.NodeCapacity do
   end
 
   @doc """
-  One node's capacity facts by node id, or `:error` if that node is not currently
-  dispatchable (or the table does not exist yet).
+  Capacity facts for a key that is EITHER an instance tuple `{node_id, pod_uid}`
+  (exact instance lookup) OR a bare `node_id` string (NODE-scoped lookup, returns
+  an instance ON that node, preferring the most recently updated). `:error` when
+  nothing dispatchable matches (or the table does not exist yet).
+
+  The bare-string form is what the node-scoped consumers (session/serving/stateful/
+  group placement + adoption) call: snapshots and volumes are NODE resources, not
+  pod resources (ADR embervm/005 R0 PR-2 step 4), so those readers ask "is THIS
+  node dispatchable" regardless of which instance currently owns it. The tuple form
+  is the dispatcher/registry's exact per-instance read.
   """
-  @spec fetch(atom(), String.t()) :: {:ok, map()} | :error
-  def fetch(table \\ @table, node_id) do
+  @spec fetch(atom(), {String.t(), String.t()} | String.t()) :: {:ok, map()} | :error
+  def fetch(table \\ @table, key)
+
+  def fetch(table, {_node, _pod_uid} = instance_key) do
     if :ets.whereis(table) == :undefined do
       :error
     else
-      case :ets.lookup(table, node_id) do
-        [{^node_id, facts}] -> {:ok, facts}
+      case :ets.lookup(table, instance_key) do
+        [{^instance_key, facts}] -> {:ok, facts}
         [] -> :error
+      end
+    end
+  end
+
+  def fetch(table, node_id) when is_binary(node_id) do
+    if :ets.whereis(table) == :undefined do
+      :error
+    else
+      table
+      |> :ets.select([{{:_, :"$1"}, [], [:"$1"]}])
+      |> Enum.filter(fn facts -> Map.get(facts, :node_id) == node_id end)
+      |> case do
+        [] -> :error
+        matches -> {:ok, Enum.max_by(matches, fn f -> Map.get(f, :updated_at, 0) end)}
       end
     end
   end

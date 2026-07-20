@@ -1534,6 +1534,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	freeBytes, usedBytes := s.snapshotDiskUsage()
 	return &nodev1.NodeStatus{
 		NodeId:                s.cfg.Node,
+		PodUid:                s.cfg.PodUID,
 		CpuVendor:             s.cfg.CpuVendor,
 		Workloads:             caps,
 		MemHeadroomMib:        s.memHeadroom(),

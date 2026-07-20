@@ -53,13 +53,30 @@ defmodule Embervm.NodeRegistry do
   capacity facts means no dispatch" is enforced by the table being empty, not by
   the dispatcher checking a flag.
 
-  ## the multi-node seam
+  ## dial-home registration, keyed by INSTANCE (R0 PR-2)
 
-  `start_link/1` takes `:nodes`, a LIST of `%{id, address}` specs. v1 configures
-  exactly one (from chart values), but every internal structure is keyed by node
-  id and every loop iterates the list, so multi-node needs no reshaping here,
-  only more entries in the list. There is deliberately no cross-node placement
-  logic in R0; that is the dispatcher's job (Task 11).
+  The control plane no longer DISCOVERS daemons (the retired EndpointSlice poll):
+  each noded instance DIALS HOME, POSTing `{node, pod_uid, address, boot_id}` to
+  the control plane's `/v1/nodes/register` route, which forwards it here as
+  `register/2`. Registration upserts an instance keyed by `{node, pod_uid}`
+  (a new instance opens a streamer and joins the NodeChannel/BaseBuilder fleet; a
+  changed address re-points; an unchanged one just refreshes the registration
+  timestamp). This inverts the ownership: the CP never lists-and-watches daemon
+  pods, and two instances on ONE node (a surge roll, ADR embervm/012) are
+  simultaneously representable because the key is the pod UID, not the node name.
+
+  An instance ages OUT of the registry only when BOTH its registration has lapsed
+  (no re-register within `@expire_after_ms`) AND its WatchNode stream is dead, so
+  a CP-side network blip alone never drops a healthy node.
+
+  ## the static seam
+
+  `start_link/1` still takes `:nodes`, a LIST of `%{id, address}` (optionally
+  `pod_uid`) specs, for the pinned `EMBERVM_NODE_ADDRESS` single-daemon override
+  and for tests. A spec with no `pod_uid` collapses to a node-scoped instance
+  (`pod_uid: ""`), matching the pre-dial-home behaviour. Registration adds and
+  removes instances on top of that static seed. There is deliberately no
+  cross-node placement logic here; that is the dispatcher's job.
   """
 
   use GenServer
@@ -90,10 +107,14 @@ defmodule Embervm.NodeRegistry do
   @unknown_after_ms 5_000
   @down_after_ms 15_000
   @age_check_ms 1_000
-  # How often the node set is re-discovered from EndpointSlices (C4 interim: a
-  # poll-and-reconcile, not a live watch). 30s is well under the time a rolled
-  # pod's absence matters and cheap (a cached-read LIST).
-  @discover_interval_ms 30_000
+  # How long an instance may go without re-registering (dial-home) before its
+  # registration is considered LAPSED. noded re-registers every ~30s, so 90s is
+  # three missed intervals: an instance is expired from the registry only when its
+  # registration is lapsed AND its WatchNode stream is dead (both signals), so a
+  # CP-side blip alone never drops a healthy node. A statically-seeded instance
+  # (EMBERVM_NODE_ADDRESS override / tests) never registers and so never lapses:
+  # its last_registered_at stays nil and expiry is skipped for it.
+  @expire_after_ms 90_000
 
   # Closed enum of node health states, the age-out machine's whole codomain
   # (evaluate_node_age computes exactly these). Exposed for the spec vocabulary
@@ -169,14 +190,19 @@ defmodule Embervm.NodeRegistry do
   end
 
   @doc """
-  Forces one synchronous node-set re-discovery + reconcile (the same code the
-  periodic `:discover` timer runs). Tests drive discovery deterministically through
-  this with an injected `discover_fun`; in production the timer fires it every
-  #{@discover_interval_ms}ms. A no-op when no `discover_fun` is configured.
+  Applies one dial-home registration from a noded instance. The map carries
+  `node` (K8s node name), `pod_uid` (the pod UID, the instance identity),
+  `address` (`"pod_ip:grpc_port"`), and optionally `boot_id`. Upserts the
+  instance keyed by `{node, pod_uid}`: a new instance seeds runtime + opens a
+  streamer + joins the NodeChannel/BaseBuilder fleet; a changed address re-points;
+  an unchanged one just refreshes the registration timestamp. Called by the
+  router's `/v1/nodes/register` handler; returns `:ok` (registration is
+  advertisement, so even a malformed body is a benign no-op the caller reports as
+  accepted). An empty `node` is rejected as `{:error, :invalid}`.
   """
-  @spec discover(GenServer.server()) :: :ok
-  def discover(server \\ __MODULE__) do
-    GenServer.call(server, :discover)
+  @spec register(GenServer.server(), map()) :: :ok | {:error, :invalid}
+  def register(server \\ __MODULE__, %{} = reg) do
+    GenServer.call(server, {:register, reg})
   end
 
   # -- GenServer callbacks ---------------------------------------------------
@@ -206,30 +232,22 @@ defmodule Embervm.NodeRegistry do
     # watch_startup drives the informer from init; tests set it false and drive
     # inject_status/1 + tick/1 explicitly so no background stream or timer fires.
     watch_startup = Keyword.get(opts, :watch_startup, true)
-    # Periodic node-set re-discovery (artifact-decoupling PR-C, C4). noded is a
-    # DaemonSet behind a headless Service; a roll changes pod IPs, so the node list
-    # is re-listed on an interval and reconciled (new pods get a streamer, vanished
-    # pods are torn down) instead of frozen at boot. The default reads
-    # EndpointSlices via Embervm.Application; tests inject a fake discover_fun and
-    # drive :discover synchronously. A nil discover_fun (the default when no
-    # discovery source is configured, e.g. a pinned single-node override or tests)
-    # disables re-discovery entirely, so the node set stays exactly the :nodes list.
-    discover_fun = Keyword.get(opts, :discover_fun, nil)
-    discover_interval = Keyword.get(opts, :discover_interval_ms, @discover_interval_ms)
-    # How a re-discovered node's NEW address is propagated to the Prime/Assign
-    # hot-path channel holder (Embervm.NodeChannel), whose node_addr map is static
-    # and would otherwise keep dialing a rolled pod's dead IP. Default calls the
-    # singleton NodeChannel; tests inject a fake to assert the propagation without a
-    # running NodeChannel.
+    # How long an instance may go without re-registering (dial-home) before its
+    # registration is LAPSED; expiry additionally requires a dead stream.
+    expire_after = Keyword.get(opts, :expire_after_ms, @expire_after_ms)
+    # How a (re)registered instance's NEW address is propagated to the Prime/Assign
+    # hot-path channel holder (Embervm.NodeChannel), whose node_addr map would
+    # otherwise keep dialing a rolled pod's dead IP. Keyed by INSTANCE id. Default
+    # calls the singleton NodeChannel; tests inject a fake to assert the
+    # propagation without a running NodeChannel.
     channel_updater_fun =
       Keyword.get(opts, :channel_updater_fun, &default_channel_update/2)
 
-    # How a discovered node add/remove is propagated to Embervm.BaseBuilder, which
-    # (like NodeChannel) is seeded with an EMPTY node list at boot under discovery
-    # and must learn the fleet so BuildBase can PLACE builds. Without this, a
-    # discovery-configured control plane would never build any base (every workload
-    # holds {:pending, :no_node}). Default calls the singleton BaseBuilder; tests
-    # inject a fake to assert the propagation without a running BaseBuilder.
+    # How a registered instance's add/remove is propagated to Embervm.BaseBuilder,
+    # which (like NodeChannel) is seeded EMPTY at boot under dial-home and must
+    # learn the fleet so BuildBase can PLACE builds. Without this, a control plane
+    # would never build any base (every workload holds {:pending, :no_node}).
+    # Default calls the singleton BaseBuilder; tests inject a fake.
     base_builder_updater_fun =
       Keyword.get(opts, :base_builder_updater_fun, &default_base_builder_update/1)
 
@@ -238,25 +256,9 @@ defmodule Embervm.NodeRegistry do
     now = clock.()
 
     node_runtime =
-      for %{id: id, address: address} <- nodes, into: %{} do
-        {id,
-         %{
-           configured_id: id,
-           address: address,
-           # {pid, ref} of the live streamer, or nil when no stream is open.
-           streamer: nil,
-           backoff_ms: base_backoff,
-           # Monotonic ms the current stream opened, to tell a healthy long-lived
-           # close (reconnect now) from a suspect fast close (back off).
-           watch_started_at: now,
-           # Monotonic ms of the last NodeStatus. nil until the first arrives; the
-           # age baseline before then is started_at, so a daemon that never
-           # answers still ages starting -> unknown -> down.
-           last_status_at: nil,
-           started_at: now,
-           health: :starting,
-           draining: false
-         }}
+      for spec <- nodes, into: %{} do
+        instance = seed_runtime(spec, base_backoff, now)
+        {instance.instance_id, instance}
       end
 
     state = %{
@@ -273,8 +275,7 @@ defmodule Embervm.NodeRegistry do
       base_backoff_ms: base_backoff,
       max_backoff_ms: max_backoff,
       min_watch_ms: min_watch,
-      discover_fun: discover_fun,
-      discover_interval_ms: discover_interval,
+      expire_after_ms: expire_after,
       channel_updater_fun: channel_updater_fun,
       base_builder_updater_fun: base_builder_updater_fun,
       node_runtime: node_runtime,
@@ -296,24 +297,21 @@ defmodule Embervm.NodeRegistry do
     end
   end
 
-  # Open every node's stream and arm the age-out timer once the process is fully
-  # initialized (continue runs after init returns, before any external message).
+  # Open every statically-seeded instance's stream and arm the age-out timer once
+  # the process is fully initialized (continue runs after init returns, before any
+  # external message). Under dial-home the seed is usually EMPTY (the fleet arrives
+  # via register/2 post-Finch); a pinned EMBERVM_NODE_ADDRESS override or a test
+  # seed is opened here. No Finch/K8s call happens here or at construction, so the
+  # boot-ordering invariant (ADR embervm/012) holds: registration is the only path
+  # that dials, and it runs only after the router accepts a POST (well after Finch).
   @impl true
   def handle_continue(:start, state) do
     state =
-      Enum.reduce(Map.keys(state.node_runtime), state, fn node_id, acc ->
-        start_streamer(acc, node_id)
+      Enum.reduce(Map.keys(state.node_runtime), state, fn instance_id, acc ->
+        start_streamer(acc, instance_id)
       end)
 
     schedule_age_check(state)
-    # Run the FIRST discovery immediately (not after the 30s interval): the app
-    # seeds an EMPTY node list at construction (discovery cannot touch Finch there,
-    # ADR embervm/012 boot ordering), so the fleet only populates once this fires.
-    # By handle_continue time the supervisor has started Finch (NodeRegistry sits
-    # after Finch in the rest_for_one chain), so the K8s list is safe here. A
-    # discover_fun that is nil (pinned override / tests) makes this a no-op.
-    state = reconcile_discovered(state)
-    schedule_discover(state)
     {:noreply, state}
   end
 
@@ -376,28 +374,23 @@ defmodule Embervm.NodeRegistry do
     {:noreply, state}
   end
 
-  # Periodic node-set re-discovery, then re-arm the timer (C4 interim).
-  def handle_info(:discover, state) do
-    state = reconcile_discovered(state)
-    schedule_discover(state)
-    {:noreply, state}
-  end
-
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
   def handle_call(:status, _from, state) do
     snapshot =
-      for {node_id, rt} <- state.node_runtime, into: %{} do
+      for {instance_id, rt} <- state.node_runtime, into: %{} do
         facts =
-          case NodeCapacity.fetch(state.table, node_id) do
+          case NodeCapacity.fetch(state.table, instance_key(rt)) do
             {:ok, f} -> f
             :error -> nil
           end
 
-        {node_id,
+        {instance_id,
          %{
            configured_id: rt.configured_id,
+           pod_uid: rt.pod_uid,
+           instance_id: rt.instance_id,
            address: rt.address,
            health: rt.health,
            draining: rt.draining,
@@ -410,9 +403,9 @@ defmodule Embervm.NodeRegistry do
     {:reply, snapshot, state}
   end
 
-  def handle_call({:inject_status, node_id, status}, _from, state) do
-    if Map.has_key?(state.node_runtime, node_id) do
-      {:reply, :ok, apply_status(state, node_id, status)}
+  def handle_call({:inject_status, instance_id, status}, _from, state) do
+    if Map.has_key?(state.node_runtime, instance_id) do
+      {:reply, :ok, apply_status(state, instance_id, status)}
     else
       {:reply, :ok, state}
     end
@@ -422,8 +415,11 @@ defmodule Embervm.NodeRegistry do
     {:reply, :ok, evaluate_ages(state)}
   end
 
-  def handle_call(:discover, _from, state) do
-    {:reply, :ok, reconcile_discovered(state)}
+  def handle_call({:register, reg}, _from, state) do
+    case normalize_registration(reg) do
+      {:ok, norm} -> {:reply, :ok, apply_registration(state, norm)}
+      :error -> {:reply, {:error, :invalid}, state}
+    end
   end
 
   # Best-effort: stop orphaned streamers from outliving the GenServer holding
@@ -441,22 +437,27 @@ defmodule Embervm.NodeRegistry do
   # publish or retract the node's capacity facts by whether it is dispatchable.
   # Marking healthy here also resets the down-edge, so a node that recovers and
   # later goes down again fires reassignment afresh.
-  defp apply_status(state, node_id, %NodeStatus{} = status) do
+  defp apply_status(state, instance_id, %NodeStatus{} = status) do
     now = state.clock.()
-    prev = state.node_runtime[node_id]
+    prev = state.node_runtime[instance_id]
     rt = %{prev | last_status_at: now, health: :healthy, draining: status.draining}
-    state = put_in(state.node_runtime[node_id], rt)
-    notify_drain_edge(state, node_id, prev, status)
-    refresh_capacity(state, node_id, status)
+    state = put_in(state.node_runtime[instance_id], rt)
+    notify_drain_edge(state, rt, prev, status)
+    refresh_capacity(state, instance_id, status)
   end
 
   # On the RISING edge of draining (false -> true) notify the drain listener exactly
-  # once with the node's published deadline, so it force-banks the node's live
-  # instances within the bounded-preemption window (R6). Only the edge fires; a
-  # steady draining=true stream (re-sent every heartbeat) does not re-notify.
-  defp notify_drain_edge(state, node_id, prev, %NodeStatus{} = status) do
+  # once with the instance's published deadline, so it force-banks the instance's
+  # live VMs within the bounded-preemption window (R6). Drain scopes to the INSTANCE
+  # (node + pod_uid): a surge roll drains only the old pod, never its fresh
+  # replacement on the same node. Only the edge fires; a steady draining=true stream
+  # (re-sent every heartbeat) does not re-notify.
+  defp notify_drain_edge(state, rt, prev, %NodeStatus{} = status) do
     if status.draining and not prev.draining do
-      send_drain(state.drain_listener, {:node_draining, node_id, status.drain_deadline_unix_ms})
+      send_drain(
+        state.drain_listener,
+        {:node_draining, rt.configured_id, rt.pod_uid, status.drain_deadline_unix_ms}
+      )
     end
 
     :ok
@@ -474,32 +475,43 @@ defmodule Embervm.NodeRegistry do
     :ok
   end
 
-  # A node is dispatchable iff its stream is healthy AND its daemon is not
+  # An instance is dispatchable iff its stream is healthy AND its daemon is not
   # draining. Only then are its facts in the capacity table; every other case
-  # deletes the row (fail-closed). The table is keyed by the CONFIGURED node id
-  # (the node_runtime key, stable and known in every path); the daemon-reported
-  # id is carried inside the facts map for the dispatcher's correlation.
-  defp refresh_capacity(state, node_id, %NodeStatus{} = status) do
-    rt = state.node_runtime[node_id]
+  # deletes the row (fail-closed). The table is keyed by the INSTANCE tuple
+  # {configured_id, pod_uid} (derived from the runtime entry, stable and known in
+  # every path); node name, pod UID and instance id are carried inside the facts
+  # map for the dispatcher's correlation.
+  defp refresh_capacity(state, instance_id, %NodeStatus{} = status) do
+    rt = state.node_runtime[instance_id]
 
     if rt.health == :healthy and not rt.draining do
-      NodeCapacity.put(state.table, node_id, facts_from_status(status, node_id, state.clock.()))
+      NodeCapacity.put(state.table, instance_key(rt), facts_from_status(status, rt, state.clock.()))
     else
-      NodeCapacity.drop(state.table, node_id)
+      NodeCapacity.drop(state.table, instance_key(rt))
     end
 
     state
   end
 
-  # Retract a node's capacity facts. Keyed by the configured node id, the same
+  # Retract an instance's capacity facts. Keyed by the instance tuple, the same
   # key refresh_capacity writes under, so degradation always deletes the row a
   # prior status published.
-  defp retract_capacity(state, node_id) do
-    NodeCapacity.drop(state.table, node_id)
+  defp retract_capacity(state, instance_id) do
+    case state.node_runtime[instance_id] do
+      nil -> :ok
+      rt -> NodeCapacity.drop(state.table, instance_key(rt))
+    end
+
     state
   end
 
-  defp facts_from_status(%NodeStatus{} = s, configured_id, now) do
+  # The ETS/capacity key for an instance: the {node_name, pod_uid} tuple. A
+  # statically-seeded instance carries pod_uid "" and keys as {node, ""}
+  # (node-scoped, matching the pre-dial-home behaviour).
+  defp instance_key(rt), do: {rt.configured_id, rt.pod_uid}
+
+  defp facts_from_status(%NodeStatus{} = s, rt, now) do
+    configured_id = rt.configured_id
     workloads =
       for %WorkloadCapacity{} = wc <- s.workloads, into: %{} do
         {wc.workload,
@@ -523,6 +535,14 @@ defmodule Embervm.NodeRegistry do
     %{
       node_id: s.node_id,
       configured_id: configured_id,
+      # Instance identity (R0 PR-2): pod_uid is the daemon-reported pod UID
+      # (falling back to the runtime's registered pod_uid when a daemon predates
+      # the field), and instance_id is the "node/pod_uid" string the dispatcher,
+      # NodeChannel and BaseBuilder key their string-keyed maps on. Prefer the
+      # runtime's pod_uid (the registration-authoritative identity) so a daemon
+      # that has not yet stamped pod_uid on its status still keys consistently.
+      pod_uid: rt.pod_uid,
+      instance_id: rt.instance_id,
       workloads: workloads,
       mem_headroom_mib: s.mem_headroom_mib,
       cpu_headroom_millicores: s.cpu_headroom_millicores,
@@ -754,14 +774,43 @@ defmodule Embervm.NodeRegistry do
 
   # -- age-out state machine --------------------------------------------------
 
-  # Recompute every node's health from time-since-last-status and act on any
-  # transition. This is the sole age-out authority, decoupled from stream
-  # liveness so a silently wedged stream still ages out.
+  # Recompute every instance's health from time-since-last-status and act on any
+  # transition, then expire any instance that is BOTH registration-lapsed AND
+  # stream-dead. This is the sole age-out authority, decoupled from stream liveness
+  # so a silently wedged stream still ages out.
   defp evaluate_ages(state) do
     now = state.clock.()
 
-    Enum.reduce(Map.keys(state.node_runtime), state, fn node_id, acc ->
-      evaluate_node_age(acc, node_id, now)
+    state =
+      Enum.reduce(Map.keys(state.node_runtime), state, fn instance_id, acc ->
+        evaluate_node_age(acc, instance_id, now)
+      end)
+
+    expire_lapsed_instances(state, now)
+  end
+
+  # Remove an instance from the registry entirely when BOTH signals say it is gone:
+  # its dial-home registration has lapsed (no re-register within expire_after_ms)
+  # AND its WatchNode stream is dead (:down). Requiring both means a CP-side network
+  # blip (stream flaps, registration keeps arriving) never drops a healthy node, and
+  # a control-plane restart (registration timers reset, stream re-establishes) never
+  # drops one either. A statically-seeded instance (last_registered_at nil) never
+  # lapses and is never expired here; only dial-home instances age out. Expiry drops
+  # the capacity row, tells the BaseBuilder to forget the node, kills the streamer,
+  # and removes the runtime entry so no reconnect resurrects it.
+  defp expire_lapsed_instances(state, now) do
+    Enum.reduce(Map.keys(state.node_runtime), state, fn instance_id, acc ->
+      rt = acc.node_runtime[instance_id]
+
+      lapsed? =
+        not is_nil(rt.last_registered_at) and
+          now - rt.last_registered_at >= acc.expire_after_ms
+
+      if lapsed? and rt.health == :down do
+        expire_instance(acc, instance_id)
+      else
+        acc
+      end
     end)
   end
 
@@ -952,77 +1001,162 @@ defmodule Embervm.NodeRegistry do
     Process.send_after(self(), :age_check, state.age_check_ms)
   end
 
-  # Arm the next periodic re-discovery, but only when a discover_fun is configured
-  # (no source => the node set is the static :nodes list and never re-lists).
-  defp schedule_discover(%{discover_fun: nil}), do: :ok
+  # -- dial-home registration -------------------------------------------------
 
-  defp schedule_discover(state) do
-    Process.send_after(self(), :discover, state.discover_interval_ms)
-    :ok
-  end
+  # Normalize an incoming registration body into %{node, pod_uid, address,
+  # boot_id, instance_id}. Accepts string or atom keys (the router decodes JSON to
+  # string keys; a test may pass atoms). A blank node OR address is rejected; a
+  # blank pod_uid collapses to a node-scoped instance (instance_id == node name),
+  # so a pre-Downward-API daemon still registers under a stable key.
+  defp normalize_registration(reg) do
+    node = reg_field(reg, "node") |> to_trimmed()
+    pod_uid = reg_field(reg, "pod_uid") |> to_trimmed()
+    address = reg_field(reg, "address") |> to_trimmed()
+    boot_id = reg_field(reg, "boot_id") |> to_trimmed()
 
-  # Re-list the node set and reconcile it against the current runtime: START a
-  # streamer for any newly-discovered node id, and TEAR DOWN a node that has
-  # vanished from discovery (drop its capacity row, kill its streamer, forget its
-  # runtime). A node that is still present is left exactly as-is (its stream, health
-  # and backoff untouched), so a steady fleet costs nothing. This is the C4 interim
-  # bridge: a poll-and-reconcile, not a live EndpointSlice watch (PR-H replaces the
-  # seam with CP-managed per-node Deployments). A discover_fun that errors (returns
-  # a non-list) leaves the set unchanged rather than tearing every node down.
-  defp reconcile_discovered(%{discover_fun: nil} = state), do: state
-
-  defp reconcile_discovered(state) do
-    case safe_discover(state.discover_fun) do
-      {:ok, discovered} ->
-        desired = for %{id: id, address: address} <- discovered, into: %{}, do: {id, address}
-        current_ids = MapSet.new(Map.keys(state.node_runtime))
-        desired_ids = MapSet.new(Map.keys(desired))
-
-        # New ids: seed + open a streamer.
-        state =
-          Enum.reduce(MapSet.difference(desired_ids, current_ids), state, fn id, acc ->
-            add_discovered_node(acc, id, desired[id])
-          end)
-
-        # Vanished ids: tear down.
-        state =
-          Enum.reduce(MapSet.difference(current_ids, desired_ids), state, fn id, acc ->
-            remove_discovered_node(acc, id)
-          end)
-
-        # Ids present in BOTH but whose ADDRESS changed (a DaemonSet pod roll keeps
-        # the stable node id but changes the pod IP). The stored address would never
-        # otherwise be compared, so reconnect and the Prime/Assign channel would
-        # re-dial the DEAD OLD IP forever. Re-point the node: tear down the old
-        # streamer, re-add at the new address, and propagate to NodeChannel.
-        MapSet.intersection(desired_ids, current_ids)
-        |> Enum.reduce(state, fn id, acc ->
-          if acc.node_runtime[id].address != desired[id] do
-            acc
-            |> remove_discovered_node(id)
-            |> add_discovered_node(id, desired[id])
-          else
-            acc
-          end
-        end)
-
-      :error ->
-        state
-    end
-  end
-
-  defp safe_discover(discover_fun) do
-    case discover_fun.() do
-      nodes when is_list(nodes) -> {:ok, nodes}
-      _ -> :error
-    end
-  rescue
-    e ->
-      Logger.warning("embervm node registry: discovery raised: #{inspect(e)}")
+    if node == "" or address == "" do
       :error
+    else
+      {:ok,
+       %{
+         node: node,
+         pod_uid: pod_uid,
+         address: address,
+         boot_id: boot_id,
+         instance_id: instance_id_of(node, pod_uid)
+       }}
+    end
   end
 
-  # Propagate a node's address to the Prime/Assign channel holder, swallowing any
+  defp reg_field(reg, key) do
+    Map.get(reg, key) || Map.get(reg, String.to_atom(key))
+  end
+
+  defp to_trimmed(nil), do: ""
+  defp to_trimmed(v) when is_binary(v), do: String.trim(v)
+  defp to_trimmed(v), do: v |> to_string() |> String.trim()
+
+  # The instance handle: "node/pod_uid" for a dial-home instance, or just the node
+  # name for a node-scoped instance (empty pod_uid: a statically-seeded pinned
+  # override or a pre-Downward-API daemon). Keeping the bare node name for the
+  # empty case preserves the pre-dial-home keying so a pinned single-node override
+  # and the existing tests key identically to before.
+  defp instance_id_of(node, ""), do: node
+  defp instance_id_of(node, pod_uid), do: node <> "/" <> pod_uid
+
+  # Apply one registration: upsert the instance keyed by {node, pod_uid}. Three
+  # cases, all event-driven (no polling): a NEW instance seeds its runtime, joins
+  # the NodeChannel/BaseBuilder fleet and opens a streamer; a KNOWN instance whose
+  # advertised address CHANGED (a re-scheduled pod keeping the same UID, rare, or a
+  # test) re-points its channel + streamer to the new address; a KNOWN instance at
+  # the same address just refreshes last_registered_at (the liveness half of the
+  # two-signal expiry). Registration never touches capacity facts directly; those
+  # flow from the WatchNode stream the streamer consumes.
+  defp apply_registration(state, %{instance_id: instance_id} = norm) do
+    now = state.clock.()
+
+    case state.node_runtime[instance_id] do
+      nil ->
+        add_instance(state, norm, now)
+
+      %{address: addr} = _rt when addr != norm.address ->
+        Logger.info(
+          "embervm node registry: instance #{instance_id} re-registered at new address #{norm.address}"
+        )
+
+        state
+        |> expire_instance(instance_id)
+        |> add_instance(norm, now)
+
+      _rt ->
+        put_in(state, [:node_runtime, instance_id, :last_registered_at], now)
+    end
+  end
+
+  # Seed a newly-registered instance's runtime, propagate its address to the
+  # Prime/Assign channel holder and the BaseBuilder (both keyed by INSTANCE id so a
+  # surge pod gets its own channel), and open its streamer. Mirrors the static seed
+  # shape so age-out and streamer plumbing treat a registered instance identically.
+  defp add_instance(state, norm, now) do
+    rt =
+      seed_runtime(
+        %{id: norm.node, address: norm.address, pod_uid: norm.pod_uid},
+        state.base_backoff_ms,
+        now
+      )
+
+    rt = %{rt | last_registered_at: now}
+
+    Logger.info(
+      "embervm node registry: registered instance #{rt.instance_id} (node #{norm.node}, pod #{norm.pod_uid}, #{norm.address})"
+    )
+
+    safe_channel_update(state.channel_updater_fun, rt.instance_id, norm.address)
+    safe_base_builder_update(state.base_builder_updater_fun, {:add, rt.instance_id, norm.address})
+
+    state
+    |> put_in([:node_runtime, rt.instance_id], rt)
+    |> start_streamer(rt.instance_id)
+  end
+
+  # Seed one instance runtime entry from a node spec (%{id, address} plus optional
+  # pod_uid). The runtime map is keyed by instance_id ("node/pod_uid"); an absent
+  # pod_uid collapses to "" (a node-scoped instance, the pre-dial-home shape).
+  defp seed_runtime(spec, base_backoff, now) do
+    node = spec.id
+    pod_uid = Map.get(spec, :pod_uid, "") |> to_trimmed()
+
+    %{
+      configured_id: node,
+      pod_uid: pod_uid,
+      instance_id: instance_id_of(node, pod_uid),
+      address: spec.address,
+      # {pid, ref} of the live streamer, or nil when no stream is open.
+      streamer: nil,
+      backoff_ms: base_backoff,
+      # Monotonic ms the current stream opened, to tell a healthy long-lived close
+      # (reconnect now) from a suspect fast close (back off).
+      watch_started_at: now,
+      # Monotonic ms of the last NodeStatus. nil until the first arrives; the age
+      # baseline before then is started_at, so a daemon that never answers still
+      # ages starting -> unknown -> down.
+      last_status_at: nil,
+      started_at: now,
+      # Monotonic ms of the last dial-home registration, nil for a statically-seeded
+      # instance (which never registers and so is never expired). One half of the
+      # two-signal expiry (the other is a dead stream).
+      last_registered_at: nil,
+      health: :starting,
+      draining: false
+    }
+  end
+
+  # Remove an instance from the registry: retract its capacity row, tell the
+  # BaseBuilder to drop it, kill its streamer if any (forgetting the pid first so
+  # the ensuing DOWN is ignored), and drop its runtime so no reconnect resurrects
+  # it. Used both by two-signal expiry and by a re-registration re-point.
+  # (NodeChannel needs no explicit removal: it lazy-dials and invalidates a dead
+  # channel on the next transport error, so a stale map entry is harmless.)
+  defp expire_instance(state, instance_id) do
+    Logger.info("embervm node registry: instance #{instance_id} expired; tearing down")
+    safe_base_builder_update(state.base_builder_updater_fun, {:remove, instance_id})
+    state = retract_capacity(state, instance_id)
+
+    state =
+      case state.node_runtime[instance_id] do
+        %{streamer: {pid, _ref}} ->
+          state = forget_streamer(state, pid, instance_id)
+          Process.exit(pid, :kill)
+          state
+
+        _ ->
+          state
+      end
+
+    %{state | node_runtime: Map.delete(state.node_runtime, instance_id)}
+  end
+
+  # Propagate an instance's address to the Prime/Assign channel holder, swallowing any
   # error (a NodeChannel that is not running, or a slow call): the streamer we open
   # next carries WatchNode over its own channel regardless, and the hot-path channel
   # simply re-dials on its next invalidate if this update did not land.
@@ -1044,16 +1178,17 @@ defmodule Embervm.NodeRegistry do
       :ok
   end
 
-  # Default: point the singleton Embervm.NodeChannel at the node's new address.
-  defp default_channel_update(node_id, address) do
-    Embervm.NodeChannel.update_address(node_id, address)
+  # Default: point the singleton Embervm.NodeChannel at the instance's address
+  # (the Prime/Assign hot path dials per instance_id, so a surge pod is distinct).
+  defp default_channel_update(instance_id, address) do
+    Embervm.NodeChannel.update_address(instance_id, address)
     :ok
   end
 
-  # Propagate a discovered node add/remove to the BaseBuilder, swallowing any error
-  # (a BaseBuilder that is not running, a slow call): the fleet still gets WatchNode
-  # capacity via our own streamers, and the next discover tick re-notifies. Never
-  # crash the reconcile on a BaseBuilder hiccup.
+  # Propagate a registered instance add/remove to the BaseBuilder, swallowing any
+  # error (a BaseBuilder that is not running, a slow call): the fleet still gets
+  # WatchNode capacity via our own streamers, and the next re-registration
+  # re-notifies. Never crash registration on a BaseBuilder hiccup.
   defp safe_base_builder_update(nil, _msg), do: :ok
 
   defp safe_base_builder_update(updater, msg) do
@@ -1069,69 +1204,16 @@ defmodule Embervm.NodeRegistry do
       :ok
   end
 
-  # Default: add/remove the node on the singleton Embervm.BaseBuilder so BuildBase
-  # placement learns the discovered fleet.
-  defp default_base_builder_update({:add, node_id, address}) do
-    Embervm.BaseBuilder.add_node(node_id, address)
+  # Default: add/remove the instance on the singleton Embervm.BaseBuilder so
+  # BuildBase placement learns the registered fleet (keyed by instance_id).
+  defp default_base_builder_update({:add, instance_id, address}) do
+    Embervm.BaseBuilder.add_node(instance_id, address)
     :ok
   end
 
-  defp default_base_builder_update({:remove, node_id}) do
-    Embervm.BaseBuilder.remove_node(node_id)
+  defp default_base_builder_update({:remove, instance_id}) do
+    Embervm.BaseBuilder.remove_node(instance_id)
     :ok
-  end
-
-  # Add a freshly-discovered node (or re-add one at a NEW address after a roll):
-  # seed its runtime (mirroring init's shape), propagate the address to the
-  # Prime/Assign channel holder so the hot path dials the current endpoint, and
-  # open its streamer, which pushes SyncRegistry + consumes WatchNode like any
-  # other node.
-  defp add_discovered_node(state, node_id, address) do
-    now = state.clock.()
-
-    rt = %{
-      configured_id: node_id,
-      address: address,
-      streamer: nil,
-      backoff_ms: state.base_backoff_ms,
-      watch_started_at: now,
-      last_status_at: nil,
-      started_at: now,
-      health: :starting,
-      draining: false
-    }
-
-    Logger.info("embervm node registry: discovered node #{node_id} (#{address})")
-    safe_channel_update(state.channel_updater_fun, node_id, address)
-    safe_base_builder_update(state.base_builder_updater_fun, {:add, node_id, address})
-
-    state
-    |> put_in([:node_runtime, node_id], rt)
-    |> start_streamer(node_id)
-  end
-
-  # Remove a node that vanished from discovery: retract its capacity row, tell the
-  # BaseBuilder to drop it, kill its streamer if any (forgetting the pid first so
-  # the ensuing DOWN is ignored), and drop its runtime so no reconnect resurrects
-  # it. (NodeChannel needs no explicit removal: it lazy-dials and invalidates a
-  # dead channel on the next transport error, so a stale map entry is harmless.)
-  defp remove_discovered_node(state, node_id) do
-    Logger.info("embervm node registry: node #{node_id} vanished from discovery; tearing down")
-    safe_base_builder_update(state.base_builder_updater_fun, {:remove, node_id})
-    state = retract_capacity(state, node_id)
-
-    state =
-      case state.node_runtime[node_id] do
-        %{streamer: {pid, _ref}} ->
-          state = forget_streamer(state, pid, node_id)
-          Process.exit(pid, :kill)
-          state
-
-        _ ->
-          state
-      end
-
-    %{state | node_runtime: Map.delete(state.node_runtime, node_id)}
   end
 
   # -- default (production) seams --------------------------------------------

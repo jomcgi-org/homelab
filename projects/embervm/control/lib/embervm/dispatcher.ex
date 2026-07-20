@@ -539,7 +539,15 @@ defmodule Embervm.Dispatcher do
         {:error, :no_capacity}
 
       true ->
-        node_id = fn f -> f.configured_id end
+        # Placement keys on the INSTANCE id ("node/pod_uid"), so a surge roll's two
+        # instances on one node are distinct pools (R0 PR-2). Prefer the NEWEST
+        # registered healthy instance per node so, when the old draining instance
+        # and its fresh replacement briefly coexist, placement goes to the fresh one
+        # while the old one empties. A draining instance never reaches here (its
+        # capacity row is dropped fail-closed), but preferring newest also handles
+        # the surge window before the old one flips to draining.
+        node_id = fn f -> instance_id_of(f) end
+        candidates = prefer_newest_per_node(candidates)
 
         warm = Enum.find(candidates, fn f -> inventory_ready?(state, node_id.(f), wl) end)
 
@@ -555,6 +563,26 @@ defmodule Embervm.Dispatcher do
             end
         end
     end
+  end
+
+  # The instance handle the dispatcher keys inventory / NodeChannel / BaseBuilder
+  # on: the "node/pod_uid" string the registry stamps into facts. Falls back to
+  # configured_id for a fact map that predates instance keying (defensive; the
+  # registry always sets instance_id now).
+  defp instance_id_of(f), do: Map.get(f, :instance_id) || f.configured_id
+
+  # Keep only the NEWEST (most recently updated) healthy instance per NODE, so a
+  # surge roll never splits placement across the draining old pod and its fresh
+  # replacement. Grouped by node_id (the K8s node name, shared across a node's
+  # instances); within a node the instance with the greatest updated_at wins (the
+  # fresh pod's facts are stamped later than the old one's last pre-drain status).
+  # Order across nodes is otherwise preserved (a stable pick).
+  defp prefer_newest_per_node(candidates) do
+    candidates
+    |> Enum.group_by(fn f -> f.node_id end)
+    |> Enum.flat_map(fn {_node, insts} ->
+      [Enum.max_by(insts, fn f -> Map.get(f, :updated_at, 0) end)]
+    end)
   end
 
   defp stale?(f, now, stale_after), do: now - (f.updated_at || 0) > stale_after
@@ -996,7 +1024,9 @@ defmodule Embervm.Dispatcher do
     facts = NodeCapacity.all(state.capacity_table)
 
     Enum.reduce(facts, state, fn f, acc ->
-      node_id = f.configured_id
+      # Key the adopted inventory by the INSTANCE id ("node/pod_uid"), the same key
+      # pick_node dispatches against, so an adopted warm pool is reachable (R0 PR-2).
+      node_id = instance_id_of(f)
 
       Enum.reduce(f.workloads || %{}, acc, fn {wl, wc}, acc2 ->
         Enum.reduce(Map.get(wc, :primed_vm_ids, []) || [], acc2, fn vm_id, acc3 ->

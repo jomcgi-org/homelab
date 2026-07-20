@@ -176,6 +176,35 @@ type Config struct {
 	// DNAT and falls back to reporting the node-internal tap IP (tests/local); the
 	// daemon logs a startup warning in that case.
 	PodIP string
+
+	// PodUID is this noded pod's Kubernetes UID (injected via the Downward API as
+	// EMBERVM_POD_UID / metadata.uid). It is the daemon's INSTANCE identity: the
+	// control plane keys its node registry and capacity ledger by (Node, PodUID),
+	// so two noded instances on one node during a surge roll never alias. Reported
+	// as NodeStatus.pod_uid and advertised in the dial-home registration body.
+	// Empty (an out-of-cluster run with no Downward API) collapses the control
+	// plane to node-scoped keying, matching the pre-dial-home behaviour.
+	PodUID string
+	// ControlPlaneURL is the control plane's HTTP base URL the daemon dials home to
+	// (EMBERVM_NODED_CONTROL_PLANE_URL, e.g. "http://embervm.embervm.svc:8080").
+	// On start and on a jittered interval the daemon POSTs its identity
+	// ({node, pod_uid, address, boot_id}) to <URL>/v1/nodes/register so the control
+	// plane adopts it without ever listing pods. Empty disables dial-home (tests,
+	// out-of-cluster); the daemon logs a startup notice and never registers.
+	ControlPlaneURL string
+	// ControlPlaneTokenPath is the file the daemon reads its bearer token from for
+	// the dial-home POST (EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH). Default the
+	// projected ServiceAccount token at
+	// /var/run/secrets/kubernetes.io/serviceaccount/token; the control plane
+	// TokenReviews it and checks it is the noded ServiceAccount. Read fresh per
+	// request so a rotated projected token is picked up without a restart. Empty
+	// (or an unreadable file) sends no Authorization header.
+	ControlPlaneTokenPath string
+	// RegisterInterval is how often the daemon re-advertises via dial-home (a
+	// jittered re-POST), so a control-plane restart re-adopts it promptly and a
+	// re-pointed pod IP propagates. Default 30s. Env EMBERVM_NODED_REGISTER_INTERVAL.
+	RegisterInterval time.Duration
+
 	// ServingPortBase is the base of the deterministic per-VM DNAT port space:
 	// vmPort = ServingPortBase + hostOffset(tapIP). A /24 yields ports base+2..base+254,
 	// clear of noded's own 8080/9090. Default 30000. NewManager rejects a base that
@@ -278,7 +307,14 @@ func Load() (Config, error) {
 		ArchiveFetchTimeout: 60 * time.Second,
 		ArchiveMaxBytes:     512 << 20,
 
-		PodIP:                     os.Getenv("EMBERVM_NODED_POD_IP"),
+		PodIP: os.Getenv("EMBERVM_NODED_POD_IP"),
+		// Dial-home registration (R0 PR-2): the daemon advertises its identity to
+		// the control plane instead of being discovered via EndpointSlices.
+		PodUID:                os.Getenv("EMBERVM_POD_UID"),
+		ControlPlaneURL:       os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),
+		ControlPlaneTokenPath: getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+		RegisterInterval:      30 * time.Second,
+
 		ServingPortBase:           atoiDefault("EMBERVM_NODED_SERVING_PORT_BASE", 30000),
 		ServingBridge:             getenvDefault("EMBERVM_NODED_SERVING_BRIDGE", "embervm-serv0"),
 		ServingSubnetCIDR:         getenvDefault("EMBERVM_NODED_SERVING_SUBNET_CIDR", "172.31.0.0/24"),
@@ -338,6 +374,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := parseDuration("EMBERVM_NODED_GROUP_PROBE_INTERVAL", &c.GroupProbeInterval); err != nil {
+		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_REGISTER_INTERVAL", &c.RegisterInterval); err != nil {
 		return Config{}, err
 	}
 	if v := os.Getenv("EMBERVM_NODED_ARCHIVE_MAX_BYTES"); v != "" {
