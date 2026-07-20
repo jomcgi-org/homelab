@@ -24,6 +24,9 @@ from pydantic import BaseModel
 
 from chat_public.turnstile import siteverify
 from ember_public import semgrep_core
+# Module-level so the public binary's srcs must include semgrep_scan and
+# main_public_imports_test verifies the closure stays public-safe in CI.
+from semgrep_scan.client import scan_files
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +95,6 @@ async def semgrep_scan_endpoint(body: SemgrepScanRequest, request: Request) -> d
             status_code=429,
             content={"error": "one scan per few seconds", "retry_after_s": 3},
         )
-
-    # semgrep_scan.client is imported lazily so the fc-invoke HTTP client
-    # (httpx + shared.k8s_auth) is only pulled in on an actual scan request,
-    # keeping module import time light; see app/main_public_imports_test.py
-    # for the public import-closure guard this package must stay clean of.
-    from semgrep_scan.client import scan_files
 
     before_slot = time.monotonic()
     try:

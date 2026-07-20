@@ -29,6 +29,12 @@ import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring
 # is matched as a module name OR a dotted prefix (so "chat" also forbids
 # "chat.anything").
 FORBIDDEN_MODULES = [
+    # semgrep_scan: only .client (the fc-invoke HTTP client) is public-safe,
+    # for the ember semgrep demo; the rest of the package is private-only.
+    "semgrep_scan.mcp",
+    "semgrep_scan.report",
+    "semgrep_scan.full_scan",
+    "semgrep_scan.router",
     # Private domains.
     "chat",
     "agent",
