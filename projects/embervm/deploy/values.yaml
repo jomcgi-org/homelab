@@ -116,6 +116,12 @@ bricks:
   enabled: true
   desiredReplicas:
     2gi: 1
+    # Re-canary step 2 (large): the 16gi brick, added after the 2gi brick verified
+    # clean on the co-located fleet (real mem facts, SUN_LEN-safe short warmth,
+    # instance-aware demo-postgres wake, no fleet_full). node-4's serving/session
+    # workloads (the ~10Gi scratch-k8s composite group) need the 16gi class.
+    # Values-only flip: foundation images already deployed at 0.1.169.
+    16gi: 1
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
