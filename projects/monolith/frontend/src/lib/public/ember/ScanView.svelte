@@ -148,7 +148,13 @@
     const sweepMs = Math.max(scanMs, 700);
     const lineOrder = codeLines.map((_, i) => i);
     const total = Math.max(lineOrder.length, 1);
-    const boxH = mirrorEl ? mirrorEl.scrollHeight : 0;
+    // The sweep must travel the rows' actual pixel height, and lines must
+    // ignite by pixel comparison against it. scrollHeight clamps to the
+    // 320px viewport when the snippet is shorter, so using it (or line
+    // fractions of the duration) makes findings light up after the sweep
+    // has already passed their row.
+    const rowH = mirrorEl?.querySelector(".row")?.offsetHeight ?? 0;
+    const boxH = rowH > 0 ? rowH * total : (mirrorEl?.scrollHeight ?? 0);
 
     if (reduced) {
       sweepOpacity = 0;
@@ -168,7 +174,11 @@
       let changed = false;
       lineOrder.forEach((i) => {
         const line = i + 1;
-        if (findingByLine.has(line) && !next.has(i) && (i + 0.5) / total <= p) {
+        if (
+          findingByLine.has(line) &&
+          !next.has(i) &&
+          sweepTop >= (i + 0.5) * (boxH / total)
+        ) {
           next.add(i);
           changed = true;
         }
