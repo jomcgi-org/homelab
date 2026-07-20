@@ -297,21 +297,44 @@
   });
 
   let scanErrors = $derived(result?.errors ?? []);
+
+  // Example chips grouped by consecutive language runs so each language
+  // gets a small caption and a divider; indices stay global because
+  // onpickexample addresses the flat examples array.
+  let exampleGroups = $derived.by(() => {
+    const groups = [];
+    examples.forEach((ex, i) => {
+      const last = groups[groups.length - 1];
+      if (last && last.language === ex.language) {
+        last.items.push({ ex, i });
+      } else {
+        groups.push({ language: ex.language, items: [{ ex, i }] });
+      }
+    });
+    return groups;
+  });
 </script>
 
 <div class="sv">
   <div class="editor">
     <div class="editor-head">
       <div class="examples">
-        {#each examples as ex, i (i)}
-          <button
-            type="button"
-            class="ex-chip"
-            class:on={activeExampleIndex === i}
-            onclick={() => onpickexample(i)}
-          >
-            {ex.label}
-          </button>
+        {#each exampleGroups as group (group.language)}
+          <div class="ex-group">
+            <span class="ex-lang">{group.language}</span>
+            <div class="ex-chips">
+              {#each group.items as { ex, i } (i)}
+                <button
+                  type="button"
+                  class="ex-chip"
+                  class:on={activeExampleIndex === i}
+                  onclick={() => onpickexample(i)}
+                >
+                  {ex.label}
+                </button>
+              {/each}
+            </div>
+          </div>
         {/each}
       </div>
       <button
@@ -507,6 +530,31 @@
   }
 
   .examples {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+  }
+
+  .ex-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .ex-group + .ex-group {
+    border-left: 1px solid var(--em-line);
+    padding-left: 14px;
+  }
+
+  .ex-lang {
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--em-faint);
+    user-select: none;
+  }
+
+  .ex-chips {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;

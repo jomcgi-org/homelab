@@ -85,20 +85,22 @@ def run():
     },
     {
       language: "python",
-      label: "SQL injection",
-      code: `import sqlite3
+      label: "SSRF",
+      code: `import urllib.request
 
 from flask import Flask, request
 
 app = Flask(__name__)
 
 
-@app.route("/user")
-def user():
-    name = request.args.get("name")
-    db = sqlite3.connect("app.db")
-    row = db.execute(f"SELECT * FROM users WHERE name = '{name}'").fetchone()
-    return str(row)
+def build_url():
+    host = request.args.get("host")
+    return f"http://{host}/status"
+
+
+@app.route("/probe")
+def probe():
+    return urllib.request.urlopen(build_url()).read()
 `,
     },
   ];
