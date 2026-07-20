@@ -21,6 +21,7 @@ defmodule Embervm.BaseBuilderTest do
   use ExUnit.Case, async: false
 
   alias Embervm.BaseBuilder
+  alias Embervm.NodeCapacity
   alias Embervm.Node.V1.BuildBaseResponse
 
   @node %{id: "node-4", address: "node-4:9090"}
@@ -710,5 +711,142 @@ defmodule Embervm.BaseBuilderTest do
       st = BaseBuilder.status(builder)
       st.workloads["w"].node_id == nil and not Map.has_key?(st.nodes, "node-4")
     end)
+  end
+
+  # -- size-aware placement (Step 5, brick co-location) -----------------------
+
+  # An isolated capacity table with per-instance brick facts.
+  defp new_cap_table do
+    table = :"bb_cap_#{System.unique_integer([:positive])}"
+    NodeCapacity.create(table)
+    table
+  end
+
+  defp put_brick(table, node_id, pod_uid, opts) do
+    NodeCapacity.put(table, {node_id, pod_uid}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      instance_id: "#{node_id}/#{pod_uid}",
+      size_class: Keyword.get(opts, :size_class, "8gi"),
+      mem_budget_mib: Keyword.get(opts, :mem_budget, 8_192),
+      mem_headroom_mib: Keyword.get(opts, :mem_headroom, 8_000),
+      live_vms: 0,
+      max_live_vms: 8,
+      updated_at: 0
+    })
+  end
+
+  test "placement picks the LARGEST-budget eligible instance, never List.first" do
+    # Three co-located bricks on node-4; the first-registered is the 2Gi one (the
+    # old List.first bug pinned everything to it). The base must land on the 16Gi
+    # brick (largest budget) for a 4Gi-need workload.
+    table = new_cap_table()
+    put_brick(table, "node-4", "small", size_class: "2gi", mem_budget: 2_048, mem_headroom: 100)
+    put_brick(table, "node-4", "mid", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    agent = start_recorder()
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap-big")} end
+
+    builder =
+      start_builder(
+        # node_ids ARE instance_ids in production; registration order puts small first.
+        nodes: [
+          %{id: "node-4/small", address: "a"},
+          %{id: "node-4/mid", address: "a"},
+          %{id: "node-4/big", address: "a"}
+        ],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+
+    assert_eventually(fn ->
+      match?(%{"snapshotRef" => "snap-big"}, latest(agent, "w"))
+    end)
+
+    st = BaseBuilder.status(builder)
+    assert st.workloads["w"].node_id == "node-4/big"
+  end
+
+  test "placement never captures a base on a too-small instance" do
+    # A 2Gi brick and an 8Gi brick; a 4Gi-need workload must NOT land on the 2Gi one.
+    table = new_cap_table()
+    put_brick(table, "node-4", "small", size_class: "2gi", mem_budget: 2_048, mem_headroom: 100)
+    put_brick(table, "node-4", "ok", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+
+    agent = start_recorder()
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap-ok")} end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/small", address: "a"}, %{id: "node-4/ok", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-ok"}, latest(agent, "w")) end)
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/ok"
+  end
+
+  test "placement re-places a workload when a LARGER eligible instance registers" do
+    # Start with only an 8Gi brick; the base pins there. A 16Gi brick then registers,
+    # and a reconcile re-places the workload onto it (a bigger eligible instance).
+    table = new_cap_table()
+    put_brick(table, "node-4", "mid", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+
+    agent = start_recorder()
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/mid", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid" end)
+
+    # A larger brick appears on the node and registers.
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    :ok = BaseBuilder.add_node(builder, "node-4/big", "a")
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big" end)
+  end
+
+  test "placement re-places when its chosen instance deregisters" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "mid", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+
+    agent = start_recorder()
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a"}, %{id: "node-4/mid", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big" end)
+
+    # The chosen instance vanishes: remove_node unpins it (node_id -> nil), and a
+    # re-add/reconcile re-places onto the remaining eligible 8Gi brick.
+    :ok = BaseBuilder.remove_node(builder, "node-4/big")
+    NodeCapacity.drop(table, {"node-4", "big"})
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid" end)
   end
 end

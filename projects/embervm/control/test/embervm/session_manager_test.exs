@@ -128,7 +128,79 @@ defmodule Embervm.SessionManagerTest do
     })
   end
 
+  # A per-INSTANCE capacity fact on a node (Step 5 size-aware create). Two co-located
+  # bricks share configured_id "node-4" so node_for_create resolves the node, then
+  # dial_instance selects the mem-eligible one among them.
+  defp put_brick(ctx, wl, pod_uid, opts) do
+    NodeCapacity.put(ctx.cap_table, {"node-4", pod_uid}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/#{pod_uid}",
+      size_class: Keyword.get(opts, :size_class, "8gi"),
+      mem_headroom_mib: Keyword.get(opts, :mem_headroom, 8_000),
+      mem_budget_mib: Keyword.get(opts, :mem_budget, 8_192),
+      workloads: %{
+        wl => %{
+          free_primed_slots: 1,
+          snapshot_ref: "snap-#{wl}",
+          base_state: :BASE_BUILD_STATE_READY,
+          primed_vm_ids: []
+        }
+      },
+      live_vms: 0,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 5_000_000
+    })
+  end
+
   # -- create ----------------------------------------------------------------
+
+  test "size-aware create: a too-small co-located brick + a big brick claims on the big one" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        claim_fun: fn _d, dial_id, _w ->
+          send(parent, {:claimed, dial_id})
+          {:ok, "vm-big"}
+        end
+      )
+
+    # A 4Gi-need session workload; the 2Gi brick cannot boot it, the 8Gi can.
+    WorkloadCatalog.upsert(ctx.cat_table, "wl-a", %{
+      name: "wl-a",
+      namespace: "embervm",
+      class: "session",
+      image_ref: "img@sha256:abc",
+      invoke_path: "/",
+      timeout_ms: 90_000,
+      cap: 8,
+      floor: 1,
+      mem_mib: 4_000,
+      session: %{
+        idle_bank_seconds: 300,
+        max_lifetime_seconds: 3600,
+        banked_ttl_seconds: 3600,
+        max_sessions: 16,
+        invoke_queue_cap: 4
+      }
+    })
+
+    put_brick(ctx, "wl-a", "small", size_class: "2gi", mem_headroom: 100, mem_budget: 2_048)
+    put_brick(ctx, "wl-a", "big", size_class: "8gi", mem_headroom: 8_000, mem_budget: 8_192)
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-a", "p1")
+    assert String.starts_with?(created.session_id, "s-")
+    # The claim (and hence the VM) dialed the big instance, never the too-small one.
+    assert_receive {:claimed, "node-4/big"}
+    refute_received {:claimed, "node-4/small"}
+
+    # The session ROW records the NODE name (node-4) so relight/drain read it
+    # node-scoped, not the dial instance_id.
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.node_id == "node-4"
+  end
 
   test "create happy path: claims a primed VM, mints a token, starts a live session" do
     ctx = start_stack()
