@@ -1,11 +1,7 @@
 apiVersion: v2
 name: monolith
 description: Consolidated homelab web services
-<<<<<<< HEAD
-version: 0.285.300
-=======
 version: 0.285.301
->>>>>>> 9415989b7 (fix(embervm): scratch-prep DaemonSet satisfies the node scratch-path contract (restore node-4))
 type: application
 dependencies:
   - name: cf-ingress
