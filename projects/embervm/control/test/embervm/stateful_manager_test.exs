@@ -1361,6 +1361,63 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(dialed, & &1) == ["node-4/pod-big"]
   end
 
+  test "restore-on-miss dials the RESTORE and the BOOT on the SAME selected instance_id (not the node name)" do
+    # Regression for the co-location restore bug: PR-2.5 makes banked bundles
+    # per-instance ON DISK, so the RestoreArtifact RPC must land the bundle on the
+    # SAME instance the subsequent relight dials. A node-name dial would resolve the
+    # restore to an arbitrary co-located instance (channel alias), stranding the boot
+    # on an instance whose disk never got the bundle.
+    {:ok, restore_channels} = Agent.start_link(fn -> [] end)
+    {:ok, boot_channels} = Agent.start_link(fn -> [] end)
+
+    # A channel tagged with the exact key it was dialled on, so both the restore and
+    # the boot record which instance_id they targeted.
+    capture_channel = fn key -> {:ok, {:ch, key}} end
+
+    restore_fun = fn {:ch, key}, _req ->
+      Agent.update(restore_channels, &[key | &1])
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{bytes_moved: 4096, skipped: false, generation: 3}}
+    end
+
+    relit_fun = fn {:ch, key}, _req ->
+      Agent.update(boot_channels, &[key | &1])
+      {:ok, %StartStatefulResponse{vm_id: "vm-relit", ip: "10.88.0.5", port: 5432, generation: 3, was_relight: true}}
+    end
+
+    ctx = start_stack(start_stateful_fun: relit_fun, channel_fun: capture_channel, restore_artifact_fun: restore_fun)
+    stateful_workload(ctx, "wl-a", %{resources: %{vcpus: 2, mem_mib: 4_000}})
+
+    # Two co-located bricks; NEITHER reports the bundle locally (a true local miss),
+    # the store is reachable, and pod-small is too small for the 4000 MiB workload.
+    # The relight's restore + boot must BOTH land on pod-big.
+    put_brick(ctx, "node-4", "pod-small",
+      size_class: "2gi",
+      mem_headroom_mib: 100,
+      mem_budget_mib: 2_048,
+      stateful_bundles: [],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3}],
+      store_reachable: true
+    )
+
+    put_brick(ctx, "node-4", "pod-big",
+      size_class: "8gi",
+      mem_headroom_mib: 8_000,
+      mem_budget_mib: 8_192,
+      stateful_bundles: [],
+      volumes: [%{workload: "wl-a", node_id: "node-4", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3}],
+      store_reachable: true
+    )
+
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    # The restore and the boot both dialled the SAME mem-eligible instance_id, never
+    # the collapsing "node-4" node-name alias and never the too-small "node-4/pod-small".
+    assert Agent.get(restore_channels, & &1) == ["node-4/pod-big"]
+    assert Agent.get(boot_channels, & &1) == ["node-4/pod-big"]
+  end
+
   test "a cold wake with no eligible instance fails cleanly rather than dialing a too-small brick" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
 
