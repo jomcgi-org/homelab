@@ -2001,3 +2001,37 @@ func writeReconcileBase(t *testing.T, basesDir, baseKey, ref string) {
 		}
 	}
 }
+
+// TestResolveImageByRefTagSkewReturnsRealPath is the demo-postgres cold-boot
+// regression at the resolution boundary: with cfg.Images empty (the Phase 2 prod
+// condition) and a tag-skewed registry (an empty-rootfs per-CR entry plus the
+// synthetic identity entry carrying the base's real path, both under the same
+// image_ref), resolveImageByRef must return the REAL rootfs path, never the empty
+// one that Firecracker rejects with "No such file or directory". resolveImage's
+// by-ref fallback and imageProvisioned resolve through the same path.
+func TestResolveImageByRefTagSkewReturnsRealPath(t *testing.T) {
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	s.cfg.Images = map[string]config.Image{}
+	s.registry.sync([]workloadEntry{
+		{Workload: "demo-postgres", ImageRef: "img-pg", RootfsRef: ""},
+		{Workload: "image:img-pg", ImageRef: "img-pg", RootfsRef: "/rootfs/pg", HarnessInit: "/init"},
+	})
+
+	img, ok := s.resolveImageByRef("img-pg")
+	if !ok {
+		t.Fatal("resolveImageByRef did not resolve img-pg under tag skew")
+	}
+	if img.RootfsPath != "/rootfs/pg" {
+		t.Fatalf("resolveImageByRef RootfsPath = %q, want /rootfs/pg (never empty)", img.RootfsPath)
+	}
+	if !s.imageProvisioned("img-pg") {
+		t.Error("imageProvisioned(img-pg) = false; want true (base is present under the skewed tag)")
+	}
+
+	// resolveImage's by-ref fallback (workload not keyed, resolves by ref) must
+	// also land on the real path, not the empty per-CR entry.
+	got, ok := s.resolveImage("unknown-workload", "img-pg")
+	if !ok || got.RootfsPath != "/rootfs/pg" {
+		t.Fatalf("resolveImage by-ref fallback = %+v (ok=%v), want RootfsPath=/rootfs/pg", got, ok)
+	}
+}

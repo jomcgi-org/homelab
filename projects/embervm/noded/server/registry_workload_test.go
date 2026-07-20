@@ -190,3 +190,49 @@ func TestPersistAtomicRoundTrip(t *testing.T) {
 		t.Errorf("round-trip mismatch: got %+v (ok=%v), want %+v", got, ok, want)
 	}
 }
+
+// TestGetByImageRefSkipsEmptyRootfsUnderTagSkew is the demo-postgres cold-boot
+// regression: under guest-image tag churn the control plane pushes a per-CR entry
+// that matches by image_ref but whose rootfs_ref the identity map could not
+// resolve (empty), alongside the synthetic "image:"-keyed identity entry that
+// carries the base's real on-disk path. getByImageRef must NOT return the
+// empty-rootfs entry (which would hand Firecracker an empty PUT /drives/rootfs
+// path, "No such file or directory"); it must fall through to the entry with a
+// real path so the churned tag still resolves to the base present on disk.
+func TestGetByImageRefSkipsEmptyRootfsUnderTagSkew(t *testing.T) {
+	r := newWorkloadRegistry("")
+	// Order-independent: register the empty per-CR entry first so a naive
+	// first-match would return it. Both entries carry the SAME image_ref (the
+	// churned tag the daemon resolves a stateful cold boot against).
+	r.sync([]workloadEntry{
+		{Workload: "demo-postgres", ImageRef: "img-pg", RootfsRef: ""},
+		{Workload: "image:img-pg", ImageRef: "img-pg", RootfsRef: "/rootfs/pg", HarnessInit: "/init"},
+	})
+
+	got, ok := r.getByImageRef("img-pg")
+	if !ok {
+		t.Fatal("getByImageRef found no entry for img-pg; want the real-path identity entry")
+	}
+	if got.RootfsRef == "" {
+		t.Fatalf("getByImageRef returned an empty-rootfs entry (%+v); want the entry with a real path", got)
+	}
+	if got.RootfsRef != "/rootfs/pg" {
+		t.Errorf("RootfsRef = %q, want /rootfs/pg", got.RootfsRef)
+	}
+}
+
+// TestGetByImageRefEmptyOnlyDoesNotResolve proves that when the ONLY entry for a
+// ref carries an empty rootfs (no provisioned base anywhere), getByImageRef
+// resolves nothing rather than yielding an empty path. This keeps the cold-boot
+// caller's "not provisioned" FailedPrecondition correct instead of failing later
+// inside Firecracker.
+func TestGetByImageRefEmptyOnlyDoesNotResolve(t *testing.T) {
+	r := newWorkloadRegistry("")
+	r.sync([]workloadEntry{
+		{Workload: "demo-postgres", ImageRef: "img-pg", RootfsRef: ""},
+	})
+
+	if got, ok := r.getByImageRef("img-pg"); ok {
+		t.Fatalf("getByImageRef resolved an empty-rootfs-only ref to %+v; want no resolution", got)
+	}
+}

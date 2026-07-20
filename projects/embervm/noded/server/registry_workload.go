@@ -149,6 +149,16 @@ func (r *workloadRegistry) get(workload string) (workloadEntry, bool) {
 // getByImageRef returns the entry whose ImageRef matches imageRef (the BuildBase
 // join). An empty imageRef never matches, so a caller that has no image_ref
 // (e.g. the zip lane's runtime is resolved separately) falls through cleanly.
+//
+// An entry whose RootfsRef is EMPTY is not a valid resolution: it names no
+// node-side rootfs, so returning it hands Firecracker an empty PUT /drives/rootfs
+// path ("No such file or directory") at cold boot. This happens under tag skew:
+// when a workload's base was cut under a guest-image tag that has since churned,
+// the control plane pushes a per-CR entry that matches by image_ref but whose
+// rootfs_ref the identity map could not resolve (empty). We therefore skip
+// empty-RootfsRef matches and prefer the first entry that carries a real path
+// (e.g. the synthetic "image:"-keyed identity entry for the same ref), so a
+// churned tag still resolves to the base present on disk instead of failing.
 func (r *workloadRegistry) getByImageRef(imageRef string) (workloadEntry, bool) {
 	if imageRef == "" {
 		return workloadEntry{}, false
@@ -156,7 +166,7 @@ func (r *workloadRegistry) getByImageRef(imageRef string) (workloadEntry, bool) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, e := range r.entries {
-		if e.ImageRef == imageRef {
+		if e.ImageRef == imageRef && e.RootfsRef != "" {
 			return e, true
 		}
 	}
