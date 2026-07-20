@@ -82,6 +82,13 @@ noded:
   # landing scratch on the root disk. Add an entry here only once a node's real
   # device is chosen.
   scratchPrep:
+    # DISABLED: the scratch-prep apko image was published with an all-zeros
+    # digest (helm_images_values pin miss), so the DaemonSet ImagePullBackOffs
+    # and ArgoCD health-gates the whole embervm sync on it (stranding the
+    # noded roll + demo fix + dial-home cutover). node-4's scratch path is
+    # held by a persisted bind-mount (fstab) meanwhile. Re-enable once the
+    # image pin is fixed.
+    enabled: false
     nodeMap:
       node-4: /disks/nvme-02
 
