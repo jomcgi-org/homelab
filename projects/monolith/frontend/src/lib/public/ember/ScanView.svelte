@@ -1,4 +1,6 @@
 <script>
+  import { onDestroy } from "svelte";
+
   // ScanView: editor, gutter/ignition, sweep, receipt line, and the
   // cold-vs-warm race. Ported from the interactive spec at
   // docs/plans/2026-07-20-ember-semgrep-scanview-mock.html (open it in a
@@ -42,12 +44,6 @@
 
   let codeLines = $derived(code.length === 0 ? [""] : code.split("\n"));
 
-  let examplesForLanguage = $derived(
-    examples
-      .map((ex, i) => ({ ...ex, i }))
-      .filter((ex) => ex.language === language),
-  );
-
   let textareaEl;
   let mirrorEl;
 
@@ -73,10 +69,6 @@
   });
 
   let highlightedLine = $state(null);
-
-  export function highlightLine(line) {
-    highlightedLine = line;
-  }
 
   // ---------------------------------------------------------------------
   // Sweep + ignition choreography, ported from the mock's runJourney().
@@ -110,6 +102,12 @@
   let segShow = $state([false, false, false]);
   let raceRaf = null;
   let raceTimeout = null;
+
+  onDestroy(() => {
+    if (sweepRaf) cancelAnimationFrame(sweepRaf);
+    if (raceRaf) cancelAnimationFrame(raceRaf);
+    if (raceTimeout) clearTimeout(raceTimeout);
+  });
 
   function resetJourney() {
     if (sweepRaf) cancelAnimationFrame(sweepRaf);
