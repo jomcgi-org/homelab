@@ -1535,6 +1535,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	return &nodev1.NodeStatus{
 		NodeId:                s.cfg.Node,
 		PodUid:                s.cfg.PodUID,
+		SizeClass:             s.cfg.SizeClass,
 		CpuVendor:             s.cfg.CpuVendor,
 		Workloads:             caps,
 		MemHeadroomMib:        s.memHeadroom(),

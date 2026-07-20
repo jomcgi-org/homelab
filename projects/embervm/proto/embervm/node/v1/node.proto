@@ -1687,4 +1687,18 @@ message NodeStatus {
   // one node (a surge roll) be represented distinctly. Empty on the static
   // EMBERVM_NODE_ADDRESS override path (falls back to bare node-name keying).
   string pod_uid = 29;
+
+  // -- Brick fact (brick-capacity PR-1, additive) ------------------------------
+  // size_class is this instance's T-shirt brick size-class label ("2gi",
+  // "4gi", "8gi", "16gi"): the fixed capacity unit the control plane places
+  // whole VMs onto (ADR embervm/013 section 7 as amended, bricks-everywhere).
+  // A brick is a Deployment pod sized to exactly one class; the control plane
+  // moves brick COUNTS, never sizes (in-place resize is dropped). The daemon
+  // reads it from EMBERVM_NODED_SIZE_CLASS and echoes it here so the control
+  // plane's BrickLedger can bucket per-(node, pod_uid) headroom by class and
+  // pick a brick of the right class for each workload. EMPTY on the legacy
+  // DaemonSet (a size_class=nil brick that matches every class, so DS-only
+  // placement is unchanged) and on any daemon that predates this field; the
+  // control plane treats empty as the wildcard class, never a guess.
+  string size_class = 30;
 }

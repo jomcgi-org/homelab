@@ -865,3 +865,63 @@ noded:
       memory: 256Mi
     limits:
       memory: 36Gi
+
+# Size-class BRICKS (ADR embervm/013 section 7 as amended, bricks-everywhere).
+# A brick is a fixed-size noded Deployment: the single capacity unit the control
+# plane places whole VMs onto and scales by COUNT (never by resizing a live pod,
+# which is dropped). Each class renders one Deployment reusing the shared noded
+# pod (embervm.noded.podSpec) with its own EMBERVM_NODED_SIZE_CLASS label and its
+# own resource block; the daemon echoes the class into NodeStatus.size_class and
+# the control-plane BrickLedger buckets placement by it.
+#
+# DISABLED by default (this is brick-capacity PR-1, inert): with enabled=false no
+# Deployment renders and the fleet stays on the legacy noded DaemonSet (the
+# wildcard class). PR-3 flips this true for a canary (one small + one large brick
+# beside the DS on node-4) and the BrickController owns each Deployment's replica
+# count thereafter. ArgoCD already ignores Deployment /spec/replicas fleet-wide
+# (the HPA ignoreDifferences rule), so the controller scaling a brick never shows
+# as drift and selfHeal never fights it; the `replicas` here is only the value at
+# first create.
+#
+# Sizing ladder (Joe-decided): memory request==limit at 2/4/8/16 GiB (a brick's
+# memory is a hard reservation, so the kube-scheduler bin-packs honestly and the
+# guest OOM-kills before the node), CPU request only at 1/2/2/2 cores with NO cpu
+# limit (bricks burst into idle headroom; the control plane's slot ceiling, not a
+# cpu cap, bounds concurrency). The large class must hold the scratch-k8s
+# composite group (a ~10 GiB single-brick group whose bridge lives in one pod's
+# netns), which the 16Gi class covers.
+bricks:
+  enabled: false
+  classes:
+    - name: 2gi
+      replicas: 0
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          memory: 2Gi
+    - name: 4gi
+      replicas: 0
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+        limits:
+          memory: 4Gi
+    - name: 8gi
+      replicas: 0
+      resources:
+        requests:
+          cpu: "2"
+          memory: 8Gi
+        limits:
+          memory: 8Gi
+    - name: 16gi
+      replicas: 0
+      resources:
+        requests:
+          cpu: "2"
+          memory: 16Gi
+        limits:
+          memory: 16Gi

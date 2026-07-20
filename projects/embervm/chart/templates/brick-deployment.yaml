@@ -1,0 +1,53 @@
+{{- if .Values.bricks.enabled }}
+# Size-class BRICK Deployments (ADR embervm/013 section 7 as amended,
+# bricks-everywhere). One Deployment per T-shirt size-class, each rendering the
+# SHARED noded pod (embervm.noded.podSpec, _noded-pod.tpl) with that class's
+# EMBERVM_NODED_SIZE_CLASS label and its own resource block. Bricks are the single
+# capacity unit: the control plane places whole VMs onto them and the
+# BrickController scales each Deployment's replica COUNT (never resizing a live
+# pod). Unlike the interim noded DaemonSet (one pod per node) a brick Deployment's
+# replicas are scheduled by kube-scheduler, so several bricks bin-pack onto one FC
+# node - that is the point, and it is why brick pods deliberately carry NO
+# anti-affinity.
+#
+# Gated on bricks.enabled (false in brick-capacity PR-1: this whole file renders
+# nothing and the fleet stays on the DaemonSet). PR-3 flips it true for a canary
+# beside the DS, after the PR-3 per-instance scratch dirs land so co-located
+# bricks do not clobber each other's warmth in the shared nvme dir.
+#
+# Each brick Deployment's selector carries component=noded-brick plus the
+# size-class label, so it is DISJOINT from the DaemonSet's (component=noded) and
+# from every other class: no two controllers ever fight over a pod. The control
+# plane learns each brick by dial-home registration (POST /v1/nodes/register),
+# not Service/EndpointSlice discovery, so brick pods need not sit behind the noded
+# Service.
+{{- $ctx := . }}
+{{- range $class := .Values.bricks.classes }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class.name }}
+  labels:
+    {{- include "embervm.brick.labels" (dict "ctx" $ctx "class" $class.name) | nindent 4 }}
+spec:
+  # replicas is only the value at FIRST create: the BrickController (PR-3) owns it
+  # thereafter, and ArgoCD ignores Deployment /spec/replicas fleet-wide (the HPA
+  # ignoreDifferences rule) so the controller's scaling never shows as drift.
+  replicas: {{ $class.replicas | default 0 }}
+  selector:
+    # embervm.brick.selectorLabels renders app.kubernetes.io/component: noded-brick
+    # plus the size-class label inside the include (the rule's regex cannot see
+    # through it); each class's selector is disjoint from the DaemonSet's and from
+    # every other class.
+    # nosemgrep: require-component-label-in-selector
+    matchLabels:
+      {{- include "embervm.brick.selectorLabels" (dict "ctx" $ctx "class" $class.name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "embervm.brick.labels" (dict "ctx" $ctx "class" $class.name) | nindent 8 }}
+    spec:
+      {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class.name "resources" $class.resources) | nindent 6 }}
+{{- end }}
+{{- end }}
