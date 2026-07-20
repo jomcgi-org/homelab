@@ -60,6 +60,20 @@ spec:
             {{- end }}
             {{- end }}
           env:
+            # BEAM distribution: name the node after the pod IP so `bin/embervm
+            # rpc`/`remote` work (operational access, generation blessing) and so
+            # a future multi-replica CP (PR-J) can cluster. RELEASE_NODE must be
+            # set AFTER the IP var it interpolates. Cookie is auto-generated per
+            # pod for now (single replica); PR-J adds a shared-secret cookie for
+            # clustering.
+            - name: RELEASE_DISTRIBUTION
+              value: name
+            - name: EMBERVM_RELEASE_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: RELEASE_NODE
+              value: "embervm@$(EMBERVM_RELEASE_POD_IP)"
             - name: EMBERVM_HTTP_PORT
               value: {{ .Values.service.port | quote }}
             - name: EMBERVM_OPLOG_PATH
