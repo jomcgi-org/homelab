@@ -109,6 +109,15 @@ bricks:
   enabled: true
   desiredReplicas:
     2gi: 1
+    # Canary step 2 (large): the 16gi brick node-4's serving/session workloads
+    # actually need (a ~10Gi composite group's bridge fits only the 16gi class).
+    # Added after the 2gi brick verified healthy (co-located beside the DS,
+    # dial-home + registry connected/healthy/dispatchable, per-instance warmth
+    # bases built with no clobber, no :fleet_full past the 5m window). Staged
+    # second so node-4 absorbed +1 core then +2 cores rather than +3 at once
+    # during the DS overlap. Projected node-4 load with both bricks: ~83% CPU /
+    # ~81% memory requests, no Pending. Reverts by removing this line.
+    16gi: 1
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
