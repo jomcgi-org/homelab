@@ -40,11 +40,16 @@ type budget struct {
 	lastUsageUsec  uint64
 	cpuBudgetMilli uint64
 	cpuHeadroomMc  uint64
+
+	// now returns the current time. A field (defaulting to time.Now) so tests
+	// can pin the sample instant and assert an exact usage-rate delta instead
+	// of racing sub-microsecond wall-clock jitter between two time.Now calls.
+	now func() time.Time
 }
 
 // newBudget constructs a reader with the given daemon-RSS reserve.
 func newBudget(reserveMib uint64) *budget {
-	return &budget{reserveMib: reserveMib}
+	return &budget{reserveMib: reserveMib, now: time.Now}
 }
 
 // MemBudgetMib returns memory.max minus the reserve, in MiB. Unlimited or
@@ -113,7 +118,7 @@ func (b *budget) Refresh() {
 		return
 	}
 
-	now := time.Now()
+	now := b.now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cpuBudgetMilli = budgetMilli
