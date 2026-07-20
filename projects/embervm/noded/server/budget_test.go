@@ -113,10 +113,13 @@ func TestCpuHeadroomFromUsageDelta(t *testing.T) {
 		t.Errorf("CpuHeadroomMillicores() after first sample = %d, want 0 (no delta yet)", got)
 	}
 
-	// Second sample one second later, having used 1000000usec (1 full core)
-	// of CPU time in that window: usage rate is 1000 millicores, so headroom
-	// against a 2000-millicore budget is 1000.
-	b.lastSampleAt = time.Now().Add(-1 * time.Second)
+	// Second sample exactly one second later, having used 1000000usec (1 full
+	// core) of CPU time in that window: usage rate is 1000 millicores, so
+	// headroom against a 2000-millicore budget is 1000. Pin both instants via
+	// the injected clock so the delta is exactly 1s (racing two real time.Now
+	// calls yields a sub-microsecond-off elapsed and an off-by-one headroom).
+	base := b.lastSampleAt
+	b.now = func() time.Time { return base.Add(1 * time.Second) }
 	writeBudgetFile(t, "cpu.stat", "usage_usec 1000000\n")
 	b.Refresh()
 
