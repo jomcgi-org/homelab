@@ -24,6 +24,9 @@ auth:
   enabled: true
   allowedCallers:
     - system:serviceaccount:monolith:monolith
+    # Public tier semgrep demo (ember_public /api/ember/semgrep): the
+    # monolith-public web pod calls fc-invoke as its own SA.
+    - system:serviceaccount:monolith-public:monolith-public
 
 # Cilium authorization for the /invoke route (ADR platform/012), on top of the
 # daemon's own TokenReview control (defence in depth).
@@ -31,6 +34,10 @@ ciliumPolicy:
   enabled: true
   fromNamespaces:
     - monolith
+    # Public tier: the monolith-public web pod reaches /invoke/semgrep for the
+    # public semgrep demo. Namespace authorization only; the daemon TokenReview
+    # gate still enforces the exact SA (see auth.allowedCallers above).
+    - monolith-public
 
 # The daemon image (private) and the proprietary semgrep-guest image (crane-pulled
 # by the rootfs-builder) need GHCR creds in-cluster; charts stay private too via
