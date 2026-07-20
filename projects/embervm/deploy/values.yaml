@@ -104,8 +104,18 @@ noded:
 # un-pins and re-places every workload on the DS (flat warmth root, no SUN_LEN),
 # and bases rebuild. Re-canary at plan Step 6 once Steps 1-5 land. No chart bump
 # ($values git ref).
+# Size-class BRICK re-canary, step 1 (foundation plan Step 6, small-first). The
+# co-location foundation is now in place: SUN_LEN-safe short warmth root, real
+# cgroup memory facts, dual-key instance addressing, instance-aware wakes, and
+# size-aware placement + class-eligible base builds. This flip re-enables the
+# FIRST co-located brick (2gi beside the DS) on node-4, exercising all of the
+# above together. Deep-merged over the chart classes ladder. desiredReplicas
+# lists ONLY 2gi (others render at 0). The 16gi large brick follows in a second
+# flip after this small brick verifies against the decision-log checklist.
 bricks:
-  enabled: false
+  enabled: true
+  desiredReplicas:
+    2gi: 1
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
