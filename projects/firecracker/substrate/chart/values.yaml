@@ -284,17 +284,19 @@ workloads:
 # this limit; oom_score_adj makes a guest die first if it is ever breached, never
 # the daemon or a node-critical tenant (ADR platform/010).
 #
-# The CPU REQUEST is load-bearing, not a floor. The guest VMs are 1 vcpu each and
-# CPU-bound. cpu.weight is proportional to the request, so a tiny request (the
-# old 50m) let co-tenants (clickhouse/signoz) out-compete the VMs for cores
-# under contention. 6000m holds ~6 cores of weight under contention and stays
-# schedulable on node-4 (~91% requested already); it is deliberately BELOW the
-# concurrency 16: there is no CPU limit, so load tests burst to all idle
-# cores regardless, and the request only decides who wins when co-tenants are
-# busy. Raising it further would overcommit node-4's requests past 100%.
+# The CPU REQUEST is cpu.weight, not a floor (no CPU limit, so a turn bursts to
+# any idle core). It was 6000m when fc-invoke was the ACTIVE Firecracker
+# substrate serving sandbox/semgrep/og-image; those are all cut over to EmberVM
+# now (live + verified 2026-07-14), so fc-invoke's only remaining live workload
+# is goosecracker's intermittent agent turns (POST /invoke/agent/{session}).
+# EmberVM/noded is the active FC substrate on node-4 and needs that CPU weight
+# for its size-class brick fleet, so the reservation is transferred: 1000m
+# guarantees a goose turn one core and still bursts higher under no contention.
+# Full removal of fc-invoke waits on the goosecracker -> EmberVM session-class
+# migration (roadmap); until then this stays deployed at the rightsized weight.
 resources:
   requests:
-    cpu: 6000m
+    cpu: 1000m
     memory: 2Gi
   limits:
     memory: 40Gi
