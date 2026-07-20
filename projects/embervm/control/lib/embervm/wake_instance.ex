@@ -121,21 +121,39 @@ defmodule Embervm.WakeInstance do
     end
   end
 
-  # A mem-eligible cold candidate on the node, then a deterministic sticky pick
-  # keyed by the workload. Eligibility is the SHARED `Embervm.Placement.eligible?/2`
-  # predicate (the one source of truth every NEW-placement path uses, Step 5): a
-  # free slot AND either the DS wildcard/zero-budget brick (always mem-eligible, the
-  # big burst envelope reporting `mem_headroom_mib = 0` under no cgroup limit) or a
-  # CLASSED brick with `mem_headroom_mib >= need_mib`. We scope the node's bricks
-  # first, then delegate the filter+`choose` to `Placement.pick/3` so the wake and
-  # dispatcher/session miss tiers can never drift on the memory gate.
-  # `BrickLedger.candidates/3` is deliberately NOT used: it gates EVERY brick on
-  # headroom, wrongly excluding a zero-headroom wildcard on the still-DS-only fleet.
+  # A mem-eligible AND base-READY cold candidate on the node, then a deterministic
+  # sticky pick keyed by the workload. The gate is the SHARED
+  # `Embervm.Placement.pick_ready/3` predicate (the one source of truth every NEW-
+  # COLD-placement path uses): a free slot, mem-eligibility (the DS wildcard/zero-
+  # budget brick is always mem-eligible, the big burst envelope reporting
+  # `mem_headroom_mib = 0` under no cgroup limit; a CLASSED brick needs
+  # `mem_headroom_mib >= need_mib`), AND `workloads[workload].base_state ==
+  # BASE_BUILD_STATE_READY` so the instance has ADVERTISED the workload's base.
+  #
+  # The base-readiness gate closes the live co-location gap: a freshly-rolled or
+  # scaled-up instance is dispatchable and mem-eligible the instant it registers, but
+  # until its noded re-provisions the runtime image and advertises the base it cannot
+  # resolve `boot_image_ref` and a cold boot hard-fails `noded: boot_image_ref
+  # required` (a fresh 16Gi brick picked for a demo-postgres cold boot did exactly
+  # this). Requiring `base_ready?` here means the cold pick skips the not-yet-ready
+  # instance; if no instance is BOTH eligible and base-ready the `nil` becomes the
+  # existing RETRYABLE `{:error, :no_eligible_instance}` (the activator keeps the
+  # workload published and the client's reconnect re-enters the wake), so the wake
+  # WAITS for a fresh instance to finish provisioning instead of dialling one that
+  # cannot boot. On a STABLE fleet every instance long ago advertised its bases, so
+  # this only changes behaviour in the post-roll/post-scale-up window (the gap).
+  #
+  # We scope the node's bricks first, then delegate the filter+`choose` to
+  # `Placement.pick_ready/3` so the wake and dispatcher/session/serving paths can
+  # never drift on the readiness gate. `BrickLedger.candidates/3` is deliberately NOT
+  # used: it gates EVERY brick on headroom, wrongly excluding a zero-headroom wildcard
+  # on the still-DS-only fleet. This is the COLD path only; the warmth/relight-owner
+  # branch of `select/2` is unchanged (the banked instance already holds the base).
   defp cold_instance(table, node_id, workload, need_mib) do
     table
     |> BrickLedger.bricks()
     |> Enum.filter(fn brick -> brick.node_id == node_id end)
-    |> Embervm.Placement.pick(workload, need_mib)
+    |> Embervm.Placement.pick_ready(workload, need_mib)
     |> case do
       nil -> {:error, :no_eligible_instance}
       brick -> {:ok, dial_id_from_brick(brick)}

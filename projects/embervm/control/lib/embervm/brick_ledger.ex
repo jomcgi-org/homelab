@@ -59,7 +59,8 @@ defmodule Embervm.BrickLedger do
           mem_budget_mib: non_neg_integer(),
           live_vms: non_neg_integer(),
           max_live_vms: non_neg_integer(),
-          free_slots: non_neg_integer()
+          free_slots: non_neg_integer(),
+          workloads: %{optional(term()) => map()}
         }
 
   @doc """
@@ -169,7 +170,13 @@ defmodule Embervm.BrickLedger do
       mem_budget_mib: Map.get(facts, :mem_budget_mib, 0),
       live_vms: live,
       max_live_vms: max_live,
-      free_slots: max(max_live - live, 0)
+      free_slots: max(max_live - live, 0),
+      # The per-workload capacity submap (`%{workload => %{base_state:, snapshot_ref:,
+      # ...}}`), carried through unchanged so `Embervm.Placement.base_ready?/2` can read
+      # `workloads[workload].base_state` off a normalized brick. Absent on a fact that
+      # predates the field -> `%{}`, which reads as base-not-ready (fail-closed: a brick
+      # that never advertised a base is not a cold-placement target).
+      workloads: Map.get(facts, :workloads) || %{}
     }
   end
 end
