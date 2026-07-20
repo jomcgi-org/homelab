@@ -280,8 +280,8 @@ defmodule Embervm.NodeRegistry do
       base_builder_updater_fun: base_builder_updater_fun,
       node_runtime: node_runtime,
       # The process notified once per drain rising edge with {:node_draining,
-      # node_id, deadline_ms} so it can force-bank the node's live instances before
-      # the pod exits (R6, ADR embervm/009). A registered name or pid; default the
+      # node_id, pod_uid, deadline_ms} so it can force-bank the instance's live VMs
+      # before the pod exits (R6, ADR embervm/009). A registered name or pid; default the
       # DrainCoordinator. A missing target (tests, or drain during boot) is a silent
       # no-op: the daemon's own deadline reap is the backstop.
       drain_listener: Keyword.get(opts, :drain_listener, Embervm.DrainCoordinator),
