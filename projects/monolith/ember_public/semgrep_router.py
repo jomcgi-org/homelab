@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from chat_public.turnstile import siteverify
 from ember_public import semgrep_core
+
 # Module-level so the public binary's srcs must include semgrep_scan and
 # main_public_imports_test verifies the closure stays public-safe in CI.
 from semgrep_scan.client import scan_files
