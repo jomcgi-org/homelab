@@ -341,6 +341,64 @@ func TestAllocateAndReleaseTap(t *testing.T) {
 	}
 }
 
+// TestAllocateTapDeletesStaleTapBeforeCreate locks in the idempotent-create fix:
+// both allocation paths must issue `ip link del <tap>` BEFORE `ip tuntap add <tap>`,
+// so a tap orphaned by a prior VM whose setup failed after tap creation (e.g. a
+// downstream volume attach) is cleared instead of wedging the recreate with EBUSY
+// (the 2026-07-20 demo-postgres relight wedge that 503'd jomcgi.dev/health).
+func TestAllocateTapDeletesStaleTapBeforeCreate(t *testing.T) {
+	assertDelBeforeAdd := func(t *testing.T, calls [][]string, tap string) {
+		t.Helper()
+		delIdx, addIdx := -1, -1
+		for i, c := range calls {
+			if len(c) >= 4 && c[0] == "ip" && c[1] == "link" && c[2] == "del" && c[3] == tap {
+				if delIdx == -1 {
+					delIdx = i
+				}
+			}
+			if len(c) >= 5 && c[0] == "ip" && c[1] == "tuntap" && c[2] == "add" && c[4] == tap {
+				addIdx = i
+			}
+		}
+		if delIdx == -1 {
+			t.Fatalf("no `ip link del %s` recorded; calls: %v", tap, calls)
+		}
+		if addIdx == -1 {
+			t.Fatalf("no `ip tuntap add ... %s` recorded; calls: %v", tap, calls)
+		}
+		if delIdx > addIdx {
+			t.Errorf("`ip link del %s` (call %d) must precede `ip tuntap add` (call %d)", tap, delIdx, addIdx)
+		}
+	}
+
+	t.Run("AllocateTap", func(t *testing.T) {
+		fr := &fakeRunner{}
+		m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		tap, _, err := m.AllocateTap(context.Background())
+		if err != nil {
+			t.Fatalf("AllocateTap: %v", err)
+		}
+		assertDelBeforeAdd(t, fr.calls, tap)
+	})
+
+	t.Run("AllocateTapForIP", func(t *testing.T) {
+		fr := &fakeRunner{}
+		m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		pin := net.ParseIP("172.31.0.2")
+		tap, err := m.AllocateTapForIP(context.Background(), pin)
+		if err != nil {
+			t.Fatalf("AllocateTapForIP: %v", err)
+		}
+		assertDelBeforeAdd(t, fr.calls, tap)
+	})
+}
+
 func TestAllocateTapForIPPinsAndConflicts(t *testing.T) {
 	fr := &fakeRunner{}
 	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
