@@ -337,18 +337,28 @@ defmodule Embervm.ServingManager do
 
     case plan do
       {:relight, instance, node_id} ->
-        # Move the banked instance to relighting (ETS-only, no op) before the RPC, so
-        # a concurrent reconcile does not touch it and the later serving_relit is a
-        # legal relighting -> starting edge.
-        case ServingStore.mark(state.store, instance.instance_id, :relight) do
-          {:ok, _} ->
-            req = relight_request(entry, instance)
-            spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, req) end)
+        # Instance selection (Step 4): a relight MUST land on the instance that
+        # BANKED this serving snapshot on disk (per-instance-on-disk, PR-2.5), so
+        # dial that instance's instance_id rather than the collapsing node-name
+        # alias. No owning instance -> a mem-eligible one; none at all -> fail clean.
+        case dial_instance(state, workload, entry, node_id, warmth_ref: instance.snapshot_ref) do
+          {:ok, dial_id} ->
+            # Move the banked instance to relighting (ETS-only, no op) before the RPC,
+            # so a concurrent reconcile does not touch it and the later serving_relit
+            # is a legal relighting -> starting edge.
+            case ServingStore.mark(state.store, instance.instance_id, :relight) do
+              {:ok, _} ->
+                req = relight_request(entry, instance)
+                spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, dial_id, req) end)
+
+              {:error, reason} ->
+                # The instance moved off banked concurrently: report a wake failure so
+                # the parked callers 503 and the next miss retries.
+                send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+            end
 
           {:error, reason} ->
-            # The instance moved off banked concurrently: report a wake failure so the
-            # parked callers 503 and the next miss retries.
-            send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+            send(self(), {:wake_done, workload, {:error, reason}})
         end
 
       # Restore-on-miss (R6): the local snapshot is gone but its store copy is
@@ -357,22 +367,39 @@ defmodule Embervm.ServingManager do
       # path. The restore failing (store unreachable mid-wake, or the copy vanished)
       # degrades to the daemon's own cold-boot fallback (fail-open warmth).
       {:restore_then_relight, instance, node_id} ->
-        case ServingStore.mark(state.store, instance.instance_id, :relight) do
-          {:ok, _} ->
-            req = relight_request(entry, instance)
+        # The local snapshot is gone, so no instance reports it: selection falls to a
+        # mem-eligible instance the restore lands the bundle onto.
+        case dial_instance(state, workload, entry, node_id, warmth_ref: instance.snapshot_ref) do
+          {:ok, dial_id} ->
+            case ServingStore.mark(state.store, instance.instance_id, :relight) do
+              {:ok, _} ->
+                req = relight_request(entry, instance)
 
-            spawn_wake(owner, workload, fn ->
-              _ = restore_bundle(state, node_id, workload, instance.snapshot_ref)
-              run_relight(state, instance, node_id, req)
-            end)
+                spawn_wake(owner, workload, fn ->
+                  _ = restore_bundle(state, node_id, workload, instance.snapshot_ref)
+                  run_relight(state, instance, node_id, dial_id, req)
+                end)
+
+              {:error, reason} ->
+                send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+            end
 
           {:error, reason} ->
-            send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+            send(self(), {:wake_done, workload, {:error, reason}})
         end
 
       {:cold, node_id, base_ref} ->
-        req = cold_request(entry, workload, base_ref)
-        spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, base_ref, req) end)
+        # A cold boot has no owning snapshot: select a mem-eligible instance on the
+        # node (a too-small classed brick is skipped, the DS wildcard is always
+        # eligible), failing cleanly if none has room.
+        case dial_instance(state, workload, entry, node_id, []) do
+          {:ok, dial_id} ->
+            req = cold_request(entry, workload, base_ref)
+            spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, dial_id, base_ref, req) end)
+
+          {:error, select_reason} ->
+            send(self(), {:wake_done, workload, {:error, select_reason}})
+        end
 
       {:error, reason} ->
         # No capacity / snapshot lost: report it so the parked callers 503.
@@ -380,6 +407,24 @@ defmodule Embervm.ServingManager do
     end
 
     state
+  end
+
+  # Select the SPECIFIC instance on the resolved node to dial (Step 4): prefer the
+  # instance that banked this workload's serving snapshot (its serving_snapshots
+  # report `warmth_ref`), else a mem-eligible instance sized for the workload's
+  # mem_mib, else `{:error, :no_eligible_instance}`. Returns the dial key
+  # (instance_id, or the node name for a legacy fact without one). A cold boot passes
+  # no `:warmth_ref` and goes straight to the mem-eligible pick.
+  defp dial_instance(state, workload, entry, node_id, opts) do
+    Embervm.WakeInstance.select(
+      node_id,
+      [
+        table: state.capacity_table,
+        workload: workload,
+        need_mib: Map.get(entry, :mem_mib) || 512,
+        warmth_key: :serving_snapshots
+      ] ++ opts
+    )
   end
 
   # Spawn a wake worker that ALWAYS reports a {:wake_done} outcome, even if the RPC
@@ -548,8 +593,8 @@ defmodule Embervm.ServingManager do
 
   # The relight RPC (in the spawned worker). Returns the outcome finish_wake
   # projects durably.
-  defp run_relight(state, instance, node_id, req) do
-    case safe_start_serving(state, node_id, req) do
+  defp run_relight(state, instance, node_id, dial_id, req) do
+    case safe_start_serving(state, dial_id, req) do
       {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
       when is_binary(vm_id) and vm_id != "" ->
         {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port}}
@@ -560,8 +605,8 @@ defmodule Embervm.ServingManager do
   end
 
   # The cold-create RPC (in the spawned worker).
-  defp run_cold(state, workload, node_id, base_ref, req) do
-    case safe_start_serving(state, node_id, req) do
+  defp run_cold(state, workload, node_id, dial_id, base_ref, req) do
+    case safe_start_serving(state, dial_id, req) do
       {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
       when is_binary(vm_id) and vm_id != "" ->
         attrs = %{

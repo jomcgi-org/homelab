@@ -200,6 +200,14 @@ defmodule Embervm.GroupManager do
       principal: Keyword.fetch!(opts, :principal),
       entry: Keyword.fetch!(opts, :entry),
       node_id: Keyword.fetch!(opts, :node_id),
+      # The channel dial KEY (brick co-location foundation, Step 4): the specific
+      # instance on `node_id` this group's member RPCs dial, as an instance_id
+      # ("node/pod_uid") the dual-keyed Embervm.NodeChannel resolves without the
+      # node-name-alias collapse. Distinct from `node_id`, which stays the K8s NODE
+      # NAME recorded durably (GroupStore rows, adoption's node lookups). Defaults to
+      # `node_id` so a caller that does not select an instance (or a single-instance
+      # fleet) dials exactly as before.
+      dial_id: Keyword.get(opts, :dial_id) || Keyword.fetch!(opts, :node_id),
       store: Keyword.get(opts, :store, GroupStore),
       publisher: Keyword.get(opts, :publisher, Embervm.EndpointPublisher),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
@@ -1017,7 +1025,7 @@ defmodule Embervm.GroupManager do
       member_name: member.member_name
     }
 
-    case over_channel(state, state.node_id, &state.stop_group_member_fun.(&1, req)) do
+    case over_channel(state, state.dial_id, &state.stop_group_member_fun.(&1, req)) do
       {:ok, %StopGroupMemberResponse{snapshot_ref: ref}} when is_binary(ref) and ref != "" ->
         {:ok, %{name: member.member_name, snapshot_ref: ref}}
 
@@ -1344,7 +1352,7 @@ defmodule Embervm.GroupManager do
       cidr: cidr
     }
 
-    case over_channel(state, state.node_id, &state.create_group_network_fun.(&1, req)) do
+    case over_channel(state, state.dial_id, &state.create_group_network_fun.(&1, req)) do
       {:ok, %CreateGroupNetworkResponse{} = resp} -> {:ok, resp}
       other -> {:error, {:create_network_failed, other}}
     end
@@ -1355,7 +1363,7 @@ defmodule Embervm.GroupManager do
   defp delete_network(state) do
     req = %DeleteGroupNetworkRequest{trace: %Trace{workload: state.workload}, group_instance_id: state.instance_id}
 
-    with {:ok, channel} <- safe_channel(state, state.node_id) do
+    with {:ok, channel} <- safe_channel(state, state.dial_id) do
       try do
         state.delete_group_network_fun.(channel, req)
       rescue
@@ -1369,7 +1377,7 @@ defmodule Embervm.GroupManager do
   end
 
   defp safe_start_group_member(state, req) do
-    over_channel(state, state.node_id, &state.start_group_member_fun.(&1, req))
+    over_channel(state, state.dial_id, &state.start_group_member_fun.(&1, req))
   rescue
     e -> {:error, {:start_group_member_raised, e}}
   catch
@@ -1465,7 +1473,7 @@ defmodule Embervm.GroupManager do
       member_name: member.member_name
     }
 
-    with {:ok, channel} <- safe_channel(state, state.node_id) do
+    with {:ok, channel} <- safe_channel(state, state.dial_id) do
       try do
         state.stop_group_member_fun.(channel, req)
       rescue
@@ -1485,7 +1493,7 @@ defmodule Embervm.GroupManager do
   defp evict_snapshot(state, snapshot_ref) do
     req = %EvictSnapshotRequest{trace: %Trace{workload: state.workload}, snapshot_ref: snapshot_ref}
 
-    with {:ok, channel} <- safe_channel(state, state.node_id) do
+    with {:ok, channel} <- safe_channel(state, state.dial_id) do
       try do
         state.evict_snapshot_fun.(channel, req)
       rescue
