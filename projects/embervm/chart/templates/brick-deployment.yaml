@@ -31,6 +31,21 @@ metadata:
   labels:
     {{- include "embervm.brick.labels" (dict "ctx" $ctx "class" $class.name) | nindent 4 }}
 spec:
+  # A brick's memory is a HARD reservation (request==limit), so two same-class
+  # bricks never fit where one does on a capacity-tight node. The default
+  # RollingUpdate surges (new pod before old), which needs 2x the class's memory
+  # and DEADLOCKS on a single-node fleet: the surge pod sits Pending "Insufficient
+  # memory" forever while the old pod it would replace stays up (observed
+  # 2026-07-20, the 16Gi brick roll). maxSurge:0 rolls each brick in place (kill
+  # old, then schedule new into the freed reservation); maxUnavailable:1 still
+  # rolls a multi-replica class one pod at a time. A zero-downtime surge-roll needs
+  # a second node with a class-sized memory hole to land on (ADR embervm/011); on
+  # the current single big-memory node the large class cannot surge.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   # replicas is only the value at FIRST create: the BrickController (PR-3) owns it
   # thereafter, and ArgoCD ignores Deployment /spec/replicas fleet-wide (the HPA
   # ignoreDifferences rule) so the controller's scaling never shows as drift. Both
