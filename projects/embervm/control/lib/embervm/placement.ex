@@ -85,6 +85,45 @@ defmodule Embervm.Placement do
   end
 
   @doc """
+  Whether `brick` has ADVERTISED `workload`'s base as READY: its
+  `workloads[workload].base_state` is the daemon's `BASE_BUILD_STATE_READY`. This
+  is the co-location READINESS half of a NEW COLD placement, distinct from the
+  memory/slot gate: a freshly-rolled or scaled-up instance is dispatchable and
+  mem-eligible the instant it registers, but until its noded re-provisions the
+  runtime image and advertises the base it CANNOT resolve `boot_image_ref` (the
+  live `noded: boot_image_ref required` failure a fresh 16Gi brick hit on a
+  demo-postgres cold boot). An instance adopts its node-shared bases from disk
+  READY internally but only projects `base_state = READY` after `imageProvisioned`
+  syncs, so this predicate is false in exactly the post-roll/post-scale-up window
+  and true once the instance can actually boot the guest.
+
+  Absent workload entry, or any non-READY `base_state`, is false. The daemon
+  reports `base_state` as the proto enum, projected by the registry as the
+  protobuf-elixir atom `:BASE_BUILD_STATE_READY`; the integer form `3` is accepted
+  defensively, matching the tolerant check the dispatcher and session/serving
+  placement already use so the four NEW-placement paths cannot drift on the
+  readiness representation.
+
+  This gates only the COLD / fresh-placement pick, NEVER the warmth/relight-owner
+  path: a relight targets the specific instance that BANKED the bundle on disk,
+  which by construction already holds (and advertises) that workload's base.
+  """
+  @spec base_ready?(brick(), term()) :: boolean()
+  def base_ready?(brick, workload) do
+    case Map.get(Map.get(brick, :workloads) || %{}, workload) do
+      %{base_state: base_state} -> base_state_ready?(base_state)
+      _ -> false
+    end
+  end
+
+  # The daemon reports base_state as the proto enum. Accept the protobuf-elixir
+  # atom form and the integer form (3) defensively, identical to the tolerant
+  # checks in Dispatcher/SessionPlacement/ServingPlacement.
+  defp base_state_ready?(:BASE_BUILD_STATE_READY), do: true
+  defp base_state_ready?(3), do: true
+  defp base_state_ready?(_), do: false
+
+  @doc """
   Filter `bricks` to those `eligible?/2` for `need_mib`, then deterministically
   pick one keyed by `key` (`BrickLedger.choose/2`: sorted by `instance_id`,
   hashed on the key, so the same key sticks and distinct keys spread across the
@@ -97,5 +136,31 @@ defmodule Embervm.Placement do
     bricks
     |> Enum.filter(&eligible?(&1, need_mib))
     |> BrickLedger.choose(key)
+  end
+
+  @doc """
+  The COLD NEW-placement primitive: filter `bricks` to those `eligible?/2` for
+  `need_mib` AND `base_ready?/2` for `workload` (`workload` is also the sticky
+  `key`), then deterministically pick one via `BrickLedger.choose/2`. Returns the
+  chosen brick or `nil` when no brick is BOTH eligible and base-ready.
+
+  This is the wake cold pick's primitive. It adds the co-location READINESS gate on
+  top of `pick/3`'s slot+memory gate so a fresh stateful/serving/task/group wake
+  never dials a dispatchable, mem-eligible instance that has not yet advertised the
+  workload's base and so would hard-fail `noded: boot_image_ref required`. When no
+  brick qualifies, the caller returns its existing retryable no-eligible outcome
+  (the activators keep retrying), so the wake WAITS for a fresh instance to finish
+  provisioning and advertise the base instead of hard-failing on the first miss.
+
+  Kept distinct from `pick/3` (which stays a pure slot+memory gate) so a caller that
+  legitimately needs only the memory gate is unaffected; the warmth/relight-owner
+  path in `Embervm.WakeInstance` also stays on the owner scan (the banked instance
+  already holds the base) and never routes through here.
+  """
+  @spec pick_ready([brick()], term(), non_neg_integer()) :: brick() | nil
+  def pick_ready(bricks, workload, need_mib) do
+    bricks
+    |> Enum.filter(fn brick -> eligible?(brick, need_mib) and base_ready?(brick, workload) end)
+    |> BrickLedger.choose(workload)
   end
 end

@@ -20,10 +20,23 @@ defmodule Embervm.WakeInstanceTest do
     %{table: table}
   end
 
+  # The workloads every cold-pick test queries; the fixture advertises each as
+  # base READY by default so the base-readiness gate is satisfied and these tests
+  # exercise the mem/slot behaviour. A test that wants a NOT-yet-advertised
+  # instance (the fresh/rolled window) passes `advertise: []`.
+  @default_advertised ~w(wl-a wl-b wl-c wl-d wl-e gwl)
+
   # A per-instance capacity fact. Defaults model a real classed brick with headroom
-  # and a free slot; override per case (size_class "" / mem_budget_mib 0 => wildcard).
+  # and a free slot that has ADVERTISED the default workloads' bases as READY;
+  # override per case (size_class "" / mem_budget_mib 0 => wildcard; advertise: []
+  # => a fresh instance that has not advertised any base yet).
   defp put_instance(table, node_id, pod_uid, opts) do
     instance_id = "#{node_id}/#{pod_uid}"
+
+    workloads =
+      for wl <- Keyword.get(opts, :advertise, @default_advertised), into: %{} do
+        {wl, %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap/#{wl}"}}
+      end
 
     facts =
       %{
@@ -36,6 +49,7 @@ defmodule Embervm.WakeInstanceTest do
         mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 8_192),
         live_vms: Keyword.get(opts, :live_vms, 0),
         max_live_vms: Keyword.get(opts, :max_live_vms, 4),
+        workloads: workloads,
         stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
         serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
         group_bundle_sets: Keyword.get(opts, :group_bundle_sets, []),
@@ -85,14 +99,17 @@ defmodule Embervm.WakeInstanceTest do
                )
     end
 
-    test "the owner is chosen even if it is mem-too-small (a relight must land on its disk)", %{table: table} do
-      # The owner is a 2Gi brick with only 100 MiB headroom; the need is 4000. Warmth
-      # ownership wins regardless: the bundle is only on this instance's disk.
+    test "the owner is chosen even if it is mem-too-small AND has not advertised the base (a relight must land on its disk)", %{table: table} do
+      # The owner is a 2Gi brick with only 100 MiB headroom (need 4000) that has
+      # advertised NO base (advertise: []). Warmth ownership wins regardless of BOTH
+      # the mem gate and the base-readiness gate: the bundle is only on this instance's
+      # disk, so the readiness gate (which is a COLD-pick-only concern) must not touch it.
       owner =
         put_instance(table, "node-4", "pod-small",
           size_class: "2gi",
           mem_headroom_mib: 100,
           mem_budget_mib: 2_048,
+          advertise: [],
           stateful_bundles: [%{snapshot_ref: "stateful/wl-a"}]
         )
 
@@ -132,6 +149,67 @@ defmodule Embervm.WakeInstanceTest do
       # warmth_key present but no warmth_ref => nothing to prefer => cold pick.
       assert {:ok, ^big} =
                WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 1_000, warmth_key: :stateful_bundles)
+    end
+  end
+
+  describe "cold pick gates on base readiness (co-location gap)" do
+    test "skips a mem-eligible instance that has NOT advertised the base, picks the advertised one", %{table: table} do
+      # fresh: mem-eligible + free slot, but advertises no base yet (the post-roll /
+      # post-scale-up window: adopted bases from disk internally but noded has not
+      # re-provisioned the runtime image, so base_state is absent and it cannot resolve
+      # boot_image_ref). ready: same size, advertises the base READY.
+      _fresh =
+        put_instance(table, "node-4", "pod-fresh",
+          size_class: "16gi",
+          mem_headroom_mib: 16_000,
+          mem_budget_mib: 16_384,
+          advertise: []
+        )
+
+      ready =
+        put_instance(table, "node-4", "pod-ready",
+          size_class: "16gi",
+          mem_headroom_mib: 16_000,
+          mem_budget_mib: 16_384
+        )
+
+      for wl <- ~w(wl-a wl-b wl-c wl-d wl-e) do
+        assert {:ok, picked} =
+                 WakeInstance.select("node-4", table: table, workload: wl, need_mib: 4_000, warmth_key: :stateful_bundles)
+
+        assert picked == ready
+      end
+    end
+
+    test "the only base-ready instance is too small AND the mem-eligible one is not ready -> clean no-eligible (retryable, NOT a bad pick)", %{table: table} do
+      # ready_small: advertises the base READY but is a 2Gi brick, too small for 4000.
+      # big_fresh: mem-eligible (16Gi) but has NOT advertised the base. Neither is BOTH
+      # eligible and ready, so selection returns :no_eligible_instance (the wake retries
+      # once big_fresh finishes provisioning) rather than dialling either bad choice.
+      _ready_small =
+        put_instance(table, "node-4", "pod-small",
+          size_class: "2gi",
+          mem_headroom_mib: 100,
+          mem_budget_mib: 2_048
+        )
+
+      _big_fresh =
+        put_instance(table, "node-4", "pod-big",
+          size_class: "16gi",
+          mem_headroom_mib: 16_000,
+          mem_budget_mib: 16_384,
+          advertise: []
+        )
+
+      assert {:error, :no_eligible_instance} =
+               WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 4_000, warmth_key: :stateful_bundles)
+    end
+
+    test "a node whose sole instance has not advertised the base fails cleanly (retryable wait)", %{table: table} do
+      _fresh = put_instance(table, "node-4", "pod-fresh", advertise: [])
+
+      assert {:error, :no_eligible_instance} =
+               WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 512)
     end
   end
 
@@ -211,6 +289,7 @@ defmodule Embervm.WakeInstanceTest do
         mem_budget_mib: 0,
         live_vms: 0,
         max_live_vms: 4,
+        workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap/wl-a"}},
         stateful_bundles: [%{snapshot_ref: "stateful/wl-a"}]
       })
 
