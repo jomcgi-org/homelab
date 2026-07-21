@@ -315,7 +315,15 @@ defmodule Embervm.GroupSweeper do
       orphaned? =
         case GroupStore.get(state.store, instance_id) do
           {:ok, instance} -> GroupState.terminal?(instance.state)
-          {:error, _} -> true
+          # GroupStore.get returns a BARE :error (not {:error, _}) when the instance
+          # is absent from the store (see get_view/2, and group_manager.ex which
+          # matches :error the same way). An absent instance IS orphaned: its network
+          # record outlived its group, which is exactly what this GC collects. The old
+          # {:error, _} clause matched neither {:ok,_} nor a bare :error, so the sweep
+          # crashed with a CaseClauseError PRECISELY when there was an orphan to clean,
+          # crash-looping the sweeper every tick and letting bridge records pile up
+          # ("cidr overlaps existing group").
+          :error -> true
         end
 
       if orphaned? and is_binary(instance_id) and instance_id != "" do

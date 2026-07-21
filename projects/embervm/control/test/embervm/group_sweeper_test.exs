@@ -706,6 +706,36 @@ defmodule Embervm.GroupSweeperTest do
     assert delete_net_calls(ctx) == []
   end
 
+  test "orphan network GC: a node-reported network for an ABSENT instance is deleted, no crash" do
+    ctx = start_stack()
+    group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
+    group_node(ctx, "node-4")
+
+    # An instance_id the store has NEVER seen: GroupStore.get returns a BARE :error.
+    # Before the fix this crashed the whole sweep with a CaseClauseError (the case only
+    # matched {:ok,_} and {:error,_}); now the absent instance is treated as orphaned
+    # and its squatting network is collected on the same sweep.
+    absent_id = "gi-absent"
+
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      configured_id: "node-4",
+      node_id: "node-4",
+      serving_subnet_cidr: "10.98.0.0/24",
+      max_live_vms: 8,
+      live_vms: 0,
+      workloads: %{},
+      group_member_vms: [],
+      group_bundle_sets: [],
+      group_networks: [%{group_instance_id: absent_id, cidr: "10.101.0.0/24", bridge: "emg1", member_count: 0}]
+    })
+
+    set_scrape(ctx, reading("group-5410", 0, 3))
+    GroupSweeper.sweep(ctx.sweeper)
+
+    assert [req] = delete_net_calls(ctx)
+    assert req.group_instance_id == absent_id
+  end
+
   test "a status-write failure never crashes the sweep" do
     ctx = start_stack()
     group_workload(ctx, "grp-a", 5410, %{idle_bank_seconds: 600})
