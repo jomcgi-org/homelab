@@ -6,4 +6,5 @@ resources:
   - ./namespace.yaml
   - ./storageclass-gpu.yaml
   - ./configure-node-4-disks.yaml
+  - ./recurringjob-snapshot-cleanup.yaml
   - ./longhorn-httpcheck-alert.yaml
