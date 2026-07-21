@@ -4,6 +4,9 @@ metadata:
   name: longhorn-node4-ssd
   annotations:
     storageclass.kubernetes.io/is-default-class: "false"
+    # StorageClass.parameters is immutable, so ArgoCD must recreate (not patch) the
+    # SC when these change. Safe here: the class has no bound volumes yet.
+    argocd.argoproj.io/sync-options: Replace=true
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Delete
@@ -15,14 +18,17 @@ parameters:
   # block-layer copy would just be a third physical copy of the same bytes.
   numberOfReplicas: "1"
 
-  # Pin to node-4 (mirrors longhorn-gpu's pattern).
-  nodeSelector: "kubernetes.io/hostname:node-4"
-
-  # node-4's 3.7T SATA SSD (disk tags: ssd, large, gpu; the only "ssd"-tagged
-  # disk in the cluster). Deliberately NOT nvme-02: that is the same physical
-  # disk as the Firecracker scratch tier (embervm bases/warmth), so putting the
-  # durable S3 store there would contend for IO and capacity with the very
-  # workload the store is meant to back up.
+  # Pin to node-4 via diskSelector alone. Longhorn's `nodeSelector` parameter takes
+  # Longhorn NODE TAGS (not a Kubernetes label selector), so the previous
+  # "kubernetes.io/hostname:node-4" value matched no node and left the PVC forever
+  # Pending. The "ssd" disk tag is unique to node-4's ssd-01 (verified: no other
+  # node has an ssd-tagged disk), so diskSelector alone pins the replica to node-4,
+  # and the volume-server pod is k8s-nodeSelector'd to node-4 independently.
+  #
+  # node-4's 3.7T SATA SSD (disk tags: ssd, large, gpu). Deliberately NOT nvme-02:
+  # that is the same physical disk as the Firecracker scratch tier (embervm
+  # bases/warmth), so putting the durable S3 store there would contend for IO and
+  # capacity with the very workload the store is meant to back up.
   diskSelector: "ssd"
 
   # Standard settings (as longhorn-gpu)
