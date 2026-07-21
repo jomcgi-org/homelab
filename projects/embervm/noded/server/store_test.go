@@ -468,6 +468,123 @@ func baseExportedInStatus(s *Server, workload, ref string) bool {
 
 // TestExportArtifactMissingLocalFails proves ExportArtifact refuses
 // FAILED_PRECONDITION when the local artifact is absent.
+func waitForBaseOnDisk(t *testing.T, s *Server, ref string) {
+	t.Helper()
+	snapfile := filepath.Join(s.cfg.SnapshotRoot, "bases", ref, "snapfile")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(snapfile); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("base %q did not land on disk within the deadline", ref)
+}
+
+func TestRestoreArtifactBaseIsAsync(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Start the async queues (export + restore share the lifecycle).
+	s.StartStoreLoops(ctx)
+
+	workload := "bazel-query"
+	ref := "bazel-query__abcdef012345"
+	// The runtime must be provisioned so the re-registered base is not GC'd by the
+	// reconcile's imageref gate; seed the store artifact with the imageref file the
+	// disk scan reads back.
+	digest := "sha256:runtime-bazel"
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel"}})
+	prefix := "base/amd/" + workload + "/" + ref
+	fs.seedArtifact(prefix, map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"}, 0, "amd", "")
+
+	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+		Vendor:   "amd",
+	})
+	if err != nil {
+		t.Fatalf("RestoreArtifact(base): %v", err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatal("a BASE restore that needs a download must fast-ACK accepted=true")
+	}
+	if resp.GetBytesMoved() != 0 {
+		t.Fatal("the fast-ACK must not report bytes moved (the download runs async)")
+	}
+
+	// The async worker downloads the base onto disk and re-registers it READY.
+	waitForBaseOnDisk(t, s, ref)
+	if got, _ := os.ReadFile(filepath.Join(s.cfg.SnapshotRoot, "bases", ref, "snapfile")); string(got) != "snap" {
+		t.Fatalf("restored base snapfile = %q, want snap", got)
+	}
+	if b, ok := s.bases.get(ref); !ok || b.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Fatal("restored base not re-registered READY")
+	}
+}
+
+// TestRestoreArtifactBaseNotPresentFailsFast proves a BASE restore whose store
+// copy is absent returns FAILED_PRECONDITION SYNCHRONOUSLY (never an accepted
+// ack that would make the caller wait a poll timeout), so the control plane
+// falls back to BuildBase at once.
+func TestRestoreArtifactBaseNotPresentFailsFast(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.StartStoreLoops(ctx)
+
+	_, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "bazel-query", Ref: "missing__000000000000"},
+		Vendor:   "amd",
+	})
+	if err == nil {
+		t.Fatal("a BASE restore of an absent store copy must fail, not ACK")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("absent-base restore error code = %v, want FailedPrecondition", status.Code(err))
+	}
+}
+
+// TestRestoreArtifactBaseAlreadyLocalSkips proves a BASE restore is an inline
+// skipped no-op (NOT accepted/async) when the base is already present locally,
+// so a redundant hydrate trigger costs no download.
+func TestRestoreArtifactBaseAlreadyLocalSkips(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.StartStoreLoops(ctx)
+
+	workload := "bazel-query"
+	ref := "bazel-query__abcdef012345"
+	digest := "sha256:runtime-bazel"
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel"}})
+	prefix := "base/amd/" + workload + "/" + ref
+	fs.seedArtifact(prefix, map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"}, 0, "amd", "")
+	// The base is ALSO already on local disk.
+	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "bases", ref), map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"})
+
+	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+		Vendor:   "amd",
+	})
+	if err != nil {
+		t.Fatalf("RestoreArtifact(already-local base): %v", err)
+	}
+	if !resp.GetSkipped() {
+		t.Fatal("an already-local base restore must be a skipped no-op")
+	}
+	if resp.GetAccepted() {
+		t.Fatal("an already-local base restore must NOT enqueue an async download")
+	}
+}
+
+// baseExportedInStatus finds the workload's capacity entry in NodeStatus whose
+// snapshot_ref matches and returns its exported flag; false if not reported.
+
+// TestExportArtifactMissingLocalFails proves ExportArtifact refuses
+// FAILED_PRECONDITION when the local artifact is absent.
 func TestExportArtifactMissingLocalFails(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)

@@ -1493,6 +1493,21 @@ message RestoreArtifactResponse {
   uint64 bytes_moved = 1;
   bool skipped = 2;
   uint64 generation = 3;
+  // accepted is true when the daemon fast-ACKed a BASE restore whose multi-GB
+  // download it enqueued to run ASYNCHRONOUSLY, rather than completing it inline
+  // (base-durability PR-2, additive). A base restore is a multi-minute S3
+  // download: holding the RPC open for it lets the Cilium/eBPF datapath reap the
+  // idle flow's conntrack entry mid-transfer ("the connection is closed"), the
+  // same failure that forced base EXPORT async. So the daemon runs the download
+  // on a bounded, deduped queue (mirroring the export queue) and returns
+  // accepted=true immediately; the caller then POLLS NodeStatus for the base to
+  // appear BASE_BUILD_STATE_READY (present-and-restorable) instead of blocking.
+  // accepted=false with skipped=true means the artifact was already present
+  // locally (an inline no-op, no poll needed); a not-present store copy is
+  // FAILED_PRECONDITION (not this response), so the caller falls back to rebuild
+  // at once. Only the BASE kind ever sets accepted; the small warmth/volume
+  // kinds still restore inline and return accepted=false.
+  bool accepted = 4;
 }
 
 // EvictArtifactRequest asks the daemon to delete one artifact. remote=true

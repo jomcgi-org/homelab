@@ -296,6 +296,16 @@ type Server struct {
 	exportOnce     sync.Once
 	exportDedupeMu sync.Mutex
 	exportDedupe   map[string]struct{}
+	// restoreCh is the bounded async BASE-restore queue; restoreDedupe drops a
+	// re-enqueue of an already-in-flight prefix (held enqueue-through-completion,
+	// so a re-triggered restore of a base still downloading is a no-op). Both
+	// nil/empty until startExportQueue runs (the restore queue shares that
+	// lifecycle). A BASE restore's multi-GB download runs here so the RPC never
+	// holds an idle flow open long enough for the Cilium/eBPF datapath to reap its
+	// conntrack entry, mirroring the export queue (base-durability PR-2).
+	restoreCh       chan restoreJob
+	restoreDedupeMu sync.Mutex
+	restoreDedupe   map[string]struct{}
 	// storeReachable is the latest object-store reachability verdict from the
 	// probe loop, surfaced in NodeStatus.store_reachable.
 	storeMu        sync.RWMutex
@@ -406,6 +416,7 @@ func New(opts Options) *Server {
 		store:           opts.Store,
 		exported:        newExportedCache(),
 		exportDedupe:    make(map[string]struct{}),
+		restoreDedupe:   make(map[string]struct{}),
 		subs:            make(map[chan struct{}]struct{}),
 		activeBuilds:    make(map[string]context.CancelFunc),
 	}
