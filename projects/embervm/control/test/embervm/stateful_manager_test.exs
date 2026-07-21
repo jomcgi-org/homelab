@@ -1443,9 +1443,16 @@ defmodule Embervm.StatefulManagerTest do
     # reconcile must auto-wake the workload (retires the post-roll manual wake).
     :ok = StatefulManager.reconcile(ctx.mgr)
 
-    poll_mgr(ctx, fn -> Agent.get(wakes, & &1) == 1 end)
+    # The StartStateful RPC records `wakes` inside the spawned wake worker, BEFORE
+    # it posts {:wake_done}; the publish only lands when finish_wake handles that
+    # message. So poll on the PUBLISHED ENDPOINT (the terminal effect), not `wakes`,
+    # to avoid asserting between the RPC return and the async publish.
+    poll_mgr(ctx, fn ->
+      match?(%{ip: "10.88.0.5", port: 5432}, StatefulStore.published_endpoint(ctx.store, "wl-a"))
+    end)
+
     assert Agent.get(wakes, & &1) == 1
-    assert match?(%{ip: "10.88.0.5", port: 5432}, StatefulStore.published_endpoint(ctx.store, "wl-a"))
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.5", port: 5432}
   end
 
   test "reconcile does NOT auto-wake when autoWake is unset, or an instance already exists" do
