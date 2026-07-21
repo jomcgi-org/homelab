@@ -387,11 +387,11 @@ defmodule Embervm.StatefulSweeper do
   # transition + inflight release on this serialized process. ip/port are the
   # endpoint captured BEFORE unpublish cleared the ETS row (see
   # spawn_bank_worker/2's comment); needed to restore it on a failed bank.
-  def handle_info({:bank_done, instance_id, node_id, vm_id, ip, port, workload, outcome}, state) do
+  def handle_info({:bank_done, instance_id, node_id, vm_id, ip, port, workload, owner_resolved, outcome}, state) do
     # Atomic bank finished: clear any drain mark (interruptible workloads clear at
     # resolve_done instead, after decide_resolve has read it).
     state = clear_draining(state, workload)
-    {:noreply, finish_bank(state, instance_id, node_id, vm_id, ip, port, workload, outcome)}
+    {:noreply, finish_bank(state, instance_id, node_id, vm_id, ip, port, workload, owner_resolved, outcome)}
   end
 
   # The CHECKPOINT phase finished (ADR embervm/008): mark :checkpoint_ready and
@@ -939,6 +939,13 @@ defmodule Embervm.StatefulSweeper do
     # fact, preserving single-instance behaviour exactly. Resolved here on the
     # owner process so the worker reads a settled key.
     dial_key = dial_for_vm(state, node_id, vm_id)
+    # Whether the dial resolved to a SPECIFIC owning instance (a live owner fact
+    # reported the vm_id) versus falling open to the bare node name. Task #12: an
+    # unknown-vm FAILED_PRECONDITION only terminalizes the instance when we dialled
+    # the owner; a fail-open dial to the node alias could be hitting the WRONG sibling
+    # (a stale-fact race), so terminalizing there could fail a still-live instance and
+    # split-brain a second VM on the same volume. See finish_bank_active.
+    owner_resolved = dial_key != node_id
     ip = instance.ip
     port = instance.port
 
@@ -972,7 +979,7 @@ defmodule Embervm.StatefulSweeper do
           end
         end
 
-      send(owner, {:bank_done, instance_id, node_id, vm_id, ip, port, workload, outcome})
+      send(owner, {:bank_done, instance_id, node_id, vm_id, ip, port, workload, owner_resolved, outcome})
     end)
   end
 
@@ -1046,7 +1053,7 @@ defmodule Embervm.StatefulSweeper do
   #     (snapshot fact + generation, the pair-key baseline);
   #   * on failure: `banking -[bank_abort]-> serving` (ETS-only, VM intact) and
   #     republish (a failed bank must not leave a warm VM dark).
-  defp finish_bank(state, instance_id, node_id, vm_id, ip, port, workload, outcome) do
+  defp finish_bank(state, instance_id, node_id, vm_id, ip, port, workload, owner_resolved, outcome) do
     state =
       state
       |> decr_bank_inflight(node_id)
@@ -1058,14 +1065,14 @@ defmodule Embervm.StatefulSweeper do
         state
 
       {:ok, instance} ->
-        finish_bank_active(state, instance, node_id, vm_id, ip, port, workload, outcome)
+        finish_bank_active(state, instance, node_id, vm_id, ip, port, workload, owner_resolved, outcome)
 
       :error ->
         state
     end
   end
 
-  defp finish_bank_active(state, instance, node_id, _vm_id, _ip, _port, workload, {:ok, ref, size, generation}) do
+  defp finish_bank_active(state, instance, node_id, _vm_id, _ip, _port, workload, _owner_resolved, {:ok, ref, size, generation}) do
     _ =
       StatefulStore.transition(
         state.store,
@@ -1090,15 +1097,24 @@ defmodule Embervm.StatefulSweeper do
   end
 
   # UNKNOWN-VM FAILED_PRECONDITION (gRPC status 9): the daemon we dialled does not
-  # own this VM ("not bankable / unknown vm"). Do NOT resurrect the endpoint into
-  # the fan-out (blind republish looped this at the 1 s sweep frequency before the
-  # dial-key fix, and even with it a genuinely-gone VM must not linger dark): fail
-  # the instance (banking -> failed, durable stateful_failed) so the wake path
-  # cold-boots a fresh one on the next connection. No backoff needed: the instance
-  # is terminal, so idle_bank_pass never re-selects it.
-  defp finish_bank_active(state, instance, node_id, vm_id, ip, port, workload, {:error, reason}) do
-    if failed_precondition?(reason) do
-      Logger.warning("embervm stateful: bank rejected unknown vm, failing instance",
+  # own this VM ("not bankable / unknown vm").
+  #
+  # Terminalize (banking -> failed, durable stateful_failed, so the wake path
+  # cold-boots a fresh one) ONLY when the dial was OWNER-RESOLVED: we reached the
+  # exact instance whose capacity fact reported this vm_id, so its "unknown vm" reply
+  # is authoritative that the VM is genuinely gone. No backoff needed: the instance is
+  # terminal, so idle_bank_pass never re-selects it.
+  #
+  # When the dial FELL OPEN to the bare node name (no owner fact reported the vm_id,
+  # owner_resolved false), an unknown-vm reply is NOT authoritative: under co-location
+  # the node-name alias can resolve to the wrong sibling brick (a stale-fact race
+  # where the owner's fact has not landed yet), so terminalizing here could fail a
+  # still-live instance and cold-boot a SECOND VM on the same volume (split-brain).
+  # Treat it as a NON-terminal error instead: abort back to the fan-out and arm the
+  # backoff, so the next sweep re-resolves the dial once the owner fact settles.
+  defp finish_bank_active(state, instance, node_id, vm_id, ip, port, workload, owner_resolved, {:error, reason}) do
+    if failed_precondition?(reason) and owner_resolved do
+      Logger.warning("embervm stateful: bank rejected unknown vm on owner-resolved dial, failing instance",
         instance_id: instance.instance_id,
         workload: workload,
         reason: inspect(reason)

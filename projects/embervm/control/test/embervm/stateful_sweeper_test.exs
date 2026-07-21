@@ -1288,10 +1288,16 @@ defmodule Embervm.StatefulSweeperTest do
     refute "node-4" in Agent.get(dialed, & &1)
   end
 
-  test "an unknown-vm FAILED_PRECONDITION terminalizes the instance (-> :failed), not loop/republish" do
+  test "an owner-resolved unknown-vm FAILED_PRECONDITION terminalizes the instance (-> :failed), not loop/republish" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
-    stateful_node(ctx, "node-4")
+    # An OWNER-RESOLVED dial: a per-instance fact reports the live vm_id, so the
+    # unknown-vm reply is authoritative (we reached the exact owner). Only then does
+    # the terminalize fire (task #12).
+    put_brick(ctx, "node-4", "pod-owner",
+      stateful_vms: [%{vm_id: "vm-1", workload: "wl-a", ip: "10.98.0.5", port: 5432, healthy: true, generation: 0}]
+    )
+
     serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
 
     # The daemon rejects the bank FAILED_PRECONDITION (status 9): it does not own
@@ -1328,6 +1334,59 @@ defmodule Embervm.StatefulSweeperTest do
     assert load_ops(ctx, "stateful_banked") == []
     # A durable stateful_failed was recorded (the wake path cold-boots next).
     assert length(load_ops(ctx, "stateful_failed")) == 1
+  end
+
+  test "a FAIL-OPEN unknown-vm FAILED_PRECONDITION does NOT terminalize (backs off instead)" do
+    # No per-instance fact reports vm-1, so the dial FALLS OPEN to the bare node name
+    # (owner_resolved false). Under co-location the alias could be the wrong sibling
+    # (a stale-fact race), so an unknown-vm reply here is NOT authoritative: task #12
+    # requires we back off (abort + arm backoff), NOT fail the instance (which would
+    # risk cold-booting a second VM on the same volume). The instance stays serving.
+    ctx = start_stack(bank_backoff_base_ms: 10_000, bank_backoff_cap_ms: 30_000)
+    stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+
+    :sys.replace_state(ctx.sweeper, fn s ->
+      %{
+        s
+        | stop_stateful_fun: fn _ch, req ->
+            if req.mode == :STOP_STATEFUL_MODE_BANK do
+              {:error, %GRPC.RPCError{status: 9, message: "not bankable (unknown vm)"}}
+            else
+              {:ok, %StopStatefulResponse{}}
+            end
+          end
+      }
+    end)
+
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    # It aborted back to serving (NOT failed), and recorded no durable stateful_failed.
+    wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1")) end)
+    {:ok, instance} = StatefulStore.get(ctx.store, "sf-1")
+    assert instance.state == :serving
+    assert load_ops(ctx, "stateful_failed") == []
+
+    # And it armed the backoff: a sweep 1 s later (inside the 10 s window) does not
+    # re-drive the bank.
+    bank_calls = fn -> Enum.count(stop_calls(ctx), &(&1.mode == :STOP_STATEFUL_MODE_BANK)) end
+    n = bank_calls.()
+
+    advance(ctx.clock_agent, 1_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+    flush(ctx)
+    assert bank_calls.() == n
   end
 
   test "a NON-terminal bank error backs off (does not re-drive at sweep frequency)" do
