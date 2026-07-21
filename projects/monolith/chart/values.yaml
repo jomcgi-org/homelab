@@ -759,16 +759,16 @@ postgres:
   # emits a small Opaque Secret (templates/cnpg-backup-s3-secret.yaml) holding
   # these same low-value dummy keys. There is no 1Password S3 item to reuse
   # because SeaweedFS S3 has no real credentials in this cluster.
-  # ENABLED 2026-07-21 after the watched preconditions were met: the
-  # s3://monolith-pg-backups bucket was pre-created via `weed shell` s3.bucket.create
-  # (NOT the chart bucket hook, which flips SeaweedFS S3 to auth-enforced), and the
-  # monolith-pg standby was confirmed caught up (2/2, streaming, primary monolith-pg-3).
-  # Continuous WAL archiving + a daily base backup now write to the in-cluster
-  # SeaweedFS S3 (a different volume set, so backups survive the Pg-volume-corruption
-  # class that bit us on 2026-07-21). NOT off-cluster DR: a node/cluster loss takes
-  # both the Pg volume and the backups; off-cluster replication is a separate follow-up.
+  # DISABLED 2026-07-21. WAL archiving to SeaweedFS was enabled briefly, but
+  # SeaweedFS's intermittent 500-on-PutObject (benign-retryable for embervm async
+  # exports) makes it a poor WAL-archive target: ContinuousArchiving flapped Failing
+  # and the archiver burned retries. For now the Pg durability floor is Longhorn block
+  # replication (the monolith-pg data volume is already multi-replica). Proper OFFSITE
+  # backups (a real object store / DR target, not the in-cluster SeaweedFS) are a
+  # deliberate future task, not this in-cluster WAL path. Re-enabling here requires
+  # both a reliable object store and the backup-secret RBAC fix.
   backup:
-    enabled: true
+    enabled: false
     # SeaweedFS S3 gateway (path-style, plaintext HTTP), same endpoint the app
     # workloads use.
     endpointURL: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
