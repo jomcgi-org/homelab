@@ -11,12 +11,18 @@ found the pressure is host containerd images / k3s state, not Longhorn or PVCs
 (their Longhorn footprint is tiny: node-1 ~2.5 G, node-3 ~23 G). So no
 `values.yaml` edit reaches it.
 
-The image cache is the growing, addressable part. On node-1, 46 distinct
-`monolith/backend` tags are cached (about 19 GiB of a 21 GiB total image cache).
-Every monolith CI push produces a new date-stamped tag; the masters are
-**untainted** and run monolith / monolith-public / embervm / signoz pods, so
-every rollout pulls the new image onto whichever master it lands on, and the old
-tags are never evicted.
+The image cache is the dominant, addressable consumer. The `node.status.images`
+API list is capped at 50 entries, so it undercounts badly (it showed only ~21
+GiB); the true containerd image store, measured from the kubelet stats-summary
+endpoint (`/api/v1/nodes/<node>/proxy/stats/summary`, `runtime.imageFs.usedBytes`),
+is **~135 GiB on node-1 and ~131 GiB on node-3**, i.e. the bulk of the ~189 GiB
+used. It is stale app images: every monolith CI push produces a new date-stamped
+`monolith/backend` tag, the masters are **untainted** and run monolith /
+monolith-public / embervm / signoz pods, so every rollout pulls the new image
+onto whichever master it lands on, and the old tags and their layers are never
+evicted. (Masters stay untainted deliberately: ADR embervm/011 and 012 put bricks
+on all four nodes including the etcd masters, so they are wanted as capacity;
+kubelet image GC, not a taint, is the right ongoing control.)
 
 They are never evicted because kubelet's default `imageGCHighThresholdPercent`
 is **85**, and these nodes sit at 80-81%, just under it. Image GC only runs above
@@ -28,17 +34,19 @@ not backing a running or recently-stopped container, continuously, and hold the
 node there. `image-minimum-gc-age=2h` keeps an image pulled by an in-flight
 rollout from being reaped before its pod is Ready.
 
-### What this does NOT fix
+### Scope and expected reclaim
 
-The image cache is roughly 21 GiB. The nodes are ~193 GiB used on a 241 GiB
-root-fs, so **~170 GiB is non-image host / k3s state that the Kubernetes API
-does not expose** (containerd snapshot layers beyond the 50-image `node.status`
-cap, `/var/lib/rancher/k3s/agent`, old pod logs, etcd data + snapshots,
-journald). Reclaiming the stale image tags buys headroom and stops the monotonic
-climb, but the owner should also inspect the host directly (see "Owner: inspect
-the invisible 170 GiB" below) to confirm what else is resident. This fix removes
-the mechanism that guarantees the number only ever goes up; it is not a claim
-that images are the whole 170 GiB.
+The stats-summary measurement changes the picture from the first-pass estimate:
+the containerd image store (~135 GiB on node-1, ~131 GiB on node-3) IS the
+dominant term, not invisible non-image state. Measured pod logs and ephemeral
+storage are negligible (< 0.2 GiB per node). So lowering the GC marks targets the
+right thing: kubelet reclaims the large unused portion of that image store (the
+stale monolith tags and orphaned layers back no running container), which should
+drop the root-fs well below the 80% pressure line and, more importantly, hold it
+there instead of climbing monotonically. The residual non-image k3s state (etcd
+data + snapshots, `/var/lib/rancher/k3s/agent`, journald) is minor by comparison
+but still worth a one-time spot-check (see the inspection block below) in case
+journald or etcd retention is a secondary term.
 
 ## Why host-level (not a DaemonSet / GitOps)
 
@@ -108,10 +116,11 @@ k3s restart briefly bounces the API server on that node.
 
 Repeat for node-2, node-3, and (optionally) node-4.
 
-## Owner: inspect the invisible ~170 GiB
+## Owner: spot-check the residual non-image state
 
-The API cannot see non-image host state. After the GC change lands, on each
-master run:
+The image store (~135 GiB) is the bulk and the GC change handles it; this block
+confirms the smaller non-image remainder (etcd, journald, containerd metadata)
+is not a secondary problem. After the GC change lands, on each master run:
 
 ```bash
 sudo du -xh --max-depth=1 /var/lib/rancher/k3s | sort -h | tail
