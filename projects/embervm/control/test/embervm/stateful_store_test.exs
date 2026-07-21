@@ -380,31 +380,35 @@ defmodule Embervm.StatefulStoreTest do
     assert row_b.state == "evicted"
   end
 
-  test "eager_evict_broken_pairs does NOT evict a transient one-sweep break (streak clears on recovery)",
+  test "eager_evict_broken_pairs does NOT evict a broken pair before the grace window; a valid pair never accrues a streak",
        %{path: path} do
     {_op_log, store} = start_pair(path)
+
+    # wl-b: a genuinely broken pair (volume advanced forward past the bundle).
     {:ok, _} = start_instance(store, workload: "wl-b", instance_id: "sf-b", generation: 0)
     _ = bank(store, "sf-b", "wl-b", 7)
-
-    # A transient break for fewer than the threshold sweeps: the volume briefly
-    # reads a stale/racy generation, then recovers to match the bundle.
     _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 9})
 
+    # wl-c: a VALID pair (volume generation == bundle generation), present for the
+    # whole test to prove a valid pair never accrues a streak and is never touched.
+    {:ok, _} = start_instance(store, workload: "wl-c", instance_id: "sf-c", generation: 0)
+    _ = bank(store, "sf-c", "wl-c", 4)
+    _ = StatefulStore.upsert_volume(store, "wl-c", %{generation: 4})
+
+    # The broken pair is observed broken on threshold - 1 sweeps WITHOUT eviction
+    # (a single transient blip must not drop a warm bundle). The valid pair is
+    # never in the evicted list on any sweep.
     for _ <- 1..(@broken_evict_threshold - 1) do
       assert StatefulStore.eager_evict_broken_pairs(store) == []
+      assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-b")
+      assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-c")
     end
 
-    # The volume settles back to the bundle's generation before the threshold is
-    # reached: a VALID observation clears the streak.
-    _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 7})
-    assert StatefulStore.eager_evict_broken_pairs(store) == []
-    assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-b")
-
-    # Even one more broken sweep after the clear starts a FRESH streak (does not
-    # ride the pre-recovery observations), so it still does not evict immediately.
-    _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 9})
-    assert StatefulStore.eager_evict_broken_pairs(store) == []
-    assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-b")
+    # The threshold-th consecutive broken observation finally evicts wl-b's bundle;
+    # wl-c's valid pair is still untouched (its streak stayed at zero throughout).
+    assert StatefulStore.eager_evict_broken_pairs(store) == ["sf-b"]
+    assert {:ok, %{state: :evicted}} = StatefulStore.get(store, "sf-b")
+    assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-c")
   end
 
   test "upsert_volume never moves the pair-key generation backward (a lagging report cannot break a valid pair)",

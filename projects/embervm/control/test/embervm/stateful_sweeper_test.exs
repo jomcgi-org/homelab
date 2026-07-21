@@ -25,6 +25,12 @@ defmodule Embervm.StatefulSweeperTest do
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{EvictArtifactResponse, EvictSnapshotResponse, ResolveStatefulResponse, StopStatefulResponse}
 
+  # Consecutive broken sweeps required before an eager eviction fires (the
+  # StatefulStore @broken_evict_threshold hysteresis). One sweep = one
+  # eager_evict_broken_pairs observation. Defined here (before its first use) so
+  # both the generation-guard test and the broken-pair test can reference it.
+  @broken_evict_sweeps 3
+
   # A publisher that RECORDS each publish/1 cast, mirroring ServingSweeperTest's
   # FakePublisher.
   defmodule FakePublisher do
@@ -657,6 +663,14 @@ defmodule Embervm.StatefulSweeperTest do
     refute StatefulStore.pair_valid?(ctx.store, "wl-a")
 
     set_scrape(ctx, reading("state-5400", 0, 0))
+
+    # Hysteresis: a genuinely broken pair is evicted only after @broken_evict_sweeps
+    # consecutive broken sweeps (see the eager broken-pair eviction section below).
+    for _ <- 1..(@broken_evict_sweeps - 1) do
+      StatefulSweeper.sweep(ctx.sweeper)
+      assert {:ok, %{state: :banked}} = StatefulStore.get(ctx.store, "sf-stale")
+    end
+
     StatefulSweeper.sweep(ctx.sweeper)
 
     {:ok, instance} = StatefulStore.get(ctx.store, "sf-stale")
@@ -694,11 +708,6 @@ defmodule Embervm.StatefulSweeperTest do
   end
 
   # -- eager broken-pair eviction -----------------------------------------------
-
-  # Consecutive broken sweeps required before an eager eviction fires (the
-  # StatefulStore @broken_evict_threshold hysteresis). One sweep = one
-  # eager_evict_broken_pairs observation.
-  @broken_evict_sweeps 3
 
   test "a banked instance whose volume generation moved is evicted after the grace window of sweeps (broken pair)" do
     ctx = start_stack()

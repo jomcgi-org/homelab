@@ -789,9 +789,9 @@ defmodule Embervm.StatefulStore do
           updated_at: ts
         }
 
-    # The pair-key generation is MONOTONIC: a node volume report must never move
-    # it backward. bump_volume_ets (the boot/relight writer) already guards this;
-    # upsert_volume (the periodic refresh_volume_facts writer) must too, or a
+    # The STORED pair-key generation is MONOTONIC: a node volume report must never
+    # move it backward. bump_volume_ets (the boot/relight writer) already guards
+    # this; upsert_volume (the periodic refresh_volume_facts writer) must too, or a
     # LAGGING report (a node still reporting the pre-bank generation, or under
     # co-location a sibling brick's stale report) regresses the volume generation
     # below a just-banked bundle's snapshot_generation, so the next sweep tick
@@ -800,7 +800,14 @@ defmodule Embervm.StatefulStore do
     # genuine FORWARD divergence (the volume legitimately advances past a stranded
     # old bundle) still lands, so real broken pairs are still detected. Other
     # fields (size/allocated/node_id/exported_generation) always take the latest
-    # report; only the generation is floored to the current value.
+    # report; only the stored generation is floored to the current value.
+    #
+    # The floor applies ONLY to the stored pair-key. Quarantine derivation below
+    # reads the RAW reported generation (reported_gen), not the floored one: an
+    # unblessed forward jump must still be caught, and a report SETTLING BACK to
+    # the blessed watermark must still CLEAR the quarantine even though the stored
+    # pair-key does not regress. The two concerns are independent (warm-bundle
+    # protection vs generation-blessing safety) and only happened to share a field.
     reported_gen = Map.get(fields, :generation)
     current_gen = Map.get(base, :generation, 0)
 
@@ -825,8 +832,15 @@ defmodule Embervm.StatefulStore do
     # when this upsert actually carries a fresh report of it.
     state =
       case Map.get(fields, :generation_blessed) do
-        nil -> state
-        blessed_on_wire -> update_quarantine(state, workload, Map.get(merged, :generation, 0), blessed_on_wire)
+        nil ->
+          state
+
+        blessed_on_wire ->
+          # Quarantine reads the RAW reported generation, not the floored stored
+          # pair-key: an unblessed forward jump must be caught, and a settle-back
+          # to the blessed watermark must clear it (see the floor comment above).
+          quarantine_gen = if is_integer(reported_gen), do: reported_gen, else: Map.get(merged, :generation, 0)
+          update_quarantine(state, workload, quarantine_gen, blessed_on_wire)
       end
 
     {:reply, merged, state}
