@@ -864,16 +864,37 @@ defmodule Embervm.Application do
       "" -> :ok
       prefix -> Application.put_env(:embervm, :brick_deployment_prefix, prefix)
     end
+
+    case brick_autoscale_mode_env() do
+      nil -> :ok
+      mode -> Application.put_env(:embervm, :brick_autoscale_mode, mode)
+    end
+  end
+
+  # Parse EMBERVM_BRICK_AUTOSCALE_MODE (Axis C). Only the four known modes are
+  # accepted; unset or unrecognized leaves the key absent so the controller's
+  # :off default fires (fail-safe: a typo in values must never ENABLE acting).
+  defp brick_autoscale_mode_env do
+    case trimmed_env("EMBERVM_BRICK_AUTOSCALE_MODE") do
+      "off" -> :off
+      "observe" -> :observe
+      "up" -> :up
+      "full" -> :full
+      _ -> nil
+    end
   end
 
   # BrickController reads all of its inputs from Application env at init, so no
   # start options are threaded here (the test suite injects its own).
   defp brick_controller_opts, do: []
 
-  # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired"} objects) into a
-  # list of %{name, desired}. nil when unset, malformed, or empty, so the
+  # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired"} objects, plus
+  # optional autoscale clamp fields "min"/"max") into a list of
+  # %{name, desired, min, max}. nil when unset, malformed, or empty, so the
   # controller's empty-list default fires (it reconciles nothing). A class missing
-  # a binary name or a non-negative integer desired is dropped, never crashing boot.
+  # a binary name or a non-negative integer desired is dropped, never crashing
+  # boot; an invalid/absent min reads 0 and an invalid/absent max reads nil (the
+  # controller then clamps to max(desired, min): no autoscale headroom).
   defp brick_classes_env do
     case trimmed_env("EMBERVM_BRICK_CLASSES") do
       "" ->
@@ -883,11 +904,16 @@ defmodule Embervm.Application do
         case safe_json_decode(raw) do
           list when is_list(list) ->
             parsed =
-              for %{"name" => name, "desired" => desired} <- list,
+              for %{"name" => name, "desired" => desired} = class <- list,
                   is_binary(name),
                   is_integer(desired),
                   desired >= 0 do
-                %{name: name, desired: desired}
+                %{
+                  name: name,
+                  desired: desired,
+                  min: non_neg_int_or(Map.get(class, "min"), 0),
+                  max: non_neg_int_or(Map.get(class, "max"), nil)
+                }
               end
 
             if parsed == [], do: nil, else: parsed
@@ -897,6 +923,9 @@ defmodule Embervm.Application do
         end
     end
   end
+
+  defp non_neg_int_or(value, _default) when is_integer(value) and value >= 0, do: value
+  defp non_neg_int_or(_value, default), do: default
 
   # :json.decode raises on malformed input; a bad EMBERVM_BRICK_CLASSES must leave
   # the controller inert, not crash the whole control plane at boot.

@@ -343,6 +343,42 @@ defmodule Embervm.K8s do
     end
   end
 
+  @doc """
+  Reads a Deployment's LIVE replica count from its `/scale` subresource (the
+  `deployments/scale` `get` verb the BrickController RBAC already grants). This
+  is the current the autoscale loop bases decisions on: reading the subresource
+  (not the full Deployment) keeps the controller scale-only, and reading LIVE
+  state (not remembering its own writes) means a control-plane restart never
+  forgets a prior scale-up. A `spec.replicas` the apiserver omits (a scale of 0
+  can serialize without the field) reads as 0.
+  """
+  @spec get_deployment_scale(String.t(), String.t()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def get_deployment_scale(namespace, name) do
+    path =
+      "/apis/apps/v1/namespaces/#{URI.encode(namespace)}/deployments/#{URI.encode(name)}/scale"
+
+    case do_request(:get, path, nil, nil) do
+      {:ok, 200, body} ->
+        case :json.decode(body) do
+          %{"spec" => %{"replicas" => replicas}} when is_integer(replicas) and replicas >= 0 ->
+            {:ok, replicas}
+
+          %{"spec" => _} ->
+            {:ok, 0}
+
+          _ ->
+            {:error, :bad_scale_body}
+        end
+
+      {:ok, status, _resp_body} ->
+        {:error, {:apiserver_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   # TokenReview create returns 201 (some clusters 200); anything else is an
   # API-server error we surface without trusting the token.
   defp parse_review(status, body) when status in [200, 201] do

@@ -232,20 +232,28 @@ spec:
             {{- if .Values.bricks.enabled }}
             # Brick capacity (PR-3): the per-size-class DESIRED replica counts the
             # Embervm.BrickController reconciles the brick Deployments to, as a JSON
-            # array of {name,desired} (desired from the bricks.desiredReplicas map,
-            # default 0 for an unlisted class), plus the brick Deployment name prefix
-            # the controller appends the class to. Rendered ONLY when bricks are
-            # enabled, so a disabled fleet leaves the class list empty and the
-            # controller inert (it scales nothing, flags nothing).
+            # array of {name,desired,min,max} (desired from the bricks.desiredReplicas
+            # map, default 0 for an unlisted class; min/max are the Axis C autoscale
+            # clamp from bricks.autoscale.minReplicas/maxReplicas, unlisted min reads
+            # 0 and unlisted max falls back to the class's desired: no headroom), plus
+            # the brick Deployment name prefix the controller appends the class to and
+            # the autoscale mode gate. Rendered ONLY when bricks are enabled, so a
+            # disabled fleet leaves the class list empty and the controller inert (it
+            # scales nothing, flags nothing).
             {{- $desired := .Values.bricks.desiredReplicas }}
+            {{- $auto := .Values.bricks.autoscale | default dict }}
+            {{- $mins := $auto.minReplicas | default dict }}
+            {{- $maxs := $auto.maxReplicas | default dict }}
             {{- $classes := list }}
             {{- range .Values.bricks.classes }}
-            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0)) }}
+            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0))) }}
             {{- end }}
             - name: EMBERVM_BRICK_CLASSES
               value: {{ $classes | toJson | quote }}
             - name: EMBERVM_BRICK_DEPLOYMENT_PREFIX
               value: {{ printf "%s-brick-" (include "embervm.noded.fullname" .) | quote }}
+            - name: EMBERVM_BRICK_AUTOSCALE_MODE
+              value: {{ $auto.mode | default "off" | quote }}
             {{- end }}
             # The R5 composite (group) TCP activator port range: the values-declared
             # range the activator physically binds on the pod (Task 7), so the node
