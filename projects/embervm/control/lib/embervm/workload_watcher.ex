@@ -948,7 +948,14 @@ defmodule Embervm.WorkloadWatcher do
     # atomic pause-snapshot-destroy bank, unchanged. A boolean for a single
     # alternative behavior; a future third bank strategy is expected to
     # supersede this with a `bankMode` enum.
-    interruptible_bank: false
+    interruptible_bank: false,
+    # Opt in to POST-BASE-READY auto-wake: when the CP observes this workload's
+    # base transition to READY and it has no live or banked instance, the
+    # StatefulManager reconcile triggers a wake (instance-key unification PR-B0a,
+    # A2). Off = the workload wakes lazily on the first connection. Set for
+    # demo-postgres so a chart bump's noded roll (which rebuilds the base) does
+    # not leave the public /health demo wedged until a manual forced wake.
+    auto_wake: false
   }
   # The minimum idleBankSeconds; the CRD schema also enforces this, re-checked
   # here for the LIST/WATCH path. Floor lowered 30 -> 1 for the demo-postgres
@@ -1066,6 +1073,9 @@ defmodule Embervm.WorkloadWatcher do
       # truthy value this must switch to Map.get/3 with an explicit default to
       # avoid the Elixir truthiness trap.
       interruptible_bank: Map.get(s, "interruptibleBank") || @stateful_defaults.interruptible_bank,
+      # Boolean-|| safe only because the default is false (same trap note as
+      # interruptible_bank above): auto-wake this workload once its base is READY.
+      auto_wake: Map.get(s, "autoWake") || @stateful_defaults.auto_wake,
       # secretRef (R4, D-R4.PR-7.1: MMDS-lite over boot-args): the NAME of a K8s
       # Secret in the workload's OWN namespace whose data keys/values become the
       # guest's first-boot process env (e.g. POSTGRES_PASSWORD). Optional; nil

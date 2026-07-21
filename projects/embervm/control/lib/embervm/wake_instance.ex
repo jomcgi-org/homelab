@@ -98,6 +98,58 @@ defmodule Embervm.WakeInstance do
 
   def select(_node_id, _opts), do: {:error, :no_eligible_instance}
 
+  @doc """
+  The channel key of the instance on `node_id` currently RUNNING `vm_id` (its
+  per-instance capacity fact reports the `vm_id` in `stateful_vms`), or the bare
+  `node_id` when no reporting instance is found (a legacy/single-instance fact, or
+  the VM not yet re-reported after a roll: the node-name alias still resolves it).
+
+  This is the post-wake dial resolution the sweeper's bank/checkpoint/resolve
+  workers use so a StopStateful/ResolveStateful lands on the instance that actually
+  holds the live VM, not the collapsing node-name alias (which co-location made
+  point at an arbitrary sibling brick). Same fail-open-to-node_id contract as the
+  wake dial's `select/2`.
+  """
+  @spec dial_for_vm(atom(), String.t(), String.t()) :: String.t()
+  def dial_for_vm(table \\ NodeCapacity.table(), node_id, vm_id)
+
+  def dial_for_vm(table, node_id, vm_id)
+      when is_binary(node_id) and is_binary(vm_id) and vm_id != "" do
+    table
+    |> instances_on(node_id)
+    |> Enum.find(fn fact -> fact_reports_vm?(fact, vm_id) end)
+    |> case do
+      nil -> node_id
+      fact -> dial_id(fact)
+    end
+  end
+
+  def dial_for_vm(_table, node_id, _vm_id), do: node_id
+
+  @doc """
+  The channel key of the instance on `node_id` currently HOLDING the banked bundle
+  `snapshot_ref` on disk (its `stateful_bundles` report it), or the bare `node_id`
+  when none is found. The evict/GC dial resolution: an EvictSnapshot/EvictArtifact
+  must land on the instance that owns the bundle on disk (per-instance-on-disk,
+  PR-2.5), not the node-name alias. Fail-open to `node_id` (legacy/single-instance
+  facts, or a bundle not re-reported yet) exactly like `dial_for_vm/3`.
+  """
+  @spec dial_for_bundle(atom(), String.t(), String.t()) :: String.t()
+  def dial_for_bundle(table \\ NodeCapacity.table(), node_id, snapshot_ref)
+
+  def dial_for_bundle(table, node_id, snapshot_ref)
+      when is_binary(node_id) and is_binary(snapshot_ref) and snapshot_ref != "" do
+    table
+    |> instances_on(node_id)
+    |> Enum.find(fn fact -> fact_reports_warmth?(fact, :stateful_bundles, snapshot_ref, :snapshot_ref) end)
+    |> case do
+      nil -> node_id
+      fact -> dial_id(fact)
+    end
+  end
+
+  def dial_for_bundle(_table, node_id, _ref), do: node_id
+
   # The instance on `node_id` whose warmth inventory reports this wake's ref: a
   # relight MUST land on the instance that banked the bundle (per-instance-on-disk,
   # PR-2.5). :none when there is no warmth to prefer (a cold boot, no key/ref given)
@@ -173,6 +225,15 @@ defmodule Embervm.WakeInstance do
     |> Map.get(warmth_key, [])
     |> Kernel.||([])
     |> Enum.any?(fn row -> Map.get(row, match_field) == ref end)
+  end
+
+  # Whether this instance's per-instance capacity fact reports `vm_id` as a live
+  # stateful VM it is running (the sweeper's live-VM dial resolution).
+  defp fact_reports_vm?(fact, vm_id) do
+    fact
+    |> Map.get(:stateful_vms, [])
+    |> Kernel.||([])
+    |> Enum.any?(fn row -> Map.get(row, :vm_id) == vm_id end)
   end
 
   # The dial key for a capacity fact: its instance_id when present, else the node

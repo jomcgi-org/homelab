@@ -117,6 +117,22 @@ defmodule Embervm.StatefulManagerTest do
     fn -> "stf-#{suffix}-#{Agent.get_and_update(counter, fn n -> {n + 1, n + 1} end)}" end
   end
 
+  # Flush the manager mailbox (a :sys call is processed after every already-queued
+  # message). An auto-wake dispatched by reconcile reports {:wake_done} from a
+  # spawned worker asynchronously, so a test asserting its outcome polls: flush,
+  # check, retry.
+  defp flush_mgr(ctx), do: :sys.get_state(ctx.mgr)
+
+  defp poll_mgr(ctx, fun, tries \\ 50) do
+    flush_mgr(ctx)
+
+    cond do
+      fun.() -> :ok
+      tries <= 0 -> flunk("poll_mgr: condition never held")
+      true -> poll_mgr(ctx, fun, tries - 1)
+    end
+  end
+
   defp stateful_workload(ctx, name, extra \\ %{}) do
     # `:resources` promotes to the TOP-LEVEL entry (where resource_spec/1 reads
     # mem_mib/vcpus); everything else merges into the stateful cfg.
@@ -1299,8 +1315,8 @@ defmodule Embervm.StatefulManagerTest do
       mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 8_192),
       live_vms: Keyword.get(opts, :live_vms, 0),
       max_live_vms: Keyword.get(opts, :max_live_vms, 4),
-      workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}},
-      stateful_vms: [],
+      workloads: Keyword.get(opts, :workloads, %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}}),
+      stateful_vms: Keyword.get(opts, :stateful_vms, []),
       stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
       volumes: Keyword.get(opts, :volumes, []),
       store_reachable: Keyword.get(opts, :store_reachable, false)
@@ -1365,6 +1381,110 @@ defmodule Embervm.StatefulManagerTest do
     # Fresh first boot (no volume): a cold wake places on a mem-eligible instance.
     assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
     assert Agent.get(dialed, & &1) == ["node-4/pod-big"]
+  end
+
+  test "boot_image_ref resolves from the CHOSEN instance's fact, not a co-located sibling that lacks the workload" do
+    # Instance-key unification (PR-B0a): the cold pick is instance-aware, but
+    # boot_image_ref used to re-resolve the base snapshot_ref by BARE node name,
+    # racing across the co-located facts. A sibling brick that never built this
+    # workload's base advertises NO wl-a entry, so the node-name fetch could read
+    # its ABSENT workload (nil -> boot_image_ref "" -> noded rejects). The ref must
+    # be read from the SAME instance the cold RPC dials.
+    {:ok, captured} = Agent.start_link(fn -> nil end)
+
+    cold_fun = fn _ch, req ->
+      Agent.update(captured, fn _ -> req end)
+      {:ok, %StartStatefulResponse{vm_id: "vm-cold", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    # A large workload (4000 MiB) so the 2Gi sibling is mem-ineligible and the cold
+    # pick lands on pod-big deterministically.
+    ctx = start_stack(start_stateful_fun: cold_fun)
+    stateful_workload(ctx, "wl-a", %{resources: %{vcpus: 2, mem_mib: 4_000}})
+
+    # pod-small: mem-ineligible AND advertises NO wl-a base (empty workloads), the
+    # exact ABSENT-fact a node-name fetch could race onto.
+    put_brick(ctx, "node-4", "pod-small",
+      size_class: "2gi",
+      mem_headroom_mib: 100,
+      mem_budget_mib: 2_048,
+      workloads: %{}
+    )
+
+    # pod-big: the chosen instance, advertising the wl-a base READY with its ref.
+    put_brick(ctx, "node-4", "pod-big",
+      size_class: "8gi",
+      mem_headroom_mib: 8_000,
+      mem_budget_mib: 8_192,
+      workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}}
+    )
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    req = Agent.get(captured, & &1)
+    assert req.boot_image_ref == "snap-a"
+  end
+
+  # -- A2 auto-wake after base READY (instance-key unification PR-B0a) ----------
+
+  test "reconcile auto-wakes an autoWake workload whose base is READY and has no instance" do
+    {:ok, wakes} = Agent.start_link(fn -> 0 end)
+
+    start_fun = fn _ch, _req ->
+      Agent.update(wakes, &(&1 + 1))
+      {:ok, %StartStatefulResponse{vm_id: "vm-auto", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun)
+    stateful_workload(ctx, "wl-a", %{auto_wake: true})
+    stateful_node(ctx, "node-4")
+
+    # No instance exists yet; the base is READY (stateful_node advertises it). A
+    # reconcile must auto-wake the workload (retires the post-roll manual wake).
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    poll_mgr(ctx, fn -> Agent.get(wakes, & &1) == 1 end)
+    assert Agent.get(wakes, & &1) == 1
+    assert match?(%{ip: "10.88.0.5", port: 5432}, StatefulStore.published_endpoint(ctx.store, "wl-a"))
+  end
+
+  test "reconcile does NOT auto-wake when autoWake is unset, or an instance already exists" do
+    {:ok, wakes} = Agent.start_link(fn -> 0 end)
+
+    start_fun = fn _ch, _req ->
+      Agent.update(wakes, &(&1 + 1))
+      {:ok, %StartStatefulResponse{vm_id: "vm-auto", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun)
+    # autoWake unset (default false): a base-READY workload is NOT auto-woken.
+    stateful_workload(ctx, "wl-a", %{})
+    stateful_node(ctx, "node-4")
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    flush_mgr(ctx)
+    assert Agent.get(wakes, & &1) == 0
+  end
+
+  test "reconcile does NOT auto-wake an autoWake workload that already has a banked instance" do
+    {:ok, wakes} = Agent.start_link(fn -> 0 end)
+
+    start_fun = fn _ch, _req ->
+      Agent.update(wakes, &(&1 + 1))
+      {:ok, %StartStatefulResponse{vm_id: "vm-auto", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun)
+    stateful_workload(ctx, "wl-a", %{auto_wake: true})
+    stateful_node(ctx, "node-4",
+      stateful_bundles: [%{snapshot_ref: "stateful/stf-banked", workload: "wl-a", generation: 3, size_bytes: 10, created_at_unix_ms: 1}]
+    )
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    flush_mgr(ctx)
+    # A banked instance relights on the next connection; nothing to auto-wake.
+    assert Agent.get(wakes, & &1) == 0
   end
 
   test "restore-on-miss dials the RESTORE and the BOOT on the SAME selected instance_id (not the node name)" do

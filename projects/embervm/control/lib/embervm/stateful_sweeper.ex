@@ -180,6 +180,16 @@ defmodule Embervm.StatefulSweeper do
   # forever.
   @default_lifetime_drain_max_ms 3_600_000
 
+  # Bank-retry backoff (instance-key unification PR-B0a). A NON-terminal bank
+  # failure (a transient transport/daemon error, not an unknown-vm
+  # FAILED_PRECONDITION) aborts+republishes and defers the next bank attempt for
+  # this workload, doubling from @bank_backoff_base_ms up to @bank_backoff_cap_ms.
+  # Without it a persistent failure re-drives the bank at the 1 s sweep frequency;
+  # with it a stuck workload backs off to ~0.03 Hz. A successful bank (or a bank
+  # abort for a raced-in connection, which is not a failure) clears the entry.
+  @bank_backoff_base_ms 1_000
+  @bank_backoff_cap_ms 30_000
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -291,6 +301,13 @@ defmodule Embervm.StatefulSweeper do
       # the threshold so a hot-looping client cannot pin the VM live forever).
       checkpoint_aborts: %{},
       flap_abort_threshold: Keyword.get(opts, :flap_abort_threshold, @default_flap_abort_threshold),
+      # workload -> {next_attempt_at_ms, current_backoff_ms}: a non-terminal bank
+      # failure defers this workload's next bank attempt (exponential, capped), so
+      # a persistent daemon-side wedge loops at ~0.03 Hz not the 1 s sweep. Cleared
+      # on a successful bank. Overridable for tests.
+      bank_backoff: %{},
+      bank_backoff_base_ms: Keyword.get(opts, :bank_backoff_base_ms, @bank_backoff_base_ms),
+      bank_backoff_cap_ms: Keyword.get(opts, :bank_backoff_cap_ms, @bank_backoff_cap_ms),
       propagation_settle_ms: Keyword.get(opts, :propagation_settle_ms, @default_propagation_settle_ms),
       lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, @default_lifetime_drain_max_ms),
       # workload -> the wall-clock ms the workload was first observed idle
@@ -659,14 +676,45 @@ defmodule Embervm.StatefulSweeper do
          since when is_integer(since) <- Map.get(state.idle_since, instance.workload) do
       idle_ms = cfg.idle_bank_seconds * 1000
 
-      if now - since >= idle_ms do
-        begin_bank(state, instance, now)
-      else
-        state
+      cond do
+        # A workload backing off from a recent non-terminal bank failure is not
+        # re-driven until its next-attempt time, so a persistent daemon-side wedge
+        # loops at ~0.03 Hz instead of the sweep frequency.
+        bank_backed_off?(state, instance.workload, now) ->
+          state
+
+        now - since >= idle_ms ->
+          begin_bank(state, instance, now)
+
+        true ->
+          state
       end
     else
       _ -> state
     end
+  end
+
+  defp bank_backed_off?(state, workload, now) do
+    case Map.get(state.bank_backoff, workload) do
+      {until, _cur} when is_integer(until) -> now < until
+      _ -> false
+    end
+  end
+
+  # Arm/advance the workload's bank backoff after a non-terminal failure: next
+  # attempt at now + backoff, backoff doubling from the base to the cap.
+  defp arm_bank_backoff(state, workload, now) do
+    cur =
+      case Map.get(state.bank_backoff, workload) do
+        {_until, prev} when is_integer(prev) -> min(prev * 2, state.bank_backoff_cap_ms)
+        _ -> state.bank_backoff_base_ms
+      end
+
+    %{state | bank_backoff: Map.put(state.bank_backoff, workload, {now + cur, cur})}
+  end
+
+  defp clear_bank_backoff(state, workload) do
+    %{state | bank_backoff: Map.delete(state.bank_backoff, workload)}
   end
 
   # -- drain force-bank (R6, ADR embervm/009) ---------------------------------
@@ -885,6 +933,12 @@ defmodule Embervm.StatefulSweeper do
     workload = instance.workload
     node_id = instance.node_id
     vm_id = instance.vm_id
+    # Dial the OWNING noded instance (the one whose capacity fact reports this
+    # live vm_id), not the node-name alias (which co-location made point at an
+    # arbitrary sibling brick). Falls back to node_id for a legacy/single-instance
+    # fact, preserving single-instance behaviour exactly. Resolved here on the
+    # owner process so the worker reads a settled key.
+    dial_key = dial_for_vm(state, node_id, vm_id)
     ip = instance.ip
     port = instance.port
 
@@ -899,7 +953,7 @@ defmodule Embervm.StatefulSweeper do
                            }
                          } do
           try do
-            case over_channel(channel_fun, invalidate_fun, node_id, &stop_fun.(&1, bank_request(vm_id))) do
+            case over_channel(channel_fun, invalidate_fun, dial_key, &stop_fun.(&1, bank_request(vm_id))) do
               {:ok, %StopStatefulResponse{snapshot_ref: ref, size_bytes: size, generation: generation}}
               when is_binary(ref) and ref != "" ->
                 # generation only becomes known once the daemon replies (the pair-key
@@ -945,6 +999,8 @@ defmodule Embervm.StatefulSweeper do
     workload = instance.workload
     node_id = instance.node_id
     vm_id = instance.vm_id
+    # Same owning-instance dial resolution as the atomic bank worker.
+    dial_key = dial_for_vm(state, node_id, vm_id)
     ip = instance.ip
     port = instance.port
 
@@ -961,7 +1017,7 @@ defmodule Embervm.StatefulSweeper do
           if is_integer(settle_ms) and settle_ms > 0, do: Process.sleep(settle_ms)
 
           try do
-            case over_channel(channel_fun, invalidate_fun, node_id, &stop_fun.(&1, checkpoint_request(vm_id))) do
+            case over_channel(channel_fun, invalidate_fun, dial_key, &stop_fun.(&1, checkpoint_request(vm_id))) do
               {:ok, %StopStatefulResponse{checkpoint_token: token, generation: generation}}
               when is_binary(token) and token != "" ->
                 {:ok, token, generation}
@@ -1029,23 +1085,59 @@ defmodule Embervm.StatefulSweeper do
       snapshot_bytes: size
     )
 
-    state
+    # A clean bank clears any backoff armed by a prior failure for this workload.
+    clear_bank_backoff(state, workload)
   end
 
+  # UNKNOWN-VM FAILED_PRECONDITION (gRPC status 9): the daemon we dialled does not
+  # own this VM ("not bankable / unknown vm"). Do NOT resurrect the endpoint into
+  # the fan-out (blind republish looped this at the 1 s sweep frequency before the
+  # dial-key fix, and even with it a genuinely-gone VM must not linger dark): fail
+  # the instance (banking -> failed, durable stateful_failed) so the wake path
+  # cold-boots a fresh one on the next connection. No backoff needed: the instance
+  # is terminal, so idle_bank_pass never re-selects it.
   defp finish_bank_active(state, instance, node_id, vm_id, ip, port, workload, {:error, reason}) do
-    Logger.warning("embervm stateful: bank failed, returning to fan-out",
+    if failed_precondition?(reason) do
+      Logger.warning("embervm stateful: bank rejected unknown vm, failing instance",
+        instance_id: instance.instance_id,
+        workload: workload,
+        reason: inspect(reason)
+      )
+
+      _ =
+        StatefulStore.transition(
+          state.store,
+          instance.instance_id,
+          :fail,
+          :stateful_failed,
+          %{reason: "bank_unknown_vm"},
+          %{}
+        )
+
+      state
+    else
+      other_error_bank_recovery(state, instance, node_id, vm_id, ip, port, workload, reason)
+    end
+  end
+
+  # Any OTHER bank error (transient transport/daemon failure, the VM still live):
+  # abort back to the fan-out and republish the still-alive VM, but ARM the
+  # per-workload backoff so a persistent failure re-drives at ~0.03 Hz, not the
+  # sweep frequency.
+  #
+  # bank_abort (banking -> serving) lands directly in the live state; no further
+  # FSM transition applies (see abort_bank/3's comment on why a `publish` call here
+  # would be the illegal {:serving, :publish} edge). Restore the endpoint fact via
+  # adopt_endpoint (ETS-only, no transition) using the endpoint captured BEFORE
+  # unpublish cleared the ETS row (the freshly-refetched `instance` here has nil
+  # ip/port, per StatefulStore.unpublish/3's clearing).
+  defp other_error_bank_recovery(state, instance, node_id, vm_id, ip, port, workload, reason) do
+    Logger.warning("embervm stateful: bank failed, returning to fan-out (backing off)",
       instance_id: instance.instance_id,
       workload: workload,
       reason: inspect(reason)
     )
 
-    # bank_abort (banking -> serving) lands directly in the live state; no
-    # further FSM transition applies (see abort_bank/3's comment on why a
-    # `publish` call here would be the illegal {:serving, :publish} edge).
-    # Restore the endpoint fact via adopt_endpoint (ETS-only, no transition)
-    # so the still-alive VM re-enters the fan-out, using the endpoint captured
-    # BEFORE unpublish cleared the ETS row (the freshly re-fetched `instance`
-    # here has nil ip/port, per StatefulStore.unpublish/3's clearing).
     _ = StatefulStore.mark(state.store, instance.instance_id, :bank_abort)
 
     if republishable_endpoint?(ip, port) do
@@ -1059,7 +1151,7 @@ defmodule Embervm.StatefulSweeper do
       Embervm.EndpointPublisher.publish(state.publisher)
     end
 
-    state
+    arm_bank_backoff(state, workload, state.clock.())
   end
 
   # -- interruptible bank: finish CHECKPOINT + resolve (ADR embervm/008) -------
@@ -1181,6 +1273,8 @@ defmodule Embervm.StatefulSweeper do
     channel_fun = state.channel_fun
     invalidate_fun = state.invalidate_fun
     resolve_fun = state.resolve_stateful_fun
+    # The paused VM is still on its owning instance: dial that, not the alias.
+    dial_key = dial_for_vm(state, node_id, vm_id)
 
     spawn(fn ->
       outcome =
@@ -1193,7 +1287,7 @@ defmodule Embervm.StatefulSweeper do
                            }
                          } do
           try do
-            case over_channel(channel_fun, invalidate_fun, node_id, &resolve_fun.(&1, resolve_request(vm_id, token, mode))) do
+            case over_channel(channel_fun, invalidate_fun, dial_key, &resolve_fun.(&1, resolve_request(vm_id, token, mode))) do
               {:ok, %ResolveStatefulResponse{} = resp} ->
                 {:ok, resp}
 
@@ -1575,8 +1669,9 @@ defmodule Embervm.StatefulSweeper do
 
   defp stop_stateful_destroy(state, %{node_id: node_id, vm_id: vm_id}) when is_binary(node_id) and is_binary(vm_id) do
     req = %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_DESTROY}
+    dial_key = dial_for_vm(state, node_id, vm_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
       try do
         state.stop_stateful_fun.(channel, req)
       rescue
@@ -1593,8 +1688,9 @@ defmodule Embervm.StatefulSweeper do
 
   defp evict_snapshot(state, %{node_id: node_id, snapshot_ref: ref}) when is_binary(node_id) and is_binary(ref) do
     req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: ref}
+    dial_key = dial_for_bundle(state, node_id, ref)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
       try do
         state.evict_snapshot_fun.(channel, req)
       rescue
@@ -1618,8 +1714,9 @@ defmodule Embervm.StatefulSweeper do
        when is_binary(node_id) and is_binary(ref) and ref != "" do
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: ref}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
+    dial_key = dial_for_bundle(state, node_id, ref)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
       try do
         state.evict_artifact_fun.(channel, req)
       rescue
@@ -1728,6 +1825,21 @@ defmodule Embervm.StatefulSweeper do
     e -> {:error, {:channel_raised, e}}
   catch
     kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  # The channel key for a live-VM dial (bank/checkpoint/resolve/destroy): the
+  # OWNING noded instance reporting `vm_id`, else the node name (single-instance /
+  # legacy fallback, unchanged behaviour). Instance-key unification (PR-B0a): a
+  # co-located node's node-name alias resolves to an arbitrary sibling brick, so a
+  # bank against the alias misroutes to a brick that never owned the VM and loops.
+  defp dial_for_vm(state, node_id, vm_id) do
+    Embervm.WakeInstance.dial_for_vm(state.capacity_table, node_id, vm_id)
+  end
+
+  # The channel key for a bundle dial (EvictSnapshot/EvictArtifact): the instance
+  # holding the bundle on disk (per-instance-on-disk, PR-2.5), else the node name.
+  defp dial_for_bundle(state, node_id, snapshot_ref) do
+    Embervm.WakeInstance.dial_for_bundle(state.capacity_table, node_id, snapshot_ref)
   end
 
   # Acquire the node's shared channel and run a stateful verb over it, invalidating

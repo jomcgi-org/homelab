@@ -208,7 +208,15 @@ defmodule Embervm.PoolManager do
   end
 
   defp refill_node(state, facts) do
-    node_id = facts.configured_id
+    # Dial the SPECIFIC instance this capacity fact belongs to (its instance_id,
+    # `"node/pod_uid"`), not the bare node name (instance-key unification PR-B0a):
+    # under brick co-location the node-name channel alias resolves to an arbitrary
+    # sibling that never adopted this instance's base, so a Prime against the alias
+    # fails "unknown snapshot_ref" and loops at the refill cadence. Fall back to the
+    # node name for a legacy/single-instance fact (no instance_id), unchanged. This
+    # key is also the per-instance bookkeeping key (inflight primes, floor status)
+    # so two co-located instances track independently.
+    node_id = dial_id(facts)
     workloads = ready_workloads(state, facts)
 
     # Node live-VM budget minus what this loop already has in flight for the node.
@@ -224,7 +232,7 @@ defmodule Embervm.PoolManager do
     if budget <= 0 or workloads == [] do
       state
     else
-      allocation = plan_primes(state, facts, workloads, budget)
+      allocation = plan_primes(state, node_id, workloads, budget)
       spawn_primes(state, node_id, allocation)
     end
   end
@@ -247,9 +255,7 @@ defmodule Embervm.PoolManager do
 
   # Decide how many VMs to prime per workload within `budget`: floors first
   # (round-robin fair under scarcity), then surplus proportional to queue depth.
-  defp plan_primes(state, facts, workloads, budget) do
-    node_id = facts.configured_id
-
+  defp plan_primes(state, node_id, workloads, budget) do
     floor_deficits =
       for w <- workloads, into: %{} do
         have = w.free + inflight_for(state, node_id, w.workload)
@@ -442,6 +448,16 @@ defmodule Embervm.PoolManager do
 
   defp stale?(f, now, stale_after), do: now - Map.get(f, :updated_at, 0) > stale_after
   defp draining?(f), do: Map.get(f, :draining, false) == true
+
+  # The dial/bookkeeping key for a capacity fact: its instance_id (`"node/pod_uid"`)
+  # when present, else the bare node name (a legacy/single-instance fact without the
+  # field still resolves via the node-name alias, unchanged behaviour).
+  defp dial_id(facts) do
+    case Map.get(facts, :instance_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> facts.configured_id
+    end
+  end
 
   defp queue_depth(state, wl) do
     if :ets.whereis(state.depth_table) == :undefined do

@@ -488,6 +488,18 @@ spec:
                         bank, unchanged. Only honored for class stateful. NOTE: a
                         boolean for a single alternative behavior; a future third bank
                         strategy is expected to supersede this with a `bankMode` enum.
+                    autoWake:
+                      type: boolean
+                      default: false
+                      description: >-
+                        Opt in to post-base-READY auto-wake (instance-key unification
+                        PR-B0a, A2): when the control plane observes this workload's
+                        base transition to READY and it has no live or banked instance,
+                        the StatefulManager reconcile triggers a wake instead of waiting
+                        for the first connection. Set for demo-postgres so a chart bump's
+                        noded roll (which rebuilds the base) does not leave the public
+                        /health demo wedged until a manual forced wake. Off (the default)
+                        is lazy first-connection wake, unchanged.
                     secretRef:
                       type: string
                       description: >-

@@ -667,6 +667,20 @@ defmodule Embervm.WorkloadWatcherTest do
     # workload with no first-boot secrets to deliver never reads a Secret).
     assert entry.stateful.secret_ref == nil
     assert entry.stateful.interruptible_bank == false
+    assert entry.stateful.auto_wake == false
+  end
+
+  test "stateful class: autoWake true is parsed onto the catalog entry (PR-B0a A2)" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = put_in(stateful_cr(), ["spec", "stateful", "autoWake"], true)
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "scratch-postgres")
+    assert entry.stateful.auto_wake == true
   end
 
   test "stateful class: interruptibleBank true is parsed onto the catalog entry (ADR 008)" do

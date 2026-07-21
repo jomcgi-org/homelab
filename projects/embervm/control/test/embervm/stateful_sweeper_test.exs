@@ -155,7 +155,7 @@ defmodule Embervm.StatefulSweeperTest do
         clock: clock(clock_agent),
         scrape_fun: fn _url -> Agent.get(scrape_agent, & &1) end,
         stats_base: Keyword.get(opts, :stats_base, "http://serving:9902"),
-        channel_fun: fn _node -> {:ok, :ch} end,
+        channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _n, _c -> :ok end),
         stop_stateful_fun: stop_stateful_fun,
         resolve_stateful_fun: resolve_stateful_fun,
@@ -1225,6 +1225,151 @@ defmodule Embervm.StatefulSweeperTest do
     atom = String.to_existing_atom(kind)
     {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     Enum.filter(ops, &(&1.kind == atom))
+  end
+
+  # -- instance-key unification (PR-B0a) ---------------------------------------
+
+  # Put one per-instance capacity fact (keyed by {node, pod_uid}) carrying the
+  # per-instance live-VM / bundle inventory the sweeper's dial resolution reads.
+  defp put_brick(ctx, node_id, pod_uid, opts) do
+    NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      pod_uid: pod_uid,
+      instance_id: "#{node_id}/#{pod_uid}",
+      serving_subnet_cidr: "10.98.0.0/24",
+      max_live_vms: 8,
+      live_vms: 0,
+      workloads: %{},
+      stateful_vms: Keyword.get(opts, :stateful_vms, []),
+      stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
+      volumes: []
+    })
+  end
+
+  test "the bank dials the OWNER instance_id even when the node-name alias points at a sibling" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    ctx = start_stack(channel_fun: capture_channel)
+    stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
+
+    # Two co-located instances on node-4. pod-owner RUNS vm-1; pod-sibling does not
+    # (it is the last registrant the node-name alias would collapse to). The bank
+    # must dial pod-owner, never the alias.
+    put_brick(ctx, "node-4", "pod-sibling", stateful_vms: [])
+    put_brick(ctx, "node-4", "pod-owner",
+      stateful_vms: [%{vm_id: "vm-1", workload: "wl-a", ip: "10.98.0.5", port: 5432, healthy: true, generation: 0}]
+    )
+
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    # The StopStateful(BANK) dialled the owning instance, not the node-name alias.
+    assert "node-4/pod-owner" in Agent.get(dialed, & &1)
+    refute "node-4" in Agent.get(dialed, & &1)
+  end
+
+  test "an unknown-vm FAILED_PRECONDITION terminalizes the instance (-> :failed), not loop/republish" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+
+    # The daemon rejects the bank FAILED_PRECONDITION (status 9): it does not own
+    # this VM ("not bankable / unknown vm"). The instance must FAIL, not abort back
+    # to serving and re-drive next tick.
+    :sys.replace_state(ctx.sweeper, fn s ->
+      %{
+        s
+        | stop_stateful_fun: fn _ch, req ->
+            if req.mode == :STOP_STATEFUL_MODE_BANK do
+              {:error, %GRPC.RPCError{status: 9, message: "not bankable (unknown vm)"}}
+            else
+              {:ok, %StopStatefulResponse{}}
+            end
+          end
+      }
+    end)
+
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :failed}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    {:ok, instance} = StatefulStore.get(ctx.store, "sf-1")
+    assert instance.state == :failed
+    assert load_ops(ctx, "stateful_banked") == []
+    # A durable stateful_failed was recorded (the wake path cold-boots next).
+    assert length(load_ops(ctx, "stateful_failed")) == 1
+  end
+
+  test "a NON-terminal bank error backs off (does not re-drive at sweep frequency)" do
+    ctx = start_stack(bank_backoff_base_ms: 10_000, bank_backoff_cap_ms: 30_000)
+    stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, "sf-1", "wl-a", "vm-1", "10.98.0.5")
+
+    # A transient (non-FAILED_PRECONDITION) bank failure: abort back to serving,
+    # arm the backoff.
+    Agent.update(ctx.bank_fail, fn _ -> true end)
+
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    # This tick crosses idle: the first bank fires and fails, arming the backoff.
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    bank_calls = fn -> Enum.count(stop_calls(ctx), &(&1.mode == :STOP_STATEFUL_MODE_BANK)) end
+    assert bank_calls.() == 1
+
+    # A sweep only 1 s later (well inside the 10 s backoff) must NOT re-drive the
+    # bank: this is the loop the backoff kills.
+    advance(ctx.clock_agent, 1_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+    flush(ctx)
+    assert bank_calls.() == 1
+
+    # Past the backoff window, the bank is re-driven (still failing, still one more
+    # attempt: the point is it backed OFF, not that it gave up).
+    advance(ctx.clock_agent, 11_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+    wait_until(ctx, fn -> bank_calls.() == 2 end)
+    assert bank_calls.() == 2
   end
 
   describe "drain_node/2 (R6 force-bank)" do
