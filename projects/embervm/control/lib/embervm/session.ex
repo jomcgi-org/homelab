@@ -110,6 +110,12 @@ defmodule Embervm.Session do
       workload: Keyword.fetch!(opts, :workload),
       principal: Keyword.get(opts, :principal),
       node_id: Keyword.fetch!(opts, :node_id),
+      # The channel key this session's per-invoke SessionAssign / destroy dial. Under
+      # brick co-location several noded instances share node_id, and the node-name
+      # alias collapses to an arbitrary sibling; dial_id is the SPECIFIC instance
+      # running this session's VM (instance-key unification PR-B0b). Defaults to
+      # node_id so a legacy/single-instance caller (and older tests) is unaffected.
+      dial_id: Keyword.get(opts, :dial_id) || Keyword.fetch!(opts, :node_id),
       vm_id: Keyword.fetch!(opts, :vm_id),
       # Session config from the catalog entry: the invoke queue cap, the guest
       # round-trip timeout, and (PR-4) the idle-bank delay.
@@ -284,6 +290,7 @@ defmodule Embervm.Session do
   defp spawn_invoke_worker(state, req, enqueued_at) do
     owner = self()
     node_id = state.node_id
+    dial_id = state.dial_id
     vm_id = state.vm_id
     session_id = state.session_id
     workload = state.workload
@@ -325,6 +332,7 @@ defmodule Embervm.Session do
                          } do
           run_invoke(%{
             node_id: node_id,
+            dial_id: dial_id,
             vm_id: vm_id,
             session_id: session_id,
             workload: workload,
@@ -347,7 +355,7 @@ defmodule Embervm.Session do
   # failure, so it does NOT fail the session (the caller decides). Only a transport
   # error, a DEADLINE_EXCEEDED, or a daemon-flagged `suspect` VM fails the session.
   defp run_invoke(ctx) do
-    case ctx.channel_fun.(ctx.node_id) do
+    case ctx.channel_fun.(ctx.dial_id) do
       {:ok, channel} ->
         guest_req = %GuestRequest{
           method: Map.get(ctx.req, :method, "POST"),
@@ -369,7 +377,7 @@ defmodule Embervm.Session do
 
         case ctx.assign_fun.(channel, assign_req) do
           {:ok, %SessionAssignResponse{suspect: true}} ->
-            _ = ctx.invalidate_fun.(ctx.node_id, channel)
+            _ = ctx.invalidate_fun.(ctx.dial_id, channel)
             {:error, :suspect}
 
           {:ok, %SessionAssignResponse{response: %GuestResponse{} = resp, usage: usage}} ->
@@ -401,14 +409,14 @@ defmodule Embervm.Session do
   # invalidate-always, unchanged.
   defp maybe_invalidate(ctx, channel, %GRPC.RPCError{} = reason) do
     if Embervm.NodeChannel.transport_dead?(reason) do
-      _ = ctx.invalidate_fun.(ctx.node_id, channel)
+      _ = ctx.invalidate_fun.(ctx.dial_id, channel)
     end
 
     :ok
   end
 
   defp maybe_invalidate(ctx, channel, _reason) do
-    _ = ctx.invalidate_fun.(ctx.node_id, channel)
+    _ = ctx.invalidate_fun.(ctx.dial_id, channel)
     :ok
   end
 
@@ -455,7 +463,7 @@ defmodule Embervm.Session do
   end
 
   defp destroy_vm(state) do
-    case state.channel_fun.(state.node_id) do
+    case state.channel_fun.(state.dial_id) do
       {:ok, channel} ->
         try do
           state.destroy_fun.(channel, state.vm_id)

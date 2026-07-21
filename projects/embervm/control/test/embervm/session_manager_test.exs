@@ -42,7 +42,7 @@ defmodule Embervm.SessionManagerTest do
     assign_fun = Keyword.get(opts, :assign_fun, &default_assign/2)
 
     session_opts = [
-      channel_fun: fn _node -> {:ok, :ch} end,
+      channel_fun: Keyword.get(opts, :session_channel_fun, fn _node -> {:ok, :ch} end),
       assign_fun: assign_fun,
       destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{}} end),
       invalidate_fun: fn _node, _ch -> :ok end
@@ -200,6 +200,58 @@ defmodule Embervm.SessionManagerTest do
     # node-scoped, not the dial instance_id.
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.node_id == "node-4"
+  end
+
+  test "the per-invoke dial targets the OWNER instance_id, not the node-name alias (task #4)" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    ctx =
+      start_stack(
+        # The claim lands the VM on the big brick.
+        claim_fun: fn _d, _dial_id, _w -> {:ok, "vm-owner"} end,
+        session_channel_fun: capture_channel
+      )
+
+    WorkloadCatalog.upsert(ctx.cat_table, "wl-a", %{
+      name: "wl-a",
+      namespace: "embervm",
+      class: "session",
+      image_ref: "img@sha256:abc",
+      invoke_path: "/",
+      timeout_ms: 90_000,
+      cap: 8,
+      floor: 1,
+      mem_mib: 4_000,
+      session: %{
+        idle_bank_seconds: 300,
+        max_lifetime_seconds: 3600,
+        banked_ttl_seconds: 3600,
+        max_sessions: 16,
+        invoke_queue_cap: 4
+      }
+    })
+
+    # Two co-located bricks: the 2Gi cannot boot the 4Gi-need session, so dial_instance
+    # picks node-4/big. The node-name alias would collapse to whichever brick
+    # registered last; the per-invoke dial must target node-4/big regardless.
+    put_brick(ctx, "wl-a", "small", size_class: "2gi", mem_headroom: 100, mem_budget: 2_048)
+    put_brick(ctx, "wl-a", "big", size_class: "8gi", mem_headroom: 8_000, mem_budget: 8_192)
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-a", "p1")
+
+    {:ok, _resp} =
+      SessionManager.invoke(ctx.mgr, created.session_id, %{method: "POST", path: "/", headers: %{}, body: "hi"})
+
+    # The invoke's SessionAssign dialled the owning instance, never the node alias.
+    keys = Agent.get(dialed, & &1)
+    assert "node-4/big" in keys
+    refute "node-4" in keys
+    refute "node-4/small" in keys
   end
 
   test "create happy path: claims a primed VM, mints a token, starts a live session" do

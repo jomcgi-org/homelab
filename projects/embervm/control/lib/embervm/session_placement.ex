@@ -66,20 +66,36 @@ defmodule Embervm.SessionPlacement do
   end
 
   @doc """
-  Resolves the node a BANKED `session` relights on: the session's recorded
-  `node_id`, CONFIRMED to be a ready node currently reporting the session's
-  `snapshot_ref` in its `session_snapshots` inventory. Returns `{:ok, node_id}` or
-  `{:error, :snapshot_lost}` when no ready node holds the snapshot (node death,
-  out-of-band eviction). Placement never picks a DIFFERENT node for a relight: a
-  node-local snapshot is restorable on exactly its owning node (standing decision 3).
+  Resolves the dial key a BANKED `session` relights on: the specific INSTANCE on the
+  session's recorded `node_id` currently reporting the session's `snapshot_ref` in
+  its `session_snapshots` inventory. Returns `{:ok, dial_key}` (the owning instance's
+  `instance_id`, or its node name for a legacy/single-instance fact) or
+  `{:error, :snapshot_lost}` when no instance on the node holds the snapshot (node
+  death, out-of-band eviction).
+
+  Instance-key unification (PR-B0b): a session's snapshot is per-instance ON DISK
+  (PR-2.5), so an established session's next invoke must relight against the INSTANCE
+  that banked it, not the collapsing node-name alias (co-location made the alias
+  point at an arbitrary sibling brick that never held the snapshot). Placement still
+  never picks a DIFFERENT node (a node-local snapshot is restorable on exactly its
+  owning node, standing decision 3); this only pins the specific co-located instance.
   """
   @spec node_for_relight(map(), atom()) :: {:ok, String.t()} | {:error, :snapshot_lost}
   def node_for_relight(session, capacity_table \\ NodeCapacity.table()) do
     snapshot_ref = Map.get(session, :snapshot_ref)
     node_id = Map.get(session, :node_id)
 
-    if is_binary(snapshot_ref) and snapshot_ref != "" and node_reports_snapshot?(capacity_table, node_id, snapshot_ref) do
-      {:ok, node_id}
+    if is_binary(snapshot_ref) and snapshot_ref != "" do
+      case Embervm.WakeInstance.owning_instance_for(
+             capacity_table,
+             node_id,
+             :session_snapshots,
+             :snapshot_ref,
+             snapshot_ref
+           ) do
+        {:ok, dial_key} -> {:ok, dial_key}
+        :none -> {:error, :snapshot_lost}
+      end
     else
       {:error, :snapshot_lost}
     end
@@ -133,20 +149,4 @@ defmodule Embervm.SessionPlacement do
     :erlang.phash2({key, node_id}, 4_294_967_296)
   end
 
-  # Whether a READY node with the given id currently reports `snapshot_ref` among
-  # its banked-snapshot inventory. A node absent from the (fail-closed) capacity
-  # table is not ready, so a session on a down node reads as snapshot_lost.
-  defp node_reports_snapshot?(_capacity_table, node_id, _snapshot_ref) when not is_binary(node_id), do: false
-
-  defp node_reports_snapshot?(capacity_table, node_id, snapshot_ref) do
-    case NodeCapacity.fetch(capacity_table, node_id) do
-      {:ok, fact} ->
-        fact
-        |> Map.get(:session_snapshots, [])
-        |> Enum.any?(fn snap -> Map.get(snap, :snapshot_ref) == snapshot_ref end)
-
-      :error ->
-        false
-    end
-  end
 end
