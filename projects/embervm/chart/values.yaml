@@ -907,6 +907,33 @@ bricks:
   # Deployment /spec/replicas fleet-wide, so the controller (not this value) is the
   # ongoing authority after first create.
   desiredReplicas: {}
+  # Demand-driven autoscale (fleet plan Axis C). The BrickController computes a
+  # per-class target from placement-denial pressure (up) and sustained brick
+  # idleness (down), clamped to [minReplicas, maxReplicas], with asymmetric
+  # cooldowns so it cannot flap. mode gates how much of the loop ACTS:
+  #   off     - legacy static reconcile to desiredReplicas only.
+  #   observe - DEFAULT: acts statically, logs every would-be decision
+  #             ("brick autoscale: would scale class ..."), so the loop soaks
+  #             against real traffic before it may act. Merging is safe.
+  #   up      - scale-up acts; scale-down stays observe-only.
+  #   full    - both act; scale-down is drain-aware (the controller picks an
+  #             idle, fully-exported victim and directs the Deployment's choice
+  #             via pod-deletion-cost before shrinking).
+  # Rollout is a values change (observe -> up -> full), never a code revert.
+  autoscale:
+    mode: observe
+    # Recorded policy (2026-07-20): keep one 16Gi brick warm so the scratch-k8s
+    # composite (a ~10 GiB single-brick group) wakes without a scale-up round
+    # trip; every other class may drain to zero. An unlisted class reads min 0.
+    minReplicas:
+      16gi: 1
+    # Recorded policy ceilings (no prior chart ceiling existed): the scale-up
+    # clamp per class. An unlisted class reads max(desired, min): no headroom.
+    maxReplicas:
+      2gi: 4
+      4gi: 3
+      8gi: 2
+      16gi: 2
   classes:
     - name: 2gi
       resources:

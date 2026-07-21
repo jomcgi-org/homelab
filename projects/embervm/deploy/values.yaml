@@ -122,6 +122,20 @@ bricks:
     # workloads (the ~10Gi scratch-k8s composite group) need the 16gi class.
     # Values-only flip: foundation images already deployed at 0.1.169.
     16gi: 1
+  # Demand-driven brick autoscale (fleet plan Axis C), pinned explicitly so the
+  # cluster's rollout rung is visible here, not implied by a chart default. The
+  # ladder is observe -> up -> full, each a values-only flip:
+  #   observe: acts statically (identical to before), logs every would-be
+  #            decision ("brick autoscale: would scale class ...") for a soak.
+  #   up:      denial-driven scale-up acts (clamped to chart maxReplicas);
+  #            scale-down stays observe-only.
+  #   full:    drain-aware scale-down acts too (idle 15m + fully-exported
+  #            victim rail, never below chart minReplicas; 16gi keeps min 1
+  #            for the scratch-k8s composite).
+  # min/max clamps live in the chart values (recorded policy 2026-07-20:
+  # min {16gi: 1}, max {2gi: 4, 4gi: 3, 8gi: 2, 16gi: 2}).
+  autoscale:
+    mode: observe
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs

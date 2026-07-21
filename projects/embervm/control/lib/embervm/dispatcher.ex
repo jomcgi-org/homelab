@@ -579,8 +579,18 @@ defmodule Embervm.Dispatcher do
               end)
 
             case BrickLedger.choose(miss_candidates, wl) do
-              nil -> {:error, :no_capacity}
-              f -> {:ok, instance_id_of(f), :miss, snapshot_ref_of(f, wl)}
+              nil ->
+                # A true CAPACITY wall (Axis C demand signal): ready, base-holding
+                # candidates exist but every one is out of slots or too small for
+                # the workload's mem_mib. The no-base / stale branches above are
+                # deliberately NOT noted: they wait on provisioning or fact
+                # freshness, which a scale-up cannot serve. Async cast; a missing
+                # controller (tests) makes it a silent no-op.
+                Embervm.BrickController.note_denial(need_mib)
+                {:error, :no_capacity}
+
+              f ->
+                {:ok, instance_id_of(f), :miss, snapshot_ref_of(f, wl)}
             end
 
           warm ->

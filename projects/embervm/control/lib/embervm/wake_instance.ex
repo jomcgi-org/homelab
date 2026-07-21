@@ -298,13 +298,28 @@ defmodule Embervm.WakeInstance do
   # on the still-DS-only fleet. This is the COLD path only; the warmth/relight-owner
   # branch of `select/2` is unchanged (the banked instance already holds the base).
   defp cold_instance(table, node_id, workload, need_mib) do
-    table
-    |> BrickLedger.bricks()
-    |> Enum.filter(fn brick -> brick.node_id == node_id end)
-    |> Embervm.Placement.pick_ready(workload, need_mib)
-    |> case do
-      nil -> {:error, :no_eligible_instance}
-      brick -> {:ok, dial_id_from_brick(brick)}
+    node_bricks =
+      table
+      |> BrickLedger.bricks()
+      |> Enum.filter(fn brick -> brick.node_id == node_id end)
+
+    case Embervm.Placement.pick_ready(node_bricks, workload, need_mib) do
+      nil ->
+        # Distinguish WHY the pick failed before feeding the autoscaler (Axis C):
+        # if some brick was slot/mem-eligible but merely not base-READY yet, the
+        # wake is waiting on provisioning, not on capacity, and a scale-up would
+        # not help (a fresh brick is equally un-ready). Only when NO brick is
+        # eligible at all is this a CAPACITY denial worth a demand signal. The
+        # note is an async cast: a missing controller (tests, DS-only fleet)
+        # makes it a silent no-op, and the wake outcome is unchanged either way.
+        unless Enum.any?(node_bricks, &Embervm.Placement.eligible?(&1, need_mib)) do
+          Embervm.BrickController.note_denial(need_mib)
+        end
+
+        {:error, :no_eligible_instance}
+
+      brick ->
+        {:ok, dial_id_from_brick(brick)}
     end
   end
 
