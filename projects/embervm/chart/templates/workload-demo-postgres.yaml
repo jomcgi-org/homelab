@@ -54,6 +54,11 @@ spec:
     # aggressive idleBankSeconds:1 above is safe. This is exactly the exhibit the
     # mode exists for (a human clicking at the wrong moment).
     interruptibleBank: {{ .Values.demoPostgres.interruptibleBank }}
+    # Auto-wake after base READY (instance-key unification PR-B0a, A2): this is the
+    # public /health exhibit, so a chart bump's noded roll (which rebuilds the base)
+    # must not leave it wedged until a manual forced wake. The CP wakes it the moment
+    # the rebuilt base is READY.
+    autoWake: {{ .Values.demoPostgres.autoWake }}
     # Reuse the scratch-postgres Secret: same superuser password on first boot.
     secretRef: {{ include "embervm.fullname" . }}-scratch-postgres
 {{- end }}

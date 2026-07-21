@@ -653,6 +653,11 @@ demoPostgres:
   # cold-boot; the interruptible bank resumes the paused VM hot instead. demo-
   # postgres is the named consumer this mode exists for.
   interruptibleBank: true
+  # Auto-wake once the base is READY (instance-key unification PR-B0a, A2). This
+  # is the public /health exhibit; a chart bump's noded roll rebuilds the base and
+  # would otherwise leave the demo wedged until a manual forced wake, so the CP
+  # wakes it as soon as the rebuilt base advertises READY.
+  autoWake: true
   # Toy dataset: a handful of demo rows, not a real datastore.
   volumeSizeGiB: 2
 

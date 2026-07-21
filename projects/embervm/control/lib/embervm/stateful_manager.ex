@@ -686,8 +686,10 @@ defmodule Embervm.StatefulManager do
                 # boot_image_ref rides even a RELIGHT: if the daemon discovers the
                 # generation pair is actually broken (a mismatch we could not see
                 # from here, or an unreadable ledger) it falls back to a cold boot
-                # from THIS ref rather than failing the call outright.
-                fallback_ref = boot_image_ref(state, node_id, workload)
+                # from THIS ref rather than failing the call outright. Resolved off
+                # dial_id (the instance the relight dials), not the node-name alias,
+                # so the fallback ref belongs to the SAME instance.
+                fallback_ref = boot_image_ref(state, dial_id, workload)
                 req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
                 spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, dial_id, req) end)
 
@@ -716,7 +718,8 @@ defmodule Embervm.StatefulManager do
           {:ok, dial_id} ->
             case StatefulStore.mark(state.store, instance.instance_id, :relight) do
               {:ok, _} ->
-                fallback_ref = boot_image_ref(state, node_id, workload)
+                # Fallback ref off the chosen instance (dial_id), not the node alias.
+                fallback_ref = boot_image_ref(state, dial_id, workload)
                 req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
 
                 spawn_wake(owner, workload, fn ->
@@ -736,13 +739,20 @@ defmodule Embervm.StatefulManager do
             send(self(), {:wake_done, workload, {:error, reason}})
         end
 
-      {:cold, node_id, boot_ref, mode, reason} ->
+      {:cold, node_id, _plan_boot_ref, mode, reason} ->
         # A cold boot has no owning bundle: select a mem-eligible instance on the
         # node (a too-small classed brick is skipped; the DS wildcard is always
         # eligible), and fail cleanly if none has room rather than dialling a
         # too-small one.
         case dial_instance(state, workload, entry, node_id, []) do
           {:ok, dial_id} ->
+            # Resolve the base snapshot_ref from the CHOSEN instance's fact (dial_id),
+            # not the node-name alias the plan phase used: under co-location the
+            # node-name fetch races across the three co-located facts and can read a
+            # sibling brick's ABSENT workload entry (nil -> boot_image_ref "" ->
+            # noded rejects). Reading it here off dial_id guarantees the ref and the
+            # RPC target are the same instance.
+            boot_ref = boot_image_ref(state, dial_id, workload)
             req = cold_request(state, entry, workload, boot_ref, mode, blessed_generation)
             spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req) end)
 
@@ -758,7 +768,10 @@ defmodule Embervm.StatefulManager do
       {:restore_volume_then_cold, wl, node_id, volume} ->
         case dial_instance(state, wl, entry, node_id, []) do
           {:ok, dial_id} ->
-            boot_ref = boot_image_ref(state, node_id, wl)
+            # Resolve the base ref from the chosen instance (dial_id), not the node
+            # alias (see the {:cold, ...} arm note): the restored volume cold-boots
+            # from the ref THIS instance advertises.
+            boot_ref = boot_image_ref(state, dial_id, wl)
             req = cold_request(state, entry, wl, boot_ref, :cold, blessed_generation)
             reason = cold_reason(volume)
 
@@ -941,19 +954,22 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  # Whether the anchor node still reports the instance's bundle on LOCAL disk (its
-  # snapshot_ref is in the node's stateful_bundles). A relight needs no restore when
-  # true; a true local miss (false) may consult the store.
+  # Whether ANY instance on the node still reports the bundle on LOCAL disk (its
+  # snapshot_ref is in some co-located instance's stateful_bundles). A relight needs
+  # no restore when true; a true local miss (false) may consult the store. Scans
+  # every per-instance fact on the node (not the freshest single fact): under
+  # co-location the bundle lives on the ONE instance that banked it (per-instance-
+  # on-disk, PR-2.5), which the node-name-keyed fetch could race past, wrongly
+  # deciding a present bundle is missing and triggering a needless restore.
   defp bundle_local?(state, node_id, snapshot_ref) when is_binary(snapshot_ref) and snapshot_ref != "" do
-    case NodeCapacity.fetch(state.capacity_table, node_id) do
-      {:ok, fact} ->
-        fact
-        |> Map.get(:stateful_bundles, [])
-        |> Enum.any?(&(&1.snapshot_ref == snapshot_ref))
-
-      :error ->
-        false
-    end
+    state.capacity_table
+    |> NodeCapacity.all()
+    |> Enum.filter(fn fact -> Map.get(fact, :node_id) == node_id end)
+    |> Enum.any?(fn fact ->
+      fact
+      |> Map.get(:stateful_bundles, [])
+      |> Enum.any?(&(&1.snapshot_ref == snapshot_ref))
+    end)
   end
 
   defp bundle_local?(_state, _node_id, _ref), do: false
@@ -1055,8 +1071,8 @@ defmodule Embervm.StatefulManager do
   # key instead (resolving it via its base registry, not the serving-image
   # inventory). Empty when the node has not built the base yet; the daemon then
   # fails the RPC loudly rather than booting an empty rootfs.
-  defp boot_image_ref(state, node_id, workload) do
-    case NodeCapacity.fetch(state.capacity_table, node_id) do
+  defp boot_image_ref(state, dial_key, workload) do
+    case fact_for_dial(state, dial_key) do
       {:ok, fact} ->
         fact
         |> Map.get(:workloads, %{})
@@ -1067,6 +1083,30 @@ defmodule Embervm.StatefulManager do
         nil
     end
   end
+
+  # Resolve the capacity fact for a dial key that is EITHER an instance_id string
+  # (`"node/pod_uid"`, the exact instance WakeInstance.select chose) OR a bare node
+  # name (a legacy/single-instance dial, or a plan-phase node-scoped resolve). An
+  # instance_id string is matched EXACTLY against the per-instance facts (no
+  # node-name-alias race across co-located siblings, the pathology this PR fixes);
+  # a bare node name uses NodeCapacity's node-scoped clause unchanged. This keeps
+  # boot_image_ref reading the SAME instance the RPC will dial, so the base
+  # snapshot_ref pick and the ref resolution can never disagree.
+  defp fact_for_dial(state, dial_key) when is_binary(dial_key) do
+    if String.contains?(dial_key, "/") do
+      state.capacity_table
+      |> NodeCapacity.all()
+      |> Enum.find(fn fact -> Map.get(fact, :instance_id) == dial_key end)
+      |> case do
+        nil -> :error
+        fact -> {:ok, fact}
+      end
+    else
+      NodeCapacity.fetch(state.capacity_table, dial_key)
+    end
+  end
+
+  defp fact_for_dial(_state, _dial_key), do: :error
 
   defp banked_instance(state, workload) do
     StatefulStore.list(state.store, workload)
@@ -1712,7 +1752,56 @@ defmodule Embervm.StatefulManager do
     _ = StatefulStore.eager_evict_broken_pairs(state.store)
 
     EndpointPublisher.publish(state.publisher)
-    state
+
+    auto_wake_ready_workloads(state, facts)
+  end
+
+  # A2 auto-wake (instance-key unification PR-B0a): kick a wake for every catalog-
+  # flagged autoWake stateful workload whose base is READY on some instance AND that
+  # has no live or banked instance AND no wake already in flight. This retires the
+  # recurring "every chart bump wedges the public demo until a manual forced wake"
+  # ops step: THIS PR's chart bump rolls the noded and rebuilds demo-postgres' base,
+  # and without this the demo stays dark until a connection (or an operator) wakes
+  # it. A workload with a live/banked instance is left alone (nothing to wake); one
+  # mid-wake is owned by that wake. start_wake parks no caller, so a successful wake
+  # simply publishes the endpoint for the next connection (reply_all([]) is a no-op).
+  defp auto_wake_ready_workloads(state, facts) do
+    WorkloadCatalog.all_names(state.catalog_table)
+    |> Enum.reduce(state, fn workload, acc ->
+      if auto_wake_eligible?(acc, workload, facts) do
+        Logger.info("embervm stateful: auto-waking workload after base READY", workload: workload)
+        start_wake(acc, workload)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp auto_wake_eligible?(state, workload, facts) do
+    auto_wake_workload?(state, workload) and
+      not Map.has_key?(state.waking, workload) and
+      not has_nonterminal_instance?(state, workload) and
+      base_ready_somewhere?(facts, workload)
+  end
+
+  defp auto_wake_workload?(state, workload) do
+    match?({:ok, %{class: "stateful", stateful: %{auto_wake: true}}}, WorkloadCatalog.fetch(state.catalog_table, workload))
+  end
+
+  # Whether the workload has ANY non-terminal instance (live OR banked): if so there
+  # is nothing to auto-wake (a banked instance relights on the next connection, and
+  # a live one is already serving).
+  defp has_nonterminal_instance?(state, workload) do
+    StatefulStore.list(state.store, workload)
+    |> Enum.any?(&(not StatefulState.terminal?(&1.state)))
+  end
+
+  # Whether some reporting instance advertises this workload's base as READY (the
+  # signal that a wake can resolve a boot_image_ref and cold-boot). Reuses the
+  # shared Placement.base_ready?/2 predicate so the READY representation (proto atom
+  # or the integer form) can never drift from the cold-placement paths.
+  defp base_ready_somewhere?(facts, workload) do
+    Enum.any?(facts, fn fact -> Embervm.Placement.base_ready?(fact, workload) end)
   end
 
   defp index_stateful_vms(facts) do
