@@ -17,6 +17,7 @@ resources:
   - ./opentelemetry-operator
   - ./priority-classes # Cluster-scoped PriorityClasses (ADR platform/010)
   - ./seaweedfs
+  - ./seaweedfs-node4 # Second volume server on node-4 (must exist for seaweedfs's replication 001)
   - ./signoz
   - ./signoz-addons # Must be after signoz
   # temporal, warehouse-bucket and temporal-databases removed: lakehouse/Temporal
