@@ -76,3 +76,29 @@ spec:
       owner: app
       postInitSQL:
         - CREATE EXTENSION IF NOT EXISTS vector
+  {{- if .Values.postgres.backup.enabled }}
+  # Barman object-store backup to the in-cluster SeaweedFS S3 gateway. Closes the
+  # zero-backup gap from the ext4-corruption recovery: backups live in SeaweedFS
+  # (a different volume set) so they survive Pg-volume corruption. NOT off-cluster
+  # DR (a cluster loss takes both); that is a separate follow-up. Uses the in-spec
+  # barmanObjectStore mechanism supported by the deployed CNPG 1.28.1 operator
+  # (the Barman Cloud Plugin is not installed). Credentials are the shared
+  # non-secret SeaweedFS dummy keys via the chart-managed Opaque secret
+  # (cnpg-backup-s3-secret.yaml); SeaweedFS S3 runs auth-disabled.
+  backup:
+    retentionPolicy: {{ .Values.postgres.backup.retentionPolicy | quote }}
+    barmanObjectStore:
+      destinationPath: {{ .Values.postgres.backup.destinationPath | quote }}
+      endpointURL: {{ .Values.postgres.backup.endpointURL | quote }}
+      s3Credentials:
+        accessKeyId:
+          name: {{ include "monolith.fullname" . }}-pg-backup-s3
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: {{ include "monolith.fullname" . }}-pg-backup-s3
+          key: ACCESS_SECRET_KEY
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+  {{- end }}

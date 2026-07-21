@@ -741,6 +741,55 @@ postgres:
     storageClass: ""
   pgvector:
     image: ghcr.io/cloudnative-pg/pgvector:0.8.2-202604021427-18-trixie
+  # Barman object-store backups (WAL archiving + scheduled base backups) to the
+  # in-cluster SeaweedFS S3 gateway. This closes the zero-backup gap exposed when
+  # the Pg Longhorn volume suffered ext4 corruption and had to be fsck-recovered
+  # with no backups. Because the backups live in SeaweedFS (a different volume
+  # set) they survive the Pg-volume-corruption failure class. NOTE: this is NOT
+  # off-cluster disaster recovery (a node/cluster loss still takes both); that is
+  # a separate follow-up.
+  #
+  # Uses the in-spec barmanObjectStore mechanism (supported by the deployed CNPG
+  # 1.28.1 operator). The newer Barman Cloud Plugin is not installed, so the
+  # plugin path is not available here.
+  #
+  # Credentials: SeaweedFS S3 runs with enableAuth: false and every workload uses
+  # the shared non-secret "duckdb"/"duckdb" keys (see stars.s3AccessKeyId). CNPG
+  # s3Credentials only accepts a Secret reference (not literals), so the chart
+  # emits a small Opaque Secret (templates/cnpg-backup-s3-secret.yaml) holding
+  # these same low-value dummy keys. There is no 1Password S3 item to reuse
+  # because SeaweedFS S3 has no real credentials in this cluster.
+  # Landed DISABLED on purpose. Enabling continuous WAL archiving to a not-yet-
+  # created bucket, or turning archive_mode on, can trigger a CNPG rolling
+  # switchover of the primary, which must not run unwatched against the freshly
+  # fsck-recovered monolith-pg. The live enable is a deliberate, watched step:
+  # (1) pre-create the s3://monolith-pg-backups bucket via `weed shell`
+  #     s3.bucket.create (NOT the chart bucket hook, which flips SeaweedFS S3 to
+  #     auth-enforced and breaks every S3 workload),
+  # (2) confirm the standby is caught up (instances: 2, streaming),
+  # (3) flip enabled: true and watch the Cluster's ContinuousArchiving condition
+  #     plus the first ScheduledBackup completing.
+  backup:
+    enabled: false
+    # SeaweedFS S3 gateway (path-style, plaintext HTTP), same endpoint the app
+    # workloads use.
+    endpointURL: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+    # s3://<bucket>/<path>. The bucket must be pre-created out-of-band (see the
+    # note in seaweedfs values.yaml: never let the chart's bucket hook run, it
+    # flips the whole cluster S3 to auth-enforced). CNPG writes base backups and
+    # WALs under this prefix.
+    destinationPath: "s3://monolith-pg-backups/monolith-pg"
+    s3AccessKeyId: "duckdb"
+    s3SecretAccessKey: "duckdb"
+    # Keep 14 days of backups + WALs. Barman prunes on each new base backup.
+    retentionPolicy: "14d"
+    scheduledBackup:
+      # Daily base backup. CNPG cron format has a leading seconds field, so this
+      # is 02:00 UTC daily. Named `cron` rather than `schedule` because the
+      # `schedule:` key under values.yaml triggers the Argo-CronWorkflow
+      # activeDeadlineSeconds lint, which does not apply to a CNPG
+      # ScheduledBackup (no such field in its schema).
+      cron: "0 0 2 * * *"
 
 service:
   port: 3000

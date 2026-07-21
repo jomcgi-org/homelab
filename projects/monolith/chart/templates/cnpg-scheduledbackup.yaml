@@ -1,0 +1,19 @@
+{{- if .Values.postgres.backup.enabled }}
+# Daily base backup of monolith-pg to the SeaweedFS Barman object store. WAL
+# archiving (configured on the Cluster's spec.backup) runs continuously; this
+# ScheduledBackup takes the periodic full base backup that WALs replay from and
+# that the retentionPolicy prunes against. method defaults to barmanObjectStore.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ include "monolith.fullname" . }}-pg-daily
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  # CNPG cron format has a leading seconds field (6 fields).
+  schedule: {{ .Values.postgres.backup.scheduledBackup.cron | quote }}
+  backupOwnerReference: self
+  cluster:
+    name: {{ include "monolith.fullname" . }}-pg
+{{- end }}
