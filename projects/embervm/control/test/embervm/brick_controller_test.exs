@@ -285,6 +285,100 @@ defmodule Embervm.BrickControllerTest do
            ]
   end
 
+  # -- full mode (phase 3: drain-aware scale-down acts) ------------------------
+
+  defp new_annotator do
+    {:ok, pid} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> if Process.alive?(pid), do: Agent.stop(pid) end)
+
+    annotate = fn ns, pod, annotations ->
+      Agent.update(pid, &[{ns, pod, annotations} | &1])
+      :ok
+    end
+
+    calls = fn -> pid |> Agent.get(& &1) |> Enum.reverse() end
+    {annotate, calls}
+  end
+
+  defp full_mode_opts(facts, scale_recorder, annotate) do
+    [
+      mode: :full,
+      classes: [%{name: "2gi", desired: 2, min: 0, max: 4}],
+      scale_fun: scale_recorder,
+      scale_get_fun: fn _ns, _name -> {:ok, 2} end,
+      facts_fun: fn -> facts end,
+      pods_fun: fn _ns, _selector ->
+        {:ok, [%{name: "brick-a", uid: "uid-a"}, %{name: "brick-b", uid: "uid-b"}]}
+      end,
+      annotate_fun: annotate,
+      registered_fun: fn -> %{"2gi" => 2} end,
+      down_idle_ms: 100
+    ]
+  end
+
+  test "full mode scale-down annotates the idle victim then shrinks" do
+    {record, calls} = new_recorder()
+    {annotate, annotated} = new_annotator()
+    {clock, advance} = new_clock()
+
+    facts = [
+      %{size_class: "2gi", pod_uid: "uid-a", live_vms: 1, draining: false},
+      %{
+        size_class: "2gi",
+        pod_uid: "uid-b",
+        live_vms: 0,
+        draining: false,
+        stateful_bundles: [%{exported: true}]
+      }
+    ]
+
+    pid = start(full_mode_opts(facts, record, annotate) ++ [clock: clock])
+
+    BrickController.reconcile_now(pid)
+    advance.(200)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "brick autoscale: scaling class 2gi from 2 to 1 (reason=idle_drain)"
+    # The idle brick (uid-b), not the busy one, got the negative deletion cost.
+    assert annotated.() == [
+             {"embervm", "brick-b", %{"controller.kubernetes.io/pod-deletion-cost" => "-1000"}}
+           ]
+
+    assert List.last(calls.()) == {"embervm", "embervm-embervm-noded-brick-2gi", 1}
+  end
+
+  test "full mode refuses to strand un-exported warmth and skips the shrink" do
+    {record, calls} = new_recorder()
+    {annotate, annotated} = new_annotator()
+    {clock, advance} = new_clock()
+
+    facts = [
+      %{size_class: "2gi", pod_uid: "uid-a", live_vms: 1, draining: false},
+      # Idle, but its banked bundle has no current store copy: not a safe victim.
+      %{
+        size_class: "2gi",
+        pod_uid: "uid-b",
+        live_vms: 0,
+        draining: false,
+        stateful_bundles: [%{exported: false}]
+      }
+    ]
+
+    pid = start(full_mode_opts(facts, record, annotate) ++ [clock: clock])
+
+    BrickController.reconcile_now(pid)
+    advance.(200)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "brick autoscale: skipping scale-down of class 2gi (reason=no_safe_victim)"
+    assert annotated.() == []
+    # Both ticks re-asserted the live current (2); the shrink never happened.
+    assert calls.() == [
+             {"embervm", "embervm-embervm-noded-brick-2gi", 2},
+             {"embervm", "embervm-embervm-noded-brick-2gi", 2}
+           ]
+  end
+
   test "a denial is attributed to the smallest class that fits the need" do
     {clock, advance} = new_clock()
 

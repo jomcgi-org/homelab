@@ -379,6 +379,64 @@ defmodule Embervm.K8s do
     end
   end
 
+  @doc """
+  Lists pods in `namespace` matching `label_selector`, projected to just the
+  identity fields the BrickController's victim-directing needs (`name` to PATCH
+  the annotation, `uid` to match the capacity fact's `pod_uid`). Namespaced
+  `pods list` RBAC, granted by the brick-pods Role only when bricks are enabled.
+  """
+  @spec list_pods(String.t(), String.t()) ::
+          {:ok, [%{name: String.t(), uid: String.t()}]} | {:error, term()}
+  def list_pods(namespace, label_selector) do
+    path =
+      "/api/v1/namespaces/#{URI.encode(namespace)}/pods?labelSelector=#{URI.encode_www_form(label_selector)}"
+
+    case do_request(:get, path, nil, nil) do
+      {:ok, 200, body} ->
+        pods =
+          body
+          |> :json.decode()
+          |> Map.get("items", [])
+          |> Enum.map(fn item ->
+            %{
+              name: get_in(item, ["metadata", "name"]),
+              uid: get_in(item, ["metadata", "uid"])
+            }
+          end)
+
+        {:ok, pods}
+
+      {:ok, status, _resp_body} ->
+        {:error, {:apiserver_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Merge-patches `annotations` onto one pod's metadata (only the given keys are
+  touched). The BrickController's single use is setting a negative
+  `controller.kubernetes.io/pod-deletion-cost` on its chosen scale-down victim
+  so the ReplicaSet deletes THAT replica when `/scale` shrinks, instead of its
+  own (age-based) pick landing on a busy sibling brick.
+  """
+  @spec annotate_pod(String.t(), String.t(), %{String.t() => String.t()}) ::
+          :ok | {:error, term()}
+  def annotate_pod(namespace, name, annotations) do
+    path = "/api/v1/namespaces/#{URI.encode(namespace)}/pods/#{URI.encode(name)}"
+
+    body =
+      :json.encode(%{"metadata" => %{"annotations" => annotations}})
+      |> :erlang.iolist_to_binary()
+
+    case do_request(:patch, path, body, "application/merge-patch+json") do
+      {:ok, 200, _resp_body} -> :ok
+      {:ok, status, _resp_body} -> {:error, {:apiserver_status, status}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   # TokenReview create returns 201 (some clusters 200); anything else is an
   # API-server error we surface without trusting the token.
   defp parse_review(status, body) when status in [200, 201] do

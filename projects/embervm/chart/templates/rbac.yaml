@@ -93,3 +93,46 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "embervm.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.bricks.enabled }}
+---
+# Drain-aware brick scale-down (Axis C, bricks.autoscale.mode=full): before
+# shrinking a brick Deployment the BrickController picks its own idle,
+# fully-exported victim and DIRECTS the ReplicaSet's choice by annotating that
+# pod with a negative controller.kubernetes.io/pod-deletion-cost; `pods list`
+# resolves the victim's name from the capacity fact's uid, `pods patch` writes
+# the annotation. A namespaced Role (not more rules on the ClusterRole above):
+# the controller only ever touches brick pods in its own release namespace, and
+# pods patch is too broad a grant to hold cluster-wide. Rendered only when
+# bricks are enabled, matching the brick Deployments themselves.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "embervm.fullname" . }}-brick-pods
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - list
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "embervm.fullname" . }}-brick-pods
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "embervm.fullname" . }}-brick-pods
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "embervm.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -143,6 +143,12 @@ defmodule Embervm.BrickController do
     * `:scale_get_fun`        - `(ns, name) -> {:ok, replicas} | {:error, term}`,
       the live replica read the autoscale loop bases decisions on; default
       `&Embervm.K8s.get_deployment_scale/2` (injected in tests).
+    * `:pods_fun`             - `(ns, label_selector) -> {:ok, [%{name, uid}]}`,
+      resolves the scale-down victim's pod name; default
+      `&Embervm.K8s.list_pods/2` (injected in tests).
+    * `:annotate_fun`         - `(ns, pod, annotations) -> :ok | {:error, term}`,
+      sets the victim's pod-deletion-cost; default
+      `&Embervm.K8s.annotate_pod/3` (injected in tests).
     * `:registered_fun`       - `() -> %{class => count}` of registered bricks,
       default derived from `Embervm.BrickLedger.by_class/0` (injected in tests).
     * `:facts_fun`            - `() -> [facts]` raw capacity facts (idle/victim
@@ -196,6 +202,8 @@ defmodule Embervm.BrickController do
       fleet_full_after_ms: Keyword.get(opts, :fleet_full_after_ms, @default_fleet_full_after_ms),
       scale_fun: Keyword.get(opts, :scale_fun, &K8s.scale_deployment/3),
       scale_get_fun: Keyword.get(opts, :scale_get_fun, &K8s.get_deployment_scale/2),
+      pods_fun: Keyword.get(opts, :pods_fun, &K8s.list_pods/2),
+      annotate_fun: Keyword.get(opts, :annotate_fun, &K8s.annotate_pod/3),
       registered_fun: Keyword.get(opts, :registered_fun, &registered_by_class/0),
       facts_fun: Keyword.get(opts, :facts_fun, fn -> NodeCapacity.all(NodeCapacity.table()) end),
       up_threshold: Keyword.get(opts, :up_threshold, @default_up_threshold),
@@ -357,24 +365,49 @@ defmodule Embervm.BrickController do
 
     with true <- state.mode != :off,
          {:ok, current} <- read_current(state, name) do
-      {target, reason} = desired(current, signals(state, class, now))
-      acting = acting_replicas(state, static, current, target)
-      state = note_decision(state, name, current, target, reason, now, acting == target)
-      {acting, state}
+      execute(state, class, current, now)
     else
       _ -> {static, state}
     end
   end
 
-  # What the tick WRITES. :observe always asserts the static desired (legacy
-  # behavior, decisions log-only). The acting modes assert the LIVE current as
-  # their baseline (the controller keeps re-asserting every tick, staying the
-  # single writer) and move it only in the direction(s) the mode enables:
-  # :up acts on increases (min-floor jumps included) and leaves decreases as
-  # would-scale logs; :full (phase 3) acts on decreases too.
-  defp acting_replicas(%{mode: :observe}, static, _current, _target), do: static
-  defp acting_replicas(_state, _static, current, target) when target > current, do: target
-  defp acting_replicas(_state, _static, current, _target), do: current
+  # Decide and (mode permitting) act for one class. What the tick WRITES:
+  # :observe always asserts the static desired (legacy behavior, decisions
+  # log-only). The acting modes assert the LIVE current as their baseline (the
+  # controller keeps re-asserting every tick, staying the single writer) and
+  # move it only in the direction(s) the mode enables: :up acts on increases
+  # (min-floor jumps included) and leaves decreases as would-scale logs; :full
+  # acts on decreases too, but only through the drain-aware victim gate (a
+  # skipped victim leaves the count as-is this tick, no cooldown stamped, so
+  # the decision retries as soon as a replica is safely removable).
+  defp execute(state, class, current, now) do
+    name = class_name(class)
+    {target, reason} = desired(current, signals(state, class, now))
+
+    cond do
+      state.mode == :observe ->
+        {class_desired(class), note_decision(state, name, current, target, reason, now, false)}
+
+      target > current ->
+        {target, note_decision(state, name, current, target, reason, now, true)}
+
+      target < current and state.mode == :full ->
+        case prepare_scale_down(state, name) do
+          :ok ->
+            {target, note_decision(state, name, current, target, reason, now, true)}
+
+          {:skip, why} ->
+            Logger.info("brick autoscale: skipping scale-down of class #{name} (reason=#{why})")
+            {current, state}
+        end
+
+      target < current ->
+        {current, note_decision(state, name, current, target, reason, now, false)}
+
+      true ->
+        {current, state}
+    end
+  end
 
   defp read_current(state, name) do
     deployment = state.deployment_prefix <> name
@@ -497,6 +530,81 @@ defmodule Embervm.BrickController do
     case Map.get(stamps, name) do
       nil -> true
       at -> now - at >= cooldown_ms
+    end
+  end
+
+  # -- drain-aware scale-down (mode :full) -------------------------------------
+
+  @deletion_cost_annotation "controller.kubernetes.io/pod-deletion-cost"
+  # Any negative cost beats the default (an unannotated sibling reads 0), so the
+  # ReplicaSet deletes the chosen victim first when /scale shrinks.
+  @victim_deletion_cost "-1000"
+
+  # The warmth inventories a brick advertises in its capacity fact; a victim may
+  # only be removed when EVERY entry across them has a current store copy
+  # (exported: true), else banked state would be stranded on the dying pod's
+  # per-instance warmth root (PR-2.5: a successor pod cannot see it on disk,
+  # only the store restore-on-miss path can, and that needs the export).
+  @warmth_keys [:stateful_bundles, :session_snapshots, :serving_snapshots, :group_bundle_sets]
+
+  # Select a safe victim and direct the Deployment's scale-down choice at it.
+  # :ok means the victim is annotated and the /scale shrink may proceed;
+  # {:skip, why} means no replica can be removed safely this tick (the
+  # refuse-to-strand rail) or the directing write failed, and the scale-down is
+  # deferred, never forced. Between the annotate and the ReplicaSet's kill a
+  # placement can still race a VM onto the victim; the existing bounded
+  # preemption drain (noded SIGTERM -> registry drain edge -> DrainCoordinator
+  # force-bank) is the backstop for exactly that window.
+  defp prepare_scale_down(state, class) do
+    case pick_victim(state.facts_fun.(), class) do
+      nil -> {:skip, :no_safe_victim}
+      victim -> direct_victim(state, class, victim)
+    end
+  end
+
+  # The refuse-to-strand rail: a victim must be a registered, non-draining brick
+  # of the class with ZERO live VMs and a fully-exported warmth inventory.
+  # Among the safe candidates, remove the one with the least warmth to lose
+  # (fewest banked bundles/snapshots; ties fall to the first sorted).
+  defp pick_victim(facts, class) do
+    facts
+    |> Enum.filter(fn f ->
+      Map.get(f, :size_class, "") == class and not Map.get(f, :draining, false) and
+        Map.get(f, :live_vms, 0) == 0 and warmth_all_exported?(f)
+    end)
+    |> case do
+      [] -> nil
+      safe -> Enum.min_by(safe, &length(warmth_inventory(&1)))
+    end
+  end
+
+  defp warmth_inventory(fact), do: Enum.flat_map(@warmth_keys, &(Map.get(fact, &1) || []))
+
+  # An entry without the flag reads NOT exported (fail-closed: unknown warmth is
+  # never assumed store-recoverable).
+  defp warmth_all_exported?(fact) do
+    Enum.all?(warmth_inventory(fact), fn entry -> Map.get(entry, :exported, false) == true end)
+  end
+
+  # Resolve the victim's pod NAME (facts carry only the uid) via the brick
+  # selector labels, then set the negative deletion cost on it. Any miss along
+  # the way (pods list failure, the victim's pod already gone, the PATCH
+  # refused) skips the scale-down rather than shrinking with an undirected
+  # victim choice.
+  defp direct_victim(state, class, victim) do
+    selector = "app.kubernetes.io/component=noded-brick,embervm.jomcgi.dev/size-class=#{class}"
+
+    with {:ok, pods} <- state.pods_fun.(state.namespace, selector),
+         %{name: pod_name} <-
+           Enum.find(pods, :no_pod, fn pod -> pod.uid == Map.get(victim, :pod_uid) end),
+         :ok <-
+           state.annotate_fun.(state.namespace, pod_name, %{
+             @deletion_cost_annotation => @victim_deletion_cost
+           }) do
+      :ok
+    else
+      :no_pod -> {:skip, :victim_pod_not_found}
+      {:error, reason} -> {:skip, inspect(reason)}
     end
   end
 
