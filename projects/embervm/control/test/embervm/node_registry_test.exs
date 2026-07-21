@@ -454,10 +454,10 @@ defmodule Embervm.NodeRegistryTest do
     # Same instance (node+pod_uid), NEW address.
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "new-ip:9090"})
     eventually(fn -> "new-ip:9090" in Agent.get(dialed, & &1) end, 200)
-    # NodeChannel is re-pointed under the NODE NAME key (what every dispatch consumer
-    # looks up), not the instance_id, so a node-name lookup after a re-registration
-    # resolves the new address rather than dialing the dead old endpoint.
-    eventually(fn -> {"node-4", "new-ip:9090"} in Agent.get(chan, & &1) end, 200)
+    # NodeChannel is re-pointed under the instance_id key (post-B0c the only key it is
+    # registered under, and what every consumer resolves before dialing), so a lookup
+    # after a re-registration resolves the new address rather than the dead old endpoint.
+    eventually(fn -> {"node-4/uid-1", "new-ip:9090"} in Agent.get(chan, & &1) end, 200)
     assert NodeRegistry.status(reg)["node-4/uid-1"].address == "new-ip:9090"
   end
 
