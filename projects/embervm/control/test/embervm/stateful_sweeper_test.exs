@@ -168,6 +168,8 @@ defmodule Embervm.StatefulSweeperTest do
         propagation_settle_ms: Keyword.get(opts, :propagation_settle_ms, 0),
         bank_concurrency: Keyword.get(opts, :bank_concurrency, 1),
         lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, 3_600_000),
+        bank_backoff_base_ms: Keyword.get(opts, :bank_backoff_base_ms, 1_000),
+        bank_backoff_cap_ms: Keyword.get(opts, :bank_backoff_cap_ms, 30_000),
         sweep_interval_ms: 0
       ]
 
