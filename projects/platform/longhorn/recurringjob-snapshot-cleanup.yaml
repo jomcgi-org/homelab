@@ -36,12 +36,21 @@ metadata:
   name: stale-snapshot-cleanup
   namespace: longhorn
 spec:
+  # spec.name is REQUIRED by the Longhorn RecurringJob validator (it is the job
+  # identifier, distinct from metadata.name). Omitting it made the webhook reject
+  # the object ("invalid job {Name: ...}"), which failed the ENTIRE home-cluster
+  # root-app (canada) sync and silently blocked every new Application from being
+  # created cluster-wide until it was noticed. Must match metadata.name.
+  name: stale-snapshot-cleanup
   # Weekly, Sunday 03:15 UTC (off-peak). Cleanup is idempotent and cheap; weekly
   # is frequent enough to keep removable-snapshot bloat bounded without churn.
   cron: "15 3 * * 0"
   task: snapshot-cleanup
   groups:
     - default
-  retain: 1
+  # retain is coerced to 0 by Longhorn for cleanup/delete tasks (it only applies to
+  # snapshot/backup-CREATING tasks), so set it to 0 explicitly to match what the
+  # validator stores and avoid the misleading git-vs-live mismatch.
+  retain: 0
   concurrency: 1
   labels: {}
