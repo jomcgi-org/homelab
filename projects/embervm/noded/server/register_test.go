@@ -205,6 +205,63 @@ func (d *countingDoer) Do(req *http.Request) (*http.Response, error) {
 
 func (d *countingDoer) count() int { return int(atomic.LoadInt64(&d.n)) }
 
+// failThenOKDoer returns a transport error for the first `failFor` calls, then
+// 2xx. It models a fresh pod whose first dial-home POST races control-plane
+// reachability (DNS/route not ready) before the control plane becomes dialable.
+type failThenOKDoer struct {
+	mu      sync.Mutex
+	n       int
+	failFor int
+}
+
+func (d *failThenOKDoer) Do(_ *http.Request) (*http.Response, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.n++
+	if d.n <= d.failFor {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
+}
+
+func (d *failThenOKDoer) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.n
+}
+
+// register-fast-retries-until-first-success: when the first POST(s) fail, the
+// loop must re-attempt on the SHORT fast-retry backoff, never idle the full
+// steady interval. With a steady interval far larger than the fast-retry base, a
+// fresh instance that fails its first two POSTs still registers within a couple
+// of fast-retry ticks (the co-location base-advertisement window fix). This test
+// pins the behaviour with registerFastRetryBase kept small by the production
+// constant and a deliberately large steady interval: if the loop waited the
+// steady interval on failure, no re-attempt would land inside the window.
+func TestRegisterFastRetriesUntilFirstSuccess(t *testing.T) {
+	s := registerTestServer(config.Config{
+		Node:            "node-4",
+		PodUID:          "uid-abc",
+		ControlPlaneURL: "http://cp:8080",
+	})
+	// Fail the first two POSTs (immediate + one fast-retry), succeed on the third.
+	doer := &failThenOKDoer{failFor: 2}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// A steady interval far larger than registerFastRetryBase (1s): were the loop
+	// to wait the steady interval on a failed first POST, the third attempt would
+	// not land for minutes. The fast-retry (1s, then 2s) must land it in seconds.
+	s.runRegisterLoop(ctx, doer, "boot", time.Hour)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for doer.count() < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := doer.count(); got < 3 {
+		t.Fatalf("expected the loop to fast-retry to a successful registration (>=3 POSTs) within the window, got %d", got)
+	}
+}
+
 // grpc-port-parse: the advertised port is extracted from various ListenAddr
 // shapes, defaulting to 9090.
 func TestGrpcPortOf(t *testing.T) {
