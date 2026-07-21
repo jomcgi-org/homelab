@@ -1,0 +1,35 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-node4-ssd
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  # Single Longhorn replica: data on this class gets its durability from the
+  # SeaweedFS replication layer (defaultReplication 001 pairs every new S3
+  # volume across the node-2 and node-4 volume servers), so a second
+  # block-layer copy would just be a third physical copy of the same bytes.
+  numberOfReplicas: "1"
+
+  # Pin to node-4 (mirrors longhorn-gpu's pattern).
+  nodeSelector: "kubernetes.io/hostname:node-4"
+
+  # node-4's 3.7T SATA SSD (disk tags: ssd, large, gpu; the only "ssd"-tagged
+  # disk in the cluster). Deliberately NOT nvme-02: that is the same physical
+  # disk as the Firecracker scratch tier (embervm bases/warmth), so putting the
+  # durable S3 store there would contend for IO and capacity with the very
+  # workload the store is meant to back up.
+  diskSelector: "ssd"
+
+  # Standard settings (as longhorn-gpu)
+  staleReplicaTimeout: "30"
+  fromBackup: ""
+  fsType: "ext4"
+  dataLocality: "strict-local" # Keep data on same node as workload
+  unmapMarkSnapChainRemoved: "ignored"
+  disableRevisionCounter: "true"
+  dataEngine: "v1"

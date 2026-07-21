@@ -6,6 +6,22 @@ seaweedfs:
     enableSecurity: false
     monitoring:
       enabled: false
+    # SeaweedFS-layer replication (Phase 0 of the embervm base-durability
+    # plan): every NEW S3 volume is paired across two DIFFERENT volume servers
+    # ("001" = same rack, different server), i.e. this release's server plus
+    # the node-4 server (../seaweedfs-node4). Notes:
+    #   - Only volumes created AFTER this flip get 2 copies. Existing volumes
+    #     keep their creation-time 000 and need a manual, operator-run
+    #     `volume.configure.replication` + `volume.fix.replication` pass in
+    #     weed shell to gain a second copy (see the plan doc; do not run
+    #     without a go-ahead, it copies tens of GB).
+    #   - With 001, allocating a new volume and writing to a 001 volume
+    #     require BOTH servers up; reads survive either one. Two volume
+    #     servers is the minimum for this placement, so this must not be
+    #     enabled unless the seaweedfs-node4 release is deployed.
+    # (replicationPlacment is the upstream chart's key spelling.)
+    enableReplication: true
+    replicationPlacment: "001"
 
   master:
     enabled: true

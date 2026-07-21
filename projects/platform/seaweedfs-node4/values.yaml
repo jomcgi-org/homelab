@@ -1,0 +1,113 @@
+# Second SeaweedFS VOLUME SERVER, pinned to node-4's large SSD.
+# Phase 0 of the embervm base-durability plan
+# (docs/plans/2026-07-21-embervm-base-durability-and-cross-vendor.md).
+#
+# This release joins the EXISTING cluster's master (global.masterServer) as an
+# additional volume server only: it adds raw capacity and a second SeaweedFS
+# failure domain so defaultReplication "001" (set in ../seaweedfs/values.yaml)
+# can pair every NEW S3 volume across the node-2 and node-4 servers.
+#
+# It is a SEPARATE Helm release because the upstream chart models exactly one
+# volume StatefulSet per release, and this server needs different pinning and
+# storage (node-4, single-replica Longhorn on the ssd-01 disk) than the
+# original (unpinned, default longhorn class).
+
+seaweedfs:
+  # The chart names the volume Service/StatefulSet from the CHART name, not
+  # the release name, so without this override a second release would render
+  # the same "seaweedfs-volume" names as the base release and fight it.
+  nameOverride: "seaweedfs-node4"
+
+  global:
+    enableSecurity: false
+    monitoring:
+      enabled: false
+    # Join the existing cluster's master instead of expecting one in this
+    # release (master/filer/s3 are all disabled below).
+    masterServer: "seaweedfs-master.seaweedfs:9333"
+    # Distinct ServiceAccount/ClusterRole names: the base release already owns
+    # the "seaweedfs" ServiceAccount in this namespace and the chart creates
+    # it unconditionally, so a second release with the default name would
+    # fight ArgoCD ownership over the same objects.
+    serviceAccountName: "seaweedfs-node4"
+
+  master:
+    enabled: false
+
+  filer:
+    enabled: false
+
+  s3:
+    enabled: false
+
+  volume:
+    enabled: true
+    replicas: 1
+    affinity: ""
+    # Pin to node-4: the backing StorageClass (longhorn-node4-ssd) is a
+    # strict-local single-replica class on node-4's ssd-01 disk, so the pod
+    # must run where its data lives.
+    nodeSelector: "kubernetes.io/hostname: node-4"
+    # Pre-populate OTEL annotation to match Kyverno injection (prevents ArgoCD drift)
+    # Prometheus annotations enable SigNoz autodiscovery
+    podAnnotations:
+      otel.injected-by: kyverno/inject-otel-env-vars
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9327"
+    dataDirs:
+      - name: data
+        type: "persistentVolumeClaim"
+        size: "400Gi"
+        storageClass: "longhorn-node4-ssd"
+        # Explicit slot count (1GB volumes): 350 slots inside a 400Gi PVC
+        # leaves ~50G slack for compaction churn and the volume server's 7%
+        # min-free floor, and keeps the slot ceiling BELOW disk capacity
+        # (the base release's ceiling once exceeded its disk; see the
+        # maxVolumes note in ../seaweedfs/values.yaml).
+        maxVolumes: 350
+    idx:
+      type: "emptyDir"
+    # Regenerate missing .idx files from .dat files on startup (same rationale
+    # as the base release: idx lives on an emptyDir and is lost on reschedule).
+    initContainers: |
+      - name: seaweedfs-vol-fix-idx
+        image: '{{ include "volume.image" . }}'
+        imagePullPolicy: IfNotPresent
+        command: ['/bin/sh', '-c']
+        args:
+          - |
+            echo "Checking for missing idx files..."
+            for dat in /data/*.dat; do
+              [ -f "$dat" ] || continue
+              base=$(basename "$dat" .dat)
+              if [ ! -f "/idx/${base}.idx" ]; then
+                if echo "$base" | grep -q '_'; then
+                  collection=$(echo "$base" | sed 's/_[0-9]*$//')
+                  volid=$(echo "$base" | grep -o '[0-9]*$')
+                  echo "Regenerating idx: collection=$collection volumeId=$volid"
+                  /usr/bin/weed fix -collection="$collection" -volumeId="$volid" /data
+                else
+                  echo "Regenerating idx: volumeId=$base"
+                  /usr/bin/weed fix -volumeId="$base" /data
+                fi
+                if [ -f "/data/${base}.idx" ]; then
+                  mv "/data/${base}.idx" /idx/
+                  echo "Moved ${base}.idx to /idx/"
+                fi
+              fi
+            done
+            echo "idx check complete"
+        volumeMounts:
+          - name: data
+            mountPath: /data
+          - name: idx
+            mountPath: /idx
+    logs:
+      type: "emptyDir"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
