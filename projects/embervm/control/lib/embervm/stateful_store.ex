@@ -143,6 +143,19 @@ defmodule Embervm.StatefulStore do
   # both defeats that nil check AND crashes anchor_node/2 (no node_id to match).
   @blessing_table :embervm_stateful_blessing
 
+  # Eager broken-pair eviction hysteresis: a banked instance's pair must be
+  # observed broken on this many CONSECUTIVE eager_evict_broken_pairs sweeps
+  # before it is evicted (reason pair_broken). The sweep runs at ~1 Hz, so this
+  # is a ~2 s grace: enough that a single transient blip (a racy reconcile that
+  # briefly advanced the volume before the bundle's bank op landed, or a one-tick
+  # stale node report) does not drop a warm bundle that is about to become valid
+  # again, while a GENUINELY broken pair (the volume permanently moved on) still
+  # evicts within a few sweeps. The monotonic upsert_volume guard (see
+  # handle_call({:upsert_volume, ...})) removes the most common trigger (a
+  # backward generation regression); this hysteresis covers the remaining
+  # forward-race window.
+  @broken_evict_threshold 3
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -522,7 +535,16 @@ defmodule Embervm.StatefulStore do
       volumes: volumes,
       blessing: blessing,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
-      counts: %{}
+      counts: %{},
+      # instance_id -> count of CONSECUTIVE eager_evict_broken_pairs observations
+      # that found this banked instance's pair broken. Eviction only fires once the
+      # streak reaches @broken_evict_threshold, so a single transient blip (a racy
+      # reconcile that briefly advanced the volume before the bundle's bank op
+      # landed) does not drop a warm bundle that is about to become valid again.
+      # An observation that finds the pair VALID clears the instance's streak. Not
+      # durable (a live hygiene fact, exactly like healthy): a rebuild starts every
+      # streak at zero and re-derives it over the next few sweeps.
+      broken_streak: %{}
     }
 
     case rebuild(state) do
@@ -766,6 +788,28 @@ defmodule Embervm.StatefulStore do
           allocated_bytes: nil,
           updated_at: ts
         }
+
+    # The pair-key generation is MONOTONIC: a node volume report must never move
+    # it backward. bump_volume_ets (the boot/relight writer) already guards this;
+    # upsert_volume (the periodic refresh_volume_facts writer) must too, or a
+    # LAGGING report (a node still reporting the pre-bank generation, or under
+    # co-location a sibling brick's stale report) regresses the volume generation
+    # below a just-banked bundle's snapshot_generation, so the next sweep tick
+    # sees snapshot_generation != volume.generation, declares the pair broken, and
+    # evicts the warm bundle: the recurring demo-postgres pair_broken flap. A
+    # genuine FORWARD divergence (the volume legitimately advances past a stranded
+    # old bundle) still lands, so real broken pairs are still detected. Other
+    # fields (size/allocated/node_id/exported_generation) always take the latest
+    # report; only the generation is floored to the current value.
+    reported_gen = Map.get(fields, :generation)
+    current_gen = Map.get(base, :generation, 0)
+
+    fields =
+      if is_integer(reported_gen) and is_integer(current_gen) and reported_gen < current_gen do
+        Map.put(fields, :generation, current_gen)
+      else
+        fields
+      end
 
     merged =
       base
@@ -1183,6 +1227,15 @@ defmodule Embervm.StatefulStore do
   # is ALSO pair-broken (no current generation to match): the general
   # do_pair_valid?/2 already returns false for that, so scanning banked instances
   # and evicting the invalid ones covers both divergence and a missing volume.
+  #
+  # HYSTERESIS: an invalid pair is not evicted on the first observation. Its
+  # broken_streak is incremented, and it is evicted only once the streak reaches
+  # @broken_evict_threshold consecutive sweeps. A VALID observation clears the
+  # instance's streak. This makes the eviction tolerant of a single transient
+  # blip (a racy reconcile that briefly advanced the volume before the bundle's
+  # bank op landed) while still evicting a genuinely broken pair within a few
+  # sweeps. The streak map is pruned to the currently-banked instances so a
+  # short-lived one leaves no residue.
   defp do_eager_evict_broken_pairs(state) do
     banked =
       :ets.foldl(
@@ -1195,21 +1248,51 @@ defmodule Embervm.StatefulStore do
 
     {evicted_ids, state} =
       Enum.reduce(banked, {[], state}, fn instance, {ids, acc} ->
-        if do_pair_valid?(acc, instance.workload) do
-          {ids, acc}
-        else
-          payload = %{reason: "pair_broken"}
+        id = instance.instance_id
 
-          case append_and_update(acc, instance, :stateful_evicted, :evicted, payload, %{}) do
-            {:ok, _updated, acc} -> {[instance.instance_id | ids], acc}
-            # A durable append failure leaves the instance banked (as durable as the
-            # op-log agrees); a later sweep retries it. Never partially evict in ETS.
-            {:error, _reason} -> {ids, acc}
+        if do_pair_valid?(acc, instance.workload) do
+          # Valid pair: clear any streak this instance had accrued.
+          {ids, put_broken_streak(acc, id, 0)}
+        else
+          streak = Map.get(acc.broken_streak, id, 0) + 1
+
+          if streak >= @broken_evict_threshold do
+            payload = %{reason: "pair_broken"}
+
+            case append_and_update(acc, instance, :stateful_evicted, :evicted, payload, %{}) do
+              # Evicted: drop the streak entry (the instance is now terminal, no
+              # longer banked, so it will never be re-scanned here).
+              {:ok, _updated, acc} -> {[id | ids], put_broken_streak(acc, id, 0)}
+              # A durable append failure leaves the instance banked (as durable as
+              # the op-log agrees); keep the streak so a later sweep retries it
+              # WITHOUT resetting the grace already served. Never partially evict.
+              {:error, _reason} -> {ids, put_broken_streak(acc, id, streak)}
+            end
+          else
+            # Still within the grace window: record the observation, do not evict.
+            {ids, put_broken_streak(acc, id, streak)}
           end
         end
       end)
 
+    # Prune streaks for instances no longer banked (evicted above, or transitioned
+    # out from under us), so the map never grows unbounded.
+    banked_ids = MapSet.new(banked, & &1.instance_id)
+    pruned = Map.filter(state.broken_streak, fn {id, _} -> MapSet.member?(banked_ids, id) end)
+    state = %{state | broken_streak: pruned}
+
     {:reply, Enum.reverse(evicted_ids), state}
+  end
+
+  # Set or clear an instance's consecutive-broken-observation streak. A 0 clears
+  # the entry entirely (the common case: most banked pairs are valid every sweep,
+  # so the map stays empty).
+  defp put_broken_streak(state, instance_id, 0) do
+    %{state | broken_streak: Map.delete(state.broken_streak, instance_id)}
+  end
+
+  defp put_broken_streak(state, instance_id, streak) do
+    %{state | broken_streak: Map.put(state.broken_streak, instance_id, streak)}
   end
 
   # -- counts ----------------------------------------------------------------

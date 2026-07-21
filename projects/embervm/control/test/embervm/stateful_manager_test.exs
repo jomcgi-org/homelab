@@ -888,7 +888,14 @@ defmodule Embervm.StatefulManagerTest do
     # while we were not looking.
     stateful_node(ctx, "node-4", volumes: [%{workload: "wl-a", generation: 5, size_bytes: 1, allocated_bytes: 1}])
 
-    :ok = StatefulManager.reconcile(ctx.mgr)
+    # Each reconcile runs one eager_evict_broken_pairs observation. The eager
+    # eviction has hysteresis (StatefulStore @broken_evict_threshold), so a
+    # GENUINELY broken pair (the volume durably moved on) evicts after a few
+    # consecutive reconciles rather than on the first. Drive enough reconciles to
+    # cross the grace window.
+    for _ <- 1..3 do
+      :ok = StatefulManager.reconcile(ctx.mgr)
+    end
 
     refute StatefulStore.pair_valid?(ctx.store, "wl-a")
     {:ok, evicted} = StatefulStore.get(ctx.store, "stf-pair")
