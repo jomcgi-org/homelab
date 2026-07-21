@@ -172,7 +172,14 @@ seaweedfs:
     resources:
       requests:
         cpu: 50m
-        memory: 64Mi
+        memory: 128Mi
       limits:
-        cpu: 200m
-        memory: 256Mi
+        cpu: 500m
+        # The S3 gateway streams object PUTs through to the filer. At 256Mi it
+        # OOM-crash-looped (exit 137) once large embervm base memfiles (up to a
+        # few GB) started flowing after the replication-000 fix let their volume
+        # assigns succeed: every large upload killed the gateway, so exports (and
+        # any other large S3 write) failed with connection-refused. 2Gi gives the
+        # streaming/multipart buffers headroom, mirroring the filer's 2Gi bump
+        # after its own cold-load OOM. (2026-07-21.)
+        memory: 2Gi
