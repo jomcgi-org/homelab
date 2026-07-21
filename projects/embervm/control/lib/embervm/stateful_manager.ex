@@ -305,6 +305,10 @@ defmodule Embervm.StatefulManager do
       # The op-log the restore audit record (:artifact_restored) is appended to.
       # Injected for tests; production uses the SQLite backend.
       op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # The backend module dispatched below, threaded alongside :op_log (the
+      # server address) so a non-default backend never requires editing this
+      # module. Defaults to the same SQLite module :op_log defaults to.
+      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
       # R4, D-R4.PR-7.1 (MMDS-lite over boot-args): reads a K8s Secret into a
       # decoded key/value map for cold_request/2 to populate mmds_env from.
       # Injected so tests can fake the K8s round-trip; production defaults to
@@ -2250,7 +2254,7 @@ defmodule Embervm.StatefulManager do
       }
     }
 
-    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    _ = state.op_log_mod.append(state.op_log, op)
     :ok
   rescue
     e ->

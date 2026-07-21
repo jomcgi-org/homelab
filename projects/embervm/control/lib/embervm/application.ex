@@ -78,7 +78,7 @@ defmodule Embervm.Application do
       {Embervm.OpLog.SQLite, path: oplog_path(), journal_horizon_ms: journal_horizon_ms()},
       # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
       # so Embervm.Metering charges the quota cache off the same durable write.
-      {Embervm.TaskStore, [on_metered: &Embervm.Metering.on_metered/1]},
+      {Embervm.TaskStore, [op_log_mod: op_log_mod(), on_metered: &Embervm.Metering.on_metered/1]},
       # Finch (the shared HTTP pool, TLS-pinned to the K8s CA in-cluster) before
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
       Embervm.K8s.finch_child_spec(),
@@ -126,7 +126,7 @@ defmodule Embervm.Application do
       # Bandit, the same price BaseBuilder/NodeRegistry already pay for their
       # ordering. The TaskStore charge hook targets the module (the public table),
       # not the process, so TaskStore may start earlier.
-      {Embervm.Metering, []},
+      {Embervm.Metering, [op_log_mod: op_log_mod()]},
       # The dispatcher (Task 11): the heart of R0. Owns the per-workload fair
       # queues, the primed-VM inventory, the enforcement caps, and drives queued
       # tasks to terminal via Assign. Placed AFTER TaskStore (drives its FSM +
@@ -167,7 +167,7 @@ defmodule Embervm.Application do
       # :rest_for_one a SessionStore restart bounces the manager and Router, which
       # rebuild from the durable projection. With no node wired, create denies
       # :no_capacity and nothing runs, exactly like the dispatcher in R0.
-      {Embervm.SessionStore, [on_metered: &Embervm.Metering.on_metered/1]},
+      {Embervm.SessionStore, [op_log_mod: op_log_mod(), on_metered: &Embervm.Metering.on_metered/1]},
       {Registry, keys: :unique, name: Embervm.SessionRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Embervm.SessionSupervisor},
       {Embervm.SessionManager, session_manager_opts()},
@@ -185,7 +185,7 @@ defmodule Embervm.Application do
       # rebuilt endpoints before any request can arrive; with no serving node wired
       # it pushes nothing (a clean no-op). The activator endpoint (Task 8) and the
       # xds http port are wired from the chart.
-      {Embervm.ServingStore, []},
+      {Embervm.ServingStore, [op_log_mod: op_log_mod()]},
       # Stateful lifecycle (R4). The StatefulStore (ETS hot set over the durable
       # `stateful_instances` + `volumes` projections, rebuilt on boot) is the L4
       # singleton-sandbox counterpart of the ServingStore. Placed BEFORE the
@@ -193,14 +193,14 @@ defmodule Embervm.Application do
       # workload's L4 cluster, so under :rest_for_one a StatefulStore restart bounces
       # the publisher (which re-derives the fan-out from the rebuilt projection). Like
       # ServingStore it depends only on the op-log (started far earlier).
-      {Embervm.StatefulStore, []},
+      {Embervm.StatefulStore, [op_log_mod: op_log_mod()]},
       # Composite-group hot set (R5): the L4 composite counterpart of StatefulStore,
       # placed BEFORE the EndpointPublisher, which reads its `entry_endpoint/2` for
       # every composite workload's L4 cluster on its boot publish. Under :rest_for_one
       # a GroupStore restart bounces the publisher (which re-derives the fan-out from
       # the rebuilt `group_instances` + `group_members` projection). Depends only on
       # the op-log (started far earlier).
-      {Embervm.GroupStore, []},
+      {Embervm.GroupStore, [op_log_mod: op_log_mod()]},
       {Embervm.EndpointPublisher, endpoint_publisher_opts()},
       # The activator (R3, Task 8): the serving miss brain. It is the fallback
       # endpoint of an empty serve|<workload> cluster (a request the node Envoy
@@ -318,7 +318,8 @@ defmodule Embervm.Application do
       # :rest_for_one a Compactor crash restarts only Bandit, the minimum blast
       # radius. It adds no writer (each batch is a call to the op-log's single
       # writer). Correctness (read-time TTLs) does not depend on it; it reclaims disk.
-      {Embervm.OpLog.Compactor, op_log: Embervm.OpLog.SQLite, interval_ms: sweep_interval_ms()},
+      {Embervm.OpLog.Compactor,
+       op_log: Embervm.OpLog.SQLite, op_log_mod: op_log_mod(), interval_ms: sweep_interval_ms()},
       # Bandit + the router last: its handlers call Auth, TaskStore, SyncWait, and
       # the dispatcher's admit? gate, so the HTTP surface must not accept requests
       # until all are up.
@@ -351,6 +352,15 @@ defmodule Embervm.Application do
       path -> path
     end
   end
+
+  # The single source of truth for the op-log backend MODULE, threaded into every
+  # store/manager/sweeper's `:op_log_mod` opt so none of them hardcodes the
+  # concrete backend. Fixed at `Embervm.OpLog.SQLite` for now: this PR only makes
+  # the dispatch configurable (mechanical, behavior-preserving), it does not add a
+  # second backend or a selection rule. A future PR adds the Postgres adapter and
+  # branches here on EMBERVM_OPLOG_DSN; every caller already reads this function
+  # rather than the literal module name, so that cutover touches only this body.
+  defp op_log_mod, do: Embervm.OpLog.SQLite
 
   # The op-log sweeper cadence (EMBERVM_OPLOG_SWEEP_INTERVAL_MS, the chart wires
   # this from values.opLog.sweepIntervalSeconds x 1000); default hourly. Distinct
@@ -458,6 +468,7 @@ defmodule Embervm.Application do
   # the timers ON in production; a 0 disables the corresponding sweep.
   defp session_manager_opts do
     [
+      op_log_mod: op_log_mod(),
       session_opts: session_opts(),
       reconcile_interval_ms: session_reconcile_interval_ms(),
       sweep_interval_ms: session_sweep_interval_ms(),
@@ -576,7 +587,7 @@ defmodule Embervm.Application do
   # values) and the adoption reconcile cadence. Defaults keep the reconcile timer ON
   # in production; the module defaults the caps (30/min wake, 64 parked).
   defp serving_manager_opts do
-    [reconcile_interval_ms: serving_reconcile_interval_ms()] ++ serving_wake_opts()
+    [op_log_mod: op_log_mod(), reconcile_interval_ms: serving_reconcile_interval_ms()] ++ serving_wake_opts()
   end
 
   # Serving adoption reconcile cadence (EMBERVM_SERVING_RECONCILE_INTERVAL_MS);
@@ -615,6 +626,7 @@ defmodule Embervm.Application do
   # cadence defaults to 30s (standing decision 9's low-cadence idle scrape).
   defp serving_sweeper_opts do
     [
+      op_log_mod: op_log_mod(),
       sweep_interval_ms: serving_sweep_interval_ms(),
       stats_base: sweeper_stats_base(),
       bank_concurrency: int_env_or_nil("EMBERVM_SERVING_BANK_CONCURRENCY")
@@ -647,12 +659,13 @@ defmodule Embervm.Application do
   # an unset var lets the module apply its own 15s default (the reject drops the
   # nil so it never overrides the default with nil).
   defp drain_coordinator_opts do
-    [safety_margin_ms: int_env_or_nil("EMBERVM_DRAIN_SAFETY_MARGIN_MS")]
+    [op_log_mod: op_log_mod(), safety_margin_ms: int_env_or_nil("EMBERVM_DRAIN_SAFETY_MARGIN_MS")]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
 
   defp stateful_sweeper_opts do
     [
+      op_log_mod: op_log_mod(),
       sweep_interval_ms: stateful_sweep_interval_ms(),
       stats_base: sweeper_stats_base(),
       bank_concurrency: int_env_or_nil("EMBERVM_STATEFUL_BANK_CONCURRENCY"),
@@ -676,6 +689,7 @@ defmodule Embervm.Application do
   # tick fails open and banks nothing, exactly the StatefulSweeper default.
   defp group_sweeper_opts do
     [
+      op_log_mod: op_log_mod(),
       sweep_interval_ms: group_sweep_interval_ms(),
       stats_base: sweeper_stats_base(),
       splices_table: Embervm.ActivatorSplices,
@@ -697,7 +711,7 @@ defmodule Embervm.Application do
   # of magnitude below serving's because a stateful workload is a
   # singleton-owned sandbox, not multi-tenant fan-in.
   defp stateful_manager_opts do
-    [reconcile_interval_ms: stateful_reconcile_interval_ms()] ++ stateful_wake_opts()
+    [op_log_mod: op_log_mod(), reconcile_interval_ms: stateful_reconcile_interval_ms()] ++ stateful_wake_opts()
   end
 
   # Stateful adoption reconcile cadence (EMBERVM_STATEFUL_RECONCILE_INTERVAL_MS);
@@ -957,6 +971,7 @@ defmodule Embervm.Application do
   # restart's group endpoint re-derivation lands on the same tempo.
   defp group_wake_manager_opts do
     [
+      op_log_mod: op_log_mod(),
       reconcile_interval_ms: group_reconcile_interval_ms(),
       # The shared supernet + DNAT port base + pod IP the adoption reconcile re-derives
       # the entry DNAT endpoint from (the SAME values group_manager_supervisor_opts

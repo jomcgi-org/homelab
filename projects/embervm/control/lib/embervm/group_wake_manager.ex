@@ -181,6 +181,10 @@ defmodule Embervm.GroupWakeManager do
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
       op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # The backend module dispatched below, threaded alongside :op_log (the
+      # server address) so a non-default backend never requires editing this
+      # module. Defaults to the same SQLite module :op_log defaults to.
+      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
       # The composite supernet + DNAT port base + control-plane pod IP, the SAME
       # shared values that feed the GroupManager (and noded's CompositeSupernet /
       # ServingPortBase). Adoption re-derives the entry DNAT endpoint `{pod_ip,
@@ -673,7 +677,7 @@ defmodule Embervm.GroupWakeManager do
       }
     }
 
-    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    _ = state.op_log_mod.append(state.op_log, op)
     :ok
   rescue
     e ->
