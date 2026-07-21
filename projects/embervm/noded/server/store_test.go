@@ -332,6 +332,77 @@ func TestExportArtifactStateful(t *testing.T) {
 	}
 }
 
+// TestExportArtifactBaseReportsExported proves a direct ExportArtifact of a base
+// snapshot uploads its files under base/<vendor>/<workload>/<ref> and, crucially
+// for base-durability PR-1, that the workload's NodeStatus capacity then reports
+// exported=true, projected from the same exportedCache the other artifact kinds
+// read. The base must be a provisioned READY base to be advertised at all, so the
+// test syncs the runtime image and marks the base READY.
+func TestExportArtifactBaseReportsExported(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	ref := "semgrep__0148fb2f0ac5"
+	workload := "semgrep"
+	digest := "img@sha256:deadbeef"
+
+	// Provision the runtime image so imageProvisioned(digest) is true (else the
+	// READY base is filtered out of NodeStatus and never reports exported).
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/semgrep"}})
+	s.bases.readyBuild(ref, workload, digest, "/shim/ready", 2048)
+
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
+
+	// Before export, the base is present but NOT exported.
+	if exported := baseExportedInStatus(s, workload, ref); exported {
+		t.Fatal("base should report exported=false before export")
+	}
+
+	resp, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+	})
+	if err != nil {
+		t.Fatalf("ExportArtifact: %v", err)
+	}
+	if resp.GetSkipped() {
+		t.Fatal("first export should not be skipped")
+	}
+	prefix := "base/amd/semgrep/semgrep__0148fb2f0ac5"
+	if !fs.has(prefix) {
+		t.Fatalf("store missing %q after export", prefix)
+	}
+
+	// After export, the workload capacity reports exported=true.
+	if exported := baseExportedInStatus(s, workload, ref); !exported {
+		t.Fatal("base should report exported=true after export")
+	}
+
+	// A second export is an idempotent skipped no-op (store already holds the
+	// same checksum), so a re-issue from the control plane is harmless.
+	resp2, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+	})
+	if err != nil {
+		t.Fatalf("second ExportArtifact: %v", err)
+	}
+	if !resp2.GetSkipped() {
+		t.Fatal("re-export of an unchanged base should be skipped")
+	}
+}
+
+// baseExportedInStatus finds the workload's capacity entry in NodeStatus whose
+// snapshot_ref matches and returns its exported flag; false if not reported.
+func baseExportedInStatus(s *Server, workload, ref string) bool {
+	for _, wc := range s.nodeStatus().GetWorkloads() {
+		if wc.GetWorkload() == workload && wc.GetSnapshotRef() == ref {
+			return wc.GetExported()
+		}
+	}
+	return false
+}
+
 // TestExportArtifactMissingLocalFails proves ExportArtifact refuses
 // FAILED_PRECONDITION when the local artifact is absent.
 func TestExportArtifactMissingLocalFails(t *testing.T) {

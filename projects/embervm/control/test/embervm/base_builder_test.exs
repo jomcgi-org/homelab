@@ -26,6 +26,12 @@ defmodule Embervm.BaseBuilderTest do
 
   @node %{id: "node-4", address: "node-4:9090"}
 
+  # A no-op op-log: swallows every append so a build's export audit never touches
+  # the real SQLite in tests that do not assert on the op-log.
+  defmodule DiscardOpLog do
+    def append(_op_log, _op), do: :ok
+  end
+
   # -- helpers ----------------------------------------------------------------
 
   defp start_recorder do
@@ -85,8 +91,19 @@ defmodule Embervm.BaseBuilderTest do
           name: nil,
           nodes: Keyword.get(opts, :nodes, [@node]),
           connect_fun: fn _addr -> {:ok, :fake_channel} end,
-          disconnect_fun: fn :fake_channel -> :ok end
-        ] ++ opts
+          disconnect_fun: fn :fake_channel -> :ok end,
+          # Base-durability PR-1 defaults for tests that do not exercise export:
+          # a no-op export seam (so a build's immediate export never dials the real
+          # stub against the fake channel) and a disabled reconcile timer (so no
+          # background sweep perturbs timing). Export-specific tests override both.
+          export_fun: Keyword.get(opts, :export_fun, fn :fake_channel, _req -> {:ok, %{}} end),
+          export_reconcile_interval_ms: Keyword.get(opts, :export_reconcile_interval_ms, 0),
+          # Default the op-log to a discarding fake so a build's export audit never
+          # touches the real SQLite in tests that do not assert on it. The
+          # op-log-specific test overrides both to observe the append.
+          op_log: Keyword.get(opts, :op_log, :discard),
+          op_log_mod: Keyword.get(opts, :op_log_mod, DiscardOpLog)
+        ] ++ Keyword.drop(opts, [:export_fun, :export_reconcile_interval_ms, :op_log, :op_log_mod])
       )
 
     pid
@@ -848,5 +865,169 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
 
     assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid" end)
+  end
+
+  # -- base export durability (base-durability PR-1) --------------------------
+
+  # A fake op-log module: append/2 forwards the op to the test pid so a test can
+  # assert the :artifact_exported audit entry was written. Matches the
+  # {op_log, op} arg order the real Embervm.OpLog.SQLite.append/2 takes.
+  defmodule FakeOpLog do
+    def append(pid, op) when is_pid(pid) do
+      send(pid, {:op_appended, op})
+      :ok
+    end
+  end
+
+  test "a successful build exports the current base to the store on its node" do
+    agent = start_recorder()
+    test_pid = self()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} = req ->
+      send(test_pid, {:exported, ref.kind, ref.workload, ref.ref, req.trace.workload})
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 123, skipped: false, generation: 0}}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_fun: export_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap1"}, latest(agent, "w")) end)
+
+    # Export fires for the freshly-built current base, kind BASE, on its node.
+    assert_receive {:exported, :ARTIFACT_KIND_BASE, "w", "snap1", "w"}, 1_000
+  end
+
+  test "a successful export appends the :artifact_exported op-log audit entry" do
+    agent = start_recorder()
+    test_pid = self()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    export_fun = fn :fake_channel, _req ->
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 42, skipped: false, generation: 0}}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_fun: export_fun,
+        op_log: test_pid,
+        op_log_mod: FakeOpLog
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{}))
+
+    assert_receive {:op_appended, op}, 1_000
+    assert op.kind == :artifact_exported
+    assert op.workload == "w"
+    assert op.principal == "system:base:w"
+    assert op.payload.kind == "base"
+    assert op.payload.ref == "snap1"
+    assert op.payload.bytes_moved == 42
+  end
+
+  test "the export reconcile re-exports a current base reported present-but-unexported" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+      send(test_pid, {:exported, ref.ref})
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_fun: export_fun,
+        # A tight reconcile cadence so the sweep fires within the test window.
+        export_reconcile_interval_ms: 20
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    # Drain the immediate post-build export so the reconcile-driven one is the
+    # signal under test.
+    assert_receive {:exported, "snap1"}, 1_000
+
+    # The node now reports the current base READY but NOT exported: the periodic
+    # reconcile must re-issue ExportArtifact for it.
+    put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_READY, false)
+    assert_receive {:exported, "snap1"}, 1_000
+  end
+
+  test "the export reconcile does not re-export a base already reported exported" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+      send(test_pid, {:exported, ref.ref})
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_fun: export_fun,
+        export_reconcile_interval_ms: 20
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    # Drain the immediate post-build export.
+    assert_receive {:exported, "snap1"}, 1_000
+
+    # The node reports the current base as ALREADY exported: the reconcile must
+    # NOT fire another export for it.
+    put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_READY, true)
+    refute_receive {:exported, "snap1"}, 200
+  end
+
+  # Seed one node's per-workload base fact (snapshot_ref, base_state, exported)
+  # into an existing brick capacity row so the export reconcile can read it.
+  # Merges into the row put_brick/4 already wrote, keyed the same way.
+  defp put_base_fact(table, node_id, pod_uid, workload, ref, base_state, exported) do
+    existing =
+      case :ets.lookup(table, {node_id, pod_uid}) do
+        [{_key, facts}] -> facts
+        [] -> %{node_id: node_id, configured_id: node_id, instance_id: "#{node_id}/#{pod_uid}"}
+      end
+
+    workloads =
+      Map.put(Map.get(existing, :workloads, %{}), workload, %{
+        free_primed_slots: 0,
+        snapshot_ref: ref,
+        serving_image_ref: "",
+        base_state: base_state,
+        exported: exported,
+        primed_vm_ids: []
+      })
+
+    NodeCapacity.put(table, {node_id, pod_uid}, Map.put(existing, :workloads, workloads))
   end
 end

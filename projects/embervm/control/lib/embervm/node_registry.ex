@@ -533,6 +533,13 @@ defmodule Embervm.NodeRegistry do
            # with no serving base built on this node.
            serving_image_ref: wc.serving_image_ref,
            base_state: wc.base_state,
+           # exported (base-durability PR-1, additive): true when this workload's
+           # current base has a complete store copy. BaseBuilder's periodic
+           # export reconcile reads it to re-issue ExportArtifact only for a
+           # current base that is present-but-unexported. false on a daemon that
+           # predates the field, which BaseBuilder safely re-exports (the export
+           # verb is idempotent per checksum).
+           exported: wc.exported,
            # The vm_ids of this node's primed VMs for the workload, so the
            # dispatcher can adopt an existing warm pool into its inventory after
            # a control-plane restart instead of orphaning it (see Dispatcher
