@@ -95,10 +95,11 @@ defmodule Embervm.NodeChannelTest do
     assert {:error, :unknown_node} = NodeChannel.get(pid, "not-configured-#{System.unique_integer([:positive])}")
   end
 
-  test "update_address adds a previously-unknown key so get/1 resolves it (dual-key add)" do
-    # The registry (Bug A fix) registers an instance under BOTH its instance_id and
-    # its node-name alias via update_address; a key unknown at init must become
-    # dialable rather than staying :unknown_node.
+  test "update_address adds a previously-unknown key so get/1 resolves it" do
+    # The registry registers an instance under its instance_id via update_address; a
+    # key unknown at init must become dialable rather than staying :unknown_node. (This
+    # exercises NodeChannel's key-add API, which is unchanged by B0c; only the set of
+    # keys the registry adds narrowed to the instance_id alone.)
     nid = node_id()
     {_dials, connect} = counting_connect()
     pid = start(nid, connect)
@@ -111,8 +112,8 @@ defmodule Embervm.NodeChannelTest do
   end
 
   test "remove_address drops the key and its cached channel so get/1 falls back to :unknown_node" do
-    # Instance expiry (Bug A fix) removes both keys; a removed key must no longer
-    # resolve, so no stale alias keeps dialing a torn-down pod's address.
+    # Instance expiry removes the instance's key; a removed key must no longer resolve,
+    # so no stale endpoint keeps dialing a torn-down pod's address.
     nid = node_id()
     {_dials, connect} = counting_connect()
     pid = start(nid, connect)

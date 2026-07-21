@@ -461,14 +461,13 @@ defmodule Embervm.NodeRegistryTest do
     assert NodeRegistry.status(reg)["node-4/uid-1"].address == "new-ip:9090"
   end
 
-  test "dial-home registration DUAL-KEYS NodeChannel: instance_id (dispatcher) AND node-name alias (legacy wakes)" do
-    # Bug A fix (brick co-location foundation Step 1). Two consumer classes address
-    # NodeChannel differently: the dispatcher (PR-2) resolves pick_node to an
-    # instance_id ("node-4/uid-1") and calls get("node-4/uid-1"); the legacy wakes
-    # (PoolManager.refill_node/2 on facts.configured_id "node-4", plus
-    # stateful/session/serving/group placement) call get("node-4"). A single-key
-    # registration starved one class or the other. So registration points BOTH keys
-    # at the instance's address; both lookups resolve.
+  test "dial-home registration keys NodeChannel ONLY by instance_id (node-name alias removed, PR-B0c)" do
+    # Post the instance-key migration (B0a/B0b) every NodeChannel consumer resolves the
+    # owning instance_id before dialing: the dispatcher (PR-2) via pick_node, and the
+    # stateful/session/serving/group wakes plus PoolManager via their dial resolvers.
+    # PR-B0c dropped the node-name alias: a shared last-writer-wins node-name key across
+    # a node's co-located bricks could only misroute a wake to the wrong sibling. So
+    # registration now points a SINGLE key, the instance_id, at the instance's address.
     {:ok, chan} = Agent.start_link(fn -> [] end)
     on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
 
@@ -481,16 +480,15 @@ defmodule Embervm.NodeRegistryTest do
 
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.42.1.24:9090"})
 
-    # Both keys resolve to the instance's address: the node-name alias (legacy wakes)
-    # AND the instance_id (dispatcher). Neither class is starved.
-    eventually(fn -> {"node-4", "10.42.1.24:9090"} in Agent.get(chan, & &1) end, 200)
+    # The instance_id key resolves; the bare node-name alias is NOT registered.
     eventually(fn -> {"node-4/uid-1", "10.42.1.24:9090"} in Agent.get(chan, & &1) end, 200)
+    refute {"node-4", "10.42.1.24:9090"} in Agent.get(chan, & &1)
   end
 
-  test "a node-scoped instance (empty pod_uid) keys NodeChannel exactly once (keys collapse)" do
-    # When pod_uid is empty the instance_id IS the node name, so channel_keys/1
-    # de-dups to a single key: the static/pinned single-daemon override registers
-    # NodeChannel once, not twice under the same key.
+  test "a node-scoped instance (empty pod_uid) keys NodeChannel exactly once under its node name" do
+    # When pod_uid is empty the instance_id IS the node name, so channel_keys/1 (just
+    # [instance_id] post-B0c) registers the static/pinned single-daemon override once,
+    # under its node name, which is where a node-scoped fact's dial resolves anyway.
     {:ok, chan} = Agent.start_link(fn -> [] end)
     on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
 
@@ -508,13 +506,11 @@ defmodule Embervm.NodeRegistryTest do
     assert length(updates) == 1
   end
 
-  test "instance expiry removes ONLY its own instance_id from NodeChannel, never the shared node-name alias" do
-    # Expiry drops the expiring instance's UNIQUE instance_id key, but must NOT touch
-    # the shared node-name alias: the alias is last-writer-wins across a node's
-    # co-located instances, so removing it on one instance's expiry would clobber a
-    # still-live sibling (regression covered end-to-end in the next test). The alias
-    # is managed solely by registration, exactly as pre-PR where expire never touched
-    # NodeChannel.
+  test "instance expiry removes its instance_id from NodeChannel (its only key, no node-name alias post-B0c)" do
+    # Expiry drops the expiring instance's UNIQUE instance_id key, which post-B0c is the
+    # only key it was registered under. There is no shared node-name alias to touch, so
+    # removing the instance_id can never affect a co-located sibling (covered end-to-end
+    # in the next test).
     {clock, advance} = new_clock()
     {:ok, removed} = Agent.start_link(fn -> [] end)
     on_exit(fn -> if Process.alive?(removed), do: Agent.stop(removed) end)
@@ -540,19 +536,20 @@ defmodule Embervm.NodeRegistryTest do
     NodeRegistry.tick(reg)
     eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 50)
 
-    # ONLY the instance_id was removed from NodeChannel; the node-name alias was left
-    # for registration to manage.
+    # The instance_id was removed from NodeChannel; the bare node name was never a key,
+    # so it never appears in the removal list.
     keys = Agent.get(removed, & &1)
     assert "node-4/uid-1" in keys
     refute "node-4" in keys
   end
 
-  test "expiring one co-located instance does NOT clobber a live sibling's node-name alias (Step 6 regression)" do
+  test "expiring one co-located instance leaves its sibling's instance_id intact (PR-B0c: no shared alias)" do
     # The real NodeChannel is the source of truth: register two co-located instances A
-    # and B on node-4 (B last, so B owns the shared "node-4" alias). Expire A. The
-    # legacy wakes' get("node-4") must still resolve to B's address, and A's own
-    # instance_id must be gone. Removing the alias on A's expiry (the reviewed bug)
-    # would leave node-4's wakes at :unknown_node until B re-registered.
+    # and B on the same node. Post-B0c there is no shared node-name alias: A and B are
+    # keyed purely by their unique instance_ids, so expiring A cannot affect B. This is
+    # the structural fix for the co-location misroute: with no shared, last-writer-wins
+    # node-name key, one sibling's expiry has nothing to clobber, and the bare node name
+    # resolves to nothing (every consumer dials the owning instance_id).
     nid_suffix = System.unique_integer([:positive])
     a_id = "node-#{nid_suffix}/uid-A"
     b_id = "node-#{nid_suffix}/uid-B"
@@ -589,15 +586,14 @@ defmodule Embervm.NodeRegistryTest do
 
     :ok = NodeRegistry.register(reg, %{"node" => node, "pod_uid" => "uid-A", "address" => a_addr})
     eventually(fn -> Map.has_key?(NodeRegistry.status(reg), a_id) end, 200)
-    # B registers LAST, so it owns the shared node-name alias.
     :ok = NodeRegistry.register(reg, %{"node" => node, "pod_uid" => "uid-B", "address" => b_addr})
     eventually(fn -> Map.has_key?(NodeRegistry.status(reg), b_id) end, 200)
 
-    # Sanity: before expiry, both instance keys and the alias resolve, and the alias
-    # points at B (the last writer).
+    # Sanity: before expiry, both instance_id keys resolve to their own address, and
+    # the bare node name resolves to nothing (no alias post-B0c).
     assert {:ok, {:chan, ^a_addr}} = Embervm.NodeChannel.get(nc, a_id)
     assert {:ok, {:chan, ^b_addr}} = Embervm.NodeChannel.get(nc, b_id)
-    assert {:ok, {:chan, ^b_addr}} = Embervm.NodeChannel.get(nc, node)
+    assert {:error, :unknown_node} = Embervm.NodeChannel.get(nc, node)
 
     # Expire A only: lapse its registration + kill its stream while B keeps re-registering.
     # (Advancing the clock lapses BOTH; we refresh B's liveness by re-registering it so
@@ -607,11 +603,11 @@ defmodule Embervm.NodeRegistryTest do
     NodeRegistry.tick(reg)
     eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), a_id) end, 50)
 
-    # A's own key is gone.
+    # A's own key is gone; B's instance_id is untouched; the bare node name still
+    # resolves to nothing. A's expiry could not affect B because they never shared a key.
     assert {:error, :unknown_node} = Embervm.NodeChannel.get(nc, a_id)
-    # The shared node-name alias STILL resolves to the live sibling B (not clobbered).
-    assert {:ok, {:chan, ^b_addr}} = Embervm.NodeChannel.get(nc, node)
     assert {:ok, {:chan, ^b_addr}} = Embervm.NodeChannel.get(nc, b_id)
+    assert {:error, :unknown_node} = Embervm.NodeChannel.get(nc, node)
   end
 
   test "registration feeds instance add to the BaseBuilder (so BuildBase can place)" do

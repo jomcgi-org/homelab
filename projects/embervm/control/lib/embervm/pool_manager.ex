@@ -450,8 +450,10 @@ defmodule Embervm.PoolManager do
   defp draining?(f), do: Map.get(f, :draining, false) == true
 
   # The dial/bookkeeping key for a capacity fact: its instance_id (`"node/pod_uid"`)
-  # when present, else the bare node name (a legacy/single-instance fact without the
-  # field still resolves via the node-name alias, unchanged behaviour).
+  # when present, else the bare node name. Post-B0c there is no node-name alias, so the
+  # fallback resolves only for a node-scoped instance (empty pod_uid, whose instance_id
+  # IS the node name it registers under); a dial-home brick fact always carries
+  # instance_id, so the fallback is never hit for co-located bricks.
   defp dial_id(facts) do
     case Map.get(facts, :instance_id) do
       id when is_binary(id) and id != "" -> id
