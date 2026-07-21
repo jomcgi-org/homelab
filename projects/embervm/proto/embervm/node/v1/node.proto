@@ -1217,6 +1217,19 @@ message WorkloadCapacity {
   // neither assign to them nor prime past them: dispatch deadlocks. The node is
   // the source of truth for the pool; the control plane reconciles from this.
   repeated string primed_vm_ids = 5;
+  // exported is true when this workload's CURRENT base (snapshot_ref) has a
+  // complete store copy (its meta.json completeness marker matches the local
+  // checksum), mirroring SessionSnapshot.exported for the other artifact kinds.
+  // The base durability lives on the WorkloadCapacity entry rather than a
+  // dedicated snapshot message because a base is reported per workload as node
+  // capacity, not as a repeated bundle inventory. The control plane reads it to
+  // know a base's durability floor has landed: BaseBuilder issues ExportArtifact
+  // after a build and its periodic reconcile re-issues export whenever the
+  // current base shows present-but-unexported here (base-durability PR-1,
+  // additive; false on a daemon that predates the field, which the control plane
+  // reads as "not yet exported" and safely re-exports, the export verb being
+  // idempotent per checksum).
+  bool exported = 7;
 }
 
 enum BaseBuildState {

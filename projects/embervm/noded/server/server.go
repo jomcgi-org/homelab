@@ -1804,6 +1804,15 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 		c := get(b.workload)
 		c.SnapshotRef = b.snapshotRef
 		c.BaseState = b.state
+		// Base durability (base-durability PR-1, additive): report whether this
+		// base's store copy is present and current, read from the same
+		// exportedCache the session/serving/stateful projections read via
+		// artifactExported. The control plane's BaseBuilder uses this to know the
+		// durability floor has landed before it treats the local disk as a cache.
+		// artifactExported is false for a base whose prefix cannot be composed
+		// (no vendor detected), which the control plane safely reads as
+		// not-yet-exported and re-exports (the export verb is idempotent).
+		c.Exported = s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_BASE, b.workload, b.snapshotRef)
 	}
 	// Serving images (cold-boot handler artifacts) are reported in a DISTINCT field
 	// from the base memory snapshot (D-R3.11.2): serving placement cold-boots this ref,

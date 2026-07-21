@@ -105,9 +105,11 @@ defmodule Embervm.BaseBuilder do
   require Logger
 
   alias Embervm.Node.V1.{
+    ArtifactRef,
     BuildBaseRequest,
     BuildBaseResponse,
     EvictSnapshotRequest,
+    ExportArtifactRequest,
     NodeService,
     ResourceSpec,
     Trace,
@@ -117,6 +119,14 @@ defmodule Embervm.BaseBuilder do
   # Backoff for a failed build: exponential from 1s, capped at the spec's 10m.
   @base_backoff_ms 1_000
   @max_backoff_ms 600_000
+
+  # Base-durability PR-1: how often the export reconcile sweeps for a current base
+  # that is present-but-unexported and re-issues ExportArtifact. The immediate
+  # post-build export is the fast path; this sweep is the self-healing backstop
+  # (a lost export result, a CP restart between build and export, or a store that
+  # was down at build time). 60s is well below any base's lifetime and the sweep
+  # is bounded to current-base-present-but-unexported, so it never hammers.
+  @export_reconcile_interval_ms 60_000
 
   # -- Client API ------------------------------------------------------------
 
@@ -256,6 +266,22 @@ defmodule Embervm.BaseBuilder do
     # NodeService.Stub.evict_snapshot/2 over a per-call channel; tests inject a
     # fake to assert eviction fires exactly when both refcounts hit zero.
     evict_fun = Keyword.get(opts, :evict_fun, &default_evict/2)
+    # Base-durability PR-1: the ExportArtifact seam that writes a freshly-built
+    # (or present-but-unexported) base back to the object store. Defaults to the
+    # real NodeService.Stub.export_artifact/2 over a per-call channel; tests
+    # inject a fake to assert export fires after a build and on the reconcile.
+    export_fun = Keyword.get(opts, :export_fun, &default_export/2)
+    # Op-log seam for the audit-only :artifact_exported record (no projection
+    # table; the log itself is the record). Mirrors the sweeper managers.
+    op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    tenant = Keyword.get(opts, :tenant, "homelab")
+    # Sweep cadence for the export reconcile. 0 disables the timer entirely (the
+    # unit-test default, so a test drives :export_reconcile explicitly and asserts
+    # deterministically); production uses the module default.
+    export_reconcile_interval_ms =
+      Keyword.get(opts, :export_reconcile_interval_ms, @export_reconcile_interval_ms)
+
     status_writer = Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3)
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     base_backoff = Keyword.get(opts, :base_backoff_ms, @base_backoff_ms)
@@ -298,6 +324,11 @@ defmodule Embervm.BaseBuilder do
       connect_fun: connect_fun,
       disconnect_fun: disconnect_fun,
       evict_fun: evict_fun,
+      export_fun: export_fun,
+      op_log: op_log,
+      op_log_mod: op_log_mod,
+      tenant: tenant,
+      export_reconcile_interval_ms: export_reconcile_interval_ms,
       runtime_images: runtime_images,
       capacity_table: capacity_table,
       status_writer: status_writer,
@@ -305,6 +336,8 @@ defmodule Embervm.BaseBuilder do
       base_backoff_ms: base_backoff,
       max_backoff_ms: max_backoff
     }
+
+    schedule_export_reconcile(state)
 
     {:ok, state}
   end
@@ -377,6 +410,14 @@ defmodule Embervm.BaseBuilder do
   # A backoff retry timer fired for a failed build.
   def handle_info({:retry, name}, state) do
     {:noreply, retry_workload(state, name)}
+  end
+
+  # Base-durability PR-1: the periodic export reconcile fired. Re-issue export for
+  # any current base present-but-unexported, then re-arm the timer.
+  def handle_info(:export_reconcile, state) do
+    state = export_reconcile(state)
+    schedule_export_reconcile(state)
+    {:noreply, state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -972,8 +1013,166 @@ defmodule Embervm.BaseBuilder do
     }
 
     state = put_in(state.workloads[w.name], w)
+
+    # Base-durability PR-1: drive the durability floor. Export the freshly-built
+    # current base to the object store on the node that built it. Fire-and-forget
+    # in a spawned worker (the RPC blocks on the store write and must never freeze
+    # this GenServer); the periodic export reconcile is the backstop if this
+    # result is lost or the store was down. Idempotent per checksum, so a redundant
+    # export (e.g. an already_built no-op build that reports the same ref) is a
+    # cheap skipped no-op on the node.
+    spawn_export(state, w.node_id, w.name, w.snapshot_ref)
+
     write_base_status(state, w, :built)
   end
+
+  # -- base export + durability (base-durability PR-1) ------------------------
+
+  # Periodic reconcile: for every workload whose CURRENT base (snapshot_ref) is
+  # present on its node but reported not-yet-exported, re-issue ExportArtifact.
+  # This is the self-healing backstop to the immediate post-build export: it
+  # recovers a lost export result, a CP restart between build and export, or a
+  # store that was down at build time. Deliberately bounded to
+  # current-base-present-but-unexported (never the superseded refs, which PR-1
+  # must not ship into the store), so it cannot hammer.
+  defp export_reconcile(state) do
+    Enum.each(state.workloads, fn {_name, w} ->
+      if current_base_present_but_unexported?(state, w) do
+        spawn_export(state, w.node_id, w.name, w.snapshot_ref)
+      end
+    end)
+
+    state
+  end
+
+  # A workload's current base needs (re-)export when it has a built ref placed on
+  # a known node AND the node's reported fact for that same ref is a READY base
+  # that is not yet exported. Matching the ref guards against exporting during a
+  # turnover (the node may still report the old ref); requiring READY guards
+  # against exporting a BUILDING/FAILED entry; requiring the node fact at all
+  # means a base whose node has not yet reported is left for the next sweep
+  # (never blindly re-exported without evidence it is present).
+  defp current_base_present_but_unexported?(state, w) do
+    is_binary(w.node_id) and is_binary(w.snapshot_ref) and
+      case node_base_fact(state, w.node_id, w.name) do
+        {:ok, %{snapshot_ref: ref, base_state: base_state, exported: exported}} ->
+          ref == w.snapshot_ref and
+            base_state == :BASE_BUILD_STATE_READY and exported != true
+
+        _ ->
+          false
+      end
+  end
+
+  # Look up one node's reported per-workload base fact (snapshot_ref, base_state,
+  # exported) from the shared capacity table. Returns :error when the node has no
+  # fact for the workload (unreported, or the base is not present there).
+  defp node_base_fact(state, node_id, workload) do
+    case find_capacity_fact(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        case get_in(fact, [:workloads, workload]) do
+          nil -> :error
+          wl -> {:ok, wl}
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  # Spawn a fire-and-forget ExportArtifact worker for one base ref on its node.
+  # ExportArtifact is idempotent per checksum (an already-exported base is a
+  # skipped no-op), so a lost result or a retry is harmless; failures are logged,
+  # not retried here (the periodic reconcile is the backstop). Not monitored: an
+  # export result never mutates BaseBuilder state (durability lives on the node's
+  # exported flag, read back on the next status). The op-log audit entry is
+  # written from the worker only on success so the log records a real durability
+  # landing, never a mere attempt.
+  defp spawn_export(state, node_id, workload, ref) do
+    address = state.node_addr[node_id]
+    connect_fun = state.connect_fun
+    disconnect_fun = state.disconnect_fun
+    export_fun = state.export_fun
+    op_log = state.op_log
+    op_log_mod = state.op_log_mod
+    tenant = state.tenant
+    clock = state.clock
+
+    spawn(fn ->
+      result =
+        case connect_fun.(address) do
+          {:ok, channel} ->
+            try do
+              export_fun.(channel, %ExportArtifactRequest{
+                artifact: %ArtifactRef{
+                  kind: :ARTIFACT_KIND_BASE,
+                  workload: workload,
+                  ref: ref
+                },
+                trace: %Trace{workload: workload}
+              })
+            catch
+              kind, reason -> {:error, {kind, reason}}
+            after
+              disconnect_fun.(channel)
+            end
+
+          {:error, reason} ->
+            {:error, {:connect, reason}}
+        end
+
+      case result do
+        {:ok, resp} ->
+          record_base_exported(op_log_mod, op_log, tenant, clock, workload, ref, resp)
+
+        other ->
+          Logger.warning(
+            "embervm base builder: ExportArtifact #{workload}/#{ref} failed: #{inspect(other)}"
+          )
+      end
+    end)
+
+    :ok
+  end
+
+  # Append the audit-only :artifact_exported op (no projection table; the log
+  # itself is the record), mirroring the restore-audit recorders in the session/
+  # serving/stateful managers. Best-effort: an append failure must never crash
+  # the export worker (the durable fact is the exported bytes, not this row).
+  defp record_base_exported(op_log_mod, op_log, tenant, clock, workload, ref, resp) do
+    op = %Embervm.OpLog.Op{
+      kind: :artifact_exported,
+      tenant: tenant,
+      principal: "system:base:#{workload}",
+      workload: workload,
+      ts: clock.(),
+      payload: %{
+        kind: "base",
+        ref: ref,
+        bytes_moved: Map.get(resp, :bytes_moved, 0),
+        generation: Map.get(resp, :generation, 0),
+        skipped: Map.get(resp, :skipped, false)
+      }
+    }
+
+    _ = op_log_mod.append(op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm base builder: artifact_exported append raised",
+        workload: workload,
+        error: inspect(e)
+      )
+
+      :ok
+  end
+
+  defp schedule_export_reconcile(%{export_reconcile_interval_ms: ms}) when ms > 0 do
+    Process.send_after(self(), :export_reconcile, ms)
+    :ok
+  end
+
+  defp schedule_export_reconcile(_state), do: :ok
 
   # -- base refcounting + eviction (R2) ---------------------------------------
 
@@ -1267,6 +1466,15 @@ defmodule Embervm.BaseBuilder do
       trace: %Trace{},
       snapshot_ref: ref
     })
+  end
+
+  # ExportArtifact one base ref to the object store (base-durability PR-1). The
+  # node stamps its own cpu vendor into the store key and meta.json, so the
+  # request carries only the ref (unlike restore, which the CP vendor-stamps).
+  # A generous timeout: a first-time export moves the whole base (up to a few GB)
+  # to SeaweedFS; a re-export is a checksum-compare skip and returns fast.
+  defp default_export(channel, %ExportArtifactRequest{} = request) do
+    NodeService.Stub.export_artifact(channel, request, timeout: 600_000)
   end
 
   # A gRPC-level failure (e.g. FAILED_PRECONDITION for an image the daemon does
