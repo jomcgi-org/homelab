@@ -1,0 +1,24 @@
+# projects/platform/master-image-gc/k3s-image-gc.yaml
+#
+# Reference-only fragment. Applied BY HAND on the host, NOT via ArgoCD.
+# k3s is host-provisioned: kubelet flags live in /etc/rancher/k3s/config.yaml
+# on each node, the same file the Cilium cutover edits (see
+# ../cilium/bootstrap/). ArgoCD reconciles Kubernetes objects; it cannot edit a
+# node's k3s config or restart k3s, so this cannot be a GitOps manifest.
+#
+# Purpose: make kubelet garbage-collect unused container images continuously
+# instead of only above the 85% default high-water mark. node-1 and node-3 sit
+# at 80-81% root-fs, just under the 85% default, so image GC never fires and
+# stale monolith/backend CI tags (46 cached on node-1, ~19 GiB) accumulate
+# forever. Lowering the high threshold to 70 makes kubelet evict any image not
+# used by a running or recently-stopped container down to the 55% low mark, and
+# keeps it there. imageMinimumGCAge protects images pulled in the last 2h from a
+# rollout in flight.
+#
+# Append these keys to /etc/rancher/k3s/config.yaml on node-1, node-2, node-3
+# (masters) and node-4 (worker: same benefit, larger legitimate model images so
+# it will simply hold more), then restart k3s on that node (see README).
+kubelet-arg:
+  - "image-gc-high-threshold=70"
+  - "image-gc-low-threshold=55"
+  - "image-minimum-gc-age=2h"
