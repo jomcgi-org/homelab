@@ -4,6 +4,26 @@
 seaweedfs:
   global:
     enableSecurity: false
+    # Cluster-wide default replication for NEW volumes/buckets that do not set
+    # their own. Single copy ("000"). The vendored chart defaults this to "001"
+    # (2 copies on different servers), which is unsatisfiable here: adding the
+    # node-4 volume server made the master enforce 001 strictly, but the node-2
+    # server is slot-saturated (130/130, 0 free) so it can never host the second
+    # replica. The master then fails EVERY new write it must grow a volume for
+    # ("failed to find writable volumes ... replication:001: No writable
+    # volumes"), which wedged all embervm base exports (large memfiles that force
+    # a volume grow) and is the same class as the CNPG WAL 500-on-PutObject.
+    # Small writes fit existing volumes; only grows failed, so the break was
+    # silent until a GB-sized write appeared.
+    #
+    # Per Joe's 2026-07-21 decision (base store n=1-on-S3 is fine; normal
+    # Longhorn + offsite backups is the durability path, not app-layer 001),
+    # single-copy is the accepted floor: block-layer durability comes from the
+    # volume servers' Longhorn PVCs (node-2's is 2-replica; node-4's node4-ssd
+    # class is 1-replica by design). Revisit "001" only once BOTH servers have
+    # free writable slots (raise node-2 maxVolumes with disk headroom, or add a
+    # third writable server) and the existing 000 volumes have been re-replicated.
+    replicationPlacment: "000"
     monitoring:
       enabled: false
     # SeaweedFS-layer replication (Phase 0 of the embervm base-durability
