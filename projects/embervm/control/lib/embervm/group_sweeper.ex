@@ -1037,7 +1037,7 @@ defmodule Embervm.GroupSweeper do
       member_name: member.member_name
     }
 
-    with {:ok, channel} <- safe_channel(state, instance.node_id) do
+    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
       try do
         state.stop_group_member_fun.(channel, req)
       rescue
@@ -1067,7 +1067,7 @@ defmodule Embervm.GroupSweeper do
   defp delete_network(state, instance) do
     req = %DeleteGroupNetworkRequest{trace: %Trace{workload: nil}, group_instance_id: instance.instance_id}
 
-    with {:ok, channel} <- safe_channel(state, instance.node_id) do
+    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
       try do
         state.delete_group_network_fun.(channel, req)
       rescue
@@ -1083,7 +1083,7 @@ defmodule Embervm.GroupSweeper do
   defp evict_snapshot(state, instance, ref) do
     req = %EvictSnapshotRequest{trace: %Trace{workload: nil}, snapshot_ref: ref}
 
-    with {:ok, channel} <- safe_channel(state, instance.node_id) do
+    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
       try do
         state.evict_snapshot_fun.(channel, req)
       rescue
@@ -1100,12 +1100,12 @@ defmodule Embervm.GroupSweeper do
   # remote=true) alongside the local per-member eviction. ref is the set_id (the set
   # is the export/evict unit). Best-effort; a set with no set_id (a partial set
   # already cleared) or no node is a clean no-op.
-  defp evict_remote_set(state, %{node_id: node_id, set_id: set_id, workload: workload})
+  defp evict_remote_set(state, %{node_id: node_id, set_id: set_id, workload: workload} = instance)
        when is_binary(node_id) and is_binary(set_id) and set_id != "" do
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: workload, ref: set_id}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
-    with {:ok, channel} <- safe_channel(state, node_id) do
+    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
       try do
         state.evict_artifact_fun.(channel, req)
       rescue
@@ -1192,6 +1192,17 @@ defmodule Embervm.GroupSweeper do
     e -> {:error, {:channel_raised, e}}
   catch
     kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  # The channel key for a group teardown dial (StopGroupMember / DeleteGroupNetwork /
+  # EvictSnapshot / EvictArtifact): the OWNING instance on the group's node reporting
+  # this group_instance_id (live group_member_vms or banked group_bundle_sets), else
+  # the node name. Instance-key unification (PR-B0b): a group's members are all
+  # co-located on ONE instance, so a teardown against the co-located node-name alias
+  # misroutes to an arbitrary sibling brick. Fail-open to the instance's node_id
+  # preserves single-instance behaviour exactly.
+  defp dial_for_group(state, %{instance_id: instance_id, node_id: node_id}) do
+    Embervm.WakeInstance.dial_for_group(state.capacity_table, node_id, instance_id)
   end
 
   defp default_bank(workload, instance_id) do
