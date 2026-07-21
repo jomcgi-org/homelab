@@ -336,7 +336,13 @@ defmodule Embervm.StatefulStoreTest do
 
   # -- eager eviction of broken pairs -----------------------------------------
 
-  test "eager_evict_broken_pairs evicts a pair-broken banked instance with reason pair_broken", %{path: path} do
+  # @broken_evict_threshold in StatefulStore: consecutive broken observations
+  # required before an eager eviction fires (hysteresis). Kept in sync with the
+  # module attribute; the tests below drive exactly this many sweeps.
+  @broken_evict_threshold 3
+
+  test "eager_evict_broken_pairs evicts a pair-broken banked instance with reason pair_broken after the grace window",
+       %{path: path} do
     {op_log, store} = start_pair(path)
     {:ok, _} = start_instance(store, workload: "wl-a", instance_id: "sf-a", generation: 0)
     {:ok, _} = start_instance(store, workload: "wl-b", instance_id: "sf-b", generation: 0)
@@ -344,10 +350,19 @@ defmodule Embervm.StatefulStoreTest do
     _ = bank(store, "sf-a", "wl-a", 3)
     _ = bank(store, "sf-b", "wl-b", 7)
 
-    # wl-a's pair is VALID (volume gen == bundle gen), wl-b's is BROKEN.
+    # wl-a's pair is VALID (volume gen == bundle gen), wl-b's is BROKEN (the volume
+    # legitimately moved FORWARD to 8, stranding the gen-7 bundle).
     _ = StatefulStore.upsert_volume(store, "wl-a", %{generation: 3})
     _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 8})
 
+    # The first @broken_evict_threshold - 1 sweeps observe the break but do NOT
+    # evict (hysteresis: a single transient blip must not drop a warm bundle).
+    for _ <- 1..(@broken_evict_threshold - 1) do
+      assert StatefulStore.eager_evict_broken_pairs(store) == []
+      assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-b")
+    end
+
+    # The threshold-th consecutive broken observation evicts.
     evicted = StatefulStore.eager_evict_broken_pairs(store)
     assert evicted == ["sf-b"]
 
@@ -355,7 +370,7 @@ defmodule Embervm.StatefulStoreTest do
     assert sf_b.state == :evicted
     assert sf_b.terminal_reason == "pair_broken"
 
-    # wl-a's valid banked bundle is untouched.
+    # wl-a's valid banked bundle is untouched throughout.
     {:ok, sf_a} = StatefulStore.get(store, "sf-a")
     assert sf_a.state == :banked
 
@@ -363,6 +378,61 @@ defmodule Embervm.StatefulStoreTest do
     {:ok, rows} = SQLite.load_stateful_instances(op_log)
     row_b = Enum.find(rows, &(&1.instance_id == "sf-b"))
     assert row_b.state == "evicted"
+  end
+
+  test "eager_evict_broken_pairs does NOT evict a transient one-sweep break (streak clears on recovery)",
+       %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store, workload: "wl-b", instance_id: "sf-b", generation: 0)
+    _ = bank(store, "sf-b", "wl-b", 7)
+
+    # A transient break for fewer than the threshold sweeps: the volume briefly
+    # reads a stale/racy generation, then recovers to match the bundle.
+    _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 9})
+
+    for _ <- 1..(@broken_evict_threshold - 1) do
+      assert StatefulStore.eager_evict_broken_pairs(store) == []
+    end
+
+    # The volume settles back to the bundle's generation before the threshold is
+    # reached: a VALID observation clears the streak.
+    _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 7})
+    assert StatefulStore.eager_evict_broken_pairs(store) == []
+    assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-b")
+
+    # Even one more broken sweep after the clear starts a FRESH streak (does not
+    # ride the pre-recovery observations), so it still does not evict immediately.
+    _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 9})
+    assert StatefulStore.eager_evict_broken_pairs(store) == []
+    assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-b")
+  end
+
+  test "upsert_volume never moves the pair-key generation backward (a lagging report cannot break a valid pair)",
+       %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store, workload: "wl-b", instance_id: "sf-b", generation: 0)
+    _ = bank(store, "sf-b", "wl-b", 7)
+
+    # The volume is at the bundle's generation: the pair is valid.
+    _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 7})
+    assert StatefulStore.pair_valid?(store, "wl-b")
+
+    # A LAGGING node report (still reporting the pre-bank generation, or a
+    # co-located sibling's stale report) must NOT regress the volume generation
+    # below the just-banked bundle: the pair stays valid, and no amount of
+    # sweeping evicts it.
+    _ = StatefulStore.upsert_volume(store, "wl-b", %{generation: 5, allocated_bytes: 123})
+    assert StatefulStore.pair_valid?(store, "wl-b")
+
+    # Non-generation fields from the lagging report still land (only the
+    # generation is floored).
+    assert %{generation: 7, allocated_bytes: 123} = StatefulStore.get_volume(store, "wl-b")
+
+    for _ <- 1..(@broken_evict_threshold + 1) do
+      assert StatefulStore.eager_evict_broken_pairs(store) == []
+    end
+
+    assert {:ok, %{state: :banked}} = StatefulStore.get(store, "sf-b")
   end
 
   # -- counts across live + banked --------------------------------------------

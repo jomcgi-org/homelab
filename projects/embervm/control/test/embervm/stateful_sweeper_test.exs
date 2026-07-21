@@ -695,7 +695,12 @@ defmodule Embervm.StatefulSweeperTest do
 
   # -- eager broken-pair eviction -----------------------------------------------
 
-  test "a banked instance whose volume generation moved is evicted on the sweep (broken pair)" do
+  # Consecutive broken sweeps required before an eager eviction fires (the
+  # StatefulStore @broken_evict_threshold hysteresis). One sweep = one
+  # eager_evict_broken_pairs observation.
+  @broken_evict_sweeps 3
+
+  test "a banked instance whose volume generation moved is evicted after the grace window of sweeps (broken pair)" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a", 5400, %{banked_ttl_seconds: 1_000_000, max_lifetime_seconds: 1_000_000})
     stateful_node(ctx, "node-4")
@@ -712,12 +717,20 @@ defmodule Embervm.StatefulSweeperTest do
     banked_instance(ctx, "sf-1", "wl-a", "vm-1", 1)
     assert StatefulStore.pair_valid?(ctx.store, "wl-a")
 
-    # The volume's generation moves (e.g. a concurrent cold-boot attach bumped
-    # it), breaking the pair.
+    # The volume's generation moves FORWARD (e.g. a concurrent cold-boot attach
+    # bumped it), genuinely breaking the pair.
     StatefulStore.upsert_volume(ctx.store, "wl-a", %{generation: 2})
     refute StatefulStore.pair_valid?(ctx.store, "wl-a")
 
     set_scrape(ctx, reading("state-5400", 0, 0))
+
+    # Hysteresis: the pair is not evicted until it has been observed broken on
+    # @broken_evict_sweeps consecutive sweeps (a single blip must not drop it).
+    for _ <- 1..(@broken_evict_sweeps - 1) do
+      StatefulSweeper.sweep(ctx.sweeper)
+      assert {:ok, %{state: :banked}} = StatefulStore.get(ctx.store, "sf-1")
+    end
+
     StatefulSweeper.sweep(ctx.sweeper)
 
     {:ok, instance} = StatefulStore.get(ctx.store, "sf-1")
