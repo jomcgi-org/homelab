@@ -73,10 +73,26 @@ func (s *Server) RunRegisterLoop(ctx context.Context) {
 	s.runRegisterLoop(ctx, client, newID("boot"), s.cfg.RegisterInterval)
 }
 
+// registerFastRetryBase is the delay before the FIRST re-attempt while the
+// instance has never successfully registered (its base is on disk but not yet
+// advertised as READY, because the control plane has not dialed WatchNode and
+// pushed SyncRegistry yet). A fresh pod whose first POST races pod-network /
+// control-plane readiness (DNS not resolvable, a 5s HTTP timeout) must NOT wait a
+// full RegisterInterval (30s) to re-advertise: that idle gap IS the co-location
+// base-advertisement window (~36s = 5s timeout + ~30s interval). We fast-retry
+// from here, doubling to the steady interval, so a fresh instance is adopted in
+// seconds. Once the first POST succeeds we switch to the steady interval, so this
+// never raises the healthy-fleet report frequency (no thundering herd).
+const registerFastRetryBase = 1 * time.Second
+
 // runRegisterLoop is the testable core: an injected doer, a fixed boot id, and
-// an explicit interval. It registers once immediately (so the control plane
-// adopts a fresh pod without waiting a full interval), then re-registers on a
-// jittered tick until ctx is cancelled or the daemon starts draining.
+// an explicit steady interval. It registers once immediately (so the control
+// plane adopts a fresh pod without waiting a full interval); until that first
+// POST succeeds it fast-retries on an exponential backoff (registerFastRetryBase,
+// doubling, capped at the steady interval) so a fresh instance whose first POST
+// races control-plane reachability re-advertises in seconds instead of idling a
+// full interval; after the first success it re-registers on the jittered steady
+// tick. Loops until ctx is cancelled or the daemon starts draining.
 func (s *Server) runRegisterLoop(ctx context.Context, doer httpDoer, bootID string, interval time.Duration) {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -86,6 +102,9 @@ func (s *Server) runRegisterLoop(ctx context.Context, doer httpDoer, bootID stri
 	// CHANGE (ok<->fail), never once per successful tick.
 	var lastOK bool
 	firstAttempt := true
+	// registered flips true after the first successful POST; until then the loop
+	// waits on the fast-retry backoff rather than the steady interval.
+	registered := false
 
 	attempt := func() {
 		// A draining instance stops re-advertising: the control plane ages it out
@@ -98,6 +117,9 @@ func (s *Server) runRegisterLoop(ctx context.Context, doer httpDoer, bootID stri
 
 		err := s.register(ctx, doer, bootID)
 		ok := err == nil
+		if ok {
+			registered = true
+		}
 
 		if firstAttempt || ok != lastOK {
 			if ok {
@@ -115,12 +137,28 @@ func (s *Server) runRegisterLoop(ctx context.Context, doer httpDoer, bootID stri
 
 	go func() {
 		attempt()
+		// Fast-retry backoff, armed while the instance has never registered. Once
+		// registered it is irrelevant (the steady interval takes over).
+		fastRetry := registerFastRetryBase
 		for {
+			// While never-yet-registered, wait the (capped) fast-retry backoff; once
+			// registered, wait the jittered steady interval. This keeps a fresh pod's
+			// re-advertisement in the single-digit-seconds range without changing the
+			// healthy-fleet cadence.
+			wait := jitter(interval)
+			if !registered {
+				wait = fastRetry
+			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(jitter(interval)):
+			case <-time.After(wait):
 				attempt()
+				if !registered {
+					if fastRetry *= 2; fastRetry > interval {
+						fastRetry = interval
+					}
+				}
 			}
 		}
 	}()
