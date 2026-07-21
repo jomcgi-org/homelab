@@ -390,7 +390,7 @@ defmodule Embervm.SessionManager do
           # node regardless of which co-located instance banked it. On the single-
           # instance fleet dial_id resolves to the node's sole instance, so claim/prime
           # is output-equivalent to the old node-name dial: inert today.
-          register_and_start(state, workload, principal, entry, node_id, vm_id)
+          register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id)
         else
           {:error, reason} ->
             audit_denial(state, principal, workload, reason)
@@ -523,7 +523,7 @@ defmodule Embervm.SessionManager do
   # PR-4 rebinds). If the process fails to start, the durable session is orphaned as
   # a live-but-unrouted row; PR-4 adoption rebinds it from NodeStatus, so we surface
   # the create as failed rather than leave the caller a token to a dead process.
-  defp register_and_start(state, workload, principal, entry, node_id, vm_id) do
+  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id) do
     attrs = %{
       tenant: state.tenant,
       principal: principal,
@@ -537,7 +537,7 @@ defmodule Embervm.SessionManager do
 
     case SessionStore.create(state.session_store, attrs) do
       {:ok, %{session_id: session_id} = created} ->
-        case start_session_process(state, session_id, workload, principal, entry, node_id, vm_id) do
+        case start_session_process(state, session_id, workload, principal, entry, node_id, vm_id, dial_id) do
           {:ok, _pid} ->
             {:ok, created}
 
@@ -551,13 +551,17 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp start_session_process(state, session_id, workload, principal, entry, node_id, vm_id) do
+  defp start_session_process(state, session_id, workload, principal, entry, node_id, vm_id, dial_id) do
     child_opts =
       [
         session_id: session_id,
         workload: workload,
         principal: principal,
         node_id: node_id,
+        # The per-invoke dial key: the SPECIFIC co-located instance running this
+        # session's VM (instance-key unification PR-B0b), not the node-name alias.
+        # Falls back to node_id when the caller had no owning instance to resolve.
+        dial_id: dial_id || node_id,
         vm_id: vm_id,
         queue_cap: entry.session.invoke_queue_cap,
         timeout_ms: entry.timeout_ms,
@@ -587,10 +591,19 @@ defmodule Embervm.SessionManager do
   # entry, used by relight and adoption (which have the row, not the create args).
   # A catalog miss (workload deleted) is surfaced so the caller can fail the session
   # rather than start a process with no config.
-  defp start_session_from_row(state, session, node_id, vm_id) do
+  defp start_session_from_row(state, session, node_id, vm_id, dial_id) do
     case fetch_session_workload(state, session.workload) do
       {:ok, entry} ->
-        start_session_process(state, session.session_id, session.workload, session.principal, entry, node_id, vm_id)
+        start_session_process(
+          state,
+          session.session_id,
+          session.workload,
+          session.principal,
+          entry,
+          node_id,
+          vm_id,
+          dial_id
+        )
 
       {:error, reason} ->
         {:error, {:no_catalog_entry, reason}}
@@ -796,6 +809,10 @@ defmodule Embervm.SessionManager do
     workload = session.workload
     parent_base_ref = session.base_snapshot_ref
     generation = (session.generation || 0) + 1
+    # Dial the OWNING instance running this live vm_id, not the node-name alias
+    # (co-location made it point at an arbitrary sibling brick). Resolved on the owner
+    # so the worker reads a settled key; fail-open to node_id.
+    dial_key = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id)
 
     spawn(fn ->
       # A lifecycle span (Task 9). Idle-bank has no caller trace, so it is a root
@@ -810,7 +827,7 @@ defmodule Embervm.SessionManager do
                              "ember.generation" => generation
                            }
                          } do
-          with {:ok, channel} <- safe_channel(channel_fun, node_id),
+          with {:ok, channel} <- safe_channel(channel_fun, dial_key),
                {:ok, %BankResponse{snapshot_ref: ref, size_bytes: size}} when is_binary(ref) and ref != "" <-
                  safe_bank(bank_fun, channel, workload, session_id, vm_id) do
             Tracer.set_attributes(%{"ember.snapshot_bytes" => size})
@@ -933,7 +950,10 @@ defmodule Embervm.SessionManager do
             state
 
           [] ->
-            _ = start_session_from_row(state, session, node_id, vm_id)
+            # Resolve the co-located instance still running this live vm_id so the
+            # restarted process's per-invoke dial targets the owner, not the alias.
+            dial_id = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id)
+            _ = start_session_from_row(state, session, node_id, vm_id, dial_id)
             state
         end
 
@@ -1095,9 +1115,15 @@ defmodule Embervm.SessionManager do
         # restore FAILURE falls back to the normal node_for_relight path (fail-open).
         restore_target =
           case restore do
-            {:restore, restore_node_id, restore_ref} ->
-              case restore_bundle(state, restore_node_id, session.workload, restore_ref) do
-                :ok -> {:ok, restore_node_id}
+            {:restore, restore_node_id, restore_dial_id, restore_ref} ->
+              # Restore onto, and later relight from, the SAME co-located instance
+              # (restore_dial_id): a session snapshot is per-instance ON DISK
+              # (PR-2.5), so restoring onto one brick while the relight dials another
+              # leaves the relight's local disk empty. On a true local miss no
+              # instance reports the snapshot, so this is a mem-eligible pick that both
+              # the restore and the relight agree on.
+              case restore_bundle(state, session.node_id, restore_dial_id, session.workload, restore_ref) do
+                :ok -> {:ok, restore_dial_id}
                 _ -> :none
               end
 
@@ -1107,15 +1133,19 @@ defmodule Embervm.SessionManager do
 
         outcome =
           case relight_node(restore_target, session, capacity_table) do
-            {:ok, node_id} ->
+            {:ok, dial_id} ->
               t0 = clock.()
 
-              with {:ok, channel} <- safe_channel(channel_fun, node_id),
+              # dial_id is the OWNING instance the relight lands on (instance-key
+              # unification PR-B0b); the durable row keeps the NODE name (session.
+              # node_id), which adoption/drain read node-scoped. On the single-instance
+              # fleet dial_id == node_id, so this is inert there.
+              with {:ok, channel} <- safe_channel(channel_fun, dial_id),
                    {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
                      safe_relight(relight_fun, channel, session) do
                 relight_ms = clock.() - t0
                 Tracer.set_attributes(%{"ember.relight_ms" => relight_ms})
-                {:ok, node_id, vm_id, relight_ms}
+                {:ok, session.node_id, vm_id, relight_ms, dial_id}
               else
                 {:error, reason} -> classify_relight_error(reason)
                 other -> classify_relight_error({:relight_failed, other})
@@ -1152,9 +1182,36 @@ defmodule Embervm.SessionManager do
 
     if is_binary(node_id) and node_id != "" and is_binary(snapshot_ref) and snapshot_ref != "" and
          not bundle_local?(state, node_id, snapshot_ref) and store_reachable?(state, node_id) do
-      {:restore, node_id, snapshot_ref}
+      # The co-located instance to restore onto AND then relight from. On a true
+      # local miss no instance reports the snapshot, so WakeInstance.select falls to a
+      # mem-eligible pick sized for the session's mem_mib (the owning-instance branch
+      # would apply only if an instance still reported it). Fail-open: no eligible
+      # instance leaves the bare node_id, byte-identical to pre-co-location behaviour.
+      {:restore, node_id, restore_dial_id(state, session, node_id, snapshot_ref), snapshot_ref}
     else
       :skip
+    end
+  end
+
+  # The instance key to restore the session bundle onto (and relight from). Prefers
+  # the instance still reporting the snapshot; else a mem-eligible pick (the true
+  # local-miss case), sized by the catalog mem_mib; else the bare node_id.
+  defp restore_dial_id(state, session, node_id, snapshot_ref) do
+    need_mib =
+      case WorkloadCatalog.fetch(state.catalog_table, Map.get(session, :workload)) do
+        {:ok, entry} -> Map.get(entry, :mem_mib) || 512
+        _ -> 512
+      end
+
+    case Embervm.WakeInstance.select(node_id,
+           table: state.capacity_table,
+           workload: Map.get(session, :workload),
+           need_mib: need_mib,
+           warmth_key: :session_snapshots,
+           warmth_ref: snapshot_ref
+         ) do
+      {:ok, dial_id} -> dial_id
+      {:error, _} -> node_id
     end
   end
 
@@ -1191,10 +1248,10 @@ defmodule Embervm.SessionManager do
   # caller falls through to node_for_relight's existing check, which the daemon (or
   # the placement layer) degrades to snapshot_lost exactly as it would without this
   # feature (fail-open warmth). Idempotent on the daemon side.
-  defp restore_bundle(state, node_id, workload, snapshot_ref) do
+  defp restore_bundle(state, node_id, dial_id, workload, snapshot_ref) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
 
-    case safe_restore_artifact(state, node_id, ref) do
+    case safe_restore_artifact(state, node_id, dial_id, ref) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_SESSION, snapshot_ref, resp)
         :ok
@@ -1210,11 +1267,15 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp safe_restore_artifact(state, node_id, %ArtifactRef{} = ref) do
+  defp safe_restore_artifact(state, node_id, dial_id, %ArtifactRef{} = ref) do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
+    # Stamp the vendor from the NODE (a node-scoped fact shared across its instances),
+    # but DIAL the specific owning/target instance (dial_id): the restore must land on
+    # the same co-located instance the relight then dials (PR-B0b), mirroring
+    # ServingManager.safe_restore_artifact.
     req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       # The `artifact_restore` span (Task 11): a child span around the
       # RestoreArtifact RPC (the restore-on-miss read path). Identity up front,
       # bytes-moved/skipped stamped from the response.
@@ -1342,7 +1403,7 @@ defmodule Embervm.SessionManager do
 
   defp finish_relight_active(state, session_id, outcome) do
     case outcome do
-      {:ok, node_id, vm_id, relight_ms} ->
+      {:ok, node_id, vm_id, relight_ms, dial_id} ->
         session = get_session!(state, session_id)
 
         _ =
@@ -1357,7 +1418,7 @@ defmodule Embervm.SessionManager do
 
         state = clear_bank_failures(state, session_id)
 
-        case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id) do
+        case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id) do
           {:ok, pid} ->
             Logger.info("embervm session relit",
               session_id: session_id,
@@ -1472,10 +1533,22 @@ defmodule Embervm.SessionManager do
     evict_orphan_snapshots(state, facts)
   end
 
-  # vm session_id -> {node_id, vm_id}; snapshot session_id -> {node_id, snapshot_ref}.
+  # vm session_id -> {node_id, vm_id, dial_id}; snapshot session_id ->
+  # {node_id, snapshot_ref}. dial_id is the REPORTING instance's channel key (its
+  # instance_id, else the node name) so an adopted live session dials the co-located
+  # instance actually running the VM, not the node-name alias (PR-B0b).
   defp index_session_vms(facts) do
     for f <- facts, v <- Map.get(f, :session_vms, []) || [], into: %{} do
-      {v.session_id, {f.configured_id, v.vm_id}}
+      {v.session_id, {f.configured_id, v.vm_id, fact_dial_id(f)}}
+    end
+  end
+
+  # The channel key for a capacity fact: its instance_id when present, else the node
+  # name (legacy/single-instance facts resolve via the node-name alias, unchanged).
+  defp fact_dial_id(fact) do
+    case Map.get(fact, :instance_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> Map.get(fact, :configured_id)
     end
   end
 
@@ -1501,8 +1574,8 @@ defmodule Embervm.SessionManager do
       # The node reports a LIVE VM for this session: rebind it (residency + process),
       # regardless of whether ETS thinks it is running/banking/relighting.
       Map.has_key?(live_vms, sid) ->
-        {node_id, vm_id} = Map.fetch!(live_vms, sid)
-        adopt_live(state, session, node_id, vm_id)
+        {node_id, vm_id, dial_id} = Map.fetch!(live_vms, sid)
+        adopt_live(state, session, node_id, vm_id, dial_id)
 
       # No live VM, but the node reports its SNAPSHOT: it is banked (or a bank/relight
       # that did not finish leaving only the snapshot). Heal ETS to banked.
@@ -1525,7 +1598,7 @@ defmodule Embervm.SessionManager do
   # Rebind a live session VM to a fresh process (idempotent). Forces ETS to running
   # from node truth (a banking/relighting/creating limbo whose node actually holds a
   # live VM), writes the residency fact + vm_id, and starts a process if none runs.
-  defp adopt_live(state, session, node_id, vm_id) do
+  defp adopt_live(state, session, node_id, vm_id, dial_id) do
     SessionStore.adopt_state(state.session_store, session.session_id, :running)
     SessionStore.adopt_residency(state.session_store, session.session_id, node_id, vm_id)
 
@@ -1536,7 +1609,7 @@ defmodule Embervm.SessionManager do
         state
 
       [] ->
-        case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id) do
+        case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id) do
           {:ok, _pid} ->
             Logger.info("embervm session adopted (live)", session_id: session.session_id, node_id: node_id)
             state
@@ -1799,11 +1872,15 @@ defmodule Embervm.SessionManager do
 
   defp evict_snapshot_on_node(state, node_id, snapshot_ref, _reported_id, workload)
        when is_binary(node_id) and is_binary(snapshot_ref) do
+    # Dial the instance holding this banked session bundle on disk (session_snapshots),
+    # not the node-name alias (co-location safe, PR-B0b). Fail-open to node_id.
+    dial_key = Embervm.WakeInstance.dial_for_session_bundle(state.capacity_table, node_id, snapshot_ref)
+
     # A lifecycle span (Task 9): reclaiming a snapshot bundle from node disk. Root
     # span (eviction is sweep/adoption-driven, no caller trace).
     Tracer.with_span "embervm.session.evict",
                      %{attributes: %{"ember.node_id" => node_id}} do
-      with {:ok, channel} <- state.channel_fun.(node_id) do
+      with {:ok, channel} <- state.channel_fun.(dial_key) do
         req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: snapshot_ref}
 
         try do
@@ -1819,8 +1896,8 @@ defmodule Embervm.SessionManager do
       # EvictSnapshot, on every eviction trigger (banked TTL, disk pressure,
       # destroy, expiry, orphan sweep) since they all funnel through here. Sessions
       # carry no volume/generation, so no pairing guard applies (unlike the
-      # stateful class's volume-generation guard).
-      _ = evict_remote_bundle(state, node_id, workload, snapshot_ref)
+      # stateful class's volume-generation guard). Dial the SAME owning instance.
+      _ = evict_remote_bundle(state, dial_key, workload, snapshot_ref)
 
       :ok
     end
@@ -1967,7 +2044,10 @@ defmodule Embervm.SessionManager do
   end
 
   defp destroy_vm(state, %{node_id: node_id, vm_id: vm_id}) when is_binary(node_id) and is_binary(vm_id) do
-    with {:ok, channel} <- state.channel_fun.(node_id) do
+    # Dial the OWNING instance running this live vm_id, not the node-name alias.
+    dial_key = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id)
+
+    with {:ok, channel} <- state.channel_fun.(dial_key) do
       opts = state.session_opts
 
       destroy_fun =
