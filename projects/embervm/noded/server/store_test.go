@@ -392,6 +392,69 @@ func TestExportArtifactBaseReportsExported(t *testing.T) {
 	}
 }
 
+// TestExportArtifactBaseIsAsyncWhenQueueStarted proves the fast-durability-export
+// fix: when the async export queue is running (as it is in production, via
+// StartStoreLoops), a BASE ExportArtifact returns a FAST ACK (not-skipped,
+// bytes_moved 0) without streaming the base inside the RPC, and the base's bytes
+// land in the store asynchronously via the queue worker. This is what keeps a
+// multi-minute large-base upload from holding the CP->noded gRPC call open long
+// enough for an on-path L4 idle timeout to reap the idle flow. Non-BASE kinds stay
+// synchronous (covered by the stateful/volume export tests above).
+func TestExportArtifactBaseIsAsyncWhenQueueStarted(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+	// Start the queue so ExportArtifact takes the async BASE path (production shape).
+	s.startExportQueue(ctx)
+
+	ref := "bazel-query__abcdef012345"
+	workload := "bazel-query"
+	digest := "img@sha256:cafef00d"
+
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel-query"}})
+	s.bases.readyBuild(ref, workload, digest, "/shim/ready", 2048)
+
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
+
+	prefix := "base/amd/bazel-query/bazel-query__abcdef012345"
+
+	resp, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+	})
+	if err != nil {
+		t.Fatalf("ExportArtifact: %v", err)
+	}
+	// Fast ack: the RPC returned before the upload; the enqueue path reports 0 bytes
+	// moved and not-skipped (the real outcome is settled asynchronously).
+	if resp.GetSkipped() {
+		t.Fatal("async base export ack should not be skipped")
+	}
+	if resp.GetBytesMoved() != 0 {
+		t.Fatalf("async base export ack bytes_moved = %d, want 0 (upload is deferred)", resp.GetBytesMoved())
+	}
+
+	// The bytes land in the store asynchronously via the queue worker.
+	waitForExport(t, fs, prefix)
+}
+
+// TestExportArtifactBaseMissingLocalFailsEvenAsync proves the async BASE path still
+// validates presence synchronously: a base with no local files is refused
+// FAILED_PRECONDITION at the RPC (never a false fast-ack for an absent base), so the
+// control plane can still distinguish "not there" from "export in flight".
+func TestExportArtifactBaseMissingLocalFailsEvenAsync(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	s.startExportQueue(context.Background())
+
+	_, err := s.ExportArtifact(context.Background(), &nodev1.ExportArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "ghost", Ref: "gone"},
+	})
+	if err == nil {
+		t.Fatal("async base export of an absent base should still fail FAILED_PRECONDITION")
+	}
+}
+
 // baseExportedInStatus finds the workload's capacity entry in NodeStatus whose
 // snapshot_ref matches and returns its exported flag; false if not reported.
 func baseExportedInStatus(s *Server, workload, ref string) bool {

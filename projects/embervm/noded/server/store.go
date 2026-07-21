@@ -283,6 +283,26 @@ func (s *Server) StartStoreLoops(ctx context.Context) {
 // local artifact is absent. It NEVER touches a live VM: the ref names a down,
 // banked artifact (post-bank-commit), so enumeration reads only its on-disk
 // files.
+//
+// A BASE artifact is exported ASYNCHRONOUSLY (fast-durability-export fix): a large
+// base memfile is up to a few GB, and streaming it to SeaweedFS inside this RPC
+// held the control-plane -> noded gRPC connection open for minutes with no wire
+// activity (noded busy io.Copy-ing to the store). Neither side sets gRPC keepalive
+// (the noded server sets no keepalive.ServerParameters, so its MaxConnectionIdle /
+// MaxConnectionAge are infinite, and the control-plane Mint client sends no
+// keepalive pings), so a long in-progress call with zero server->client frames is
+// eventually reaped by an on-path L4 idle timeout (Cilium is eBPF L4 with no L7
+// proxy in this path, so a stale conntrack/NAT entry for a no-packet TCP flow is
+// the closer, not a mesh proxy) and the CP saw {:error, "the connection is closed"}
+// mid-upload. Every SMALL base (memfile <=768MB) landed; the LARGE ones (bazel-query
+// ~3G, scratch-k8s/sandbox-session ~2G, semgrep ~1.5G) never did. Rather than keep a
+// multi-minute synchronous call alive with client keepalive, a BASE export is
+// enqueued onto the existing bounded async export queue (scoped to EXACTLY this ref,
+// never the blanket enqueueReconcileExports sweep, which must not ship the ~245
+// leaked base versions into the store) and the RPC returns a fast ack. The control
+// plane confirms completion by reading the additive exported flag on WorkloadCapacity
+// and re-issues on its 60s reconcile if a queued export was dropped or lost. Every
+// other (SMALL) kind keeps the synchronous path.
 func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactRequest) (*nodev1.ExportArtifactResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; export unavailable")
@@ -299,6 +319,15 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	files, err := enumerateArtifactFiles(localDir)
 	if err != nil || len(files) == 0 {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: local artifact %q absent or empty (nothing to export)", prefix)
+	}
+	// BASE: hand the (validated, present) ref to the async queue and ack fast, so a
+	// multi-minute upload never holds the meshed RPC open past a proxy idle timeout.
+	// The queue is started in StartStoreLoops; when it is not running (a Server built
+	// without the loops, e.g. a test), fall through to the synchronous path so the
+	// export still happens rather than being silently dropped.
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE && s.exportCh != nil {
+		s.enqueueExport(ref)
+		return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: false, Generation: 0}, nil
 	}
 	generation := s.artifactGeneration(ref)
 	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
