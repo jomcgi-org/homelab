@@ -759,18 +759,16 @@ postgres:
   # emits a small Opaque Secret (templates/cnpg-backup-s3-secret.yaml) holding
   # these same low-value dummy keys. There is no 1Password S3 item to reuse
   # because SeaweedFS S3 has no real credentials in this cluster.
-  # Landed DISABLED on purpose. Enabling continuous WAL archiving to a not-yet-
-  # created bucket, or turning archive_mode on, can trigger a CNPG rolling
-  # switchover of the primary, which must not run unwatched against the freshly
-  # fsck-recovered monolith-pg. The live enable is a deliberate, watched step:
-  # (1) pre-create the s3://monolith-pg-backups bucket via `weed shell`
-  #     s3.bucket.create (NOT the chart bucket hook, which flips SeaweedFS S3 to
-  #     auth-enforced and breaks every S3 workload),
-  # (2) confirm the standby is caught up (instances: 2, streaming),
-  # (3) flip enabled: true and watch the Cluster's ContinuousArchiving condition
-  #     plus the first ScheduledBackup completing.
+  # ENABLED 2026-07-21 after the watched preconditions were met: the
+  # s3://monolith-pg-backups bucket was pre-created via `weed shell` s3.bucket.create
+  # (NOT the chart bucket hook, which flips SeaweedFS S3 to auth-enforced), and the
+  # monolith-pg standby was confirmed caught up (2/2, streaming, primary monolith-pg-3).
+  # Continuous WAL archiving + a daily base backup now write to the in-cluster
+  # SeaweedFS S3 (a different volume set, so backups survive the Pg-volume-corruption
+  # class that bit us on 2026-07-21). NOT off-cluster DR: a node/cluster loss takes
+  # both the Pg volume and the backups; off-cluster replication is a separate follow-up.
   backup:
-    enabled: false
+    enabled: true
     # SeaweedFS S3 gateway (path-style, plaintext HTTP), same endpoint the app
     # workloads use.
     endpointURL: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
