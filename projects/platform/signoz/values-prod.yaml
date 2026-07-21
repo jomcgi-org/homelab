@@ -217,27 +217,46 @@ signoz:
         cpu: 4
         memory: 10Gi
     persistence:
+      # LEFT AT 150Gi DELIBERATELY. Kubernetes PVCs cannot shrink in place
+      # (Longhorn allowVolumeExpansion only grows a volume); lowering this value
+      # would be ignored by the running PVC or force a destructive recreate. The
+      # storage audit's suggested 150Gi -> 100Gi ceiling reduction therefore
+      # requires a separate, planned PVC migration and is OUT OF SCOPE here. This
+      # PR frees space WITHIN the existing 150Gi by tightening system-log TTLs
+      # below; the filesystem holds only ~48G of 147G, so headroom is ample.
       size: 150Gi
-    # System table TTL settings (days) - prevents unbounded growth
+    # System table TTL settings (days) - prevents unbounded growth.
+    #
+    # These are ClickHouse's own SYSTEM-table logs, not SigNoz app telemetry.
+    # App-data retention (logs_v2, traces, samples_v4 metrics) is NOT a chart
+    # value: it is set via the SigNoz retention API and stored in the SigNoz DB,
+    # so it is out of GitOps scope and untouched here. Durable observability data
+    # (the ~30G of logs/traces/metrics the owner wants) is unaffected by these
+    # system-log TTLs.
+    #
+    # Reduced per the storage audit (2026-07-20): zookeeper_log alone held ~11.5G
+    # at a 7d TTL, so the high-volume system logs are cut 7d -> 3d. traceLog and
+    # processorsProfileLog were already at 3d. sessionLog kept at 7d (tiny, and
+    # useful for auth debugging).
     clickhouseOperator:
       queryLog:
-        ttl: 7
+        ttl: 3
       partLog:
-        ttl: 7
+        ttl: 3
       traceLog:
         ttl: 3
       metricLog:
-        ttl: 7
+        ttl: 3
       asynchronousMetricLog:
-        ttl: 7
+        ttl: 3
       sessionLog:
         ttl: 7
       zookeeperLog:
-        ttl: 7
+        ttl: 3
       processorsProfileLog:
         ttl: 3
       queryViewsLog:
-        ttl: 7
+        ttl: 3
     # Zookeeper is a subchart of clickhouse
     zookeeper:
       # 7-day working_set ~1.13Gi against a 1Gi request: raised 1 -> 1.25 to

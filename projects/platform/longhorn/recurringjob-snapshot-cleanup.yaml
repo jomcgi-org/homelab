@@ -1,0 +1,47 @@
+# Longhorn RecurringJob: purge stale, removable snapshots on a schedule.
+#
+# Why this exists: the storage audit (docs/plans/2026-07-20-cluster-storage-rightsizing.md)
+# found old system snapshots inflating Longhorn actualSize far beyond live data
+# (a 136d-old ClickHouse snapshot holding ~54G of blocks, a 7d SeaweedFS chain, a
+# 36d zookeeper/mcp-pg chain). Nothing was pruning them, so blocks accumulated.
+#
+# Task choice: "snapshot-cleanup" (NOT "snapshot-delete"). snapshot-cleanup only
+# removes REMOVABLE snapshots: Longhorn system snapshots (auto-created during
+# replica rebuilds / volume operations) and snapshots already marked for deletion.
+# It coalesces and purges those blocks. It does NOT delete usable user restore
+# points, and it never creates a new snapshot. This is the conservative choice:
+# it frees the retained-block bloat the audit flagged without ever removing a
+# deliberate restore point.
+#
+# Durable-asset safety (SeaweedFS = S3, CNPG = Pg): because snapshot-cleanup only
+# touches removable/system snapshots, it cannot delete a usable restore point on
+# the SeaweedFS or CNPG volumes even though it applies to the "default" group
+# (see below). The audit's confirm-only item (the SeaweedFS 136d snapshot) is a
+# USER-visible snapshot decision and is deliberately NOT auto-pruned here: if that
+# snapshot is a usable restore point, snapshot-cleanup leaves it in place, and its
+# removal stays a manual, human-confirmed action. If it is merely a removable
+# system snapshot, cleanup reclaiming it is safe by definition.
+#
+# Grouping: group "default". Longhorn adds the "default" group to any volume that
+# has no other recurring-job label, so this covers all current cluster volumes
+# (clickhouse, seaweedfs, monolith-pg, zookeeper, embervm-oplog, etc.) with one
+# job. Safe here precisely because the task is removable-only.
+#
+# retain: 1. For snapshot-cleanup the retain count is not used to prune user
+# snapshots (it only affects snapshot/backup-creating tasks); it is set to a small
+# value for schema clarity. concurrency 1 keeps the cleanup gentle on the cluster.
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: stale-snapshot-cleanup
+  namespace: longhorn
+spec:
+  # Weekly, Sunday 03:15 UTC (off-peak). Cleanup is idempotent and cheap; weekly
+  # is frequent enough to keep removable-snapshot bloat bounded without churn.
+  cron: "15 3 * * 0"
+  task: snapshot-cleanup
+  groups:
+    - default
+  retain: 1
+  concurrency: 1
+  labels: {}
