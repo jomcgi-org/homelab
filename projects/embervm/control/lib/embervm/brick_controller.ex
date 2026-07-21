@@ -347,9 +347,10 @@ defmodule Embervm.BrickController do
   # The per-class plan: what replica count to ACT with this tick, plus the
   # autoscale decision log. Mode :off is the legacy static reconcile untouched.
   # Every other mode computes the autoscale target off the LIVE /scale read;
-  # in this phase (observe-only) ALL modes still act statically and the target
-  # is logged, never written. A failed /scale read degrades that class to the
-  # static path for the tick (the decision needs a trustworthy current).
+  # :observe still acts statically and only logs the target, the acting modes
+  # assert the live current and move it in the enabled direction(s). A failed
+  # /scale read degrades that class to the static path for the tick (the
+  # decision needs a trustworthy current).
   defp plan_class(state, class, now) do
     name = class_name(class)
     static = class_desired(class)
@@ -357,12 +358,23 @@ defmodule Embervm.BrickController do
     with true <- state.mode != :off,
          {:ok, current} <- read_current(state, name) do
       {target, reason} = desired(current, signals(state, class, now))
-      state = note_decision(state, name, current, target, reason, now)
-      {static, state}
+      acting = acting_replicas(state, static, current, target)
+      state = note_decision(state, name, current, target, reason, now, acting == target)
+      {acting, state}
     else
       _ -> {static, state}
     end
   end
+
+  # What the tick WRITES. :observe always asserts the static desired (legacy
+  # behavior, decisions log-only). The acting modes assert the LIVE current as
+  # their baseline (the controller keeps re-asserting every tick, staying the
+  # single writer) and move it only in the direction(s) the mode enables:
+  # :up acts on increases (min-floor jumps included) and leaves decreases as
+  # would-scale logs; :full (phase 3) acts on decreases too.
+  defp acting_replicas(%{mode: :observe}, static, _current, _target), do: static
+  defp acting_replicas(_state, _static, current, target) when target > current, do: target
+  defp acting_replicas(_state, _static, current, _target), do: current
 
   defp read_current(state, name) do
     deployment = state.deployment_prefix <> name
@@ -402,24 +414,27 @@ defmodule Embervm.BrickController do
     }
   end
 
-  # Log the decision and stamp the direction cooldown. Stamped in observe mode
-  # too, so the observed log stream paces exactly as the acting modes would
-  # (one would-scale line per cooldown, not one per tick).
-  defp note_decision(state, name, current, target, reason, now) do
+  # Log the decision and stamp the direction cooldown. Stamped on would-scale
+  # decisions (observe, or a direction the mode has not enabled) too, so the
+  # observed log stream paces exactly as the acting modes would (one line per
+  # cooldown, not one per tick) and a mode flip inherits sane cooldown state.
+  defp note_decision(state, name, current, target, reason, now, acted?) do
+    verb = if acted?, do: "scaling", else: "would scale"
+
     cond do
       target == current ->
         state
 
       target > current ->
         Logger.info(
-          "brick autoscale: would scale class #{name} from #{current} to #{target} (reason=#{reason})"
+          "brick autoscale: #{verb} class #{name} from #{current} to #{target} (reason=#{reason})"
         )
 
         %{state | last_up_at: Map.put(state.last_up_at, name, now)}
 
       target < current ->
         Logger.info(
-          "brick autoscale: would scale class #{name} from #{current} to #{target} (reason=#{reason})"
+          "brick autoscale: #{verb} class #{name} from #{current} to #{target} (reason=#{reason})"
         )
 
         %{state | last_down_at: Map.put(state.last_down_at, name, now)}
