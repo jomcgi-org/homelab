@@ -1086,6 +1086,173 @@ defmodule Embervm.BaseBuilderTest do
   # Seed one node's per-workload base fact (snapshot_ref, base_state, exported)
   # into an existing brick capacity row so the export reconcile can read it.
   # Merges into the row put_brick/4 already wrote, keyed the same way.
+  # -- restore-first (hydrate-on-miss, base-durability PR-2) -------------------
+
+  # Bring a workload to a recorded-and-built state (snapshot_ref set,
+  # built_signature == signature), then flip the node fact so the base reads
+  # AFFIRMATIVELY absent (BASE_BUILD_STATE_NONE): the recorded-but-absent trigger.
+  # Returns {builder, agent, table}. The initial export is drained so it never
+  # perturbs later assertions.
+  defp build_then_report_base_absent(opts) do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+    build_fun = Keyword.get(opts, :build_fun, fn :fake_channel, _req -> {:ok, resp("snap1")} end)
+
+    builder =
+      start_builder(
+        [
+          nodes: [%{id: "node-4/big", address: "a"}],
+          capacity_table: table,
+          status_writer: recording_status_writer(agent),
+          build_fun: build_fun,
+          # Signal each export so the immediate post-build one can be drained.
+          export_fun: fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+            send(test_pid, {:exported, ref.ref})
+            {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+          end
+        ] ++ Keyword.take(opts, [:restore_fun, :op_log, :op_log_mod, :hydrate_poll_interval_ms, :hydrate_poll_max])
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+    assert_receive {:exported, "snap1"}, 1_000
+
+    # The node now AFFIRMATIVELY reports the recorded base absent (a cold-start /
+    # node replacement / scratch loss), the sole restore-first trigger.
+    put_base_fact(table, "node-4", "big", "w", "", :BASE_BUILD_STATE_NONE, false)
+
+    {builder, agent, table}
+  end
+
+  test "restore-first: a recorded-but-absent base is HYDRATED, not rebuilt" do
+    test_pid = self()
+
+    # A restore that fast-ACKs accepted=true (noded's async download path).
+    restore_fun = fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+      send(test_pid, {:restore_called, ref.ref})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    build_calls = start_recorder()
+
+    {builder, _agent, table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50,
+        # Count any SECOND build: a hydrate must not rebuild.
+        build_fun: fn :fake_channel, _req ->
+          Agent.update(build_calls, &[:build | &1])
+          {:ok, resp("snap1")}
+        end
+      )
+
+    # Re-reconcile with the SAME (unchanged) spec: restore-first must trigger.
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive {:restore_called, "snap1"}, 1_000
+
+    # The async download "lands": flip the node fact back to READY so the poll
+    # sees the base present and the hydrate completes.
+    put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_READY, true)
+
+    # Give the poll a moment; exactly ONE build (the initial one) ever ran.
+    Process.sleep(80)
+    assert Agent.get(build_calls, &length(&1)) == 1
+  end
+
+  test "restore-first falls back to BuildBase on an S3 miss (FAILED_PRECONDITION)" do
+    test_pid = self()
+
+    # noded reports the ref is not in the store: a fast, distinguishable miss.
+    restore_fun = fn :fake_channel, _req ->
+      {:error, %GRPC.RPCError{status: 9, message: "not present in store"}}
+    end
+
+    {builder, _agent, _table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50,
+        build_fun: fn :fake_channel, _req ->
+          send(test_pid, :rebuilt)
+          {:ok, resp("snap1")}
+        end
+      )
+
+    # Re-reconcile: restore-first tries, gets FAILED_PRECONDITION, falls back to a
+    # rebuild AT ONCE (no poll wait).
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive :rebuilt, 1_000
+  end
+
+  test "restore-first falls back to BuildBase when the hydrate never lands (poll timeout)" do
+    test_pid = self()
+
+    # The restore is accepted but the base NEVER becomes READY (node died
+    # mid-download, S3 flaked): the poll must time out and rebuild.
+    restore_fun = fn :fake_channel, _req ->
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    {builder, _agent, _table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        # A tiny poll budget so the timeout fallback is fast and deterministic.
+        hydrate_poll_interval_ms: 2,
+        hydrate_poll_max: 3,
+        build_fun: fn :fake_channel, _req ->
+          send(test_pid, :rebuilt)
+          {:ok, resp("snap1")}
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive :rebuilt, 1_000
+  end
+
+  test "restore-first does NOT fire on a not-yet-reported base (post-build race guard)" do
+    # After a build, before the node re-reports the base READY, there is a window
+    # where the workload has a recorded ref but NO node fact. A reconcile in that
+    # window must NOT hydrate (it would be a spurious restore of a base that is
+    # actually present); it must idempotent-no-op instead.
+    test_pid = self()
+    agent = start_recorder()
+    table = new_cap_table()
+
+    restore_fun = fn :fake_channel, _req ->
+      send(test_pid, :restore_called)
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap1")} end,
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    # No base fact is ever written for "w" (the node has not re-reported). A
+    # reconcile here must NOT hydrate.
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    refute_receive :restore_called, 200
+  end
+
+  # Seed one node's per-workload base fact (snapshot_ref, base_state, exported)
+  # into an existing brick capacity row so the export reconcile can read it.
+  # Merges into the row put_brick/4 already wrote, keyed the same way.
+
   defp put_base_fact(table, node_id, pod_uid, workload, ref, base_state, exported) do
     existing =
       case :ets.lookup(table, {node_id, pod_uid}) do

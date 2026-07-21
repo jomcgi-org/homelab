@@ -345,6 +345,17 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 // Idempotent: an artifact already present locally with a matching checksum is a
 // skipped no-op. FAILED_PRECONDITION when the store is disabled, or the store
 // copy is absent/incomplete/mismatched.
+//
+// BASE restores are ASYNC (base-durability PR-2): a base is a multi-GB S3
+// download, and holding this RPC open for the minutes it takes lets the
+// Cilium/eBPF datapath reap the idle flow's conntrack entry mid-transfer ("the
+// connection is closed"), the same failure that forced base EXPORT async. So a
+// BASE restore that genuinely needs a download runs the cheap presence + sku +
+// already-local checks SYNCHRONOUSLY (so a store-miss is a fast, distinguishable
+// FAILED_PRECONDITION the caller falls back to rebuild on, and an already-local
+// base is an inline skipped no-op), then ENQUEUES the download onto a bounded,
+// deduped queue and fast-ACKs accepted=true. The caller polls NodeStatus for the
+// base to appear READY. Every other (small) kind still restores inline.
 func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; restore unavailable")
@@ -383,6 +394,29 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 			return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
 		}
 	}
+	// A genuine download is needed. The store copy must be present to attempt it:
+	// a not-present copy is FAILED_PRECONDITION (fast, distinguishable), so the
+	// caller falls back to rebuild AT ONCE rather than waiting a timeout for a
+	// base that is not in S3. A transport error probing presence is also
+	// FAILED_PRECONDITION (we cannot prove the copy exists; do not enqueue a
+	// doomed download). This gate is shared by both the async BASE path and the
+	// inline small-kind path.
+	if perr != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: store presence probe failed: %v", prefix, perr)
+	}
+	if !present {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: not present in store", prefix)
+	}
+
+	// BASE: fast-ACK and download asynchronously (multi-GB; must not hold the RPC).
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
+		s.enqueueRestore(ref, prefix, localDir)
+		return &nodev1.RestoreArtifactResponse{Accepted: true}, nil
+	}
+
+	// Every other (small) kind restores inline: the download is quick enough that
+	// the idle-flow-reap risk does not apply, and the caller's existing inline
+	// restore-on-miss semantics are unchanged.
 	moved, generation, err := s.store.Restore(ctx, prefix, localDir)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: %v", prefix, err)
@@ -580,10 +614,12 @@ type exportJob struct {
 	key string // the store prefix, the dedupe key
 }
 
-// startExportQueue launches the bounded export-worker pool. It is idempotent and
-// a no-op when the store is disabled (nil): with no store there is nothing to
-// export. Called once from the daemon entrypoint after the server is built. The
-// workers run until ctx is cancelled (daemon shutdown), draining fire-and-forget.
+// startExportQueue launches the bounded export- AND restore-worker pools. It is
+// idempotent and a no-op when the store is disabled (nil): with no store there is
+// nothing to export or restore. Called once from the daemon entrypoint after the
+// server is built. The workers run until ctx is cancelled (daemon shutdown),
+// draining fire-and-forget. The restore queue shares this lifecycle (one
+// sync.Once) so both pools start and stop together.
 func (s *Server) startExportQueue(ctx context.Context) {
 	if s.store == nil {
 		return
@@ -592,6 +628,10 @@ func (s *Server) startExportQueue(ctx context.Context) {
 		s.exportCh = make(chan exportJob, exportQueueDepth)
 		for i := 0; i < exportQueueWorkers; i++ {
 			go s.exportWorker(ctx)
+		}
+		s.restoreCh = make(chan restoreJob, restoreQueueDepth)
+		for i := 0; i < restoreQueueWorkers; i++ {
+			go s.restoreWorker(ctx)
 		}
 	})
 }
@@ -772,6 +812,110 @@ func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) 
 		}
 	}
 	s.enqueueExport(ref)
+}
+
+// ---- async BASE-restore queue ----------------------------------------------
+
+// restoreQueueWorkers is the bounded worker pool draining the restore queue. Two
+// overlaps a large base download with a second without letting downloads pile
+// unbounded. A base restore is demand-driven (the CP triggers one when a base is
+// needed and missing), so contention is naturally low; two is a comfortable
+// ceiling that still overlaps a fresh-node multi-base hydrate.
+const restoreQueueWorkers = 2
+
+// restoreQueueDepth bounds the buffered restore-enqueue channel. An enqueue that
+// would block (queue full) is DROPPED, not awaited: the RPC has already fast-ACKed
+// accepted=true, so a dropped enqueue simply means the base does not appear READY
+// and the CP re-triggers (or falls back to rebuild) on its poll timeout. It is
+// generous because the dedupe set (held enqueue-through-completion) already caps
+// distinct in-flight restores to one per prefix.
+const restoreQueueDepth = 64
+
+// restoreJob names one BASE artifact to download, carrying its resolved store
+// prefix (already vendor/legacy-resolved by resolveRestorePrefix) and local dir
+// so the worker needs no further resolution. Keyed (in the dedupe set) by prefix
+// so a re-triggered restore of an in-flight base is dropped.
+type restoreJob struct {
+	ref      *nodev1.ArtifactRef
+	prefix   string // resolved store prefix, the dedupe key
+	localDir string
+}
+
+// enqueueRestore schedules a BASE download for async write-back. It is
+// non-blocking: a full queue drops the enqueue (the CP's poll re-triggers or
+// falls back to rebuild), and an already-in-flight prefix is a no-op. The dedupe
+// key is held enqueue-THROUGH-COMPLETION (cleared in runRestoreJob's defer, not on
+// dequeue), so a re-triggered restore of a base still downloading never starts a
+// second concurrent download of the same prefix (the node's queue is the real
+// dedupe guard for the CP's retriggers). It no-ops when the store is disabled or
+// the queue is not started.
+func (s *Server) enqueueRestore(ref *nodev1.ArtifactRef, prefix, localDir string) {
+	if s.store == nil || s.restoreCh == nil || prefix == "" {
+		return
+	}
+	s.restoreDedupeMu.Lock()
+	if _, queued := s.restoreDedupe[prefix]; queued {
+		s.restoreDedupeMu.Unlock()
+		return // already downloading (or queued); a re-trigger is a no-op
+	}
+	s.restoreDedupe[prefix] = struct{}{}
+	s.restoreDedupeMu.Unlock()
+
+	select {
+	case s.restoreCh <- restoreJob{ref: ref, prefix: prefix, localDir: localDir}:
+	default:
+		// Queue full: drop and un-mark so a later CP re-trigger can re-enqueue. The
+		// base simply does not appear READY; the CP re-triggers or rebuilds.
+		s.restoreDedupeMu.Lock()
+		delete(s.restoreDedupe, prefix)
+		s.restoreDedupeMu.Unlock()
+		s.logger.Warn("noded: restore queue full; dropping enqueue (CP will re-trigger or rebuild)", "artifact", prefix)
+	}
+}
+
+// restoreWorker drains the restore queue, running each download fire-and-forget.
+// A failure is logged, never retried inline (the base simply does not appear
+// READY and the CP re-triggers or rebuilds); a success re-registers the base so
+// NodeStatus advertises it READY. It exits when ctx is done or the channel closes.
+func (s *Server) restoreWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-s.restoreCh:
+			if !ok {
+				return
+			}
+			s.runRestoreJob(ctx, job)
+		}
+	}
+}
+
+// runRestoreJob performs one queued BASE download: the multi-GB store.Restore
+// (checksum-verified per file), then re-registers the base via
+// ReconcileBasesFromDisk so a NodeStatus projection advertises it
+// BASE_BUILD_STATE_READY and a later wake sees it. It always clears the dedupe key
+// (guaranteed cleanup via defer, mirroring the export worker's crash-safety
+// discipline) so a subsequent CP re-trigger can re-enqueue. A download failure is
+// logged and dropped: the base stays absent, the CP's poll times out and it
+// rebuilds. It uses ctx (daemon lifetime), NOT the original RPC's context, which
+// returned at the fast-ACK; that is the whole point of going async.
+func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
+	defer func() {
+		s.restoreDedupeMu.Lock()
+		delete(s.restoreDedupe, job.prefix)
+		s.restoreDedupeMu.Unlock()
+	}()
+
+	moved, generation, err := s.store.Restore(ctx, job.prefix, job.localDir)
+	if err != nil {
+		s.logger.Warn("noded: async base restore failed (CP will re-trigger or rebuild)", "artifact", job.prefix, "err", err)
+		return
+	}
+	s.reregisterRestored(job.ref)
+	s.exported.mark(job.prefix, generation)
+	s.logger.Info("noded: restored base off store", "artifact", job.prefix, "bytesMoved", moved, "generation", generation)
+	s.signalChange()
 }
 
 // ---- store reachability probe ----------------------------------------------

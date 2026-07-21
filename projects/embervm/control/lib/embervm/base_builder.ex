@@ -112,6 +112,7 @@ defmodule Embervm.BaseBuilder do
     ExportArtifactRequest,
     NodeService,
     ResourceSpec,
+    RestoreArtifactRequest,
     Trace,
     ZipSource
   }
@@ -271,6 +272,14 @@ defmodule Embervm.BaseBuilder do
     # real NodeService.Stub.export_artifact/2 over a per-call channel; tests
     # inject a fake to assert export fires after a build and on the reconcile.
     export_fun = Keyword.get(opts, :export_fun, &default_export/2)
+    # Base-durability PR-2: the RestoreArtifact seam that HYDRATES a recorded base
+    # back onto a node that lacks it locally (cold-start / node-replacement),
+    # turning a rebuild into an S3 download. Defaults to the real
+    # NodeService.Stub.restore_artifact/2 over a per-call channel; tests inject a
+    # fake to assert the restore-first/fallback decision. noded fast-ACKs a BASE
+    # restore (accepted=true) and downloads async, so the CP polls NodeStatus for
+    # the base to appear READY (see spawn_hydrate).
+    restore_fun = Keyword.get(opts, :restore_fun, &default_restore/2)
     # Op-log seam for the audit-only :artifact_exported record (no projection
     # table; the log itself is the record). Mirrors the sweeper managers.
     op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
@@ -281,6 +290,17 @@ defmodule Embervm.BaseBuilder do
     # deterministically); production uses the module default.
     export_reconcile_interval_ms =
       Keyword.get(opts, :export_reconcile_interval_ms, @export_reconcile_interval_ms)
+
+    # Base-durability PR-2: how long a hydrate worker polls NodeStatus for the
+    # base to appear READY before giving up and falling back to BuildBase. noded
+    # downloads the base async (a multi-GB, multi-minute S3 read), so the CP polls
+    # rather than blocks. hydrate_poll_interval_ms is the poll cadence,
+    # hydrate_poll_max the attempt ceiling; interval * max bounds the wait before
+    # a stuck/failed hydrate (node died mid-download, S3 flaked) rebuilds instead.
+    # Defaults cover a ~3G base download comfortably (5s * 90 = 7.5 min); tests
+    # shrink both so a fallback path asserts deterministically without real sleep.
+    hydrate_poll_interval_ms = Keyword.get(opts, :hydrate_poll_interval_ms, 5_000)
+    hydrate_poll_max = Keyword.get(opts, :hydrate_poll_max, 90)
 
     status_writer = Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3)
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
@@ -335,10 +355,18 @@ defmodule Embervm.BaseBuilder do
       disconnect_fun: disconnect_fun,
       evict_fun: evict_fun,
       export_fun: export_fun,
+      restore_fun: restore_fun,
       op_log: op_log,
       op_log_mod: op_log_mod,
       tenant: tenant,
       export_reconcile_interval_ms: export_reconcile_interval_ms,
+      hydrate_poll_interval_ms: hydrate_poll_interval_ms,
+      hydrate_poll_max: hydrate_poll_max,
+      # In-flight hydrate guard: workloads with a hydrate worker running, so a
+      # re-reconcile during the async download does not spawn a second hydrate for
+      # the same base (mirrors the node queue's role for exports/evicts). A worker
+      # clears its own entry on completion via the {:hydrate_done, name} message.
+      hydrating: MapSet.new(),
       runtime_images: runtime_images,
       capacity_table: capacity_table,
       status_writer: status_writer,
@@ -422,6 +450,13 @@ defmodule Embervm.BaseBuilder do
     {:noreply, retry_workload(state, name)}
   end
 
+  # Base-durability PR-2: a hydrate worker finished (hydrated, fell back, or
+  # crashed in `after`). Clear the in-flight guard so a later reconcile can hydrate
+  # (or build) again; the fallback path already re-drove a build via :reconcile.
+  def handle_info({:hydrate_done, name}, state) do
+    {:noreply, update_in(state.hydrating, &MapSet.delete(&1, name))}
+  end
+
   # Base-durability PR-1: the periodic export reconcile fired. Re-issue export for
   # any current base present-but-unexported, then re-arm the timer.
   def handle_info(:export_reconcile, state) do
@@ -472,6 +507,28 @@ defmodule Embervm.BaseBuilder do
         # that broke only the runtime resolution.
         write_base_status(state, w, {:failed, zip_runtime_error(state, w)})
 
+      should_hydrate?(state, w, node_id) ->
+        # Base-durability PR-2: restore-first (hydrate-on-miss). The CP recorded a
+        # base (snapshot_ref set, signature unchanged) but the node AFFIRMATIVELY
+        # reports it absent (base_state NONE, not merely unreported): a cold-start,
+        # a node replacement, or scratch loss. Instead of rebuilding, download the
+        # SAME content-addressed ref back from S3. noded fast-ACKs and downloads
+        # async, so this spawns a worker that triggers RestoreArtifact then polls
+        # NodeStatus for the base to appear READY; it falls back to BuildBase on an
+        # S3 miss (FAILED_PRECONDITION) or a poll timeout.
+        #
+        # SCOPE (deliberate): restore-first covers ONLY the recorded-but-absent
+        # case. A NEW build and a spec-change REBUILD both target a ref the CP
+        # cannot know before building (noded derives <workload>__hash(digest +
+        # revision + vendor) node-side), so they correctly stay BuildBase.
+        # Rollback-to-a-predecessor is intentionally a rebuild, NOT a hydrate:
+        # under N=1 S3 retention (Joe, 2026-07-21) no predecessor ref persists in
+        # the store to hydrate from, so a signature->ref history would be dead
+        # weight. See docs/plans/2026-07-21-embervm-base-durability-and-cross-vendor.md.
+        state
+        |> mark_hydrating(name)
+        |> spawn_hydrate(w)
+
       w.built_signature == signature(w) and w.snapshot_ref != nil ->
         # Desired base already built and recorded: idempotent no-op. (The watcher
         # separately writes observedGeneration for a generation-only change.)
@@ -488,6 +545,282 @@ defmodule Embervm.BaseBuilder do
         |> write_base_status(w, :building)
         |> maybe_start_build(node_id)
     end
+  end
+
+  # -- restore-first (hydrate-on-miss, base-durability PR-2) --------------------
+
+  # Should this workload's recorded base be HYDRATED (S3 restore) rather than
+  # rebuilt? True only when ALL four guards hold (fail-safe: any unmet guard falls
+  # through to the ordinary build/no-op branches):
+  #
+  #   1. a base is recorded (snapshot_ref set) AND the spec is unchanged
+  #      (built_signature == signature): we are restoring the SAME ref we would
+  #      otherwise rebuild, never papering over a spec change (whose target ref is
+  #      unknowable pre-build anyway);
+  #   2. the node AFFIRMATIVELY reports that base absent (base_state NONE for the
+  #      workload). This is the KEY guard: a workload the node has not yet reported
+  #      (no fact) is NOT hydrated, so the race window right after a build (base
+  #      built, node has not re-reported READY) never triggers a spurious restore;
+  #   3. no build is already queued or in flight for the workload (do not race a
+  #      hydrate against a build);
+  #   4. no hydrate is already in flight for the workload (the in-flight guard, so
+  #      a re-reconcile during the async download does not spawn a second worker).
+  defp should_hydrate?(state, w, node_id) do
+    is_binary(w.snapshot_ref) and w.built_signature == signature(w) and
+      node_reports_base_absent?(state, node_id, w.name) and
+      not already_targeting?(state, node_id, w.name, signature(w)) and
+      not MapSet.member?(state.hydrating, w.name)
+  end
+
+  # The node AFFIRMATIVELY reports the workload's base absent: a fact exists for
+  # the workload on the node AND its base_state is NONE. A missing fact (node not
+  # reported yet, or the base present-but-unprojected) is NOT "absent": returning
+  # false there is what keeps the post-build race from hydrating (guard 2 above).
+  defp node_reports_base_absent?(state, node_id, workload) do
+    case node_base_fact(state, node_id, workload) do
+      {:ok, %{base_state: :BASE_BUILD_STATE_NONE}} -> true
+      _ -> false
+    end
+  end
+
+  defp mark_hydrating(state, name) do
+    update_in(state.hydrating, &MapSet.put(&1, name))
+  end
+
+  # Spawn a monitored-free (fire-and-forget) hydrate worker for one recorded base.
+  # The worker triggers RestoreArtifact (vendor-stamped) then polls NodeStatus for
+  # the base to appear READY, since noded downloads a BASE async (fast-ACK
+  # accepted=true, multi-GB download off the RPC). It falls back to a BuildBase by
+  # casting :reconcile for the workload on an S3 miss (FAILED_PRECONDITION) or a
+  # poll timeout; on hydrate success it records :artifact_restored{kind:"base"} so
+  # the hydrate-vs-build ratio is auditable from the op-log. It always sends
+  # {:hydrate_done, name} so the GenServer clears the in-flight guard.
+  #
+  # Not spawn_monitor (unlike a build worker): a hydrate result never mutates
+  # BaseBuilder's build state (the base's presence lives on the node's own fact,
+  # read back on the next status), so a crashed worker only needs the in-flight
+  # guard cleared, which the {:hydrate_done, ...} in `after` guarantees.
+  defp spawn_hydrate(state, w) do
+    owner = self()
+    name = w.name
+    node_id = w.node_id
+    ref = w.snapshot_ref
+    address = state.node_addr[node_id]
+    connect_fun = state.connect_fun
+    disconnect_fun = state.disconnect_fun
+    restore_fun = state.restore_fun
+    capacity_table = state.capacity_table
+    poll_interval = state.hydrate_poll_interval_ms
+    poll_max = state.hydrate_poll_max
+    op_log = state.op_log
+    op_log_mod = state.op_log_mod
+    tenant = state.tenant
+    clock = state.clock
+
+    spawn(fn ->
+      try do
+        outcome =
+          run_hydrate(%{
+            owner: owner,
+            name: name,
+            node_id: node_id,
+            ref: ref,
+            address: address,
+            connect_fun: connect_fun,
+            disconnect_fun: disconnect_fun,
+            restore_fun: restore_fun,
+            capacity_table: capacity_table,
+            poll_interval: poll_interval,
+            poll_max: poll_max
+          })
+
+        case outcome do
+          :hydrated ->
+            record_base_restored(op_log_mod, op_log, tenant, clock, name, ref)
+
+          {:fallback, reason} ->
+            Logger.info(
+              "embervm base builder: hydrate #{name}/#{ref} fell back to build (#{inspect(reason)})"
+            )
+
+            # Re-drive a build for the workload. The reconcile is idempotent and
+            # re-reads current desc/placement, so a spec that changed under the
+            # hydrate is handled correctly.
+            reconcile(owner, hydrate_fallback_desc(w))
+        end
+      after
+        send(owner, {:hydrate_done, name})
+      end
+    end)
+
+    state
+  end
+
+  # Drive one hydrate attempt: RestoreArtifact, then (on accepted) poll NodeStatus
+  # for the base to become READY. Returns :hydrated on success, {:fallback, reason}
+  # on an S3 miss / restore failure / poll timeout (the caller then rebuilds).
+  defp run_hydrate(ctx) do
+    case dial_restore(ctx) do
+      {:ok, %{skipped: true}} ->
+        # The base was already present locally when the RPC ran (a race with
+        # another restore, or the node reported stale): treat as hydrated, the
+        # node's next status advertises it READY.
+        :hydrated
+
+      {:ok, %{accepted: true}} ->
+        poll_base_ready(ctx, ctx.poll_max)
+
+      {:ok, other} ->
+        # An unexpected non-accepted, non-skipped response (e.g. an inline restore
+        # that reported bytes_moved without accepted, from a daemon that predates
+        # the async change). The base is present; treat as hydrated.
+        _ = other
+        :hydrated
+
+      {:error, {:grpc, :failed_precondition, _msg}} ->
+        # S3 does not hold the ref (or the store is disabled): rebuild AT ONCE, no
+        # wait. This is the fast, distinguishable miss the async ack guarantees.
+        {:fallback, :not_present_in_store}
+
+      {:error, reason} ->
+        {:fallback, {:restore_failed, reason}}
+    end
+  end
+
+  # Poll the node fact until the workload's base shows READY (hydrate landed), or
+  # the attempt budget is exhausted (fall back to build). Reads the SHARED capacity
+  # table the node registry keeps fresh, so the poll sees the async download's
+  # ReconcileBasesFromDisk re-registration as soon as it lands. Resolves the fact
+  # by instance_id (find_capacity_fact), matching how node_base_fact reads it (the
+  # builder's node_id is an instance_id "node/pod_uid", not the daemon's node_id).
+  defp poll_base_ready(_ctx, 0), do: {:fallback, :poll_timeout}
+
+  defp poll_base_ready(ctx, attempts_left) do
+    case find_capacity_fact(ctx.capacity_table, ctx.node_id) do
+      {:ok, fact} ->
+        case get_in(fact, [:workloads, ctx.name]) do
+          %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: ref} when ref == ctx.ref ->
+            :hydrated
+
+          _ ->
+            sleep_then_poll(ctx, attempts_left)
+        end
+
+      :error ->
+        sleep_then_poll(ctx, attempts_left)
+    end
+  end
+
+  defp sleep_then_poll(ctx, attempts_left) do
+    Process.sleep(ctx.poll_interval)
+    poll_base_ready(ctx, attempts_left - 1)
+  end
+
+  # Issue the vendor-stamped RestoreArtifact over a per-call channel, normalising a
+  # GRPC.RPCError into a {:grpc, status_atom, message} tuple so run_hydrate can
+  # distinguish an S3 miss (FAILED_PRECONDITION, fast fallback) from other errors.
+  defp dial_restore(ctx) do
+    case ctx.connect_fun.(ctx.address) do
+      {:ok, channel} ->
+        req =
+          Embervm.RestoreVendor.stamp(
+            ctx.capacity_table,
+            stamp_key(ctx.capacity_table, ctx.node_id),
+            %RestoreArtifactRequest{
+              artifact: %ArtifactRef{
+                kind: :ARTIFACT_KIND_BASE,
+                workload: ctx.name,
+                ref: ctx.ref
+              },
+              trace: %Trace{workload: ctx.name}
+            }
+          )
+
+        try do
+          case ctx.restore_fun.(channel, req) do
+            {:ok, resp} -> {:ok, resp}
+            {:error, err} -> {:error, normalize_grpc_error(err)}
+          end
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        after
+          ctx.disconnect_fun.(channel)
+        end
+
+      {:error, reason} ->
+        {:error, {:connect, reason}}
+    end
+  end
+
+  # Resolve the anchor key RestoreVendor.stamp reads the CPU vendor off. The
+  # builder's node_id is an instance_id ("node/pod_uid"), which NodeCapacity.fetch
+  # does NOT resolve (its binary form matches the daemon's node_id field, its tuple
+  # form matches the {configured_id, pod_uid} ETS key). So resolve the instance's
+  # own capacity fact by instance_id and hand stamp the {configured_id, pod_uid}
+  # tuple, the exact per-instance key. Falls back to the raw node_id string when no
+  # fact is found (stamp then resolves "" and noded maps it to the legacy alias, so
+  # today's single-vendor fleet still restores; correct once vendors are reported).
+  defp stamp_key(table, node_id) do
+    case find_capacity_fact(table, node_id) do
+      {:ok, %{configured_id: cfg, pod_uid: pod}} when is_binary(cfg) -> {cfg, pod || ""}
+      _ -> node_id
+    end
+  end
+
+  # Map a GRPC.RPCError to {:grpc, status_atom, message}; pass other errors through.
+  # FAILED_PRECONDITION (status 9) is noded's S3-not-present / store-disabled /
+  # sku-mismatch signal, which run_hydrate treats as an immediate rebuild fallback.
+  defp normalize_grpc_error(%GRPC.RPCError{status: 9, message: msg}),
+    do: {:grpc, :failed_precondition, msg}
+
+  defp normalize_grpc_error(%GRPC.RPCError{status: status, message: msg}),
+    do: {:grpc, status, msg}
+
+  defp normalize_grpc_error(other), do: other
+
+  # The desc a hydrate fallback re-drives: reconstruct the minimal build descriptor
+  # from the workload's own recorded fields, so the reconcile rebuilds the SAME
+  # base the hydrate failed to restore. class/zip are optional map keys.
+  defp hydrate_fallback_desc(w) do
+    %{
+      name: w.name,
+      namespace: w.namespace,
+      generation: w.generation,
+      class: Map.get(w, :class),
+      image_ref: w.image_ref,
+      zip: Map.get(w, :zip),
+      guest_port: w.guest_port,
+      ready_path: w.ready_path,
+      vcpus: w.vcpus,
+      mem_mib: w.mem_mib,
+      init_env: w.init_env
+    }
+  end
+
+  # Append the audit-only :artifact_restored op recording a base HYDRATE (kind
+  # "base"), the partner signal to :base_built, so the hydrate-vs-build ratio is
+  # auditable from the log alone. Best-effort: an append failure never crashes the
+  # hydrate worker (the durable fact is the restored bytes on the node).
+  defp record_base_restored(op_log_mod, op_log, tenant, clock, workload, ref) do
+    op = %Embervm.OpLog.Op{
+      kind: :artifact_restored,
+      tenant: tenant,
+      principal: "system:base:#{workload}",
+      workload: workload,
+      ts: clock.(),
+      payload: %{kind: "base", ref: ref}
+    }
+
+    _ = op_log_mod.append(op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm base builder: artifact_restored append raised",
+        workload: workload,
+        error: inspect(e)
+      )
+
+      :ok
   end
 
   # -- node set updates (discovery) --------------------------------------------
@@ -1536,6 +1869,18 @@ defmodule Embervm.BaseBuilder do
   # to SeaweedFS; a re-export is a checksum-compare skip and returns fast.
   defp default_export(channel, %ExportArtifactRequest{} = request) do
     NodeService.Stub.export_artifact(channel, request, timeout: 600_000)
+  end
+
+  # RestoreArtifact one base ref from the object store (base-durability PR-2). noded
+  # FAST-ACKs a BASE restore (accepted=true) and downloads async, so this is NOT a
+  # long-held call: it returns in milliseconds with the ack (or a fast
+  # FAILED_PRECONDITION on an S3 miss). The short default per-call timeout is
+  # therefore correct here (unlike the slow BuildBase path); the multi-minute
+  # download runs on the node's own restore queue, and the CP polls NodeStatus for
+  # READY rather than holding this RPC open (the whole reason the download went
+  # async, mirroring the export idle-close lesson).
+  defp default_restore(channel, %RestoreArtifactRequest{} = request) do
+    NodeService.Stub.restore_artifact(channel, request)
   end
 
   # A gRPC-level failure (e.g. FAILED_PRECONDITION for an image the daemon does
