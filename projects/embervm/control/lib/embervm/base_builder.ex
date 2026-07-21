@@ -320,6 +320,16 @@ defmodule Embervm.BaseBuilder do
       # pid -> %{node_id, name, signature} for the CURRENT build worker, so a
       # result from a superseded worker (or for a since-changed spec) is dropped.
       workers: %{},
+      # In-flight base exports, a MapSet of {workload, ref} (fast-durability-export
+      # fix). A base export now returns a fast ack and completes asynchronously on
+      # the node, but a large base's upload takes longer than the 60s export
+      # reconcile interval, so the sweep would otherwise pile up duplicate concurrent
+      # ExportArtifact calls for the same ref that is still uploading. spawn_export
+      # skips a ref already tracked here and clears it when the spawned worker
+      # finishes (success OR failure), so the reconcile re-issues only once the prior
+      # attempt has settled. Keyed by {workload, ref} (not ref alone) so two
+      # workloads that ever shared a ref never mask each other.
+      exports_in_flight: MapSet.new(),
       build_fun: build_fun,
       connect_fun: connect_fun,
       disconnect_fun: disconnect_fun,
@@ -418,6 +428,12 @@ defmodule Embervm.BaseBuilder do
     state = export_reconcile(state)
     schedule_export_reconcile(state)
     {:noreply, state}
+  end
+
+  # A base export worker finished (success OR failure): clear its in-flight key so
+  # the next export reconcile may re-issue it. See spawn_export for the dedup model.
+  def handle_info({:export_done, key}, state) do
+    {:noreply, %{state | exports_in_flight: MapSet.delete(state.exports_in_flight, key)}}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -1016,12 +1032,12 @@ defmodule Embervm.BaseBuilder do
 
     # Base-durability PR-1: drive the durability floor. Export the freshly-built
     # current base to the object store on the node that built it. Fire-and-forget
-    # in a spawned worker (the RPC blocks on the store write and must never freeze
-    # this GenServer); the periodic export reconcile is the backstop if this
+    # in a spawned worker (the RPC returns a fast ack and the node uploads
+    # asynchronously); the periodic export reconcile is the backstop if this
     # result is lost or the store was down. Idempotent per checksum, so a redundant
     # export (e.g. an already_built no-op build that reports the same ref) is a
     # cheap skipped no-op on the node.
-    spawn_export(state, w.node_id, w.name, w.snapshot_ref)
+    state = spawn_export(state, w.node_id, w.name, w.snapshot_ref)
 
     write_base_status(state, w, :built)
   end
@@ -1036,13 +1052,13 @@ defmodule Embervm.BaseBuilder do
   # current-base-present-but-unexported (never the superseded refs, which PR-1
   # must not ship into the store), so it cannot hammer.
   defp export_reconcile(state) do
-    Enum.each(state.workloads, fn {_name, w} ->
-      if current_base_present_but_unexported?(state, w) do
-        spawn_export(state, w.node_id, w.name, w.snapshot_ref)
+    Enum.reduce(state.workloads, state, fn {_name, w}, acc ->
+      if current_base_present_but_unexported?(acc, w) do
+        spawn_export(acc, w.node_id, w.name, w.snapshot_ref)
+      else
+        acc
       end
     end)
-
-    state
   end
 
   # A workload's current base needs (re-)export when it has a built ref placed on
@@ -1080,65 +1096,110 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  # Spawn a fire-and-forget ExportArtifact worker for one base ref on its node.
-  # ExportArtifact is idempotent per checksum (an already-exported base is a
-  # skipped no-op), so a lost result or a retry is harmless; failures are logged,
-  # not retried here (the periodic reconcile is the backstop). Not monitored: an
-  # export result never mutates BaseBuilder state (durability lives on the node's
-  # exported flag, read back on the next status). The op-log audit entry is
-  # written from the worker only on success so the log records a real durability
-  # landing, never a mere attempt.
+  # Spawn a fire-and-forget ExportArtifact worker for one base ref on its node,
+  # unless an export for the same {workload, ref} is already in flight. Returns the
+  # (possibly updated) state with the in-flight key marked.
+  #
+  # In-flight tracking (fast-durability-export fix): the ExportArtifact RPC now
+  # returns a FAST ACK (milliseconds) and the node uploads a large base
+  # asynchronously (minutes for a 3GB memfile). This CP-side {workload, ref} set does
+  # NOT prevent duplicate UPLOADS: it clears on the fast ack, long before the async
+  # upload finishes, so it cannot be what serializes the multi-minute write. noded's
+  # own exportDedupe (keyed on the store prefix, held from enqueue THROUGH
+  # store.Export completion) is the real guard that prevents concurrent uploads of the
+  # same ref. What this set does is trim reconcile RPC CHURN: without it the 60s sweep
+  # would fire a fresh ExportArtifact RPC (each opening a gRPC channel) for a ref whose
+  # prior fast-ack call has already returned, every sweep, while the node is still
+  # uploading. A ref already tracked is skipped; the worker signals :export_done on
+  # completion (success OR failure) so the key clears, and clearing on failure too is
+  # what keeps a failed export re-issuable by the next reconcile rather than skipped
+  # forever.
+  #
+  # The :export_done signal is sent from a top-level `after`, so it fires on EVERY exit
+  # path, including a raise in connect_fun or disconnect_fun (which are outside the
+  # inner catch). Without that, a worker that crashed before signalling would leave the
+  # key stuck in exports_in_flight forever, permanently skipping that ref's re-export
+  # and defeating the reconcile backstop (a silent durability gap).
+  #
+  # ExportArtifact is idempotent per checksum (an already-exported base is a skipped
+  # no-op), so a lost result or a retry is harmless; failures are logged, not retried
+  # here (the periodic reconcile is the backstop). Not monitored: an export result
+  # never mutates BaseBuilder state (durability lives on the node's exported flag,
+  # read back on the next status). The op-log audit entry is written from the worker
+  # only on a successful ack so the log records a real export request, never a mere
+  # crash (see record_base_exported for the request-vs-durable-completion nuance).
   defp spawn_export(state, node_id, workload, ref) do
-    address = state.node_addr[node_id]
-    connect_fun = state.connect_fun
-    disconnect_fun = state.disconnect_fun
-    export_fun = state.export_fun
-    op_log = state.op_log
-    op_log_mod = state.op_log_mod
-    tenant = state.tenant
-    clock = state.clock
+    key = {workload, ref}
 
-    spawn(fn ->
-      result =
-        case connect_fun.(address) do
-          {:ok, channel} ->
-            try do
-              export_fun.(channel, %ExportArtifactRequest{
-                artifact: %ArtifactRef{
-                  kind: :ARTIFACT_KIND_BASE,
-                  workload: workload,
-                  ref: ref
-                },
-                trace: %Trace{workload: workload}
-              })
-            catch
-              kind, reason -> {:error, {kind, reason}}
-            after
-              disconnect_fun.(channel)
+    if MapSet.member?(state.exports_in_flight, key) do
+      # An export RPC for this exact ref is already in flight; skip a redundant one.
+      state
+    else
+      owner = self()
+      address = state.node_addr[node_id]
+      connect_fun = state.connect_fun
+      disconnect_fun = state.disconnect_fun
+      export_fun = state.export_fun
+      op_log = state.op_log
+      op_log_mod = state.op_log_mod
+      tenant = state.tenant
+      clock = state.clock
+
+      spawn(fn ->
+        try do
+          result =
+            case connect_fun.(address) do
+              {:ok, channel} ->
+                try do
+                  export_fun.(channel, %ExportArtifactRequest{
+                    artifact: %ArtifactRef{
+                      kind: :ARTIFACT_KIND_BASE,
+                      workload: workload,
+                      ref: ref
+                    },
+                    trace: %Trace{workload: workload}
+                  })
+                catch
+                  kind, reason -> {:error, {kind, reason}}
+                after
+                  disconnect_fun.(channel)
+                end
+
+              {:error, reason} ->
+                {:error, {:connect, reason}}
             end
 
-          {:error, reason} ->
-            {:error, {:connect, reason}}
+          case result do
+            {:ok, resp} ->
+              record_base_exported(op_log_mod, op_log, tenant, clock, workload, ref, resp)
+
+            other ->
+              Logger.warning(
+                "embervm base builder: ExportArtifact #{workload}/#{ref} failed: #{inspect(other)}"
+              )
+          end
+        after
+          # Always clear the in-flight key: on success, on a logged failure, and on any
+          # raise from connect_fun/disconnect_fun that skips the case above. A stuck key
+          # would permanently skip this ref's re-export.
+          send(owner, {:export_done, key})
         end
+      end)
 
-      case result do
-        {:ok, resp} ->
-          record_base_exported(op_log_mod, op_log, tenant, clock, workload, ref, resp)
-
-        other ->
-          Logger.warning(
-            "embervm base builder: ExportArtifact #{workload}/#{ref} failed: #{inspect(other)}"
-          )
-      end
-    end)
-
-    :ok
+      %{state | exports_in_flight: MapSet.put(state.exports_in_flight, key)}
+    end
   end
 
   # Append the audit-only :artifact_exported op (no projection table; the log
   # itself is the record), mirroring the restore-audit recorders in the session/
   # serving/stateful managers. Best-effort: an append failure must never crash
   # the export worker (the durable fact is the exported bytes, not this row).
+  #
+  # For a BASE this now fires on the FAST ACK, i.e. it records the export REQUEST, not
+  # the durable landing: the async upload completes minutes later, so this ts is eager
+  # by the upload duration. Do NOT read this op-log entry as a durability timestamp;
+  # the authoritative durability signal is the `exported` flag on WorkloadCapacity
+  # (which flips only after the node's upload lands). bytes_moved is 0 on the fast ack.
   defp record_base_exported(op_log_mod, op_log, tenant, clock, workload, ref, resp) do
     op = %Embervm.OpLog.Op{
       kind: :artifact_exported,

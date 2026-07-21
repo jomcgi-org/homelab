@@ -1008,6 +1008,81 @@ defmodule Embervm.BaseBuilderTest do
     refute_receive {:exported, "snap1"}, 200
   end
 
+  test "the reconcile does not fire a second export RPC for a ref already in flight, and re-issues once it settles" do
+    # fast-durability-export fix: the CP-side in-flight set trims reconcile RPC churn
+    # (noded's exportDedupe is what serializes the actual multi-minute upload). While
+    # an ExportArtifact call for a ref is in flight, the reconcile must NOT spawn a
+    # second export RPC for it, and MUST re-issue once the in-flight one settles (so a
+    # failed export is not skipped forever). export_fun blocks until released, holding
+    # the call in flight; this fake conflates the RPC and the upload, which is what the
+    # CP set keys on (the spawn is skipped, not the upload).
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+      # Report this worker's pid so the test can release it, and that the export
+      # started, then block until released (standing in for a slow upload).
+      send(test_pid, {:export_started, ref.ref, self()})
+
+      receive do
+        :release -> :ok
+      after
+        2_000 -> :ok
+      end
+
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_fun: export_fun,
+        # Timer disabled: the test drives :export_reconcile explicitly so dedup is
+        # asserted deterministically, not on a racing cadence.
+        export_reconcile_interval_ms: 0
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    # The immediate post-build export starts and is now blocked (in flight).
+    assert_receive {:export_started, "snap1", worker1}, 1_000
+
+    # The node still reports the base present-but-unexported (the slow upload has
+    # not landed). Two reconcile sweeps while the export is in flight must NOT spawn
+    # a second export for the same ref.
+    put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_READY, false)
+    send(builder, :export_reconcile)
+    send(builder, :export_reconcile)
+    refute_receive {:export_started, "snap1", _}, 200
+
+    # Release the in-flight upload; its worker sends :export_done, clearing tracking.
+    send(worker1, :release)
+
+    # A fresh reconcile re-issues the export (still reported unexported) exactly
+    # because the prior attempt settled. assert_receive waits for the new worker,
+    # which cannot appear until :export_done cleared the in-flight key.
+    assert_eventually(fn ->
+      send(builder, :export_reconcile)
+
+      receive do
+        {:export_started, "snap1", worker2} ->
+          send(worker2, :release)
+          true
+      after
+        50 -> false
+      end
+    end)
+  end
+
   # Seed one node's per-workload base fact (snapshot_ref, base_state, exported)
   # into an existing brick capacity row so the export reconcile can read it.
   # Merges into the row put_brick/4 already wrote, keyed the same way.
