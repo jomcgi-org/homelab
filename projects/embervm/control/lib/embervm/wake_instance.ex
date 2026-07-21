@@ -47,16 +47,19 @@ defmodule Embervm.WakeInstance do
 
   With one instance per node the node's only instance IS the owner (it banked
   everything) and IS the sole cold candidate, so selection always returns that
-  instance and the caller dials its `instance_id`, which the dual-keyed channel
-  resolves identically to the old node-name dial. Output-equivalent, so this deploys
-  later at the re-canary with no behaviour change today.
+  instance and the caller dials its `instance_id`, which is the single key
+  NodeChannel is registered under (post-B0c the node-name alias is gone). The dial
+  key is the instance_id in every case.
 
   ## legacy / test facts without an instance_id
 
   A capacity fact that carries no `:instance_id` (a statically-seeded instance or a
-  test fixture that predates the field) falls back to the fact's `node_id`, so the
-  dial still resolves via the node-name alias exactly as before. The selection logic
-  is unchanged; only the dial key degrades gracefully.
+  test fixture that predates the field) falls back to the fact's `node_id`. For a
+  node-scoped instance that node_id IS the key it registers under, so the dial still
+  resolves; a dial-home fact always carries `:instance_id`, so this fallback is not
+  hit for co-located bricks (and post-B0c a bare node name no longer misroutes: it
+  fails closed to `:unknown_node`). The selection logic is unchanged; only the dial
+  key degrades gracefully.
   """
 
   alias Embervm.{BrickLedger, NodeCapacity}
@@ -102,7 +105,9 @@ defmodule Embervm.WakeInstance do
   The channel key of the instance on `node_id` currently RUNNING `vm_id` (its
   per-instance capacity fact reports the `vm_id` in `stateful_vms`), or the bare
   `node_id` when no reporting instance is found (a legacy/single-instance fact, or
-  the VM not yet re-reported after a roll: the node-name alias still resolves it).
+  the VM not yet re-reported after a roll). Post-B0c the bare `node_id` resolves only
+  for a node-scoped instance; a co-located VM not yet re-reported fails closed to
+  `:unknown_node` (a retryable miss) rather than misrouting to a sibling brick.
 
   This is the post-wake dial resolution the sweeper's bank/checkpoint/resolve
   workers use so a StopStateful/ResolveStateful lands on the instance that actually

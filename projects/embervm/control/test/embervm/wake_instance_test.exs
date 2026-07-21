@@ -279,8 +279,11 @@ defmodule Embervm.WakeInstanceTest do
                )
     end
 
-    test "a fact without an instance_id falls back to the node name (legacy/dual-key)", %{table: table} do
+    test "a fact without an instance_id falls back to the node name (legacy/node-scoped)", %{table: table} do
       # Mirror a statically-seeded / pre-field fact: no :instance_id, keyed by node.
+      # Post-B0c this bare node name is still a valid key for a node-scoped instance
+      # (its instance_id IS the node name), so the fallback resolves; only a co-located
+      # dial-home fact (which always carries :instance_id) would bypass it.
       NodeCapacity.put(table, "node-4", %{
         node_id: "node-4",
         configured_id: "node-4",

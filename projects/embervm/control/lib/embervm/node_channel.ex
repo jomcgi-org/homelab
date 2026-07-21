@@ -97,12 +97,11 @@ defmodule Embervm.NodeChannel do
   @doc """
   Drop `node_id` from the address map entirely and erase any cached channel, so a
   subsequent `get/1` returns `{:error, :unknown_node}` rather than re-dialing a
-  dead endpoint. Used by `Embervm.NodeRegistry` when an instance expires: under the
-  dual-key registration (brick co-location foundation, Step 1) an instance is
-  registered under BOTH its instance_id (`"node/pod_uid"`) and its node-name alias,
-  and both must be removed on expiry so no stale alias points at a torn-down pod's
-  address. Idempotent: removing an unknown key is a no-op. Synchronous so the caller
-  knows the map no longer resolves the key before it drops its own runtime entry.
+  dead endpoint. Used by `Embervm.NodeRegistry` when an instance expires: post-B0c an
+  instance is registered under its instance_id (`"node/pod_uid"`) alone, so expiry
+  removes that single key and no stale endpoint points at a torn-down pod's address.
+  Idempotent: removing an unknown key is a no-op. Synchronous so the caller knows the
+  map no longer resolves the key before it drops its own runtime entry.
   """
   @spec remove_address(GenServer.server(), String.t()) :: :ok
   def remove_address(server \\ __MODULE__, node_id) do
