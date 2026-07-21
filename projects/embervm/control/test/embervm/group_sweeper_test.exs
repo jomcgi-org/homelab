@@ -128,7 +128,7 @@ defmodule Embervm.GroupSweeperTest do
       stats_base: Keyword.get(opts, :stats_base, "http://serving:9902"),
       splices_table: splices,
       bank_fun: bank_fun,
-      channel_fun: fn _node -> {:ok, :ch} end,
+      channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
       stop_group_member_fun: stop_group_member_fun,
       delete_group_network_fun: delete_group_network_fun,
       evict_snapshot_fun: evict_snapshot_fun,
@@ -717,5 +717,61 @@ defmodule Embervm.GroupSweeperTest do
     set_scrape(ctx, reading("group-5410", 1, 3))
     assert :ok = GroupSweeper.sweep(ctx.sweeper)
     assert {:ok, %{state: :running}} = GroupStore.get(ctx.store, "gi-1")
+  end
+
+  # -- instance-key unification (PR-B0b) ---------------------------------------
+
+  # A per-instance capacity fact carrying the per-instance group inventory the
+  # sweeper's dial resolution reads (keyed on group_instance_id).
+  defp group_brick(ctx, node_id, pod_uid, opts) do
+    NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
+      configured_id: node_id,
+      node_id: node_id,
+      pod_uid: pod_uid,
+      instance_id: "#{node_id}/#{pod_uid}",
+      serving_subnet_cidr: "10.98.0.0/24",
+      max_live_vms: 8,
+      live_vms: 0,
+      workloads: %{},
+      group_member_vms: Keyword.get(opts, :group_member_vms, []),
+      group_bundle_sets: Keyword.get(opts, :group_bundle_sets, [])
+    })
+  end
+
+  test "group teardown dials the OWNER instance_id even when the node-name alias points at a sibling" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    ctx = start_stack(channel_fun: capture_channel)
+    group_workload(ctx, "grp-a", 5410, %{max_lifetime_seconds: 100})
+
+    # Two co-located instances on node-4. pod-owner reports the live group gi-1;
+    # pod-sibling does not (the last registrant the node alias would collapse to). The
+    # destroy (StopGroupMember + DeleteGroupNetwork) must dial pod-owner.
+    group_brick(ctx, "node-4", "pod-sibling", group_member_vms: [])
+
+    group_brick(ctx, "node-4", "pod-owner",
+      group_member_vms: [
+        %{vm_id: "vm-gi-1-a", group_instance_id: "gi-1", member_name: "a", ip: "10.101.0.10", healthy: true},
+        %{vm_id: "vm-gi-1-b", group_instance_id: "gi-1", member_name: "b", ip: "10.101.0.11", healthy: true}
+      ]
+    )
+
+    running_group(ctx, "gi-1", "grp-a")
+
+    advance(ctx.clock_agent, 200_000)
+    set_scrape(ctx, reading("group-5410", 0, 0))
+    GroupSweeper.sweep(ctx.sweeper)
+
+    assert {:ok, %{state: :destroyed}} = GroupStore.get(ctx.store, "gi-1")
+
+    keys = Agent.get(dialed, & &1)
+    assert "node-4/pod-owner" in keys
+    refute "node-4" in keys
+    refute "node-4/pod-sibling" in keys
   end
 end
