@@ -208,6 +208,10 @@ defmodule Embervm.SessionManager do
       # The op-log the restore audit record (:artifact_restored) is appended to.
       # Injected for tests; production uses the SQLite backend.
       op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # The backend module dispatched below, threaded alongside :op_log (the
+      # server address) so a non-default backend never requires editing this
+      # module. Defaults to the same SQLite module :op_log defaults to.
+      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
       # Extra opts threaded into every started Embervm.Session (the daemon seams),
       # so a test can inject a fake session_assign into the spawned process.
       session_opts: Keyword.get(opts, :session_opts, []),
@@ -1333,7 +1337,7 @@ defmodule Embervm.SessionManager do
       }
     }
 
-    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    _ = state.op_log_mod.append(state.op_log, op)
     :ok
   rescue
     e ->

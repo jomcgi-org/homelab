@@ -1,8 +1,8 @@
 defmodule Embervm.OpLog.Compactor do
   @moduledoc """
   The scheduled op-log sweeper (ADR embervm/002 rule 2 + rule 3): a supervised
-  GenServer that periodically drives `Embervm.OpLog.SQLite.compact/2` to reclaim
-  space, then logs one structured summary line.
+  GenServer that periodically drives the configured op-log backend's `compact/2`
+  to reclaim space, then logs one structured summary line.
 
   It owns NO SQLite connection and adds NO second writer. Every batch is a
   discrete `GenServer.call` to the op-log's single-writer process, so appends
@@ -36,6 +36,11 @@ defmodule Embervm.OpLog.Compactor do
   def init(opts) do
     state = %{
       op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # The backend module dispatched for compact/2 + db_size/1, threaded
+      # alongside :op_log (the server address) so a non-default backend never
+      # requires editing this module. Defaults to the same SQLite module the
+      # :op_log server address defaults to.
+      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms)
     }
 
@@ -75,7 +80,7 @@ defmodule Embervm.OpLog.Compactor do
   end
 
   defp sweep_loop(state, now_ms, totals) do
-    case Embervm.OpLog.SQLite.compact(state.op_log, now_ms) do
+    case state.op_log_mod.compact(state.op_log, now_ms) do
       {:ok, batch} ->
         totals = %{
           results_deleted: totals.results_deleted + batch.results_deleted,
@@ -106,7 +111,7 @@ defmodule Embervm.OpLog.Compactor do
 
   defp log_summary(state, totals) do
     db_size =
-      case Embervm.OpLog.SQLite.db_size(state.op_log) do
+      case state.op_log_mod.db_size(state.op_log) do
         {:ok, size} -> size
         {:error, _} -> nil
       end

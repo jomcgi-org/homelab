@@ -46,9 +46,16 @@ defmodule Embervm.DrainCoordinator do
 
   @impl true
   def init(opts) do
+    # The backend module the default append_fun below dispatches through,
+    # threaded alongside :op_log (the server address) so a non-default backend
+    # never requires editing this module. Defaults to the same SQLite module
+    # :op_log defaults to.
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+
     state = %{
       tenant: Keyword.get(opts, :tenant, "homelab"),
       op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      op_log_mod: op_log_mod,
       safety_margin_ms: Keyword.get(opts, :safety_margin_ms, @default_safety_margin_ms),
       clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end),
       stateful: Keyword.get(opts, :stateful_sweeper, Embervm.StatefulSweeper),
@@ -62,8 +69,8 @@ defmodule Embervm.DrainCoordinator do
           server.drain_node(server, node_id)
         end),
       # The op-log append, seamed for tests. Production appends the audit op to the
-      # SQLite backend; a test records it instead.
-      append_fun: Keyword.get(opts, :append_fun, fn op_log, op -> op_log.append(op_log, op) end)
+      # configured backend (op_log_mod); a test records it instead.
+      append_fun: Keyword.get(opts, :append_fun, fn op_log, op -> op_log_mod.append(op_log, op) end)
     }
 
     {:ok, state}

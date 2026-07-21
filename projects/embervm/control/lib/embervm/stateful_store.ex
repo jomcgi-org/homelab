@@ -522,6 +522,10 @@ defmodule Embervm.StatefulStore do
   @impl true
   def init(opts) do
     op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
+    # The backend module dispatched at every call site below, threaded alongside
+    # :op_log (the server address) so a non-default backend never requires editing
+    # this module. Defaults to the same SQLite module :op_log defaults to.
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     clock = Keyword.get(opts, :clock, &default_clock/0)
 
     instances = :ets.new(@instances_table, [:set, :private])
@@ -530,6 +534,7 @@ defmodule Embervm.StatefulStore do
 
     state = %{
       op_log: op_log,
+      op_log_mod: op_log_mod,
       clock: clock,
       instances: instances,
       volumes: volumes,
@@ -561,9 +566,9 @@ defmodule Embervm.StatefulStore do
   # node's next probe corrects it if it is actually unhealthy. A non-serving rebuilt
   # instance is healthy=false (it is not in the fan-out anyway).
   defp rebuild(state) do
-    with {:ok, rows} <- Embervm.OpLog.SQLite.load_stateful_instances(state.op_log),
-         {:ok, volumes} <- Embervm.OpLog.SQLite.load_volumes(state.op_log),
-         {:ok, blessing_rows} <- Embervm.OpLog.SQLite.load_volume_blessing(state.op_log) do
+    with {:ok, rows} <- state.op_log_mod.load_stateful_instances(state.op_log),
+         {:ok, volumes} <- state.op_log_mod.load_volumes(state.op_log),
+         {:ok, blessing_rows} <- state.op_log_mod.load_volume_blessing(state.op_log) do
       state =
         Enum.reduce(rows, state, fn row, acc ->
           instance = row_to_instance(row)
@@ -866,7 +871,7 @@ defmodule Embervm.StatefulStore do
       payload: %{generation: generation}
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         # A fresh CP-issued blessing is by definition not behind itself: clear
         # any prior quarantine. This writes ONLY the separate blessing table,
@@ -917,7 +922,7 @@ defmodule Embervm.StatefulStore do
       }
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         base = fetch_volume(state, workload) || %{workload: workload}
 
@@ -952,7 +957,7 @@ defmodule Embervm.StatefulStore do
       payload: %{}
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         :ets.delete(state.volumes, workload)
         {:reply, :ok, state}
@@ -1079,7 +1084,7 @@ defmodule Embervm.StatefulStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         instance = %{
           instance_id: instance_id,
@@ -1170,7 +1175,7 @@ defmodule Embervm.StatefulStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         terminal? = StatefulState.terminal?(next_state)
 

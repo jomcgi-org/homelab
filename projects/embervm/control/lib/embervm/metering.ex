@@ -188,6 +188,10 @@ defmodule Embervm.Metering do
   def init(opts) do
     state = %{
       op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # The backend module dispatched at every call site below, threaded alongside
+      # :op_log (the server address) so a non-default backend never requires
+      # editing this module. Defaults to the same SQLite module :op_log defaults to.
+      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
       tenant: Keyword.get(opts, :tenant, "homelab"),
       table: Keyword.get(opts, :table, @table),
       clock: Keyword.get(opts, :clock, &default_clock/0),
@@ -230,7 +234,7 @@ defmodule Embervm.Metering do
       payload: %{reason: reason}
     }
 
-    _ = safe(fn -> Embervm.OpLog.SQLite.append(state.op_log, op) end)
+    _ = safe(fn -> state.op_log_mod.append(state.op_log, op) end)
     {:noreply, state}
   end
 
@@ -254,7 +258,7 @@ defmodule Embervm.Metering do
   defp rebuild(state) do
     today = day_of(state.clock.())
 
-    case safe(fn -> Embervm.OpLog.SQLite.list_usage(state.op_log, since_day: today, limit: :infinity) end) do
+    case safe(fn -> state.op_log_mod.list_usage(state.op_log, since_day: today, limit: :infinity) end) do
       {:ok, %{items: items}} ->
         Enum.each(items, fn row ->
           cpu_ms = round(row.vcpu_seconds * 1000)

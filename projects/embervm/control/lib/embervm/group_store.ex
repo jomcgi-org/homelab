@@ -342,6 +342,10 @@ defmodule Embervm.GroupStore do
   @impl true
   def init(opts) do
     op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
+    # The backend module dispatched at every call site below, threaded alongside
+    # :op_log (the server address) so a non-default backend never requires editing
+    # this module. Defaults to the same SQLite module :op_log defaults to.
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     clock = Keyword.get(opts, :clock, &default_clock/0)
 
     instances = :ets.new(@instances_table, [:set, :private])
@@ -349,6 +353,7 @@ defmodule Embervm.GroupStore do
 
     state = %{
       op_log: op_log,
+      op_log_mod: op_log_mod,
       clock: clock,
       instances: instances,
       members: members
@@ -367,8 +372,8 @@ defmodule Embervm.GroupStore do
   # publisher re-derives the exact entry endpoint the projection recorded
   # (byte-identical rebuild), and the node's next probe corrects a stale flag.
   defp rebuild(state) do
-    with {:ok, instance_rows} <- Embervm.OpLog.SQLite.load_group_instances(state.op_log),
-         {:ok, member_rows} <- Embervm.OpLog.SQLite.load_group_members(state.op_log) do
+    with {:ok, instance_rows} <- state.op_log_mod.load_group_instances(state.op_log),
+         {:ok, member_rows} <- state.op_log_mod.load_group_members(state.op_log) do
       Enum.each(member_rows, fn row ->
         member = row_to_member(row)
         :ets.insert(state.members, {{row.instance_id, row.member_name}, member})
@@ -488,7 +493,7 @@ defmodule Embervm.GroupStore do
         payload: %{subnet_cidr: subnet_cidr}
       }
 
-      case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      case state.op_log_mod.append(state.op_log, op) do
         {:ok, _seq} ->
           updated = %{instance | subnet_cidr: subnet_cidr, updated_at: op.ts}
           :ets.insert(state.instances, {instance_id, updated})
@@ -758,7 +763,7 @@ defmodule Embervm.GroupStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         instance = %{
           instance_id: instance_id,
@@ -812,7 +817,7 @@ defmodule Embervm.GroupStore do
         }
       }
 
-      case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      case state.op_log_mod.append(state.op_log, op) do
         {:ok, _seq} ->
           member = %{
             instance_id: instance_id,
@@ -882,7 +887,7 @@ defmodule Embervm.GroupStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         terminal? = GroupState.terminal?(next_state)
 
@@ -1080,7 +1085,7 @@ defmodule Embervm.GroupStore do
       payload: %{reason: reason}
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         updated = %{instance | set_id: nil, updated_at: ts}
         :ets.insert(state.instances, {instance.instance_id, updated})

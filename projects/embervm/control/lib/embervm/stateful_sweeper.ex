@@ -239,6 +239,10 @@ defmodule Embervm.StatefulSweeper do
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # The backend module dispatched below, threaded alongside :op_log (the
+      # server address) so a non-default backend never requires editing this
+      # module. Defaults to the same SQLite module :op_log defaults to.
+      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
       clock: Keyword.get(opts, :clock, &default_clock/0),
       tenant: Keyword.get(opts, :tenant, "homelab"),
       # The node Envoy stats scrape seam: (stats_url) -> {:ok, %{stat_prefix =>
@@ -641,7 +645,7 @@ defmodule Embervm.StatefulSweeper do
       payload: %{workload: workload, cx_delta: cx_delta, window_ms: nil}
     }
 
-    _ = Embervm.OpLog.SQLite.append(state.op_log, op)
+    _ = state.op_log_mod.append(state.op_log, op)
     :ok
   rescue
     e ->

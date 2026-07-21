@@ -246,6 +246,10 @@ defmodule Embervm.TaskStore do
   @impl true
   def init(opts) do
     op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
+    # The backend module dispatched at every call site below, threaded alongside
+    # :op_log (the server address) so a non-default backend never requires editing
+    # this module. Defaults to the same SQLite module :op_log defaults to.
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     id_fun = Keyword.get(opts, :id_fun, &default_id/0)
     clock = Keyword.get(opts, :clock, &default_clock/0)
     # Fired on every transition INTO :queued (submit-created, retry, redrive) with
@@ -266,6 +270,7 @@ defmodule Embervm.TaskStore do
 
     state = %{
       op_log: op_log,
+      op_log_mod: op_log_mod,
       id_fun: id_fun,
       clock: clock,
       on_queued: on_queued,
@@ -289,8 +294,8 @@ defmodule Embervm.TaskStore do
   # the entire recovery story: no per-op replay, just the projection's current
   # snapshot, because the op-log projection already IS the authoritative
   # current state.
-  defp rebuild(%{op_log: op_log, tasks: tasks, idem: idem}) do
-    case Embervm.OpLog.SQLite.load_tasks(op_log) do
+  defp rebuild(%{op_log: op_log, op_log_mod: op_log_mod, tasks: tasks, idem: idem}) do
+    case op_log_mod.load_tasks(op_log) do
       {:ok, rows} ->
         Enum.each(rows, fn row ->
           task = row_to_task(row)
@@ -391,7 +396,7 @@ defmodule Embervm.TaskStore do
   # ETS entries, then submit fresh under the same key. The old task's immutable ops
   # stay in the journal until horizon compaction; only the projection is pruned early.
   defp fresh_resubmit(attrs, workload, idempotency_key, old_task_id, state) do
-    case Embervm.OpLog.SQLite.evict_task(state.op_log, old_task_id) do
+    case state.op_log_mod.evict_task(state.op_log, old_task_id) do
       :ok ->
         :ets.delete(state.tasks, old_task_id)
         :ets.delete(state.idem, {workload, idempotency_key})
@@ -467,7 +472,7 @@ defmodule Embervm.TaskStore do
         payload: %{}
       }
 
-      case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      case state.op_log_mod.append(state.op_log, op) do
         {:ok, _seq} ->
           updated = %{task | state: next, attempt: task.attempt + 1, updated_at: ts}
           :ets.insert(state.tasks, {task_id, updated})
@@ -494,11 +499,11 @@ defmodule Embervm.TaskStore do
   end
 
   def handle_call({:get_request, task_id}, _from, state) do
-    {:reply, Embervm.OpLog.SQLite.load_request(state.op_log, task_id), state}
+    {:reply, state.op_log_mod.load_request(state.op_log, task_id), state}
   end
 
   def handle_call({:list_usage, opts}, _from, state) do
-    {:reply, Embervm.OpLog.SQLite.list_usage(state.op_log, opts), state}
+    {:reply, state.op_log_mod.list_usage(state.op_log, opts), state}
   end
 
   def handle_call(:list_backlog, _from, state) do
@@ -563,7 +568,7 @@ defmodule Embervm.TaskStore do
         payload: %{}
       }
 
-      case Embervm.OpLog.SQLite.append(state.op_log, op) do
+      case state.op_log_mod.append(state.op_log, op) do
         {:ok, _seq} ->
           updated = %{task | state: next, attempt: 1, updated_at: ts}
           :ets.insert(state.tasks, {task_id, updated})
@@ -625,7 +630,7 @@ defmodule Embervm.TaskStore do
       }
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         task = %{
           task_id: task_id,
@@ -688,7 +693,7 @@ defmodule Embervm.TaskStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         updated = %{task | state: next_state, updated_at: ts}
         :ets.insert(state.tasks, {task.task_id, updated})
@@ -812,7 +817,7 @@ defmodule Embervm.TaskStore do
   # The clock lives here in the store, so the filter stays here rather than in the
   # op-log's load_result (whose behaviour signature is unchanged).
   defp live_result(state, task_id) do
-    case Embervm.OpLog.SQLite.load_result(state.op_log, task_id) do
+    case state.op_log_mod.load_result(state.op_log, task_id) do
       {:ok, %{expires_at: expires_at} = result} when is_integer(expires_at) ->
         if expires_at < state.clock.(), do: {:ok, nil}, else: {:ok, result}
 

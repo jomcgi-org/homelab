@@ -206,6 +206,10 @@ defmodule Embervm.SessionStore do
   @impl true
   def init(opts) do
     op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
+    # The backend module dispatched at every call site below, threaded alongside
+    # :op_log (the server address) so a non-default backend never requires editing
+    # this module. Defaults to the same SQLite module :op_log defaults to.
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     clock = Keyword.get(opts, :clock, &default_clock/0)
     id_fun = Keyword.get(opts, :id_fun, nil)
     # Fired AFTER a session_invoked/other op that carried usage lands durably,
@@ -218,6 +222,7 @@ defmodule Embervm.SessionStore do
 
     state = %{
       op_log: op_log,
+      op_log_mod: op_log_mod,
       clock: clock,
       id_fun: id_fun,
       on_metered: on_metered,
@@ -240,7 +245,7 @@ defmodule Embervm.SessionStore do
   # is heard from, which is correct (the control plane must not assume a VM lives
   # where a stale durable node_id says without the node confirming).
   defp rebuild(state) do
-    case Embervm.OpLog.SQLite.load_sessions(state.op_log) do
+    case state.op_log_mod.load_sessions(state.op_log) do
       {:ok, rows} ->
         state =
           Enum.reduce(rows, state, fn row, acc ->
@@ -432,7 +437,7 @@ defmodule Embervm.SessionStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         session = %{
           session_id: session_id,
@@ -526,7 +531,7 @@ defmodule Embervm.SessionStore do
           payload: payload
         }
 
-        case Embervm.OpLog.SQLite.append(state.op_log, op) do
+        case state.op_log_mod.append(state.op_log, op) do
           {:ok, _seq} ->
             updated = %{session | last_invoke_at: ts, updated_at: ts}
             :ets.insert(state.sessions, {session_id, updated})
@@ -573,7 +578,7 @@ defmodule Embervm.SessionStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         terminal_reason =
           if SessionState.terminal?(next_state) do

@@ -256,12 +256,17 @@ defmodule Embervm.ServingStore do
   @impl true
   def init(opts) do
     op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
+    # The backend module dispatched at every call site below, threaded alongside
+    # :op_log (the server address) so a non-default backend never requires editing
+    # this module. Defaults to the same SQLite module :op_log defaults to.
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     clock = Keyword.get(opts, :clock, &default_clock/0)
 
     instances = :ets.new(@instances_table, [:set, :private])
 
     state = %{
       op_log: op_log,
+      op_log_mod: op_log_mod,
       clock: clock,
       instances: instances,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
@@ -283,7 +288,7 @@ defmodule Embervm.ServingStore do
   # non-published rebuilt instance is healthy=false (it is not in the fan-out
   # anyway).
   defp rebuild(state) do
-    case Embervm.OpLog.SQLite.load_serving_instances(state.op_log) do
+    case state.op_log_mod.load_serving_instances(state.op_log) do
       {:ok, rows} ->
         state =
           Enum.reduce(rows, state, fn row, acc ->
@@ -547,7 +552,7 @@ defmodule Embervm.ServingStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         instance = %{
           instance_id: instance_id,
@@ -634,7 +639,7 @@ defmodule Embervm.ServingStore do
       payload: payload
     }
 
-    case Embervm.OpLog.SQLite.append(state.op_log, op) do
+    case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
         terminal? = ServingState.terminal?(next_state)
 
