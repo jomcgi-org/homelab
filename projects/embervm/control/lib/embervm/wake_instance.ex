@@ -62,7 +62,7 @@ defmodule Embervm.WakeInstance do
   alias Embervm.{BrickLedger, NodeCapacity}
 
   @typedoc "A warmth-inventory field on a per-instance capacity fact + the id key its rows carry."
-  @type warmth_key :: :serving_snapshots | :stateful_bundles | :group_bundle_sets
+  @type warmth_key :: :serving_snapshots | :stateful_bundles | :group_bundle_sets | :session_snapshots
 
   @doc """
   Select the instance on `node_id` a wake must dial. Returns `{:ok, instance_id}`
@@ -113,18 +113,8 @@ defmodule Embervm.WakeInstance do
   @spec dial_for_vm(atom(), String.t(), String.t()) :: String.t()
   def dial_for_vm(table \\ NodeCapacity.table(), node_id, vm_id)
 
-  def dial_for_vm(table, node_id, vm_id)
-      when is_binary(node_id) and is_binary(vm_id) and vm_id != "" do
-    table
-    |> instances_on(node_id)
-    |> Enum.find(fn fact -> fact_reports_vm?(fact, vm_id) end)
-    |> case do
-      nil -> node_id
-      fact -> dial_id(fact)
-    end
-  end
-
-  def dial_for_vm(_table, node_id, _vm_id), do: node_id
+  def dial_for_vm(table, node_id, vm_id),
+    do: dial_owning(table, node_id, :stateful_vms, :vm_id, vm_id)
 
   @doc """
   The channel key of the instance on `node_id` currently HOLDING the banked bundle
@@ -135,20 +125,121 @@ defmodule Embervm.WakeInstance do
   facts, or a bundle not re-reported yet) exactly like `dial_for_vm/3`.
   """
   @spec dial_for_bundle(atom(), String.t(), String.t()) :: String.t()
-  def dial_for_bundle(table \\ NodeCapacity.table(), node_id, snapshot_ref)
+  def dial_for_bundle(table \\ NodeCapacity.table(), node_id, snapshot_ref),
+    do: dial_owning(table, node_id, :stateful_bundles, :snapshot_ref, snapshot_ref)
 
-  def dial_for_bundle(table, node_id, snapshot_ref)
-      when is_binary(node_id) and is_binary(snapshot_ref) and snapshot_ref != "" do
+  @doc """
+  The channel key of the instance on `node_id` currently RUNNING the SERVING VM
+  `vm_id` (its `serving_vms` report it), or the bare `node_id` when none is found.
+  The serving-sweeper's live-VM dial resolution (StopServing BANK/DESTROY): a serving
+  VM lives on ONE instance, so co-location's node-name alias misroutes to a sibling.
+  Same fail-open-to-node_id contract as `dial_for_vm/3`.
+  """
+  @spec dial_for_serving_vm(atom(), String.t(), String.t()) :: String.t()
+  def dial_for_serving_vm(table \\ NodeCapacity.table(), node_id, vm_id),
+    do: dial_owning(table, node_id, :serving_vms, :vm_id, vm_id)
+
+  @doc """
+  The channel key of the instance on `node_id` currently RUNNING the SESSION VM
+  `vm_id` (its `session_vms` report it), or the bare `node_id` when none is found.
+  The session restart/adoption dial resolution: a session's live VM is on ONE
+  instance, so co-location's node-name alias misroutes to a sibling. Same fail-open-
+  to-node_id contract as `dial_for_vm/3`.
+  """
+  @spec dial_for_session_vm(atom(), String.t(), String.t()) :: String.t()
+  def dial_for_session_vm(table \\ NodeCapacity.table(), node_id, vm_id),
+    do: dial_owning(table, node_id, :session_vms, :vm_id, vm_id)
+
+  @doc """
+  The channel key of the instance on `node_id` HOLDING the banked SERVING snapshot
+  `snapshot_ref` on disk (its `serving_snapshots` report it), or the bare `node_id`
+  when none is found. The serving evict dial resolution (EvictArtifact SERVING). Same
+  fail-open-to-node_id contract as `dial_for_bundle/3`.
+  """
+  @spec dial_for_serving_bundle(atom(), String.t(), String.t()) :: String.t()
+  def dial_for_serving_bundle(table \\ NodeCapacity.table(), node_id, snapshot_ref),
+    do: dial_owning(table, node_id, :serving_snapshots, :snapshot_ref, snapshot_ref)
+
+  @doc """
+  The channel key of the instance on `node_id` HOLDING the banked SESSION snapshot
+  `snapshot_ref` on disk (its `session_snapshots` report it), or the bare `node_id`
+  when none is found. The session evict dial resolution (EvictSnapshot / EvictArtifact
+  SESSION). Same fail-open-to-node_id contract as `dial_for_bundle/3`.
+  """
+  @spec dial_for_session_bundle(atom(), String.t(), String.t()) :: String.t()
+  def dial_for_session_bundle(table \\ NodeCapacity.table(), node_id, snapshot_ref),
+    do: dial_owning(table, node_id, :session_snapshots, :snapshot_ref, snapshot_ref)
+
+  @doc """
+  The channel key of the instance on `node_id` OWNING the composite group instance
+  `group_instance_id` (it reports the id in either `group_member_vms`, a live group,
+  or `group_bundle_sets`, a banked group), or the bare `node_id` when none is found.
+  The group-sweeper's dial resolution (StopGroupMember/DeleteGroupNetwork/Evict): a
+  group's members are all co-located on ONE instance, keyed by the durable
+  group_instance_id, so the node-name alias misroutes to a sibling under co-location.
+  Same fail-open-to-node_id contract as `dial_for_vm/3`.
+  """
+  @spec dial_for_group(atom(), String.t(), String.t()) :: String.t()
+  def dial_for_group(table \\ NodeCapacity.table(), node_id, group_instance_id)
+
+  def dial_for_group(table, node_id, group_instance_id)
+      when is_binary(node_id) and is_binary(group_instance_id) and group_instance_id != "" do
     table
     |> instances_on(node_id)
-    |> Enum.find(fn fact -> fact_reports_warmth?(fact, :stateful_bundles, snapshot_ref, :snapshot_ref) end)
+    |> Enum.find(fn fact ->
+      fact_reports_warmth?(fact, :group_member_vms, group_instance_id, :group_instance_id) or
+        fact_reports_warmth?(fact, :group_bundle_sets, group_instance_id, :group_instance_id)
+    end)
     |> case do
       nil -> node_id
       fact -> dial_id(fact)
     end
   end
 
-  def dial_for_bundle(_table, node_id, _ref), do: node_id
+  def dial_for_group(_table, node_id, _group_instance_id), do: node_id
+
+  @doc """
+  The channel key of the instance on `node_id` HOLDING `ref` in the inventory list
+  `key` under `match_field`, as `{:ok, dial_key}`, or `:none` when no instance on the
+  node reports it. Unlike the `dial_for_*` helpers this fails CLOSED (`:none`, not the
+  node name), for a caller whose absence must be a distinct outcome (the session
+  relight's `snapshot_lost`, where a missing snapshot must 410, not silently dial the
+  node alias). The dial key is still the owning instance_id (co-location safe).
+  """
+  @spec owning_instance_for(atom(), String.t(), atom(), atom(), String.t()) ::
+          {:ok, String.t()} | :none
+  def owning_instance_for(table \\ NodeCapacity.table(), node_id, key, match_field, ref)
+
+  def owning_instance_for(table, node_id, key, match_field, ref)
+      when is_binary(node_id) and is_binary(ref) and ref != "" do
+    table
+    |> instances_on(node_id)
+    |> Enum.find(fn fact -> fact_reports_warmth?(fact, key, ref, match_field) end)
+    |> case do
+      nil -> :none
+      fact -> {:ok, dial_id(fact)}
+    end
+  end
+
+  def owning_instance_for(_table, _node_id, _key, _match_field, _ref), do: :none
+
+  # The owning instance on `node_id` whose capacity fact reports `ref` in the
+  # inventory list `key` under `field`, else the bare `node_id` (legacy/single-
+  # instance fact, or the row not re-reported yet). The shared core of the
+  # instance-key dial resolution: every stateful/serving live-VM and bundle dial
+  # routes through here so they cannot drift on the fail-open contract.
+  defp dial_owning(table, node_id, key, field, ref)
+       when is_binary(node_id) and is_binary(ref) and ref != "" do
+    table
+    |> instances_on(node_id)
+    |> Enum.find(fn fact -> fact_reports_warmth?(fact, key, ref, field) end)
+    |> case do
+      nil -> node_id
+      fact -> dial_id(fact)
+    end
+  end
+
+  defp dial_owning(_table, node_id, _key, _field, _ref), do: node_id
 
   # The instance on `node_id` whose warmth inventory reports this wake's ref: a
   # relight MUST land on the instance that banked the bundle (per-instance-on-disk,
@@ -225,15 +316,6 @@ defmodule Embervm.WakeInstance do
     |> Map.get(warmth_key, [])
     |> Kernel.||([])
     |> Enum.any?(fn row -> Map.get(row, match_field) == ref end)
-  end
-
-  # Whether this instance's per-instance capacity fact reports `vm_id` as a live
-  # stateful VM it is running (the sweeper's live-VM dial resolution).
-  defp fact_reports_vm?(fact, vm_id) do
-    fact
-    |> Map.get(:stateful_vms, [])
-    |> Kernel.||([])
-    |> Enum.any?(fn row -> Map.get(row, :vm_id) == vm_id end)
   end
 
   # The dial key for a capacity fact: its instance_id when present, else the node

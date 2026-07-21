@@ -642,6 +642,12 @@ defmodule Embervm.ServingSweeper do
     instance_id = instance.instance_id
     workload = instance.workload
     generation = (instance.generation || 0) + 1
+    # Dial the OWNING instance (the one whose capacity fact reports this live serving
+    # vm_id), not the node-name alias (co-location made it point at an arbitrary
+    # sibling brick). Falls back to node_id for a legacy/single-instance fact,
+    # preserving single-instance behaviour. Resolved on the owner so the worker reads
+    # a settled key.
+    dial_key = dial_for_serving_vm(state, node_id, vm_id)
 
     spawn(fn ->
       # The `bank` lifecycle span (Task 10): a ROOT span in the spawned worker (the
@@ -659,7 +665,7 @@ defmodule Embervm.ServingSweeper do
                            }
                          } do
           try do
-            with {:ok, channel} <- safe_channel(channel_fun, node_id),
+            with {:ok, channel} <- safe_channel(channel_fun, dial_key),
                  {:ok, %StopServingResponse{snapshot_ref: ref, size_bytes: size}}
                  when is_binary(ref) and ref != "" <-
                    stop_fun.(channel, bank_request(vm_id)) do
@@ -967,8 +973,10 @@ defmodule Embervm.ServingSweeper do
        when is_binary(node_id) and is_binary(ref) and ref != "" do
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_SERVING, workload: workload, ref: ref}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
+    # Dial the instance holding the banked serving bundle on disk, not the alias.
+    dial_key = dial_for_serving_bundle(state, node_id, ref)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
       try do
         state.evict_artifact_fun.(channel, req)
       rescue
@@ -986,8 +994,10 @@ defmodule Embervm.ServingSweeper do
   defp stop_serving_destroy(state, %{node_id: node_id, vm_id: vm_id})
        when is_binary(node_id) and is_binary(vm_id) do
     req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
+    # Dial the OWNING instance running this serving vm_id, not the node-name alias.
+    dial_key = dial_for_serving_vm(state, node_id, vm_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
       try do
         state.stop_serving_fun.(channel, req)
       rescue
@@ -1093,6 +1103,21 @@ defmodule Embervm.ServingSweeper do
     e -> {:error, {:channel_raised, e}}
   catch
     kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  # The channel key for a live serving-VM dial (bank/destroy): the OWNING instance
+  # reporting `vm_id` in serving_vms, else the node name (single-instance / legacy
+  # fallback). Instance-key unification (PR-B0b): a co-located node's node-name alias
+  # resolves to an arbitrary sibling brick, so a bank/destroy against the alias
+  # misroutes to a brick that never ran the VM.
+  defp dial_for_serving_vm(state, node_id, vm_id) do
+    Embervm.WakeInstance.dial_for_serving_vm(state.capacity_table, node_id, vm_id)
+  end
+
+  # The channel key for a serving-bundle dial (EvictArtifact SERVING): the instance
+  # holding the bundle on disk (serving_snapshots), else the node name.
+  defp dial_for_serving_bundle(state, node_id, snapshot_ref) do
+    Embervm.WakeInstance.dial_for_serving_bundle(state.capacity_table, node_id, snapshot_ref)
   end
 
   defp default_stop_serving(channel, req) do

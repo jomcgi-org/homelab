@@ -106,7 +106,7 @@ defmodule Embervm.ServingSweeperTest do
         clock: clock(clock_agent),
         scrape_fun: fn _url -> Agent.get(scrape_agent, & &1) end,
         stats_base: Keyword.get(opts, :stats_base, "http://serving:9902"),
-        channel_fun: fn _node -> {:ok, :ch} end,
+        channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         stop_serving_fun: stop_serving_fun,
         timer_fun: timer_fun,
         bank_concurrency: Keyword.get(opts, :bank_concurrency, 1),
@@ -770,5 +770,60 @@ defmodule Embervm.ServingSweeperTest do
     :sys.replace_state(ctx.sweeper, fn s -> %{s | status_writer: fn _ns, _n, _m -> raise "boom" end} end)
 
     assert :ok = ServingSweeper.sweep(ctx.sweeper)
+  end
+
+  # -- instance-key unification (PR-B0b) ---------------------------------------
+
+  # A per-instance capacity fact (keyed by {node, pod_uid}) carrying the per-instance
+  # live serving-VM inventory the sweeper's dial resolution reads.
+  defp put_serving_brick(ctx, node_id, pod_uid, opts) do
+    NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
+      configured_id: node_id,
+      node_id: node_id,
+      pod_uid: pod_uid,
+      instance_id: "#{node_id}/#{pod_uid}",
+      serving_subnet_cidr: "10.99.0.0/24",
+      max_live_vms: 8,
+      live_vms: 0,
+      workloads: %{},
+      serving_vms: Keyword.get(opts, :serving_vms, []),
+      serving_snapshots: Keyword.get(opts, :serving_snapshots, [])
+    })
+  end
+
+  test "the serving bank dials the OWNER instance_id even when the node-name alias points at a sibling" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    ctx = start_stack(channel_fun: capture_channel)
+    serving_workload(ctx, "wl-a", %{min_instances: 0, idle_bank_seconds: 60, drain_seconds: 5})
+
+    # Two co-located instances on node-4. pod-owner RUNS vm-1; pod-sibling does not (it
+    # is the last registrant the node-name alias would collapse to). The bank must dial
+    # pod-owner, never the alias.
+    put_serving_brick(ctx, "node-4", "pod-sibling", serving_vms: [])
+
+    put_serving_brick(ctx, "node-4", "pod-owner",
+      serving_vms: [%{vm_id: "vm-1", workload: "wl-a", ip: "10.99.0.5", port: 8080, healthy: true}]
+    )
+
+    published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+
+    set_scrape(ctx, {:ok, %{"serve|wl-a" => 0}})
+    ServingSweeper.sweep(ctx.sweeper)
+
+    advance(ctx.clock_agent, 70_000)
+    set_scrape(ctx, {:ok, %{"serve|wl-a" => 0}})
+    ServingSweeper.sweep(ctx.sweeper)
+
+    fire_drain(ctx, "srv-1")
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, ServingStore.get(ctx.store, "srv-1")) end)
+
+    assert "node-4/pod-owner" in Agent.get(dialed, & &1)
+    refute "node-4" in Agent.get(dialed, & &1)
   end
 end
