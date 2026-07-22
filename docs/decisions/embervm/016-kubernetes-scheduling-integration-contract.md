@@ -389,6 +389,27 @@ isolation model. Notes:
   allow-lists are data the CP pushes to the VM boundary (per-VM tap
   firewall rules, per-secret egress allowlists), because the pod is the
   wrong unit for per-tenant policy in a multi-VM brick.
+- **The credential model bounds what a compromised brick is worth.**
+  noded is the TCB for its guests (it owns their memory), so robustness
+  is blast radius and persistence, not pretending the brick is untrusted:
+  (1) placeholders are **random nonces minted per light/relight**
+  (MMDS-delivered), honored by the egress proxy only from that VM's tap
+  and unmapped at bank/destroy, so a placeholder is worthless exfiltrated,
+  replayed, or found in a stale snapshot, and doubles as the per-session
+  audit ID; (2) the brick holds credentials as **live-session leases
+  only**: acquired at light, memory-only (never disk, env, MMDS, or any
+  snapshot tier), TTL-renewed on use rather than repulled per request,
+  dropped at bank/destroy, centrally revocable, so a compromised brick
+  yields only the sessions currently live on it; (3) **bricks never hold
+  root credentials**: the CP-side broker exchanges long-lived secrets for
+  short-lived downscoped derivations (installation tokens, STS sessions)
+  before they reach a brick, so even a full noded compromise leaks
+  material that expires in minutes and is scoped to the same paths the
+  egress allowlist names. Leases are sealed to the brick's dial-home
+  identity, and the swap cache lives in a separate minimal process from
+  noded's large attack surface (the agents/023 sidecar shape). Mechanics
+  belong to the agents/023 and agents/046 lines; this ADR fixes the
+  contract those mechanics must satisfy.
 
 ---
 
