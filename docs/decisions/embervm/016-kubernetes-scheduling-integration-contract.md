@@ -437,7 +437,18 @@ isolation model. Notes:
   decryption or signing) is converted to a broker call where possible (a
   signing oracle: the operation travels to the key, not the key to the
   guest) and is otherwise a recorded per-workload exception whose memory
-  snapshots carry the exposure caveat alone.
+  snapshots carry the exposure caveat alone. Two non-solutions and one
+  rule are recorded to prevent re-derivation: **encrypting a fixed key
+  and distributing it with a TTL does not reclassify it** (a credential's
+  lifetime is enforced by its validator, not its courier; the plaintext
+  is exposed at use time and stays valid upstream regardless of our
+  wrapper's expiry). The central swap tier is what actually "makes
+  everything rotatable": every credential that moves (nonces, leases,
+  brick mTLS identity) is platform-issued and revocable at will, and the
+  un-boundable key never moves. And **internal services must never mint
+  fixed long-lived keys**: for validators we own, credentials are
+  derivable by design (scoped, short-TTL), so class 3 remains only the
+  external-provider residue it has to be.
 
 ---
 
