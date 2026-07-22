@@ -410,6 +410,22 @@ isolation model. Notes:
   noded's large attack surface (the agents/023 sidecar shape). Mechanics
   belong to the agents/023 and agents/046 lines; this ADR fixes the
   contract those mechanics must satisfy.
+- **Fixed secrets that cannot be scoped or derived are handled by
+  routing, not by exception.** Secrets fall into three classes: derivable
+  (provider issues short-lived scoped material; broker derives, brick
+  leases), fixed-but-API-rotatable (brick may lease; the platform imposes
+  the lifetime the provider will not, via scheduled rotation, making the
+  cadence the blast-radius knob), and fixed-with-manual-rotation, which
+  is **never distributed to bricks in any form**: the brick's egress
+  proxy forwards the placeholder request to a central swap tier (the
+  agents/023 sidecar grown into a shared service) that holds the key and
+  injects it upstream. The cost is one intra-cluster hop on a call
+  already crossing the internet; the gain is that a brick compromise
+  yields exactly nothing for this class. The invariant restated: **what
+  reaches a brick is always time-bounded within our control; anything we
+  cannot time-bound does not reach a brick.** Per-secret path allowlists
+  apply to all three classes, which is scoping-by-proxy even where the
+  provider offers none.
 
 ---
 
