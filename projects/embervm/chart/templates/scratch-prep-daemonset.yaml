@@ -78,7 +78,14 @@ spec:
               SCRATCH=/var/lib/embervm/scratch
               # Backing file for the loop-mounted cap. Lives on the host disk via
               # the /host hostPath bind (see volumes), NOT inside scratch itself.
+              # IMG is the CONTAINER view (used by in-container fallocate/mkfs);
+              # HOST_IMG is the SAME physical file as the HOST sees it, used by the
+              # nsenter-into-host `mount -o loop` and the fstab entry. They must
+              # differ: the /host bind path does not exist in the host mount
+              # namespace, so mounting IMG via nsenter fails to open the backing
+              # file ("failed to setup loop device").
               IMG=/host/scratch.img
+              HOST_IMG=/var/lib/embervm/scratch.img
               SIZE_GI="${SCRATCH_SIZE_GI:?scratchSizeGi unset}"
 
               # THE GUARD. A bind mount (node-4's dedicated-NVMe fstab bind) and a
@@ -113,13 +120,13 @@ spec:
               #    check; the earlier guard already proved it is unmounted, this only
               #    guards a mid-script re-entry.
               if ! nsenter -t 1 -m -- mountpoint -q "$SCRATCH"; then
-                nsenter -t 1 -m -- mount -o loop "$IMG" "$SCRATCH"
+                nsenter -t 1 -m -- mount -o loop "$HOST_IMG" "$SCRATCH"
               fi
 
               # 3) Persist across reboots. The fstab entry is keyed on the backing
               #    FILE with the loop option, so the host re-derives the loop device
               #    on boot. Idempotent: appended only if absent.
-              FSTAB_LINE="$IMG $SCRATCH ext4 loop,defaults 0 0"
+              FSTAB_LINE="$HOST_IMG $SCRATCH ext4 loop,defaults 0 0"
               if ! nsenter -t 1 -m -- grep -qF "$FSTAB_LINE" /etc/fstab 2>/dev/null; then
                 nsenter -t 1 -m -- sh -c "echo '$FSTAB_LINE' >> /etc/fstab"
               fi
