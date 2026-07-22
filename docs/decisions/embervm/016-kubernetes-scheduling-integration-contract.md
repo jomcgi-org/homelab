@@ -235,6 +235,25 @@ node lifetime a fact the placement pass reads:
   `terminationGracePeriodSeconds` must exceed the measured worst-case drain
   (bank time for the largest VM of the class, plus margin), derived from
   existing bank/relight timings rather than guessed.
+- **Users express posture, never mechanics.** Following Kubernetes' own
+  pattern (intent through bounded primitives, platform owns the raw knobs),
+  a workload owner chooses from a small enum: posture (preemptible or
+  durable), lane, and for durable work a session duration at or under the
+  platform ceiling. Everything downstream is platform-derived from that
+  choice: the PriorityClass rung, the disruption budget, the grace period,
+  the do-not-disrupt lifecycle. No workload can set a raw budget percentage,
+  a priority value, or a grace period, which is what makes the hierarchy
+  misconfiguration-resistant: the worst a wrong choice can do is give one
+  workload a stricter posture than it needed, never wedge fleet-wide node
+  recycling or outrank the interactive lane.
+- **The session cap is a platform ceiling with per-workload registered
+  durations under it.** The 8h ceiling is sized for the longest honest use
+  case (long-running coding sessions). A workload registers its expected
+  session duration at or below the ceiling and may never raise it
+  (the same non-escalation rule as the priority rungs). A shorter declared
+  duration is placement information, not just policy: it fits inside
+  smaller node-termination horizons, so short-session work is exactly what
+  keeps draining nodes utilized.
 - **Verification splits by tool.** The kwok drills cover the observable
   Karpenter interplay; the drain/migration protocol itself (no session's
   guarantee left uncovered by a migration, no durable placement onto a node
@@ -321,17 +340,13 @@ preemption and consolidation never become a cross-principal reuse path
 
 ## Open Questions
 
-1. Concrete disruption budget percentages per lane (the shape is decided in
-   section 5: per-lane, schedule-gated, zero for durable-posture bricks at
-   peak); numbers come from kwok drill results and real occupancy data, not
-   guesses.
-2. Does the isolated lane eventually want a CP-side occupancy cap per brick
-   (spread pressure) once real traffic data exists, or does data-plane
-   `LEAST_REQUEST` suffice alone? Deliberately left open: adding the cap
-   later is one filter in the CP score pass.
-3. Does the 8h session guarantee become a per-workload registered value
-   (bounded by a platform ceiling) once API registration exists, or stay a
-   single platform constant?
+1. The platform-side disruption budget constants per posture (users never
+   set these; section 5): initial values come from kwok drill results and
+   real occupancy data, not guesses.
+2. Does the isolated lane (ADR 015) eventually want a CP-side occupancy cap
+   per brick (spread pressure) once real traffic data exists, or does
+   data-plane `LEAST_REQUEST` suffice alone? Deliberately left open: adding
+   the cap later is one filter in the CP score pass.
 
 ---
 
