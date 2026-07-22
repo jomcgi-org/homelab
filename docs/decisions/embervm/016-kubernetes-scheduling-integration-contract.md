@@ -425,7 +425,19 @@ isolation model. Notes:
   reaches a brick is always time-bounded within our control; anything we
   cannot time-bound does not reach a brick.** Per-secret path allowlists
   apply to all three classes, which is scoping-by-proxy even where the
-  provider offers none.
+  provider offers none. A workload requiring a fixed API key does not
+  contradict this: the *upstream* sees its fixed key on every request,
+  attached at exactly one hop; the guest only ever sends the placeholder.
+  The pattern's honest boundary is where injection-in-transit cannot
+  work, and each case degrades one rung, no further than the operation
+  requires: request-signing schemes (SigV4, HMAC) are re-signed at the
+  swap point with the guest SDK signing against a discarded dummy key;
+  protocols the proxy cannot speak (SMTP, database auth) fall back to a
+  brick lease under class-2 discipline; genuinely local use (in-guest
+  decryption or signing) is converted to a broker call where possible (a
+  signing oracle: the operation travels to the key, not the key to the
+  guest) and is otherwise a recorded per-workload exception whose memory
+  snapshots carry the exposure caveat alone.
 
 ---
 
