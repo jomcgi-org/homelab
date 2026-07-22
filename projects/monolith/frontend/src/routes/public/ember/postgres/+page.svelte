@@ -37,7 +37,7 @@
       ><a class="brand" href="/"><strong>jomcgi.dev</strong></a> /
       <a class="brand" href="/ember">ember</a> / postgres</span
     >
-    <a class="topbar-cross" href="/ember/firecracker">how does firecracker work?</a>
+    <a class="topbar-cross" href="/ember/firecracker">how firecracker resumes a VM</a>
   </header>
 
   <main class="ember-page">
