@@ -330,6 +330,18 @@ defmodule Embervm.Application do
       # Gated OFF by default (EMBERVM_WARMTH_RETENTION_SWEEP): merging is inert (the
       # sweep runs but only LOGS what it would evict, deleting nothing).
       {Embervm.WarmthReaper, warmth_reaper_opts()},
+      # The S3-direct warmth GC (task #39): the third GC arm, enumerating warmth
+      # prefixes from the OBJECT STORE itself. The pre-sidecar orphan backlog is
+      # invisible to both the sweepers and the WarmthReaper (its workload
+      # binding was lost on a boot scan, so no node can even compose its S3
+      # prefix); only a bucket listing can find it. Placed AFTER the stores +
+      # NodeRegistry its fail-closed predicate consults (StatefulStore /
+      # GroupStore / NodeCapacity) and after the WarmthReaper it complements
+      # (disjoint by construction: the GC excludes anything node-reported).
+      # Every periodic sweep is a logged dry-run plan + persisted manifest; the
+      # destructive arm is gated OFF by default (EMBERVM_WARMTH_S3_GC), so
+      # merging is inert. It holds no durable state.
+      {Embervm.S3WarmthGc, s3_warmth_gc_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -519,6 +531,59 @@ defmodule Embervm.Application do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end
+  end
+
+  # S3-direct warmth GC (task #39) config. The store endpoint/bucket mirror
+  # noded's EMBERVM_NODED_STORE_* (the chart renders BOTH from the same
+  # noded.store values, one source of truth); an empty endpoint leaves the GC
+  # inert. The destructive gate parses exactly like the other retention gates.
+  # Caps/cadence/freshness are values-overridable; the module carries the
+  # supervised-first-run defaults. expected_nodes is the fleet contract the
+  # fleet-freshness abort checks against: EMPTY (the chart default) means the
+  # sweep always aborts, so even the dry-run plan requires an operator to have
+  # named the fleet.
+  defp s3_warmth_gc_opts do
+    [
+      enabled: warmth_s3_gc_enabled(),
+      endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
+      bucket: store_bucket(),
+      expected_nodes: warmth_s3_gc_expected_nodes(),
+      max_prefixes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_PREFIXES"),
+      max_bytes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_BYTES"),
+      sweep_interval_ms: int_env_or_nil("EMBERVM_WARMTH_S3_GC_INTERVAL_MS"),
+      freshness_window_ms: int_env_or_nil("EMBERVM_WARMTH_S3_GC_FRESHNESS_MS"),
+      min_uptime_ms: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MIN_UPTIME_MS")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp store_bucket do
+    case trimmed_env("EMBERVM_STORE_BUCKET") do
+      "" -> "embervm"
+      bucket -> bucket
+    end
+  end
+
+  # The destructive gate for the S3-direct warmth GC, from EMBERVM_WARMTH_S3_GC.
+  # UNSET or "0"/"false"/"" (the default, and what this PR ships) => every sweep
+  # computes, logs, and manifests the plan but deletes NOTHING. "1"/"true" =>
+  # the gated delete arm fires (supervised first run via :sweep_now). Mirrors
+  # warmth_retention_sweep_enabled/0 exactly.
+  defp warmth_s3_gc_enabled do
+    case trimmed_env("EMBERVM_WARMTH_S3_GC") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  # The comma-separated fleet contract (EMBERVM_WARMTH_S3_GC_EXPECTED_NODES,
+  # e.g. "node-1,node-2,node-3,node-4"): every named node must be present AND
+  # fresh in NodeCapacity or the sweep aborts. Empty = always abort.
+  defp warmth_s3_gc_expected_nodes do
+    trimmed_env("EMBERVM_WARMTH_S3_GC_EXPECTED_NODES")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
   end
 
   # Dispatcher tuning from the chart (values -> env). The share fraction, when

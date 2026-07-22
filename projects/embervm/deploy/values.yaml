@@ -223,3 +223,17 @@ baseRetention:
 # GC (task #39). Rollback: set back to "" and bump the chart; that stops eviction.
 warmthRetention:
   sweepEnabled: "1"
+
+# S3-direct warmth GC (task #39): dry-run ONLY at this point. The gate
+# (warmthS3Gc.enabled) is deliberately NOT set here; flipping it to "1" is a
+# separate, supervised deploy step after the dry-run manifests
+# (gc-manifests/<ts>.json in the embervm bucket) have been read and verified.
+# expectedNodes names the real fleet for the fleet-freshness abort: every
+# listed node must be present and fresh in the CP's capacity facts or the
+# sweep (dry-run included) aborts.
+warmthS3Gc:
+  expectedNodes:
+    - node-1
+    - node-2
+    - node-3
+    - node-4
