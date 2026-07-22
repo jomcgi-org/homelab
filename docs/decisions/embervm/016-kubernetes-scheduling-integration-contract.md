@@ -460,7 +460,17 @@ isolation model. Notes:
   cache from the secret operator; no disk), horizontally scaled, reached
   by bricks over mTLS with their dial-home identity, and its calls are
   internet-bound by definition, so the intra-cluster hop is noise
-  against upstream RTT. If class-3 volume ever runs hot, that is a
+  against upstream RTT. High-frequency workloads do not change this:
+  stateless rewrite proxying is orders of magnitude cheaper than the
+  internet call it fronts, connections are pooled on both sides, and the
+  binding constraint arrives earlier anyway, at the **provider's per-key
+  rate limit**. That constraint is the tier's second job: a class-3 key
+  is one shared fixed key for the whole fleet, so brick-local swapping
+  would mean fifty uncoordinated callers spending one quota (429 storms,
+  retry amplification, provider bans); the central tier is the only
+  component that sees the key's global consumption and therefore owns
+  the token bucket, per-workload fairness, coalescing, and backoff for
+  it. If class-3 volume still runs hot after that, it is a
   provider-selection smell with two fixes before any architecture
   change: re-check the provider for a rotation API (promote to class 2),
   or record a measured per-key exception leasing brick-side under
