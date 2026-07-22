@@ -38,6 +38,7 @@ go_test(
     srcs = [
         "budget_test.go",
         "drain_test.go",
+        "evict_local_test.go",
         "group_member_test.go",
         "group_test.go",
         "register_test.go",

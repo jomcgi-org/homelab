@@ -1382,12 +1382,26 @@ func (s *Server) EvictSnapshot(_ context.Context, req *nodev1.EvictSnapshotReque
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
 	}
-	// A serving snapshot ref is evicted exactly like a session ref, just stored under
-	// the serving/ prefix (per the PR-1 proto contract: serving reuses EvictSnapshot).
 	// Dispatch on which inventory holds the ref BEFORE the session-driver guard so a
-	// serving ref evicts even in a build wired only for serving.
+	// serving/stateful/group ref evicts even in a build wired only for that class,
+	// and so a typed ref removes its REAL on-disk bundle instead of falling through
+	// to the session path (which would RemoveAll a nonexistent sessions/<ref> and
+	// return a false success while the real bundle leaks: the exact misroute the
+	// BASE arm fixed for base refs, #38 fixes for stateful and group-member refs).
+	// Order: serving -> stateful -> group-member -> session fallback. A ref in NO
+	// inventory keeps today's idempotent session-path semantics.
 	if _, ok := s.servingSnap.get(ref); ok {
 		return s.evictServingSnapshot(ref)
+	}
+	if s.statefulBundles != nil {
+		if _, ok := s.statefulBundles.get(ref); ok {
+			return s.evictStatefulSnapshot(ref)
+		}
+	}
+	if s.groupBundles != nil {
+		if _, ok := s.groupBundles.get(ref); ok {
+			return s.evictGroupMemberSnapshot(ref)
+		}
 	}
 	if s.sessionDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: session eviction not configured")
@@ -1426,6 +1440,71 @@ func (s *Server) evictServingSnapshot(ref string) (*nodev1.EvictSnapshotResponse
 		return nil, status.Errorf(codes.Internal, "noded: evict serving snapshot %q: %v", ref, err)
 	}
 	s.servingSnap.remove(ref)
+	s.signalChange()
+	return &nodev1.EvictSnapshotResponse{}, nil
+}
+
+// evictStatefulSnapshot deletes a banked stateful bundle (stateful/<ref>) from
+// disk. It mirrors the serving eviction path: idempotent, and refusing
+// FAILED_PRECONDITION when a LIVE stateful VM was relit from this ref (evicting
+// the bundle out from under a live relit VM would lose the state needed to
+// re-bank it if the VM dies or the node restarts before the next bank). This is
+// the arm the warmth reaper's per-bundle stateful eviction drives (#38): before
+// it existed a STATEFUL local evict fell through to the SESSION bundle path
+// (RemoveSessionBundle), which no-op-removed a nonexistent sessions/<ref> and
+// returned success while stateful/<ref> survived, the same misroute class the
+// BASE arm fixed in base-durability PR-3. RemoveStatefulBundle is idempotent, so
+// an already-absent bundle is success.
+func (s *Server) evictStatefulSnapshot(ref string) (*nodev1.EvictSnapshotResponse, error) {
+	if s.statefulDriver == nil {
+		return nil, status.Error(codes.Unimplemented, "noded: stateful eviction not configured")
+	}
+	// In-use guard: refuse while a live stateful VM was relit from this ref.
+	if vmID, inUse := s.statefulVMs.snapshotRefInUse(ref); inUse {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful snapshot %q is in use by live vm %q", ref, vmID)
+	}
+	if err := s.statefulDriver.RemoveStatefulBundle(ref); err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: evict stateful snapshot %q: %v", ref, err)
+	}
+	s.statefulBundles.remove(ref)
+	s.signalChange()
+	return &nodev1.EvictSnapshotResponse{}, nil
+}
+
+// evictGroupMemberSnapshot deletes one banked group member bundle
+// (group/<set_id>/<member_name>) from disk. A group set is evicted locally
+// PER-MEMBER (the R5 contract: there is no set-level local-evict driver op), so
+// this is the arm each per-member EvictSnapshot resolves to; the GroupSweeper and
+// the warmth reaper drive it (#38). Before it existed a group-member ref fell
+// through to the SESSION path and no-op-removed a nonexistent
+// sessions/group/<set>/<member>, leaving the real member bundle on disk. It
+// recovers (set_id, member_name, group_instance_id) from the banked-bundle
+// inventory (the only place the ref -> instance mapping is recorded), refuses
+// FAILED_PRECONDITION while a live member relit from this ref is still attached
+// (matched on group_instance_id + member_name, since a live member carries no
+// snapshotRef of its own), then removes the member bundle dir. Idempotent: a ref
+// absent from the inventory has no on-disk bundle and no live member could have
+// relit from it, so it is a success (the caller reached here only because the ref
+// WAS in the inventory; the RemoveGroupMemberBundle driver op is itself
+// idempotent on an already-absent dir).
+func (s *Server) evictGroupMemberSnapshot(ref string) (*nodev1.EvictSnapshotResponse, error) {
+	if s.groupDriver == nil {
+		return nil, status.Error(codes.Unimplemented, "noded: group member eviction not configured")
+	}
+	entry, ok := s.groupBundles.get(ref)
+	if !ok {
+		// Not in the inventory: nothing on disk to remove and no live member could
+		// have relit from it. Idempotent success (desired end-state already holds).
+		return &nodev1.EvictSnapshotResponse{}, nil
+	}
+	// In-use guard: refuse while a live member relit from this bundle is attached.
+	if vmID, inUse := s.groupMembers.memberInUse(entry.groupInstanceID, entry.memberName); inUse {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member snapshot %q is in use by live vm %q", ref, vmID)
+	}
+	if err := s.groupDriver.RemoveGroupMemberBundle(entry.setID, entry.memberName); err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: evict group member snapshot %q: %v", ref, err)
+	}
+	s.groupBundles.remove(ref)
 	s.signalChange()
 	return &nodev1.EvictSnapshotResponse{}, nil
 }
