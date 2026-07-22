@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -725,5 +727,49 @@ func TestReconcileGroupBundlesFromDisk(t *testing.T) {
 	}
 	if bySet["set-1"] != 2 || bySet["set-2"] != 1 {
 		t.Errorf("bundle set membership wrong: %v", bySet)
+	}
+}
+
+// TestReconcileGroupReadsInstanceSidecar proves a boot-scan reconciliation
+// recovers the group_instance_id from the on-disk sidecar (#38 F2), so a member
+// banked (with its sidecar) before a restart re-seeds with its REAL group binding
+// and is remotely evictable, while a pre-sidecar member seeds with "".
+func TestReconcileGroupReadsInstanceSidecar(t *testing.T) {
+	dir := t.TempDir()
+	gmd := newFakeGroupMemberDriver(dir)
+	gmd.banked["set-1/worker-0"] = true // has a sidecar (below)
+	gmd.banked["set-1/worker-1"] = true // pre-sidecar (no sidecar file)
+
+	// Write the group_instance_id sidecar beside worker-0's bundle on real disk,
+	// where readGroupInstanceSidecar looks (GroupSetsDir/set/member/...).
+	sidecarDir := filepath.Join(gmd.GroupSetsDir(), "set-1", "worker-0")
+	if err := os.MkdirAll(sidecarDir, 0o700); err != nil {
+		t.Fatalf("mkdir sidecar dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sidecarDir, groupInstanceSidecar), []byte("grp-alpha"), 0o600); err != nil {
+		t.Fatalf("write gid sidecar: %v", err)
+	}
+
+	s := New(Options{
+		Config:       config.Config{Arch: "amd64", Node: "node-4", SnapshotRoot: dir},
+		Driver:       groupMemberVMDriverAdapter{gmd},
+		Transport:    &fakeTransport{},
+		GroupNet:     newFakeGroupNet(),
+		GroupRecords: newFakeGroupRecords(t.TempDir()),
+		GroupDriver:  gmd,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	s.memHeadroom = func() uint64 { return 0 }
+	s.ReconcileGroupBundlesFromDisk()
+
+	byRef := map[string]string{} // snapshotRef -> groupInstanceID
+	for _, e := range s.groupBundles.snapshot() {
+		byRef[e.snapshotRef] = e.groupInstanceID
+	}
+	if got := byRef["group/set-1/worker-0"]; got != "grp-alpha" {
+		t.Fatalf("worker-0 groupInstanceID = %q, want grp-alpha (from sidecar)", got)
+	}
+	if got := byRef["group/set-1/worker-1"]; got != "" {
+		t.Fatalf("worker-1 (pre-sidecar) groupInstanceID = %q, want \"\"", got)
 	}
 }

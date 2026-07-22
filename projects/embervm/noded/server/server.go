@@ -1498,7 +1498,9 @@ func (s *Server) evictGroupMemberSnapshot(ref string) (*nodev1.EvictSnapshotResp
 		return &nodev1.EvictSnapshotResponse{}, nil
 	}
 	// In-use guard: refuse while a live member relit from this bundle is attached.
-	if vmID, inUse := s.groupMembers.memberInUse(entry.groupInstanceID, entry.memberName); inUse {
+	// Matched ref-first (authoritative, survives a gid-less boot scan), falling
+	// back to (group_instance_id, member_name) from the bundle entry.
+	if vmID, inUse := s.groupMembers.memberInUse(ref, entry.groupInstanceID, entry.memberName); inUse {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member snapshot %q is in use by live vm %q", ref, vmID)
 	}
 	if err := s.groupDriver.RemoveGroupMemberBundle(entry.setID, entry.memberName); err != nil {
@@ -2536,9 +2538,12 @@ func (s *Server) ReconcileStatefulFromDisk() {
 	for _, b := range bundles {
 		s.statefulBundles.add(statefulBundleEntry{
 			snapshotRef: b.SnapshotRef,
-			// workload is unknown from disk alone (the bundle dir name is the
-			// opaque snapshot_ref); the control plane rebinds by adoption, same
-			// as a disk-only serving/session rescan entry.
+			// Recover the workload from the on-disk sidecar written at bank time
+			// (#38 F1), so a boot-scanned bundle is remotely evictable across a
+			// restart. A pre-sidecar bundle reads back "" and the reaper SKIPS it
+			// (fix C) rather than draining its local copy while its S3 copy strands.
+			// The control plane still rebinds by adoption for live-instance purposes.
+			workload:        s.readStatefulWorkloadSidecar(b.SnapshotRef),
 			generation:      b.Generation,
 			sizeBytes:       b.SizeBytes,
 			createdAtUnixMs: b.CreatedAtUnixMs,

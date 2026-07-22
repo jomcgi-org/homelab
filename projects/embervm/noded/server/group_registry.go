@@ -139,6 +139,13 @@ type groupMemberEntry struct {
 	handle substrate.Handle
 	// isEntry marks the group's entry member (the one exposed via the entry DNAT).
 	isEntry bool
+	// snapshotRef is the group member bundle this VM was RELIT from
+	// (group/<set_id>/<member_name>), or "" for a fresh/cold boot (which has no
+	// source snapshot). Mirrors statefulEntry.snapshotRef; it is the primary key
+	// the per-member eviction in-use guard (memberInUse) matches on, so a live
+	// relit member protects its bundle even when the banked-bundle entry lost its
+	// group_instance_id to a pre-sidecar boot scan (#38 F3).
+	snapshotRef string
 	// probe is the running TCP-connect health-probe loop for this member.
 	probe *serving.ProbeHandle
 
@@ -227,18 +234,26 @@ func (r *groupMemberRegistry) hasMembers(groupInstanceID string) bool {
 	return r.memberCount(groupInstanceID) > 0
 }
 
-// memberInUse reports whether a LIVE member VM matching (groupInstanceID,
-// memberName) is currently attached, i.e. a member relit from this bundle is
-// still running. It is the in-use guard for a per-member local group eviction
-// (#38): removing a member bundle out from under a live relit member would lose
-// the state needed to re-bank it. A live member carries no snapshotRef of its
-// own, so the caller recovers (groupInstanceID, memberName) from the banked
-// bundle inventory and matches on that pair. Returns the live member's vm_id.
-func (r *groupMemberRegistry) memberInUse(groupInstanceID, memberName string) (string, bool) {
+// memberInUse reports whether a LIVE member VM is currently attached that was
+// relit from the given bundle, i.e. removing the bundle would lose the state a
+// running member needs to re-bank. It is the in-use guard for a per-member local
+// group eviction (#38). It matches REF-FIRST on the live member's snapshotRef
+// (set at relight, mirroring the stateful guard), which is authoritative and
+// survives a boot scan that lost the bundle's group_instance_id (F3); it falls
+// back to matching (groupInstanceID, memberName) so a member relit before this
+// snapshotRef plumbing shipped, or whose bundle entry still carries a gid, is
+// still protected. An empty snapshotRef (fresh/cold member) never ref-matches.
+// Returns the live member's vm_id.
+func (r *groupMemberRegistry) memberInUse(ref, groupInstanceID, memberName string) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, e := range r.members {
-		if e.groupInstanceID == groupInstanceID && e.memberName == memberName {
+		if ref != "" && e.snapshotRef == ref {
+			return id, true
+		}
+	}
+	for id, e := range r.members {
+		if groupInstanceID != "" && e.groupInstanceID == groupInstanceID && e.memberName == memberName {
 			return id, true
 		}
 	}

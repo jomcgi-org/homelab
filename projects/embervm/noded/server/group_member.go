@@ -126,7 +126,7 @@ func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGro
 		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot group member: %v", err)
 	}
-	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), false, groupMemberReadyBudget(req, s.cfg.BootReadyTimeout))
+	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), false, "", groupMemberReadyBudget(req, s.cfg.BootReadyTimeout))
 }
 
 // groupMemberReadyBudget resolves the readiness budget for one member start: the
@@ -187,14 +187,14 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member %q clock resync failed: %v", ref, clockErr)
 	}
 
-	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), true, groupMemberReadyBudget(req, s.cfg.RestoreReadyTimeout))
+	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), true, ref, groupMemberReadyBudget(req, s.cfg.RestoreReadyTimeout))
 }
 
 // finishGroupMemberStart is the shared tail of both member start paths: TCP-health-
 // gate {ip, health_port}, register the live member, and start its probe. On a
 // readiness failure it reaps the VM and removes the tap, returning
 // FAILED_PRECONDITION (no half-alive member is ever published).
-func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle, groupInstanceID, memberName string, memberIndex uint32, tap string, ip net.IP, healthPort, entryGuestPort uint32, wasRelight bool, readyBudget time.Duration) (*nodev1.StartGroupMemberResponse, error) {
+func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle, groupInstanceID, memberName string, memberIndex uint32, tap string, ip net.IP, healthPort, entryGuestPort uint32, wasRelight bool, snapshotRef string, readyBudget time.Duration) (*nodev1.StartGroupMemberResponse, error) {
 	if err := s.waitStatefulReady(ctx, ip, healthPort, readyBudget); err != nil {
 		// Loud on purpose: this reap is the daemon KILLING a member that missed its
 		// readiness budget. Silent, it reads as a mystery VM disappearance (the R6
@@ -227,6 +227,7 @@ func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle,
 		tap:             tap,
 		port:            healthPort,
 		handle:          h,
+		snapshotRef:     snapshotRef,
 		probe:           probe,
 	})
 	s.signalChange()
@@ -318,6 +319,10 @@ func (s *Server) stopGroupMemberBank(ctx context.Context, req *nodev1.StopGroupM
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
 	})
+	// Persist the group_instance_id binding beside the member bundle so a boot-scan
+	// reconciliation (which reads only set_id + member_name off the dir) can recover
+	// it and compose the remote (S3) GROUP_SET prefix at eviction time (#38 F2).
+	s.writeGroupInstanceSidecar(setID, memberName, e.groupInstanceID)
 	// Async off-node write-back (R6): a group set is the export unit, so enqueue
 	// the SET (keyed by group instance + set_id) fire-and-forget after each member
 	// bank. The dedupe coalesces overlapping member banks of the same set; the

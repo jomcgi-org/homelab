@@ -308,6 +308,58 @@ func waitForExport(t *testing.T, fs *fakeStore, prefix string) {
 	t.Fatalf("export of %q did not land within the deadline", prefix)
 }
 
+// TestReconcileStatefulReadsWorkloadSidecar proves a boot-scan reconciliation
+// recovers the workload from the on-disk sidecar (#38 F1), so a bundle banked
+// (with its sidecar) before a restart re-seeds with its REAL workload and is
+// therefore remotely evictable, instead of seeding with "".
+func TestReconcileStatefulReadsWorkloadSidecar(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+
+	ref := "scratch-postgres__g9"
+	dir := filepath.Join(s.cfg.SnapshotRoot, "stateful", ref)
+	// A complete bundle (snapfile makes ScanStatefulBundles report it) WITH the
+	// workload sidecar written at bank time.
+	writeBundleFiles(t, dir, map[string]string{
+		"snapfile":              "snap",
+		"memfile":               "mem",
+		"gen":                   "9",
+		statefulWorkloadSidecar: "scratch-postgres",
+	})
+
+	s.ReconcileStatefulFromDisk()
+
+	got, ok := s.statefulBundles.get(ref)
+	if !ok {
+		t.Fatalf("reconcile should have seeded stateful bundle %q", ref)
+	}
+	if got.workload != "scratch-postgres" {
+		t.Fatalf("reconciled workload = %q, want scratch-postgres (from sidecar)", got.workload)
+	}
+}
+
+// TestReconcileStatefulNoSidecarSeedsEmptyWorkload proves a pre-sidecar bundle
+// (no workload file) reconciles with workload "", which the reaper then SKIPS
+// (fix C) rather than draining a bundle whose S3 copy it cannot address.
+func TestReconcileStatefulNoSidecarSeedsEmptyWorkload(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+
+	ref := "legacy__nobind"
+	dir := filepath.Join(s.cfg.SnapshotRoot, "stateful", ref)
+	writeBundleFiles(t, dir, map[string]string{"snapfile": "snap", "memfile": "mem", "gen": "1"})
+
+	s.ReconcileStatefulFromDisk()
+
+	got, ok := s.statefulBundles.get(ref)
+	if !ok {
+		t.Fatalf("reconcile should still seed the bundle %q", ref)
+	}
+	if got.workload != "" {
+		t.Fatalf("pre-sidecar bundle should seed workload \"\", got %q", got.workload)
+	}
+}
+
 // TestExportArtifactStateful proves a direct ExportArtifact of a banked stateful
 // bundle uploads its files and reports it exported in NodeStatus.
 func TestExportArtifactStateful(t *testing.T) {
