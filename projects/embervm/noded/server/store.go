@@ -147,6 +147,88 @@ func artifactPrefix(ref *nodev1.ArtifactRef, vendor string) string {
 	return kindStr + "/" + ref.GetWorkload()
 }
 
+// The binding sidecars record, on disk beside a banked bundle, the control-plane
+// identity noded needs to compose the bundle's REMOTE (S3) prefix at eviction
+// time (#38 F1/F2). The bundle dir name is only the opaque snapshot_ref, so
+// without these a boot-scanned inventory entry seeds with an empty workload /
+// group_instance_id and its remote evict fails InvalidArgument, stranding the S3
+// copy. Written by the server AFTER the driver publishes the (already complete)
+// bundle, mirroring the driver's gen/pinned-IP sidecars; a bundle banked before
+// this change (or a crash between snapfile-publish and sidecar-write) simply has
+// no sidecar and reads back empty, which the reaper then SKIPS (see #38 fix C).
+const (
+	statefulWorkloadSidecar = "workload"
+	groupInstanceSidecar    = "group_instance_id"
+)
+
+// writeStatefulWorkloadSidecar records the workload beside a banked stateful
+// bundle (stateful/<ref>/workload). Best-effort: a write failure logs and leaves
+// the bundle usable, degrading only to the empty-binding SKIP the reaper handles.
+func (s *Server) writeStatefulWorkloadSidecar(ref, workload string) {
+	if s.statefulDriver == nil || workload == "" || ref == "" {
+		return
+	}
+	root := s.statefulDriver.StatefulDir()
+	if root == "" {
+		return
+	}
+	path := filepath.Join(root, ref, statefulWorkloadSidecar)
+	if err := os.WriteFile(path, []byte(workload), 0o600); err != nil {
+		s.logger.Warn("noded: write stateful workload sidecar (bundle still usable, will seed empty on restart)", "ref", ref, "workload", workload, "err", err)
+	}
+}
+
+// readStatefulWorkloadSidecar reads the workload a stateful bundle was banked for
+// ("" if the sidecar is absent or unreadable: a pre-sidecar bundle).
+func (s *Server) readStatefulWorkloadSidecar(ref string) string {
+	if s.statefulDriver == nil || ref == "" {
+		return ""
+	}
+	root := s.statefulDriver.StatefulDir()
+	if root == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(root, ref, statefulWorkloadSidecar))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// writeGroupInstanceSidecar records the group_instance_id beside a banked group
+// member bundle (group/<set>/<member>/group_instance_id). Best-effort, same
+// contract as the stateful sidecar.
+func (s *Server) writeGroupInstanceSidecar(setID, memberName, groupInstanceID string) {
+	if s.groupDriver == nil || groupInstanceID == "" || setID == "" || memberName == "" {
+		return
+	}
+	root := s.groupDriver.GroupSetsDir()
+	if root == "" {
+		return
+	}
+	path := filepath.Join(root, setID, memberName, groupInstanceSidecar)
+	if err := os.WriteFile(path, []byte(groupInstanceID), 0o600); err != nil {
+		s.logger.Warn("noded: write group instance sidecar (bundle still usable, will seed empty on restart)", "set", setID, "member", memberName, "gid", groupInstanceID, "err", err)
+	}
+}
+
+// readGroupInstanceSidecar reads the group_instance_id a member bundle was banked
+// under ("" if absent: a pre-sidecar bundle).
+func (s *Server) readGroupInstanceSidecar(setID, memberName string) string {
+	if s.groupDriver == nil || setID == "" || memberName == "" {
+		return ""
+	}
+	root := s.groupDriver.GroupSetsDir()
+	if root == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(root, setID, memberName, groupInstanceSidecar))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 // legacyArtifactPrefix composes the pre-R7 un-vendored prefix for a vendor-bound
 // kind (<kindStr>/<workload>/<ref>), the key layout every BASE/SESSION/SERVING/
 // STATEFUL/GROUP_SET artifact used before vendor keying shipped. It is the alias

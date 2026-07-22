@@ -303,6 +303,31 @@ defmodule Embervm.WarmthReaper do
   # uses); the single remote EvictArtifact{remote: true, kind: GROUP_SET, workload:
   # group_instance_id, ref: set_id} that drops the whole set prefix at once fires
   # ONLY when EVERY member's local eviction succeeded.
+  # Empty-binding SKIP (#38 fix C): a bundle boot-scanned from disk before the
+  # binding sidecar shipped (or after a crash between snapfile-publish and
+  # sidecar-write) seeds with workload/group_instance_id = "" or nil. Its LOCAL
+  # evict would succeed and DRAIN the on-disk copy, but the REMOTE (S3) evict needs
+  # the workload to compose the prefix and fails InvalidArgument, so the set/bundle
+  # would be locally gone yet its S3 copy stranded FOREVER with no handle to find it
+  # again (Fable F2, worse than nothing). So we run NEITHER copy's evict and log ONE
+  # info line. Reclaiming these pre-sidecar orphans is a separate decision (task
+  # #39); until then they are safely left whole.
+  defp evict_entry(_state, %{kind: :stateful, id: ref, workload: workload}) when workload in [nil, ""] do
+    Logger.info(
+      "embervm warmth reaper: SKIP orphaned stateful bundle #{inspect(ref)} (no workload binding on disk; cannot evict remote copy safely, leaving whole)"
+    )
+
+    :ok
+  end
+
+  defp evict_entry(_state, %{kind: :group, id: set_id, workload: gid}) when gid in [nil, ""] do
+    Logger.info(
+      "embervm warmth reaper: SKIP orphaned group set #{inspect(set_id)} (no group_instance_id binding on disk; cannot evict remote copy safely, leaving whole)"
+    )
+
+    :ok
+  end
+
   defp evict_entry(state, %{kind: :stateful, id: ref, workload: workload, node_id: node_id}) do
     dial_key = WakeInstance.dial_for_bundle(state.capacity_table, node_id, ref)
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: ref}

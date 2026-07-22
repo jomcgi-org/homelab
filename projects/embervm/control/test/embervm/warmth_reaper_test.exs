@@ -420,4 +420,72 @@ defmodule Embervm.WarmthReaperTest do
       refute_receive {:evict_artifact, :ARTIFACT_KIND_GROUP_SET, "orphan-set", true}, 300
     end
   end
+
+  # #38 fix C: an orphan boot-scanned before the binding sidecar shipped has an
+  # empty workload/group_instance_id. Its local evict would drain the disk copy
+  # while its remote evict fails InvalidArgument, stranding the S3 copy forever. So
+  # such an entry is SKIPPED entirely: NEITHER local nor remote runs.
+  describe "empty-binding orphans are skipped entirely (#38 fix C)" do
+    test "a stateful orphan with no workload binding runs no local and no remote evict" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+
+      # The disk-reported bundle has workload "" (pre-sidecar boot scan). Its
+      # instance is destroyed, so it classifies as an orphan.
+      put_warmth_fact(table, "node-4", [stateful_bundle("orphan-nobind", "", 4_096)], [])
+      stateful = start_store([stateful_instance(:destroyed, "orphan-nobind")])
+      group = start_store([])
+
+      reaper =
+        start_reaper(
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: group,
+          evict_artifact_fun: artifact_fun,
+          evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
+          sweep_enabled: true
+        )
+
+      plan = WarmthReaper.sweep_now(reaper)
+      # It is still PLANNED as an orphan (visibility) ...
+      assert Enum.any?(plan, &(&1.id == "orphan-nobind"))
+      # ... but NOTHING is evicted, local or remote.
+      refute_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-nobind", _}, 300
+    end
+
+    test "a group orphan with no group_instance_id binding runs no member local and no remote evict" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+
+      # set with group_instance_id "" (pre-sidecar). group_set/3 takes the gid as
+      # arg 2; pass "".
+      put_warmth_fact(table, "node-4", [], [
+        group_set("orphan-nobind-set", "", [member("a", "m-nb-a", 1_000), member("b", "m-nb-b", 2_000)])
+      ])
+
+      stateful = start_store([])
+      group = start_store([group_instance(:destroyed, "orphan-nobind-set")])
+
+      reaper =
+        start_reaper(
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: group,
+          evict_artifact_fun: artifact_fun,
+          evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
+          sweep_enabled: true
+        )
+
+      plan = WarmthReaper.sweep_now(reaper)
+      assert Enum.any?(plan, &(&1.id == "orphan-nobind-set"))
+      # No per-member local evict, no whole-set remote evict.
+      refute_receive {:evict_snapshot, "m-nb-a"}, 300
+      refute_receive {:evict_snapshot, "m-nb-b"}, 200
+      refute_receive {:evict_artifact, :ARTIFACT_KIND_GROUP_SET, "orphan-nobind-set", true}, 200
+    end
+  end
 end

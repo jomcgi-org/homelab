@@ -74,7 +74,10 @@ func newEvictTestServer(t *testing.T) (nodev1.NodeServiceClient, *Server, string
 	// has a session driver wired.
 	drv := &fakeDriver{sessionsDir: filepath.Join(root, "sessions"), sessionBundles: map[string]string{}}
 	s := New(Options{
-		Config:         config.Config{Arch: "amd64", Node: "node-4", SnapshotRoot: root, VolumeRoot: volRoot},
+		// CpuVendor is REQUIRED: artifactPrefix refuses a vendor-bound kind (STATEFUL)
+		// with an empty vendor, so a STATEFUL EvictArtifact would fail InvalidArgument
+		// before reaching the local arm. A real node always has its vendor configured.
+		Config:         config.Config{Arch: "amd64", Node: "node-4", CpuVendor: "amd", SnapshotRoot: root, VolumeRoot: volRoot},
 		Driver:         drv,
 		SessionDriver:  drv,
 		StatefulDriver: newDiskScanStatefulDriver(root),
@@ -254,6 +257,36 @@ func TestEvictGroupMemberInUseRefused(t *testing.T) {
 	}
 	if !groupMemberDirExists(root, set, "entry") {
 		t.Fatalf("group/%s/entry must SURVIVE a refused in-use evict", set)
+	}
+}
+
+// TestEvictGroupMemberInUseRefusedRefFirstNoGid proves a live member relit from a
+// ref is protected (FAILED_PRECONDITION, bundle survives) via the ref-first match
+// EVEN when its banked-bundle entry lost its group_instance_id to a pre-sidecar
+// boot scan (gid=""). This closes the F3 window: without the ref-first match, the
+// (gid, member) fallback would find no gid to match and the live member's bundle
+// would be wrongly evictable.
+func TestEvictGroupMemberInUseRefusedRefFirstNoGid(t *testing.T) {
+	client, s, root := newEvictTestServer(t)
+	ctx := context.Background()
+
+	set := "k3s-cluster__set3"
+	ref := "group/" + set + "/entry"
+	writeBundleFiles(t, filepath.Join(root, "group", set, "entry"), map[string]string{"snapfile": "snap", "memfile": "mem"})
+	// Bundle entry seeded WITHOUT a group_instance_id, as a pre-sidecar boot scan
+	// would (ReconcileGroupBundlesFromDisk reads back "" for a member with no
+	// sidecar).
+	s.groupBundles.add(groupBundleEntry{setID: set, memberName: "entry", groupInstanceID: "", snapshotRef: ref, sizeBytes: 5120})
+	// A live member relit from this ref carries the snapshotRef (set by the relight
+	// plumbing) but its groupInstanceID need not match the empty bundle entry.
+	s.groupMembers.add(&groupMemberEntry{vmID: "live-relit-1", groupInstanceID: "grp-k3s-3", memberName: "entry", snapshotRef: ref, ip: net.ParseIP("10.0.0.9")})
+
+	_, err := client.EvictSnapshot(ctx, &nodev1.EvictSnapshotRequest{SnapshotRef: ref})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ref-first in-use guard: want FAILED_PRECONDITION, got %v", err)
+	}
+	if !groupMemberDirExists(root, set, "entry") {
+		t.Fatalf("group/%s/entry must SURVIVE: a live member relit from the ref holds it", set)
 	}
 }
 

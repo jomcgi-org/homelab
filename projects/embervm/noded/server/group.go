@@ -183,9 +183,11 @@ func (s *Server) groupNetworksStatus() []*nodev1.GroupNetwork {
 // kills every LIVE member (they died with the pod, the standing single-node
 // availability posture); only the on-disk bundle sets survive, and the control plane
 // resolves each group to relightable (a complete set) or fresh-bootable from these
-// reports (the daemon makes NO completeness judgment). A member bundle carries no
-// group_instance_id on disk (the set dir names only the set_id + member), so the
-// group binding is left empty for the control plane to rebind by adoption.
+// reports (the daemon makes NO completeness judgment). The set dir names only the
+// set_id + member, but a member banked after #38 carries a group_instance_id
+// sidecar beside its bundle, which this rescan reads back so the boot-scanned
+// entry is remotely evictable; a pre-sidecar member reads back "" and the control
+// plane rebinds it by adoption (and the reaper SKIPS an empty-binding set).
 func (s *Server) ReconcileGroupBundlesFromDisk() {
 	if s.groupDriver == nil {
 		return
@@ -203,8 +205,12 @@ func (s *Server) ReconcileGroupBundlesFromDisk() {
 	for _, set := range sets {
 		for _, m := range set.Members {
 			s.groupBundles.add(groupBundleEntry{
-				setID:           set.SetID,
-				memberName:      m.MemberName,
+				setID:      set.SetID,
+				memberName: m.MemberName,
+				// Recover the group_instance_id from the on-disk sidecar (#38 F2), so
+				// this boot-scanned member is remotely evictable across a restart.
+				// "" for a pre-sidecar member: the reaper SKIPS such a set.
+				groupInstanceID: s.readGroupInstanceSidecar(set.SetID, m.MemberName),
 				snapshotRef:     m.SnapshotRef,
 				sizeBytes:       m.SizeBytes,
 				createdAtUnixMs: set.CreatedAtUnixMs,

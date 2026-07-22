@@ -531,6 +531,9 @@ func (s *Server) commitCheckpoint(ctx context.Context, e *statefulEntry, token s
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
 	})
+	// Persist the workload binding beside the committed bundle (#38 F1), same as
+	// the direct-bank path.
+	s.writeStatefulWorkloadSidecar(ref.ID, e.workload)
 	// Async off-node write-back (R6): the committed bundle and its paired volume,
 	// fire-and-forget (identical to stopStatefulBank's tail).
 	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: e.workload, Ref: ref.ID})
@@ -627,6 +630,12 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
 	})
+	// Persist the workload binding beside the bundle so a boot-scan reconciliation
+	// (which knows only the opaque ref) can recover it and compose the remote (S3)
+	// prefix at eviction time (#38 F1). Written after the driver published the
+	// complete bundle, so a crash before this leaves a usable bundle that seeds
+	// empty and is safely SKIPPED by the reaper.
+	s.writeStatefulWorkloadSidecar(ref.ID, e.workload)
 	// Async off-node write-back (R6): a stateful bank ships BOTH the bundle and its
 	// paired volume (vol.img + gen); the volume export skips when its generation is
 	// unchanged since the last export. Both are fire-and-forget (never blocking).
