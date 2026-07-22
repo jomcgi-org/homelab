@@ -20,7 +20,7 @@ defmodule Embervm.ApplicationTest do
   setup do
     # Snapshot and restore the env vars these tests toggle, so they never leak.
     saved =
-      for k <- ~w(EMBERVM_NODE_ADDRESS EMBERVM_NODE_ID) do
+      for k <- ~w(EMBERVM_NODE_ADDRESS EMBERVM_NODE_ID EMBERVM_OPLOG_DSN) do
         {k, System.get_env(k)}
       end
 
@@ -54,5 +54,25 @@ defmodule Embervm.ApplicationTest do
   test "configured_nodes/0 seeds EMPTY when neither override nor service is configured" do
     # No discovery, no override: an idle control plane, empty node set, no Finch.
     assert App.configured_nodes() == []
+  end
+
+  # op_log_mod/0 selection (PR-4, #18/#27): EMBERVM_OPLOG_DSN unset or empty
+  # keeps every cluster on Embervm.OpLog.SQLite (today's shipped default); a
+  # set, non-empty DSN selects Embervm.OpLog.Postgres. This PR does not wire
+  # the DSN into any deploy values, so the selection stays SQLite in prod
+  # until a later cutover PR sets it.
+  test "op_log_mod/0 selects Embervm.OpLog.SQLite when EMBERVM_OPLOG_DSN is unset" do
+    System.delete_env("EMBERVM_OPLOG_DSN")
+    assert App.op_log_mod() == Embervm.OpLog.SQLite
+  end
+
+  test "op_log_mod/0 selects Embervm.OpLog.SQLite when EMBERVM_OPLOG_DSN is empty" do
+    System.put_env("EMBERVM_OPLOG_DSN", "")
+    assert App.op_log_mod() == Embervm.OpLog.SQLite
+  end
+
+  test "op_log_mod/0 selects Embervm.OpLog.Postgres when EMBERVM_OPLOG_DSN is set" do
+    System.put_env("EMBERVM_OPLOG_DSN", "postgres://embervm:pw@embervm-pg:5432/embervm")
+    assert App.op_log_mod() == Embervm.OpLog.Postgres
   end
 end

@@ -54,6 +54,14 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file"
 # the tarball and re-pin the sha here.
 _HEX_DEPS = [
     ("exqlite", "0.38.0", "f3da7b6e7b08bd548c33a118890d0eb8c5395fe093b31c8b329663234d0e988e"),
+    # Embervm.OpLog.Postgres (PR-4, #18/#27): postgrex reuses the already-vendored
+    # db_connection (its `~> 2.1` bound is satisfied by 2.10.2 above) and adds one
+    # new leaf, decimal (postgrex's `~> 1.5 or ~> 2.0` bound). postgrex's other
+    # optional deps (jason, already vendored; table, an IEx result-formatting
+    # helper this control plane never calls) are not pulled, mirroring how
+    # exqlite's optional `table` dep is skipped above.
+    ("postgrex", "0.20.0", "d36ef8b36f323d29505314f704e21a1a038e2dc387c6409ee0cd24144e187c0f"),
+    ("decimal", "2.3.0", "a4d66355cb29cb47c3cf30e71329e58361cfcb37c34235ef3bf1d7bf3773aeac"),
     ("db_connection", "2.10.2", "510b14482330f1af6490a2fa0efd8d4f1435d1529b165647df22ac0f2df0fa93"),
     ("elixir_make", "0.9.0", "db23d4fd8b757462ad02f8aa73431a426fe6671c80b200d9710caf3d1dd0ffdb"),
     ("cc_precompiler", "0.1.11", "3427232caf0835f94680e5bcf082408a70b48ad68a5f5c0b02a3bea9f3a075b9"),
