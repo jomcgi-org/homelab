@@ -45,7 +45,9 @@ tunnel:
 
   image:
     repository: cloudflare/cloudflared
-    tag: "2025.4.0"
+    # Pinned deliberately (noAutoupdate: true). 2026.7.x adds startup
+    # DNS/UDP/TCP connectivity prechecks and clearer connection failures.
+    tag: "2026.7.2"
     pullPolicy: IfNotPresent
 
   # Tunnel identity (set from secret when using OnePassword)
@@ -89,19 +91,21 @@ tunnel:
     seccompProfile:
       type: RuntimeDefault
 
+  # Liveness only checks the local metrics/process is alive (TCP connect to the
+  # metrics listener), NOT edge readiness. An upstream Cloudflare transport
+  # outage must not restart an otherwise-healthy, reconnecting cloudflared:
+  # that just adds synchronized restart churn and extends the outage. Edge
+  # health is a readiness concern (below). Requires metrics bound to 0.0.0.0
+  # so the kubelet can reach it on the pod IP (see metrics.address).
   livenessProbe:
-    exec:
-      command:
-        - cloudflared
-        - tunnel
-        - --metrics
-        - 127.0.0.1:2000
-        - ready
+    tcpSocket:
+      port: 2000
     failureThreshold: 6
     initialDelaySeconds: 30
     periodSeconds: 10
     timeoutSeconds: 5
 
+  # Readiness DOES gate on edge readiness (runs in-container against loopback).
   readinessProbe:
     exec:
       command:
@@ -117,7 +121,10 @@ tunnel:
 
   metrics:
     enabled: true
-    address: "127.0.0.1:2000"
+    # Bound to 0.0.0.0 (was 127.0.0.1) so the kubelet tcpSocket liveness probe
+    # can reach it on the pod IP. Exposure is in-cluster only (ClusterIP service,
+    # never internet-facing); tighten with a CiliumNetworkPolicy if needed.
+    address: "0.0.0.0:2000"
 
   envoy:
     enabled: false
