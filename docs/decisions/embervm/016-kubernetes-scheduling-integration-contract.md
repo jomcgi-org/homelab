@@ -125,6 +125,18 @@ the whole of ember's kube-level priority story:
   are minimum per-lane brick counts held by the EmberPool controller
   (ADR 013 section 7); priority only decides who eats provisioning latency
   when demand exceeds the floor.
+- **The lane-to-PriorityClass ladder is a CP-owned table, not chart
+  values.** Workload registration is Helm-driven today but is headed toward
+  Helm-or-API registration (deploying a lambda-shaped workload through an
+  API call) with the definition living durably in the CP datastore
+  (ADR 007). A per-lane scheduling attribute sourced from chart values
+  would leave API-registered workloads with no home for it, so the ladder
+  lives beside the workload and lane definitions in the CP, and the
+  EmberPool controller (already the single writer of brick counts) stamps
+  `priorityClassName` on the brick pods it reconciles. The cluster-scoped
+  `PriorityClass` objects themselves stay chart-managed GitOps resources:
+  the chart defines the rungs that exist, the CP table decides which rung
+  each lane's bricks stand on.
 
 ### 4. Packing policy under heterogeneous demand: pack to empty, place by class
 
@@ -232,9 +244,7 @@ preemption and consolidation never become a cross-principal reuse path
    target) or GKE NAP, and do the conformance drills run against both?
 2. Concrete NodePool disruption budget values per lane: what churn rate is
    acceptable for session-bearing bricks during business hours?
-3. Where does the lane-to-PriorityClass ladder live: chart values per brick
-   pool, or a CP-owned table the chart renders from?
-4. Does the isolated lane eventually want a CP-side occupancy cap per brick
+3. Does the isolated lane eventually want a CP-side occupancy cap per brick
    (spread pressure) once real traffic data exists, or does data-plane
    `LEAST_REQUEST` suffice alone?
 
