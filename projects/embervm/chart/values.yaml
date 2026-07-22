@@ -12,6 +12,35 @@ image:
   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   pullPolicy: IfNotPresent
 
+# Uniform size-capped scratch (warmth cache-cap retention decisions 2026-07-22).
+# The scratch-prep DaemonSet provisions an ext4 loop file of THIS size at
+# /var/lib/embervm/scratch on every FC node that does NOT already have a mount
+# there (node-4's dedicated-NVMe bind is left untouched by the mountpoint guard).
+# ONE uniform knob, no per-node map: a hard cap makes a warmth leak physically
+# unable to starve etcd/root on the etcd-master FC nodes. Sized to the ~30-40G
+# true working set (bases + placed instances' warmth); the fs is sparse, so an
+# unfilled cap costs only what is written. Raise fleet-wide here, never per node.
+scratchSizeGi: 35
+
+# Node-provisioning contract actuator (ADR embervm/012 storage-tiers amendment):
+# the scratch-prep DaemonSet that provisions the uniform capped loop scratch (see
+# scratchSizeGi) on the pet-node fleet. TOP-LEVEL, not noded.scratchPrep: its
+# image is Bazel-pinned at the dotted key `scratchPrep.image` (chart/BUILD), and
+# helm_images_values emits one YAML block per dotted key, so nesting it under the
+# noded.* prefix would strand the pin at a phantom key while the template read an
+# all-zeros digest (the ImagePullBackOff that disabled the earlier roll). On EKS
+# this is disabled (Karpenter userData mounts instance-store NVMe at bootstrap);
+# the two are mutually exclusive actuators of the same contract, never both.
+scratchPrep:
+  enabled: true
+  image:
+    # Pinned at build time by helm_chart(images={"scratchPrep.image":
+    # ".../scratch-prep:image.info"}).
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/scratch-prep
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    pullPolicy: IfNotPresent
+
 # GHCR pull credentials. The control-plane image is private, and embervm runs in
 # its own namespace (unlike fc-invoke, which reuses the monolith namespace's
 # secret), so it creates its own OnePasswordItem-synced dockerconfigjson.
@@ -791,32 +820,12 @@ noded:
   drain:
     timeoutSeconds: 110
 
-  # Node-provisioning contract (ADR embervm/012 storage-tiers amendment; brick
-  # decisions log 2026-07-19 "Scratch mechanism"): who satisfies the logical
-  # scratch path noded's hostPath expects (firecracker.nvmeRoot above) is a
-  # node-bootstrap concern, not noded's. On EKS, Karpenter userData mounts
-  # instance-store NVMe there at boot. On the homelab (pet nodes with no
-  # bootstrap script), this scratch-prep DaemonSet is the actuator: it
-  # bind-mounts each FC node's real scratch device onto the logical path,
-  # running the mount in the HOST namespace via nsenter so it survives the pod.
-  # Disable on EKS once Karpenter userData carries this (the two are mutually
-  # exclusive actuators of the same contract, never both).
-  scratchPrep:
-    enabled: true
-    image:
-      # Pinned at build time by helm_chart(images={"scratchPrep.image":
-      # ".../scratch-prep:image.info"}).
-      repository: ghcr.io/jomcgi/homelab/projects/embervm/scratch-prep
-      tag: latest
-      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-      pullPolicy: IfNotPresent
-    # node name -> real scratch device mountpoint. A node carrying the FC label
-    # with NO entry here fails closed: the DaemonSet pod logs "no scratch source
-    # mapped" and sleeps, the bind-mount never happens, and noded on that node
-    # stays FailedMount (never silently falls back to the node's root disk).
-    # Cluster-specific mapping lives in deploy/values.yaml; this default is
-    # empty so a bare `helm template` never assumes a device that may not exist.
-    nodeMap: {}
+  # (Node-provisioning scratch-prep config moved to the TOP-LEVEL `scratchPrep`
+  # block below. It must NOT live under `noded.*`: helm_images_values pins its
+  # image at the dotted key `scratchPrep.image`, and a nested noded.scratchPrep.
+  # image would leave the pin at a phantom top-level key while the template read
+  # the nested all-zeros digest, which is exactly the ImagePullBackOff that
+  # stranded the earlier roll. See the top-level `scratchPrep` block.)
 
   # R1 zip lane: a BuildBase zip source is a runtime image plus a zip archive noded
   # fetches, sha256-verifies into memory, and hydrates into the build VM over vsock

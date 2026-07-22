@@ -75,22 +75,22 @@ tracing:
 # runaway backstop, not any pool floor.
 noded:
   maxLiveVMs: 16
-  # Node-provisioning contract (ADR embervm/012 storage-tiers amendment): only
-  # node-4 is mapped. node-1/2/3 (the etcd masters) are intentionally ABSENT:
-  # their scratch disks have not been decided yet, so a FC label on those nodes
-  # today fails closed (no bind-mount, noded FailedMount) rather than silently
-  # landing scratch on the root disk. Add an entry here only once a node's real
-  # device is chosen.
-  scratchPrep:
-    # DISABLED: the scratch-prep apko image was published with an all-zeros
-    # digest (helm_images_values pin miss), so the DaemonSet ImagePullBackOffs
-    # and ArgoCD health-gates the whole embervm sync on it (stranding the
-    # noded roll + demo fix + dial-home cutover). node-4's scratch path is
-    # held by a persisted bind-mount (fstab) meanwhile. Re-enable once the
-    # image pin is fixed.
-    enabled: false
-    nodeMap:
-      node-4: /disks/nvme-02
+
+# Node-provisioning contract (ADR embervm/012 storage-tiers amendment; warmth
+# cache-cap retention decisions 2026-07-22): re-enabled now that scratch-prep
+# provisions a UNIFORM size-capped ext4 loop scratch (chart scratchSizeGi = 35G)
+# instead of a per-node bind-mount, and its image pin is fixed (relocated to the
+# top-level `scratchPrep.image` key the Bazel helm_images_values actually writes,
+# resolving the all-zeros-digest ImagePullBackOff that disabled the earlier roll).
+#
+# SAFETY: the DaemonSet SKIPS any node where /var/lib/embervm/scratch is already
+# a mountpoint. node-4's dedicated NVMe is an fstab bind mount there, so it is
+# detected and LEFT UNTOUCHED (never unmounted, reformatted, or fallocated over).
+# The etcd masters (node-1/2/3) have nothing mounted there, so they receive the
+# capped loop scratch, and the hard cap makes a warmth leak physically unable to
+# starve etcd/root on those nodes. One uniform knob, no per-node map.
+scratchPrep:
+  enabled: true
 
 # Size-class BRICK cutover REVERTED to the known-good single-instance DS fleet
 # (foundation plan Step 0, docs/plans/2026-07-20-embervm-brick-colocation-foundation.md).

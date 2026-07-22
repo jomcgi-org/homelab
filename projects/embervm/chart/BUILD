@@ -46,8 +46,10 @@ helm_chart(
         # resolve to the same pinned digest.
         "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
         # Node-provisioning contract (ADR embervm/012 storage-tiers amendment): the
-        # scratch-prep DaemonSet image (nsenter-only, no repo code). MUST be a
-        # DISTINCT top-level key, not noded.scratchPrep.image: helm_images_values
+        # scratch-prep DaemonSet image (busybox + util-linux + e2fsprogs, no repo
+        # code). MUST be a DISTINCT top-level key, not noded.scratchPrep.image:
+        # this is the key the template now reads and helm_images_values pins;
+        # helm_images_values
         # emits one YAML block per dotted key, so nesting under the noded.* prefix
         # already claimed by "noded.image" above would collapse to the last on
         # parse (duplicate-key, D14a.6), silently dropping one pin.
