@@ -183,4 +183,4 @@ statefulSweeper:
 # local eviction, and hydrate-on-miss restores from S3 on a cold start.
 # Rollback: set back to "" and bump the chart; that stops further eviction.
 baseRetention:
-  sweepEnabled: ""
+  sweepEnabled: "1"
