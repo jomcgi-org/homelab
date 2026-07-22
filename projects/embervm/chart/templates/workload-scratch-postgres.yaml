@@ -21,7 +21,7 @@ spec:
     image:
       # Must match the top-level scratchPostgres.guestImage exactly (the derived
       # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
-      ref: "{{ .Values.scratchPostgres.guestImage.repository }}:{{ .Values.scratchPostgres.guestImage.tag }}"
+      ref: "{{ .Values.scratchPostgres.guestImage.repository }}@{{ .Values.scratchPostgres.guestImage.digest }}"
       # The vsock health/ready contract used at BASE BUILD time (the warm-base
       # cold boot health-gates over vsock at readyPath; the guest-init answers
       # /shim/ready there). The RUNTIME health is a TCP connect to stateful.port

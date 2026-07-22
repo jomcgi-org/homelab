@@ -17,7 +17,7 @@ spec:
     image:
       # Must match the top-level semgrep.guestImage exactly (the derived
       # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
-      ref: "{{ .Values.semgrep.guestImage.repository }}:{{ .Values.semgrep.guestImage.tag }}"
+      ref: "{{ .Values.semgrep.guestImage.repository }}@{{ .Values.semgrep.guestImage.digest }}"
       port: {{ .Values.semgrepWorkload.port }}
       readyPath: {{ .Values.semgrepWorkload.readyPath | quote }}
       invokePath: {{ .Values.semgrepWorkload.invokePath | quote }}

@@ -19,7 +19,7 @@ spec:
     image:
       # Must match the top-level sandbox.guestImage exactly (the derived
       # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
-      ref: "{{ .Values.sandbox.guestImage.repository }}:{{ .Values.sandbox.guestImage.tag }}"
+      ref: "{{ .Values.sandbox.guestImage.repository }}@{{ .Values.sandbox.guestImage.digest }}"
       port: {{ .Values.sandboxWorkload.port }}
       readyPath: {{ .Values.sandboxWorkload.readyPath | quote }}
       invokePath: {{ .Values.sandboxWorkload.invokePath | quote }}

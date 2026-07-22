@@ -24,7 +24,7 @@ spec:
       # and the noded image table are keyed on this ref via the scratchPostgres
       # workloads entry, so an identical string is what makes this workload
       # bootable without its own base bake.
-      ref: "{{ .Values.scratchPostgres.guestImage.repository }}:{{ .Values.scratchPostgres.guestImage.tag }}"
+      ref: "{{ .Values.scratchPostgres.guestImage.repository }}@{{ .Values.scratchPostgres.guestImage.digest }}"
       port: 1027
       readyPath: /shim/ready
   resources:

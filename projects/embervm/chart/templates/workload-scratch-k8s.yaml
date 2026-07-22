@@ -43,7 +43,7 @@ spec:
   # build is a valid k3s image.
   source:
     image:
-      ref: "{{ .Values.scratchK8sServer.guestImage.repository }}:{{ .Values.scratchK8sServer.guestImage.tag }}"
+      ref: "{{ .Values.scratchK8sServer.guestImage.repository }}@{{ .Values.scratchK8sServer.guestImage.digest }}"
       # The vsock health/ready contract used at BASE BUILD time (the warm-base
       # cold boot health-gates over vsock at readyPath; the k3s guest-init answers
       # /shim/ready there, mirroring scratch-postgres). The RUNTIME health is a TCP
@@ -73,7 +73,8 @@ spec:
         replicas: 1
         source:
           image:
-            ref: "{{ .Values.scratchK8sServer.guestImage.repository }}:{{ .Values.scratchK8sServer.guestImage.tag }}"
+            ref: "{{ .Values.scratchK8sServer.guestImage.repository }}@{{ .Values.scratchK8sServer.guestImage.digest }}"
+            # (server member, same digest as the group source ref above)
         resources:
           vcpus: 2
           memMib: 4096
@@ -91,7 +92,7 @@ spec:
         replicas: 2
         source:
           image:
-            ref: "{{ .Values.scratchK8sAgent.guestImage.repository }}:{{ .Values.scratchK8sAgent.guestImage.tag }}"
+            ref: "{{ .Values.scratchK8sAgent.guestImage.repository }}@{{ .Values.scratchK8sAgent.guestImage.digest }}"
         resources:
           vcpus: 1
           memMib: 3072

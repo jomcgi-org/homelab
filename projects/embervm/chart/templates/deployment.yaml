@@ -116,7 +116,7 @@ spec:
             # bakes and EMBERVM_NODED_IMAGES keys on (both derive from
             # runtimePython.guestImage), so BuildBase resolves it on the node.
             - name: EMBERVM_RUNTIME_IMAGES
-              value: {{ printf "%s=%s:%s" .Values.runtimePython.runtime .Values.runtimePython.guestImage.repository .Values.runtimePython.guestImage.tag | quote }}
+              value: {{ printf "%s=%s@%s" .Values.runtimePython.runtime .Values.runtimePython.guestImage.repository .Values.runtimePython.guestImage.digest | quote }}
             {{- end }}
             {{- if .Values.workloads }}
             # Artifact-decoupling Phase 2: node-side image identity (rootfs ref +
@@ -129,14 +129,18 @@ spec:
             # harness + sizing into each RegistryEntry). Keying by image_ref (not the
             # workloads values key) is deliberate: the values key is the
             # rootfs-builder key, while image_ref is the CR's stable join key
-            # (source.image.ref == guestImage.repository:tag). Format:
-            # comma-separated `imageRef=rootfsRef|harnessInit`.
+            # (source.image.ref == guestImage.repository@digest). Content-addressed
+            # so a chart republish with an unchanged guest rootfs renders the SAME
+            # ref, leaving the base-build signature stable (no rebuild churn). This
+            # ref MUST render byte-identical to the Workload CR source.image.ref and
+            # the noded rootfs-builder GUEST_IMAGE, since all three join on it.
+            # Format: comma-separated `imageRef=rootfsRef|harnessInit`.
             - name: EMBERVM_NODE_IMAGE_IDENTITY
               {{- $ids := list }}
               {{- range $name, $wl := .Values.workloads }}
               {{- $top := index $.Values $name }}
               {{- if and $top $top.guestImage $top.guestImage.repository }}
-              {{- $ref := printf "%s:%s" $top.guestImage.repository $top.guestImage.tag }}
+              {{- $ref := printf "%s@%s" $top.guestImage.repository $top.guestImage.digest }}
               {{- $rootfs := include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) }}
               {{- $ids = append $ids (printf "%s=%s|%s" $ref $rootfs ($wl.harnessInit | default "")) }}
               {{- end }}
