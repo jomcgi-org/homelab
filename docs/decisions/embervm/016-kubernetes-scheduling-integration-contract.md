@@ -198,6 +198,18 @@ not by clever cross-class placement:
 - **Per-brick contiguous headroom remains the ledger dimension**
   (ADR 013 section 6): refill and placement select a brick, never a node,
   and aggregate free capacity is never trusted.
+- **Security never drives colocation.** Affinity rules that group
+  "similar" workloads onto shared bricks or nodes to simplify network
+  policy are rejected: they couple placement freedom to the security
+  model, fragment capacity back toward the per-workload-pool shape
+  ADR 013 rejected, and still leave the pod as the policy unit when the
+  actual tenant is the VM. Per-workload network and secret boundaries are
+  enforced at the VM boundary instead (per-VM tap firewall rules and the
+  egress path; see Security), so brick pods stay interchangeable capacity
+  carrying one uniform coarse network policy, and the packing score keeps
+  full freedom. The only placement-shaped isolation that exists is the
+  lane (ADR 015), which is a semantics choice, not a network-policy
+  workaround.
 
 ### 5. Node lifecycle is a placement input; durability is a state guarantee, not node residency
 
@@ -280,7 +292,12 @@ node lifetime a fact the placement pass reads:
   memory image), so bank expiry at 7 days degrades to this tier by pure
   artifact expiry, no extraction step, and bank GC stays trivially safe;
   content-addressing makes successive captures near-free since a
-  session's git objects barely change between banks.
+  session's git objects barely change between banks. Retention is
+  **latest-only per session lineage**: each capture supersedes the
+  previous manifest, unreferenced chunks fall out of the content store,
+  and the CP owns the whole lifecycle (capture, upload, hydrate, expiry)
+  through node verbs, the ADR 003 pattern of nodes exposing verbs and the
+  CP deciding.
 - **Resume is one interface with four verbs, and the CP picks the
   cheapest unexpired artifact.** The workload lifecycle contract is: boot
   cold; run from a base snapshot restore; continue from a warm (memory)
@@ -350,11 +367,28 @@ graph TB
 ## Security
 
 Baseline in [docs/security.md](../../security.md). Nothing here changes the
-isolation model. Two notes: balloon bricks run no workload (pause-shaped or
-empty pre-warmed daemons), so preempting them moves no tenant state; and
-drain-on-SIGTERM banks a session under its existing principal keying, so
-preemption and consolidation never become a cross-principal reuse path
-(ADR 001's rule is unchanged).
+isolation model. Notes:
+
+- Balloon bricks run no workload (pause-shaped or empty pre-warmed
+  daemons), so preempting them moves no tenant state; and drain-on-SIGTERM
+  banks a session under its existing principal keying, so preemption and
+  consolidation never become a cross-principal reuse path (ADR 001's rule
+  is unchanged).
+- **Snapshot tiers hold different secret exposure.** A banked memory
+  snapshot contains whatever was resident in guest RAM, so credentials
+  follow the established pattern: guests hold placeholders with real
+  secrets swapped at the egress hop (ADR agents/023) and dynamic
+  per-workload tokens delivered via MMDS (ADR agents/046), injected fresh
+  at boot and relight. A 7-day-old memory snapshot then contains only
+  placeholders and expired short-lived tokens, and the 30-day workspace
+  tier contains no credentials at all (files only; credential material is
+  excluded from the workspace manifest by construction).
+- **Network policy granularity follows the same pod-vs-VM split as
+  priority.** Brick pods carry one uniform coarse CiliumNetworkPolicy
+  (CP, object store, egress proxy; deny otherwise); per-workload
+  allow-lists are data the CP pushes to the VM boundary (per-VM tap
+  firewall rules, per-secret egress allowlists), because the pod is the
+  wrong unit for per-tenant policy in a multi-VM brick.
 
 ---
 
