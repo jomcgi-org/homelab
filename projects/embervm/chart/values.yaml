@@ -672,6 +672,17 @@ statefulSweeper:
   sweepIntervalMs: ""
   wakeMax: ""
 
+# Base-retention sweep gate (base-durability PR-3, control-plane env). Empty
+# (the default) leaves the reconciled sweep in dry-run: it logs what it would
+# evict and deletes nothing. "1" arms it: superseded local bases outside each
+# workload's desired set (current ref plus still-refcounted refs) are evicted,
+# first as the supervised one-shot backlog reclaim, then as the ongoing
+# retention backstop. Durability is checked before any eviction: a workload is
+# skipped whole unless its current base shows exported=true in S3. Flipping
+# this value back to "" is the entire rollback lever.
+baseRetention:
+  sweepEnabled: ""
+
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
 # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
 # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
