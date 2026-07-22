@@ -449,6 +449,22 @@ isolation model. Notes:
   fixed long-lived keys**: for validators we own, credentials are
   derivable by design (scoped, short-TTL), so class 3 remains only the
   external-provider residue it has to be.
+- **The central swap tier is not a hot path; scope and placement are
+  fixed here.** It sits on class-3 secret-injecting egress only: ingress
+  and serving traffic, internal calls (platform creds, brick-local
+  injection), class-1/2 external calls (brick-local lease swap), and
+  non-secret egress never transit it. The policy layer that IS on every
+  guest egress is the brick-local proxy, which scales with the fleet by
+  construction. The central tier is a stateless in-cluster Deployment
+  behind a Service (TLS, allowlist match, header rewrite, in-memory key
+  cache from the secret operator; no disk), horizontally scaled, reached
+  by bricks over mTLS with their dial-home identity, and its calls are
+  internet-bound by definition, so the intra-cluster hop is noise
+  against upstream RTT. If class-3 volume ever runs hot, that is a
+  provider-selection smell with two fixes before any architecture
+  change: re-check the provider for a rotation API (promote to class 2),
+  or record a measured per-key exception leasing brick-side under
+  aggressive manual-rotation cadence.
 
 ---
 
