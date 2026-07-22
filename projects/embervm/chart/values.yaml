@@ -712,6 +712,15 @@ statefulSweeper:
 baseRetention:
   sweepEnabled: ""
 
+# Warmth-retention sweep gate (base-durability PR-3, extended to stateful and group
+# orphans, task #36): "1" arms the reconciled eviction of orphaned stateful/group
+# warmth. Empty-binding orphans (banked pre-sidecar, no workload/group_instance_id
+# recovered on a boot scan) are SKIPPED, so a drained-local-but-stranded-remote leak
+# cannot happen. Unset ("") keeps the dry-run that only logs. Flipping back to "" is
+# the entire rollback lever.
+warmthRetention:
+  sweepEnabled: ""
+
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
 # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
 # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
