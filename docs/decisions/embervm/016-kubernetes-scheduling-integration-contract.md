@@ -501,6 +501,21 @@ isolation model. Notes:
   7-day shelf life, undoing the property that snapshot tiers decay in
   sensitivity as they age. Trusted-and-ephemeral is the only posture
   that may take direct credentials.
+- **Prior art (FaaS platforms) validates the shape.** Lambda and Cloud
+  Run distribute *identity* (short-lived auto-rotated role/service-account
+  credentials per sandbox; the metadata server is the MMDS analog) and
+  derive everything else on demand; fixed third-party keys descend into
+  sandbox memory only because their isolation unit is a per-tenant,
+  never-shared microVM and their sandboxes do not persist. Where AWS does
+  persist and restore memory snapshots (Lambda SnapStart), its guidance
+  is exactly the banked rule above: never capture credentials in
+  snapshotted state, refresh after restore. EmberVM's brick lease model
+  matches the Lambda worker host's exposure profile (in-memory material
+  for resident workloads only); the placeholder discipline is stricter
+  than FaaS defaults because ember snapshots outlive execution; the
+  central swap tier has no cloud analog because clouds outsource fixed
+  keys to the tenant's own sandbox, a position unavailable to a platform
+  running untrusted code whose state persists.
 
 ---
 
@@ -549,6 +564,8 @@ isolation model. Notes:
 | [Karpenter kwok provider](https://github.com/kubernetes-sigs/karpenter/tree/main/kwok) | Real Karpenter controllers against fake nodes; the no-cloud-spend drill substrate |
 | [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nested-virtualization.html) | KVM on virtual 7i/8i instances; the watched cost lever against the metal NodePool |
 | [containers-roadmap #2784](https://github.com/aws/containers-roadmap/issues/2784) | EKS managed nodegroups ignore the nested-virt CPU option; the gate on deploying that lever |
+| [Lambda SnapStart security](https://docs.aws.amazon.com/lambda/latest/dg/snapstart-uniqueness.html) | AWS's own persisted-snapshot credential guidance; prior art for the placeholder-at-bank rule |
+| [Lambda execution role / Secrets extension](https://docs.aws.amazon.com/secretsmanager/latest/userguide/retrieving-secrets_lambda.html) | The identity-plus-derive FaaS pattern; fixed keys reside only in the owning tenant's sandbox |
 | [Karpenter disruption docs](https://karpenter.sh/docs/concepts/disruption/) | Consolidation, do-not-disrupt, and budget semantics the compatibility rules encode |
 | [kube-scheduler NodeResourcesFit scoring](https://kubernetes.io/docs/reference/scheduling/config/#scheduling-plugins) | `LeastAllocated` default vs `MostAllocated` packing; why EKS spreads at placement |
 | [GKE autoscaling profiles](https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler#autoscaling_profiles) | `optimize-utilization` as the GKE packing lever |
