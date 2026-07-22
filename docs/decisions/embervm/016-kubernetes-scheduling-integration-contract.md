@@ -265,6 +265,29 @@ node lifetime a fact the placement pass reads:
   rebuilding them (bases are digest-pinned OCI, so rebuildable; the first
   resume after a long idle may pay a cold base restore, which is
   accepted).
+- **A third tier: the durable workspace, 30 days from last use, files
+  only.** A session's working set (git repo, sqlite, dotfiles; on the
+  order of 10MB, cap enforced) outlives its memory snapshot as a
+  compressed (zstd), content-addressed file archive in S3. Resume from
+  this tier is **current base + file hydration** (the zip-hydration VSOCK
+  path pointed at a workspace): in-memory state is gone, but a coding
+  session does not need it to continue. What makes this tier the cheapest
+  *and* the most robust is what it lacks: a workspace is not
+  CPU-vendor-pinned, not base-generation-pinned, and pins nothing against
+  warmth or base GC, so it survives base digest churn, kernel upgrades,
+  and vendor migration that would invalidate a memory snapshot. The
+  workspace is captured **eagerly at every bank** (a few MB next to the
+  memory image), so bank expiry at 7 days degrades to this tier by pure
+  artifact expiry, no extraction step, and bank GC stays trivially safe;
+  content-addressing makes successive captures near-free since a
+  session's git objects barely change between banks.
+- **Resume is one interface with four verbs, and the CP picks the
+  cheapest unexpired artifact.** The workload lifecycle contract is: boot
+  cold; run from a base snapshot restore; continue from a warm (memory)
+  snapshot restore; continue from base + workspace hydration. Warm within
+  7d beats hydration within 30d beats cold; every tier below the top is a
+  graceful degradation of the same session lineage, not a different
+  product surface.
 - **Verification splits by tool.** The kwok drills cover the observable
   Karpenter interplay; the drain/migration protocol itself (no session's
   guarantee left uncovered by a migration, no durable placement onto a node
@@ -358,6 +381,11 @@ preemption and consolidation never become a cross-principal reuse path
    per brick (spread pressure) once real traffic data exists, or does
    data-plane `LEAST_REQUEST` suffice alone? Deliberately left open: adding
    the cap later is one filter in the CP score pass.
+3. The workspace manifest: which guest paths constitute the durable
+   workspace (declared per workload vs a platform convention like the guest
+   home directory), how the size cap is enforced at capture time, and
+   whether the cap is a registered value under a platform ceiling like
+   session duration.
 
 ---
 
