@@ -145,6 +145,29 @@ func (r *vmRegistry) liveCount() int {
 	return len(r.vms)
 }
 
+// snapshotRefInUse reports whether any live task VM (primed or assigned) was
+// restored from the given base ref, i.e. its birth base is still needed by a
+// running guest. It is the in-use guard for a local BASE eviction (PR-3): a base
+// dir must never be removed out from under a VM that restored from it. A primed
+// session VM before its first SessionAssign also lives here (claimForSession
+// promotes it out only on adoption), so this covers the pre-adoption session
+// lane too; post-adoption session/serving VMs ride their own session/serving
+// bundle refs, never a base ref, so they are correctly not consulted here. An
+// empty ref never matches a real VM.
+func (r *vmRegistry) snapshotRefInUse(ref string) (string, bool) {
+	if ref == "" {
+		return "", false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, e := range r.vms {
+		if e.snapshotRef == ref {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // ---- session VM registry ---------------------------------------------------
 
 // sessionEntry is one LIVE session microVM the daemon supervises. Unlike a task
@@ -437,6 +460,14 @@ func (b *baseRegistry) register(e baseEntry) {
 		readyPath:   e.readyPath,
 		state:       e.state,
 	}
+}
+
+// remove forgets a base entry by snapshot_ref (after its on-disk dir is deleted),
+// so NodeStatus stops advertising it. Idempotent on an absent ref.
+func (b *baseRegistry) remove(ref string) {
+	b.mu.Lock()
+	delete(b.bases, ref)
+	b.mu.Unlock()
 }
 
 // snapshot returns a copy of all base entries, for building NodeStatus.

@@ -98,12 +98,23 @@ defmodule Embervm.BaseBuilderTest do
           # background sweep perturbs timing). Export-specific tests override both.
           export_fun: Keyword.get(opts, :export_fun, fn :fake_channel, _req -> {:ok, %{}} end),
           export_reconcile_interval_ms: Keyword.get(opts, :export_reconcile_interval_ms, 0),
+          # Base-durability PR-3: disable the retention-sweep timer by default so no
+          # background sweep perturbs the other tests' timing; the sweep-specific
+          # tests drive :retention_sweep_now synchronously and opt the gate on/off.
+          retention_sweep_interval_ms: Keyword.get(opts, :retention_sweep_interval_ms, 0),
           # Default the op-log to a discarding fake so a build's export audit never
           # touches the real SQLite in tests that do not assert on it. The
           # op-log-specific test overrides both to observe the append.
           op_log: Keyword.get(opts, :op_log, :discard),
           op_log_mod: Keyword.get(opts, :op_log_mod, DiscardOpLog)
-        ] ++ Keyword.drop(opts, [:export_fun, :export_reconcile_interval_ms, :op_log, :op_log_mod])
+        ] ++
+          Keyword.drop(opts, [
+            :export_fun,
+            :export_reconcile_interval_ms,
+            :retention_sweep_interval_ms,
+            :op_log,
+            :op_log_mod
+          ])
       )
 
     pid
@@ -525,7 +536,7 @@ defmodule Embervm.BaseBuilderTest do
   # -- base refcounting + eviction (R2) ---------------------------------------
 
   # Drives a base turnover (snap1 -> snap2) and then feeds refcounts against the
-  # superseded snap1 via report_base_refs/3, asserting that EvictSnapshot fires
+  # superseded snap1 via report_base_refs/3, asserting that EvictArtifact fires
   # exactly once, and only when BOTH primed and session refcounts are zero.
   defp turnover_to_snap2(builder, agent) do
     # gen1 -> snap1.
@@ -547,9 +558,9 @@ defmodule Embervm.BaseBuilderTest do
       {:ok, resp(ref)}
     end
 
-    evict_fun = fn :fake_channel, ref ->
+    evict_fun = fn :fake_channel, _workload, ref ->
       send(test_pid, {:evicted, ref})
-      {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
     end
 
     builder =
@@ -592,9 +603,9 @@ defmodule Embervm.BaseBuilderTest do
       {:ok, resp(ref)}
     end
 
-    evict_fun = fn :fake_channel, ref ->
+    evict_fun = fn :fake_channel, _workload, ref ->
       send(test_pid, {:evicted, ref})
-      {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
     end
 
     builder =
@@ -638,9 +649,9 @@ defmodule Embervm.BaseBuilderTest do
       {:ok, resp(ref)}
     end
 
-    evict_fun = fn :fake_channel, ref ->
+    evict_fun = fn :fake_channel, _workload, ref ->
       send(test_pid, {:evicted, ref})
-      {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
     end
 
     builder =
@@ -664,6 +675,216 @@ defmodule Embervm.BaseBuilderTest do
     # either.
     :ok = BaseBuilder.report_base_refs(builder, "snap1", sessions: 0)
     assert_receive {:evicted, "snap1"}, 1_000
+  end
+
+  # -- reconciled base-retention sweep (base-durability PR-3) ------------------
+
+  # Put a node-4 capacity fact carrying a current-base WorkloadCapacity fact (with
+  # its exported flag) and a full local_bases inventory, so the retention sweep can
+  # reconcile the reported local set against its desired set. instance_id is "node-4"
+  # so find_capacity_fact(table, w.node_id) matches (the workload places on @node).
+  defp put_local_bases_fact(table, workload, current_ref, exported?, local_bases) do
+    NodeCapacity.put(table, {"node-4", "ds"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4",
+      workloads: %{
+        workload => %{
+          snapshot_ref: current_ref,
+          base_state: :BASE_BUILD_STATE_READY,
+          exported: exported?
+        }
+      },
+      local_bases: local_bases,
+      updated_at: 0
+    })
+  end
+
+  defp ready_base(ref, workload, bytes) do
+    %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_READY}
+  end
+
+  # An unregistered / .tmp-orphan on-disk base dir: noded reports it with
+  # base_state UNSPECIFIED. The sweep must treat it as a candidate (it is neither
+  # current nor BUILDING), so the reclaim drains orphans too.
+  defp orphan_base(ref, workload, bytes) do
+    %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_UNSPECIFIED}
+  end
+
+  # Drive one build so the CP has a placed, current snapshot_ref for "w" on node-4.
+  # The builder's own build_fun (set by the caller) returns `ref`.
+  defp build_current(builder, agent, ref) do
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 1, image_ref: "imgA"}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => ^ref}, latest(agent, "w")) end)
+  end
+
+  test "retention sweep evicts superseded local bases outside the desired set (gate on)" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__current")} end
+
+    evict_fun = fn :fake_channel, workload, ref ->
+      send(test_pid, {:evicted, workload, ref})
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        evict_fun: evict_fun,
+        retention_sweep_enabled: true
+      )
+
+    build_current(builder, agent, "w__current")
+
+    # The node reports its full on-disk inventory: the current base, a READY
+    # superseded version the CP never tracked, AND an unregistered .tmp orphan
+    # (base_state UNSPECIFIED). Both non-current dirs must evict.
+    put_local_bases_fact(table, "w", "w__current", true, [
+      ready_base("w__current", "w", 512),
+      ready_base("w__superseded", "w", 2_048),
+      orphan_base("w__tmporphan", "w", 1_024)
+    ])
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+
+    entry = Enum.find(plan, &(&1.workload == "w"))
+    assert entry.skipped_unexported == false
+    assert Enum.sort(entry.evict_refs) == ["w__superseded", "w__tmporphan"]
+    assert entry.evict_bytes == 3_072
+
+    # Gate on: both the superseded READY base and the .tmp orphan are evicted;
+    # the current base is never touched.
+    assert_receive {:evicted, "w", "w__superseded"}, 1_000
+    assert_receive {:evicted, "w", "w__tmporphan"}, 1_000
+    refute_receive {:evicted, "w", "w__current"}, 100
+  end
+
+  test "retention sweep is a dry-run no-op with the gate OFF (default): plans but evicts nothing" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__current")} end
+
+    evict_fun = fn :fake_channel, workload, ref ->
+      send(test_pid, {:evicted, workload, ref})
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+    end
+
+    # No retention_sweep_enabled opt => default false (what this PR ships).
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        evict_fun: evict_fun
+      )
+
+    build_current(builder, agent, "w__current")
+
+    put_local_bases_fact(table, "w", "w__current", true, [
+      ready_base("w__current", "w", 512),
+      ready_base("w__orphan1", "w", 2_048)
+    ])
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+
+    # The plan still identifies the candidate (observability), but nothing is evicted.
+    entry = Enum.find(plan, &(&1.workload == "w"))
+    assert entry.evict_refs == ["w__orphan1"]
+    assert entry.evict_bytes == 2_048
+    refute_receive {:evicted, "w", "w__orphan1"}, 200
+  end
+
+  test "retention sweep skips a workload whose current base is not yet exported (durability floor)" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__current")} end
+
+    evict_fun = fn :fake_channel, workload, ref ->
+      send(test_pid, {:evicted, workload, ref})
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        evict_fun: evict_fun,
+        retention_sweep_enabled: true
+      )
+
+    build_current(builder, agent, "w__current")
+
+    # Current base is present but NOT yet exported: the whole workload is skipped,
+    # so the local cache is never emptied before the S3 durability floor lands.
+    put_local_bases_fact(table, "w", "w__current", false, [
+      ready_base("w__current", "w", 512),
+      ready_base("w__orphan1", "w", 2_048)
+    ])
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+
+    entry = Enum.find(plan, &(&1.workload == "w"))
+    assert entry.skipped_unexported == true
+    assert entry.evict_refs == []
+    refute_receive {:evicted, "w", "w__orphan1"}, 200
+  end
+
+  test "retention sweep never evicts a still-refcounted superseded ref" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    # Turnover so the CP tracks snap-old as a superseded ref, then hold it
+    # refcounted (a primed VM still rides it: primed reported, sessions unknown).
+    build_fun = fn :fake_channel, req ->
+      ref = if req.image_ref == "imgA", do: "snap-old", else: "snap-new"
+      {:ok, resp(ref)}
+    end
+
+    evict_fun = fn :fake_channel, workload, ref ->
+      send(test_pid, {:evicted, workload, ref})
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        evict_fun: evict_fun,
+        retention_sweep_enabled: true
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 1, image_ref: "imgA"}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-old"}, latest(agent, "w")) end)
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgB"}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-new"}, latest(agent, "w")) end)
+
+    # snap-old is still refcounted (a primed VM rides it): sessions unknown (nil)
+    # keeps it un-evictable in the R2 path AND desired in the sweep.
+    :ok = BaseBuilder.report_base_refs(builder, "snap-old", primed: 1)
+
+    put_local_bases_fact(table, "w", "snap-new", true, [
+      ready_base("snap-new", "w", 512),
+      ready_base("snap-old", "w", 2_048)
+    ])
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+
+    entry = Enum.find(plan, &(&1.workload == "w"))
+    # snap-old is refcounted, so it is in the desired set: nothing to evict.
+    assert entry == nil or entry.evict_refs == []
+    refute_receive {:evicted, "w", "snap-old"}, 200
   end
 
   # -- discovery-fed node set (artifact-decoupling PR-C, C4) -------------------

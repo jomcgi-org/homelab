@@ -455,6 +455,195 @@ func TestExportArtifactBaseMissingLocalFailsEvenAsync(t *testing.T) {
 	}
 }
 
+// evictBase is a small helper: EvictArtifact{remote:false} of a BASE ref.
+func evictBase(s *Server, workload, ref string) error {
+	_, err := s.EvictArtifact(context.Background(), &nodev1.EvictArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+		Remote:   false,
+	})
+	return err
+}
+
+// seedLocalBase writes a base dir on disk and registers it READY. Returns the dir path.
+func seedLocalBase(t *testing.T, s *Server, workload, ref string) string {
+	t.Helper()
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
+	s.bases.readyBuild(ref, workload, "img@sha256:seed", "/shim/ready", 2048)
+	return dir
+}
+
+// dirExists reports whether path is an existing directory (test-only helper).
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// TestEvictBaseLocalRemovesSupersededDir proves the PR-3 BASE arm: an
+// EvictArtifact{remote:false} of a superseded base ref removes bases/<ref> from
+// disk and forgets its registry entry, while the workload's CURRENT base survives.
+// This is the arm that fixes the leak: before it existed the control plane's
+// EvictSnapshot misrouted a base ref into the session path and no-op'd.
+func TestEvictBaseLocalRemovesSupersededDir(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+
+	current := "semgrep__current00"
+	superseded := "semgrep__old0000000"
+	seedLocalBase(t, s, "semgrep", current)
+	oldDir := seedLocalBase(t, s, "semgrep", superseded)
+
+	if err := evictBase(s, "semgrep", superseded); err != nil {
+		t.Fatalf("evict superseded base: %v", err)
+	}
+	if dirExists(oldDir) {
+		t.Fatalf("superseded base dir %q survived eviction", oldDir)
+	}
+	if _, ok := s.bases.get(superseded); ok {
+		t.Fatal("superseded base still registered after eviction")
+	}
+	// The current base is untouched.
+	if _, ok := s.bases.get(current); !ok {
+		t.Fatal("current base was wrongly forgotten")
+	}
+	if !dirExists(filepath.Join(s.cfg.SnapshotRoot, "bases", current)) {
+		t.Fatal("current base dir was wrongly removed")
+	}
+}
+
+// TestEvictBaseLocalIdempotentAlreadyGone proves an evict of an already-absent
+// base ref (never on disk, never registered) is success, so a retry or a
+// duplicate reconcile sweep is harmless.
+func TestEvictBaseLocalIdempotentAlreadyGone(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	if err := evictBase(s, "semgrep", "semgrep__neverexisted"); err != nil {
+		t.Fatalf("evict of absent base should be idempotent success, got %v", err)
+	}
+}
+
+// TestEvictBaseLocalRefusesInUse proves the in-use guard: a base a live VM was
+// restored from is NOT evicted (its dir survives), so a running guest never loses
+// its birth lineage.
+func TestEvictBaseLocalRefusesInUse(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+
+	inUse := "sandbox__inuse00000"
+	dir := seedLocalBase(t, s, "sandbox", inUse)
+	s.vms.add(&vmEntry{id: "vm-live-1", workload: "sandbox", snapshotRef: inUse, state: vmPrimed})
+
+	err := evictBase(s, "sandbox", inUse)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("in-use base evict: want FailedPrecondition, got %v", err)
+	}
+	if !dirExists(dir) {
+		t.Fatal("in-use base dir was removed despite the guard")
+	}
+}
+
+// TestEvictBaseLocalRefusesBuilding proves the BUILDING guard: a base a BuildBase
+// is currently writing is NOT evicted (removing it mid-build would corrupt the
+// in-progress snapshot).
+func TestEvictBaseLocalRefusesBuilding(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+
+	// A current READY base plus a BUILDING one for the same workload.
+	seedLocalBase(t, s, "bazel-query", "bazel-query__ready000")
+	building := "bazel-query__building"
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", building)
+	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
+	s.bases.beginBuild(building, "bazel-query", "/shim/ready")
+
+	err := evictBase(s, "bazel-query", building)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("BUILDING base evict: want FailedPrecondition, got %v", err)
+	}
+	if !dirExists(dir) {
+		t.Fatal("BUILDING base dir was removed despite the guard")
+	}
+}
+
+// TestEvictBaseLocalEvictsUnregisteredOrphan proves the reclaim requirement: a
+// base dir with NO registry entry (a superseded dir not re-registered, or a build
+// that died leaving memfile.tmp/snapfile.tmp with no snapfile so
+// ReconcileBasesFromDisk never registered it) IS evicted, not refused. A
+// registry-gated guard would strand exactly these bytes, which is the leak PR-3
+// exists to drain. Current-base protection is the control plane's job (its sweep
+// never targets a current ref), not a noded registry guard.
+func TestEvictBaseLocalEvictsUnregisteredOrphan(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+
+	// A .tmp orphan: no snapfile, never registered.
+	orphan := "scratch-k8s__fc281c2c3e10"
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", orphan)
+	writeBundleFiles(t, dir, map[string]string{"memfile.tmp": "partial", "snapfile.tmp": "partial"})
+	if _, ok := s.bases.get(orphan); ok {
+		t.Fatal("precondition: orphan should not be registered")
+	}
+
+	if err := evictBase(s, "scratch-k8s", orphan); err != nil {
+		t.Fatalf("evict unregistered orphan: %v (want success)", err)
+	}
+	if dirExists(dir) {
+		t.Fatal("unregistered .tmp orphan dir survived eviction")
+	}
+}
+
+// TestEvictBaseLocalEvictsOnlyBaseWhenTargeted proves noded has NO not-last guard:
+// when the control plane targets a base for local eviction (its desired-set
+// computation and durability gate having already run), noded removes it even if it
+// is the workload's last local READY base. The current-base floor lives in the CP
+// (which never targets a current ref), not in noded; a not-last guard here would
+// refuse a legitimately-superseded ref that happened to be the last on-disk copy.
+func TestEvictBaseLocalEvictsOnlyBaseWhenTargeted(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+
+	only := "scratch-k8s__only0000"
+	dir := seedLocalBase(t, s, "scratch-k8s", only)
+
+	if err := evictBase(s, "scratch-k8s", only); err != nil {
+		t.Fatalf("evict targeted base: %v (want success)", err)
+	}
+	if dirExists(dir) {
+		t.Fatal("targeted base dir survived eviction")
+	}
+	if _, ok := s.bases.get(only); ok {
+		t.Fatal("evicted base still registered")
+	}
+}
+
+// TestLocalBasesStatusReportsOrphans proves the Option-B inventory SCANS the
+// bases/ dir (not just the registry), so unregistered/.tmp orphan dirs appear in
+// NodeStatus.local_bases and the control plane's sweep can target them. A
+// registry-only projection would hide the orphans and strand them.
+func TestLocalBasesStatusReportsOrphans(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+
+	// A registered READY base and an unregistered .tmp orphan for the same workload.
+	seedLocalBase(t, s, "scratch-k8s", "scratch-k8s__current0")
+	orphanDir := filepath.Join(s.cfg.SnapshotRoot, "bases", "scratch-k8s__orphan00")
+	writeBundleFiles(t, orphanDir, map[string]string{"memfile.tmp": "partial"})
+
+	inv := s.localBasesStatus()
+	byRef := make(map[string]*nodev1.BaseInventoryEntry)
+	for _, e := range inv {
+		byRef[e.GetRef()] = e
+	}
+
+	reg, ok := byRef["scratch-k8s__current0"]
+	if !ok || reg.GetBaseState() != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Fatalf("registered base missing/not READY in inventory: %+v", reg)
+	}
+	orphan, ok := byRef["scratch-k8s__orphan00"]
+	if !ok {
+		t.Fatal("unregistered .tmp orphan not reported in local_bases (would be stranded)")
+	}
+	if orphan.GetBaseState() != nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED {
+		t.Fatalf("orphan base_state = %v, want UNSPECIFIED", orphan.GetBaseState())
+	}
+	if orphan.GetWorkload() != "scratch-k8s" {
+		t.Fatalf("orphan workload = %q, want scratch-k8s (from base-key prefix)", orphan.GetWorkload())
+	}
+}
+
 // baseExportedInStatus finds the workload's capacity entry in NodeStatus whose
 // snapshot_ref matches and returns its exported flag; false if not reported.
 func baseExportedInStatus(s *Server, workload, ref string) bool {
