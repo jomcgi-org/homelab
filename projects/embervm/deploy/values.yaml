@@ -152,6 +152,21 @@ bricks:
     # to absorb the migrated workloads. Scale-down stays observe-only until we
     # promote to full. This is what lets the CP choose the optimal brick mix.
     mode: up
+  # Per-node brick floor guarantees (PR-3, #35): pins one small brick onto a
+  # specific node so it joins active duty instead of the fleet bin-packing
+  # everything onto node-4 and spilling under load. CANARY: node-1 only for
+  # now, to validate one floor brick before fanning out. node-2/node-3 are
+  # commented and ready; each needs its own scratch pre-flight (mountpoint +
+  # ~35Gi ext4 loop file) verified on the host BEFORE uncommenting - this is a
+  # values-only follow-up PR once the node-1 canary is confirmed healthy
+  # (registered in the CP, canary invoke lands a VM, no fleet_full flag).
+  nodeFloors:
+    - node: node-1
+      class: 2gi
+    # - node: node-2
+    #   class: 2gi
+    # - node: node-3
+    #   class: 2gi
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs

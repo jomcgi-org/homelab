@@ -992,3 +992,12 @@ bricks:
           memory: 16Gi
         limits:
           memory: 16Gi
+  # Per-node brick FLOOR guarantees (brick-capacity PR-3): a list of
+  # {node, class} pairs, each rendering one ADDITIONAL fixed-replicas-1
+  # Deployment pinned via nodeSelector to that node (kubernetes.io/hostname),
+  # distinct from and never touched by the demand-driven class Deployment or
+  # the BrickController (which scales by exact Deployment name). This is what
+  # pulls a specific node into active duty instead of every class bin-packing
+  # onto whichever node the scheduler fills first. Empty by default (no
+  # floors); deploy/values.yaml sets the fleet's actual floor entries.
+  nodeFloors: []

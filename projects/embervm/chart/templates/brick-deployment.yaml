@@ -67,4 +67,68 @@ spec:
     spec:
       {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class.name "resources" $class.resources) | nindent 6 }}
 {{- end }}
+
+# Per-node brick FLOOR Deployments (brick-capacity PR-3, ADR embervm/013 sibling
+# decision): one pinned, fixed-replicas-1 Deployment per `bricks.nodeFloors`
+# entry, guaranteeing that specific node joins active duty instead of every
+# class bin-packing onto whichever node the scheduler happens to fill first
+# (observed: everything landing on node-4 and spilling under load). Each floor
+# renders the SAME shared pod (identical labels, resources, strategy) as its
+# class's demand-driven Deployment, but under a DISTINCT name
+# (`-brick-<class>-<node>` vs `-brick-<class>`) and with nodeSelector pinned to
+# kubernetes.io/hostname instead of the fleet-wide FC-node label.
+#
+# The distinct name is what keeps the BrickController out: it PATCHes /scale by
+# exact Deployment name (deployment_prefix <> class name), never enumerating by
+# label, so a floor Deployment is simply never addressed by the controller and
+# replicas stays a static 1 forever (verified against brick_controller.ex). A
+# floor brick still dial-home registers as a normal instance of its class
+# (registration is name-agnostic), so it counts toward that class's registered
+# total for fleet-full/autoscale accounting - which only ever makes fleet-full
+# LESS likely and idle scale-down MORE likely (the accounting is registered <
+# desired shaped, not equality-shaped), both acceptable per the plan's analysis.
+#
+# Selector: embervm.brickFloor.selectorLabels adds a brick-floor=<node> label on
+# top of the shared class selector, so this Deployment's selector is DISJOINT
+# from its class Deployment's. Reusing the class selector here would be a real
+# bug (two ReplicaSet controllers fighting over the same pods), not just style.
+{{- range $floor := .Values.bricks.nodeFloors }}
+{{- $class := $floor.class }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class }}-{{ $floor.node }}
+  labels:
+    {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 4 }}
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  # Fixed at 1: a floor is a static per-node guarantee, not a scaled quantity.
+  # ArgoCD's fleet-wide replicas ignoreDifferences rule applies here too, but
+  # nothing ever writes a different value, so it is inert for floor Deployments.
+  replicas: 1
+  selector:
+    # nosemgrep: require-component-label-in-selector
+    matchLabels:
+      {{- include "embervm.brickFloor.selectorLabels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 8 }}
+    spec:
+      {{- $classSpec := "" }}
+      {{- range $c := $ctx.Values.bricks.classes }}
+      {{- if eq $c.name $class }}
+      {{- $classSpec = $c }}
+      {{- end }}
+      {{- end }}
+      {{- if not $classSpec }}
+      {{- fail (printf "bricks.nodeFloors entry for node %s references unknown class %q (not in bricks.classes)" $floor.node $class) }}
+      {{- end }}
+      {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class "resources" $classSpec.resources "nodeSelector" (dict "kubernetes.io/hostname" $floor.node)) | nindent 6 }}
+{{- end }}
 {{- end }}
