@@ -321,6 +321,14 @@ spec:
             - name: EMBERVM_BASE_RETENTION_SWEEP
               value: {{ .Values.baseRetention.sweepEnabled | quote }}
             {{- end }}
+            {{- if .Values.warmthRetention.sweepEnabled }}
+            # Warmth-retention sweep gate (base-durability PR-3, extended to
+            # stateful and group orphans): "1" arms the reconciled eviction of
+            # orphaned stateful/group warmth; empty-binding orphans are skipped.
+            # Unset keeps the dry-run that only logs. See warmthRetention in values.
+            - name: EMBERVM_WARMTH_RETENTION_SWEEP
+              value: {{ .Values.warmthRetention.sweepEnabled | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

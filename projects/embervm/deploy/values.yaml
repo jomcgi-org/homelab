@@ -200,3 +200,11 @@ statefulSweeper:
 # Rollback: set back to "" and bump the chart; that stops further eviction.
 baseRetention:
   sweepEnabled: "1"
+
+# Arm the warmth-retention sweep (task #36, Joe 2026-07-22): flips the merged-inert
+# WarmthReaper from dry-run to acting. With #38 fix C the reaper SKIPS empty-binding
+# orphans (all pre-sidecar backlog), so this reclaims steady-state forward (new
+# orphans) safely; the existing ~120G backlog is reclaimed separately by the S3-direct
+# GC (task #39). Rollback: set back to "" and bump the chart; that stops eviction.
+warmthRetention:
+  sweepEnabled: "1"
