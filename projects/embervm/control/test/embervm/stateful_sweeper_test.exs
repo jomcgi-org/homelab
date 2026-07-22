@@ -64,6 +64,60 @@ defmodule Embervm.StatefulSweeperTest do
     def handle_call({:parked?, _workload}, _from, notes), do: {:reply, false, notes}
   end
 
+  # An Embervm.OpLog backend that delegates every callback to the real SQLite
+  # backend EXCEPT append/2 for a :generation_blessed op, which it fails
+  # unconditionally. Used to exercise plan_resolve_blessing/3's
+  # bless_generation-fails-so-force-COMMIT branch (StatefulSweeper.ex's
+  # `defp plan_resolve_blessing(state, workload, :abort)`): the sweeper's own
+  # StatefulStore is a real GenServer whose op_log_mod is dispatched per-call
+  # (see StatefulStore's moduledoc), so swapping ONLY this module in for the
+  # workload's StatefulStore reproduces a genuine op-log append failure exactly
+  # as StatefulStore.bless_generation/3 would see it in production, rather than
+  # forcing the {:error, _} branch artificially from outside the real call path.
+  defmodule FailingBlessOpLog do
+    @behaviour Embervm.OpLog
+    alias Embervm.OpLog.SQLite
+
+    @impl true
+    def append(server, %Embervm.OpLog.Op{kind: :generation_blessed} = _op) do
+      _ = server
+      {:error, :bless_write_boom}
+    end
+
+    def append(server, op), do: SQLite.append(server, op)
+
+    @impl true
+    def read_from(server, seq), do: SQLite.read_from(server, seq)
+    @impl true
+    def load_tasks(server), do: SQLite.load_tasks(server)
+    @impl true
+    def load_sessions(server), do: SQLite.load_sessions(server)
+    @impl true
+    def load_serving_instances(server), do: SQLite.load_serving_instances(server)
+    @impl true
+    def load_stateful_instances(server), do: SQLite.load_stateful_instances(server)
+    @impl true
+    def load_volumes(server), do: SQLite.load_volumes(server)
+    @impl true
+    def load_volume_blessing(server), do: SQLite.load_volume_blessing(server)
+    @impl true
+    def load_group_instances(server), do: SQLite.load_group_instances(server)
+    @impl true
+    def load_group_members(server), do: SQLite.load_group_members(server)
+    @impl true
+    def load_result(server, task_id), do: SQLite.load_result(server, task_id)
+    @impl true
+    def load_request(server, task_id), do: SQLite.load_request(server, task_id)
+    @impl true
+    def list_usage(server, opts), do: SQLite.list_usage(server, opts)
+    @impl true
+    def compact(server, now_ms), do: SQLite.compact(server, now_ms)
+    @impl true
+    def compacted_through(server), do: SQLite.compacted_through(server)
+    @impl true
+    def evict_task(server, task_id), do: SQLite.evict_task(server, task_id)
+  end
+
   defp clock(agent), do: fn -> Agent.get(agent, & &1) end
   defp advance(agent, ms), do: Agent.update(agent, &(&1 + ms))
 
@@ -80,7 +134,17 @@ defmodule Embervm.StatefulSweeperTest do
 
     {:ok, clock_agent} = Agent.start_link(fn -> 10_000 end)
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
-    {:ok, store} = StatefulStore.start_link(name: nil, op_log: op_log, clock: clock(clock_agent))
+    # store_op_log_mod: the Embervm.OpLog backend the STORE's own op_log_mod
+    # dispatches to (default the real SQLite). A test that needs a genuine
+    # bless_generation append failure (rather than the idempotent
+    # at-or-below-watermark no-op, which is NOT an error) injects
+    # FailingBlessOpLog here, exercising StatefulSweeper's
+    # plan_resolve_blessing/3 force-commit branch through the real call path.
+    store_op_log_mod = Keyword.get(opts, :store_op_log_mod, SQLite)
+
+    {:ok, store} =
+      StatefulStore.start_link(name: nil, op_log: op_log, op_log_mod: store_op_log_mod, clock: clock(clock_agent))
+
     {:ok, pub} = FakePublisher.start_link()
 
     # The scrape seam: an Agent holds the CURRENT reading the next scrape
@@ -916,6 +980,104 @@ defmodule Embervm.StatefulSweeperTest do
 
     _ = :sys.get_state(ctx.fake_mgr)
     assert {"wl-i", :abort} in resolved_notes(ctx)
+  end
+
+  # -- R7 abort-blessing (ADR embervm/011, standing decision 4) ---------------
+
+  test "an ABORT resolve blesses next_blessed_generation BEFORE dispatch and threads it into the ResolveStatefulRequest" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, true)
+
+    # Nothing blessed yet for this never-blessed workload.
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 1
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    # The captured ResolveStateful request carries the blessed generation (1, the
+    # first blessing for a never-blessed workload), not 0.
+    assert [%{mode: :RESOLVE_MODE_ABORT, vm_id: "vm-1", blessed_generation: 1}] = resolve_calls(ctx)
+
+    # The store's blessing watermark advanced to what was dispatched, and a
+    # SECOND abort cycle blesses the NEXT generation past it (2), proving the
+    # watermark is durable across cycles, not just threaded once.
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 2
+
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> length(resolve_calls(ctx)) >= 2 end)
+
+    assert [_first, %{mode: :RESOLVE_MODE_ABORT, blessed_generation: 2}] = resolve_calls(ctx)
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 3
+  end
+
+  test "a COMMIT resolve does NOT bless: the watermark is unchanged and the request carries blessed_generation 0" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, false)
+
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 1
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    assert [%{mode: :RESOLVE_MODE_COMMIT, blessed_generation: 0}] = resolve_calls(ctx)
+
+    # A COMMIT never appends a generation_blessed op, so the watermark is exactly
+    # as unblessed as before the cycle ran.
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 1
+  end
+
+  test "a bless_generation failure forces the resolve to COMMIT instead of dispatching an unblessed abort" do
+    # A stale/lower-generation collision against StatefulStore.bless_generation/3
+    # is NOT an error (the store's monotonicity guard treats it as an idempotent
+    # no-op returning {:ok, fact}; see StatefulStore's handle_call({:bless_generation,
+    # ...}) clause), so it cannot be used to trigger plan_resolve_blessing/3's
+    # {:error, reason} branch. The only way bless_generation/3 genuinely returns
+    # {:error, _} is an op-log append failure. FailingBlessOpLog fails exactly
+    # (only) the :generation_blessed append, through the real StatefulStore call
+    # path (state.store here is a real StatefulStore GenServer, just backed by a
+    # failing op-log for this one op kind), so this reproduces the real failure
+    # StatefulSweeper.plan_resolve_blessing/3 must recover from, not an artificial
+    # short-circuit.
+    ctx = start_stack(store_op_log_mod: FailingBlessOpLog)
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    # A parked connection would normally decide ABORT; the bless failure must
+    # override that decision to COMMIT regardless.
+    set_parked(ctx, true)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    # Forced COMMIT despite parked==true: no generation was blessed to abort with,
+    # so plan_resolve_blessing/3 refuses to dispatch an unblessed abort and falls
+    # back to the always-ledger-safe COMMIT.
+    assert [%{mode: :RESOLVE_MODE_COMMIT, blessed_generation: 0}] = resolve_calls(ctx)
+
+    {:ok, banked} = StatefulStore.get(ctx.store, "sf-1")
+    assert banked.state == :banked
+
+    # The watermark never advanced (the append failed): still 1 for the very
+    # first bless attempt of this never-blessed workload.
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 1
   end
 
   test "flap guard: at the abort threshold the next cycle FORCES COMMIT even though parked, and resets the counter" do

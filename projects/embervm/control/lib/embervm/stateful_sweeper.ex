@@ -1194,7 +1194,8 @@ defmodule Embervm.StatefulSweeper do
           })
 
         {mode, state} = decide_resolve(state, workload)
-        spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode)
+        {mode, blessed_generation, state} = plan_resolve_blessing(state, workload, mode)
+        spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode, blessed_generation)
         state
 
       # Terminal mid-checkpoint (a forced destroy raced it) or gone: release the
@@ -1284,11 +1285,41 @@ defmodule Embervm.StatefulSweeper do
     _, _ -> false
   end
 
+  # An ABORT resumes the paused guest, which may write, so the volume generation
+  # must advance. Under R7 (ADR embervm/011, standing decision 4) the control plane
+  # is the sole issuer: bless the next generation and thread it into the
+  # ResolveStateful request so noded RecordBlessed's it (genFile == blessedFile,
+  # reported generation_blessed:true) rather than self-bumping into a false
+  # quarantine that fails every subsequent wake closed. The bless op-log append is
+  # the fence, op-log-before-dispatch, mirroring Embervm.StatefulManager.plan_wake:
+  # if it fails we force COMMIT rather than dispatch an unblessed abort, since a
+  # commit invents no generation and is always ledger-safe (the parked caller
+  # relights, slightly colder, off the fresh bundle). COMMIT needs no blessing (it
+  # publishes the already-blessed boot generation).
+  defp plan_resolve_blessing(state, workload, :abort) do
+    next = StatefulStore.next_blessed_generation(state.store, workload)
+
+    case StatefulStore.bless_generation(state.store, workload, next) do
+      {:ok, _fact} ->
+        {:abort, next, state}
+
+      {:error, reason} ->
+        Logger.warning("embervm stateful: bless for checkpoint abort failed, forcing commit",
+          workload: workload,
+          reason: inspect(reason)
+        )
+
+        {:commit, 0, state}
+    end
+  end
+
+  defp plan_resolve_blessing(state, _workload, :commit), do: {:commit, 0, state}
+
   # The resolve worker: ResolveStateful(vm_id, token, mode) off the GenServer (it
   # can take seconds: a commit publishes the bundle, an abort resumes the VM).
   # Reports {:resolve_done, ..., mode, outcome}; finish_resolve completes the
   # durable transition on the owner process.
-  defp spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode) do
+  defp spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode, blessed_generation) do
     owner = self()
     channel_fun = state.channel_fun
     invalidate_fun = state.invalidate_fun
@@ -1307,7 +1338,7 @@ defmodule Embervm.StatefulSweeper do
                            }
                          } do
           try do
-            case over_channel(channel_fun, invalidate_fun, dial_key, &resolve_fun.(&1, resolve_request(vm_id, token, mode))) do
+            case over_channel(channel_fun, invalidate_fun, dial_key, &resolve_fun.(&1, resolve_request(vm_id, token, mode, blessed_generation))) do
               {:ok, %ResolveStatefulResponse{} = resp} ->
                 {:ok, resp}
 
@@ -1325,12 +1356,16 @@ defmodule Embervm.StatefulSweeper do
     end)
   end
 
-  defp resolve_request(vm_id, token, mode) do
+  defp resolve_request(vm_id, token, mode, blessed_generation) do
     %ResolveStatefulRequest{
       trace: %Trace{},
       vm_id: vm_id,
       checkpoint_token: token,
-      mode: resolve_mode(:commit == mode)
+      mode: resolve_mode(:commit == mode),
+      # CP-issued generation for an ABORT resume (0 for COMMIT, which publishes the
+      # already-blessed boot generation). noded RecordBlessed's it so the resumed
+      # volume stays blessed and is never falsely quarantined.
+      blessed_generation: blessed_generation
     }
   end
 

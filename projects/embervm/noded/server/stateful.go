@@ -494,7 +494,7 @@ func (s *Server) ResolveStateful(ctx context.Context, req *nodev1.ResolveStatefu
 	if req.GetMode() == nodev1.ResolveMode_RESOLVE_MODE_COMMIT {
 		return s.commitCheckpoint(ctx, e, token)
 	}
-	return s.abortCheckpoint(ctx, e, token)
+	return s.abortCheckpoint(ctx, e, token, req.GetBlessedGeneration())
 }
 
 // commitCheckpoint publishes the checkpoint's temp as the workload's bundle and
@@ -543,16 +543,28 @@ func (s *Server) commitCheckpoint(ctx context.Context, e *statefulEntry, token s
 }
 
 // abortCheckpoint returns a checkpointed VM to serving on the same process image.
-// Order (ADR embervm/008): bump the volume generation, THEN delete the temp +
-// resume (the driver does the latter two). A bump failure is not fatal:
-// delete-before-resume alone closes the crash leak (guarantee 3), so it logs and
-// proceeds on the current generation rather than wedging. If the resume itself
-// fails the driver destroyed the VM, so this degrades to a next-wake cold boot.
-// The caller has already claimed the resolve.
-func (s *Server) abortCheckpoint(ctx context.Context, e *statefulEntry, token string) (*nodev1.ResolveStatefulResponse, error) {
-	gen, bumpErr := s.volumes.BumpGeneration(e.workload)
-	if bumpErr != nil {
-		s.logger.Warn("noded: bump generation on checkpoint abort failed; proceeding (delete-before-resume still protects)", "workload", e.workload, "err", bumpErr)
+// Order (ADR embervm/008): advance the volume generation, THEN delete the temp +
+// resume (the driver does the latter two). The advance witnesses the resumed
+// guest's future writes in the pair key even if resume then fails; there is no
+// un-bump. A generation-advance failure is not fatal: delete-before-resume alone
+// closes the crash leak (guarantee 3), so it logs and proceeds on the current
+// generation rather than wedging. If the resume itself fails the driver destroyed
+// the VM, so this degrades to a next-wake cold boot. The caller has already
+// claimed the resolve.
+//
+// blessedGeneration (R7, ADR embervm/011, standing decision 4): when the control
+// plane issued a generation for this abort (the normal CP-driven resolve path), we
+// RecordBlessed it so genFile == blessedFile and the node reports
+// generation_blessed:true. A legitimate abort must never look like an unblessed
+// self-bump, or StatefulStore.update_quarantine quarantines the volume and every
+// wake fails closed. Zero means the legacy self-bump lane: only the node's own
+// resolve-timeout auto-abort (autoAbortCheckpoint), where no control plane is
+// reachable to issue a generation, so the resulting unblessed state is a correct
+// fail-closed signal rather than a bug.
+func (s *Server) abortCheckpoint(ctx context.Context, e *statefulEntry, token string, blessedGeneration uint64) (*nodev1.ResolveStatefulResponse, error) {
+	gen, genErr := s.recordAbortGeneration(e.workload, blessedGeneration)
+	if genErr != nil {
+		s.logger.Warn("noded: advance generation on checkpoint abort failed; proceeding (delete-before-resume still protects)", "workload", e.workload, "err", genErr)
 		gen = e.generation
 	}
 	if err := s.statefulDriver.ResolveStatefulAbort(ctx, token); err != nil {
@@ -565,10 +577,27 @@ func (s *Server) abortCheckpoint(ctx context.Context, e *statefulEntry, token st
 		s.signalChange()
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: abort checkpoint for vm %q (resume failed, VM destroyed): %v", e.vmID, err)
 	}
-	// Resumed hot: record the bumped generation, clear the checkpoint + stop guard.
+	// Resumed hot: record the advanced generation, clear the checkpoint + stop guard.
 	s.statefulVMs.resumeFromCheckpoint(e.vmID, gen)
 	s.signalChange()
-	return &nodev1.ResolveStatefulResponse{}, nil
+	// Report the generation so the control plane's blessing ledger can confirm the
+	// value it issued was recorded (it blessed the same number pre-dispatch). Zero
+	// for the legacy self-bump lane, where the CP has no matching blessing.
+	return &nodev1.ResolveStatefulResponse{Generation: gen}, nil
+}
+
+// recordAbortGeneration advances the volume generation for a checkpoint abort. A
+// nonzero blessedGeneration (a CP-driven resolve) is recorded via RecordBlessed so
+// genFile == blessedFile and the node self-certifies generation_blessed:true;
+// RecordBlessed's gen > current guard keeps it strictly monotonic. Zero is the
+// legacy self-bump lane (autoAbortCheckpoint only): BumpGeneration advances genFile
+// without the blessed marker, which correctly reads unblessed since no control
+// plane witnessed it.
+func (s *Server) recordAbortGeneration(workload string, blessedGeneration uint64) (uint64, error) {
+	if blessedGeneration > 0 {
+		return s.volumes.RecordBlessed(workload, blessedGeneration)
+	}
+	return s.volumes.BumpGeneration(workload)
 }
 
 // autoAbortCheckpoint is the resolve-timeout backstop (ADR embervm/008): if a
@@ -581,7 +610,12 @@ func (s *Server) autoAbortCheckpoint(vmID, token string) {
 		return // already resolved by the control plane
 	}
 	s.logger.Warn("noded: interruptible-bank checkpoint resolve-timeout, auto-aborting", "vm_id", vmID, "workload", e.workload)
-	if _, err := s.abortCheckpoint(context.Background(), e, token); err != nil {
+	// blessedGeneration 0: no control plane is reachable to issue a generation for
+	// this self-driven abort, so the legacy self-bump lane applies. The resulting
+	// unblessed volume may quarantine on the next wake, which is correct
+	// fail-closed behaviour for a resume the CP ledger never witnessed (see the
+	// runbook: recover by blessing the reported generation forward).
+	if _, err := s.abortCheckpoint(context.Background(), e, token, 0); err != nil {
 		s.logger.Warn("noded: checkpoint auto-abort failed", "vm_id", vmID, "err", err)
 	}
 }

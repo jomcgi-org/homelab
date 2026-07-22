@@ -924,11 +924,27 @@ message ResolveStatefulRequest {
   // already-resolved token is FAILED_PRECONDITION (single-resolve).
   string checkpoint_token = 3;
   ResolveMode mode = 4;
+  // blessed_generation is the CP-issued generation the node records for an ABORT
+  // resume, mirroring StartStatefulRequest.blessed_generation (R7, ADR
+  // embervm/011, standing decision 4: the control plane is the sole issuer). An
+  // ABORT resumes the paused guest, which may write, so the volume generation
+  // must advance; recording the CP-blessed value (RecordBlessed) instead of a
+  // legacy self-bump keeps genFile == blessedFile so the node reports
+  // generation_blessed:true and the volume is never falsely quarantined. Zero
+  // means the legacy self-bump lane (only the node's own resolve-timeout
+  // auto-abort, where no control plane is reachable to issue a generation).
+  // COMMIT ignores this field (it publishes the already-blessed boot generation).
+  uint64 blessed_generation = 5;
 }
 
 message ResolveStatefulResponse {
-  // Set only for COMMIT (the published bundle), exactly as StopStateful(BANK)
-  // reports it; all zero for ABORT (an abort publishes no bundle).
+  // For COMMIT: the published bundle (snapshot_ref + size_bytes + its
+  // generation), exactly as StopStateful(BANK) reports it. For ABORT:
+  // snapshot_ref and size_bytes are empty (an abort publishes no bundle), but
+  // generation carries the value the resumed volume was recorded at, the
+  // CP-blessed blessed_generation on the normal resolve path or the node's
+  // self-bumped value on the legacy auto-abort lane, so the control plane can
+  // confirm what was recorded.
   string snapshot_ref = 1;
   uint64 generation = 2;
   uint64 size_bytes = 3;

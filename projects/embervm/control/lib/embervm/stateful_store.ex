@@ -857,6 +857,30 @@ defmodule Embervm.StatefulStore do
   end
 
   def handle_call({:bless_generation, workload, generation}, _from, state) do
+    current = fetch_blessing(state, workload) |> Map.get(:blessed_generation)
+
+    # Monotonicity guard (R7): the blessing watermark must never regress. Every real
+    # caller blesses next_blessed_generation (strictly greater than the current
+    # watermark), so a request at or below it is a stale or duplicated call; treat it
+    # as an idempotent no-op rather than rewinding the ledger, which would append a
+    # regressing op AND re-open a quarantine the higher watermark had already cleared
+    # (the quad {reported > blessed} would flip back true). Callers ignore the
+    # returned fact (they proceed on their own computed generation), so returning the
+    # unchanged fact is transparent.
+    if is_integer(current) and generation <= current do
+      Logger.warning("embervm stateful: bless_generation ignored, would not advance watermark",
+        workload: workload,
+        requested_generation: generation,
+        blessed_generation: current
+      )
+
+      {:reply, {:ok, fetch_blessing(state, workload)}, state}
+    else
+      bless_generation_append(state, workload, generation)
+    end
+  end
+
+  defp bless_generation_append(state, workload, generation) do
     ts = state.clock.()
 
     op = %Op{

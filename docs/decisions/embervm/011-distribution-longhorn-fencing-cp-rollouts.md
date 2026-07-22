@@ -161,3 +161,24 @@ The exploratory rung recorded in the design seed (right-sized multi-pod noded,
 control-plane binpacking with in-place pod resize, forecast-driven pre-warm)
 is future work on top of these mechanisms and needs its own decision record
 before commitment.
+
+## Amendment (2026-07-22): the abort lane is a blessed generation issuer
+
+The "control plane is the sole issuer of a volume generation" rule (standing
+decision 4) originally covered only the wake/attach path. The ADR-008
+interruptible-bank ABORT path was missed: it resumes a paused guest (which may
+write), so it must advance the generation, but it did so with the legacy
+node-side self-bump. A self-bump reads `generation_blessed:false` and, being past
+the last blessed value, quarantined the volume on the next report, which
+fail-closed every subsequent wake. This surfaced as a `demo-postgres` outage
+(`jomcgi.dev/health` 503) after a normal checkpoint-abort.
+
+The rule now extends to the abort lane: when the control plane decides ABORT it
+blesses the next generation (op-log-before-dispatch, the same fence as a wake) and
+threads it into `ResolveStateful`; noded records it as blessed rather than
+self-bumping. The one remaining self-bump is noded's own resolve-timeout
+auto-abort, where no control plane is reachable to issue a generation; its
+resulting quarantine is accepted as correct fail-closed behaviour, with a
+break-glass recovery documented in
+`docs/runbooks/embervm-stateful-generation-quarantine.md`. See
+`docs/plans/2026-07-22-embervm-abort-generation-blessing.md` for the full design.

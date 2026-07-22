@@ -524,6 +524,35 @@ defmodule Embervm.StatefulStoreTest do
     assert StatefulStore.get_volume(store2, "wl-a") == nil
   end
 
+  test "bless_generation at or below the current watermark is an idempotent no-op: no regression, no op-log entry",
+       %{path: path} do
+    {op_log, store} = start_pair(path)
+
+    {:ok, fact1} = StatefulStore.bless_generation(store, "wl-a", 3)
+    assert fact1.blessed_generation == 3
+
+    # Equal to the current watermark: a stale/duplicated call, not an advance.
+    assert {:ok, fact_eq} = StatefulStore.bless_generation(store, "wl-a", 3)
+    assert fact_eq.blessed_generation == 3
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 4
+
+    # Below the current watermark: same idempotent no-op, never rewinds the ledger.
+    assert {:ok, fact_below} = StatefulStore.bless_generation(store, "wl-a", 1)
+    assert fact_below.blessed_generation == 3
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 4
+
+    # Neither no-op call appended a durable generation_blessed op: only the
+    # original bless_generation(3) call did.
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    blessed_ops = Enum.filter(ops, &(&1.kind == :generation_blessed))
+    assert length(blessed_ops) == 1
+    assert hd(blessed_ops).payload["generation"] == 3
+
+    # A rebuild sees the same unregressed watermark.
+    {:ok, store2} = StatefulStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
+    assert StatefulStore.next_blessed_generation(store2, "wl-a") == 4
+  end
+
   test "upsert_volume quarantines a report past the last blessed generation with generation_blessed: false", %{path: path} do
     {_op_log, store} = start_pair(path)
     {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)

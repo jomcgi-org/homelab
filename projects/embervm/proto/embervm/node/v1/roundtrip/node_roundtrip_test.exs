@@ -389,6 +389,48 @@ defmodule Embervm.NodeRoundtripTest do
     assert device_unset.vm_id == "vm:pg-base"
   end
 
+  test "ResolveStatefulRequest.blessed_generation survives protobuf encode/decode (R7 abort-blessing fix)" do
+    # Unlike the fields exercised above, blessed_generation on a RESOLVE_MODE_ABORT
+    # request has no fake-server echo to observe crossing the wire (the fake's
+    # ResolveStateful ABORT branch returns an empty response regardless of the
+    # request). Prove the field itself survives protobuf wire encoding directly
+    # against the generated struct's own Protobuf.Encoder/Decoder (no server, no
+    # channel needed): this is the field-level guarantee the gRPC round trip above
+    # otherwise relies on transitively.
+    req = %ResolveStatefulRequest{
+      trace: %Trace{workload: "scratch-postgres"},
+      vm_id: "vm-st1",
+      checkpoint_token: "ckpt:vm-st1",
+      mode: :RESOLVE_MODE_ABORT,
+      blessed_generation: 9
+    }
+
+    encoded = ResolveStatefulRequest.encode(req)
+    decoded = ResolveStatefulRequest.decode(encoded)
+
+    assert decoded.blessed_generation == 9
+    assert decoded.mode == :RESOLVE_MODE_ABORT
+    assert decoded.vm_id == "vm-st1"
+    assert decoded.checkpoint_token == "ckpt:vm-st1"
+
+    # A COMMIT request (blessed_generation unused, left at its zero default)
+    # round-trips identically, proving the new field does not disturb the
+    # existing COMMIT wire shape.
+    commit_req = %ResolveStatefulRequest{
+      vm_id: "vm-st1",
+      checkpoint_token: "ckpt:vm-st1",
+      mode: :RESOLVE_MODE_COMMIT
+    }
+
+    decoded_commit =
+      commit_req
+      |> ResolveStatefulRequest.encode()
+      |> ResolveStatefulRequest.decode()
+
+    assert decoded_commit.blessed_generation == 0
+    assert decoded_commit.mode == :RESOLVE_MODE_COMMIT
+  end
+
   test "group verbs round-trip across the wire (R5 additive contract)", %{channel: ch} do
     # CreateGroupNetwork: derives bridge_name/gateway_ip from the request, proving
     # the group_instance_id and cidr fields crossed the wire.
