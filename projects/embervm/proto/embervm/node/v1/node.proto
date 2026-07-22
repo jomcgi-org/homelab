@@ -1240,6 +1240,34 @@ enum BaseBuildState {
   BASE_BUILD_STATE_FAILED = 4;    // last BuildBase failed (see build_error)
 }
 
+// BaseInventoryEntry is ONE base snapshot dir the daemon holds on local disk
+// (base-durability PR-3, additive). WorkloadCapacity reports only the ONE current
+// base per workload (last-wins over the daemon's base registry), so it cannot
+// convey the SUPERSEDED versions that accumulate under bases/ across turnovers.
+// This repeated inventory is the daemon's full per-ref base disk truth, which the
+// control plane's reconciled base-retention sweep needs to compute (reported local
+// set MINUS desired set) and evict the difference. It is DELIBERATELY LOCAL-only:
+// {ref, workload, size_bytes, base_state}, NOT the S3 object listing (that is
+// PR-4's ListArtifacts, which is remote and carries vendor + created-at for
+// retention-by-count). Bounded by the on-disk base-dir count (~245 during the
+// backlog, shrinking toward ~9 per workload set post-reclaim), well within gRPC
+// message limits.
+message BaseInventoryEntry {
+  // ref is the base snapshot_ref (== the base dir name under bases/, the
+  // "<workload>__<sig>" base key).
+  string ref = 1;
+  // workload is the base's owning workload (recovered from the ref's
+  // "<workload>__" prefix on a disk-only entry).
+  string workload = 2;
+  // size_bytes is the base dir's on-disk size (snapfile + memfile), for the
+  // sweep's reclaim-bytes accounting and the dry-run log.
+  uint64 size_bytes = 3;
+  // base_state is the daemon's build state for this ref (READY/BUILDING/FAILED),
+  // so the sweep and its guards can reason about a BUILDING ref without a second
+  // lookup.
+  BaseBuildState base_state = 4;
+}
+
 // SessionVm is one LIVE session VM the node currently holds: the daemon reports
 // it (with the opaque session_id it was given at SessionAssign/Relight) so a
 // restarted control plane ADOPTS the running session instead of orphaning it,
@@ -1729,4 +1757,16 @@ message NodeStatus {
   // placement is unchanged) and on any daemon that predates this field; the
   // control plane treats empty as the wildcard class, never a guess.
   string size_class = 30;
+
+  // -- Local base inventory (base-durability PR-3, additive) -------------------
+  // local_bases is the daemon's FULL per-ref base disk inventory, one entry per
+  // dir under bases/. WorkloadCapacity carries only the ONE current base per
+  // workload, so the superseded versions that accumulate across turnovers are
+  // invisible to the control plane there; this field is the observed-truth input
+  // the CP base-retention sweep reconciles against its desired set (current +
+  // still-refcounted refs), evicting the difference via EvictArtifact{remote:
+  // false}. Empty on a daemon that predates this field (the CP then simply has no
+  // local base inventory to sweep, exactly the pre-PR-3 behavior). Bounded by the
+  // on-disk base-dir count.
+  repeated BaseInventoryEntry local_bases = 31;
 }

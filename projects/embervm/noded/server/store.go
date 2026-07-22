@@ -503,9 +503,11 @@ func (s *Server) EvictArtifact(ctx context.Context, req *nodev1.EvictArtifactReq
 // evictArtifactLocal deletes the on-disk copy of an artifact over the typed ref,
 // reusing the existing kind-specific eviction path (EvictSnapshot for a session/
 // serving/stateful bundle, RemoveGroupMemberBundle per member for a group set,
-// DeleteVolume for a volume). Idempotent.
+// DeleteVolume for a volume, a direct bases/<ref> removal for a BASE). Idempotent.
 func (s *Server) evictArtifactLocal(ctx context.Context, ref *nodev1.ArtifactRef) (*nodev1.EvictArtifactResponse, error) {
 	switch ref.GetKind() {
+	case nodev1.ArtifactKind_ARTIFACT_KIND_BASE:
+		return s.evictBaseLocal(ref)
 	case nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL:
 		if _, err := s.EvictSnapshot(ctx, &nodev1.EvictSnapshotRequest{SnapshotRef: ref.GetRef()}); err != nil {
 			return nil, err
@@ -525,6 +527,74 @@ func (s *Server) evictArtifactLocal(ctx context.Context, ref *nodev1.ArtifactRef
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "noded: artifact kind %s not locally evictable", ref.GetKind())
 	}
+	return &nodev1.EvictArtifactResponse{}, nil
+}
+
+// evictBaseLocal removes a base snapshot dir (SnapshotRoot/bases/<ref>) behind
+// two safety guards, then forgets any registry entry so NodeStatus stops
+// advertising it. It is the local arm the control plane's superseded-ref eviction
+// and its reconciled retention sweep drive (PR-3): before this arm existed, a BASE
+// local evict fell through to InvalidArgument, so the control plane's EvictSnapshot
+// dispatched a base ref into the SESSION bundle path (RemoveSessionBundle), which
+// no-op-removed a nonexistent sessions/<ref> dir and returned success while
+// bases/<ref> survived. Every superseded base leaked that way.
+//
+// Guards (both refuse FAILED_PRECONDITION; these are the REAL safety, and they are
+// the only two facts noded can judge authoritatively about a ref):
+//   - (a) IN-USE: no live task VM (or pre-adoption session VM) was restored from
+//     this ref (vmRegistry.snapshotRefInUse). Evicting a base out from under a
+//     running guest that restored from it would strand the birth lineage.
+//   - (b) BUILDING: the ref is not currently BUILDING (a build writes into
+//     bases/<ref>; removing it mid-build corrupts the in-progress snapshot).
+//
+// Deliberately NO registry-membership, not-last, or "current base" guard here.
+// noded does not know the control plane's authoritative CURRENT ref (its own
+// per-workload capacity projection is last-wins-nondeterministic among multiple
+// provisioned READY bases, so it cannot be trusted to identify current), and a
+// registry/completeness guard would REFUSE exactly the artifacts PR-3 must delete:
+// the pre-R2 superseded versions AND the incomplete/.tmp orphan dirs (a build that
+// died mid-write leaves memfile.tmp/snapfile.tmp with no snapfile, so
+// ReconcileBasesFromDisk never registers it, so a registry-gated guard would strand
+// it forever). CURRENT-base protection is the CONTROL PLANE's job and is enforced
+// there: the retention sweep's desired set always includes the workload's current
+// ref (never a candidate) and the ongoing superseded-eviction path only ever names
+// a drained superseded ref, so noded is never asked to evict a current base. The
+// in-use and BUILDING guards below are the defense-in-depth backstop against a
+// mistargeted request. Result: every non-current, non-in-use, non-BUILDING dir
+// (registered, unregistered, or a .tmp orphan) is evictable, which is what drains
+// the backlog to exactly the current set.
+//
+// Idempotent: an already-absent dir is success (the desired end-state holds), so a
+// retry or a re-sweep is harmless.
+func (s *Server) evictBaseLocal(ref *nodev1.ArtifactRef) (*nodev1.EvictArtifactResponse, error) {
+	baseRef := ref.GetRef()
+	if baseRef == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: base ref required for local eviction")
+	}
+	if s.cfg.SnapshotRoot == "" {
+		return nil, status.Error(codes.FailedPrecondition, "noded: snapshot root not configured; base not locally evictable")
+	}
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseRef)
+
+	// (a) In-use guard: refuse while a live VM was restored from this base ref.
+	if vmID, inUse := s.vms.snapshotRefInUse(baseRef); inUse {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: base %q is in use by live vm %q; refusing evict", baseRef, vmID)
+	}
+
+	// (b) BUILDING guard: never remove a base dir a BuildBase is writing into. An
+	// unknown ref (no registry entry, e.g. a superseded or .tmp-orphan dir) is by
+	// definition not BUILDING, so this only ever fires for a live in-progress build.
+	if entry, known := s.bases.get(baseRef); known && entry.state == nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: base %q is BUILDING; refusing evict", baseRef)
+	}
+
+	// Remove the on-disk dir (idempotent: RemoveAll on an absent path is nil) and
+	// forget any registry entry so NodeStatus stops advertising it.
+	if err := os.RemoveAll(dir); err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: evict base %q: %v", baseRef, err)
+	}
+	s.bases.remove(baseRef)
+	s.signalChange()
 	return &nodev1.EvictArtifactResponse{}, nil
 }
 

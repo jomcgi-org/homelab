@@ -1586,7 +1586,124 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		MemBudgetMib:          s.memBudget(),
 		CpuBudgetMillicores:   s.cpuBudget(),
 		CpuSku:                s.cpuSku(),
+		LocalBases:            s.localBasesStatus(),
 	}
+}
+
+// localBasesStatus projects the daemon's FULL on-disk base inventory into the
+// repeated NodeStatus.local_bases (base-durability PR-3). Unlike the
+// WorkloadCapacity projection (ONE current base per workload) AND unlike the base
+// registry alone, this SCANS the bases/ directory so it reports EVERY dir present:
+//   - registered bases (READY/BUILDING/FAILED), carrying the registry's state +
+//     size,
+//   - superseded versions left by turnovers,
+//   - and UNREGISTERED on-disk-only dirs (a build that died mid-write leaves a
+//     memfile.tmp/snapfile.tmp orphan with no snapfile, so ReconcileBasesFromDisk
+//     never registered it), reported with base_state UNSPECIFIED.
+//
+// Scanning disk (not just the registry) is what lets the control plane's retention
+// sweep target the .tmp orphans too: a registry-only projection would hide them,
+// stranding the exact bytes PR-3 exists to reclaim. A dir also present in the
+// registry takes the registry's state/size (authoritative for a live BUILDING
+// ref); a dir absent from the registry is sized from its files on disk. Bounded by
+// the on-disk base-dir count.
+func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
+	root := filepath.Join(s.cfg.SnapshotRoot, "bases")
+	dirents, err := os.ReadDir(root)
+	if err != nil {
+		// Missing dir (fresh node) or unreadable: fall back to the registry view so
+		// a scan error never blanks an inventory the registry could still report.
+		return s.localBasesFromRegistry()
+	}
+	// Index the registry by ref so a scanned dir can adopt its authoritative state.
+	reg := make(map[string]baseEntry)
+	for _, b := range s.bases.snapshot() {
+		reg[b.snapshotRef] = b
+	}
+	out := make([]*nodev1.BaseInventoryEntry, 0, len(dirents))
+	seen := make(map[string]struct{}, len(dirents))
+	for _, ent := range dirents {
+		if !ent.IsDir() {
+			continue
+		}
+		ref := ent.Name()
+		seen[ref] = struct{}{}
+		if b, ok := reg[ref]; ok {
+			out = append(out, &nodev1.BaseInventoryEntry{
+				Ref:       ref,
+				Workload:  b.workload,
+				SizeBytes: uint64(b.sizeBytes),
+				BaseState: b.state,
+			})
+			continue
+		}
+		// Unregistered on-disk dir (a superseded dir not re-registered, or a .tmp
+		// orphan): report it so the sweep can reclaim it. base_state UNSPECIFIED
+		// marks "on disk, not a registry-known build".
+		out = append(out, &nodev1.BaseInventoryEntry{
+			Ref:       ref,
+			Workload:  workloadFromBaseKey(ref),
+			SizeBytes: dirSizeBytes(filepath.Join(root, ref)),
+			BaseState: nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED,
+		})
+	}
+	// A BUILDING ref whose dir has not yet materialized on disk (the build just
+	// started) lives only in the registry; include it so the sweep sees it BUILDING
+	// and never targets it.
+	for ref, b := range reg {
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		out = append(out, &nodev1.BaseInventoryEntry{
+			Ref:       ref,
+			Workload:  b.workload,
+			SizeBytes: uint64(b.sizeBytes),
+			BaseState: b.state,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// localBasesFromRegistry is the registry-only fallback for localBasesStatus when
+// the bases/ dir cannot be scanned (missing on a fresh node, or a read error).
+func (s *Server) localBasesFromRegistry() []*nodev1.BaseInventoryEntry {
+	entries := s.bases.snapshot()
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]*nodev1.BaseInventoryEntry, 0, len(entries))
+	for _, b := range entries {
+		out = append(out, &nodev1.BaseInventoryEntry{
+			Ref:       b.snapshotRef,
+			Workload:  b.workload,
+			SizeBytes: uint64(b.sizeBytes),
+			BaseState: b.state,
+		})
+	}
+	return out
+}
+
+// dirSizeBytes sums the regular-file sizes directly under a base dir (snapfile +
+// memfile + any .tmp partials + sidecars), best-effort: an unreadable dir or entry
+// contributes 0 rather than failing the whole NodeStatus projection.
+func dirSizeBytes(dir string) uint64 {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	var total uint64
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && fi.Size() > 0 {
+			total += uint64(fi.Size())
+		}
+	}
+	return total
 }
 
 // cpuSku builds this node's full CPU-restore identity (PR-E): vendor plus the

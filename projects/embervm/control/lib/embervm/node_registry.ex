@@ -87,6 +87,7 @@ defmodule Embervm.NodeRegistry do
   alias Embervm.Node.V1.{
     GroupBundleSet,
     GroupMemberVm,
+    BaseInventoryEntry,
     GroupNetwork,
     NodeService,
     NodeStatus,
@@ -639,9 +640,31 @@ defmodule Embervm.NodeRegistry do
       # sets them (wire-compatible), which reads as "no group state on this node".
       group_networks: group_networks_from_status(s),
       group_member_vms: group_member_vms_from_status(s),
-      group_bundle_sets: group_bundle_sets_from_status(s)
+      group_bundle_sets: group_bundle_sets_from_status(s),
+      # Local base inventory (base-durability PR-3, additive): the node's FULL
+      # per-ref base disk inventory (every dir under bases/, including superseded
+      # versions), which the WorkloadCapacity projection cannot convey (it reports
+      # only the ONE current base per workload). Embervm.BaseBuilder's reconciled
+      # base-retention sweep reconciles this observed local set against its desired
+      # set (current + still-refcounted refs) and evicts the difference. Empty when
+      # a daemon predates the field (wire-compatible), which the sweep reads as "no
+      # local base inventory to reconcile", exactly the pre-PR-3 behavior.
+      local_bases: local_bases_from_status(s)
     }
   end
+
+  defp local_bases_from_status(%NodeStatus{local_bases: bases}) when is_list(bases) do
+    for %BaseInventoryEntry{} = b <- bases do
+      %{
+        ref: b.ref,
+        workload: b.workload,
+        size_bytes: b.size_bytes,
+        base_state: b.base_state
+      }
+    end
+  end
+
+  defp local_bases_from_status(_), do: []
 
   defp group_networks_from_status(%NodeStatus{group_networks: nets}) when is_list(nets) do
     for %GroupNetwork{} = n <- nets do

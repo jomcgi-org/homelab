@@ -108,7 +108,7 @@ defmodule Embervm.BaseBuilder do
     ArtifactRef,
     BuildBaseRequest,
     BuildBaseResponse,
-    EvictSnapshotRequest,
+    EvictArtifactRequest,
     ExportArtifactRequest,
     NodeService,
     ResourceSpec,
@@ -128,6 +128,16 @@ defmodule Embervm.BaseBuilder do
   # was down at build time). 60s is well below any base's lifetime and the sweep
   # is bounded to current-base-present-but-unexported, so it never hammers.
   @export_reconcile_interval_ms 60_000
+
+  # Base-durability PR-3: how often the reconciled base-retention sweep runs. It
+  # reconciles each node's reported local base inventory (NodeStatus.local_bases,
+  # the full per-ref disk truth) against the desired set (current ref + still-
+  # refcounted superseded refs) and, when the destructive gate is on, evicts the
+  # difference. 300s: retention is a slow-moving reconcile (a superseded base is
+  # only born on a build turnover), never a hot path, and the sweep is bounded to
+  # workloads whose current base is already exported. Well below any base's
+  # lifetime; the guarded, idempotent EvictArtifact makes a re-sweep harmless.
+  @retention_sweep_interval_ms 300_000
 
   # -- Client API ------------------------------------------------------------
 
@@ -246,6 +256,20 @@ defmodule Embervm.BaseBuilder do
     GenServer.call(server, :status)
   end
 
+  @doc """
+  Run one reconciled base-retention sweep synchronously and return the dry-run
+  plan (a list of `%{workload, evict_refs, evict_bytes, skipped_unexported}`
+  descriptors), for tests and operational visibility. A synchronous call so a
+  test can drive the sweep deterministically and assert what it evicted (or, with
+  the destructive gate off, what it WOULD evict) without waiting on the timer.
+  The actual evictions (gate on) are spawned fire-and-forget exactly as the timer
+  path does; the returned plan is the sweep's decision, independent of the gate.
+  """
+  @spec retention_sweep_now(GenServer.server()) :: [map()]
+  def retention_sweep_now(server \\ __MODULE__) do
+    GenServer.call(server, :retention_sweep_now)
+  end
+
   defp cast_if_alive(server, msg) do
     case GenServer.whereis(server) do
       nil -> :ok
@@ -262,11 +286,18 @@ defmodule Embervm.BaseBuilder do
     build_fun = Keyword.get(opts, :build_fun, &default_build/2)
     connect_fun = Keyword.get(opts, :connect_fun, &default_connect/1)
     disconnect_fun = Keyword.get(opts, :disconnect_fun, &default_disconnect/1)
-    # R2: the EvictSnapshot seam for destroying a fully-drained superseded base
-    # (the ADR embervm/003 eviction verb, landed early). Defaults to the real
-    # NodeService.Stub.evict_snapshot/2 over a per-call channel; tests inject a
-    # fake to assert eviction fires exactly when both refcounts hit zero.
-    evict_fun = Keyword.get(opts, :evict_fun, &default_evict/2)
+    # R2 + PR-3: the eviction seam for destroying a fully-drained superseded base.
+    # It now uses EvictArtifact{remote: false} (kind BASE) rather than the R2-era
+    # EvictSnapshot: EvictSnapshot dispatched a base ref into the SESSION bundle
+    # path on the node (RemoveSessionBundle), which no-op-removed a nonexistent
+    # sessions/<ref> dir and returned success while bases/<ref> survived, so every
+    # superseded base leaked. EvictArtifact routes to the new noded BASE arm that
+    # removes bases/<ref> behind an in-use/BUILDING/not-last guard. Defaults to the
+    # real NodeService.Stub.evict_artifact/2 over a per-call channel; tests inject a
+    # fake to assert eviction fires exactly when both refcounts hit zero. The seam
+    # takes (channel, workload, ref) so it can compose the vendor-keyed store prefix
+    # (the BASE key is base/<vendor>/<workload>/<ref>).
+    evict_fun = Keyword.get(opts, :evict_fun, &default_evict/3)
     # Base-durability PR-1: the ExportArtifact seam that writes a freshly-built
     # (or present-but-unexported) base back to the object store. Defaults to the
     # real NodeService.Stub.export_artifact/2 over a per-call channel; tests
@@ -301,6 +332,22 @@ defmodule Embervm.BaseBuilder do
     # shrink both so a fallback path asserts deterministically without real sleep.
     hydrate_poll_interval_ms = Keyword.get(opts, :hydrate_poll_interval_ms, 5_000)
     hydrate_poll_max = Keyword.get(opts, :hydrate_poll_max, 90)
+
+    # Base-durability PR-3: the reconciled base-retention sweep cadence. 0 disables
+    # the timer entirely (the unit-test default, so a test drives :retention_sweep
+    # explicitly and asserts deterministically); production uses the module default.
+    retention_sweep_interval_ms =
+      Keyword.get(opts, :retention_sweep_interval_ms, @retention_sweep_interval_ms)
+
+    # Base-durability PR-3: the destructive gate. When FALSE (the default, and the
+    # production default until an operator opts in) the retention sweep computes and
+    # LOGS what it would evict (a dry-run line per workload: candidate count + total
+    # bytes) but deletes NOTHING. When TRUE it issues EvictArtifact{remote: false}
+    # for each superseded local base outside the desired set. application.ex reads it
+    # from EMBERVM_BASE_RETENTION_SWEEP ("1"/"true" => on, unset/"0" => off) so it can
+    # be enabled later via deploy values without a code change; nothing in this PR
+    # sets it on. Merging this PR is inert: the sweep runs but only logs.
+    retention_sweep_enabled = Keyword.get(opts, :retention_sweep_enabled, false)
 
     status_writer = Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3)
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
@@ -372,10 +419,13 @@ defmodule Embervm.BaseBuilder do
       status_writer: status_writer,
       clock: clock,
       base_backoff_ms: base_backoff,
-      max_backoff_ms: max_backoff
+      max_backoff_ms: max_backoff,
+      retention_sweep_interval_ms: retention_sweep_interval_ms,
+      retention_sweep_enabled: retention_sweep_enabled
     }
 
     schedule_export_reconcile(state)
+    schedule_retention_sweep(state)
 
     {:ok, state}
   end
@@ -400,6 +450,11 @@ defmodule Embervm.BaseBuilder do
   @impl true
   def handle_call({:report_base_refs, ref, counts}, _from, state) do
     {:reply, :ok, apply_base_refs(state, ref, counts)}
+  end
+
+  def handle_call(:retention_sweep_now, _from, state) do
+    {plan, state} = retention_sweep_plan(state)
+    {:reply, plan, state}
   end
 
   def handle_call(:status, _from, state) do
@@ -462,6 +517,15 @@ defmodule Embervm.BaseBuilder do
   def handle_info(:export_reconcile, state) do
     state = export_reconcile(state)
     schedule_export_reconcile(state)
+    {:noreply, state}
+  end
+
+  # Base-durability PR-3: the periodic reconciled base-retention sweep fired.
+  # Reconcile each node's reported local base inventory against the desired set and
+  # (when the destructive gate is on) evict the difference, then re-arm the timer.
+  def handle_info(:retention_sweep, state) do
+    state = retention_sweep(state)
+    schedule_retention_sweep(state)
     {:noreply, state}
   end
 
@@ -1429,6 +1493,142 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
+  # -- reconciled base-retention sweep (base-durability PR-3) ------------------
+
+  # Run one reconciled base-retention sweep and apply it: with the destructive gate
+  # OFF, log the dry-run plan and change nothing; with the gate ON, spawn an
+  # EvictArtifact{remote: false} for each superseded local base outside the desired
+  # set. Returns the (possibly updated) state. This is the reconciled backstop the
+  # event-driven refcount path lacks: it enumerates from the node's REPORTED local
+  # inventory (NodeStatus.local_bases), so it prunes even the pre-R2 orphans the CP
+  # never tracked in base_refs and the superseded refs whose refcount event fired
+  # and no-op'd before this fix, which the event path alone can never re-fire.
+  defp retention_sweep(state) do
+    {_plan, state} = retention_sweep_plan(state)
+    state
+  end
+
+  # Compute the sweep plan (a per-workload list of what to evict) AND apply the
+  # gated action. The plan is returned for tests/visibility; the action is the
+  # spawned evictions (gate on) or the dry-run log (gate off).
+  #
+  # For each workload with a placed, exported current base:
+  #   candidates = local READY bases the node reports (local_bases, READY only)
+  #                MINUS the desired set (current ref + still-refcounted superseded
+  #                refs). BUILDING/FAILED local bases are never candidates (a
+  #                BUILDING base is being written; noded also refuses it).
+  # Durability-before-eviction: a workload whose CURRENT base is not yet exported
+  # is SKIPPED WHOLE (never empty the local cache before the S3 floor lands). noded's
+  # in-use/current/BUILDING guard is the final backstop beneath this.
+  defp retention_sweep_plan(state) do
+    Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
+      case workload_retention(acc, w) do
+        :skip ->
+          {plan, acc}
+
+        {:skip_unexported, node_id} ->
+          entry = %{workload: name, evict_refs: [], evict_bytes: 0, skipped_unexported: true, node_id: node_id}
+          {[entry | plan], acc}
+
+        {:evict, node_id, refs, bytes} ->
+          entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, skipped_unexported: false, node_id: node_id}
+          acc = apply_retention(acc, name, node_id, refs, bytes)
+          {[entry | plan], acc}
+      end
+    end)
+    |> then(fn {plan, acc} -> {Enum.reverse(plan), acc} end)
+  end
+
+  # Decide one workload's retention outcome from the node's reported facts:
+  #   :skip                          - not placed, no node fact, or nothing to evict
+  #   {:skip_unexported, node_id}    - current base present but not yet exported
+  #   {:evict, node_id, refs, bytes} - superseded local bases to evict + their bytes
+  defp workload_retention(state, w) do
+    with true <- is_binary(w.node_id) and is_binary(w.snapshot_ref),
+         {:ok, fact} <- find_capacity_fact(state.capacity_table, w.node_id),
+         locals when is_list(locals) <- Map.get(fact, :local_bases, []) do
+      current_exported? =
+        case get_in(fact, [:workloads, w.name]) do
+          %{snapshot_ref: ref, exported: exported} -> ref == w.snapshot_ref and exported == true
+          _ -> false
+        end
+
+      cond do
+        not current_exported? ->
+          # Durability floor not yet confirmed for this workload: skip it whole.
+          {:skip_unexported, w.node_id}
+
+        true ->
+          desired = desired_refs(w)
+
+          # A candidate is any local base for this workload that is NOT desired and
+          # NOT currently BUILDING. READY superseded versions AND unregistered/.tmp
+          # orphan dirs (base_state UNSPECIFIED) are both candidates, so the reclaim
+          # drains the orphans too; a BUILDING ref is never a candidate (it is being
+          # written, and noded refuses it as the final backstop). The current ref is
+          # excluded via `desired`, and durability-before-eviction gated this whole
+          # workload above.
+          candidates =
+            for b <- locals,
+                b.workload == w.name,
+                b.base_state != :BASE_BUILD_STATE_BUILDING,
+                b.ref not in desired,
+                do: b
+
+          if candidates == [] do
+            :skip
+          else
+            refs = Enum.map(candidates, & &1.ref)
+            bytes = candidates |> Enum.map(&(&1.size_bytes || 0)) |> Enum.sum()
+            {:evict, w.node_id, refs, bytes}
+          end
+      end
+    else
+      _ -> :skip
+    end
+  end
+
+  # The desired base refs for a workload: its CURRENT ref, PLUS every superseded
+  # ref the CP still refcounts (a base_refs entry that is not yet evicted, so a
+  # primed VM or pinned session may still ride it). A ref whose refcounts drained
+  # and fired an eviction (evicted: true) is NOT desired: it is a candidate. This
+  # keeps the sweep from ever removing a base a live VM or banked session still
+  # needs, independent of noded's own in-use guard.
+  defp desired_refs(w) do
+    superseded_desired =
+      for {ref, entry} <- w.base_refs, not Map.get(entry, :evicted, false), do: ref
+
+    [w.snapshot_ref | superseded_desired]
+  end
+
+  # Apply the gated retention action for one workload. Gate OFF: log the dry-run
+  # (count + total bytes) and change nothing. Gate ON: spawn an idempotent
+  # EvictArtifact{remote: false} per candidate ref (noded's guard is the final
+  # backstop) and log the reclaim.
+  defp apply_retention(state, workload, node_id, refs, bytes) do
+    if state.retention_sweep_enabled do
+      Logger.info(
+        "embervm base builder: base-retention sweep evicting #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes) on #{node_id}"
+      )
+
+      Enum.each(refs, fn ref -> spawn_evict(state, node_id, workload, ref) end)
+      state
+    else
+      Logger.info(
+        "embervm base builder: base-retention sweep (DRY RUN, gate off) WOULD evict #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes) on #{node_id}"
+      )
+
+      state
+    end
+  end
+
+  defp schedule_retention_sweep(%{retention_sweep_interval_ms: ms}) when ms > 0 do
+    Process.send_after(self(), :retention_sweep, ms)
+    :ok
+  end
+
+  defp schedule_retention_sweep(_state), do: :ok
+
   # Spawn a fire-and-forget ExportArtifact worker for one base ref on its node,
   # unless an export for the same {workload, ref} is already in flight. Returns the
   # (possibly updated) state with the in-flight key marked.
@@ -1650,18 +1850,19 @@ defmodule Embervm.BaseBuilder do
       }
 
       state = put_in(state.workloads[name], w)
-      spawn_evict(state, entry.node_id, ref)
+      spawn_evict(state, entry.node_id, name, ref)
       state
     else
       state
     end
   end
 
-  # Spawn a fire-and-forget eviction worker. EvictSnapshot is idempotent (an
-  # unknown ref is OK), so a lost result or a retry is harmless; failures are
-  # logged, not retried here (the next report, or the banked-TTL GC, is the
-  # backstop). Not monitored: a crash cannot un-evict the already-marked ref.
-  defp spawn_evict(state, node_id, ref) do
+  # Spawn a fire-and-forget eviction worker. EvictArtifact{remote: false} is
+  # idempotent (an already-gone base is success), so a lost result or a retry is
+  # harmless; failures are logged, not retried here (the next report, or the
+  # reconciled retention sweep, is the backstop). Not monitored: a crash cannot
+  # un-evict the already-marked ref.
+  defp spawn_evict(state, node_id, workload, ref) do
     address = state.node_addr[node_id]
     connect_fun = state.connect_fun
     disconnect_fun = state.disconnect_fun
@@ -1672,7 +1873,7 @@ defmodule Embervm.BaseBuilder do
         case connect_fun.(address) do
           {:ok, channel} ->
             try do
-              evict_fun.(channel, ref)
+              evict_fun.(channel, workload, ref)
             catch
               kind, reason -> {:error, {kind, reason}}
             after
@@ -1684,8 +1885,13 @@ defmodule Embervm.BaseBuilder do
         end
 
       case result do
-        {:ok, _} -> :ok
-        other -> Logger.warning("embervm base builder: EvictSnapshot #{ref} failed: #{inspect(other)}")
+        {:ok, _} ->
+          :ok
+
+        other ->
+          Logger.warning(
+            "embervm base builder: EvictArtifact #{workload}/#{ref} failed: #{inspect(other)}"
+          )
       end
     end)
 
@@ -1853,12 +2059,20 @@ defmodule Embervm.BaseBuilder do
     NodeService.Stub.build_base(channel, request, timeout: 600_000)
   end
 
-  # EvictSnapshot the superseded base ref. Trace carries no workload (a base
-  # eviction is not a per-workload task op); the ref is the whole payload.
-  defp default_evict(channel, ref) do
-    NodeService.Stub.evict_snapshot(channel, %EvictSnapshotRequest{
-      trace: %Trace{},
-      snapshot_ref: ref
+  # EvictArtifact{remote: false} the superseded base ref (kind BASE): remove the
+  # LOCAL bases/<ref> dir on the node, leaving any store copy untouched. The
+  # ArtifactRef carries the workload so the node composes the vendor-keyed base
+  # store prefix; the node stamps its own cpu vendor. Idempotent on an
+  # already-gone base.
+  defp default_evict(channel, workload, ref) do
+    NodeService.Stub.evict_artifact(channel, %EvictArtifactRequest{
+      artifact: %ArtifactRef{
+        kind: :ARTIFACT_KIND_BASE,
+        workload: workload,
+        ref: ref
+      },
+      remote: false,
+      trace: %Trace{workload: workload}
     })
   end
 

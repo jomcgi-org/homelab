@@ -93,7 +93,10 @@ defmodule Embervm.Application do
       # dials the daemon over its own Mint gRPC connection (per build), so it
       # depends on Finch but not on the watcher or node registry. Empty node
       # config (no daemon wired) means it holds descriptors and builds nothing.
-      {Embervm.BaseBuilder, nodes: configured_nodes(), runtime_images: configured_runtime_images()},
+      {Embervm.BaseBuilder,
+       nodes: configured_nodes(),
+       runtime_images: configured_runtime_images(),
+       retention_sweep_enabled: base_retention_sweep_enabled()},
       # The Workload informer (Task 5): LISTs then WATCHes Workload CRs over the
       # Finch pool above and writes Embervm.WorkloadCatalog, which
       # TaskStore.cfg_for/1 reads. Placed after Finch (its watch streams over
@@ -445,6 +448,20 @@ defmodule Embervm.Application do
               acc
           end
         end)
+    end
+  end
+
+  # Base-durability PR-3: the destructive gate for the BaseBuilder base-retention
+  # sweep, from EMBERVM_BASE_RETENTION_SWEEP. UNSET or "0"/"false"/"" (the default,
+  # and what this PR ships) => the sweep runs but only LOGS what it would evict,
+  # deleting nothing. "1"/"true" => the sweep issues EvictArtifact{remote: false}
+  # for each superseded local base outside the desired set (the one-shot ~290G
+  # backlog reclaim an operator supervises). Wired here so it flips via a deploy
+  # values env change, no code change. Nothing sets it on in this PR.
+  defp base_retention_sweep_enabled do
+    case trimmed_env("EMBERVM_BASE_RETENTION_SWEEP") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
     end
   end
 
