@@ -75,7 +75,7 @@ defmodule Embervm.Application do
       # rest_for_one chain costs nothing.
       {Registry, keys: :duplicate, name: Embervm.TaskWaiters},
       Embervm.SyncWait,
-      {Embervm.OpLog.SQLite, path: oplog_path(), journal_horizon_ms: journal_horizon_ms()},
+      op_log_child_spec(),
       # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
       # so Embervm.Metering charges the quota cache off the same durable write.
       {Embervm.TaskStore, [op_log_mod: op_log_mod(), on_metered: &Embervm.Metering.on_metered/1]},
@@ -96,7 +96,9 @@ defmodule Embervm.Application do
       {Embervm.BaseBuilder,
        nodes: configured_nodes(),
        runtime_images: configured_runtime_images(),
-       retention_sweep_enabled: base_retention_sweep_enabled()},
+       retention_sweep_enabled: base_retention_sweep_enabled(),
+       op_log: op_log_mod(),
+       op_log_mod: op_log_mod()},
       # The Workload informer (Task 5): LISTs then WATCHes Workload CRs over the
       # Finch pool above and writes Embervm.WorkloadCatalog, which
       # TaskStore.cfg_for/1 reads. Placed after Finch (its watch streams over
@@ -335,7 +337,7 @@ defmodule Embervm.Application do
       # radius. It adds no writer (each batch is a call to the op-log's single
       # writer). Correctness (read-time TTLs) does not depend on it; it reclaims disk.
       {Embervm.OpLog.Compactor,
-       op_log: Embervm.OpLog.SQLite, op_log_mod: op_log_mod(), interval_ms: sweep_interval_ms()},
+       op_log: op_log_mod(), op_log_mod: op_log_mod(), interval_ms: sweep_interval_ms()},
       # Bandit + the router last: its handlers call Auth, TaskStore, SyncWait, and
       # the dispatcher's admit? gate, so the HTTP surface must not accept requests
       # until all are up.
@@ -371,12 +373,33 @@ defmodule Embervm.Application do
 
   # The single source of truth for the op-log backend MODULE, threaded into every
   # store/manager/sweeper's `:op_log_mod` opt so none of them hardcodes the
-  # concrete backend. Fixed at `Embervm.OpLog.SQLite` for now: this PR only makes
-  # the dispatch configurable (mechanical, behavior-preserving), it does not add a
-  # second backend or a selection rule. A future PR adds the Postgres adapter and
-  # branches here on EMBERVM_OPLOG_DSN; every caller already reads this function
-  # rather than the literal module name, so that cutover touches only this body.
-  defp op_log_mod, do: Embervm.OpLog.SQLite
+  # concrete backend. EMBERVM_OPLOG_DSN set and non-empty selects
+  # Embervm.OpLog.Postgres (PR-4, #18/#27); unset (the default, and what every
+  # cluster runs today) keeps Embervm.OpLog.SQLite. This PR ships the Postgres
+  # module dormant: nothing in deploy values sets the DSN yet, so the selected
+  # backend never changes as a result of merging it. Public (@doc false) so
+  # Embervm.ApplicationTest can assert the selection directly, matching how
+  # configured_nodes/0 is exposed for its own boot-ordering test.
+  @doc false
+  def op_log_mod do
+    case trimmed_env("EMBERVM_OPLOG_DSN") do
+      "" -> Embervm.OpLog.SQLite
+      _dsn -> Embervm.OpLog.Postgres
+    end
+  end
+
+  # The op-log child spec: SQLite takes its PVC path + journal horizon, Postgres
+  # takes the DSN. Kept as one function (rather than inlining a case in the
+  # children list) so the selected module and its opts stay next to each other.
+  defp op_log_child_spec do
+    case op_log_mod() do
+      Embervm.OpLog.SQLite ->
+        {Embervm.OpLog.SQLite, path: oplog_path(), journal_horizon_ms: journal_horizon_ms()}
+
+      Embervm.OpLog.Postgres ->
+        {Embervm.OpLog.Postgres, dsn: trimmed_env("EMBERVM_OPLOG_DSN"), journal_horizon_ms: journal_horizon_ms()}
+    end
+  end
 
   # The op-log sweeper cadence (EMBERVM_OPLOG_SWEEP_INTERVAL_MS, the chart wires
   # this from values.opLog.sweepIntervalSeconds x 1000); default hourly. Distinct

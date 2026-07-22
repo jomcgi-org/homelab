@@ -110,6 +110,10 @@ defmodule Embervm.OpLog.Compactor do
   end
 
   defp log_summary(state, totals) do
+    # Embervm.OpLog.Postgres (PR-4, #18/#27) has no single PVC file to stat, so
+    # its db_size/1 always returns {:error, :not_supported}; this already-generic
+    # {:error, _} clause omits the field rather than crashing or warning, so the
+    # sweep summary is silently size-less on that backend instead of failing.
     db_size =
       case state.op_log_mod.db_size(state.op_log) do
         {:ok, size} -> size

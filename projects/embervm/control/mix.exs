@@ -56,6 +56,12 @@ defmodule Embervm.MixProject do
   defp deps do
     [
       {:exqlite, path: "deps/exqlite"},
+      # Embervm.OpLog.Postgres (PR-4, #18/#27): the configurable-DSN backend,
+      # dormant behind EMBERVM_OPLOG_DSN (see Embervm.Application.op_log_mod/0).
+      # Reuses the db_connection/telemetry already vendored for exqlite; decimal
+      # is the one new leaf postgrex pulls in for its NUMERIC decoding.
+      {:postgrex, path: "deps/postgrex"},
+      {:decimal, path: "deps/decimal", override: true},
       {:db_connection, path: "deps/db_connection", override: true},
       {:telemetry, path: "deps/telemetry", override: true},
       {:elixir_make, path: "deps/elixir_make", runtime: false, override: true},
