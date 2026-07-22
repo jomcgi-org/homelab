@@ -88,20 +88,17 @@ noded:
   maxLiveVMs: 16
 
 # Node-provisioning contract (ADR embervm/012 storage-tiers amendment; warmth
-# cache-cap retention decisions 2026-07-22): re-enabled now that scratch-prep
-# provisions a UNIFORM size-capped ext4 loop scratch (chart scratchSizeGi = 35G)
-# instead of a per-node bind-mount, and its image pin is fixed (relocated to the
-# top-level `scratchPrep.image` key the Bazel helm_images_values actually writes,
-# resolving the all-zeros-digest ImagePullBackOff that disabled the earlier roll).
-#
-# SAFETY: the DaemonSet SKIPS any node where /var/lib/embervm/scratch is already
-# a mountpoint. node-4's dedicated NVMe is an fstab bind mount there, so it is
-# detected and LEFT UNTOUCHED (never unmounted, reformatted, or fallocated over).
-# The etcd masters (node-1/2/3) have nothing mounted there, so they receive the
-# capped loop scratch, and the hard cap makes a warmth leak physically unable to
-# starve etcd/root on those nodes. One uniform knob, no per-node map.
+# cache-cap retention decisions 2026-07-22): DISABLED. The privileged runtime
+# DaemonSet that provisioned the capped loop scratch proved fragile in the
+# homelab (the masters' minimal host image lacks losetup/mkfs.ext4/mount on the
+# nsenter PATH, and the container-vs-host path split kept surfacing a new failure
+# per layer). Node scratch is instead provisioned ONCE per node out of band: a
+# manual host setup over SSH today (see docs/runbooks/embervm-node-scratch-setup.md),
+# and cloud-init / a machine template when the fleet moves to the cloud. noded only
+# needs /var/lib/embervm/scratch to be a correctly-sized ext4 mount; how it gets
+# there does not need to be a runtime pod. node-4 keeps its dedicated NVMe mount.
 scratchPrep:
-  enabled: true
+  enabled: false
 
 # Size-class BRICK cutover REVERTED to the known-good single-instance DS fleet
 # (foundation plan Step 0, docs/plans/2026-07-20-embervm-brick-colocation-foundation.md).
