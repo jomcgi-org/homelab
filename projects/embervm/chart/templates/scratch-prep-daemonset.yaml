@@ -20,15 +20,15 @@
 #   cap from day one (near-empty scratch, hard-capped so a leak cannot spill onto
 #   the root/etcd disk).
 #
-# Tool boundary: the RISKY filesystem work (fallocate the backing file, losetup,
-# mkfs.ext4) runs with THIS IMAGE's own util-linux + e2fsprogs against a hostPath
-# bind of /var/lib/embervm (so the .img lands on the host disk). Loop devices are
-# kernel-global under privileged (host /dev), so the loop device the container
-# attaches is visible in the host mount namespace too. Only the final `mount`
-# (and `mountpoint`/`mkdir`/`grep`/`echo` for fstab) run via nsenter into host
-# PID1, using the host's own `mount` (guaranteed present), so the mount is
-# visible to the kubelet's hostPath resolution and survives the pod. We do NOT
-# depend on the host carrying e2fsprogs/fallocate/losetup.
+# Tool boundary: the container does only file-level work (fallocate the backing
+# file, mkfs.ext4 the FILE directly) with THIS IMAGE's own util-linux + e2fsprogs
+# against a hostPath bind of /var/lib/embervm (so the .img lands on the host
+# disk). It ships NO losetup: loop-device setup belongs on the host, which owns
+# the loop module. The `mount -o loop` (and `mountpoint`/`mkdir`/`grep`/`echo`
+# for fstab) run via nsenter into host PID1, so the HOST attaches the loop device
+# with its own losetup and mounts it where the kubelet's hostPath resolution sees
+# it, surviving the pod. The host needs only `mount` (guaranteed present); it does
+# NOT need e2fsprogs, since formatting already happened in the container.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -97,39 +97,28 @@ spec:
               # 1) Backing file. Create it ONLY if absent, so a re-run never
               #    fallocates over (and thus never truncates) an existing image.
               if [ ! -f "$IMG" ]; then
-                echo "scratch-prep: creating ${SIZE_GI}Gi backing file at $IMG on $NODE_NAME"
+                echo "scratch-prep: creating + formatting ${SIZE_GI}Gi backing file at $IMG on $NODE_NAME"
                 fallocate -l "${SIZE_GI}G" "$IMG"
+                # mkfs.ext4 formats the REGULAR FILE directly (no loop device
+                # needed in-container), so this image ships no losetup. Only on
+                # first creation, so a re-run never reformats a data-bearing image.
+                mkfs.ext4 -q -F "$IMG"
               fi
 
-              # 2) Attach a kernel-global loop device (privileged => host /dev, so
-              #    the device is visible in the host mount namespace too). Reuse an
-              #    existing association for this backing file if one is present.
-              LOOP=$(losetup -j "$IMG" | cut -d: -f1)
-              if [ -z "$LOOP" ]; then
-                LOOP=$(losetup --find --show "$IMG")
-              fi
-              echo "scratch-prep: $IMG attached at $LOOP on $NODE_NAME"
-
-              # 3) Format ONLY if the device carries no filesystem yet. blkid
-              #    prints the TYPE only when one exists, so an empty result means
-              #    unformatted. This guard makes reformatting an already-formatted
-              #    (data-bearing) image impossible on a re-run.
-              if [ -z "$(blkid -o value -s TYPE "$LOOP" 2>/dev/null || true)" ]; then
-                echo "scratch-prep: formatting $LOOP ext4 on $NODE_NAME"
-                mkfs.ext4 -q -F "$LOOP"
-              fi
-
-              # 4) Mount it in the HOST mount namespace (so the kubelet's hostPath
-              #    resolution sees it) using the host's own `mount`. Guarded by the
-              #    same mountpoint check; the earlier guard already proved it is not
-              #    mounted, this only guards a mid-script re-entry.
+              # 2) Mount in the HOST mount namespace so the kubelet's hostPath
+              #    resolution sees it. `-o loop` makes the HOST attach the loop
+              #    device using its own losetup + loop module: this image ships no
+              #    losetup, and a privileged container cannot reliably modprobe loop,
+              #    so loop setup belongs on the host. Guarded by the mountpoint
+              #    check; the earlier guard already proved it is unmounted, this only
+              #    guards a mid-script re-entry.
               if ! nsenter -t 1 -m -- mountpoint -q "$SCRATCH"; then
-                nsenter -t 1 -m -- mount "$LOOP" "$SCRATCH"
+                nsenter -t 1 -m -- mount -o loop "$IMG" "$SCRATCH"
               fi
 
-              # 5) Persist across reboots. The fstab entry is keyed on the backing
-              #    FILE (loop= option), not a device name, so the kernel re-derives
-              #    the loop device on boot. Idempotent: appended only if absent.
+              # 3) Persist across reboots. The fstab entry is keyed on the backing
+              #    FILE with the loop option, so the host re-derives the loop device
+              #    on boot. Idempotent: appended only if absent.
               FSTAB_LINE="$IMG $SCRATCH ext4 loop,defaults 0 0"
               if ! nsenter -t 1 -m -- grep -qF "$FSTAB_LINE" /etc/fstab 2>/dev/null; then
                 nsenter -t 1 -m -- sh -c "echo '$FSTAB_LINE' >> /etc/fstab"
