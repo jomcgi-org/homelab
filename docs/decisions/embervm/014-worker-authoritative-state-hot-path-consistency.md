@@ -124,26 +124,6 @@ node-confirmed.
 | Destroyed transition | CP-recorded | Node-confirmed only; fail-closed reconciliation toward destruction |
 | Single-use guarantee | Operational convention | `isolated_execution: true` workload flag; CP refuses pool return, relight, and snapshot on flagged instances |
 
-### Formal specification follow-through (ADR 006)
-
-This decision changes the semantics the TLA+ pilot models: `adoption.tla`
-treats the CP's primed-pool inventory as authoritative and reconciles from
-node reports on restart; under this model the CP view is a reconciled cache
-at all times. Per ADR 006's own rule, specs are not updated while the
-protocol churns, but every implementation plan executing this ADR MUST carry
-an explicit TLA+ step so the requirement cannot be dropped:
-
-1. Re-check `adoption.tla`'s assumptions against worker authority once the
-   reconciler changes land (the vocabulary guard will force classification of
-   any new verbs or op-log kinds, but the semantic shift of CP-as-cache needs
-   a human pass over the spec's actions).
-2. Write the bank/relight + generation-pairing spec (ADR 006 protocol 2)
-   against these semantics, not the pre-014 ones. New invariants this ADR
-   makes checkable: no instance is recorded destroyed before the owning node
-   confirms teardown (decision 5), an `isolated_execution` instance never
-   reaches pool return, relight, or snapshot (decision 6), no wake resumes a
-   stale snapshot, and stored volume generations never regress.
-
 ---
 
 ## Architecture
@@ -239,7 +219,6 @@ workload class may touch.
 | [Modal: scaling to 1 million concurrent sandboxes](https://modal.com/blog/scaling-to-1-million-concurrent-sandboxes-in-seconds) | Worker-as-truth, async state publication, no durable writes on the creation path, rtnl contention fix |
 | [Post-Kubernetes infrastructure for GenAI](https://axjns.dev/blog/post-kubernetes-genai) | Coordination-plane vs execution-plane split; throughput-first, weakly consistent, reject/retry scheduling |
 | [ADR 001](001-embervm-beam-firecracker-workload-orchestrator.md) | Original CP/node-agent orchestrator design this model amends |
-| [ADR 006](006-tla-formal-specification-pilot.md) | TLA+ pilot whose specs must follow this ADR's semantics; see the follow-through subsection above |
 | [ADR 007](007-sharded-control-plane-pg-oplog-cells.md) | Oplog seam a candidate carrier for async writes |
 | [ADR 011](011-distribution-longhorn-fencing-cp-rollouts.md), [ADR 012](012-fleet-colocation-cp-dynamic-sizing.md), [ADR 013](013-substrate-lanes-brick-sizing-capacity-tiers.md) | The fleet/brick topology that makes reject/retry cheap |
 | Incidents: #3732 (NodeChannel keying fleet-down), #3745 (tap-leak wedge), node-name alias misroute | The drift bug class this decision removes |

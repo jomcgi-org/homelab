@@ -329,6 +329,43 @@ spec:
             - name: EMBERVM_WARMTH_RETENTION_SWEEP
               value: {{ .Values.warmthRetention.sweepEnabled | quote }}
             {{- end }}
+            # S3-direct warmth GC (task #39): the control plane's OWN object
+            # store client (List/Get/Delete for the orphan sweep + manifest
+            # persist). Rendered from the SAME noded.store values as the
+            # daemons' EMBERVM_NODED_STORE_*, one source of truth; an empty
+            # endpoint leaves the GC inert.
+            - name: EMBERVM_STORE_ENDPOINT
+              value: {{ .Values.noded.store.endpoint | quote }}
+            - name: EMBERVM_STORE_BUCKET
+              value: {{ .Values.noded.store.bucket | quote }}
+            {{- if .Values.warmthS3Gc.enabled }}
+            # The DESTRUCTIVE gate: "1" arms irreversible S3 deletion of proven
+            # orphan prefixes (supervised, capped). Unset keeps every sweep a
+            # dry-run plan + manifest. See warmthS3Gc in values.
+            - name: EMBERVM_WARMTH_S3_GC
+              value: {{ .Values.warmthS3Gc.enabled | quote }}
+            {{- end }}
+            {{- if .Values.warmthS3Gc.expectedNodes }}
+            # The fleet contract for the fleet-freshness abort: EVERY listed
+            # node must be present + fresh in NodeCapacity or the sweep aborts
+            # (a down node's unreported disk bundles must never look orphaned).
+            # Unset = the sweep always aborts, so this must name the real fleet
+            # before even the dry-run plan is produced.
+            - name: EMBERVM_WARMTH_S3_GC_EXPECTED_NODES
+              value: {{ join "," .Values.warmthS3Gc.expectedNodes | quote }}
+            {{- end }}
+            {{- if .Values.warmthS3Gc.maxPrefixes }}
+            - name: EMBERVM_WARMTH_S3_GC_MAX_PREFIXES
+              value: {{ .Values.warmthS3Gc.maxPrefixes | quote }}
+            {{- end }}
+            {{- if .Values.warmthS3Gc.maxBytes }}
+            - name: EMBERVM_WARMTH_S3_GC_MAX_BYTES
+              value: {{ .Values.warmthS3Gc.maxBytes | quote }}
+            {{- end }}
+            {{- if .Values.warmthS3Gc.intervalMs }}
+            - name: EMBERVM_WARMTH_S3_GC_INTERVAL_MS
+              value: {{ .Values.warmthS3Gc.intervalMs | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

@@ -721,6 +721,27 @@ baseRetention:
 warmthRetention:
   sweepEnabled: ""
 
+# S3-direct warmth GC (task #39, control-plane env): reclaims orphaned warmth
+# prefixes the reaper cannot reach (the pre-sidecar backlog whose workload
+# binding was lost) by listing the bucket directly. Every sweep computes, logs,
+# and persists a dry-run manifest (gc-manifests/<ts>.json); enabled "1" arms
+# the DESTRUCTIVE, capped delete arm (irreversible S3 deletion; flip only for
+# the supervised drain, and flipping back to "" is the entire rollback lever).
+# expectedNodes is the fleet-freshness contract: EVERY listed node must be
+# present and fresh in the CP's capacity facts or the sweep aborts (a down
+# node's unreported disk bundles must never look orphaned). Empty (the
+# default) means the sweep ALWAYS aborts: a deployment must name its real
+# fleet to get even the dry-run plan. maxPrefixes/maxBytes bound one sweep
+# (module defaults 10 / 20GiB, the supervised-first-run caps); intervalMs
+# defaults hourly. The CP's store endpoint/bucket are rendered from
+# noded.store above (one source of truth).
+warmthS3Gc:
+  enabled: ""
+  expectedNodes: []
+  maxPrefixes: ""
+  maxBytes: ""
+  intervalMs: ""
+
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
 # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
 # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
