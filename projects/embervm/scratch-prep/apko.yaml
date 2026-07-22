@@ -1,14 +1,17 @@
 # Runtime image for the embervm scratch-prep DaemonSet. This is the node-
 # provisioning contract's homelab-side actuator (docs/decisions/embervm/012, the
-# storage-tiers amendment): it bind-mounts each pet node's real scratch device
-# onto the uniform logical path /var/lib/embervm/scratch that noded's hostPath
-# expects, running the mount inside the HOST mount namespace via nsenter so the
-# bind survives the pod's own lifecycle.
+# storage-tiers amendment): it provisions a uniform, size-capped ext4 loop
+# scratch onto /var/lib/embervm/scratch on every FC node EXCEPT where scratch is
+# already a mountpoint (node-4's dedicated-NVMe bind is skipped untouched).
 #
-# LEAN and PRIVILEGED by necessity: the only tool this image needs is nsenter
-# (util-linux) plus a POSIX shell to invoke it. mount/mountpoint/mkdir/grep all
-# run INSIDE the host namespace via nsenter, using the HOST's own binaries, not
-# this image's, so this image carries no mount tooling of its own. Runs as root
+# PRIVILEGED by necessity, and it carries its OWN filesystem tooling. The RISKY
+# steps (fallocate the backing file, losetup, mkfs.ext4) run with THIS image's
+# util-linux (fallocate/losetup/blkid) + e2fsprogs (mkfs.ext4) against a hostPath
+# bind of /var/lib/embervm, so we do NOT depend on the host carrying those tools;
+# loop devices are kernel-global under privileged so the attached device is
+# visible in the host mount namespace. Only the final `mount` (and mountpoint/
+# mkdir/grep/echo for fstab) run via nsenter into host PID1 using the HOST's own
+# `mount` (guaranteed present) so the mount survives the pod. Runs as root
 # (uid 0): privileged + hostPID is required to nsenter into PID 1's namespaces,
 # so the repo's non-root convention does not apply here, same exception noded
 # itself takes for driving Firecracker.
@@ -19,7 +22,10 @@ contents:
     - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
   packages:
     - busybox
+    # nsenter, mountpoint, fallocate, losetup, blkid.
     - util-linux
+    # mkfs.ext4 for formatting the loop backing file.
+    - e2fsprogs
 
 archs:
   - x86_64

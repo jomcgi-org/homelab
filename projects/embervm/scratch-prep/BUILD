@@ -1,11 +1,12 @@
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 # embervm scratch-prep DaemonSet container image: a minimal Wolfi image carrying
-# only busybox (shell) + util-linux (nsenter). No Go binary, no repo code: the
-# DaemonSet's command (rendered in the chart template) is the whole program,
-# invoking host binaries in the host mount namespace via nsenter. DUAL-ARCH,
-# matching every other apko image in the repo, though node-4 (the only node
-# with scratchPrep.nodeMap entries today) is amd64.
+# busybox (shell) + util-linux (nsenter, fallocate, losetup, blkid) + e2fsprogs
+# (mkfs.ext4). No Go binary, no repo code: the DaemonSet's command (rendered in
+# the chart template) is the whole program. It provisions a uniform size-capped
+# ext4 loop scratch using THIS image's own fs tooling (so it does not depend on
+# host e2fsprogs/util-linux), and runs only the final `mount` in the host mount
+# namespace via nsenter. DUAL-ARCH, matching every other apko image in the repo.
 apko_image(
     name = "image",
     config = "apko.yaml",
