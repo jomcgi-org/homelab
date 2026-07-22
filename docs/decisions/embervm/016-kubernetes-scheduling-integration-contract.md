@@ -85,6 +85,24 @@ hold across, not discovered per incident:
   here, not transient, so the lane priority ladder below matters most on the
   smallest tier.
 
+**EKS/Karpenter is the proven-first environment; GKE is demand-gated.**
+ADR 005's metal NodePool stands: AWS exposes hardware virtualization only on
+`.metal` instances, while GCE offers nested virtualization on general VMs, a
+different performance and support posture to evaluate only if GKE demand
+appears. The conformance drills below therefore target Karpenter semantics.
+
+**The behavioral contracts are drilled with Karpenter's kwok provider,
+path-scoped in CI.** A kind cluster running the real Karpenter controllers
+against kwok fake nodes exercises provisioning, consolidation, disruption
+taints, and budget semantics with no cloud spend, R6-gate style, and re-runs
+on autoscaler version bumps (this is what makes "behavioral contracts, not
+vendor code reading" an honest posture). The drill suite triggers only when
+the modules encoding Karpenter-facing behavior change (placement score,
+EmberPool controller, drain and node-lifecycle handling), never on general CP
+changes; Bazel target granularity provides that gating for free, which makes
+"Karpenter-facing policy lives in its own modules" a code-organization
+requirement of this ADR, not a style preference.
+
 **Consolidation compatibility is a lane admission requirement.** Any brick
 type the fleet runs must: drain on SIGTERM within
 `terminationGracePeriodSeconds` (bank or snapshot live sessions, finish or
@@ -136,7 +154,12 @@ the whole of ember's kube-level priority story:
   `priorityClassName` on the brick pods it reconciles. The cluster-scoped
   `PriorityClass` objects themselves stay chart-managed GitOps resources:
   the chart defines the rungs that exist, the CP table decides which rung
-  each lane's bricks stand on.
+  each lane's bricks stand on. One bound on the future API path is recorded
+  now: a registration call references an existing lane and rung, it never
+  creates or raises one, so registering a workload cannot become a
+  scheduling-privilege escalation surface. The full authorization story
+  (which caller may register into which lane, with what floors and budgets)
+  belongs to the future tenancy ADR (ADR 009's facade line).
 
 ### 4. Packing policy under heterogeneous demand: pack to empty, place by class
 
@@ -163,7 +186,50 @@ not by clever cross-class placement:
   (ADR 013 section 6): refill and placement select a brick, never a node,
   and aggregate free capacity is never trusted.
 
-### 5. Reserved options, deliberately not built
+### 5. Node lifecycle is a placement input; durability is a state guarantee, not node residency
+
+Disruption policy is set by splitting workloads into two postures and making
+node lifetime a fact the placement pass reads:
+
+- **Preemptible-posture lanes** (task, isolated) lose nothing by dying
+  between requests; their bricks are disruptable any time under normal
+  budgets.
+- **Durable-posture lanes** (session, stateful) carry a CP continuity
+  guarantee of **up to 8 hours per session**. The guarantee is delivered by
+  state durability, not node pinning: between requests the CP may bank a
+  session and relight it on another brick or node freely, provided the
+  banked state is HA-durable (Longhorn plus S3 backup, ADR 011). The 8h
+  figure is both the promise to the workload and a **per-session cap the
+  placement layer plans against**; nothing obliges the CP to hold a session
+  on one node for that window.
+- **The CP consumes node lifecycle signals as ledger facts.** Karpenter's
+  disruption taint and events, node expiry horizons (`expireAfter`), and
+  spot interruption notices all reduce to one placement input: **remaining
+  node lifetime**. ADR 009's availability contract (spot semantics, a
+  two-minute preemption bound) already set the floor this machinery must
+  respect.
+- **A terminating node is a placement target, not a blacklist entry.** Once
+  a node carries a termination horizon, placement filters by fit instead of
+  avoiding it: durable work may still land there when its expected residency
+  fits inside the horizon (or its inter-request bank makes eviction free),
+  and preemptible work is *preferentially* routed there in the run-up. Grace
+  and drain windows are spent doing work, not idling; this is the same
+  pack-to-empty utilization logic (section 4) applied on the time axis.
+- **Disruption budgets are per-lane and schedule-gated** (Karpenter budgets
+  take cron schedules natively): zero voluntary disruption for
+  durable-posture bricks in declared peak windows, a bounded drain rate
+  off-peak, unrestricted for preemptible-posture bricks. Per-lane
+  `terminationGracePeriodSeconds` must exceed the measured worst-case drain
+  (bank time for the largest VM of the class, plus margin), derived from
+  existing bank/relight timings rather than guessed.
+- **Verification splits by tool.** The kwok drills cover the observable
+  Karpenter interplay; the drain/migration protocol itself (no session's
+  guarantee left uncovered by a migration, no durable placement onto a node
+  whose horizon cannot fit the commitment) is a candidate for a small TLA+
+  spec in the ADR 006 pilot lineage, since it is exactly the kind of
+  concurrency-critical, counterexample-prone protocol that pilot exists for.
+
+### 6. Reserved options, deliberately not built
 
 - **A custom or secondary scheduler** (or scheduler plugin, where a future
   self-managed cluster allows it) is reserved for the day pod-shape levers
@@ -235,18 +301,24 @@ preemption and consolidation never become a cross-principal reuse path
 | Balloon bricks mis-sized: too small to absorb bursts or too large as idle spend | Medium | Low | Balloon size is a values-level knob per lane; floors carry the guaranteed part, balloons only the stochastic residual |
 | Upstream behavior drifts (scheduler scoring, Karpenter consolidation rules) | Medium | Medium | Contracts here are behavioral; verify with conformance drills against a sandbox cluster (R6-gate style) on version bumps, not by reading vendor code |
 | Pack-to-empty concentrates load and widens single-brick blast radius | Low | Medium | Brick sizing rule already bounds blast radius (ADR 013 section 5); score can cap per-brick occupancy per lane if incident data demands it |
+| Node termination horizon is wrong or short (spot gives 2 minutes, not a plannable window) | Medium | Medium | ADR 009's two-minute preemption bound is already the availability floor; durable placement onto short-horizon nodes is allowed only when eviction is free (session banked between requests), otherwise only preemptible work fills them |
+| kwok drills diverge from real EKS behavior (fake kubelet, no real capacity) | Medium | Medium | kwok validates Karpenter's controller logic, not node reality; a thin real-EKS smoke pass gates the first production cutover, kwok owns the regression surface after that |
 
 ---
 
 ## Open Questions
 
-1. Which autoscaled environment is proven first, EKS/Karpenter (ADR 005's
-   target) or GKE NAP, and do the conformance drills run against both?
-2. Concrete NodePool disruption budget values per lane: what churn rate is
-   acceptable for session-bearing bricks during business hours?
-3. Does the isolated lane eventually want a CP-side occupancy cap per brick
+1. Concrete disruption budget percentages per lane (the shape is decided in
+   section 5: per-lane, schedule-gated, zero for durable-posture bricks at
+   peak); numbers come from kwok drill results and real occupancy data, not
+   guesses.
+2. Does the isolated lane eventually want a CP-side occupancy cap per brick
    (spread pressure) once real traffic data exists, or does data-plane
-   `LEAST_REQUEST` suffice alone?
+   `LEAST_REQUEST` suffice alone? Deliberately left open: adding the cap
+   later is one filter in the CP score pass.
+3. Does the 8h session guarantee become a per-workload registered value
+   (bounded by a platform ceiling) once API registration exists, or stay a
+   single platform constant?
 
 ---
 
@@ -258,6 +330,10 @@ preemption and consolidation never become a cross-principal reuse path
 | [ADR embervm/012](012-fleet-colocation-cp-dynamic-sizing.md) | The fixed homelab tier where priority arbitration is permanent |
 | [ADR embervm/013](013-substrate-lanes-brick-sizing-capacity-tiers.md) | Size classes, per-brick headroom ledger, bricks-everywhere amendment this contract builds on |
 | [ADR embervm/015](015-isolated-high-throughput-lane-data-plane-placement.md) | The lane whose data-plane balancing is the packing-policy exception |
+| [ADR embervm/006](006-tla-formal-specification-pilot.md) | The TLA+ pilot lineage the drain/migration protocol spec would join |
+| [ADR embervm/009](009-roadmap-extension-continuity-before-tenancy.md) | Spot availability contract (2-minute preemption bound); the tenancy line owning future registration authorization |
+| [ADR embervm/011](011-distribution-longhorn-fencing-cp-rollouts.md) | HA-durable banked state (Longhorn + S3) that lets sessions migrate between requests |
+| [Karpenter kwok provider](https://github.com/kubernetes-sigs/karpenter/tree/main/kwok) | Real Karpenter controllers against fake nodes; the no-cloud-spend drill substrate |
 | [Karpenter disruption docs](https://karpenter.sh/docs/concepts/disruption/) | Consolidation, do-not-disrupt, and budget semantics the compatibility rules encode |
 | [kube-scheduler NodeResourcesFit scoring](https://kubernetes.io/docs/reference/scheduling/config/#scheduling-plugins) | `LeastAllocated` default vs `MostAllocated` packing; why EKS spreads at placement |
 | [GKE autoscaling profiles](https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler#autoscaling_profiles) | `optimize-utilization` as the GKE packing lever |
