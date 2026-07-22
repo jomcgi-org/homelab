@@ -1,0 +1,388 @@
+defmodule Embervm.WarmthReaper do
+  @moduledoc """
+  The reconciled warmth-retention sweep for STATEFUL bundles (`stateful/<ref>`)
+  and GROUP bundle SETS (`group/<set_id>/`), the exact structural analogue of the
+  BaseBuilder base-retention sweep (base-durability PR-3) extended to the two
+  warmth kinds that leak identically.
+
+  ## why a reconciled sweep, and why a NEW module
+
+  `Embervm.StatefulSweeper` and `Embervm.GroupSweeper` already GC warmth, but they
+  are EVENT-DRIVEN bankers: they evict a bundle on an FSM trigger (banked-TTL,
+  broken-pair, partial-set, lifetime) for an instance the control plane STILL
+  TRACKS. They can never reclaim an artifact the CP no longer tracks AT ALL, which
+  is the whole leak: 143 orphaned `state-*` bundles (dead demo-pg instances whose
+  CP row is terminal or gone) and 5 leaked `set-grp-*` sets. Those never fire a
+  per-instance FSM trigger because there is no live instance to fire it.
+
+  This reaper is the reconciled backstop, exactly like the base sweep: it
+  enumerates from the node's REPORTED on-disk inventory (NodeStatus.stateful_bundles
+  and NodeStatus.group_bundle_sets, projected into the shared NodeCapacity table by
+  Embervm.NodeRegistry) and evicts every reported artifact NOT in the CP's desired
+  set. It is a separate GenServer, not a fourth arm bolted onto the two sweepers,
+  because its enumeration axis is the node inventory (reconcile), not the CP
+  instance list (bank), so its shape is the base sweep's, not the sweepers'.
+
+  ## desired set = non-terminal CP instances
+
+  The desired set is the warmth held by any instance the CP tracks as NON-TERMINAL
+  (live OR banked). For stateful that is every `StatefulStore.all/1` instance whose
+  state is not `StatefulState.terminal?/1`, keyed by its `snapshot_ref`. For groups
+  it is every `GroupStore.all/1` instance not `GroupState.terminal?/1`, keyed by its
+  `set_id`. A reported artifact whose ref/set_id is in the desired set is NEVER a
+  candidate: it is a live or banked instance's current warmth. Everything else is an
+  ORPHAN.
+
+  ## retention policy (Joe, 2026-07-21): disk N=1 / S3 N=2, orphans evicted ENTIRELY
+
+  The retention shape is the same shallow-history model as the bases: keep the
+  CURRENT snapshot on disk (N=1) and current+previous in S3 (N=2), no time travel.
+  For stateful, disk N=1 is already an invariant of the bank path (noded's
+  `RemoveStatefulBundle` drops any prior bundle before publishing a new one, so a
+  workload only ever has ONE `stateful/<ref>` dir on disk); the S3 N=2 predecessor
+  retention lives in the export path, not here. What this reaper adds is the missing
+  ORPHAN reclaim: an instance the CP no longer tracks as non-terminal has NO ongoing
+  durability requirement (the demo pg is wiped, ephemeral), so its warmth is evicted
+  ENTIRELY, local AND remote (both S3 copies), reclaiming the disk cache and the
+  object store together. Groups are the same: a `set-grp-*` set whose group instance
+  is terminal/gone is evicted whole.
+
+  ## guards (identical intent to the base sweep)
+
+    * durability-before-eviction: an orphan is safe to remote-evict (its instance is
+      gone, nothing will ever relight it), so no export floor gates an orphan. The
+      base sweep's `skip_unexported` guard protects a workload's CURRENT base before
+      trimming its superseded siblings; here the analogue is simply that a DESIRED
+      (non-terminal) instance's warmth is never a candidate, so its durability is
+      never at risk regardless of its exported flag. We never evict a desired ref.
+    * in-use: noded's own EvictSnapshot / EvictArtifact refuses (FailedPrecondition,
+      idempotent) a ref a live VM was restored from. That is the final backstop
+      beneath the CP-side desired-set exclusion, exactly as for bases.
+
+  ## the gate (mandatory off-by-default, mirrors EMBERVM_BASE_RETENTION_SWEEP)
+
+  Gated behind `EMBERVM_WARMTH_RETENTION_SWEEP`, read in application.ex. When FALSE
+  (the default, and what this PR ships) the sweep computes the plan and LOGS a
+  per-kind dry-run line ("WOULD evict N ... (~BYTES bytes)") but deletes NOTHING.
+  When TRUE it fires the idempotent evictions. Merging this PR is INERT: the timer
+  runs but only logs, so the flip is a later deploy-values change with no code
+  change, exactly like the base sweep.
+  """
+
+  use GenServer
+  require Logger
+
+  alias Embervm.{GroupState, GroupStore, NodeCapacity, StatefulState, StatefulStore, WakeInstance}
+
+  alias Embervm.Node.V1.{
+    ArtifactRef,
+    EvictArtifactRequest,
+    EvictSnapshotRequest,
+    NodeService,
+    Trace
+  }
+
+  # How often the reconciled warmth-retention sweep runs. Like the base retention
+  # sweep it is a slow-moving reconcile (an orphan is born only when an instance
+  # terminalizes), never a hot path, so 300s is ample; the guarded, idempotent
+  # evictions make a re-sweep harmless.
+  @sweep_interval_ms 300_000
+
+  # -- Client API ------------------------------------------------------------
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
+  end
+
+  @doc """
+  Run one reconciled warmth-retention sweep synchronously and return the plan (the
+  list of per-artifact `%{kind, id, workload, node_id, evict_bytes}` entries the
+  sweep WOULD evict, or DID evict with the gate on). Lets a test drive the sweep
+  deterministically without the timer, and an operator preview (gate off) what it
+  would reclaim. Mirrors `BaseBuilder.retention_sweep_now/1`.
+  """
+  @spec sweep_now(GenServer.server()) :: [map()]
+  def sweep_now(server \\ __MODULE__) do
+    GenServer.call(server, :sweep_now)
+  end
+
+  # -- GenServer callbacks ---------------------------------------------------
+
+  @impl true
+  def init(opts) do
+    # Injected seams (defaults are the shared capacity table, the real stores, the
+    # real NodeChannel dial, and the real gRPC stubs). Tests inject fakes.
+    capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
+    stateful_store = Keyword.get(opts, :stateful_store, StatefulStore)
+    group_store = Keyword.get(opts, :group_store, GroupStore)
+    channel_fun = Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1)
+    evict_snapshot_fun = Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2)
+    evict_artifact_fun = Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2)
+
+    # 0 disables the timer entirely (the unit-test default, so a test drives
+    # :sweep_now explicitly and asserts deterministically); production uses the
+    # module default.
+    sweep_interval_ms = Keyword.get(opts, :sweep_interval_ms, @sweep_interval_ms)
+
+    # The destructive gate. FALSE (the default, and what this PR ships) => the sweep
+    # computes and LOGS a per-kind dry-run line but deletes NOTHING. TRUE => it fires
+    # the idempotent evictions. application.ex reads it from
+    # EMBERVM_WARMTH_RETENTION_SWEEP so it flips via deploy values, no code change.
+    sweep_enabled = Keyword.get(opts, :sweep_enabled, false)
+
+    state = %{
+      capacity_table: capacity_table,
+      stateful_store: stateful_store,
+      group_store: group_store,
+      channel_fun: channel_fun,
+      evict_snapshot_fun: evict_snapshot_fun,
+      evict_artifact_fun: evict_artifact_fun,
+      sweep_interval_ms: sweep_interval_ms,
+      sweep_enabled: sweep_enabled
+    }
+
+    schedule_sweep(state)
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:sweep_now, _from, state) do
+    plan = sweep_plan(state)
+    apply_plan(state, plan)
+    {:reply, plan, state}
+  end
+
+  @impl true
+  def handle_info(:sweep, state) do
+    plan = sweep_plan(state)
+    apply_plan(state, plan)
+    schedule_sweep(state)
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  # -- sweep plan --------------------------------------------------------------
+
+  # Build the per-artifact eviction plan by reconciling every node's reported
+  # warmth inventory against the CP's desired set. A plan entry names ONE orphaned
+  # artifact (a stateful bundle or a whole group set) with its owning node, its
+  # kind-specific id, the workload it namespaces under, and its byte size. The plan
+  # is returned for tests/visibility; apply_plan/2 does the gated action.
+  defp sweep_plan(state) do
+    stateful_desired = stateful_desired_refs(state)
+    group_desired = group_desired_set_ids(state)
+
+    facts = NodeCapacity.all(state.capacity_table)
+
+    stateful_orphans =
+      for fact <- facts,
+          node_id = Map.get(fact, :node_id),
+          is_binary(node_id),
+          bundle <- Map.get(fact, :stateful_bundles, []) || [],
+          is_binary(bundle.snapshot_ref),
+          bundle.snapshot_ref != "",
+          bundle.snapshot_ref not in stateful_desired do
+        %{
+          kind: :stateful,
+          id: bundle.snapshot_ref,
+          workload: bundle.workload,
+          node_id: node_id,
+          evict_bytes: bundle.size_bytes || 0
+        }
+      end
+
+    group_orphans =
+      for fact <- facts,
+          node_id = Map.get(fact, :node_id),
+          is_binary(node_id),
+          set <- Map.get(fact, :group_bundle_sets, []) || [],
+          is_binary(set.set_id),
+          set.set_id != "",
+          set.set_id not in group_desired do
+        %{
+          kind: :group,
+          id: set.set_id,
+          workload: set.group_instance_id,
+          node_id: node_id,
+          member_refs: for(m <- set.members || [], is_binary(m.snapshot_ref), do: m.snapshot_ref),
+          evict_bytes: (set.members || []) |> Enum.map(&(&1.size_bytes || 0)) |> Enum.sum()
+        }
+      end
+
+    stateful_orphans ++ group_orphans
+  end
+
+  # The desired STATEFUL refs: the snapshot_ref of every non-terminal instance the
+  # CP tracks (live OR banked). A banked instance's bundle is its warmth-to-relight,
+  # so it stays; a terminal (evicted/destroyed/failed) instance holds none. A
+  # nil/"" snapshot_ref (a live instance not yet banked) contributes nothing to the
+  # protected set (there is no on-disk bundle keyed by it to protect).
+  defp stateful_desired_refs(state) do
+    for %{state: st, snapshot_ref: ref} <- StatefulStore.all(state.stateful_store),
+        not StatefulState.terminal?(st),
+        is_binary(ref),
+        ref != "",
+        into: MapSet.new(),
+        do: ref
+  end
+
+  # The desired GROUP set_ids: the set_id of every non-terminal group instance the
+  # CP tracks. A banked group's set is its warmth; a terminal group holds none. A
+  # nil set_id (a group whose partial set was already cleared, or a fresh_booting
+  # group with no bank yet) contributes nothing.
+  defp group_desired_set_ids(state) do
+    for %{state: st, set_id: set_id} <- GroupStore.all(state.group_store),
+        not GroupState.terminal?(st),
+        is_binary(set_id),
+        set_id != "",
+        into: MapSet.new(),
+        do: set_id
+  end
+
+  # -- apply (gated) -----------------------------------------------------------
+
+  # Apply the gated retention action. Gate OFF: log ONE per-kind dry-run line
+  # (count + total bytes) and change nothing. Gate ON: fire the idempotent
+  # evictions (noded's in-use/BUILDING guard is the final backstop) and log the
+  # reclaim. An empty plan logs nothing.
+  defp apply_plan(_state, []), do: :ok
+
+  defp apply_plan(state, plan) do
+    {stateful, group} = Enum.split_with(plan, &(&1.kind == :stateful))
+
+    log_and_evict(state, :stateful, stateful)
+    log_and_evict(state, :group, group)
+    :ok
+  end
+
+  defp log_and_evict(_state, _kind, []), do: :ok
+
+  defp log_and_evict(state, kind, entries) do
+    count = length(entries)
+    bytes = entries |> Enum.map(& &1.evict_bytes) |> Enum.sum()
+
+    if state.sweep_enabled do
+      Logger.info(
+        "embervm warmth reaper: warmth-retention sweep evicting #{count} orphaned #{kind} warmth artifact(s) (~#{bytes} bytes)"
+      )
+
+      Enum.each(entries, &evict_entry(state, &1))
+    else
+      Logger.info(
+        "embervm warmth reaper: warmth-retention sweep (DRY RUN, gate off) WOULD evict #{count} orphaned #{kind} warmth artifact(s) (~#{bytes} bytes)"
+      )
+    end
+
+    :ok
+  end
+
+  # Evict one orphaned artifact ENTIRELY (local disk AND remote S3), fire-and-forget
+  # in a spawned worker so a blocking RPC never freezes this GenServer. The instance
+  # is gone (orphan), so both copies go (Joe's "orphaned instances evicted
+  # entirely"). Every eviction is idempotent on an already-absent artifact.
+  #
+  # STATEFUL: local is EvictArtifact{remote: false, kind: STATEFUL, ref} (which noded
+  # routes to EvictSnapshot(ref) -> os.RemoveAll(stateful/<ref>)); remote is the same
+  # ref with remote: true (deletes the S3 stateful/<vendor>/<workload>/<ref> prefix).
+  #
+  # GROUP: local set eviction is PER-MEMBER (noded refuses a set-level local evict as
+  # Unimplemented; a set is evicted locally by EvictSnapshot on each member's
+  # snapshot_ref, the R5 contract the GroupSweeper uses); remote is one
+  # EvictArtifact{remote: true, kind: GROUP_SET, workload: group_instance_id, ref:
+  # set_id} that drops the whole set prefix at once.
+  defp evict_entry(state, %{kind: :stateful, id: ref, workload: workload, node_id: node_id}) do
+    dial_key = WakeInstance.dial_for_bundle(state.capacity_table, node_id, ref)
+    artifact = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: ref}
+
+    spawn(fn ->
+      with {:ok, channel} <- safe_channel(state, dial_key) do
+        run_evict(state, channel, [
+          {:artifact, %EvictArtifactRequest{artifact: artifact, remote: false, trace: %Trace{workload: workload}}},
+          {:artifact, %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}}
+        ])
+
+        release_channel(state, channel)
+      end
+    end)
+
+    :ok
+  end
+
+  defp evict_entry(state, %{kind: :group, id: set_id, workload: group_instance_id, node_id: node_id, member_refs: member_refs}) do
+    dial_key = WakeInstance.dial_for_group(state.capacity_table, node_id, group_instance_id)
+
+    remote =
+      {:artifact,
+       %EvictArtifactRequest{
+         artifact: %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: group_instance_id, ref: set_id},
+         remote: true,
+         trace: %Trace{workload: group_instance_id}
+       }}
+
+    per_member = for ref <- member_refs, do: {:snapshot, %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: ref}}
+
+    spawn(fn ->
+      with {:ok, channel} <- safe_channel(state, dial_key) do
+        run_evict(state, channel, per_member ++ [remote])
+        release_channel(state, channel)
+      end
+    end)
+
+    :ok
+  end
+
+  # Fire a batch of evictions on an already-dialled channel, best-effort: a single
+  # failure is logged and never aborts the rest (each artifact/copy is independent
+  # and idempotent). Kept out of the spawn body so both evict_entry clauses share it.
+  defp run_evict(state, channel, requests) do
+    Enum.each(requests, fn
+      {:artifact, req} -> safe_call(fn -> state.evict_artifact_fun.(channel, req) end, req)
+      {:snapshot, req} -> safe_call(fn -> state.evict_snapshot_fun.(channel, req) end, req)
+    end)
+  end
+
+  defp safe_call(fun, req) do
+    case fun.() do
+      {:ok, _} -> :ok
+      other -> Logger.warning("embervm warmth reaper: eviction #{inspect(req)} failed: #{inspect(other)}")
+    end
+  rescue
+    e -> Logger.warning("embervm warmth reaper: eviction #{inspect(req)} raised: #{inspect(e)}")
+  catch
+    kind, reason -> Logger.warning("embervm warmth reaper: eviction #{inspect(req)} threw: #{inspect({kind, reason})}")
+  end
+
+  defp schedule_sweep(%{sweep_interval_ms: ms}) when ms > 0 do
+    Process.send_after(self(), :sweep, ms)
+    :ok
+  end
+
+  defp schedule_sweep(_state), do: :ok
+
+  # -- channel + default seams -------------------------------------------------
+
+  defp safe_channel(state, dial_key) do
+    state.channel_fun.(dial_key)
+  rescue
+    e -> {:error, {:channel_raised, e}}
+  catch
+    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
+  # NodeChannel pools channels per dial key; release is a no-op for a keyed pool but
+  # kept so a test channel_fun that returns a per-call channel can be torn down.
+  defp release_channel(_state, _channel), do: :ok
+
+  defp default_evict_snapshot(channel, req) do
+    NodeService.Stub.evict_snapshot(channel, req)
+  end
+
+  defp default_evict_artifact(channel, req) do
+    NodeService.Stub.evict_artifact(channel, req)
+  end
+end

@@ -315,6 +315,19 @@ defmodule Embervm.Application do
       # It holds no durable state; a restart only misses an in-flight drain edge, which
       # the daemon's own deadline reap backstops.
       {Embervm.DrainCoordinator, drain_coordinator_opts()},
+      # The reconciled warmth-retention reaper (base-durability PR-3, extended to
+      # STATEFUL bundles and GROUP sets): the structural analogue of the BaseBuilder
+      # base-retention sweep, reconciling each node's REPORTED warmth inventory
+      # (NodeStatus.stateful_bundles / group_bundle_sets, projected into NodeCapacity)
+      # against the CP's non-terminal instance set and evicting the orphans the
+      # event-driven sweepers can never reach (an instance the CP no longer tracks
+      # fires no FSM trigger). Placed AFTER StatefulStore/GroupStore + the two
+      # sweepers it reads-alongside (never mutates their FSM; it only evicts orphans
+      # neither owns) and AFTER NodeRegistry (whose capacity projection it reads). It
+      # holds no durable state; a restart only misses a tick the next one re-runs.
+      # Gated OFF by default (EMBERVM_WARMTH_RETENTION_SWEEP): merging is inert (the
+      # sweep runs but only LOGS what it would evict, deleting nothing).
+      {Embervm.WarmthReaper, warmth_reaper_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -460,6 +473,26 @@ defmodule Embervm.Application do
   # values env change, no code change. Nothing sets it on in this PR.
   defp base_retention_sweep_enabled do
     case trimmed_env("EMBERVM_BASE_RETENTION_SWEEP") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  # WarmthReaper (base-durability PR-3, extended to stateful + group) config: only
+  # the destructive gate is env-driven; the sweep cadence uses the module default.
+  # The gate mirrors base_retention_sweep_enabled/0 exactly.
+  defp warmth_reaper_opts do
+    [sweep_enabled: warmth_retention_sweep_enabled()]
+  end
+
+  # The destructive gate for the WarmthReaper warmth-retention sweep, from
+  # EMBERVM_WARMTH_RETENTION_SWEEP. UNSET or "0"/"false"/"" (the default, and what
+  # this PR ships) => the sweep runs but only LOGS what it would evict, deleting
+  # nothing. "1"/"true" => the sweep evicts each orphaned stateful bundle / group
+  # set ENTIRELY (local disk AND remote S3). Wired here so it flips via a deploy
+  # values env change, no code change. Nothing sets it on in this PR.
+  defp warmth_retention_sweep_enabled do
+    case trimmed_env("EMBERVM_WARMTH_RETENTION_SWEEP") do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end
