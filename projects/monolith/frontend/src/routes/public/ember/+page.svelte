@@ -95,7 +95,7 @@
     {
       done: true,
       name: "R0 tasks",
-      desc: "Dispatch, fair round-robin pooling, metering and quotas, tracing. Untrusted code runs and is billed.",
+      desc: "Dispatch, fair round-robin pooling, metering and quotas, tracing. Untrusted code runs and every run counts against a quota.",
     },
     {
       done: true,
@@ -135,7 +135,7 @@
     {
       done: false,
       name: "R8 elasticity",
-      desc: "Capacity becomes fixed-size bricks: each a plain pod owning a slice of VMs, so the Kubernetes scheduler bin-packs them and a Pending brick is the autoscaler's signal to buy a spot node. The fleet grows and shrinks with demand, and preemption is routine rather than an outage, because every workload is a durable snapshot that wakes wherever there is room.",
+      desc: "Capacity becomes fixed-size bricks: each a plain pod owning a slice of VMs, so the Kubernetes scheduler bin-packs them and a Pending brick is the autoscaler's signal to buy a spot node. Every workload is a durable snapshot that wakes wherever there is room; preemption costs a wake, not an outage.",
     },
   ];
 </script>
@@ -206,7 +206,8 @@
       </h2>
       <p class="body">
         Everything Ember runs is declared as a Kubernetes custom resource in
-        one of three classes. The classes differ in exactly one dimension:
+        one of three classes, and a composite workload groups several of them
+        into one unit that wakes together. What separates the classes:
         <b>how much of the machine the guest is allowed to touch</b>.
       </p>
       <dl class="classes">
@@ -491,7 +492,7 @@
         <p>
           Metering rides the operation itself; <b
             >a crash cannot lose usage</b
-          >. Every task is billed on success and on failure.
+          >. Every task counts against its quota on success and on failure.
         </p>
         <p>
           The one public route is scoped at <b>three independent layers</b>:
@@ -506,8 +507,8 @@
         <a class="anchor" href="#live-exhibits">See it run</a>
       </h2>
       <p class="body">
-        Four exhibits run on the live system, through the same wake path
-        production uses.
+        Three of these exhibits run on the live system, through the same wake
+        path production uses; the fourth explains the resume itself.
       </p>
       <div class="doors">
         <a class="door" href="/ember/postgres">
