@@ -499,8 +499,23 @@ isolation model. Notes:
   participation**. Any workload that banks uses placeholders regardless
   of trust, or its banked memory image becomes a credential vault with a
   7-day shelf life, undoing the property that snapshot tiers decay in
-  sensitivity as they age. Trusted-and-ephemeral is the only posture
-  that may take direct credentials.
+  sensitivity as they age. For trusted lanes the FaaS-style relaxation
+  is permitted with its honest mechanism named: **expiry and revocation
+  do the wiping, never memory hygiene**. A trusted banked workload may
+  take direct MMDS-injected class-1 tokens iff the CP revokes them at
+  bank and delivers fresh ones at relight (validator-side wipe; the
+  banked image then holds only dead credentials by construction).
+  Scrubbing guest RAM before snapshot is explicitly rejected as a
+  load-bearing mechanism: injected tokens are copied into SDK buffers,
+  TLS state, and freed pages that no wipe reliably reaches, which is
+  also why SnapStart's model is short-lived-plus-refresh, not wiping.
+  Non-persistent lanes need no rule at all: task-class primed VMs are
+  snapshotted before any credential exists (injection at assignment,
+  after the primed image), and fresh-per-request or unbanked serving
+  VMs end in destruction. Direct injection remains trusted-lanes-only
+  regardless of snapshot behavior: a hostile guest exfiltrates
+  mid-session within TTL, and only placeholders with tap binding stop
+  live exfiltration.
 - **Prior art (FaaS platforms) validates the shape.** Lambda and Cloud
   Run distribute *identity* (short-lived auto-rotated role/service-account
   credentials per sandbox; the metadata server is the MMDS analog) and
