@@ -515,7 +515,16 @@ isolation model. Notes:
   VMs end in destruction. Direct injection remains trusted-lanes-only
   regardless of snapshot behavior: a hostile guest exfiltrates
   mid-session within TTL, and only placeholders with tap binding stop
-  live exfiltration.
+  live exfiltration. And the relaxation is **class-gated, not just
+  trust-gated**: it applies to class-1 material only, because
+  revoke-at-bank requires being the validator. Class-2 rotation is
+  scheduled and fleet-shared, not per-session (rotating a shared key at
+  every bank would break its other holders), so class-2 stays behind
+  placeholders for anything that banks even when trusted; class-3 has
+  no validator lever at all, which is why it never descends under any
+  posture. The unified rule: material may sit in persistable guest
+  memory only if the platform can kill its validity on demand; material
+  whose validity the platform cannot kill does not move.
 - **Prior art (FaaS platforms) validates the shape.** Lambda and Cloud
   Run distribute *identity* (short-lived auto-rotated role/service-account
   credentials per sandbox; the metadata server is the MMDS analog) and
