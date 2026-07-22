@@ -126,6 +126,7 @@ defmodule Embervm.WarmthReaperTest do
           group_store: group,
           evict_artifact_fun: artifact_fun,
           evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
           sweep_enabled: true
         )
 
@@ -188,6 +189,7 @@ defmodule Embervm.WarmthReaperTest do
           group_store: group,
           evict_artifact_fun: artifact_fun,
           evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
           sweep_enabled: true
         )
 
@@ -220,6 +222,7 @@ defmodule Embervm.WarmthReaperTest do
           group_store: group,
           evict_artifact_fun: artifact_fun,
           evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
           sweep_enabled: true
         )
 
