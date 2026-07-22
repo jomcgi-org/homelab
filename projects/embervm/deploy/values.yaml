@@ -74,6 +74,17 @@ tracing:
 # ~1.5Gi/VM that is ~24Gi worst case, well within budget. This only raises the
 # runaway backstop, not any pool floor.
 noded:
+  # WILDCARD DAEMONSET DEPRECATED (bricks-only migration). The per-node wildcard
+  # noded DaemonSet is retired: node capacity is now provided entirely by the
+  # size-class brick Deployments the BrickController autoscales (bricks.autoscale
+  # = up below), so the CP picks the optimal brick mix from placement demand
+  # rather than one fixed daemon per node. Discovery is dial-home (not the noded
+  # Service), and the shared noded ServiceAccount + the CP dial-home auth env are
+  # decoupled from this flag (rendered for noded OR bricks), so bricks keep their
+  # identity with the DS off. Rollback: set back to true (the DS re-renders and
+  # backstops beside the bricks). node scratch is provisioned out of band now
+  # (docs/runbooks/embervm-node-scratch-setup.md).
+  enabled: false
   maxLiveVMs: 16
 
 # Node-provisioning contract (ADR embervm/012 storage-tiers amendment; warmth
@@ -135,7 +146,12 @@ bricks:
   # min/max clamps live in the chart values (recorded policy 2026-07-20:
   # min {16gi: 1}, max {2gi: 4, 4gi: 3, 8gi: 2, 16gi: 2}).
   autoscale:
-    mode: observe
+    # up: with the wildcard DaemonSet retired (noded.enabled=false above), bricks
+    # are the ONLY capacity, so the BrickController must act on placement-denial
+    # pressure and scale classes up (clamped to chart maxReplicas: 2gi 4, 16gi 2)
+    # to absorb the migrated workloads. Scale-down stays observe-only until we
+    # promote to full. This is what lets the CP choose the optimal brick mix.
+    mode: up
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs

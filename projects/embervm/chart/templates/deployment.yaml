@@ -100,11 +100,16 @@ spec:
             - name: EMBERVM_NODE_ADDRESS
               value: {{ .Values.node.address | quote }}
             {{- end }}
-            {{- if .Values.noded.enabled }}
+            {{- if or .Values.noded.enabled .Values.bricks.enabled }}
             # The noded ServiceAccount username the control plane authenticates the
             # dial-home POST against (a valid TokenReview whose username equals this,
             # NOT the task-submit allow-list). Rendered from the release namespace +
             # noded SA name so it survives a rename.
+            #
+            # SHARED (not DS-specific): brick pods dial home as this same SA, so the
+            # CP must accept it whenever the DS OR any brick exists. Gated on
+            # (noded OR bricks) so retiring the DS (bricks-only) does not strip the
+            # CP's dial-home auth allow-list out from under the bricks.
             - name: EMBERVM_NODED_SERVICE_ACCOUNT
               value: {{ printf "system:serviceaccount:%s:%s" .Release.Namespace (include "embervm.noded.serviceAccountName" .) | quote }}
             {{- end }}
