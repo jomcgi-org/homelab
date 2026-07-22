@@ -916,7 +916,12 @@ func TestStatefulResolveCommit(t *testing.T) {
 }
 
 // TestStatefulResolveAbort: ABORT resumes the VM (still live), bumps the
-// generation, and records NO bundle.
+// generation via the legacy self-bump lane (no blessed_generation on the
+// request), and records NO bundle. The response now reports the bumped
+// generation (R7, ADR embervm/011: ResolveStatefulResponse.Generation is
+// populated on ABORT too, so the control plane can confirm what noded
+// recorded), but the volume must NOT read as blessed since this is the
+// self-bump lane, not a CP-issued blessing.
 func TestStatefulResolveAbort(t *testing.T) {
 	port := tcpHealthServer(t)
 	s, _, fsd := newStatefulTestServer(t)
@@ -931,8 +936,11 @@ func TestStatefulResolveAbort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveStateful(abort): %v", err)
 	}
-	if resp.GetSnapshotRef() != "" || resp.GetGeneration() != 0 || resp.GetSizeBytes() != 0 {
-		t.Fatalf("abort response should be empty; got %+v", resp)
+	if resp.GetSnapshotRef() != "" || resp.GetSizeBytes() != 0 {
+		t.Fatalf("abort response should carry no bundle; got %+v", resp)
+	}
+	if resp.GetGeneration() != 2 {
+		t.Fatalf("abort response generation = %d want 2 (the self-bumped generation, reported so the control plane can confirm it)", resp.GetGeneration())
 	}
 	// VM resumed, still live; no bundle.
 	if fsd.liveCount() != 1 {
@@ -949,6 +957,56 @@ func TestStatefulResolveAbort(t *testing.T) {
 	}
 	if v.GetGeneration() != 2 {
 		t.Fatalf("resumed VM generation = %d want 2 (abort bumped)", v.GetGeneration())
+	}
+	// Legacy self-bump lane (blessed_generation unset): the volume must NOT read
+	// as blessed, since no control plane issued this generation.
+	if s.volumes.GenerationBlessed("wl-state") {
+		t.Error("a legacy self-bumped abort must not read as blessed")
+	}
+}
+
+// TestStatefulResolveAbortWithBlessedGenerationRecordsBlessed proves the R7 fix
+// (ADR embervm/011, standing decision 4): when ResolveStateful(ABORT) carries a
+// nonzero blessed_generation (the normal CP-driven resolve path), noded records
+// it via RecordBlessed rather than self-bumping, so the volume's genFile and
+// blessedFile agree (GenerationBlessed reports true) and the response echoes the
+// CP-issued value verbatim, never desyncing from the control plane's blessing
+// ledger the way the pre-fix self-bump did.
+func TestStatefulResolveAbortWithBlessedGenerationRecordsBlessed(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	started := startFreshStateful(t, s, port, "wl-state")
+	ckpt := checkpointStateful(t, s, started.GetVmId(), "wl-state")
+
+	resp, err := s.ResolveStateful(context.Background(), &nodev1.ResolveStatefulRequest{
+		VmId:              started.GetVmId(),
+		CheckpointToken:   ckpt.GetCheckpointToken(),
+		Mode:              nodev1.ResolveMode_RESOLVE_MODE_ABORT,
+		BlessedGeneration: 9,
+	})
+	if err != nil {
+		t.Fatalf("ResolveStateful(abort, blessed): %v", err)
+	}
+	if resp.GetGeneration() != 9 {
+		t.Errorf("abort response generation = %d want 9 (the CP-issued blessed_generation, recorded verbatim)", resp.GetGeneration())
+	}
+	if !s.volumes.GenerationBlessed("wl-state") {
+		t.Error("volume should read as blessed after a blessed ABORT resolve")
+	}
+	gen, gerr := s.volumes.Generation("wl-state")
+	if gerr != nil {
+		t.Fatalf("Generation after blessed abort: %v", gerr)
+	}
+	if gen != 9 {
+		t.Errorf("ledger generation = %d want 9 (recorded verbatim, not self-bumped)", gen)
+	}
+	// VM resumed, still live; no bundle.
+	if fsd.liveCount() != 1 {
+		t.Fatalf("live count after blessed abort = %d want 1 (resumed)", fsd.liveCount())
+	}
+	v := statefulVMStatus(t, s, started.GetVmId())
+	if v == nil || v.GetGeneration() != 9 {
+		t.Fatalf("resumed VM status generation = %+v want 9", v)
 	}
 }
 
