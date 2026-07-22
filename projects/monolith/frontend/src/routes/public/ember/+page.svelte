@@ -137,6 +137,11 @@
       name: "R8 elasticity",
       desc: "Capacity becomes fixed-size bricks: each a plain pod owning a slice of VMs, so the Kubernetes scheduler bin-packs them and a Pending brick is the autoscaler's signal to buy a spot node. Every workload is a durable snapshot that wakes wherever there is room; preemption costs a wake, not an outage.",
     },
+    {
+      done: false,
+      name: "R9 isolation",
+      desc: "A lane for high-throughput isolated requests: Envoy routes straight to the nodes, each request gets a fresh microVM from a node-local pool and the VM is destroyed after the response, confirmed by the node that held it. No control-plane hop per request; it only keeps pools filled and quota leases granted. Planned.",
+    },
   ];
 </script>
 

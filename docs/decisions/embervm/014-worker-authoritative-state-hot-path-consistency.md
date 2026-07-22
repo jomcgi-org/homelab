@@ -108,6 +108,13 @@ node-confirmed.
    flagged instance found in any state other than running or destroying as a
    defect to destroy.
 
+   *Amended 2026-07-22: the flag mechanism is replaced by
+   [ADR 015](015-isolated-high-throughput-lane-data-plane-placement.md).
+   Isolation becomes structural to a dedicated lane (fresh VM per request,
+   no reuse transitions exist) rather than an opt-in flag policed across
+   lanes. The single-use contract and its checkable invariants stand
+   unchanged.*
+
 | Aspect | Today | Decided |
 | ------ | ----- | ------- |
 | Source of truth for instance state | CP Postgres tables | Node-agent dial-home reports; CP tables are a reconciled cache |
