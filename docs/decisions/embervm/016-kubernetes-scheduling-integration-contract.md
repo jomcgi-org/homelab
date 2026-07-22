@@ -86,10 +86,23 @@ hold across, not discovered per incident:
   smallest tier.
 
 **EKS/Karpenter is the proven-first environment; GKE is demand-gated.**
-ADR 005's metal NodePool stands: AWS exposes hardware virtualization only on
-`.metal` instances, while GCE offers nested virtualization on general VMs, a
-different performance and support posture to evaluate only if GKE demand
-appears. The conformance drills below therefore target Karpenter semantics.
+ADR 005's metal NodePool remains the working EKS path, but its premise is
+softened rather than absolute: EC2 now supports nested virtualization on
+virtual instances (the 7i/8i Intel families, KVM as the L1 hypervisor,
+opt-in per instance via the `NestedVirtualization` CPU option), which would
+be a large cost lever versus metal. It is recorded as watched, not
+deployable, because the k8s provisioning paths have not caught up: EKS
+managed nodegroups silently ignore the CPU option
+(containers-roadmap #2784, open), Karpenter's EC2NodeClass exposure of CPU
+options must be confirmed at implementation time, AWS itself steers
+latency-sensitive virtualization workloads to metal, and L2 boot/snapshot
+latency under nested Nitro extensions is unmeasured for Firecracker's
+profile. Adopting it is a NodePool swap plus a benchmark, not a redesign,
+which is exactly what the pod-ABI contract buys. On GKE, Firecracker runs
+on Standard nodes with nested virtualization enabled (Autopilot is
+excluded: it blocks the privileged pods and host access bricks need);
+demand-gated as before. The conformance drills below target Karpenter
+semantics either way.
 
 **The behavioral contracts are drilled with Karpenter's kwok provider,
 path-scoped in CI.** A kind cluster running the real Karpenter controllers
@@ -334,6 +347,8 @@ preemption and consolidation never become a cross-principal reuse path
 | [ADR embervm/009](009-roadmap-extension-continuity-before-tenancy.md) | Spot availability contract (2-minute preemption bound); the tenancy line owning future registration authorization |
 | [ADR embervm/011](011-distribution-longhorn-fencing-cp-rollouts.md) | HA-durable banked state (Longhorn + S3) that lets sessions migrate between requests |
 | [Karpenter kwok provider](https://github.com/kubernetes-sigs/karpenter/tree/main/kwok) | Real Karpenter controllers against fake nodes; the no-cloud-spend drill substrate |
+| [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nested-virtualization.html) | KVM on virtual 7i/8i instances; the watched cost lever against the metal NodePool |
+| [containers-roadmap #2784](https://github.com/aws/containers-roadmap/issues/2784) | EKS managed nodegroups ignore the nested-virt CPU option; the gate on deploying that lever |
 | [Karpenter disruption docs](https://karpenter.sh/docs/concepts/disruption/) | Consolidation, do-not-disrupt, and budget semantics the compatibility rules encode |
 | [kube-scheduler NodeResourcesFit scoring](https://kubernetes.io/docs/reference/scheduling/config/#scheduling-plugins) | `LeastAllocated` default vs `MostAllocated` packing; why EKS spreads at placement |
 | [GKE autoscaling profiles](https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler#autoscaling_profiles) | `optimize-utilization` as the GKE packing lever |
