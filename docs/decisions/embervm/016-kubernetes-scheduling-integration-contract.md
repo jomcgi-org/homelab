@@ -246,14 +246,25 @@ node lifetime a fact the placement pass reads:
   misconfiguration-resistant: the worst a wrong choice can do is give one
   workload a stricter posture than it needed, never wedge fleet-wide node
   recycling or outrank the interactive lane.
-- **The session cap is a platform ceiling with per-workload registered
-  durations under it.** The 8h ceiling is sized for the longest honest use
-  case (long-running coding sessions). A workload registers its expected
-  session duration at or below the ceiling and may never raise it
-  (the same non-escalation rule as the priority rungs). A shorter declared
-  duration is placement information, not just policy: it fits inside
-  smaller node-termination horizons, so short-session work is exactly what
-  keeps draining nodes utilized.
+- **The session contract is two-tier: an 8h live ceiling and a 7-day
+  resume window, bounded by different things.** The 8h ceiling applies to
+  a *continuously live* session (sized for long-running coding sessions)
+  because a live session is what consumes placement: a slot held, a node
+  horizon to fit, disruption budgets to respect. A workload registers its
+  expected live duration at or below the ceiling and may never raise it
+  (the same non-escalation rule as the priority rungs); shorter declared
+  durations are placement information that keeps draining nodes utilized.
+  A *banked* session is different in kind: its snapshot lives in S3
+  (ADR 009/011), off-node and HA-durable, holding no slot and invisible to
+  node lifecycle, so its bound is storage retention, not placement. Banked
+  sessions are resumable for **7 days from last bank**; a relight within
+  the window starts a fresh live window. One consequence recorded
+  explicitly: an unexpired bank is a **GC root**. Warmth and base GC (the
+  generation-invariant S3 sweeps) must either pin the artifacts an
+  unexpired bank's relight needs, or relight must tolerate re-fetching and
+  rebuilding them (bases are digest-pinned OCI, so rebuildable; the first
+  resume after a long idle may pay a cold base restore, which is
+  accepted).
 - **Verification splits by tool.** The kwok drills cover the observable
   Karpenter interplay; the drain/migration protocol itself (no session's
   guarantee left uncovered by a migration, no durable placement onto a node
