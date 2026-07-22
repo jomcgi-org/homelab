@@ -20,7 +20,7 @@ spec:
     image:
       # Must match the top-level bazelQuery.guestImage exactly (the derived
       # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
-      ref: "{{ .Values.bazelQuery.guestImage.repository }}:{{ .Values.bazelQuery.guestImage.tag }}"
+      ref: "{{ .Values.bazelQuery.guestImage.repository }}@{{ .Values.bazelQuery.guestImage.digest }}"
       port: {{ .Values.bazelQueryWorkload.port }}
       readyPath: {{ .Values.bazelQueryWorkload.readyPath | quote }}
       invokePath: {{ .Values.bazelQueryWorkload.invokePath | quote }}

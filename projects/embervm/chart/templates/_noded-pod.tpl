@@ -47,7 +47,7 @@ securityContext:
 # Build each workload's base rootfs in-cluster from its pinned guest image
 # (crane export + mkfs.ext4 onto the nvme scratch), so node-4 never needs a
 # manual sudo rootfs placement. One builder per workload that declares a
-# top-level `<name>.guestImage` block (Bazel pins its repository:tag from the
+# top-level `<name>.guestImage` block (Bazel pins its repository@digest from the
 # guest image's .info provider); the builder bakes that guest's filesystem
 # into the workload's rootfsPath. Idempotent (a marker skips the multi-GB
 # rebuild when the guest ref is unchanged). Mirrors the fc-invoke pattern.
@@ -63,7 +63,7 @@ initContainers:
     command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
     env:
       - name: GUEST_IMAGE
-        value: "{{ $top.guestImage.repository }}:{{ $top.guestImage.tag }}"
+        value: "{{ $top.guestImage.repository }}@{{ $top.guestImage.digest }}"
       - name: BASE_ROOTFS_PATH
         value: {{ include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) | quote }}
       - name: ROOTFS_SIZE

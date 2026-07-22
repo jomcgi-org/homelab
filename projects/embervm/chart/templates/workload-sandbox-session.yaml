@@ -34,7 +34,7 @@ spec:
       # SAME pin as the one-shot sandbox workload: one guest image serves both
       # the task class and the session class (the kernel mode is opt-in per
       # request via {"mode":"session"}, so the image is byte-identical).
-      ref: "{{ .Values.sandbox.guestImage.repository }}:{{ .Values.sandbox.guestImage.tag }}"
+      ref: "{{ .Values.sandbox.guestImage.repository }}@{{ .Values.sandbox.guestImage.digest }}"
       port: {{ .Values.sandboxSessionWorkload.port }}
       readyPath: {{ .Values.sandboxSessionWorkload.readyPath | quote }}
       invokePath: {{ .Values.sandboxSessionWorkload.invokePath | quote }}
