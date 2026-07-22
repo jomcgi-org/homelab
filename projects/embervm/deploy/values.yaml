@@ -163,10 +163,10 @@ bricks:
   nodeFloors:
     - node: node-1
       class: 2gi
-    # - node: node-2
-    #   class: 2gi
-    # - node: node-3
-    #   class: 2gi
+    - node: node-2
+      class: 2gi
+    - node: node-3
+      class: 2gi
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
 # enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
