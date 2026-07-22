@@ -474,7 +474,33 @@ isolation model. Notes:
   provider-selection smell with two fixes before any architecture
   change: re-check the provider for a rotation API (promote to class 2),
   or record a measured per-key exception leasing brick-side under
-  aggressive manual-rotation cadence.
+  aggressive manual-rotation cadence. When the tier does grow past a
+  small Deployment, it **shards by secret key** (consistent-hash key
+  ownership): both of its jobs are per-key, so key ownership makes the
+  token bucket local replica state (no distributed rate limiter), pools
+  upstream connections per provider, and bounds blast radius since each
+  replica loads only the keys it owns. Tenant/customer sharding is
+  rejected for this tier: class-3 tenants share one key by premise, so
+  tenant shards would split the quota spender again; tenant isolation
+  lives at the VM boundary and tenant fairness is weighted-bucket policy
+  inside the key owner. BYO-key tenancy collapses into key sharding
+  (key equals tenant).
+- **Enforcement strictness tiers by trust posture and snapshot
+  participation, not uniformly.** Untrusted/sandbox lanes get the full
+  ladder mandatorily: placeholders, tap binding, deny-by-default
+  allowlists, class-3 never descending; this is the threat the machinery
+  exists for, and those lanes are the low-traffic case. First-party
+  workloads hold only class-1 credentials by construction (the
+  no-fixed-internal-keys rule), so direct injection of short-lived
+  scoped tokens at boot is acceptable, with the swap hop as optional
+  defense-in-depth and egress allowlists still applying (supply-chain
+  exfiltration does not care whose code it rides in). The cut that is
+  not optional: **placeholder discipline follows snapshot
+  participation**. Any workload that banks uses placeholders regardless
+  of trust, or its banked memory image becomes a credential vault with a
+  7-day shelf life, undoing the property that snapshot tiers decay in
+  sensitivity as they age. Trusted-and-ephemeral is the only posture
+  that may take direct credentials.
 
 ---
 
