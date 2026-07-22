@@ -7,19 +7,26 @@ templates; everything a noded pod actually IS (securityContext, KVM + nvme host
 mounts, rootfs-builder initContainers, the full daemon env, probes) lives here.
 
 Input dict:
-  * ctx        - the chart root context (`.` / `$`), for `.Values` / `.Release`.
-  * sizeClass  - the brick T-shirt class label ("2gi".."16gi"); "" for the legacy
-                 DaemonSet, which renders NO EMBERVM_NODED_SIZE_CLASS env (the
-                 wildcard class the control plane treats as matching every
-                 request), so the DS pod is byte-identical to its pre-brick form.
-  * resources  - the noded container's resources map. The DaemonSet passes
-                 .Values.noded.resources unchanged; a brick passes its class's
-                 own request/limit block (memory req==limit, cpu request only).
+  * ctx          - the chart root context (`.` / `$`), for `.Values` / `.Release`.
+  * sizeClass    - the brick T-shirt class label ("2gi".."16gi"); "" for the legacy
+                   DaemonSet, which renders NO EMBERVM_NODED_SIZE_CLASS env (the
+                   wildcard class the control plane treats as matching every
+                   request), so the DS pod is byte-identical to its pre-brick form.
+  * resources    - the noded container's resources map. The DaemonSet passes
+                   .Values.noded.resources unchanged; a brick passes its class's
+                   own request/limit block (memory req==limit, cpu request only).
+  * nodeSelector - OPTIONAL override for the pod's nodeSelector map. Absent (or
+                   nil) falls back to $ctx.Values.noded.nodeSelector (the
+                   fleet-wide FC-node label every bin-packed brick uses). A
+                   per-node floor Deployment (brick-capacity PR-3) passes
+                   {kubernetes.io/hostname: <node>} here to pin onto one host,
+                   which is why this is a dict field and not just $ctx.Values.
 
 Call with `{{- include "embervm.noded.podSpec" (dict "ctx" . "sizeClass" "" "resources" .Values.noded.resources) | nindent 6 }}`.
 */}}
 {{- define "embervm.noded.podSpec" -}}
 {{- $ctx := .ctx -}}
+{{- $nodeSelector := .nodeSelector | default $ctx.Values.noded.nodeSelector -}}
 # Safe-rollout drain: give the daemon time to finish in-flight Assigns on
 # SIGTERM before Kubernetes SIGKILLs it. Set above the daemon's own drain
 # budget (EMBERVM_NODED_DRAIN_TIMEOUT below) so grace always outlasts drain,
@@ -32,7 +39,7 @@ imagePullSecrets:
 {{- end }}
 priorityClassName: {{ $ctx.Values.noded.priorityClassName }}
 nodeSelector:
-  {{- toYaml $ctx.Values.noded.nodeSelector | nindent 2 }}
+  {{- toYaml $nodeSelector | nindent 2 }}
 {{- with $ctx.Values.noded.tolerations }}
 tolerations:
   {{- toYaml . | nindent 2 }}
