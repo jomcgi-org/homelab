@@ -176,3 +176,11 @@ demoPostgres:
 statefulSweeper:
   sweepIntervalMs: "1000"
   wakeMax: "30"
+
+# Arm the base-retention sweep (base-durability PR-3): one-shot supervised
+# reclaim of ~290G of superseded base versions on node-4, then the ongoing
+# retention backstop. Every current base is confirmed durable in S3 before any
+# local eviction, and hydrate-on-miss restores from S3 on a cold start.
+# Rollback: set back to "" and bump the chart; that stops further eviction.
+baseRetention:
+  sweepEnabled: "1"

@@ -305,6 +305,13 @@ spec:
             - name: EMBERVM_STATEFUL_WAKE_MAX
               value: {{ .Values.statefulSweeper.wakeMax | quote }}
             {{- end }}
+            {{- if .Values.baseRetention.sweepEnabled }}
+            # Base-retention sweep gate (base-durability PR-3): "1" arms the
+            # reconciled eviction of superseded local bases; unset keeps the
+            # dry-run that only logs. See baseRetention.sweepEnabled in values.
+            - name: EMBERVM_BASE_RETENTION_SWEEP
+              value: {{ .Values.baseRetention.sweepEnabled | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
