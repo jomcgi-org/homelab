@@ -268,6 +268,29 @@ func (r *statefulRegistry) byWorkload(workload string) (*statefulEntry, bool) {
 	return nil, false
 }
 
+// snapshotRefInUse reports whether any LIVE stateful VM was relit from the given
+// stateful bundle ref, i.e. the bundle is still needed by a running guest that
+// resumed from it. It is the in-use guard for a local STATEFUL eviction (#38):
+// evicting a bundle out from under a live relit VM would lose the state needed to
+// re-bank it if the VM dies before the next bank. It scans the LIVE registry's
+// snapshotRef (set on relight, "" on a fresh/cold boot, so a fresh VM never
+// matches). The R4 v1 note on statefulEntry.snapshotRef deferred exactly this
+// guard; the reaper's per-bundle evict makes it load-bearing, so it lands now. An
+// empty ref never matches. Returns the vm_id of the first live VM holding the ref.
+func (r *statefulRegistry) snapshotRefInUse(ref string) (string, bool) {
+	if ref == "" {
+		return "", false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, e := range r.vms {
+		if e.snapshotRef == ref {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // statefulView is a lock-free, read-only projection of a statefulEntry, for
 // NodeStatus.stateful_vms.
 type statefulView struct {

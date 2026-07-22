@@ -482,6 +482,18 @@ func (s *Server) EvictArtifact(ctx context.Context, req *nodev1.EvictArtifactReq
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: volume for %q still pairs with a banked bundle; refusing evict", ref.GetWorkload())
 		}
 	}
+	// Stateful in-use guard (defense-in-depth, #38): refuse to evict a STATEFUL
+	// artifact (local OR remote store copy) while a live VM was relit from this ref.
+	// The reaper only ever targets orphans (no live instance) and gates its remote
+	// evict on the local one, so in normal operation this never fires; it is the
+	// backstop against a mistargeted control-plane request deleting the recovery
+	// copy of a bundle a running guest still depends on, mirroring the volume
+	// pairing guard's intent for the store copy.
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL && s.statefulVMs != nil {
+		if vmID, inUse := s.statefulVMs.snapshotRefInUse(ref.GetRef()); inUse {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful snapshot %q is in use by live vm %q; refusing evict", ref.GetRef(), vmID)
+		}
+	}
 	if req.GetRemote() {
 		if s.store == nil {
 			// No store: the remote copy cannot exist, so the desired end-state
@@ -501,15 +513,26 @@ func (s *Server) EvictArtifact(ctx context.Context, req *nodev1.EvictArtifactReq
 }
 
 // evictArtifactLocal deletes the on-disk copy of an artifact over the typed ref,
-// reusing the existing kind-specific eviction path (EvictSnapshot for a session/
-// serving/stateful bundle, RemoveGroupMemberBundle per member for a group set,
-// DeleteVolume for a volume, a direct bases/<ref> removal for a BASE). Idempotent.
+// reusing the kind-specific eviction path (EvictSnapshot for a session/serving
+// bundle, the stateful arm for a stateful bundle, RemoveGroupMemberBundle per
+// member for a group set, DeleteVolume for a volume, a direct bases/<ref> removal
+// for a BASE). Idempotent.
 func (s *Server) evictArtifactLocal(ctx context.Context, ref *nodev1.ArtifactRef) (*nodev1.EvictArtifactResponse, error) {
 	switch ref.GetKind() {
 	case nodev1.ArtifactKind_ARTIFACT_KIND_BASE:
 		return s.evictBaseLocal(ref)
-	case nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL:
+	case nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, nodev1.ArtifactKind_ARTIFACT_KIND_SERVING:
 		if _, err := s.EvictSnapshot(ctx, &nodev1.EvictSnapshotRequest{SnapshotRef: ref.GetRef()}); err != nil {
+			return nil, err
+		}
+	case nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL:
+		// Dispatch STATEFUL directly to its own arm (NOT via the generic
+		// EvictSnapshot inventory dispatch) so a typed stateful evict removes the
+		// on-disk stateful/<ref> dir even if the banked-bundle inventory entry is
+		// missing (e.g. a bundle that reconcile has not re-registered). The arm's
+		// RemoveStatefulBundle is idempotent, so an already-absent bundle is
+		// success; its in-use guard still refuses a bundle a live relit VM holds.
+		if _, err := s.evictStatefulSnapshot(ref.GetRef()); err != nil {
 			return nil, err
 		}
 	case nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME:

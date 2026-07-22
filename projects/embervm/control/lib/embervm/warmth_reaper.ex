@@ -286,26 +286,35 @@ defmodule Embervm.WarmthReaper do
   # is gone (orphan), so both copies go (Joe's "orphaned instances evicted
   # entirely"). Every eviction is idempotent on an already-absent artifact.
   #
-  # STATEFUL: local is EvictArtifact{remote: false, kind: STATEFUL, ref} (which noded
-  # routes to EvictSnapshot(ref) -> os.RemoveAll(stateful/<ref>)); remote is the same
-  # ref with remote: true (deletes the S3 stateful/<vendor>/<workload>/<ref> prefix).
+  # The remote (S3) copy is deleted ONLY when the local eviction succeeded (#38): a
+  # local FAILED_PRECONDITION (a live VM was relit from the ref) or any local error
+  # SKIPS the remote, so the reaper never destroys the off-node recovery copy of a
+  # bundle the node itself refused to remove. See run_evict/2 for the ordering.
+  #
+  # STATEFUL: local is EvictArtifact{remote: false, kind: STATEFUL, ref}, which noded
+  # routes to its stateful arm (evictStatefulSnapshot -> RemoveStatefulBundle(ref) ->
+  # os.RemoveAll(stateful/<ref>)); remote is the same ref with remote: true (deletes
+  # the S3 stateful/<vendor>/<workload>/<ref> prefix), fired only on local success.
   #
   # GROUP: local set eviction is PER-MEMBER (noded refuses a set-level local evict as
   # Unimplemented; a set is evicted locally by EvictSnapshot on each member's
-  # snapshot_ref, the R5 contract the GroupSweeper uses); remote is one
-  # EvictArtifact{remote: true, kind: GROUP_SET, workload: group_instance_id, ref:
-  # set_id} that drops the whole set prefix at once.
+  # snapshot_ref, which noded routes to its group-member arm ->
+  # RemoveGroupMemberBundle(set_id, member_name), the R5 contract the GroupSweeper
+  # uses); the single remote EvictArtifact{remote: true, kind: GROUP_SET, workload:
+  # group_instance_id, ref: set_id} that drops the whole set prefix at once fires
+  # ONLY when EVERY member's local eviction succeeded.
   defp evict_entry(state, %{kind: :stateful, id: ref, workload: workload, node_id: node_id}) do
     dial_key = WakeInstance.dial_for_bundle(state.capacity_table, node_id, ref)
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: ref}
 
+    local = {:artifact, %EvictArtifactRequest{artifact: artifact, remote: false, trace: %Trace{workload: workload}}}
+    remote = {:artifact, %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}}
+
     spawn(fn ->
       with {:ok, channel} <- safe_channel(state, dial_key) do
-        run_evict(state, channel, [
-          {:artifact, %EvictArtifactRequest{artifact: artifact, remote: false, trace: %Trace{workload: workload}}},
-          {:artifact, %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}}
-        ])
-
+        # Remote (S3) evict fires ONLY if the local disk evict succeeded: never
+        # delete the recovery copy of a bundle the node refused/failed to remove.
+        run_evict(state, channel, [local], remote)
         release_channel(state, channel)
       end
     end)
@@ -328,7 +337,10 @@ defmodule Embervm.WarmthReaper do
 
     spawn(fn ->
       with {:ok, channel} <- safe_channel(state, dial_key) do
-        run_evict(state, channel, per_member ++ [remote])
+        # The single remote GROUP_SET evict (drops the whole S3 set prefix at once)
+        # fires ONLY if EVERY member's local evict succeeded: one refused/failed
+        # member (e.g. a live relit member) leaves the set's recovery copy intact.
+        run_evict(state, channel, per_member, remote)
         release_channel(state, channel)
       end
     end)
@@ -336,25 +348,63 @@ defmodule Embervm.WarmthReaper do
     :ok
   end
 
-  # Fire a batch of evictions on an already-dialled channel, best-effort: a single
-  # failure is logged and never aborts the rest (each artifact/copy is independent
-  # and idempotent). Kept out of the spawn body so both evict_entry clauses share it.
-  defp run_evict(state, channel, requests) do
-    Enum.each(requests, fn
-      {:artifact, req} -> safe_call(fn -> state.evict_artifact_fun.(channel, req) end, req)
-      {:snapshot, req} -> safe_call(fn -> state.evict_snapshot_fun.(channel, req) end, req)
-    end)
+  # Fire an entry's LOCAL evictions then, ONLY if every local succeeded, the single
+  # REMOTE (S3) evict, on an already-dialled channel (#38). Locals are best-effort
+  # among themselves (each is independent and idempotent, so one failure is logged
+  # and does not abort the rest), but a local failure of ANY kind (a warning return
+  # OR a raised/thrown call, including a FAILED_PRECONDITION from noded's in-use
+  # guard) withholds the remote: the reaper must never delete the off-node recovery
+  # copy of a bundle the node itself refused/failed to remove locally. A local
+  # success is a genuine (idempotent) removal, so the remote copy is then safe to
+  # drop. Kept out of the spawn body so both evict_entry clauses share it.
+  defp run_evict(state, channel, locals, remote) do
+    all_local_ok =
+      Enum.reduce(locals, true, fn req, acc ->
+        # Reduce, not all?/2 with side effects: run EVERY local (they are
+        # independent) while tracking whether all succeeded, so a group set still
+        # attempts each member's local evict even when an earlier one failed.
+        case run_one(state, channel, req) do
+          :ok -> acc
+          :error -> false
+        end
+      end)
+
+    if all_local_ok do
+      run_one(state, channel, remote)
+    else
+      Logger.info(
+        "embervm warmth reaper: skipping remote evict #{inspect(remote_req(remote))} (a local eviction was refused or failed; recovery copy kept)"
+      )
+    end
+
+    :ok
   end
 
+  defp run_one(state, channel, {:artifact, req}), do: safe_call(fn -> state.evict_artifact_fun.(channel, req) end, req)
+  defp run_one(state, channel, {:snapshot, req}), do: safe_call(fn -> state.evict_snapshot_fun.(channel, req) end, req)
+
+  defp remote_req({_tag, req}), do: req
+
+  # Returns :ok on a genuine (idempotent) eviction, :error on any refusal, error
+  # return, raise, or throw. The caller uses :error to withhold the paired remote
+  # evict; every path still logs so a best-effort sweep stays observable.
   defp safe_call(fun, req) do
     case fun.() do
-      {:ok, _} -> :ok
-      other -> Logger.warning("embervm warmth reaper: eviction #{inspect(req)} failed: #{inspect(other)}")
+      {:ok, _} ->
+        :ok
+
+      other ->
+        Logger.warning("embervm warmth reaper: eviction #{inspect(req)} failed: #{inspect(other)}")
+        :error
     end
   rescue
-    e -> Logger.warning("embervm warmth reaper: eviction #{inspect(req)} raised: #{inspect(e)}")
+    e ->
+      Logger.warning("embervm warmth reaper: eviction #{inspect(req)} raised: #{inspect(e)}")
+      :error
   catch
-    kind, reason -> Logger.warning("embervm warmth reaper: eviction #{inspect(req)} threw: #{inspect({kind, reason})}")
+    kind, reason ->
+      Logger.warning("embervm warmth reaper: eviction #{inspect(req)} threw: #{inspect({kind, reason})}")
+      :error
   end
 
   defp schedule_sweep(%{sweep_interval_ms: ms}) when ms > 0 do

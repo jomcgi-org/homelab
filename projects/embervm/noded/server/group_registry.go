@@ -227,6 +227,24 @@ func (r *groupMemberRegistry) hasMembers(groupInstanceID string) bool {
 	return r.memberCount(groupInstanceID) > 0
 }
 
+// memberInUse reports whether a LIVE member VM matching (groupInstanceID,
+// memberName) is currently attached, i.e. a member relit from this bundle is
+// still running. It is the in-use guard for a per-member local group eviction
+// (#38): removing a member bundle out from under a live relit member would lose
+// the state needed to re-bank it. A live member carries no snapshotRef of its
+// own, so the caller recovers (groupInstanceID, memberName) from the banked
+// bundle inventory and matches on that pair. Returns the live member's vm_id.
+func (r *groupMemberRegistry) memberInUse(groupInstanceID, memberName string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, e := range r.members {
+		if e.groupInstanceID == groupInstanceID && e.memberName == memberName {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // groupMemberView is a lock-free, read-only projection of a groupMemberEntry, for
 // NodeStatus.group_member_vms (Task 5 populates the health verdict).
 type groupMemberView struct {
@@ -302,6 +320,20 @@ func (r *groupBundleRegistry) add(e groupBundleEntry) {
 	defer r.mu.Unlock()
 	cp := e
 	r.snaps[e.snapshotRef] = &cp
+}
+
+// get returns a copy of the banked group bundle entry for a member snapshot_ref
+// (group/<set_id>/<member_name>), recovering the (set_id, member_name,
+// group_instance_id) a per-member local eviction needs. Absent -> (_, false),
+// which the caller treats as an idempotent already-gone success.
+func (r *groupBundleRegistry) get(ref string) (groupBundleEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.snaps[ref]
+	if !ok {
+		return groupBundleEntry{}, false
+	}
+	return *e, true
 }
 
 // remove deletes a snapshot_ref from the inventory (idempotent).

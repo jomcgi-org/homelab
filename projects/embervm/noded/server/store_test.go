@@ -190,6 +190,18 @@ func newDiskScanStatefulDriver(snapshotRoot string) *diskScanStatefulDriver {
 
 func (d *diskScanStatefulDriver) StatefulDir() string { return d.statefulRoot }
 
+// RemoveStatefulBundle does a REAL os.RemoveAll of stateful/<ref> under the temp
+// root (mirroring the production *driver.Driver), so an eviction test can assert
+// the on-disk dir actually leaves disk rather than a faked in-memory map mutation
+// masking the misroute #38 fixes. It also drops the in-memory banked entry so a
+// subsequent ScanStatefulBundles agrees with disk.
+func (d *diskScanStatefulDriver) RemoveStatefulBundle(snapshotRef string) error {
+	if err := os.RemoveAll(filepath.Join(d.statefulRoot, snapshotRef)); err != nil {
+		return err
+	}
+	return d.fakeStatefulDriver.RemoveStatefulBundle(snapshotRef)
+}
+
 // ScanStatefulBundles reads the on-disk stateful/ dir (mirroring the real
 // driver): a bundle is any subdir holding a snapfile, keyed by the dir name, its
 // generation read from the gen sidecar. This is what makes a restored bundle dir

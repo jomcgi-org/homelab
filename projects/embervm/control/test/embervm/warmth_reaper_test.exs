@@ -299,4 +299,125 @@ defmodule Embervm.WarmthReaperTest do
       assert WarmthReaper.sweep_now(reaper) == []
     end
   end
+
+  # #38: the remote (S3) evict is the recovery copy; it must fire ONLY when the
+  # paired local disk evict succeeded, so the reaper never destroys the off-node
+  # copy of a bundle the node itself refused/failed to remove locally.
+  describe "remote evict is gated on local success (#38)" do
+    test "stateful: local failure withholds the remote S3 evict" do
+      test_pid = self()
+      table = new_cap_table()
+      # A local (remote: false) evict that FAILS; the remote would succeed if reached.
+      # Records every call so the test can assert the remote never ran.
+      artifact_fun = fn _channel, req ->
+        send(test_pid, {:evict_artifact, req.artifact.kind, req.artifact.ref, req.remote})
+
+        if req.remote do
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        else
+          {:error, :failed_precondition}
+        end
+      end
+
+      {_unused, snapshot_fun} = recording_evict_funs(test_pid)
+
+      put_warmth_fact(table, "node-4", [stateful_bundle("orphan-dead", "pg", 4_096)], [])
+      stateful = start_store([stateful_instance(:destroyed, "orphan-dead")])
+      group = start_store([])
+
+      reaper =
+        start_reaper(
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: group,
+          evict_artifact_fun: artifact_fun,
+          evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
+          sweep_enabled: true
+        )
+
+      WarmthReaper.sweep_now(reaper)
+
+      # The local evict was attempted...
+      assert_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-dead", false}, 1_000
+      # ...but because it failed, the remote (recovery copy) evict NEVER fired.
+      refute_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-dead", true}, 300
+    end
+
+    test "stateful: local success permits the remote S3 evict" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+
+      put_warmth_fact(table, "node-4", [stateful_bundle("orphan-dead", "pg", 4_096)], [])
+      stateful = start_store([stateful_instance(:destroyed, "orphan-dead")])
+      group = start_store([])
+
+      reaper =
+        start_reaper(
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: group,
+          evict_artifact_fun: artifact_fun,
+          evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
+          sweep_enabled: true
+        )
+
+      WarmthReaper.sweep_now(reaper)
+
+      # Local ok THEN remote: the recovery copy is dropped only after the disk copy.
+      assert_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-dead", false}, 1_000
+      assert_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-dead", true}, 1_000
+    end
+
+    test "group: one member's local failure withholds the whole-set remote evict" do
+      test_pid = self()
+      table = new_cap_table()
+
+      # Record every artifact call so we can assert the GROUP_SET remote never ran.
+      artifact_fun = fn _channel, req ->
+        send(test_pid, {:evict_artifact, req.artifact.kind, req.artifact.ref, req.remote})
+        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+      end
+
+      # Member "a" evicts fine; member "b"'s local evict fails (e.g. a live relit
+      # member): FAILED_PRECONDITION from noded's in-use guard.
+      snapshot_fun = fn _channel, req ->
+        send(test_pid, {:evict_snapshot, req.snapshot_ref})
+
+        if req.snapshot_ref == "m-orph-b" do
+          {:error, :failed_precondition}
+        else
+          {:ok, %Embervm.Node.V1.EvictSnapshotResponse{}}
+        end
+      end
+
+      put_warmth_fact(table, "node-4", [], [
+        group_set("orphan-set", "grp-orphan-set", [member("a", "m-orph-a", 1_000), member("b", "m-orph-b", 2_000)])
+      ])
+
+      stateful = start_store([])
+      group = start_store([group_instance(:destroyed, "orphan-set")])
+
+      reaper =
+        start_reaper(
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: group,
+          evict_artifact_fun: artifact_fun,
+          evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
+          sweep_enabled: true
+        )
+
+      WarmthReaper.sweep_now(reaper)
+
+      # BOTH members are still attempted locally (independent, run-every semantics)...
+      assert_receive {:evict_snapshot, "m-orph-a"}, 1_000
+      assert_receive {:evict_snapshot, "m-orph-b"}, 1_000
+      # ...but because one member's local evict failed, the whole-set remote copy is kept.
+      refute_receive {:evict_artifact, :ARTIFACT_KIND_GROUP_SET, "orphan-set", true}, 300
+    end
+  end
 end
