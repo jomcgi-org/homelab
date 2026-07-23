@@ -251,6 +251,35 @@ defmodule Embervm.ServingStore do
     GenServer.call(store, {:adopt_endpoint, instance_id, node_id, vm_id, endpoint})
   end
 
+  @doc """
+  Adoption of a NODE-woken serving VM (ADR embervm/018 Fork A): mint a `:published`
+  instance row directly from node truth for an `origin: ACTIVATOR` VM the control
+  plane has no row for (the brick minted the instance during a CP gap, so no CP row
+  exists). ETS-only, like `adopt_state`/`adopt_endpoint`: the durable lifecycle ops
+  are appended separately by `backfill_created/2` once the row is present. A no-op
+  if a row already exists for `instance_id` (idempotent; the reconcile only calls
+  this when no row claims the vm_id). `attrs` carries `:instance_id`, `:tenant`,
+  `:principal`, `:workload`, `:node_id`, `:vm_id`, `:ip`, `:port`. Returns `:ok`.
+  """
+  @spec adopt_activator(GenServer.server(), map()) :: :ok
+  def adopt_activator(store \\ __MODULE__, attrs) do
+    GenServer.call(store, {:adopt_activator, attrs})
+  end
+
+  @doc """
+  Re-drive the durable serving lifecycle appends (`serving_started`, then
+  `serving_published` for a live-and-published instance) from the surviving ETS
+  row, for an instance adopted from node truth whose ops the control plane never
+  wrote (the ADR embervm/018 activator adoption, the serving analog of
+  `SessionStore.backfill_created`). Appends SYNCHRONOUSLY (reconcile is not a hot
+  path); the projection is INSERT OR IGNORE so a re-drive is idempotent. A no-op /
+  `:error` for an unknown instance.
+  """
+  @spec backfill_created(GenServer.server(), String.t()) :: :ok | {:error, term()}
+  def backfill_created(store \\ __MODULE__, instance_id) do
+    GenServer.call(store, {:backfill_created, instance_id})
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -525,6 +554,86 @@ defmodule Embervm.ServingStore do
     end
   end
 
+  def handle_call({:adopt_activator, attrs}, _from, state) do
+    instance_id = Map.fetch!(attrs, :instance_id)
+
+    case fetch(state, instance_id) do
+      # A row already exists (a prior pass minted it): the normal adopt_live path
+      # heals it from here, so this is a no-op. Keeps the mint strictly once-only.
+      {:ok, _instance} ->
+        {:reply, :ok, state}
+
+      {:error, _} ->
+        ts = state.clock.()
+        # Mint the row already :published from node truth: the brick woke the VM and
+        # reports it live-and-healthy, so it is in the fan-out immediately (the ETS
+        # row is what published_endpoints reads). backfill_created writes the durable
+        # serving_started/serving_published ops from this row on the same pass.
+        instance = %{
+          instance_id: instance_id,
+          tenant: Map.fetch!(attrs, :tenant),
+          principal: Map.get(attrs, :principal),
+          workload: Map.fetch!(attrs, :workload),
+          state: :published,
+          node_id: Map.get(attrs, :node_id),
+          vm_id: Map.get(attrs, :vm_id),
+          ip: Map.get(attrs, :ip),
+          port: Map.get(attrs, :port),
+          healthy: true,
+          drain_reason: nil,
+          base_snapshot_ref: nil,
+          base_digest: nil,
+          generation: 0,
+          snapshot_ref: nil,
+          snapshot_size_bytes: nil,
+          created_at: ts,
+          last_active_at: nil,
+          updated_at: ts,
+          terminal_reason: nil
+        }
+
+        :ets.insert(state.instances, {instance_id, instance})
+        state = bump_counts(state, nil, :published, instance.workload)
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:backfill_created, instance_id}, _from, state) do
+    case fetch(state, instance_id) do
+      {:ok, instance} ->
+        # serving_started reconstructs the lifecycle birth op; serving_published
+        # follows it when the row is live-and-published (the activator case always
+        # is). Both are INSERT OR IGNORE at projection, so a re-drive is idempotent.
+        started = %Op{
+          kind: :serving_started,
+          tenant: instance.tenant,
+          principal: instance.principal,
+          workload: instance.workload,
+          serving_instance_id: instance_id,
+          ts: state.clock.(),
+          payload: %{
+            node_id: instance.node_id,
+            vm_id: instance.vm_id,
+            ip: instance.ip,
+            port: instance.port,
+            base_snapshot_ref: instance.base_snapshot_ref,
+            base_digest: instance.base_digest,
+            state: to_string(instance.state)
+          }
+        }
+
+        result =
+          with {:ok, _seq} <- state.op_log_mod.append(state.op_log, started) do
+            maybe_backfill_published(state, instance)
+          end
+
+        {:reply, backfill_reply(result), state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
   # -- start -----------------------------------------------------------------
 
   defp do_start(attrs, state) do
@@ -621,6 +730,30 @@ defmodule Embervm.ServingStore do
       {:error, _reason} = error -> {:reply, error, state}
     end
   end
+
+  # Append the durable serving_published for an adopted, already-published instance
+  # (ADR embervm/018 activator backfill). A row that is not published (defensive:
+  # the activator case always is) skips the second append and reports ok on the
+  # serving_started already written. reason "adopted" names why the endpoint entered
+  # the fan-out late.
+  defp maybe_backfill_published(state, %{state: :published} = instance) do
+    published = %Op{
+      kind: :serving_published,
+      tenant: instance.tenant,
+      principal: instance.principal,
+      workload: instance.workload,
+      serving_instance_id: instance.instance_id,
+      ts: state.clock.(),
+      payload: %{ip: instance.ip, port: instance.port, reason: "adopted"}
+    }
+
+    state.op_log_mod.append(state.op_log, published)
+  end
+
+  defp maybe_backfill_published(_state, _instance), do: {:ok, :skipped}
+
+  defp backfill_reply({:ok, _seq}), do: :ok
+  defp backfill_reply({:error, _reason} = error), do: error
 
   # The write-through core: append to the op-log, and ONLY on {:ok, seq} update
   # ETS. On append failure ETS is left untouched (as durable as the op-log agrees)

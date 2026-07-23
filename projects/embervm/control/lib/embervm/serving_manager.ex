@@ -985,6 +985,12 @@ defmodule Embervm.ServingManager do
         adopt_one(acc, instance, live_vms, snapshots)
       end)
 
+    # ADR embervm/018 Fork A: a node-woken (origin ACTIVATOR) serving VM has no CP
+    # row (the brick minted it during a CP gap). Adopt it as an async-write to
+    # backfill BEFORE the orphan-destroy pass below, so it is never mistaken for an
+    # orphan and its endpoint enters the re-derived fan-out on this same pass.
+    state = adopt_activator_vms(state, live_vms)
+
     state = evict_orphan_snapshots(state, facts)
 
     # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
@@ -1018,6 +1024,66 @@ defmodule Embervm.ServingManager do
       {s.snapshot_ref, {f.configured_id, s}}
     end
   end
+
+  # ADR embervm/018 Fork A: adopt every node-reported origin-ACTIVATOR serving VM
+  # that no CP row claims. The brick woke it during a CP gap and minted its vm_id;
+  # the CP mints a matching :published row from node truth (using the node's vm_id
+  # as the instance id) and backfills the durable serving_started/serving_published
+  # ops. Serving hit traffic is anonymous (no bearer principal, standing decision),
+  # so the row attributes to the manager's tenant with a nil principal, exactly as a
+  # CP-driven serving wake does. Once minted, later passes find the row by vm_id and
+  # heal it through the normal adopt_live path, so this fires exactly once per VM.
+  defp adopt_activator_vms(state, live_vms) do
+    Enum.reduce(live_vms, state, fn {vm_id, {node_id, vm}}, acc ->
+      if activator_origin?(vm) and find_instance_by_vm(acc, vm_id) == :none do
+        adopt_activator_vm(acc, node_id, vm)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp adopt_activator_vm(state, node_id, vm) do
+    instance_id = vm.vm_id
+
+    ServingStore.adopt_activator(state.store, %{
+      instance_id: instance_id,
+      tenant: state.tenant,
+      principal: nil,
+      workload: vm.workload,
+      node_id: node_id,
+      vm_id: vm.vm_id,
+      ip: Map.get(vm, :ip),
+      port: Map.get(vm, :port)
+    })
+
+    case ServingStore.backfill_created(state.store, instance_id) do
+      :ok ->
+        Logger.info("embervm serving adopted (activator-woken)",
+          instance_id: instance_id,
+          workload: vm.workload,
+          node_id: node_id
+        )
+
+      {:error, reason} ->
+        # The ETS row is minted (the endpoint is already in the fan-out); only the
+        # durable backfill failed. Log and leave it: the next reconcile pass re-drives
+        # backfill_created idempotently (INSERT OR IGNORE), and the endpoint keeps
+        # serving in the meantime.
+        Logger.warning("embervm serving activator backfill failed, will retry",
+          instance_id: instance_id,
+          workload: vm.workload,
+          reason: inspect(reason)
+        )
+    end
+
+    state
+  end
+
+  # True when a node-reported serving VM was minted by the brick activator (ADR
+  # embervm/018). A pre-018 daemon reports no origin (nil / UNSPECIFIED), which is
+  # the CP-issued default and NOT an activator VM.
+  defp activator_origin?(vm), do: Map.get(vm, :origin) == :INSTANCE_ORIGIN_ACTIVATOR
 
   defp adopt_one(state, instance, live_vms, snapshots) do
     cond do
@@ -1169,12 +1235,20 @@ defmodule Embervm.ServingManager do
   defp destroy_orphan_serving_vms(state, facts, _live_vms) do
     for fact <- facts, vm <- Map.get(fact, :serving_vms, []) || [], reduce: state do
       acc ->
-        case find_instance_by_vm(acc, vm.vm_id) do
-          :none ->
+        cond do
+          # ADR embervm/018 Fork A: an origin-ACTIVATOR VM is a node-woken instance
+          # adopt_activator_vms mints a row for on the SAME pass (which runs first),
+          # so it is not an orphan. Skip it explicitly as a belt-and-suspenders guard
+          # for the window where adoption's durable backfill failed but the ETS row
+          # is minted: never destroy a live node-woken VM, let adoption retry.
+          activator_origin?(vm) ->
+            acc
+
+          match?(:none, find_instance_by_vm(acc, vm.vm_id)) ->
             _ = stop_serving_destroy_confirmed(acc, %{node_id: fact.configured_id, vm_id: vm.vm_id})
             acc
 
-          {:ok, _instance} ->
+          true ->
             acc
         end
     end

@@ -379,6 +379,10 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.serving.max_lifetime_seconds == 21_600
     # bankedTtlSeconds omitted -> defaults to maxLifetimeSeconds (Task 9).
     assert entry.serving.banked_ttl_seconds == 21_600
+    # ADR embervm/018 Fork A: nodeLocalWake/meteringFailOpen default false when the
+    # CR omits them, so an unmodified serving workload keeps CP-only synchronous wake.
+    assert entry.serving.node_local_wake == false
+    assert entry.serving.metering_fail_open == false
 
     # A valid CR: the watcher writes only observedGeneration (no conditions).
     assert {_ns, "sandbox-serving", status_map} = ready_status(recorded_calls(agent), "sandbox-serving")

@@ -433,6 +433,12 @@ defmodule Embervm.EndpointPublisher do
       catalog_table: state.catalog_table,
       activator_endpoint: state.activator_endpoint,
       activator_ip: state.activator_ip,
+      # Node facts snapshotted once per render (ADR embervm/018 Fork A): the serving
+      # activator fallback PREFERS a node's advertised activator_endpoint over the
+      # CP-injected address, so the wake target survives a CP Recreate. Captured in
+      # the ctx so the render stays a pure function of the ctx (the byte-identical
+      # rebuild property EDS relies on).
+      node_facts: NodeCapacity.all(state.capacity_table),
       connect_timeout_ms: state.connect_timeout_ms
     }
   end
@@ -498,7 +504,7 @@ defmodule Embervm.EndpointPublisher do
   defp cluster_for(ctx, workload) do
     endpoints =
       case ServingStore.published_endpoints(ctx.store, workload) do
-        [] -> activator_endpoints(ctx)
+        [] -> activator_endpoints(ctx, workload)
         eps -> eps
       end
 
@@ -514,11 +520,57 @@ defmodule Embervm.EndpointPublisher do
   # so the first request wakes it. nil (no activator configured) renders an empty
   # cluster, which is a valid CDS entry Envoy 503s against until an instance
   # publishes (correct before Task 8 wires the activator).
-  defp activator_endpoints(%{activator_endpoint: %{ip: ip, port: port}})
+  # The activator fallback for `workload`, PREFERRING a node's own advertised
+  # activator endpoint (ADR embervm/018 Fork A) over the CP-injected address. A
+  # node's advertised endpoint is a node address (stable across a CP Recreate),
+  # so a scaled-to-zero workload's first request survives a CP roll; the CP
+  # address is the fallback for nodes that do not advertise one (pre-018 daemons),
+  # which keeps a half-rolled fleet correct with no flag day.
+  defp activator_endpoints(ctx, workload) do
+    case node_advertised_activator(ctx, workload) do
+      %{ip: ip, port: port} when is_binary(ip) and is_integer(port) ->
+        [%{ip: ip, port: port}]
+
+      _ ->
+        cp_activator_endpoint(ctx)
+    end
+  end
+
+  # Pick a node-advertised activator endpoint for the workload. Among nodes that
+  # advertise one, PREFER a node whose base for this workload is READY (it can
+  # actually cold-boot the workload; #3993 flagged this as easy to get subtly
+  # wrong), falling back to any advertiser. Deterministic: candidates are sorted by
+  # configured_id and the first is taken, so the rendered fallback is stable across
+  # rebuilds (the byte-identical render property). nil when no node advertises one.
+  defp node_advertised_activator(ctx, workload) do
+    advertisers =
+      ctx.node_facts
+      |> Enum.filter(&is_map(Map.get(&1, :activator_endpoint)))
+      |> Enum.sort_by(& &1.configured_id)
+
+    ready = Enum.filter(advertisers, &workload_base_ready?(&1, workload))
+
+    case List.first(ready) || List.first(advertisers) do
+      nil -> nil
+      fact -> fact.activator_endpoint
+    end
+  end
+
+  defp workload_base_ready?(fact, workload) do
+    case Map.get(Map.get(fact, :workloads, %{}), workload) do
+      %{base_state: :BASE_BUILD_STATE_READY} -> true
+      _ -> false
+    end
+  end
+
+  # The CP-injected activator (the pre-018 fallback), rendered when no node
+  # advertises its own. nil (none configured) yields an empty cluster, a valid CDS
+  # entry Envoy 503s against until an instance publishes.
+  defp cp_activator_endpoint(%{activator_endpoint: %{ip: ip, port: port}})
        when is_binary(ip) and is_integer(port),
        do: [%{ip: ip, port: port}]
 
-  defp activator_endpoints(_ctx), do: []
+  defp cp_activator_endpoint(_ctx), do: []
 
   # One route per workload: exact host from the catalog, prefix `/`, injecting the
   # workload header. A serving workload with no host in its catalog entry yields no
