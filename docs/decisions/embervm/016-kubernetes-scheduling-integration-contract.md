@@ -1,7 +1,7 @@
 # ADR 016: Kubernetes Scheduling Integration Contract: Drive the Autoscaler, Own VM Placement
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-07-22
 **Refines:** [ADR 005](005-embervm-eks-scale-out-metal-pool-bricks.md), [ADR 012](012-fleet-colocation-cp-dynamic-sizing.md), [ADR 013](013-substrate-lanes-brick-sizing-capacity-tiers.md)
 
