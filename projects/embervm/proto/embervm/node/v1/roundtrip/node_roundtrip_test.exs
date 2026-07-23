@@ -577,6 +577,9 @@ defmodule Embervm.NodeRoundtripTest do
     # A live VM is never checkpoint-pending.
     assert vm.checkpoint_pending == false
     assert vm.checkpoint_token == ""
+    # origin (ADR embervm/018 Phase 2): a node-woken stateful VM reports ACTIVATOR
+    # so the control plane adopts it (fenced-writer adoption trusts its generation).
+    assert vm.origin == :INSTANCE_ORIGIN_ACTIVATOR
 
     # The second VM is PAUSED awaiting a resolve (ADR embervm/008): adoption reads
     # checkpoint_pending + the token to resolve a stranded checkpoint.
