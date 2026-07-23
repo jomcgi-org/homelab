@@ -142,8 +142,12 @@ defmodule Embervm.AsyncWriterTest do
     AsyncWriter.enqueue(writer, entry(agent, :assigned, "held", "vm-held", %{block: self()}))
     assert_receive {:appending, "held", _appender}
     AsyncWriter.enqueue(writer, entry(agent, :assigned, "doomed"))
-    Process.exit(writer, :kill)
     ref = Process.monitor(writer)
+    # Unlink first: start_link/1 links the writer to this test process, and an
+    # untrappable :kill propagates over that link and would take the test down
+    # with it. The monitor (unaffected by unlink) still observes the death.
+    Process.unlink(writer)
+    Process.exit(writer, :kill)
     assert_receive {:DOWN, ^ref, :process, ^writer, :killed}
 
     assert RecordingOpLog.count(agent) == 0

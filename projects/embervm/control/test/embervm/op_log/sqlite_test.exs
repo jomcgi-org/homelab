@@ -827,7 +827,14 @@ defmodule Embervm.OpLog.SQLiteTest do
 
   defp append_task_op(server, kind, task_id, ts, payload \\ %{}) do
     {:ok, _} =
-      SQLite.append(server, %Op{kind: kind, tenant: "t1", task_id: task_id, ts: ts, payload: payload})
+      SQLite.append(server, %Op{
+        kind: kind,
+        tenant: "t1",
+        principal: "p1",
+        task_id: task_id,
+        ts: ts,
+        payload: payload
+      })
 
     :ok
   end

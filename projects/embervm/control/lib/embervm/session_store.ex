@@ -431,8 +431,8 @@ defmodule Embervm.SessionStore do
 
         {:reply, backfill_reply(state.op_log_mod.append(state.op_log, op)), state}
 
-      :error ->
-        {:reply, :error, state}
+      {:error, _reason} = error ->
+        {:reply, error, state}
     end
   end
 
