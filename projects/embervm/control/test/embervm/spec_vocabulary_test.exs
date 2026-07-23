@@ -13,14 +13,18 @@ defmodule Embervm.SpecVocabularyTest do
   artifact.
 
   A fourth test cross-checks freshness: every op-log kind the manifest claims the
-  spec MODELS must appear verbatim in adoption.tla. The modeled op kinds map to
-  durable taskState / vmState VALUES the spec writes literally (submitted,
-  assigned, succeeded, primed), so a verbatim-string check is the right invariant
-  there and keeps the manifest honest against the actual model. (The proto verbs
-  and health states are documented in the spec by the prose map's own action
-  names, e.g. RecvStatus for the status verbs, not by the raw RPC-verb string, so
-  the verbatim check is scoped to op kinds. The partition tests above are the
-  drift guard for those two surfaces.)
+  spec suite MODELS must appear verbatim in SOME spec `.tla` file. The modeled op
+  kinds map to durable taskState / vmState VALUES a spec writes literally
+  (submitted, assigned, succeeded, primed in adoption.tla; the session bank/relight
+  kinds in bank_relight.tla), so a verbatim-string check is the right invariant
+  there and keeps the manifest honest against the actual models. The scan is over
+  the whole specs/ directory (adoption.tla and bank_relight.tla today) because the
+  ADR 006 pilot now carries two protocols: protocol 1 (VM lifecycle + adoption) and
+  protocol 2 (session bank/relight generation pairing). (The proto verbs and health
+  states are documented in the spec by the prose map's own action names, e.g.
+  RecvStatus for the status verbs, not by the raw RPC-verb string, so the verbatim
+  check is scoped to op kinds. The partition tests above are the drift guard for
+  those two surfaces.)
   """
   use ExUnit.Case, async: true
 
@@ -101,17 +105,27 @@ defmodule Embervm.SpecVocabularyTest do
     assert_partitions(:op_kinds, MapSet.new(OpLog.kinds()))
   end
 
-  test "freshness: every modeled op kind's name appears verbatim in adoption.tla" do
-    spec = File.read!(Path.join(@specs_dir, "adoption.tla"))
+  test "freshness: every modeled op kind's name appears verbatim in some spec .tla" do
+    # Scan the whole spec suite (adoption.tla + bank_relight.tla today): the ADR 006
+    # pilot now carries two protocols, so a modeled op kind may be documented in
+    # either spec's prose map or actions. A single concatenated corpus is the right
+    # granularity, since the manifest models the vocabulary across the suite, not
+    # per file.
+    corpus =
+      @specs_dir
+      |> Path.join("*.tla")
+      |> Path.wildcard()
+      |> Enum.map_join("\n", &File.read!/1)
+
     {modeled, _excluded} = partition(:op_kinds)
 
     for kind <- modeled do
-      assert String.contains?(spec, Atom.to_string(kind)),
+      assert String.contains?(corpus, Atom.to_string(kind)),
              "op kind #{inspect(kind)} is marked modeled in vocabulary.exs but its name does " <>
-               "not appear in adoption.tla. Either the spec no longer models it (move it to " <>
-               "`excluded` in projects/embervm/specs/vocabulary.exs with a reason) or the " <>
+               "not appear in any projects/embervm/specs/*.tla. Either no spec models it (move " <>
+               "it to `excluded` in projects/embervm/specs/vocabulary.exs with a reason) or a " <>
                "spec's prose map / actions must be updated to mention it (ADR embervm/006 " <>
-               "layer 1: the manifest must not claim to model what the spec does not)."
+               "layer 1: the manifest must not claim to model what the specs do not)."
     end
   end
 end
