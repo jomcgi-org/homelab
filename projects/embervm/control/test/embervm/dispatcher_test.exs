@@ -9,7 +9,9 @@ defmodule Embervm.DispatcherTest do
   TaskStore give the real FSM, and unique ETS table names + an unnamed store keep
   each test isolated from the application's own supervised dispatcher.
   """
-  use ExUnit.Case, async: true
+  # async: false: put_env/delete_env on EMBERVM_PLACEMENT_RETRY here would leak the
+  # gate into other async modules' gate-off assertions and flake CI.
+  use ExUnit.Case, async: false
 
   alias Embervm.{Dispatcher, NodeCapacity, TaskStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite

@@ -9,7 +9,12 @@ defmodule Embervm.Placement.RetryTest do
   Tests pass `:enabled?` explicitly rather than touching the process env, so they
   are deterministic and `async: true`.
   """
-  use ExUnit.Case, async: true
+  # async: false — the enabled?/0 test mutates the process-global
+  # EMBERVM_PLACEMENT_RETRY env, which would leak into other async modules'
+  # gate-sensitive assertions if this ran concurrently. The core cases pass
+  # :enabled? explicitly and do not touch env, but the module as a whole must be
+  # serial because of that one sub-test.
+  use ExUnit.Case, async: false
 
   alias Embervm.Placement.Retry
 

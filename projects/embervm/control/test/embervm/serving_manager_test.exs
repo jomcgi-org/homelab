@@ -8,7 +8,9 @@ defmodule Embervm.ServingManagerTest do
   the wake-rate 429, wake-failure 503 + retry-ability, the straggler path (a live
   endpoint exists: resolved, not woken), and the restart adoption matrix.
   """
-  use ExUnit.Case, async: true
+  # async: false: put_env/delete_env on EMBERVM_PLACEMENT_RETRY here would leak the
+  # gate into other async modules' gate-off assertions and flake CI.
+  use ExUnit.Case, async: false
 
   alias Embervm.{NodeCapacity, ServingManager, ServingStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
