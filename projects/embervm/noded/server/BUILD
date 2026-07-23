@@ -4,6 +4,7 @@ go_library(
     name = "server",
     srcs = [
         "activator.go",
+        "stateful_activator.go",
         "budget.go",
         "group.go",
         "group_member.go",
@@ -39,6 +40,7 @@ go_test(
     name = "server_test",
     srcs = [
         "activator_test.go",
+        "stateful_activator_test.go",
         "budget_test.go",
         "drain_test.go",
         "evict_local_test.go",

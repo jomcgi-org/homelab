@@ -54,6 +54,10 @@ type Config struct {
 	// ActivatorPort is the port parsed from ActivatorAddr. It is advertised in
 	// NodeStatus and used by the stable node-IP DNAT rule.
 	ActivatorPort uint32
+	// StatefulActivatorPortRange is the inclusive L4 listener range for
+	// node-local stateful wake. A zero range disables the listeners. Env
+	// EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE.
+	StatefulActivatorPortRange [2]uint32
 	// Node identifies the Kubernetes node this daemon is pinned to (injected via
 	// the Downward API as EMBERVM_NODED_NODE / spec.nodeName). Reported as
 	// node_id in NodeStatus and stamped into snapshot node-pinning.
@@ -403,6 +407,15 @@ func Load() (Config, error) {
 
 		RequireBlessing: boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),
 	}
+	statefulActivatorRangeRaw := "5400-5409"
+	if raw, ok := os.LookupEnv("EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE"); ok {
+		statefulActivatorRangeRaw = raw
+	}
+	statefulActivatorRange, err := parsePortRange(statefulActivatorRangeRaw)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE: %w", err)
+	}
+	c.StatefulActivatorPortRange = statefulActivatorRange
 
 	if c.Node == "" {
 		c.Node = os.Getenv("NODE_NAME")
@@ -496,6 +509,25 @@ func Load() (Config, error) {
 	}
 
 	return c, nil
+}
+
+func parsePortRange(raw string) ([2]uint32, error) {
+	if raw == "" || raw == "0" {
+		return [2]uint32{}, nil
+	}
+	parts := strings.Split(raw, "-")
+	if len(parts) != 2 {
+		return [2]uint32{}, fmt.Errorf("%q must be LO-HI, empty, or 0", raw)
+	}
+	lo, err := strconv.ParseUint(parts[0], 10, 16)
+	if err != nil || lo == 0 {
+		return [2]uint32{}, fmt.Errorf("%q has an invalid lower port", raw)
+	}
+	hi, err := strconv.ParseUint(parts[1], 10, 16)
+	if err != nil || hi == 0 || hi < lo {
+		return [2]uint32{}, fmt.Errorf("%q has an invalid upper port", raw)
+	}
+	return [2]uint32{uint32(lo), uint32(hi)}, nil
 }
 
 // PruneStaleInstanceWarmth removes per-instance (brick) warmth directories under

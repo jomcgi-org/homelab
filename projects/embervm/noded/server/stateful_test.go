@@ -25,9 +25,11 @@ import (
 // banks/relights stateful VMs in memory, recording the volume path and the
 // generation each bank was stamped with, mirroring fakeServingDriver's shape.
 type fakeStatefulDriver struct {
-	mu     sync.Mutex
-	live   int
-	claims int
+	mu       sync.Mutex
+	live     int
+	claims   int
+	restores int
+	resumes  int
 	// banked maps snapshotRef -> the generation it was stamped with.
 	banked       map[string]uint64
 	statefulDir  string
@@ -44,7 +46,9 @@ type fakeStatefulDriver struct {
 	failResume     error
 	// pinnedIPs maps a banked snapshotRef -> the tap IP it was banked with, so a
 	// test can assert relight re-pins it (ADR embervm/008 relight IP fix).
-	pinnedIPs map[string]string
+	pinnedIPs      map[string]string
+	restoreStarted chan struct{}
+	releaseRestore chan struct{}
 }
 
 type fakeCheckpoint struct {
@@ -93,11 +97,25 @@ func (f *fakeStatefulDriver) StatefulPinnedIP(snapshotRef string) string {
 
 func (f *fakeStatefulDriver) RestoreStateful(_ context.Context, snapshotRef, _ string) (substrate.Handle, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if _, ok := f.banked[snapshotRef]; !ok {
+		f.mu.Unlock()
 		return substrate.Handle{}, status.Errorf(codes.FailedPrecondition, "no such banked stateful snapshot %q", snapshotRef)
 	}
+	started, release := f.restoreStarted, f.releaseRestore
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		<-release
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.live++
+	f.restores++
 	return substrate.Handle{ID: "relit-" + snapshotRef, ThreadID: "t-relit", Node: "node-4"}, nil
 }
 
@@ -167,6 +185,7 @@ func (f *fakeStatefulDriver) ResolveStatefulAbort(_ context.Context, token strin
 		}
 		return f.failResume
 	}
+	f.resumes++
 	return nil
 }
 

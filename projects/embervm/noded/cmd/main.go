@@ -252,7 +252,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// The activator is serving-class only. Bind before marking it advertised so
+	// The HTTP activator is serving-class only. Bind before marking it advertised so
 	// NodeStatus never sends an Envoy request to a listener that is not present.
 	activatorLis, err := net.Listen("tcp", cfg.ActivatorAddr)
 	if err != nil {
@@ -263,6 +263,20 @@ func run(logger *slog.Logger) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	srv.EnableActivator()
+	var statefulActivatorListeners []net.Listener
+	if lo, hi := cfg.StatefulActivatorPortRange[0], cfg.StatefulActivatorPortRange[1]; lo != 0 && hi >= lo && cfg.VolumeRoot != "" {
+		for port := lo; port <= hi; port++ {
+			statefulLis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+			if err != nil {
+				for _, bound := range statefulActivatorListeners {
+					_ = bound.Close()
+				}
+				return fmt.Errorf("stateful activator listen on port %d: %w", port, err)
+			}
+			statefulActivatorListeners = append(statefulActivatorListeners, statefulLis)
+		}
+		srv.StartStatefulActivator(ctx, statefulActivatorListeners)
+	}
 
 	// Plain-HTTP /healthz for kubelet probes (a privileged single-replica pod does
 	// not warrant gRPC health-checking machinery).
