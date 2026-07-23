@@ -1,7 +1,7 @@
 # ADR 010: Bazel Skyframe Snapshot as a Stateless Query Demo
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-07-18
 
 ---
