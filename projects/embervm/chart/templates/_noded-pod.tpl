@@ -168,6 +168,11 @@ containers:
         value: {{ printf "http://%s.%s.svc:%v" (include "embervm.fullname" $ctx) $ctx.Release.Namespace $ctx.Values.service.port | quote }}
       - name: EMBERVM_NODED_MAX_LIVE_VMS
         value: {{ $ctx.Values.noded.maxLiveVMs | quote }}
+      # Serving tap pre-provisioning (ADR embervm/014 decision 4). Zero (default)
+      # disables it; the daemon clamps a positive value to its own cgroup-derived
+      # slot ceiling regardless of what is configured here (server.go SlotCeiling).
+      - name: EMBERVM_NODED_TAP_PREALLOC
+        value: {{ $ctx.Values.noded.tapPrealloc | quote }}
       # R5 composite-group supernet: noded carves a /24 per group out of this
       # supernet and VALIDATES each control-plane-assigned group cidr is a /24
       # wholly within it. Distinct from the serving 172.31/12 tap space so the

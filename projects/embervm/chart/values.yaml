@@ -794,6 +794,16 @@ noded:
   # real concurrency; this only stops a runaway from exhausting the node.
   maxLiveVMs: 8
 
+  # Serving tap pre-provisioning (ADR embervm/014 decision 4): the number of serving
+  # taps EnsureNetwork pre-creates at brick boot, left down until AllocateTap draws
+  # one, so instance boot skips netlink create/attach work. Zero (the default)
+  # disables pre-provisioning: taps are created/deleted on demand exactly as before
+  # this feature existed. A positive value is clamped at the daemon to the brick's
+  # cgroup-derived slot ceiling (server.Server.SlotCeiling), so pre-creating more
+  # taps than the brick could ever host is not possible even if this is set too
+  # high. Not yet flipped fleet-wide; canary one brick class first (Task 4.2).
+  tapPrealloc: 0
+
   # R5 composite-group supernet: noded carves a per-group /24 out of this supernet
   # for each composite-workload group and VALIDATES the control-plane-assigned group
   # cidr is a /24 wholly within it (and non-overlapping with an existing group

@@ -96,6 +96,22 @@ func tapSetupArgs(tap, bridge string) [][]string {
 	}
 }
 
+// tapPrecreateArgs is tapSetupArgs' pre-provisioning sibling: it creates a tap and
+// attaches it to the bridge but leaves it DOWN, since a pre-created pool tap sits
+// idle until AllocateTap draws it and brings it up. Pure for table testing.
+func tapPrecreateArgs(tap, bridge string) [][]string {
+	return [][]string{
+		{"ip", "tuntap", "add", "dev", tap, "mode", "tap"},
+		{"ip", "link", "set", tap, "master", bridge},
+	}
+}
+
+// tapUpArgs and tapDownArgs bring a pre-created pool tap up (on AllocateTap draw)
+// or down (on ReleaseTap return), without creating or deleting the device. Pure for
+// table testing.
+func tapUpArgs(tap string) []string   { return []string{"ip", "link", "set", tap, "up"} }
+func tapDownArgs(tap string) []string { return []string{"ip", "link", "set", tap, "down"} }
+
 // tapTeardownArgs returns the argv to delete a tap device. Deleting the tap detaches
 // it from the bridge implicitly. Pure for table testing.
 func tapTeardownArgs(tap string) []string {
@@ -234,16 +250,30 @@ type Manager struct {
 	// calls cannot interleave ruleset writes.
 	dnatMu sync.Mutex
 	dnat   map[string]dnatEntry
+
+	// tapPrealloc is the number of taps EnsureNetwork pre-creates at brick boot
+	// (ADR embervm/014 decision 4). Zero disables pre-provisioning: AllocateTap/
+	// ReleaseTap fall back to today's create-on-demand/delete-on-release behaviour.
+	tapPrealloc int
+	// poolMu guards pool, which is idle pre-created IPs available for AllocateTap
+	// to draw. An IP leaves pool while its tap is checked out (link up, DNAT wired)
+	// and returns to it on ReleaseTap (link down, DNAT removed); it is never
+	// released back to the allocator, since the tap device persists for the IP's
+	// whole pre-provisioned lifetime, up or down.
+	poolMu sync.Mutex
+	pool   []net.IP
 }
 
 // NewManager builds a serving network Manager for a bridge name and a CIDR. The
 // gateway (bridge) IP is the first usable address (.1) of the CIDR; VM IPs are
 // allocated from .2 upward. podIP is noded's routable pod IP for the DNAT projection
-// (empty disables DNAT and reports tap IPs); portBase is the DNAT port-space base. A
-// malformed CIDR, or (when podIP is set) a portBase whose top offset would overflow
-// 65535, is an error so a misconfiguration fails loudly at startup rather than at the
-// first StartServing.
-func NewManager(runner Runner, bridge, cidr, podIP string, portBase int) (*Manager, error) {
+// (empty disables DNAT and reports tap IPs); portBase is the DNAT port-space base.
+// tapPrealloc is the ADR embervm/014 decision-4 pool size EnsureNetwork pre-creates
+// at boot (0 disables pre-provisioning; see AllocateTap/ReleaseTap). A malformed
+// CIDR, or (when podIP is set) a portBase whose top offset would overflow 65535, is
+// an error so a misconfiguration fails loudly at startup rather than at the first
+// StartServing.
+func NewManager(runner Runner, bridge, cidr, podIP string, portBase, tapPrealloc int) (*Manager, error) {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
@@ -262,16 +292,20 @@ func NewManager(runner Runner, bridge, cidr, podIP string, portBase int) (*Manag
 			return nil, fmt.Errorf("serving: port base %d + subnet %s top offset overflows 65535 (max derived port %d)", portBase, cidr, maxPort)
 		}
 	}
+	if tapPrealloc < 0 {
+		return nil, fmt.Errorf("serving: tap prealloc %d must be >= 0", tapPrealloc)
+	}
 	return &Manager{
-		runner:    runner,
-		bridge:    bridge,
-		cidr:      ipnet,
-		gatewayIP: gatewayIP,
-		prefixLen: prefixLen,
-		alloc:     newIPAllocator(ipnet, gatewayIP),
-		podIP:     podIP,
-		portBase:  portBase,
-		dnat:      make(map[string]dnatEntry),
+		runner:      runner,
+		bridge:      bridge,
+		cidr:        ipnet,
+		gatewayIP:   gatewayIP,
+		prefixLen:   prefixLen,
+		alloc:       newIPAllocator(ipnet, gatewayIP),
+		podIP:       podIP,
+		portBase:    portBase,
+		dnat:        make(map[string]dnatEntry),
+		tapPrealloc: tapPrealloc,
 	}, nil
 }
 
@@ -283,10 +317,25 @@ func (m *Manager) CIDR() string {
 	return m.cidr.String()
 }
 
-// EnsureNetwork creates the bridge (idempotently) and installs the serving forward
-// nftables posture (drop VM-originated NEW forwarding; see nftRuleset). It is called
-// once on daemon start before any serving VM is brought up. Bridge-create batches that
-// fail because the device already exists are
+// ClampTapPrealloc lowers the configured tap-prealloc count to ceiling when it
+// exceeds it, a no-op otherwise. It must be called before EnsureNetwork. The
+// daemon entrypoint uses it to cap the pool at the brick's cgroup-derived slot
+// ceiling (server.Server.SlotCeiling, ADR embervm/013 section 7): that ceiling is
+// only known once server.New has built the budget reader, which happens after this
+// Manager is constructed, so the clamp is applied as a separate step rather than a
+// NewManager argument.
+func (m *Manager) ClampTapPrealloc(ceiling int) {
+	if ceiling >= 0 && m.tapPrealloc > ceiling {
+		m.tapPrealloc = ceiling
+	}
+}
+
+// EnsureNetwork creates the bridge (idempotently), installs the serving forward
+// nftables posture (drop VM-originated NEW forwarding; see nftRuleset), and, when
+// tapPrealloc > 0, pre-creates that many taps left DOWN in the pool (ADR
+// embervm/014 decision 4: pre-provisioning removes netlink work from the instance
+// boot path). It is called once on daemon start before any serving VM is brought
+// up. Bridge-create batches that fail because the device already exists are
 // tolerated (a daemon restart re-enters here with the bridge already present); the
 // nftables apply is inherently idempotent (flush-then-define of our own table).
 func (m *Manager) EnsureNetwork(ctx context.Context) error {
@@ -304,11 +353,45 @@ func (m *Manager) EnsureNetwork(ctx context.Context) error {
 	if _, err := m.runner.Run(ctx, "sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return err
 	}
+	if err := m.precreatePool(ctx); err != nil {
+		return err
+	}
 	// Apply the ruleset from the CURRENT (boot: empty) DNAT map. Post-boot, EnsureDNAT/
 	// RemoveDNAT regenerate the same table including the forward posture.
 	m.dnatMu.Lock()
 	defer m.dnatMu.Unlock()
 	return m.applyRulesetLocked(ctx)
+}
+
+// precreatePool pre-creates m.tapPrealloc taps (a no-op when it is 0) using the
+// same deterministic TapNameForIP naming AllocateTap uses on-demand, over IPs drawn
+// from the allocator's usable range. Each tap is created and attached to the bridge
+// but left DOWN (see tapPrecreateArgs); del-before-add is retained per tap, exactly
+// the #3745 stale-tap repair AllocateTap already relies on, since a daemon restart
+// re-enters here with the prior incarnation's pool taps still attached. A failure
+// mid-precreate rolls back only the failed tap's reservation; taps already pooled
+// stay pooled (a partially pre-provisioned pool degrades to more on-demand
+// allocation, not a boot failure).
+func (m *Manager) precreatePool(ctx context.Context) error {
+	for i := 0; i < m.tapPrealloc; i++ {
+		ip, err := m.alloc.allocate()
+		if err != nil {
+			return fmt.Errorf("serving: pre-provisioning tap %d/%d: %w", i+1, m.tapPrealloc, err)
+		}
+		tap := TapNameForIP(ip)
+		_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
+		for _, argv := range tapPrecreateArgs(tap, m.bridge) {
+			if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
+				_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
+				m.alloc.release(ip)
+				return fmt.Errorf("serving: pre-provisioning tap %s: %w", tap, rerr)
+			}
+		}
+		m.poolMu.Lock()
+		m.pool = append(m.pool, ip)
+		m.poolMu.Unlock()
+	}
+	return nil
 }
 
 // applyRulesetLocked regenerates the whole serving ruleset from the current DNAT map
@@ -378,11 +461,25 @@ func (m *Manager) Endpoint(ip net.IP, guestPort uint32) (string, uint32) {
 	return m.podIP, vmPort
 }
 
-// AllocateTap allocates the next free IP, creates and attaches a tap named for that
-// IP, and returns (tapName, ip). On any ip failure the partially-created tap and the
+// AllocateTap draws a pre-created pool tap when one is idle (ADR embervm/014
+// decision 4: bring the link up, no netlink create/attach on the instance boot
+// path), falling back to allocating the next free IP and creating a fresh tap when
+// the pool is empty or disabled (tapPrealloc == 0), exactly today's behaviour. It
+// returns (tapName, ip); on any ip failure the partially-created tap and the
 // reserved IP are rolled back so a failed StartServing leaks neither. The returned
 // tap name is deterministic from the IP so teardown needs only the IP.
 func (m *Manager) AllocateTap(ctx context.Context) (tap string, ip net.IP, err error) {
+	if pooled, ok := m.popPool(); ok {
+		tap = TapNameForIP(pooled)
+		if _, rerr := m.runner.Run(ctx, "ip", tapUpArgs(tap)...); rerr != nil {
+			// Bringing an already-attached tap up failed: put it back rather than leak
+			// it out of the pool, then fall through to on-demand creation below so the
+			// caller still gets a usable tap.
+			m.pushPool(pooled)
+		} else {
+			return tap, pooled, nil
+		}
+	}
 	ip, err = m.alloc.allocate()
 	if err != nil {
 		return "", nil, err
@@ -414,9 +511,21 @@ func (m *Manager) AllocateTap(ctx context.Context) (tap string, ip net.IP, err e
 // the guest's eth0 keeps the IP baked at fresh boot (a snapshot resume never re-runs
 // kernel init), so a different IP would black-hole traffic. The IP must be free in the
 // allocator (it will be after a bank released it, or after a restart rescan re-reserved
-// nothing); a conflict is an error the caller maps to FAILED_PRECONDITION.
+// nothing); a conflict is an error the caller maps to FAILED_PRECONDITION. When ip is
+// currently idle in the prealloc pool (already reserved in the allocator by
+// precreatePool, ADR embervm/014 decision 4), it is drawn out of the pool instead of
+// re-reserved, since the allocator already holds it for that tap's whole
+// pre-provisioned lifetime; if bringing the pool tap up fails, the on-demand path
+// below still runs against the freshly-reserved IP.
 func (m *Manager) AllocateTapForIP(ctx context.Context, ip net.IP) (tap string, err error) {
-	if err = m.alloc.reserve(ip); err != nil {
+	if m.popPoolIP(ip) {
+		tap = TapNameForIP(ip)
+		if _, rerr := m.runner.Run(ctx, "ip", tapUpArgs(tap)...); rerr == nil {
+			return tap, nil
+		}
+		// Bringing the pool tap up failed: fall through to the on-demand path, which
+		// re-does the full create+attach+up over an IP the allocator already reserved.
+	} else if err = m.alloc.reserve(ip); err != nil {
 		return "", err
 	}
 	tap = TapNameForIP(ip)
@@ -436,20 +545,71 @@ func (m *Manager) AllocateTapForIP(ctx context.Context, ip net.IP) (tap string, 
 	return tap, nil
 }
 
-// ReleaseTap deletes the tap for an IP and releases the IP back to the allocator. It
-// is idempotent at the ip layer (deleting an absent tap is tolerated) so a teardown
-// after a partial start still frees the IP.
+// ReleaseTap returns a VM's tap. When tapPrealloc is enabled AND the IP was drawn
+// from the pool (a pre-created tap, ADR embervm/014 decision 4), the tap is brought
+// down and returned to the pool instead of deleted, so a later AllocateTap can reuse
+// it without netlink create/attach work; the IP stays reserved in the allocator the
+// whole time (the tap device persists for it, up or down). Otherwise (prealloc
+// disabled, or the tap was created on-demand because the pool was exhausted) it is
+// today's behaviour: delete the tap and free the IP back to the allocator. Either
+// way this is idempotent at the ip layer (deleting/downing an absent tap is
+// tolerated) so a teardown after a partial start still frees the IP.
 func (m *Manager) ReleaseTap(ctx context.Context, ip net.IP) {
 	// Drop the VM's DNAT rule first so the kernel stops advertising the endpoint before
-	// the tap disappears (no-op when DNAT is disabled).
+	// the tap goes down or disappears (no-op when DNAT is disabled).
 	m.RemoveDNAT(ctx, ip)
 	tap := TapNameForIP(ip)
+	if m.tapPrealloc > 0 {
+		if _, err := m.runner.Run(ctx, "ip", tapDownArgs(tap)...); err != nil {
+			_ = err // best-effort: the tap stays attached (possibly still up) rather than wedging release
+		}
+		m.pushPool(ip)
+		return
+	}
 	if _, err := m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...); err != nil {
 		// A missing tap is fine (already gone); other errors are logged by the caller
 		// via the returned nothing, so swallow here to keep teardown best-effort.
 		_ = err
 	}
 	m.alloc.release(ip)
+}
+
+// popPool removes and returns the lowest-IP idle pool entry, or (nil, false) when
+// the pool is empty or disabled. FIFO (pool is built in ascending IP order by
+// precreatePool and refilled at the tail by pushPool), matching the allocator's own
+// lowest-free convention so pool draws are deterministic and easy to reason about.
+func (m *Manager) popPool() (net.IP, bool) {
+	m.poolMu.Lock()
+	defer m.poolMu.Unlock()
+	if len(m.pool) == 0 {
+		return nil, false
+	}
+	ip := m.pool[0]
+	m.pool = m.pool[1:]
+	return ip, true
+}
+
+// pushPool returns an IP to the idle pool.
+func (m *Manager) pushPool(ip net.IP) {
+	m.poolMu.Lock()
+	m.pool = append(m.pool, ip)
+	m.poolMu.Unlock()
+}
+
+// popPoolIP removes a SPECIFIC IP from the idle pool if present, reporting whether
+// it was found. Used by AllocateTapForIP: a relight pin may name an IP that happens
+// to be sitting idle in the prealloc pool, in which case it must be drawn out (not
+// re-reserved; precreatePool already holds it in the allocator).
+func (m *Manager) popPoolIP(ip net.IP) bool {
+	m.poolMu.Lock()
+	defer m.poolMu.Unlock()
+	for i, pooled := range m.pool {
+		if pooled.Equal(ip) {
+			m.pool = append(m.pool[:i], m.pool[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // GatewayIP is the bridge IP a guest uses as its default route.
