@@ -89,6 +89,21 @@ defmodule Embervm.SessionStore do
   end
 
   @doc """
+  Like `transition/6`, but the durable append may be DEFERRED to Embervm.AsyncWriter
+  when `EMBERVM_ASYNC_LIFECYCLE_WRITES` is on (ADR embervm/014 decision 2). Used only
+  for the wake hot-path `session_relit`: the ETS row (state + residency +
+  `node_id`/`vm_id` from `updates`) is advanced synchronously so the woken session is
+  immediately routable and adoption sees it, and the durable append lands afterward.
+  `vm_id` registers the pending write for the reconciler's adopt-and-backfill
+  discriminator. Gate off: identical to `transition/6` (write-through).
+  """
+  @spec transition_lifecycle(GenServer.server(), String.t(), atom(), atom(), map(), map(), binary() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def transition_lifecycle(store \\ __MODULE__, session_id, event, op_kind, payload, updates, vm_id) do
+    GenServer.call(store, {:transition_lifecycle, session_id, event, op_kind, payload, updates, vm_id})
+  end
+
+  @doc """
   Applies a TRANSIENT FSM edge to a session WITHOUT an op-log append: the ETS-only
   move into a mid-operation state (`banking`, `relighting`) that a crash heals from
   node inventory rather than from the durable log (there is no `session_banking`/
@@ -219,6 +234,15 @@ defmodule Embervm.SessionStore do
     # %{principal, ts, stats}, so Embervm.Metering charges the quota cache off the
     # same write, exactly like TaskStore. No-op default (unit tests wire none).
     on_metered = Keyword.get(opts, :on_metered, fn _event -> :ok end)
+    # Off-hot-path boot/wake writes (ADR embervm/014 decision 2). When on, the
+    # session_created (create) and session_relit (wake) durable appends are deferred
+    # to Embervm.AsyncWriter AFTER the ETS row + token are minted synchronously (the
+    # caller needs the token, and reads/adoption must see the row immediately), so
+    # the boot/wake caller never blocks on the durable write. Off (default): exact
+    # write-through ordering (append THEN reply). Never applies to session_invoked,
+    # bank, or terminal ops (those stay synchronous).
+    async_writer = Keyword.get(opts, :async_writer, Embervm.AsyncWriter)
+    async_lifecycle_writes = Keyword.get(opts, :async_lifecycle_writes, false)
 
     sessions = :ets.new(@sessions_table, [:set, :private])
     residency = :ets.new(@residency_table, [:set, :private])
@@ -229,6 +253,8 @@ defmodule Embervm.SessionStore do
       clock: clock,
       id_fun: id_fun,
       on_metered: on_metered,
+      async_writer: async_writer,
+      async_lifecycle_writes: async_lifecycle_writes,
       sessions: sessions,
       residency: residency,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
@@ -311,6 +337,14 @@ defmodule Embervm.SessionStore do
 
   def handle_call({:transition, session_id, event, op_kind, payload, updates}, _from, state) do
     do_transition(state, session_id, event, op_kind, payload, updates)
+  end
+
+  def handle_call({:transition_lifecycle, session_id, event, op_kind, payload, updates, vm_id}, _from, state) do
+    if state.async_lifecycle_writes do
+      do_transition_async(state, session_id, event, op_kind, payload, updates, vm_id)
+    else
+      do_transition(state, session_id, event, op_kind, payload, updates)
+    end
   end
 
   def handle_call({:mark, session_id, event}, _from, state) do
@@ -441,46 +475,72 @@ defmodule Embervm.SessionStore do
       payload: payload
     }
 
-    case state.op_log_mod.append(state.op_log, op) do
-      {:ok, _seq} ->
-        session = %{
-          session_id: session_id,
-          tenant: op.tenant,
-          principal: op.principal,
-          workload: op.workload,
-          state: :running,
-          node_id: Map.get(attrs, :node_id),
-          vm_id: Map.get(attrs, :vm_id),
-          base_snapshot_ref: Map.get(attrs, :base_snapshot_ref),
-          base_digest: Map.get(attrs, :base_digest),
-          generation: 0,
-          snapshot_ref: nil,
-          snapshot_size_bytes: nil,
-          token_sha256: token_sha256,
-          created_at: ts,
-          last_invoke_at: nil,
-          expires_at: Map.get(attrs, :expires_at),
-          updated_at: ts,
-          terminal_reason: nil
-        }
+    session = %{
+      session_id: session_id,
+      tenant: op.tenant,
+      principal: op.principal,
+      workload: op.workload,
+      state: :running,
+      node_id: Map.get(attrs, :node_id),
+      vm_id: Map.get(attrs, :vm_id),
+      base_snapshot_ref: Map.get(attrs, :base_snapshot_ref),
+      base_digest: Map.get(attrs, :base_digest),
+      generation: 0,
+      snapshot_ref: nil,
+      snapshot_size_bytes: nil,
+      token_sha256: token_sha256,
+      created_at: ts,
+      last_invoke_at: nil,
+      expires_at: Map.get(attrs, :expires_at),
+      updated_at: ts,
+      terminal_reason: nil
+    }
 
-        :ets.insert(state.sessions, {session_id, session})
-        put_residency(state, session)
-        state = bump_counts(state, nil, :running, session.workload)
+    reply = %{
+      session_id: session_id,
+      token: token,
+      expires_at: session.expires_at,
+      base_digest: session.base_digest,
+      state: :running
+    }
 
-        reply = %{
-          session_id: session_id,
-          token: token,
-          expires_at: session.expires_at,
-          base_digest: session.base_digest,
-          state: :running
-        }
+    if state.async_lifecycle_writes do
+      # Gate on (ADR embervm/014 decision 2): mint the ETS row + token synchronously
+      # (the caller needs the token, and adoption/reads must see the session at
+      # once), then defer the durable session_created append to Embervm.AsyncWriter
+      # so the create caller does not block on it. A CP crash before the append
+      # lands loses the row; the node still reports the live VM, and the adoption
+      # backfill re-creates it (session_manager Direction-2), so the vm_id registers
+      # the pending write for that discriminator.
+      insert_created_session(state, session)
 
-        {:reply, {:ok, reply}, state}
+      Embervm.AsyncWriter.enqueue(state.async_writer, %{
+        op: op,
+        op_log_mod: state.op_log_mod,
+        op_log: state.op_log,
+        vm_id: Map.get(attrs, :vm_id)
+      })
 
-      {:error, _reason} = error ->
-        {:reply, error, state}
+      {:reply, {:ok, reply}, bump_counts(state, nil, :running, session.workload)}
+    else
+      case state.op_log_mod.append(state.op_log, op) do
+        {:ok, _seq} ->
+          insert_created_session(state, session)
+          {:reply, {:ok, reply}, bump_counts(state, nil, :running, session.workload)}
+
+        {:error, _reason} = error ->
+          {:reply, error, state}
+      end
     end
+  end
+
+  # The ETS side of a create: the hot-set row + its residency fact. Shared by the
+  # write-through and async paths so both land the identical in-memory state; only
+  # the durable append's timing differs between them.
+  defp insert_created_session(state, session) do
+    :ets.insert(state.sessions, {session.session_id, session})
+    put_residency(state, session)
+    :ok
   end
 
   # -- transition ------------------------------------------------------------
@@ -492,6 +552,50 @@ defmodule Embervm.SessionStore do
         {:ok, updated, state} -> {:reply, {:ok, updated}, state}
         {:error, reason} -> {:reply, {:error, reason}, state}
       end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # The async-deferred transition (session_relit under the gate, ADR embervm/014
+  # decision 2): advance the FSM + ETS row (state, merged updates, residency,
+  # counts) SYNCHRONOUSLY so the woken session is immediately routable and adoption
+  # sees it, then defer the durable append to Embervm.AsyncWriter. Mirrors
+  # append_and_update's ETS side exactly, minus the metering hook: this path is only
+  # ever a non-terminal, usage-free lifecycle op (session_relit), so there is
+  # nothing to charge (metering stays synchronous, on the terminal/invoke ops).
+  defp do_transition_async(state, session_id, event, op_kind, payload, updates, vm_id) do
+    with {:ok, session} <- fetch(state, session_id),
+         {:ok, next} <- SessionState.transition(session.state, event) do
+      ts = state.clock.()
+
+      op = %Op{
+        kind: op_kind,
+        tenant: session.tenant,
+        principal: session.principal,
+        workload: session.workload,
+        session_id: session_id,
+        ts: ts,
+        payload: payload
+      }
+
+      updated =
+        session
+        |> Map.merge(updates)
+        |> Map.merge(%{state: next, updated_at: ts})
+
+      :ets.insert(state.sessions, {session_id, updated})
+      state = bump_counts(state, session.state, next, session.workload)
+      state = apply_residency(state, session.state, updated)
+
+      Embervm.AsyncWriter.enqueue(state.async_writer, %{
+        op: op,
+        op_log_mod: state.op_log_mod,
+        op_log: state.op_log,
+        vm_id: vm_id
+      })
+
+      {:reply, {:ok, updated}, state}
     else
       {:error, _reason} = error -> {:reply, error, state}
     end

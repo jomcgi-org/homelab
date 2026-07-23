@@ -560,12 +560,16 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
+  # Monotonic advance for the deferred async lifecycle appends (ADR embervm/014
+  # decision 2), mirroring Embervm.OpLog.SQLite: only from the exact prior state, so
+  # a late async :assigned/:started append cannot regress a row that already ran or
+  # terminalized. Inert under the gate off. See the SQLite backend for the rationale.
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
-    update_task_state(conn, op.task_id, "assigned", op.ts)
+    advance_task_state(conn, op.task_id, "queued", "assigned", op.ts)
   end
 
   defp project(conn, %Op{kind: :started} = op, _seq) do
-    update_task_state(conn, op.task_id, "running", op.ts)
+    advance_task_state(conn, op.task_id, "assigned", "running", op.ts)
   end
 
   defp project(conn, %Op{kind: :succeeded} = op, _seq) do
@@ -633,12 +637,16 @@ defmodule Embervm.OpLog.Postgres do
   defp project(conn, %Op{kind: :session_created} = op, _seq) do
     payload = op.payload
 
+    # ON CONFLICT DO NOTHING: idempotent on session_id so the adopt-and-backfill
+    # repair can re-append session_created for a lost async write without a clash
+    # (mirrors the SQLite backend's INSERT OR IGNORE), ADR embervm/014 decision 2.
     sql = """
     INSERT INTO sessions
       (session_id, tenant, principal, workload, state, node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, NULL, NULL, $9, $10, NULL, $11, $12, NULL)
+    ON CONFLICT (session_id) DO NOTHING
     """
 
     exec(conn, sql, [
@@ -686,11 +694,15 @@ defmodule Embervm.OpLog.Postgres do
     ])
   end
 
+  # Guarded against terminal states so a deferred async relit append cannot
+  # resurrect a since-destroyed session (mirrors the SQLite backend), ADR
+  # embervm/014 decision 2. Inert under the gate off.
   defp project(conn, %Op{kind: :session_relit} = op, _seq) do
-    exec(conn, "UPDATE sessions SET state='running', updated_at=$1 WHERE session_id=$2", [
-      op.ts,
-      op.session_id
-    ])
+    exec(
+      conn,
+      "UPDATE sessions SET state='running', updated_at=$1 WHERE session_id=$2 AND state NOT IN ('destroyed','expired','evicted','failed')",
+      [op.ts, op.session_id]
+    )
   end
 
   defp project(conn, %Op{kind: :session_expired} = op, _seq),
@@ -1265,6 +1277,16 @@ defmodule Embervm.OpLog.Postgres do
 
   defp update_task_state(conn, task_id, state, ts) do
     exec(conn, "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3", [state, ts, task_id])
+  end
+
+  # Monotonic advance for a deferred async lifecycle append: SET only when the row
+  # is still in the exact prior state (see Embervm.OpLog.SQLite.advance_task_state/5).
+  defp advance_task_state(conn, task_id, from_state, to_state, ts) do
+    exec(
+      conn,
+      "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3 AND state=$4",
+      [to_state, ts, task_id, from_state]
+    )
   end
 
   # -- usage accrual, mirrors Embervm.OpLog.SQLite exactly -------------------

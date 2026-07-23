@@ -137,8 +137,11 @@ defmodule Embervm.AsyncWriterTest do
     # An op enqueued but never given a chance to apply (we kill the writer with the
     # cast still in its mailbox) leaves NOTHING durable. This encodes the ADR's
     # accepted crash-loss window; the adoption backfill (session_manager) is the
-    # repair, exercised in session_manager_test.
-    :ok = GenServer.cast(writer, {:enqueue, entry(agent, :assigned, "doomed")})
+    # repair, exercised in session_manager_test. A blocking op holds the writer so
+    # the second (doomed) enqueue is still in the mailbox when we kill it.
+    AsyncWriter.enqueue(writer, entry(agent, :assigned, "held", "vm-held", %{block: self()}))
+    assert_receive {:appending, "held", _appender}
+    AsyncWriter.enqueue(writer, entry(agent, :assigned, "doomed"))
     Process.exit(writer, :kill)
     ref = Process.monitor(writer)
     assert_receive {:DOWN, ^ref, :process, ^writer, :killed}

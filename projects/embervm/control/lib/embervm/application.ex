@@ -76,9 +76,26 @@ defmodule Embervm.Application do
       {Registry, keys: :duplicate, name: Embervm.TaskWaiters},
       Embervm.SyncWait,
       op_log_child_spec(),
+      # The async lifecycle-write queue (ADR embervm/014 decision 2), gated by
+      # EMBERVM_ASYNC_LIFECYCLE_WRITES. Placed AFTER the op-log (it appends through
+      # it) and BEFORE TaskStore/SessionStore/SessionManager (they enqueue their
+      # off-hot-path :assigned/:started and session_created/session_relit appends
+      # here). Owns no ETS and effectively never crashes, so leading the stores in
+      # the rest_for_one chain costs nothing; it drains on graceful shutdown so a CP
+      # roll loses no pending append. Started unconditionally: with the gate OFF it
+      # receives no work (the stores keep write-through ordering), so it is inert.
+      Embervm.AsyncWriter,
       # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
       # so Embervm.Metering charges the quota cache off the same durable write.
-      {Embervm.TaskStore, [op_log_mod: op_log_mod(), on_metered: &Embervm.Metering.on_metered/1]},
+      # async_writer + async_lifecycle_writes wire the gated off-hot-path append of
+      # :assigned/:started (dispatch); OFF (default) keeps write-through ordering.
+      {Embervm.TaskStore,
+       [
+         op_log_mod: op_log_mod(),
+         on_metered: &Embervm.Metering.on_metered/1,
+         async_writer: Embervm.AsyncWriter,
+         async_lifecycle_writes: async_lifecycle_writes_enabled()
+       ]},
       # Finch (the shared HTTP pool, TLS-pinned to the K8s CA in-cluster) before
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
       Embervm.K8s.finch_child_spec(),
@@ -172,7 +189,13 @@ defmodule Embervm.Application do
       # :rest_for_one a SessionStore restart bounces the manager and Router, which
       # rebuild from the durable projection. With no node wired, create denies
       # :no_capacity and nothing runs, exactly like the dispatcher in R0.
-      {Embervm.SessionStore, [op_log_mod: op_log_mod(), on_metered: &Embervm.Metering.on_metered/1]},
+      {Embervm.SessionStore,
+       [
+         op_log_mod: op_log_mod(),
+         on_metered: &Embervm.Metering.on_metered/1,
+         async_writer: Embervm.AsyncWriter,
+         async_lifecycle_writes: async_lifecycle_writes_enabled()
+       ]},
       {Registry, keys: :unique, name: Embervm.SessionRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Embervm.SessionSupervisor},
       {Embervm.SessionManager, session_manager_opts()},
@@ -613,7 +636,12 @@ defmodule Embervm.Application do
       disk_low_watermark_bytes: session_disk_low_watermark_bytes(),
       node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
-      orphan_grace_ms: orphan_grace_ms()
+      orphan_grace_ms: orphan_grace_ms(),
+      # The Direction-2 adopt-and-backfill discriminator asks AsyncWriter whether a
+      # rowless reported VM has a write in flight (ADR embervm/014 decision 2), so it
+      # needs both the gate and the writer reference.
+      async_lifecycle_writes: async_lifecycle_writes_enabled(),
+      async_writer: Embervm.AsyncWriter
     ] ++ wake_opts()
   end
 
@@ -626,6 +654,23 @@ defmodule Embervm.Application do
   # change, no code change. Nothing sets it on in this PR.
   defp node_confirmed_destroy_enabled do
     case trimmed_env("EMBERVM_NODE_CONFIRMED_DESTROY") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2). UNSET or
+  # "0"/"false"/"" (the default, and what this PR ships) => the boot/wake lifecycle
+  # appends (:assigned/:started on dispatch, session_created/session_relit on session
+  # boot/wake) stay write-through: the durable oplog append blocks the hot-path caller
+  # before the instance is handed back, today's ordering. "1"/"true" => those four
+  # appends are deferred to Embervm.AsyncWriter AFTER the in-memory state is advanced
+  # (RPC already succeeded), taking the durable write off the hot path; a lost write
+  # (CP crash before the async append) is repaired by the adoption backfill. Metering,
+  # :submitted, destruction, and bank ops are NEVER deferred. Wired here so it flips
+  # via a deploy values env change, no code change. Nothing sets it on in this PR.
+  defp async_lifecycle_writes_enabled do
+    case trimmed_env("EMBERVM_ASYNC_LIFECYCLE_WRITES") do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end

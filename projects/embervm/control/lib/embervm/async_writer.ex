@@ -44,6 +44,17 @@ defmodule Embervm.AsyncWriter do
   stronger than the per-instance order the ADR requires; a per-scheduler pool is
   deliberately YAGNI until CI perf shows single-writer contention).
 
+  ## The pending registry (a public ETS table)
+
+  In-flight appends are tracked by `vm_id` in a PUBLIC ETS counter table this
+  process owns, NOT in the GenServer state. That is deliberate: an append can
+  block inside `handle_cast/2` (a slow op-log), and a `pending?/2` reader must
+  still get an answer while that append is in flight (a GenServer `call` would sit
+  behind the blocked cast in the mailbox and deadlock). The count is incremented
+  the moment an op is enqueued (before it can apply) and decremented after it
+  applies, so a reader sees a VM as pending for exactly the enqueue..applied
+  window.
+
   ## Crash-loss and its repair
 
   A crash between `enqueue/2` and the append inside `handle_cast/2` loses that op:
@@ -53,8 +64,7 @@ defmodule Embervm.AsyncWriter do
   node reports the live VM, the CP has no row, but a pending async write (tracked
   here via `pending?/2`) OR an existing task/session record references the
   `vm_id`, so the instance is ADOPTED and its missing ops backfilled, never
-  destroyed. `pending?/2` is the "is a write in flight for this vm_id" half of
-  that discriminator; the store-row half is the reconciler's own lookup.
+  destroyed.
 
   On a GRACEFUL shutdown (a normal CP roll), `terminate/2` drains every queued
   append before the process exits, so a planned rollout loses nothing; only an
@@ -82,23 +92,33 @@ defmodule Embervm.AsyncWriter do
   The append is `op_log_mod.append(op_log, op)`; `vm_id` (when set) registers this
   op as an in-flight write so `pending?/2` can answer the adopt-and-backfill
   discriminator until the append lands. Fire-and-forget: a cast, so the caller
-  (the dispatch/create hot path) never blocks on the durable write.
+  (the dispatch/create hot path) never blocks on the durable write. The pending
+  count is bumped SYNCHRONOUSLY here (from the caller), before the cast, so a
+  reader can never observe a gap between enqueue and the vm being pending.
   """
   @spec enqueue(GenServer.server(), map()) :: :ok
   def enqueue(server \\ __MODULE__, entry) when is_map(entry) do
-    GenServer.cast(server, {:enqueue, entry})
+    table = table_for(server)
+    inc_pending(table, Map.get(entry, :vm_id))
+    GenServer.cast(server, {:enqueue, entry, table})
   end
 
   @doc """
   Does an as-yet-unapplied durable append reference `vm_id`? The pending half of
   the reconciler's adopt-vs-destroy discriminator: a node reports a live VM the CP
   has no row for, but if a write for that VM is still in flight here it is a young
-  async-write race to adopt, not an orphan to destroy. A synchronous call so the
-  answer reflects every append queued (but not yet applied) at call time.
+  async-write race to adopt, not an orphan to destroy. Reads the public ETS
+  counter directly (no GenServer call), so it answers even while an append is
+  blocked in flight.
   """
   @spec pending?(GenServer.server(), binary()) :: boolean()
   def pending?(server \\ __MODULE__, vm_id) when is_binary(vm_id) do
-    GenServer.call(server, {:pending?, vm_id})
+    table = table_for(server)
+
+    case :ets.lookup(table, vm_id) do
+      [{^vm_id, n}] when n > 0 -> true
+      _ -> false
+    end
   end
 
   @doc """
@@ -108,46 +128,53 @@ defmodule Embervm.AsyncWriter do
   """
   @spec drain(GenServer.server()) :: :ok
   def drain(server \\ __MODULE__) do
-    GenServer.call(server, :drain)
+    GenServer.call(server, :drain, :infinity)
   end
 
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     Process.flag(:trap_exit, true)
-    # vm_id -> count of in-flight appends referencing it (a vm can have both an
-    # :assigned and a :started append queued at once, so it is a count, not a set:
-    # the vm stays "pending" until BOTH have applied).
-    {:ok, %{pending: %{}}}
+    name = Keyword.get(opts, :name, __MODULE__)
+    # A public counter table (vm_id -> in-flight append count) this process owns, so
+    # it dies with the writer. Named off the registered name when there is one (the
+    # supervised singleton), else an anonymous table whose id we stash in
+    # persistent_term keyed by our pid (unnamed test writers). pending?/2 and
+    # enqueue/2 resolve the table without a GenServer round trip.
+    table =
+      if is_atom(name) and not is_nil(name) do
+        :ets.new(pending_table_name(name), [:set, :public, :named_table])
+      else
+        tid = :ets.new(:embervm_async_writer_pending, [:set, :public])
+        :persistent_term.put({__MODULE__, :table, self()}, tid)
+        tid
+      end
+
+    {:ok, %{table: table}}
   end
 
   @impl true
-  def handle_cast({:enqueue, entry}, state) do
-    state = track_pending(state, entry)
+  def handle_cast({:enqueue, entry, table}, state) do
     _ = apply_append(entry)
-    state = untrack_pending(state, entry)
+    dec_pending(table, Map.get(entry, :vm_id))
     {:noreply, state}
-  end
-
-  @impl true
-  def handle_call({:pending?, vm_id}, _from, state) do
-    {:reply, Map.has_key?(state.pending, vm_id), state}
   end
 
   # A no-op reply whose ONLY purpose is to have travelled behind every enqueue cast
   # already in the mailbox: once this returns, those casts have been handled.
+  @impl true
   def handle_call(:drain, _from, state) do
     {:reply, :ok, state}
   end
 
-  # Graceful shutdown: process the remaining {:enqueue, _} casts still in the
+  # Graceful shutdown: process the remaining {:enqueue, _, _} casts still in the
   # mailbox so a normal CP roll flushes every pending append. Only reached on a
   # supervised/normal stop (trap_exit is set); a SIGKILL cannot run terminate/2, so
   # that (and only that) window depends on the adoption backfill repair.
   @impl true
-  def terminate(_reason, state) do
-    flush_mailbox(state)
+  def terminate(_reason, _state) do
+    flush_mailbox()
     :ok
   end
 
@@ -173,40 +200,56 @@ defmodule Embervm.AsyncWriter do
     end
   rescue
     e ->
-      Logger.warning("embervm async_writer append crashed",
-        kind: op.kind,
-        error: inspect(e)
-      )
-
+      Logger.warning("embervm async_writer append crashed", kind: op.kind, error: inspect(e))
       :ok
   end
 
-  defp track_pending(state, %{vm_id: vm_id}) when is_binary(vm_id) do
-    put_in(state, [:pending, vm_id], Map.get(state.pending, vm_id, 0) + 1)
+  # -- pending registry (public ETS counter) ---------------------------------
+
+  defp inc_pending(_table, nil), do: :ok
+
+  defp inc_pending(table, vm_id) do
+    :ets.update_counter(table, vm_id, {2, 1}, {vm_id, 0})
+    :ok
   end
 
-  defp track_pending(state, _entry), do: state
+  defp dec_pending(_table, nil), do: :ok
 
-  defp untrack_pending(state, %{vm_id: vm_id}) when is_binary(vm_id) do
-    case Map.get(state.pending, vm_id, 0) do
-      n when n <= 1 -> update_in(state, [:pending], &Map.delete(&1, vm_id))
-      n -> put_in(state, [:pending, vm_id], n - 1)
+  defp dec_pending(table, vm_id) do
+    # Decrement; drop the row once it reaches zero so the table does not grow
+    # unbounded with settled vms. update_counter with a floor of 0 keeps it safe if
+    # a decrement ever races ahead (it cannot today: one inc per enqueue, one dec per
+    # apply).
+    case :ets.update_counter(table, vm_id, {2, -1, 0, 0}, {vm_id, 0}) do
+      0 -> :ets.delete(table, vm_id)
+      _ -> :ok
     end
+
+    :ok
   end
 
-  defp untrack_pending(state, _entry), do: state
+  defp table_for(server) when is_atom(server) and not is_nil(server) do
+    pending_table_name(server)
+  end
 
-  # Drain every {:enqueue, _} cast still in the mailbox (terminate/2). Selective
-  # receive with a zero timeout: pull enqueues until none remain, applying each.
-  defp flush_mailbox(state) do
+  defp table_for(server) do
+    pid = GenServer.whereis(server)
+    :persistent_term.get({__MODULE__, :table, pid})
+  end
+
+  defp pending_table_name(name), do: :"#{name}.Pending"
+
+  # Drain every {:enqueue, _, _} cast still in the mailbox (terminate/2). Selective
+  # receive with a zero timeout: pull enqueues until none remain, applying each and
+  # settling its pending counter.
+  defp flush_mailbox do
     receive do
-      {:"$gen_cast", {:enqueue, entry}} ->
-        state = track_pending(state, entry)
+      {:"$gen_cast", {:enqueue, entry, table}} ->
         _ = apply_append(entry)
-        state = untrack_pending(state, entry)
-        flush_mailbox(state)
+        dec_pending(table, Map.get(entry, :vm_id))
+        flush_mailbox()
     after
-      0 -> state
+      0 -> :ok
     end
   end
 end

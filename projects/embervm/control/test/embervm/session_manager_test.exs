@@ -17,6 +17,26 @@ defmodule Embervm.SessionManagerTest do
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{GuestResponse, SessionAssignResponse, UsageStats}
 
+  # A stub op-log whose append/2 blocks until the test sends :go, so a test can hold
+  # one async write "in flight" (pending) while it runs a reconcile pass, modelling
+  # the writer-stalled-between-RPC-and-append window the adopt-and-backfill repair
+  # guards. Only append/2 is exercised (AsyncWriter calls nothing else).
+  defmodule BlockingOpLog do
+    def append(_server, op) do
+      case op.payload do
+        %{block_to: waiter} when is_pid(waiter) ->
+          send(waiter, {:appending, op.session_id, self()})
+
+          receive do
+            :go -> {:ok, 1}
+          end
+
+        _ ->
+          {:ok, 1}
+      end
+    end
+  end
+
   # -- harness ---------------------------------------------------------------
 
   defp start_stack(opts \\ []) do
@@ -31,7 +51,15 @@ defmodule Embervm.SessionManagerTest do
     on_exit(fn -> File.rm_rf!(path) end)
 
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
-    {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log)
+
+    # A shared AsyncWriter (ADR embervm/014 decision 2), threaded into BOTH the store
+    # and the manager so an async-gated stack defers appends through the same writer
+    # the manager's adopt-and-backfill discriminator queries. Off by default.
+    async = Keyword.get(opts, :async_lifecycle_writes, false)
+    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
+
+    {:ok, store} =
+      SessionStore.start_link(name: nil, op_log: op_log, async_writer: writer, async_lifecycle_writes: async)
 
     registry = :"sreg_#{suffix}"
     {:ok, _registry_pid} = Registry.start_link(keys: :unique, name: registry)
@@ -60,7 +88,9 @@ defmodule Embervm.SessionManagerTest do
         channel_fun: fn _node -> {:ok, :ch} end,
         claim_fun: Keyword.get(opts, :claim_fun, fn _d, _n, _w -> {:ok, "vm-primed-#{suffix}"} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
-        session_opts: session_opts
+        session_opts: session_opts,
+        async_writer: writer,
+        async_lifecycle_writes: async
       ] ++
         Keyword.take(opts, [
           :quota_config,
@@ -76,6 +106,7 @@ defmodule Embervm.SessionManagerTest do
       mgr: mgr,
       store: store,
       op_log: op_log,
+      writer: writer,
       cap_table: cap_table,
       cat_table: cat_table,
       registry: registry,
@@ -560,6 +591,79 @@ defmodule Embervm.SessionManagerTest do
     assert_received {:orphan_destroyed, "vm-orphan"}
     # No CP row was created for it (never adopted).
     assert :error = SessionStore.get(ctx.store, "s-orphan")
+  end
+
+  test "gated async: reconcile ADOPTS a rowless reported VM with a pending async write, not destroy" do
+    parent = self()
+
+    # Async gate ON (so the discriminator is live) + node-confirmed-destroy ON (so the
+    # Direction-2 pass runs at all). destroy_fun records any destroy so we can assert
+    # it is NEVER called for the adopted VM.
+    ctx =
+      start_stack(
+        async_lifecycle_writes: true,
+        node_confirmed_destroy: true,
+        destroy_fun: fn _ch, vm ->
+          send(parent, {:destroyed, vm})
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    # Hold one async write in flight for vm-race: enqueue a blocking append through
+    # the shared writer so AsyncWriter.pending?(writer, "vm-race") is true across the
+    # reconcile. This models the writer stalled between RPC success and the
+    # session_created append landing.
+    op = %Embervm.OpLog.Op{
+      kind: :session_created,
+      tenant: "t",
+      session_id: "s-race",
+      ts: 0,
+      payload: %{block_to: parent}
+    }
+
+    Embervm.AsyncWriter.enqueue(ctx.writer, %{
+      op: op,
+      op_log_mod: BlockingOpLog,
+      op_log: :ignored,
+      vm_id: "vm-race"
+    })
+
+    # Wait until the writer has entered the (blocked) append: the vm is now pending.
+    assert_receive {:appending, "s-race", appender}
+    assert Embervm.AsyncWriter.pending?(ctx.writer, "vm-race")
+
+    # The node reports the live VM but the CP has no row (its create append is the one
+    # stalled above). The reconcile must ADOPT (skip destroy), not orphan-destroy it.
+    report_session_vm(ctx, "s-race", "wl-race", "vm-race")
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    refute_received {:destroyed, "vm-race"}
+
+    # Release the stalled append; the write completes normally afterward.
+    send(appender, :go)
+  end
+
+  test "gated async off the discriminator: a truly rowless VM with NO pending write is still destroyed" do
+    parent = self()
+
+    # Async gate ON but NO pending write for vm-orphan2: the discriminator returns
+    # false, so PR 1's orphan-destroy still fires (adopt-and-backfill only spares a
+    # VM with a write actually in flight).
+    ctx =
+      start_stack(
+        async_lifecycle_writes: true,
+        node_confirmed_destroy: true,
+        destroy_fun: fn _ch, vm ->
+          send(parent, {:destroyed, vm})
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    report_session_vm(ctx, "s-orphan2", "wl-orphan2", "vm-orphan2")
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    assert_received {:destroyed, "vm-orphan2"}
+    assert :error = SessionStore.get(ctx.store, "s-orphan2")
   end
 
   test "gated: reconcile never destroys a primed-pool VM" do
