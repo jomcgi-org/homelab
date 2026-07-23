@@ -397,6 +397,28 @@ func (b *baseRegistry) get(ref string) (baseEntry, bool) {
 	return *e, true
 }
 
+// readyByWorkload returns the snapshot_ref of a READY base for the workload, so
+// the node-local stateful activator can resolve boot_image_ref itself (the
+// control plane supplies it per-call in StartStatefulRequest, but the activator
+// has no control plane during a gap). The base key is node-local, so it cannot
+// ride the global workload registry; the daemon owns it here, exactly as the
+// serving activator resolves its serving image from its own inventory. On more
+// than one READY base for a workload (a mid-turnover overlap) the lexically
+// greatest ref wins, deterministically.
+func (b *baseRegistry) readyByWorkload(workload string) (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	best := ""
+	for ref, e := range b.bases {
+		if e.workload == workload && e.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+			if best == "" || ref > best {
+				best = ref
+			}
+		}
+	}
+	return best, best != ""
+}
+
 // beginBuild marks a base BUILDING. It returns false if a build for this key is
 // already in progress (BUILDING), so BuildBase serializes per key without
 // blocking. A READY or FAILED entry is re-driven (a rebuild after failure, or a

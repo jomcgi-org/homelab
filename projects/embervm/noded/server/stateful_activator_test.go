@@ -103,6 +103,35 @@ func addStatefulActivatorBundle(t *testing.T, s *Server, driver *fakeStatefulDri
 	s.statefulBundles.add(statefulBundleEntry{snapshotRef: ref, workload: workload, generation: 0})
 }
 
+func TestStatefulActivatorColdBootResolvesBaseLocally(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+	// A volume exists but there is NO banked bundle, so the activator must COLD-boot.
+	// The COLD path needs boot_image_ref, which the control plane does not push (it
+	// is node-local); the activator resolves it from the daemon's own base registry
+	// (readyByWorkload). The harness seeds a READY base "img-a" for "wl-state".
+	if err := s.volumes.Create("wl-state", 1<<20); err != nil {
+		t.Fatalf("create stateful volume: %v", err)
+	}
+
+	conn := statefulActivatorConn(t, listenPort)
+	defer conn.Close()
+	statefulActivatorRoundTrip(t, conn, "cold-hello")
+
+	driver.mu.Lock()
+	claims := driver.claims
+	driver.mu.Unlock()
+	if claims != 1 {
+		t.Errorf("ClaimStateful calls = %d, want 1 (one cold boot)", claims)
+	}
+	status := s.statefulVMsStatus()
+	if len(status) != 1 || status[0].GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR {
+		t.Errorf("expected one ACTIVATOR-origin stateful VM, got %+v", status)
+	}
+}
+
 func TestStatefulActivatorStragglerSplicesLiveVM(t *testing.T) {
 	port := statefulActivatorEchoServer(t)
 	s, _, driver := newStatefulTestServer(t)
