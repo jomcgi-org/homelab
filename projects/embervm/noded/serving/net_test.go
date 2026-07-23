@@ -606,16 +606,21 @@ func TestPoolDrainedThenRefilledOnRelease(t *testing.T) {
 	createsAfterDrain := countCreateCalls(fr)
 
 	// Release ip1: prealloc is on, so it must go DOWN and back to the pool, not be
-	// deleted.
+	// deleted. Only inspect calls issued FROM HERE: fr.calls already carries
+	// precreatePool's own del-before-add repair for ip1's tap (EnsureNetwork ran
+	// above), and scanning the whole history would misidentify that boot-time
+	// idempotent delete as a release-time one.
+	callsBeforeRelease := len(fr.calls)
 	m.ReleaseTap(context.Background(), ip1)
+	releaseCalls := fr.calls[callsBeforeRelease:]
 	tap1 := TapNameForIP(ip1)
-	for _, c := range fr.calls {
+	for _, c := range releaseCalls {
 		if len(c) >= 4 && c[0] == "ip" && c[1] == "link" && c[2] == "del" && c[3] == tap1 {
 			t.Errorf("ReleaseTap deleted a pooled tap %s; prealloc mode must return it, not delete it", tap1)
 		}
 	}
 	sawDown := false
-	for _, c := range fr.calls {
+	for _, c := range releaseCalls {
 		if fmt.Sprint(c) == fmt.Sprint(tapDownArgs(tap1)) {
 			sawDown = true
 		}
