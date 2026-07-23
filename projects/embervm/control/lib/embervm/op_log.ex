@@ -167,6 +167,21 @@ defmodule Embervm.OpLog do
     # `{generation}`; stateful_instance_id is nil (it is workload-scoped, like
     # volume_created/volume_deleted, not instance-scoped).
     :generation_blessed,
+    # Checkpoint-abort auto-heal (R7, ADR embervm/017). The interruptible-bank
+    # CHECKPOINT (ADR embervm/008) arms a noded resolve-timeout auto-abort that
+    # self-bumps the volume generation with no control plane reachable to bless it,
+    # which quarantines the volume on the next report. To auto-heal only THAT
+    # provably self-inflicted case, the control plane durably records each
+    # checkpoint it dispatched: checkpoint_dispatched carries `{vm_id, generation}`
+    # (workload-scoped, like generation_blessed) and projects into the
+    # `checkpoint_dispatch` table (one row per workload; the stop-serialization
+    # guard means one in-flight checkpoint per workload). checkpoint_resolved clears
+    # it when the control plane itself drives the resolve (COMMIT or ABORT) or when
+    # update_quarantine consumes the record to auto-bless a matching +1. An
+    # unresolved row is what a recovered control plane replays to recognize its own
+    # auto-aborted checkpoint after the very restart that triggered the auto-abort.
+    :checkpoint_dispatched,
+    :checkpoint_resolved,
     # Composite-group lifecycle (R5). Additive to the closed enum, mirroring the R4
     # stateful kinds: a composite group is a set of member microVMs that live, bank,
     # relight, and die as ONE unit (ADR embervm/001) and project into the
@@ -273,6 +288,13 @@ defmodule Embervm.OpLog do
   # StatefulStore.get_volume/2's nil-means-no-volume-yet contract). A
   # projection read, never the raw ops log.
   @callback load_volume_blessing(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every in-flight checkpoint-dispatch row from the durable
+  # `checkpoint_dispatch` projection (R7, ADR embervm/017): the per-workload
+  # `{vm_id, generation}` of a CHECKPOINT the control plane dispatched but has not
+  # yet resolved. Rebuilt into StatefulStore ETS on boot so a recovered control
+  # plane can auto-heal its own auto-aborted checkpoint. A projection read, never
+  # the raw ops log.
+  @callback load_checkpoint_dispatches(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every group-instance row from the durable `group_instances` projection
   # (R5), for the future GroupStore's boot/adoption rebuild, exactly mirroring
   # load_stateful_instances/1. One row per composite group. A projection read,

@@ -1193,6 +1193,15 @@ defmodule Embervm.StatefulSweeper do
             vm_id: vm_id
           })
 
+        # Durably record the dispatched checkpoint BEFORE any resolve is planned
+        # (R7, ADR embervm/017): noded's resolve-timeout auto-abort self-bumps this
+        # volume to `generation + 1` on the SAME vm_id if the control plane never
+        # delivers the resolve (a COMMIT-planned-then-slow/rolled control plane is
+        # the case that still quarantines). This record lets a recovered control
+        # plane recognize its own auto-aborted checkpoint and auto-heal it. Recorded
+        # for BOTH commit and abort plans, since only the record proves provenance.
+        _ = StatefulStore.record_checkpoint_dispatch(state.store, workload, vm_id, generation)
+
         {mode, state} = decide_resolve(state, workload)
         {mode, blessed_generation, state} = plan_resolve_blessing(state, workload, mode)
         spawn_resolve_worker(state, instance_id, node_id, vm_id, ip, port, workload, token, mode, blessed_generation)
@@ -1408,6 +1417,12 @@ defmodule Embervm.StatefulSweeper do
     state = reset_checkpoint_aborts(state, workload)
     notify_checkpoint_resolved(state, workload, :commit)
 
+    # CP-driven commit: the checkpoint resolved as a bank at the current generation
+    # (commit never bumps), so its dispatch record is resolved and cleared (ADR
+    # embervm/017). The VM is destroyed by the commit, so a lingering record could
+    # never auto-heal anyway (no live vm_id), but clearing keeps the ledger clean.
+    _ = StatefulStore.clear_checkpoint_dispatch(state.store, workload)
+
     Logger.info("embervm stateful checkpoint committed",
       instance_id: instance_id,
       workload: workload,
@@ -1424,6 +1439,30 @@ defmodule Embervm.StatefulSweeper do
   # republish. Increment the consecutive-abort counter (flap guard input) and
   # notify the manager so parked callers get the hot endpoint.
   defp apply_resolve(state, instance_id, node_id, vm_id, ip, port, workload, :abort, {:ok, %ResolveStatefulResponse{}}) do
+    state = resume_hot_after_abort(state, instance_id, node_id, vm_id, ip, port, workload)
+
+    # CP-driven abort: plan_resolve_blessing already blessed generation+1 before
+    # dispatch, so this checkpoint is resolved and its dispatch record must be
+    # cleared (ADR embervm/017); leaving it would be harmless but unclean. NOT
+    # cleared on the FAILED_PRECONDITION path below, where noded self-drove the
+    # abort and the record must survive to auto-heal a possibly-unblessed +1.
+    _ = StatefulStore.clear_checkpoint_dispatch(state.store, workload)
+
+    Logger.info("embervm stateful checkpoint aborted, resumed hot",
+      instance_id: instance_id,
+      workload: workload,
+      node_id: node_id
+    )
+
+    state
+  end
+
+  # Reconcile a checkpointed instance back to serving after an ABORT resumed the
+  # SAME VM hot (mark serving, restore the endpoint, republish, count the abort for
+  # the flap guard, notify parked callers). Shared by a CP-driven ABORT and the
+  # FAILED_PRECONDITION path where noded's own auto-abort won the single-resolve
+  # race; the two differ only in whether they clear the dispatch record.
+  defp resume_hot_after_abort(state, instance_id, node_id, vm_id, ip, port, workload) do
     _ = StatefulStore.mark(state.store, instance_id, :abort)
 
     if republishable_endpoint?(ip, port) do
@@ -1445,13 +1484,6 @@ defmodule Embervm.StatefulSweeper do
     end
 
     notify_checkpoint_resolved(state, workload, :abort)
-
-    Logger.info("embervm stateful checkpoint aborted, resumed hot",
-      instance_id: instance_id,
-      workload: workload,
-      node_id: node_id
-    )
-
     state
   end
 
@@ -1480,7 +1512,13 @@ defmodule Embervm.StatefulSweeper do
         workload: workload
       )
 
-      apply_resolve(state, instance_id, node_id, vm_id, ip, port, workload, :abort, {:ok, %ResolveStatefulResponse{}})
+      # Reconcile to serving exactly as a CP-driven ABORT, but do NOT clear the
+      # dispatch record (ADR embervm/017): noded self-drove this abort with a
+      # node-side self-bump, and if the control plane had planned COMMIT it never
+      # blessed generation+1, so the volume is unblessed one past the watermark.
+      # Leaving the record lets update_quarantine auto-heal that on the next node
+      # report instead of quarantining into the manual break-glass.
+      resume_hot_after_abort(state, instance_id, node_id, vm_id, ip, port, workload)
     else
       # Any OTHER resolve error (transport/timeout/raised, or a noded resume
       # failure that tore the VM down): the paused VM is gone, so the instance

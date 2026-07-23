@@ -100,6 +100,8 @@ defmodule Embervm.StatefulSweeperTest do
     def load_volumes(server), do: SQLite.load_volumes(server)
     @impl true
     def load_volume_blessing(server), do: SQLite.load_volume_blessing(server)
+
+    def load_checkpoint_dispatches(server), do: SQLite.load_checkpoint_dispatches(server)
     @impl true
     def load_group_instances(server), do: SQLite.load_group_instances(server)
     @impl true
@@ -1048,6 +1050,42 @@ defmodule Embervm.StatefulSweeperTest do
     # A COMMIT never appends a generation_blessed op, so the watermark is exactly
     # as unblessed as before the cycle ran.
     assert StatefulStore.next_blessed_generation(ctx.store, "wl-i") == 1
+  end
+
+  # -- R7 checkpoint-abort auto-heal record (ADR embervm/017) -----------------
+
+  test "a CHECKPOINT records a checkpoint_dispatched op, and a COMMIT resolve clears it (checkpoint_resolved)" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, false)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    # The dispatch was recorded when the VM paused, and the CP-driven COMMIT cleared
+    # it so a resolved checkpoint can never auto-heal a later unrelated +1.
+    assert length(load_ops(ctx, "checkpoint_dispatched")) == 1
+    assert length(load_ops(ctx, "checkpoint_resolved")) == 1
+  end
+
+  test "a CHECKPOINT then ABORT records the dispatch and clears it on the CP-driven abort" do
+    ctx = start_stack()
+    prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+
+    set_parked(ctx, true)
+
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading(prefix, 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+
+    wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1")) end)
+
+    assert length(load_ops(ctx, "checkpoint_dispatched")) == 1
+    assert length(load_ops(ctx, "checkpoint_resolved")) == 1
   end
 
   test "a bless_generation failure forces the resolve to COMMIT instead of dispatching an unblessed abort" do

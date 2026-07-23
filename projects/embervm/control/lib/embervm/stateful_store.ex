@@ -149,6 +149,14 @@ defmodule Embervm.StatefulStore do
   # non-nil, node_id-less volume row for a workload with no real volume, which
   # both defeats that nil check AND crashes anchor_node/2 (no node_id to match).
   @blessing_table :embervm_stateful_blessing
+  # In-flight checkpoint-dispatch records (R7, ADR embervm/017): workload ->
+  # %{vm_id, generation} for an interruptible-bank CHECKPOINT the control plane
+  # dispatched but has not yet resolved. Rebuilt from the durable
+  # `checkpoint_dispatch` projection on boot (unlike `quarantined`, this IS durable:
+  # it is the proof a recovered control plane uses to recognize its OWN auto-aborted
+  # checkpoint and auto-heal the resulting quarantine, so it must survive the very
+  # restart that triggers the auto-abort). Consulted by update_quarantine.
+  @checkpoint_dispatch_table :embervm_stateful_checkpoint_dispatch
 
   # Eager broken-pair eviction hysteresis: a banked instance's pair must be
   # observed broken on this many CONSECUTIVE eager_evict_broken_pairs sweeps
@@ -446,6 +454,35 @@ defmodule Embervm.StatefulStore do
   end
 
   @doc """
+  Durably records an in-flight interruptible-bank CHECKPOINT the control plane
+  dispatched for `workload` (R7, ADR embervm/017): appends `checkpoint_dispatched`
+  (write-through) carrying `{vm_id, generation}` and, on success, UPSERTs the ETS
+  record (one per workload). `generation` is the volume generation the checkpoint
+  was taken at, so noded's resolve-timeout auto-abort will advance it to
+  `generation + 1` on the SAME `vm_id`; that is exactly the signature
+  `update_quarantine/4` auto-heals. Best-effort: on an op-log append failure the
+  record is not written and the workload falls back to the manual break-glass on a
+  later auto-abort (correct fail-closed), so the caller does not crash.
+  """
+  @spec record_checkpoint_dispatch(GenServer.server(), String.t(), String.t(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  def record_checkpoint_dispatch(store \\ __MODULE__, workload, vm_id, generation) do
+    GenServer.call(store, {:record_checkpoint_dispatch, workload, vm_id, generation})
+  end
+
+  @doc """
+  Clears `workload`'s in-flight checkpoint-dispatch record (R7, ADR embervm/017):
+  appends `checkpoint_resolved` and removes the ETS record, called when the control
+  plane itself drives the resolve (COMMIT or ABORT) so a resolved checkpoint can
+  never auto-heal a later unrelated `+1`. A no-op (no op appended) when no record
+  exists, to keep op-log noise down.
+  """
+  @spec clear_checkpoint_dispatch(GenServer.server(), String.t()) :: :ok | {:error, term()}
+  def clear_checkpoint_dispatch(store \\ __MODULE__, workload) do
+    GenServer.call(store, {:clear_checkpoint_dispatch, workload})
+  end
+
+  @doc """
   Seeds `workload`'s blessed-generation watermark to `generation` WITHOUT
   appending an op-log entry, iff the volume has never been blessed
   (`blessed_generation` nil/absent). This is the adoption grandfather path (R7):
@@ -538,6 +575,7 @@ defmodule Embervm.StatefulStore do
     instances = :ets.new(@instances_table, [:set, :private])
     volumes = :ets.new(@volumes_table, [:set, :private])
     blessing = :ets.new(@blessing_table, [:set, :private])
+    checkpoint_dispatch = :ets.new(@checkpoint_dispatch_table, [:set, :private])
 
     state = %{
       op_log: op_log,
@@ -546,6 +584,7 @@ defmodule Embervm.StatefulStore do
       instances: instances,
       volumes: volumes,
       blessing: blessing,
+      checkpoint_dispatch: checkpoint_dispatch,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
       counts: %{},
       # instance_id -> count of CONSECUTIVE eager_evict_broken_pairs observations
@@ -575,7 +614,8 @@ defmodule Embervm.StatefulStore do
   defp rebuild(state) do
     with {:ok, rows} <- state.op_log_mod.load_stateful_instances(state.op_log),
          {:ok, volumes} <- state.op_log_mod.load_volumes(state.op_log),
-         {:ok, blessing_rows} <- state.op_log_mod.load_volume_blessing(state.op_log) do
+         {:ok, blessing_rows} <- state.op_log_mod.load_volume_blessing(state.op_log),
+         {:ok, dispatch_rows} <- state.op_log_mod.load_checkpoint_dispatches(state.op_log) do
       state =
         Enum.reduce(rows, state, fn row, acc ->
           instance = row_to_instance(row)
@@ -592,6 +632,15 @@ defmodule Embervm.StatefulStore do
       # and the next NodeStatus refresh re-derives it.
       Enum.each(blessing_rows, fn row ->
         :ets.insert(state.blessing, {row.workload, %{blessed_generation: row.blessed_generation, quarantined: false}})
+      end)
+
+      # Durable, unlike quarantined above: an unresolved checkpoint-dispatch record
+      # is the proof a recovered control plane uses to auto-heal its OWN auto-aborted
+      # checkpoint (ADR embervm/017), so it must survive the restart that caused the
+      # auto-abort. A resolved checkpoint's projection row was deleted, so it is
+      # absent here by construction.
+      Enum.each(dispatch_rows, fn row ->
+        :ets.insert(state.checkpoint_dispatch, {row.workload, %{vm_id: row.vm_id, generation: row.generation}})
       end)
 
       {:ok, state}
@@ -895,8 +944,17 @@ defmodule Embervm.StatefulStore do
   end
 
   defp bless_generation_append(state, workload, generation) do
-    ts = state.clock.()
+    case do_bless_append(state, workload, generation) do
+      {:ok, state} -> {:reply, {:ok, fetch_blessing(state, workload)}, state}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
 
+  # The op-append + ETS write half of a blessing, returning `{:ok, state}` /
+  # `{:error, reason}` so it is usable from both the `:bless_generation` handle_call
+  # (via bless_generation_append/3) and the update_quarantine auto-heal (ADR
+  # embervm/017), which is inside another handle_call and must not emit a reply.
+  defp do_bless_append(state, workload, generation) do
     op = %Op{
       kind: :generation_blessed,
       tenant: "homelab",
@@ -905,7 +963,7 @@ defmodule Embervm.StatefulStore do
       # synthesized system owner, matching every other stateful lifecycle op.
       principal: "system:stateful:#{workload}",
       workload: workload,
-      ts: ts,
+      ts: state.clock.(),
       payload: %{generation: generation}
     }
 
@@ -917,15 +975,48 @@ defmodule Embervm.StatefulStore do
         # this workload may not exist yet (the very first wake blesses before
         # a FRESH boot's volume_created lands).
         :ets.insert(state.blessing, {workload, %{blessed_generation: generation, quarantined: false}})
-        {:reply, {:ok, fetch_blessing(state, workload)}, state}
+        {:ok, state}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  def handle_call({:quarantined?, workload}, _from, state) do
+    {:reply, Map.get(fetch_blessing(state, workload), :quarantined, false) || false, state}
+  end
+
+  def handle_call({:record_checkpoint_dispatch, workload, vm_id, generation}, _from, state) do
+    op = %Op{
+      kind: :checkpoint_dispatched,
+      tenant: "homelab",
+      principal: "system:stateful:#{workload}",
+      workload: workload,
+      ts: state.clock.(),
+      payload: %{vm_id: vm_id, generation: generation}
+    }
+
+    case state.op_log_mod.append(state.op_log, op) do
+      {:ok, _seq} ->
+        :ets.insert(state.checkpoint_dispatch, {workload, %{vm_id: vm_id, generation: generation}})
+        {:reply, :ok, state}
 
       {:error, _reason} = error ->
         {:reply, error, state}
     end
   end
 
-  def handle_call({:quarantined?, workload}, _from, state) do
-    {:reply, Map.get(fetch_blessing(state, workload), :quarantined, false) || false, state}
+  def handle_call({:clear_checkpoint_dispatch, workload}, _from, state) do
+    case :ets.lookup(state.checkpoint_dispatch, workload) do
+      [] ->
+        # Nothing in flight: skip the op-log append entirely to keep noise down
+        # (a COMMIT/ABORT of a workload that never recorded a dispatch, or a
+        # double-clear).
+        {:reply, :ok, state}
+
+      [_ | _] ->
+        {:reply, clear_checkpoint_dispatch_write(state, workload), state}
+    end
   end
 
   def handle_call({:seed_blessed_generation_if_unset, workload, generation}, _from, state) do
@@ -1487,6 +1578,20 @@ defmodule Embervm.StatefulStore do
       is_binary(reporting_node) and is_binary(anchor_node) and reporting_node == anchor_node
 
     cond do
+      # Auto-heal (R7, ADR embervm/017): the unblessed forward jump is the control
+      # plane's OWN auto-aborted checkpoint resuming the same VM, proven by an
+      # unresolved dispatch record matching this vm_id at exactly reported_gen - 1.
+      # Bless it forward (durably) instead of quarantining. Checked before the
+      # fenced-writer adoption because it is the most specific, provable signature;
+      # anything not proven falls through to adoption / fail-closed quarantine.
+      forward_unblessed? and checkpoint_abort_signature?(state, workload, reported_gen) ->
+        auto_heal_checkpoint_abort(state, workload, reported_gen, blessed_gen)
+
+      # Fenced-writer adoption (ADR embervm/014): the reporting node IS the fenced
+      # anchor, so the fenced writer simply ran ahead of the blessed watermark (the
+      # recurring demo-postgres quarantine after a CP roll). Adopt it: advance the
+      # watermark to the reported generation and clear quarantine (ETS-only, re-derived
+      # from node reports; the next real wake blesses past it durably).
       forward_unblessed? and fenced_writer? ->
         Logger.info(
           "embervm stateful volume generation adopted: fenced writer ran ahead of the blessed watermark",
@@ -1504,10 +1609,8 @@ defmodule Embervm.StatefulStore do
 
         state
 
-      true ->
-        quarantined? = forward_unblessed?
-
-        if quarantined? and not Map.get(fact, :quarantined, false) do
+      forward_unblessed? ->
+        if not Map.get(fact, :quarantined, false) do
           Logger.warning(
             "embervm stateful volume quarantined: unblessed generation reported past the last blessed one",
             event: :generation_quarantined,
@@ -1519,8 +1622,110 @@ defmodule Embervm.StatefulStore do
           )
         end
 
-        :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, quarantined?)})
+        :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, true)})
         state
+
+      true ->
+        :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, false)})
+        state
+    end
+  end
+
+  # The benign checkpoint-abort fingerprint (ADR embervm/017): an unresolved
+  # checkpoint-dispatch record exists for the workload, the report is exactly one
+  # past the recorded checkpoint generation, and the recorded vm_id is still a live
+  # (serving or checkpointed) instance of the workload. The last condition is the
+  # real discriminator: noded's auto-abort resumes the SAME vm_id, so a fresh second
+  # writer (a different vm_id, or the recorded VM already gone) fails it and stays
+  # quarantined even if it happens to land at reported_gen.
+  defp checkpoint_abort_signature?(state, workload, reported_gen) do
+    case fetch_checkpoint_dispatch(state, workload) do
+      %{vm_id: vm_id, generation: gen} ->
+        reported_gen == gen + 1 and workload_has_live_vm?(state, workload, vm_id)
+
+      nil ->
+        false
+    end
+  end
+
+  # Bless the reported generation forward (the same write-through path a CP-driven
+  # abort uses) and consume the dispatch record. A bless-append failure falls back
+  # to quarantine (fail-closed): the auto-heal is an optimization over the manual
+  # break-glass, never a reason to admit an unblessed generation.
+  defp auto_heal_checkpoint_abort(state, workload, reported_gen, blessed_gen) do
+    case do_bless_append(state, workload, reported_gen) do
+      {:ok, state} ->
+        Logger.info("embervm stateful volume auto-healed: blessed the control plane's own checkpoint-abort generation",
+          event: :generation_auto_healed,
+          workload: workload,
+          generation: reported_gen,
+          previous_blessed_generation: blessed_gen
+        )
+
+        # Best-effort clear: the watermark has already advanced past reported_gen,
+        # so a lingering record can never re-heal (the report is no longer > blessed
+        # next tick); the resolved op is bookkeeping.
+        _ = clear_checkpoint_dispatch_write(state, workload)
+        state
+
+      {:error, reason} ->
+        Logger.warning("embervm stateful: checkpoint-abort auto-heal bless failed, quarantining (fail-closed)",
+          workload: workload,
+          generation: reported_gen,
+          reason: inspect(reason)
+        )
+
+        fact = fetch_blessing(state, workload)
+        :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, true)})
+        state
+    end
+  end
+
+  # The in-flight checkpoint-dispatch record for `workload` (`%{vm_id, generation}`)
+  # or nil. A pure ETS read of the durable record rebuilt on boot.
+  defp fetch_checkpoint_dispatch(state, workload) do
+    case :ets.lookup(state.checkpoint_dispatch, workload) do
+      [{^workload, rec}] -> rec
+      [] -> nil
+    end
+  end
+
+  # Whether the workload has a LIVE (serving/checkpointed, not terminal or banked)
+  # instance with this exact vm_id, i.e. the resumed VM from the auto-aborted
+  # checkpoint is still the one holding the volume.
+  defp workload_has_live_vm?(state, workload, vm_id) do
+    :ets.foldl(
+      fn {_id, instance}, acc ->
+        acc or
+          (instance.workload == workload and instance.vm_id == vm_id and
+             StatefulState.live?(instance.state))
+      end,
+      false,
+      state.instances
+    )
+  end
+
+  # Append checkpoint_resolved (write-through) and, on success, drop the ETS record.
+  # Returns :ok | {:error, reason}. On an append failure the ETS row is left in
+  # place (harmless: see auto_heal_checkpoint_abort on why a lingering record cannot
+  # cause a spurious heal once the watermark has advanced).
+  defp clear_checkpoint_dispatch_write(state, workload) do
+    op = %Op{
+      kind: :checkpoint_resolved,
+      tenant: "homelab",
+      principal: "system:stateful:#{workload}",
+      workload: workload,
+      ts: state.clock.(),
+      payload: %{}
+    }
+
+    case state.op_log_mod.append(state.op_log, op) do
+      {:ok, _seq} ->
+        :ets.delete(state.checkpoint_dispatch, workload)
+        :ok
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

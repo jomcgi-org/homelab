@@ -651,4 +651,98 @@ defmodule Embervm.StatefulStoreTest do
     still_blessed = StatefulStore.seed_blessed_generation_if_unset(store, "wl-b", 1)
     assert still_blessed.blessed_generation == 2
   end
+
+  # -- checkpoint-abort auto-heal (R7, ADR embervm/017) ----------------------
+
+  test "auto-heal: an unblessed +1 on the recorded vm_id blesses forward instead of quarantining", %{path: path} do
+    {op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store, workload: "wl-a", vm_id: "vm-1")
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
+    :ok = StatefulStore.record_checkpoint_dispatch(store, "wl-a", "vm-1", 5)
+
+    # noded's resolve-timeout auto-abort resumed vm-1 and self-bumped 5 -> 6 unblessed.
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: false})
+
+    refute StatefulStore.quarantined?(store, "wl-a")
+    # The watermark advanced to the healed generation (bless forward, not just clear).
+    assert StatefulStore.next_blessed_generation(store, "wl-a") - 1 == 6
+
+    # The record was consumed: a checkpoint_resolved followed the dispatch.
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    kinds = Enum.map(ops, & &1.kind)
+    assert :checkpoint_dispatched in kinds
+    assert :checkpoint_resolved in kinds
+  end
+
+  test "auto-heal does NOT fire for a jump past +1 (stays quarantined, fail-closed)", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store, workload: "wl-a", vm_id: "vm-1")
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
+    :ok = StatefulStore.record_checkpoint_dispatch(store, "wl-a", "vm-1", 5)
+
+    # A +2 is not a single checkpoint-abort resume; a genuine second writer could
+    # land here, so it must not auto-heal.
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 7, generation_blessed: false})
+    assert StatefulStore.quarantined?(store, "wl-a")
+  end
+
+  test "auto-heal does NOT fire when the +1 comes from a different vm_id (a fresh second writer)", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    # The live instance is vm-2, but the recorded checkpoint was on vm-9: the vm_id
+    # that would have resumed is gone, so the +1 is NOT a checkpoint-abort resume.
+    {:ok, _} = start_instance(store, workload: "wl-a", vm_id: "vm-2")
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
+    :ok = StatefulStore.record_checkpoint_dispatch(store, "wl-a", "vm-9", 5)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: false})
+    assert StatefulStore.quarantined?(store, "wl-a")
+  end
+
+  test "auto-heal does NOT fire without a dispatch record (stays quarantined)", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store, workload: "wl-a", vm_id: "vm-1")
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: false})
+    assert StatefulStore.quarantined?(store, "wl-a")
+  end
+
+  test "auto-heal survives a control-plane restart: a rebuilt store heals its own dispatched checkpoint", %{path: path} do
+    {op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store, workload: "wl-a", vm_id: "vm-1")
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
+    :ok = StatefulStore.record_checkpoint_dispatch(store, "wl-a", "vm-1", 5)
+
+    # The control plane crashes/rolls (the very condition that triggers noded's
+    # auto-abort) before delivering the resolve. Rebuild the store from the durable
+    # op-log; the dispatch record must survive so the recovered CP recognizes its
+    # own auto-aborted checkpoint.
+    {:ok, store2} = StatefulStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
+
+    StatefulStore.upsert_volume(store2, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: false})
+    refute StatefulStore.quarantined?(store2, "wl-a")
+    assert StatefulStore.next_blessed_generation(store2, "wl-a") - 1 == 6
+  end
+
+  test "a resolved checkpoint does not auto-heal after a rebuild: the record is gone, so a later +1 quarantines", %{path: path} do
+    {op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store, workload: "wl-a", vm_id: "vm-1")
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
+    :ok = StatefulStore.record_checkpoint_dispatch(store, "wl-a", "vm-1", 5)
+    # The control plane drove the resolve, clearing the record.
+    :ok = StatefulStore.clear_checkpoint_dispatch(store, "wl-a")
+
+    {:ok, store2} = StatefulStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
+
+    StatefulStore.upsert_volume(store2, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: false})
+    assert StatefulStore.quarantined?(store2, "wl-a")
+  end
+
+  test "clear_checkpoint_dispatch with no in-flight record is a no-op (no checkpoint_resolved op)", %{path: path} do
+    {op_log, store} = start_pair(path)
+    :ok = StatefulStore.clear_checkpoint_dispatch(store, "wl-a")
+
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    refute Enum.any?(ops, &(&1.kind == :checkpoint_resolved))
+  end
 end
