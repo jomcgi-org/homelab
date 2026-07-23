@@ -651,6 +651,7 @@ defmodule Embervm.StatefulStore do
     "starting" => :starting,
     "serving" => :serving,
     "banked" => :banked,
+    "destroying" => :destroying,
     "evicted" => :evicted,
     "destroyed" => :destroyed,
     "failed" => :failed

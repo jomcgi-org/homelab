@@ -46,7 +46,10 @@ defmodule Embervm.SessionStore do
 
   # The live (non-terminal) session states, for the per-workload counts and the
   # capacity gate. `banked` is counted separately because it holds disk, not a VM.
-  @live_states [:creating, :running, :banking, :relighting]
+  # `destroying` still holds a live VM (teardown RPC in flight, ADR embervm/014
+  # decision 5): it stays routable/dialable and counts against capacity until the
+  # node confirms teardown and the terminal destroyed op fires.
+  @live_states [:creating, :running, :banking, :relighting, :destroying]
 
   # -- Client API ------------------------------------------------------------
 
@@ -292,6 +295,7 @@ defmodule Embervm.SessionStore do
     "banking" => :banking,
     "banked" => :banked,
     "relighting" => :relighting,
+    "destroying" => :destroying,
     "expired" => :expired,
     "evicted" => :evicted,
     "destroyed" => :destroyed,

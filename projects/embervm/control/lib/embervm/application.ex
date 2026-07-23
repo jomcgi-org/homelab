@@ -610,8 +610,40 @@ defmodule Embervm.Application do
       session_opts: session_opts(),
       reconcile_interval_ms: session_reconcile_interval_ms(),
       sweep_interval_ms: session_sweep_interval_ms(),
-      disk_low_watermark_bytes: session_disk_low_watermark_bytes()
+      disk_low_watermark_bytes: session_disk_low_watermark_bytes(),
+      node_confirmed_destroy: node_confirmed_destroy_enabled(),
+      destroying_alarm_ms: destroying_alarm_ms(),
+      orphan_grace_ms: orphan_grace_ms()
     ] ++ wake_opts()
+  end
+
+  # EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014 decision 5). UNSET or
+  # "0"/"false"/"" (the default, and what this PR ships) => destruction records
+  # destroyed first and tears the VM down asynchronously (today's behaviour).
+  # "1"/"true" => destruction records a destroying intent, runs the node-confirmed
+  # teardown RPC, and records destroyed ONLY on node confirmation, with fail-closed
+  # reconciliation toward destruction. Wired here so it flips via a deploy values env
+  # change, no code change. Nothing sets it on in this PR.
+  defp node_confirmed_destroy_enabled do
+    case trimmed_env("EMBERVM_NODE_CONFIRMED_DESTROY") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  # Alarm threshold for an instance stuck in destroying (EMBERVM_DESTROYING_ALARM_MS);
+  # default 5 minutes. The reconcile loop logs error-level with a SigNoz-visible field
+  # when a destroying instance persists past this, per the ADR risk table.
+  defp destroying_alarm_ms do
+    int_env_or_nil("EMBERVM_DESTROYING_ALARM_MS") || 300_000
+  end
+
+  # Grace window before fail-closed orphan reconciliation acts
+  # (EMBERVM_ORPHAN_GRACE_MS); default 60s. An instance younger than this window is
+  # never terminalized/destroyed by reconciliation (it may be mid-boot or racing an
+  # async write), per ADR embervm/014 decision 5.
+  defp orphan_grace_ms do
+    int_env_or_nil("EMBERVM_ORPHAN_GRACE_MS") || 60_000
   end
 
   # Adoption reconcile cadence (EMBERVM_SESSION_RECONCILE_INTERVAL_MS); default 10s,
