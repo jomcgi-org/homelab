@@ -382,6 +382,27 @@ spec:
                         when unset (the watcher applies that), so a banked snapshot
                         never outlives what a live instance would.
                       minimum: 0
+                    nodeLocalWake:
+                      type: boolean
+                      description: >-
+                        Node-local activator (ADR embervm/018 Fork A). When true,
+                        the brick's node-local activator is eligible to cold-boot a
+                        scaled-to-zero instance of this workload on the first request,
+                        so the wake survives a control-plane Recreate instead of
+                        black-holing on the dead CP-pod activator. Pushed to the node
+                        daemon in the workload registry and drives the control plane's
+                        origin=ACTIVATOR adoption. Defaults false (CP-only wake).
+                      default: false
+                    meteringFailOpen:
+                      type: boolean
+                      description: >-
+                        Companion, EXPLICIT policy for nodeLocalWake (ADR embervm/018
+                        Fork A): a true workload wakes UNMETERED during a control-plane
+                        gap and reconciles accounting best-effort when the control
+                        plane adopts the instance and backfills its lifecycle ops. The
+                        policy is named here rather than implied; allowlisted to
+                        blessed homelab demos. Defaults false.
+                      default: false
                 stateful:
                   type: object
                   description: >-

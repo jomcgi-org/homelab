@@ -483,6 +483,14 @@ hotImageDemo:
     idleBankSeconds: 600
     drainSeconds: 5
     maxLifetimeSeconds: 86400
+    # Node-local activator (ADR embervm/018 Fork A): eligible for a brick cold boot
+    # so a scaled-to-zero first request survives a control-plane Recreate (the
+    # demo's whole point). meteringFailOpen is the companion, named policy that this
+    # blessed demo wakes unmetered during a CP gap and reconciles on adoption. When
+    # this demo is scaled to zero for the kill-the-CP drill, the first request
+    # cold-boots on the brick instead of black-holing on the dead CP-pod activator.
+    nodeLocalWake: true
+    meteringFailOpen: true
   # Sized for the WARM serving footprint, not the fresh-per-request task footprint
   # (task-class og-image is 512Mi). Pillow stays resident and the TCP server runs
   # continuously across many renders, so memMib is 768 for headroom (256Mi x max 2
@@ -772,6 +780,12 @@ noded:
   # gRPC port the control plane dials; health port for kubelet probes.
   grpcPort: 9090
   healthPort: 8080
+  # Node-local activator HTTP listener (ADR embervm/018 Fork A): a node Envoy
+  # routes a scaled-to-zero serving workload's first request here, so the cold
+  # boot happens on the brick and survives a control-plane Recreate. Advertised as
+  # NodeStatus.activator_endpoint at {node hostIP, activatorPort} with a startup
+  # DNAT to the current pod IP.
+  activatorPort: 8081
 
   # node-4 pinning: the lone Firecracker node (homelab.io/firecracker=true).
   nodeSelector:
