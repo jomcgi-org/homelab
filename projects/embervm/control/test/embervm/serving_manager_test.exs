@@ -543,7 +543,13 @@ defmodule Embervm.ServingManagerTest do
   # candidate. Keyed by the {node_id, pod_uid} tuple (the per-instance key).
   defp serving_brick(ctx, node_id, pod_uid, instance_id) do
     NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
-      configured_id: instance_id,
+      # configured_id is the NODE NAME (matching production + the serving_node
+      # helper), not the instance_id: ServingPlacement.node_for_create returns
+      # fact.configured_id as the node_id, which WakeInstance.cold_candidates then
+      # matches against each brick's :node_id field. Setting it to instance_id here
+      # would make that filter ("node-4" == "node-4/pod-a") fail and yield no
+      # eligible instance, which is exactly the bug this fixture had.
+      configured_id: node_id,
       node_id: node_id,
       pod_uid: pod_uid,
       instance_id: instance_id,

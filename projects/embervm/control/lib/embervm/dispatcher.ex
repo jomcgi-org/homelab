@@ -609,9 +609,11 @@ defmodule Embervm.Dispatcher do
 
           warm ->
             # Warm has exactly one reserved VM on one instance: a single-element
-            # frontier (no cross-brick retry; the VM is already primed HERE).
+            # frontier (no cross-brick retry; the VM is already primed HERE). Map
+            # shape matches the Retry.run contract, same as the miss frontier, though
+            # the warm path never enters prime_with_retry (acquire_vm short-circuits).
             {:ok, instance_id_of(warm), :warm, snapshot_ref_of(warm, wl),
-             [{instance_id_of(warm), snapshot_ref_of(warm, wl)}]}
+             [%{instance_id: instance_id_of(warm), snapshot_ref: snapshot_ref_of(warm, wl)}]}
         end
     end
   end
@@ -623,13 +625,18 @@ defmodule Embervm.Dispatcher do
   # exactly the brick today's code would; the tail is the deterministic retry
   # frontier. Mirrors Embervm.Placement's sort_by_choose_key rotation, but over
   # raw facts (which carry `workloads` for snapshot_ref_of) rather than bricks.
+  # Each candidate is a MAP carrying :instance_id (the Retry.run contract, which
+  # reads Map.get(brick, :instance_id) for its logging/on_reject) plus the
+  # :snapshot_ref the Prime needs. A bare {id, ref} tuple would crash Retry's
+  # Logger.debug with a BadMapError on the first rejection, so the map shape is
+  # load-bearing, not cosmetic.
   defp miss_candidate_frontier(facts, key) do
     sorted = Enum.sort_by(facts, fn f -> instance_id_of(f) end)
     idx = :erlang.phash2(key, length(sorted))
     {head, tail} = Enum.split(sorted, idx)
 
     (tail ++ head)
-    |> Enum.map(fn f -> {instance_id_of(f), snapshot_ref_of(f, key)} end)
+    |> Enum.map(fn f -> %{instance_id: instance_id_of(f), snapshot_ref: snapshot_ref_of(f, key)} end)
   end
 
   # The instance handle the dispatcher keys inventory / NodeChannel / BaseBuilder
@@ -888,7 +895,7 @@ defmodule Embervm.Dispatcher do
   # track the brick the VM really lives on (not the committed head), which keeps
   # adopt_inventory and the Assign channel correct after a cross-brick retry.
   defp prime_with_retry(ctx, channel_fun, invalidate_fun, prime_fun) do
-    attempt_fun = fn {dial_id, snapshot_ref} ->
+    attempt_fun = fn %{instance_id: dial_id, snapshot_ref: snapshot_ref} ->
       case channel_fun.(dial_id) do
         {:ok, channel} ->
           case prime_on(ctx, dial_id, channel, snapshot_ref, prime_fun) do
