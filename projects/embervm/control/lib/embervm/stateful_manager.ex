@@ -1657,7 +1657,8 @@ defmodule Embervm.StatefulManager do
               {evict_banked(acc, instance), d, e + 1}
 
             true ->
-              {force_destroy_live(acc, instance), d + 1, e}
+              {acc, destroyed?} = force_destroy_live(acc, instance)
+              {acc, d + if(destroyed?, do: 1, else: 0), e}
           end
         end)
 
@@ -1668,6 +1669,16 @@ defmodule Embervm.StatefulManager do
   end
 
   defp force_destroy_live(state, instance) do
+    if state.node_confirmed_destroy do
+      force_destroy_live_node_confirmed(state, instance)
+    else
+      force_destroy_live_legacy(state, instance)
+    end
+  end
+
+  # Gate-off path: preserve today's best-effort teardown then record-destroyed
+  # ordering exactly.
+  defp force_destroy_live_legacy(state, instance) do
     _ = stop_stateful_destroy(state, instance)
 
     _ =
@@ -1680,7 +1691,39 @@ defmodule Embervm.StatefulManager do
         %{}
       )
 
-    state
+    {state, true}
+  end
+
+  # Gate-on path: persist the destroying intent before contacting the node, then
+  # record destroyed only after the node confirms the teardown.
+  defp force_destroy_live_node_confirmed(state, instance) do
+    intent =
+      StatefulStore.transition(
+        state.store,
+        instance.instance_id,
+        :begin_destroy,
+        :stateful_destroying,
+        %{reason: "forced_destroy"},
+        %{}
+      )
+
+    case intent do
+      {:ok, _} ->
+        if stop_stateful_destroy(state, instance) do
+          {record_stateful_destroyed(state, instance), true}
+        else
+          Logger.warning("embervm stateful teardown unconfirmed, left destroying",
+            instance_id: instance.instance_id,
+            workload: instance.workload,
+            vm_id: instance.vm_id
+          )
+
+          {state, false}
+        end
+
+      {:error, _reason} ->
+        {state, false}
+    end
   end
 
   defp evict_banked(state, instance) do
@@ -1702,25 +1745,30 @@ defmodule Embervm.StatefulManager do
 
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
       try do
-        state.stop_stateful_fun.(channel, req)
+        case state.stop_stateful_fun.(channel, req) do
+          {:ok, %{teardown_confirmed: true}} -> true
+          _ -> false
+        end
       rescue
-        _ -> :error
+        _ -> false
       catch
         # Dead Mint ConnectionProcess: invalidate so the next verb re-dials
         # (best-effort verb, but leaving the corpse cached wedges later wakes).
         :exit, _ ->
           _ = state.invalidate_fun.(node_id, channel)
-          :error
+          false
 
         _, _ ->
-          :error
+          false
       end
+    else
+      _ -> false
     end
-
-    :ok
   end
 
-  defp stop_stateful_destroy(_state, _instance), do: :ok
+  # An instance without a reachable VM holds nothing on a node, so its teardown is
+  # trivially confirmed.
+  defp stop_stateful_destroy(_state, _instance), do: true
 
   # -- delete volume (management verb) -----------------------------------------
 
@@ -1799,9 +1847,112 @@ defmodule Embervm.StatefulManager do
 
     _ = StatefulStore.eager_evict_broken_pairs(state.store)
 
+    state =
+      if state.node_confirmed_destroy do
+        state
+        |> redrive_destroying(live_vms)
+        |> destroy_orphan_stateful_vms(facts, live_vms)
+      else
+        state
+      end
+
     EndpointPublisher.publish(state.publisher)
 
     auto_wake_ready_workloads(state, facts)
+  end
+
+  # A destroying instance is re-driven only while its owner reports. If the owner
+  # reports but the VM is absent, its absence confirms the prior teardown; a missing
+  # owner report is a disconnect and leaves the instance destroying.
+  defp redrive_destroying(state, live_vms) do
+    now = state.clock.()
+
+    StatefulStore.all(state.store)
+    |> Enum.filter(&(&1.state == :destroying))
+    |> Enum.reduce(state, fn instance, acc ->
+      maybe_alarm_destroying(acc, instance, now)
+      redrive_one_destroying(acc, instance, live_vms)
+    end)
+  end
+
+  defp maybe_alarm_destroying(state, instance, now) do
+    elapsed = now - instance.updated_at
+
+    if elapsed > state.destroying_alarm_ms do
+      Logger.error("embervm stateful instance stuck in destroying",
+        instance_id: instance.instance_id,
+        workload: instance.workload,
+        vm_id: instance.vm_id,
+        elapsed_ms: elapsed,
+        alarm_threshold_ms: state.destroying_alarm_ms
+      )
+    end
+
+    :ok
+  end
+
+  defp redrive_one_destroying(state, instance, live_vms) do
+    cond do
+      is_binary(instance.vm_id) and Map.has_key?(live_vms, instance.vm_id) ->
+        if stop_stateful_destroy(state, instance) do
+          record_stateful_destroyed(state, instance)
+        else
+          state
+        end
+
+      node_reporting?(state, instance.node_id) ->
+        record_stateful_destroyed(state, instance)
+
+      true ->
+        state
+    end
+  end
+
+  defp record_stateful_destroyed(state, instance) do
+    _ =
+      StatefulStore.transition(
+        state.store,
+        instance.instance_id,
+        :destroy,
+        :stateful_destroyed,
+        %{reason: "forced_destroy"},
+        %{}
+      )
+
+    Logger.info("embervm stateful instance destroyed (reconcile-confirmed)",
+      instance_id: instance.instance_id,
+      workload: instance.workload
+    )
+
+    state
+  end
+
+  # A node-reported stateful VM with no matching control-plane instance is an
+  # orphan. Stateful has no async-write adoption discriminator: destroy every such
+  # VM node-confirmed and never create a row for it.
+  defp destroy_orphan_stateful_vms(state, facts, _live_vms) do
+    for fact <- facts, vm <- Map.get(fact, :stateful_vms, []) || [], reduce: state do
+      acc ->
+        case Enum.find(StatefulStore.all(acc.store), &(&1.vm_id == vm.vm_id)) do
+          nil ->
+            confirmed =
+              stop_stateful_destroy(acc, %{
+                node_id: fact.configured_id,
+                vm_id: vm.vm_id
+              })
+
+            Logger.warning("embervm orphan stateful vm destroyed",
+              vm_id: vm.vm_id,
+              node_id: fact.configured_id,
+              teardown_confirmed: confirmed
+            )
+
+            acc
+
+          _instance ->
+            acc
+        end
+    end
   end
 
   # A2 auto-wake (instance-key unification PR-B0a): kick a wake for every catalog-
