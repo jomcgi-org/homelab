@@ -87,6 +87,17 @@ func TestLoadCpuVendorEnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoadActivatorAddress(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_ACTIVATOR_ADDR", "127.0.0.1:18081")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ActivatorAddr != "127.0.0.1:18081" || c.ActivatorPort != 18081 {
+		t.Errorf("activator endpoint = %q:%d, want 127.0.0.1:18081", c.ActivatorAddr, c.ActivatorPort)
+	}
+}
+
 // TestLoadCpuTemplateDefaultsPerVendor proves CpuTemplate resolves to the
 // conservative per-vendor default (PR-E) when EMBERVM_NODED_CPU_TEMPLATE is
 // unset and CpuVendor is known, for both fleet vendors.

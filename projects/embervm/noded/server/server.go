@@ -194,12 +194,15 @@ type Server struct {
 	// Phase 2). The daemon boots with it empty (or a STALE boot-cache load) and
 	// admits no new work until the control plane replays it over SyncRegistry
 	// (readiness gate). It replaces the retired EMBERVM_NODED_IMAGES config table.
-	registry     *workloadRegistry
-	sessionVMs   *sessionRegistry
-	sessionSnap  *sessionSnapshotRegistry
-	servingVMs   *servingRegistry
-	servingSnap  *servingSnapshotRegistry
-	servingImage *servingImageRegistry
+	registry         *workloadRegistry
+	sessionVMs       *sessionRegistry
+	sessionSnap      *sessionSnapshotRegistry
+	servingVMs       *servingRegistry
+	servingSnap      *servingSnapshotRegistry
+	servingImage     *servingImageRegistry
+	activator        *activator
+	activatorMu      sync.RWMutex
+	activatorEnabled bool
 
 	// servingNet owns the host serving network (bridge, taps, nftables, IP
 	// allocation). nil disables the serving verbs (task/session-only tests and any
@@ -420,6 +423,7 @@ func New(opts Options) *Server {
 		subs:            make(map[chan struct{}]struct{}),
 		activeBuilds:    make(map[string]context.CancelFunc),
 	}
+	s.activator = newActivator(s)
 	// VolumeRoot may be set directly on Options (mirroring how cmd/main.go wires
 	// every other stateful/serving knob explicitly) or left to fall back to
 	// Config.VolumeRoot, so a caller that only populates Config (as several
@@ -1670,7 +1674,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	live := taskLive + len(sessionVMs) + len(servingVMs) + len(statefulVMs) + len(groupMemberVMs)
 	snaps := s.sessionSnapshotsStatus()
 	freeBytes, usedBytes := s.snapshotDiskUsage()
-	return &nodev1.NodeStatus{
+	ns := &nodev1.NodeStatus{
 		NodeId:                s.cfg.Node,
 		PodUid:                s.cfg.PodUID,
 		SizeClass:             s.cfg.SizeClass,
@@ -1702,6 +1706,23 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		CpuSku:                s.cpuSku(),
 		LocalBases:            s.localBasesStatus(),
 	}
+	s.activatorMu.RLock()
+	activatorEnabled := s.activatorEnabled
+	s.activatorMu.RUnlock()
+	// Advertise the activator at the daemon's own POD IP (ADR embervm/018 Fork A,
+	// as amended for the pod-networked daemon): serving VMs are already published
+	// and reached at podIP:vmPort via a DNAT in noded's OWN netns, so a pod-network
+	// Envoy dials podIP directly. Advertising the node IP instead would black-hole
+	// (nodeIP-destined traffic never enters this netns), so podIP is the only
+	// address that routes. This survives a control-plane Recreate (noded's podIP is
+	// stable across it); only a noded RESCHEDULE churns podIP, the accepted #3993
+	// open limitation. Not advertised when there is no pod IP (local/test), so the
+	// control plane falls back to its own activator address.
+	if activatorEnabled && s.cfg.PodIP != "" {
+		ns.ActivatorEndpoint = &nodev1.Endpoint{Ip: s.cfg.PodIP, Port: s.cfg.ActivatorPort}
+		ns.ActivatorIp = s.cfg.PodIP
+	}
+	return ns
 }
 
 // localBasesStatus projects the daemon's FULL on-disk base inventory into the
@@ -1853,6 +1874,7 @@ func (s *Server) servingVMsStatus() []*nodev1.ServingVm {
 			Port:            port,
 			Healthy:         e.healthy,
 			LastProbeUnixMs: e.lastProbeUnixMs,
+			Origin:          e.origin,
 		})
 	}
 	return out

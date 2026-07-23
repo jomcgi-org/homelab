@@ -252,6 +252,17 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The activator is serving-class only. Bind before marking it advertised so
+	// NodeStatus never sends an Envoy request to a listener that is not present.
+	activatorLis, err := net.Listen("tcp", cfg.ActivatorAddr)
+	if err != nil {
+		return err
+	}
+	activatorHTTP := &http.Server{
+		Handler:           srv.ActivatorHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	srv.EnableActivator()
 
 	// Plain-HTTP /healthz for kubelet probes (a privileged single-replica pod does
 	// not warrant gRPC health-checking machinery).
@@ -264,6 +275,12 @@ func run(logger *slog.Logger) error {
 		logger.Info("health endpoint listening", "addr", cfg.HealthAddr)
 		if err := health.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("health server failed", "err", err)
+		}
+	}()
+	go func() {
+		logger.Info("activator endpoint listening", "addr", cfg.ActivatorAddr)
+		if err := activatorHTTP.Serve(activatorLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("activator server failed", "err", err)
 		}
 	}()
 
@@ -300,6 +317,7 @@ func run(logger *slog.Logger) error {
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = health.Shutdown(shutdownCtx)
+		_ = activatorHTTP.Shutdown(shutdownCtx)
 		cancel()
 
 		// Hold the door: keep serving lifecycle rpcs until the control plane has

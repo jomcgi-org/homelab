@@ -16,6 +16,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,6 +48,12 @@ type Config struct {
 	// (gRPC health-checking a privileged single-replica pod is more moving parts
 	// than a 20-line HTTP handler). Default ":8080".
 	HealthAddr string
+	// ActivatorAddr is the node-local HTTP listener that wakes eligible serving
+	// workloads during a control-plane gap. Default ":8081".
+	ActivatorAddr string
+	// ActivatorPort is the port parsed from ActivatorAddr. It is advertised in
+	// NodeStatus and used by the stable node-IP DNAT rule.
+	ActivatorPort uint32
 	// Node identifies the Kubernetes node this daemon is pinned to (injected via
 	// the Downward API as EMBERVM_NODED_NODE / spec.nodeName). Reported as
 	// node_id in NodeStatus and stamped into snapshot node-pinning.
@@ -341,6 +348,7 @@ func Load() (Config, error) {
 	c := Config{
 		ListenAddr:       getenvDefault("EMBERVM_NODED_LISTEN_ADDR", ":9090"),
 		HealthAddr:       getenvDefault("EMBERVM_NODED_HEALTH_ADDR", ":8080"),
+		ActivatorAddr:    getenvDefault("EMBERVM_NODED_ACTIVATOR_ADDR", ":8081"),
 		Node:             os.Getenv("EMBERVM_NODED_NODE"),
 		Arch:             os.Getenv("EMBERVM_NODED_ARCH"),
 		CpuVendor:        os.Getenv("EMBERVM_NODED_CPU_VENDOR"),
@@ -399,6 +407,15 @@ func Load() (Config, error) {
 	if c.Node == "" {
 		c.Node = os.Getenv("NODE_NAME")
 	}
+	_, activatorPort, err := net.SplitHostPort(c.ActivatorAddr)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid EMBERVM_NODED_ACTIVATOR_ADDR %q: %w", c.ActivatorAddr, err)
+	}
+	p, err := strconv.ParseUint(activatorPort, 10, 16)
+	if err != nil || p == 0 {
+		return Config{}, fmt.Errorf("invalid EMBERVM_NODED_ACTIVATOR_ADDR %q: port required", c.ActivatorAddr)
+	}
+	c.ActivatorPort = uint32(p)
 	if c.Arch == "" {
 		c.Arch = runtime.GOARCH
 	}
