@@ -440,6 +440,28 @@ defmodule Embervm.GroupWakeManagerTest do
     assert FakePublisher.count(ctx.pub) >= 1
   end
 
+  test "adoption SKIPS a :destroying group even though the node still reports live members" do
+    ctx = start_stack()
+    instance_id = "g-destroying"
+
+    # Seed an instance, then force it into :destroying: mid node-confirmed teardown
+    # (ADR embervm/014 decision 5), the per-member teardown RPCs in flight.
+    _ = seed_banked(ctx, instance_id)
+    _ = GroupStore.adopt_state(ctx.store, instance_id, :destroying)
+
+    # The node still reports the group's members live: the straggler report that turns
+    # on the TLC NoDestroyBeforeConfirm violation if adoption keys off the node.
+    seed_node(ctx, %{
+      group_member_vms: [%{vm_id: "vm-l", group_instance_id: instance_id, member_name: "leader", ip: "10.101.0.10", healthy: true}]
+    })
+
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    # NOT re-adopted to :running; stays destroying for the (gated) redrive to own.
+    {:ok, inst} = GroupStore.get(ctx.store, instance_id)
+    assert inst.state == :destroying
+  end
+
   test "adoption: a banked instance with a COMPLETE reported set heals to banked" do
     ctx = start_stack()
     instance_id = "g-banked"

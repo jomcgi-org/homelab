@@ -830,6 +830,39 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(ctx.starts, & &1) == 0
   end
 
+  test "adoption SKIPS a :destroying instance even though the node still reports its live VM" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+
+    {:ok, _} =
+      StatefulStore.start(ctx.store, %{
+        instance_id: "stf-destroying",
+        tenant: "homelab",
+        principal: "p",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-live",
+        generation: 1
+      })
+
+    # Force the instance into :destroying: mid node-confirmed teardown (ADR
+    # embervm/014 decision 5), the teardown RPC in flight.
+    _ = StatefulStore.adopt_state(ctx.store, "stf-destroying", :destroying)
+
+    # The node still reports the VM live: the straggler report that turns on the TLC
+    # NoDestroyBeforeConfirm violation if adoption keys off the node, not the CP state.
+    stateful_node(ctx, "node-4",
+      stateful_vms: [%{vm_id: "vm-live", workload: "wl-a", ip: "10.88.0.9", port: 5432, healthy: true, generation: 1, last_probe_unix_ms: 1}]
+    )
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    # NOT re-adopted to :serving; stays destroying for the (gated) redrive to own.
+    {:ok, inst} = StatefulStore.get(ctx.store, "stf-destroying")
+    assert inst.state == :destroying
+    assert Agent.get(ctx.starts, & &1) == 0
+  end
+
   test "adoption heals a limbo instance the node reports only as a bundle to banked" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a")
