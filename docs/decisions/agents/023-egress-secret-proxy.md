@@ -181,4 +181,4 @@ is a strict hardening: it closes the cluster-pivot vector the old `allow` defaul
 left open. Decision 3 (per-secret egressTo as the exfiltration control) is
 unchanged and now orthogonal to the zone policy. Shipped in PR #3010, deployed at
 fc-invoke chart 0.4.2, verified live (a default-tier agent reached inference:8080
-under internal-deny). Plan: docs/plans/2026-07-01-git-mirror-recording-generic-egress.md.
+under internal-deny).

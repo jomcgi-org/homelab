@@ -9,8 +9,7 @@
 
 ## Context
 
-The abort-generation-blessing fix (`aa3df2cd5`,
-`docs/plans/2026-07-22-embervm-abort-generation-blessing.md`) made the control
+The abort-generation-blessing fix (`aa3df2cd5`) made the control
 plane the sole issuer of a volume generation on the interruptible-bank ABORT
 lane: the CP blesses `next_blessed_generation` before dispatch and noded
 `RecordBlessed`s it, so a normal checkpoint-abort no longer quarantines. That

@@ -3,7 +3,7 @@
 **Author:** Joe McGinley
 **Status:** Accepted
 **Created:** 2026-07-05
-**Relates to:** [ADR 011: Grimoire Hot-Tier Schema on Postgres](011-grimoire-hot-tier-schema.md), [ADR 012: Grimoire Postgres-First, Loom-Shaped](012-grimoire-postgres-first-loom-shaped.md), live-play design (`docs/plans/2026-07-04-grimoire-live-play-design.md`, PR #3214)
+**Relates to:** [ADR 011: Grimoire Hot-Tier Schema on Postgres](011-grimoire-hot-tier-schema.md), [ADR 012: Grimoire Postgres-First, Loom-Shaped](012-grimoire-postgres-first-loom-shaped.md), live-play design (PR #3214)
 
 ---
 
@@ -131,4 +131,4 @@ Baseline per `docs/security.md`. Specifics:
 | [ADR 011](011-grimoire-hot-tier-schema.md) | Grant overlay, scopes, visibility predicate this ADR compiles into |
 | [ADR 012](012-grimoire-postgres-first-loom-shaped.md) | Loom compat contract that rules-compiled-to-grants preserves |
 | Live-play design (PR #3214) | FR-CHAR-3, surfacing lanes, ACL matrix, auto-reveal safeguards this composes with |
-| `docs/plans/2026-07-03-grimoire-extract-qwen-cachekey.md` | Marker/cache-key semantics the enrichment pass mirrors |
+| Extraction cache-key design | Marker/cache-key semantics the enrichment pass mirrors |

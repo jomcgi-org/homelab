@@ -1,6 +1,6 @@
 """OpenRouter entity extraction: knowledge_chunk -> entities/mentions/relationships.
 
-Spec #4.2 (docs/plans/2026-07-02-grimoire-pg-first-spec.md): a batch job body
+Spec #4.2 of the pg-first design: a batch job body
 that reads loaded chunks with no entity mentions yet, calls a frontier model
 via OpenRouter for structured JSON extraction, and writes entities (spine +
 typed detail per ADR 011), ``chunk_entity_mention`` rows, and

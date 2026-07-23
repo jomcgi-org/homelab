@@ -178,7 +178,6 @@ ADR 001's explicit exclusion allowlist before anything is rendered:
 | Path                        | Reason                                  |
 | --------------------------- | --------------------------------------- |
 | `.claude/` (AGENTS, skills) | Internal agent capabilities and prompts |
-| `docs/plans/`               | Ephemeral design docs, not reference    |
 | CV / personal assets        | Personal content, not homelab docs      |
 | any non-doc source trees    | Not documentation                       |
 

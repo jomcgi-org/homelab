@@ -9,7 +9,7 @@
 
 ## Problem
 
-The public surface is gaining a chat: the landing page of the public notes app is a neo-brutalist chat box, and a user can deep-dive into the knowledge graph as an overlay that highlights the public nodes a conversation touched and expands their content. The chat is backed by the in-cluster Qwen model (vLLM, OpenAI-compatible at `inference.inference.svc.cluster.local:8080`). This is V3 of the public-notes plan (`docs/plans/2026-05-07-public-notes-visibility-design.md`), which deferred it precisely because it changes the risk profile.
+The public surface is gaining a chat: the landing page of the public notes app is a neo-brutalist chat box, and a user can deep-dive into the knowledge graph as an overlay that highlights the public nodes a conversation touched and expands their content. The chat is backed by the in-cluster Qwen model (vLLM, OpenAI-compatible at `inference.inference.svc.cluster.local:8080`). This is V3 of the public-notes design work, which deferred it precisely because it changes the risk profile.
 
 A public, anonymous, internet-facing endpoint that spends GPU on demand is a qualitatively different surface from the read-only JSON endpoints ADR 004 isolated. Every other public route is a cheap point read against a replica. Chat is expensive, stateful, generative, and adversarial by default. The specific threats:
 
@@ -199,8 +199,8 @@ Public chat shipped deliberately unshareable: a transcript lived only on the ser
 | [ADR 004: Public Read-Only Service Isolation](004-public-read-only-service-isolation.md)     | The isolated public service this chat module is composed into; source of `public_reader`, public views, replica, and default-deny egress             |
 | [ADR 010: FastMonolith Modular Framework](../services/010-fastmonolith-modular-framework.md) | The module/tier/profile mechanism that makes `chat_public` a PUBLIC-tier module composed into the public binary, with private code physically absent |
 | [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)           | Public hostname and tier the chat sits behind                                                                                                        |
-| `docs/plans/2026-05-07-public-notes-visibility-design.md`                                    | V1/V2 visibility work; this is the deferred V3 chat surface                                                                                          |
-| `docs/plans/2026-06-16-public-chat-v3-plan.md`                                               | Implementation plan for this decision                                                                                                                |
+| Public-notes visibility design                                                               | V1/V2 visibility work; this is the deferred V3 chat surface                                                                                          |
+| Public chat V3 implementation plan                                                           | Implementation plan for this decision                                                                                                                |
 | `projects/agent_platform/inference/deploy/values-prod.yaml`                                  | The shared Qwen vLLM the semaphore reserves headroom against                                                                                         |
 | `projects/monolith/chat/summarizer.py`                                                       | Existing rolling-summary pattern reused for compaction                                                                                               |
 | [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/)                         | The admission challenge minting the session token                                                                                                    |

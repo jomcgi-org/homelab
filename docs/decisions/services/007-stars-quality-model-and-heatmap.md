@@ -145,4 +145,4 @@ data; no new external calls, credentials, or exposure. Baseline per
 | [ADR 006: Stars grid ingest](006-stars-grid-ingest.md) | The dense grid this heatmap renders; quality is the field it colors |
 | `projects/monolith/stars/scoring.py`                   | The current additive score this evolves                             |
 | `projects/monolith/ships/heat.py`                      | The WebGL heatmap rollup pattern to mirror                          |
-| `docs/plans/2026-06-13-stars-into-monolith.md`         | The self-contained stars design this extends                        |
+| Stars-into-monolith design                             | The self-contained stars design this extends                        |

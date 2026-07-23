@@ -37,9 +37,8 @@ hand and reference only a small subset of available endpoints. Most of the
 private API surface is invisible to Claude unless someone hand-writes a
 skill for it.
 
-The forcing function for this ADR is the addition of scheduler API endpoints
-(see `docs/plans/2026-04-25-scheduler-api-design.md`). That work is shipping
-in the existing hand-written style to avoid blocking on this larger refactor,
+The forcing function for this ADR is the addition of scheduler API endpoints.
+That work is shipping in the existing hand-written style to avoid blocking on this larger refactor,
 but it is the third domain in a row that has paid the duplication tax. The
 next domain should not.
 
@@ -250,7 +249,7 @@ See `docs/security.md` for baseline. No deviations.
 | [`tools/cli/`](../../../tools/cli/)                                                               | Current hand-written CLI; the duplication this ADR removes                                  |
 | [`tools/cli/knowledge_cmd.py`](../../../tools/cli/knowledge_cmd.py)                               | Reference for current command shape (auth, retry, output formatting)                        |
 | [`projects/monolith/app/main.py`](../../../projects/monolith/app/main.py)                         | FastAPI app wiring; openapi.json source                                                     |
-| [`docs/plans/2026-04-25-scheduler-api-design.md`](../../plans/2026-04-25-scheduler-api-design.md) | The forcing function — third domain paying duplication tax                                  |
+| Scheduler API design | The forcing function, third domain paying duplication tax                                  |
 | [FastAPI OpenAPI customization](https://fastapi.tiangolo.com/how-to/extending-openapi/)           | Mechanism for `x-cli-*` extensions on routes                                                |
 | [Claude Code skills format](https://docs.claude.com/en/docs/claude-code/skills)                   | Frontmatter + body structure for `.claude/skills/<name>/SKILL.md`                           |
 | [ADR 002: Service Deployment Tooling](./002-service-deployment-tooling.md)                        | Sister ADR — same "scaffolding from a single source" philosophy applied to service creation |

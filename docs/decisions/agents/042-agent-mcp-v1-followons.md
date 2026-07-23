@@ -10,7 +10,7 @@
 
 [ADR 004 (Autonomous Agents)](004-autonomous-agents.md) and [ADR 007 (Agent Orchestrator)](007-agent-orchestrator.md) established the in-cluster agent execution surface. Today (2026-05-08) PRs [#2295](https://github.com/jomcgi/homelab/pull/2295), [#2300](https://github.com/jomcgi/homelab/pull/2300), and [#2301](https://github.com/jomcgi/homelab/pull/2301) shipped v1 of the **`monolith-agent-*` MCP surface** — the cluster-side coordination layer that lets cloud Claude Code Routines (the `claude-routine-agent` actor) read internal cluster state, take TTL locks for opportunistic dedup, claim/complete delegated work, and notify via Discord.
 
-The v1 design doc ([`docs/plans/2026-05-07-monolith-agent-mcp-surface-design.md`](../../plans/2026-05-07-monolith-agent-mcp-surface-design.md)) sketched two further phases — **v2** (self-improving loop where Routine failures auto-produce capability-gap PRs) and **v2+** (tiered model pipeline: Opus planner → Sonnet implementer → Opus reviewer → Opus merger). Neither was implemented in v1 by deliberate choice.
+The v1 design doc sketched two further phases: **v2** (self-improving loop where Routine failures auto-produce capability-gap PRs) and **v2+** (tiered model pipeline: Opus planner, Sonnet implementer, Opus reviewer, Opus merger). Neither was implemented in v1 by deliberate choice.
 
 This ADR records:
 

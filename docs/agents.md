@@ -188,7 +188,7 @@ recipes plus three sub-recipes the router dispatches to.
 | ---------------- | ------- | ------------------------------------------------------------------------------------------- |
 | `agent.yaml`     | 1.3.0   | **Router.** Classifies the task and dispatches exactly one sub-recipe. Does no work itself. |
 | `query.yaml`     | 1.2.0   | Read-only. Answers a question, grounded in `.claude/CLAUDE.md` + the project's CLAUDE.md.   |
-| `plan.yaml`      | 1.2.0   | Writes an implementation plan to `docs/plans/` and opens a PR on a `claude/-` branch.       |
+| `plan.yaml`      | 1.2.0   | Writes an implementation plan and opens a PR on a `claude/-` branch.                        |
 | `implement.yaml` | 1.2.0   | Autonomous coding: reads, edits, commits, pushes, opens a PR on a `claude/-` branch.        |
 | `artifact.yaml`  | 1.0.0   | Writes ONE self-contained HTML file; the harness publishes it. Used by `/artifact`.         |
 

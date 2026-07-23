@@ -12,8 +12,7 @@
 ADR [platform/012](../platform/012-cilium-replaces-linkerd.md) replaced Linkerd + flannel
 with Cilium, but deliberately scoped the migration to "get the datapath swapped
 safely" and pushed the higher-value or higher-blast-radius Cilium features to a
-follow-up. The migration plan's closing section
-(`docs/plans/2026-07-10-cilium-migration.md`, "Post-migration follow-ups") lists
+follow-up. The migration's post-migration follow-ups list
 them explicitly: kube-proxy replacement, `policyEnforcementMode: always`, and a
 richer Hubble metric set were all left as "adopt later, independently." Cilium is
 now the CNI, but we are running it in close to its most conservative shape:
@@ -102,13 +101,13 @@ already-emitted `drop` metric. It goes first.
   `loadBalancer` tuning that only makes sense *after* `kubeProxyReplacement: true`
   is stable; a later, independent config change.
 
-Implementation is tracked in three plans, not in this ADR:
+Implementation is tracked in GitHub Issues, not in this ADR:
 
-- `docs/plans/2026-07-13-hubble-signoz-observability.md` (#1: the drop alert, the
+- Hubble/SigNoz observability (#1: the drop alert, the
   shared `hubble-metrics` scrape job, and the topology decommission)
-- `docs/plans/2026-07-13-cilium-policy-hardening.md` (#2 + #4: L7 per-surface
+- Cilium policy hardening (#2 + #4: L7 per-surface
   policies with their harvested HTTP alerts, then the gated default-deny flip)
-- `docs/plans/2026-07-13-cilium-kube-proxy-replacement.md` (#3, a two-track runbook
+- kube-proxy replacement runbook (#3, a two-track runbook
   like the migration plan)
 
 ---
@@ -281,7 +280,7 @@ The "never K8s NetworkPolicies in meshed namespaces" caveat retired with Linkerd
 | Resource | Relevance |
 | -------- | --------- |
 | [ADR platform/012](../platform/012-cilium-replaces-linkerd.md) | The migration this builds on; deferred these capabilities on purpose |
-| `docs/plans/2026-07-10-cilium-migration.md` (Post-migration follow-ups) | Where #3/#4 were first parked |
+| Cilium migration follow-ups (GitHub Issues) | Where #3/#4 were first parked |
 | `projects/platform/cilium/values.yaml` | Current `hubble.metrics`, `kubeProxyReplacement`, `k8sServiceHost`, `policyEnforcementMode` |
 | `projects/monolith-public/chart/templates/cilium-policy.yaml` | Existing L3/L4 + L7-DNS policy; the L4-shadows-L7 gotcha lives here |
 | `projects/firecracker/substrate/chart/templates/cilium-policy.yaml` | `/invoke` policy that #2 hardens at L7 |

@@ -2,7 +2,7 @@
 
 Lens membership is a union predicate over the existing
 ``(category, temporality, entity_type)`` spine columns, never a stored flag
-(see docs/plans/2026-07-05-grimoire-explore-tab.md design decision 2):
+(design decision 2 of the explore-tab design):
 scope (which slice of the corpus) and lens (how to view that slice) are
 orthogonal dials, and a predicate can be recomputed for free if the
 underlying data changes, whereas a stored flag would need a backfill every

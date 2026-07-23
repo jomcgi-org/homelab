@@ -126,10 +126,8 @@ Baseline per `docs/security.md`. Specifics:
 
 The original decision above kept the whole corpus private-tier-only, on the
 premise that all chunk content is licensed book text. A public read-only
-Grimoire tier was subsequently built (see
-`docs/plans/2026-07-03-grimoire-public-readonly.md`), which served every book's
-verbatim text behind Turnstile plus `noindex` as an accepted demo-period
-compromise. That compromise does not hold up for wider sharing: reconstructing
+Grimoire tier was subsequently built, which served every book's verbatim
+text behind Turnstile plus `noindex` as an accepted demo-period compromise. That compromise does not hold up for wider sharing: reconstructing
 copyrighted sourcebooks in full is a takedown risk regardless of a robots hint.
 
 The refined policy draws the line by license, not by tier:

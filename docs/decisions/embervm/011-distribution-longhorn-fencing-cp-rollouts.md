@@ -16,8 +16,7 @@ Firecracker-capable node. Since then, the /ember demo went public and deploys
 froze while it was being shown, which inverts the platform's goal: deploys
 should be boring precisely because the workloads survive them.
 
-Three findings reshape the rung (full findings in the design seed,
-`docs/plans/2026-07-18-embervm-r7-distribution-design-seed.md`):
+Three findings reshape the rung (full findings in the design seed):
 
 1. **The fleet constraint was never KVM, it is snapshot portability.** All four
    cluster nodes have virtualization enabled and headroom. Firecracker is
@@ -180,5 +179,4 @@ self-bumping. The one remaining self-bump is noded's own resolve-timeout
 auto-abort, where no control plane is reachable to issue a generation; its
 resulting quarantine is accepted as correct fail-closed behaviour, with a
 break-glass recovery documented in
-`docs/runbooks/embervm-stateful-generation-quarantine.md`. See
-`docs/plans/2026-07-22-embervm-abort-generation-blessing.md` for the full design.
+`docs/runbooks/embervm-stateful-generation-quarantine.md`.

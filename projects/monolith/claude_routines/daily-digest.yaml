@@ -19,14 +19,17 @@ prompt: |
   Follow the `daily-digest` skill in this repo
   (.claude/skills/daily-digest/SKILL.md) for the full method. In brief:
 
-  1. PRs: `gh pr list --author "@me" --state open` plus PRs with
+  1. Issues: `gh issue list --state open` (the source of truth for
+     outstanding work), noting parent tracking issues with open sub-issues.
+  2. PRs: `gh pr list --author "@me" --state open` plus PRs with
      `review-requested:@me`. If `gh` errors, skip PRs and note it once.
-  2. Plans: scan `docs/plans/*.md` for files with remaining `- [ ]` tasks.
   3. ADRs: `grep -rl "^\*\*Status:\*\* Draft" docs/decisions/`.
 
   Rank into tiers, P0 finish (PR approved+mergeable, or CI red, or a review
-  reply owed), P1 in flight (plans with unchecked tasks, your draft PRs),
-  P2 decide (Draft ADRs), P3 review (PRs requesting your review). Within a
+  reply owed, or an issue labeled `critical`), P1 in flight (tracking issues
+  with open sub-issues, issues labeled `bug`/`agent-ready`, your draft PRs),
+  P2 decide (Draft ADRs, `enhancement`/`documentation` issues not started),
+  P3 review (PRs requesting your review). Within a
   tier sort by most-recently-updated. Cap at ~12 items with "+N more" per
   truncated tier.
 

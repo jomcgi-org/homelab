@@ -114,7 +114,7 @@ This is the value proposition. Every row is Go code we stop maintaining.
 
 `security/003` lands first (gVisor on the agent-worker node class is a hard prerequisite — Substrate's actor multiplexing magnifies the blast radius of any compromised actor, so the host kernel boundary must be re-established at runsc). Substrate and AX deploy next, in their own namespaces. The first migrated routine is `PRFixAgent` because it has the clearest input/output contract. The orchestrator and `cluster_agents` services are deleted last, after every consumer is migrated.
 
-Detailed task tracking lives in `docs/plans/` if needed — this ADR records the decision, not the work.
+Detailed task tracking lives in GitHub Issues if needed, this ADR records the decision, not the work.
 
 ---
 

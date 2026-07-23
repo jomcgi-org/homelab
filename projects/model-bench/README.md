@@ -1,6 +1,6 @@
 # model-bench
 
-model-bench is an internal Python CLI that screens OpenRouter LLM models against a curated pack of coding and config tasks drawn from this repo's real commits, to identify budget-tier models that clear the quality bar for offloadable work. For the full design rationale, task taxonomy, and scoring approach, see `docs/plans/2026-06-30-model-bench-design.md`.
+model-bench is an internal Python CLI that screens OpenRouter LLM models against a curated pack of coding and config tasks drawn from this repo's real commits, to identify budget-tier models that clear the quality bar for offloadable work.
 
 ## Two run modes
 

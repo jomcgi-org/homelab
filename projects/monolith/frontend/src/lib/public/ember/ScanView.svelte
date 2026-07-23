@@ -3,7 +3,7 @@
 
   // ScanView: editor, gutter/ignition, sweep, receipt line, and the
   // cold-vs-warm race. Ported from the interactive spec at
-  // docs/plans/2026-07-20-ember-semgrep-scanview-mock.html (open it in a
+  // the ember semgrep scanview mockup (the target design, referenced in a
   // browser, everything inside the white panel is this component + the
   // page shell around it). Session/Turnstile gating, proxies, and the
   // busy/queued/error states live one level up in +page.svelte; this

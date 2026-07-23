@@ -10,9 +10,8 @@
 > per-request code injection into the shared `sandbox` workload to a per-function
 > EmberVM `zip` Workload (its own baked snapshot), per the [embervm/001](../embervm/001-embervm-beam-firecracker-workload-orchestrator.md)
 > roadmap ("R1 resolves the agents/045 relationship"). A function IS an EmberVM
-> Workload; EmberVM never learns what a "function" is. Shipped in EmberVM R1
-> (`docs/plans/2026-07-14-embervm-r1-zip-lane-spec-and-plan.md`), live at
-> `https://jomcgi.dev/functions/og-image`. This does not change any decision
+> Workload; EmberVM never learns what a "function" is. Shipped in EmberVM R1,
+> live at `https://jomcgi.dev/functions/og-image`. This does not change any decision
 > below; it changes only where the code runs.
 
 ---

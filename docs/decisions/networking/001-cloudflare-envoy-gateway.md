@@ -3,7 +3,7 @@
 **Author:** Joe McGinley
 **Status:** Implemented
 **Created:** 2026-02-28
-**Relates to:** [K8s API Tunnel RFC](../../../docs/plans/2026-02-26-k8s-api-tunnel.md)
+**Relates to:** K8s API Tunnel RFC
 
 ---
 

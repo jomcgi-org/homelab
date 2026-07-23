@@ -982,7 +982,7 @@ gardener:
     itemPath: ""
 
 # Grimoire: D&D campaign manager ingest pipeline (private tier only; spec
-# docs/plans/2026-07-02-grimoire-pg-first-spec.md). Two daily scheduled jobs
+# the grimoire pg-first design). Two daily scheduled jobs
 # load S3 chunk manifests and extract entities via OpenRouter. Disabled by
 # default (the private deploy values enable it). OPENROUTER_API_KEY for the
 # extract job is sourced from the existing "goosecracker" Secret (field

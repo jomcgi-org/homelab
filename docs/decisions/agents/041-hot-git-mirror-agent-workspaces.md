@@ -135,5 +135,4 @@ refs stay read-only, and the fetch refspec never covers refs/agents/\* (prune
 cannot delete scratch refs). This narrows, it does not reverse, the "push-through
 mirror rejected" alternative: authoritative writes still go direct to GitHub; only
 a non-authoritative refs/agents/** audit and replay namespace is writable, and it
-never feeds CI, ArgoCD, or PRs. Plan:
-docs/plans/2026-07-01-git-mirror-recording-generic-egress.md.
+never feeds CI, ArgoCD, or PRs.

@@ -1,8 +1,8 @@
 """Typed ``submit_plan`` schema, deserializer, and semantic validator.
 
 ADR 036 has the DeepSeek orchestrator select sub-recipes and order them with
-per-step context, never author recipe YAML itself (Design invariant 1 in
-``docs/plans/2026-07-03-deepseek-runtime-recipes.md``). This module is the
+per-step context, never author recipe YAML itself (Design invariant 1 of
+the DeepSeek runtime recipes design). This module is the
 typed boundary that makes that invariant mechanical:
 
 - ``submit_plan_schema()`` builds a JSON Schema for a ``submit_plan`` tool

@@ -10,9 +10,8 @@
 ## Context
 
 ADR 011 established the heterogeneous fleet (noded on all four nodes,
-vendor-bound warmth) and the artifact-decoupling design seed
-(docs/plans/2026-07-19-embervm-artifact-decoupled-noded-design-seed.md, PR-A
-of its implementation plan already shipped) made noded's boot independent of
+vendor-bound warmth) and the artifact-decoupling design seed (PR-A of its
+implementation plan already shipped) made noded's boot independent of
 the artifact lifecycle. What neither decided is the concrete fleet shape, how
 guest memory becomes visible to the Kubernetes scheduler when Firecracker VMs
 share nodes with platform workloads, and how the second vendor pool is keyed

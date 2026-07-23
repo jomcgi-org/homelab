@@ -18,7 +18,13 @@ publish generic slop. This skill samples ALL artifacts published in the window,
 judges them visually from screenshots, and edits only the two artifact recipe
 YAMLs.
 
-Design doc: `docs/plans/2026-07-02-improve-artifacts-design.md`.
+Design rationale (folded in): the artifact pipeline's three UI/UX layers (the
+DESIGN BAR in `artifact-build.yaml`, the fresh-eyes pass in `artifact-review.yaml`,
+and the static retry gates) are all feed-forward; nothing fed back from published
+artifacts to the recipes. improve-recipes cannot fill the gap because it selects on
+cost metrics and never renders the published HTML, so a fast, no-follow-up session
+that ships slop never enters its worklist. This loop closes that gap by judging every
+published artifact visually.
 
 ## Goal metric
 

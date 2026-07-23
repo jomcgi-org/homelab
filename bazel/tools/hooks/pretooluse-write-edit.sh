@@ -20,36 +20,24 @@ if [[ -z "$FILE_PATH" ]]; then
 	exit 0
 fi
 
-# ── Check 1: plan-worktree ──────────────────────────────────────────────
-# Plans must be written in a linked worktree, not the main repo.
+# ── Check 1: plans-are-retired ──────────────────────────────────────────
+# docs/plans/ is retired. Plans are no longer committed to the repo; the plan
+# for a piece of work lives in its GitHub issue (or the feature's tracking
+# issue), or as an uncommitted working file. GitHub Issues are the source of
+# truth for outstanding work.
 if [[ "$FILE_PATH" == *"/docs/plans/"* ]]; then
-	DIR=$(dirname "$FILE_PATH")
-	if [ ! -d "$DIR" ]; then
-		DIR=$(dirname "$DIR")
-		[ -d "$DIR" ] || { exit 0; }
-	fi
+	cat >&2 <<-EOF
+		BLOCKED: docs/plans/ is retired. Do not commit plan/design docs to the repo.
+		File: $FILE_PATH
 
-	REPO_ROOT=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || exit 0
-	GIT_DIR=$(cd "$REPO_ROOT" && git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
-	GIT_COMMON_DIR=$(cd "$REPO_ROOT" && git rev-parse --git-common-dir 2>/dev/null) || exit 0
+		Instead:
+		  - Put the plan in the feature's GitHub issue (or a parent tracking issue
+		    with sub-issues); GitHub Issues are the source of truth for outstanding work.
+		  - Or keep it as an uncommitted working file (e.g. under /tmp), not in docs/plans/.
 
-	# Normalize relative path
-	if [[ "$GIT_COMMON_DIR" != /* ]]; then
-		GIT_COMMON_DIR=$(cd "$REPO_ROOT" && cd "$GIT_COMMON_DIR" && pwd)
-	fi
-
-	if [[ "$GIT_DIR" == "$GIT_COMMON_DIR" ]]; then
-		cat >&2 <<-EOF
-			BLOCKED: Plan/design files must be written to a worktree, not the main repo.
-			File: $FILE_PATH
-
-			Create a worktree first, then save plans there:
-			  git worktree add -b docs/<topic> /tmp/claude-worktrees/<topic> origin/main
-
-			Then write to the worktree's docs/plans/ directory instead.
-		EOF
-		exit 2
-	fi
+		Record the decision + rationale in an ADR (docs/decisions/) if one is warranted.
+	EOF
+	exit 2
 fi
 
 # ── Check 2: chart-version-sync ─────────────────────────────────────────

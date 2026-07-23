@@ -43,8 +43,10 @@ session driving to completion across turns without re-prompting you.
 
 ## State ledger & resumability
 
-The phase-1 plan doc is the ledger, at
-`docs/plans/<YYYY-MM-DD>-<slug>-ship.md`, ending with:
+The GitHub tracking issue is the ledger (the repo's source of truth for outstanding
+work). At Phase 0/1, open (or reuse) a GitHub issue for the feature (`gh issue create`,
+`enhancement` label, `agent-ready` if autonomously pickable) and put the lifecycle
+checklist in its body:
 
 ```
 ## Lifecycle state
@@ -55,28 +57,28 @@ The phase-1 plan doc is the ledger, at
 - [ ] 5-stpa      pr=  systems=
 ```
 
-Durable state lives in artifacts (plan, ADR, committed specs, merged PRs,
-`<system>/STPA.md`), never only in context. Workflow resume is same-session only,
-so this ledger is the cross-session source of truth: on every invocation, find
-the first unchecked phase and resume there. Commit each ledger update with that
-phase's PR. Always work on a worktree + feature branch (never main).
+Durable state lives in artifacts (the tracking issue, the ADR, committed specs,
+merged PRs, `<system>/STPA.md`), never only in context, and never in a committed
+`docs/plans/*.md` (that directory is retired). Workflow resume is same-session only,
+so the issue's checklist is the cross-session source of truth: on every invocation,
+read the issue, find the first unchecked phase, and resume there. Update the checklist
+in the issue body (`gh issue edit <n>`) as each phase's PR merges. Always work on a
+worktree + feature branch (never main).
 
-**GitHub tracking issue (repo source of truth for outstanding work).** At Phase 1,
-open (or reuse) a GitHub issue for the feature (`gh issue create`, `enhancement`
-label, `agent-ready` if autonomously pickable) and record its number in the plan
-front matter and the ledger. It is the outward-facing home of "what's left"; the
-plan ledger is the mechanical phase tracker. If the feature decomposes into several
-independently-shippable pieces, open them as **sub-issues** of that tracking issue
-(`gh api repos/jomcgi/homelab/issues/<parent>/sub_issues -f sub_issue_id=<child>`).
-**Close the tracking issue when all five boxes are checked** (or let the phase-4 PR
-close it via a `Closes #<n>` line); a closed issue is how the repo records the
-feature shipped.
+The plan produced in Phase 1 (`brainstorming` + `writing-plans`) is held in the
+tracking issue (or an uncommitted working file), not committed to the repo. If the
+feature decomposes into several independently-shippable pieces, open them as
+**sub-issues** of the tracking issue (`gh api
+repos/jomcgi/homelab/issues/<parent>/sub_issues -F sub_issue_id=<child>`, `-F` for
+the integer field). **Close the tracking issue when all five boxes are checked** (or
+let the phase-4 PR close it via a `Closes #<n>` line); a closed issue is how the repo
+records the feature shipped.
 
 ## The five phases
 
 | # | Phase | How it runs | Artifact | Merge |
 |---|-------|-------------|----------|-------|
-| 1 | Plan | `brainstorming` + `writing-plans`; optional workflow to draft from several angles and weigh them | `docs/plans/<date>-<slug>-ship.md` (with ledger) | auto (rebase) |
+| 1 | Plan | `brainstorming` + `writing-plans`; optional workflow to draft from several angles and weigh them | GitHub tracking issue (holds the lifecycle ledger + the plan) | auto (rebase) |
 | 2 | ADR | `adr` skill (inline) | `docs/decisions/<cat>/NNN-*.md` | auto (rebase) |
 | 3 | Failing BDD | author `bdd_test(future = True, ...)` specs (inline or a small workflow) | red `future`-tagged specs carrying `@covers_*` markers | auto (rebase) |
 | 4 | Implement | **workflow**: fan out the plan's tasks across parallel agents until every future spec passes; then drop `future = True` to promote | feature code | **pause for human review** |

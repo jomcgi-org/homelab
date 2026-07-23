@@ -172,5 +172,5 @@ Baseline `docs/security.md`; inherits 023 (no credentials in guests), 026 (mirro
 | [ADR 041 - Hot Git Mirror Agent Workspaces](041-hot-git-mirror-agent-workspaces.md)   | Repo hydration (homelab, loom) and `refs/agents/**` recording for every queued run.                                  |
 | [ADR 030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md)              | The workload config (`concurrency`, timeouts) that defines a "free slot".                                            |
 | [ADR 024 - Hosted-Model Tiers](024-discord-agent-hosted-model-tiers-and-artifacts.md) | Tier mechanism used to run judgment classes on Opus-or-better implementers.                                          |
-| docs/plans/2026-07-01-improve-recipes-feedback-loop-design.md                         | The eval loop the verdict ledger feeds as ground truth.                                                              |
+| Improve-recipes feedback loop design                                                  | The eval loop the verdict ledger feeds as ground truth.                                                              |
 | loom docs/code-health/{complexity,duplication}.md                                     | The machine-legible registers behind the highest-volume feeder.                                                      |

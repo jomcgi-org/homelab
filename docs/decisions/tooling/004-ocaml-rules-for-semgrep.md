@@ -193,7 +193,7 @@ compiler plugin); they enter the build only through the pinned lockfile.
 | Resource                                                                               | Relevance                                     |
 | -------------------------------------------------------------------------------------- | --------------------------------------------- |
 | `bazel/ocaml/README.md`                                                                | Current toy design and its rationale          |
-| `docs/plans/2026-06-09-ocaml-semgrep-toolchain-opam-ppx.md`                            | Prior toolchain productionization notes       |
+| Prior toolchain productionization notes                                                | opam/ppx toolchain groundwork this ADR builds on |
 | [semgrep/ocaml `5.3.0-semgrep`](https://github.com/semgrep/ocaml)                      | The pinned compiler fork the toolchain builds |
 | [obazl rules_ocaml](https://github.com/obazl/rules_ocaml)                              | The community ruleset evaluated and rejected  |
 | [Dune library docs](https://dune.readthedocs.io/en/stable/reference/dune/library.html) | Semantics the translator models               |

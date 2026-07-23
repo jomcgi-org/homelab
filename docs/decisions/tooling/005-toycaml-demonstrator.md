@@ -118,7 +118,7 @@ product source.
 | --- | --- |
 | `bazel/ocaml/examples/toycaml/README.md` | the component-to-feature map, runnable |
 | `docs/decisions/tooling/004-ocaml-rules-for-semgrep.md` | the scaling decision this serves |
-| `docs/plans/2026-06-10-ocaml-rules-semgrep-scale.md` | the phase plan tOyCaml is the acceptance target for |
+| OCaml rules/semgrep scale plan | the phase plan tOyCaml is the acceptance target for |
 | `github.com/semgrep/semgrep` | the public engine whose build shape is mirrored |
 | `docs/decisions/tooling/006-extensible-multiarch-ocaml-toolchains.md` | how the toy builds per-arch |
 | `docs/decisions/tooling/007-ocaml-build-file-generation-gazelle.md` | how the toy's BUILDs are generated at scale |

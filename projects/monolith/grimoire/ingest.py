@@ -1,6 +1,6 @@
 """S3 chunk loader: NDJSON manifests -> knowledge_chunk + embedding.
 
-Spec #4.1/#4.2 (docs/plans/2026-07-02-grimoire-pg-first-spec.md): each book's
+Spec #4.1/#4.2 of the pg-first design: each book's
 converted chunks land as NDJSON at ``s3://<bucket>/books/<book_id>/chunks/*.ndjson``
 (one chunk object per line), colocated with the verbatim third-party extraction
 under ``books/<book_id>/raw/``. This module lists those manifests, upserts rows

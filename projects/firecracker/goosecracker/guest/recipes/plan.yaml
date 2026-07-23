@@ -17,8 +17,9 @@ instructions: |
     first, for example `find . -maxdepth 2 -name CLAUDE.md`.
   - Read the CLAUDE.md of any project directory the plan touches
     (e.g. projects/<service>/CLAUDE.md).
-  - Check docs/decisions/ for ADRs that constrain the design, and
-    docs/plans/ for prior plans that overlap.
+  - Check docs/decisions/ for ADRs that constrain the design, and open
+    GitHub issues for prior or overlapping work (`gh issue list`); issues
+    are the source of truth for outstanding work.
   - Read the actual code and deploy configs the plan would change; a plan
     grounded in real file paths beats one written from memory.
   - Keep tool output small: you run in a limited context window, so bound
@@ -35,9 +36,11 @@ instructions: |
     any chart/version bumps required.
   - Call out risks, open questions, and anything needing a human decision.
 
-  Write the plan to docs/plans/ following the naming convention of the
-  existing files there. Commit it with a Conventional Commits message
-  (docs: ...) on a new claude/-prefixed branch, push, and open a PR.
+  Do not commit the plan to the repo (docs/plans/ is retired). File it as a
+  GitHub issue via `gh issue create` (or a parent tracking issue with
+  sub-issues for a multi-step initiative); GitHub Issues are the source of
+  truth for outstanding work. Put the goal, the recommended approach, the
+  ordered tasks, and the risks in the issue body.
 
   Your final message is returned verbatim to the routing agent: state what
   you planned, the recommended approach in one sentence, the plan file path,

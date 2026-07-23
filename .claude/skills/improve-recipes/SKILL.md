@@ -14,13 +14,17 @@ On-demand feedback loop for goosecracker recipes. Gathers session outcomes from
 Postgres and S3, classifies the worst ones against a fixed taxonomy, and drafts
 a PR editing the responsible lever with evidence tied to specific sessions.
 
-Design doc: `docs/plans/2026-07-01-improve-recipes-feedback-loop-design.md`.
+Design rationale (folded in): the loop optimizes two metrics, fast time to outcome
+and minimum owner turns per interaction. The feedback signal is fully automatic
+(objective run-ledger metrics plus an LLM classification of session transcripts, no
+explicit rating step); it drafts concrete recipe edits and opens a PR with
+session-tied evidence for Joe to merge, with CI plus review as the safety gate.
 
 ## How routing works now (read this first)
 
-As of the runtime-recipe paradigm (`docs/plans/2026-07-03-deepseek-runtime-recipes.md`),
-routing is no longer done inside the guest. The DeepSeek orchestrator constructs
-the recipe at runtime:
+As of the runtime-recipe paradigm (the DeepSeek orchestrator constructs the recipe
+at runtime; see ADR agents/036), routing is no longer done inside the guest. The
+DeepSeek orchestrator constructs the recipe at runtime:
 
 1. The orchestrator (ADR 036) emits a typed `submit_plan` tool call that SELECTS
    and SEQUENCES sub-recipes with per-step context. This is the routing brain.
