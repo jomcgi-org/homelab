@@ -399,11 +399,21 @@ func TestAllocateTapDeletesStaleTapBeforeCreate(t *testing.T) {
 	})
 }
 
+// TestAllocateTapForIPPinsAndConflicts runs with tapPrealloc > 0 (a 1-tap pool
+// covering only .2) so the pin .7 is NOT pool-origin: AllocateTapForIP must take the
+// on-demand alloc.reserve() branch for it (exactly as with prealloc disabled), while
+// the separately pooled .2 stays untouched and available to a plain AllocateTap.
+// This asserts the pooled-pin-vs-allocator-conflict interaction: a relight pin
+// outside the pool must still conflict correctly against the allocator, and must
+// not accidentally consult or disturb the pool.
 func TestAllocateTapForIPPinsAndConflicts(t *testing.T) {
 	fr := &fakeRunner{}
-	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 1)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
 	}
 	pin := net.ParseIP("172.31.0.7")
 	tap, err := m.AllocateTapForIP(context.Background(), pin)
@@ -413,18 +423,19 @@ func TestAllocateTapForIPPinsAndConflicts(t *testing.T) {
 	if tap != TapNameForIP(pin) {
 		t.Errorf("pinned tap name %q != %q", tap, TapNameForIP(pin))
 	}
-	// Re-pinning the same live IP conflicts (two live VMs cannot hold one IP).
+	// Re-pinning the same live IP conflicts (two live VMs cannot hold one IP), same
+	// as with prealloc disabled: the pin path outside the pool is untouched.
 	if _, err := m.AllocateTapForIP(context.Background(), pin); err == nil {
 		t.Error("AllocateTapForIP on an already-held IP should conflict")
 	}
-	// A fresh allocation must skip the pinned .7 (it is taken) but still return the
-	// lowest OTHER free address (.2).
+	// A plain AllocateTap must still draw the pooled .2 (untouched by the .7 pin),
+	// not skip to some fresh on-demand address.
 	_, ip, err := m.AllocateTap(context.Background())
 	if err != nil {
 		t.Fatalf("AllocateTap: %v", err)
 	}
 	if ip.String() != "172.31.0.2" {
-		t.Errorf("fresh alloc after pin = %s, want 172.31.0.2", ip)
+		t.Errorf("pool draw after unrelated pin = %s, want the pooled 172.31.0.2", ip)
 	}
 }
 
@@ -726,5 +737,188 @@ func TestAllocateTapForIPDrawsPooledPin(t *testing.T) {
 	}
 	if drawn.String() == pin.String() {
 		t.Errorf("pool still offered the pinned IP %s after AllocateTapForIP drew it", pin)
+	}
+}
+
+// argvFailer wraps a Runner and fails the FIRST call whose argv exactly matches
+// want, passing every other call straight through to inner. It exists because
+// fakeRunner.failOn only keys on the first two argv tokens ("name arg0"), too
+// coarse to fail one specific `ip link set <tap> up` or `ip tuntap add ...
+// <tap>` call among several without also breaking every other call that shares
+// those tokens (precreate's `ip link set <tap> master <bridge>` is also "ip
+// link", for instance).
+type argvFailer struct {
+	inner  *fakeRunner
+	want   []string
+	err    error
+	failed bool // fires only once, so a retry after the failure succeeds
+	fired  bool
+}
+
+func (f *argvFailer) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	call := append([]string{name}, args...)
+	if !f.failed && argvEqual(call, f.want) {
+		f.failed = true
+		f.fired = true
+		f.inner.calls = append(f.inner.calls, call)
+		return nil, f.err
+	}
+	return f.inner.Run(ctx, name, args...)
+}
+
+func argvEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestReleaseTapDeletesFallbackTapUnderPrealloc locks in the PR4-review fix: a tap
+// AllocateTap created ON DEMAND because the pool was exhausted is NOT pool-origin,
+// so releasing it (even with tapPrealloc > 0) must delete the tap and free the
+// allocator reservation exactly like the prealloc-disabled path, not return it to
+// the pool. Gating release on "tapPrealloc > 0" alone (the pre-fix behaviour) would
+// let the idle pool grow past tapPrealloc entries and the allocator accumulate
+// reservations above the brick's slot ceiling.
+func TestReleaseTapDeletesFallbackTapUnderPrealloc(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
+	}
+	// Drain the 1-tap pool, then force a second AllocateTap through the on-demand
+	// fallback path.
+	_, poolIP, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap (pool draw): %v", err)
+	}
+	_, fallbackIP, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap (fallback): %v", err)
+	}
+	if fallbackIP.String() == poolIP.String() {
+		t.Fatalf("fallback allocation reused the checked-out pool IP %s", poolIP)
+	}
+
+	m.ReleaseTap(context.Background(), fallbackIP)
+	fallbackTap := TapNameForIP(fallbackIP)
+	sawDelete := false
+	for _, c := range fr.calls {
+		if len(c) >= 4 && c[0] == "ip" && c[1] == "link" && c[2] == "del" && c[3] == fallbackTap {
+			sawDelete = true
+		}
+	}
+	if !sawDelete {
+		t.Errorf("ReleaseTap on a fallback-created tap must delete it even with prealloc on; calls: %v", fr.argvStrings())
+	}
+	// The allocator reservation must be freed too: a fresh AllocateTap (poolIP is
+	// still checked out, so this must come from the allocator, not the pool) reuses
+	// fallbackIP rather than advancing past it or erroring.
+	_, reused, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap after release: %v", err)
+	}
+	if reused.String() != fallbackIP.String() {
+		t.Errorf("released fallback IP not freed to the allocator: got %s want %s", reused, fallbackIP)
+	}
+}
+
+// TestPrecreatePoolDegradesOnTransientFailure locks in the PR4-review fix: a single
+// tap's precreate failure (a transient ip error, e.g. an EBUSY racing a prior
+// incarnation's teardown) must be best-effort — EnsureNetwork still succeeds with a
+// SHORTER pool, never propagating the error and crash-looping the brick.
+func TestPrecreatePoolDegradesOnTransientFailure(t *testing.T) {
+	// tapPrealloc is 2 (.2 and .3); fail only .3's `ip tuntap add`, leaving .2 to
+	// precreate successfully.
+	failTap := TapNameForIP(net.ParseIP("172.31.0.3"))
+	inner := &fakeRunner{}
+	failer := &argvFailer{
+		inner: inner,
+		want:  []string{"ip", "tuntap", "add", "dev", failTap, "mode", "tap"},
+		err:   errors.New("simulated transient EBUSY"),
+	}
+	m, err := NewManager(failer, "br0", "172.31.0.0/24", "", 30000, 2)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork must degrade to a shorter pool on a transient precreate failure, not error: %v", err)
+	}
+	if !failer.fired {
+		t.Fatal("test did not actually exercise the targeted precreate failure")
+	}
+	// Exactly the one successful precreate (.2) is in the pool; draw it.
+	tap, ip, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap: %v", err)
+	}
+	if ip.String() != "172.31.0.2" {
+		t.Errorf("surviving pool member = %s, want 172.31.0.2 (the one precreate that succeeded)", ip)
+	}
+	if tap != TapNameForIP(ip) {
+		t.Errorf("tap name %q != deterministic %q", tap, TapNameForIP(ip))
+	}
+	// A further draw falls back to on-demand creation (the pool is exhausted at 1
+	// member, not the configured 2), proving the short pool degrades cleanly.
+	createsBefore := countCreateCalls(inner)
+	_, ip2, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap (fallback after short pool): %v", err)
+	}
+	if ip2.String() == ip.String() {
+		t.Fatalf("fallback reused the checked-out pool IP %s", ip)
+	}
+	if got := countCreateCalls(inner); got != createsBefore+1 {
+		t.Errorf("expected fallback to create a fresh tap: creates before=%d after=%d", createsBefore, got)
+	}
+}
+
+// TestAllocateTapPushesBackPoolTapOnLinkUpFailure locks in AllocateTap's pool-draw
+// failure path: when bringing a popped pool tap's link up fails, the IP must be
+// pushed back into the pool (not lost) before AllocateTap falls through to
+// on-demand creation, so a transient failure degrades gracefully instead of leaking
+// a pool slot.
+func TestAllocateTapPushesBackPoolTapOnLinkUpFailure(t *testing.T) {
+	poolTap := TapNameForIP(net.ParseIP("172.31.0.2"))
+	inner := &fakeRunner{}
+	m, err := NewManager(inner, "br0", "172.31.0.0/24", "", 30000, 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
+	}
+	// Fail only the pool draw's `ip link set <poolTap> up`; precreate already ran
+	// (above) with a clean runner, so this cannot touch precreate's own calls.
+	failer := &argvFailer{inner: inner, want: tapUpArgs(poolTap), err: errors.New("simulated link-up failure")}
+	m.runner = failer
+
+	_, ip, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap should fall back to on-demand creation, not error: %v", err)
+	}
+	if !failer.fired {
+		t.Fatal("test did not actually exercise the pool tap's link-up path")
+	}
+	if ip.String() == "172.31.0.2" {
+		t.Errorf("AllocateTap returned the pool IP %s despite its link-up failing; fallback should allocate a different IP", ip)
+	}
+	// The pool IP must have been pushed back (not lost): switching back to a clean
+	// runner, a further AllocateTap draws it again from the pool.
+	m.runner = inner
+	_, ip2, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap after push-back: %v", err)
+	}
+	if ip2.String() != "172.31.0.2" {
+		t.Errorf("pool IP not pushed back after link-up failure: got %s want 172.31.0.2", ip2)
 	}
 }

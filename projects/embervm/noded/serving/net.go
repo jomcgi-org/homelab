@@ -255,13 +255,20 @@ type Manager struct {
 	// (ADR embervm/014 decision 4). Zero disables pre-provisioning: AllocateTap/
 	// ReleaseTap fall back to today's create-on-demand/delete-on-release behaviour.
 	tapPrealloc int
-	// poolMu guards pool, which is idle pre-created IPs available for AllocateTap
-	// to draw. An IP leaves pool while its tap is checked out (link up, DNAT wired)
-	// and returns to it on ReleaseTap (link down, DNAT removed); it is never
-	// released back to the allocator, since the tap device persists for the IP's
-	// whole pre-provisioned lifetime, up or down.
-	poolMu sync.Mutex
-	pool   []net.IP
+	// poolMu guards pool (idle pre-created IPs available for AllocateTap to draw)
+	// and poolOrigin (every IP precreatePool ever gave a pool identity, whether
+	// currently idle in pool or checked out). An IP leaves pool while its tap is
+	// checked out (link up, DNAT wired) and returns to it on ReleaseTap (link down,
+	// DNAT removed) WHEN that IP is a pool-origin IP; it is never released back to
+	// the allocator, since the tap device persists for the IP's whole
+	// pre-provisioned lifetime. A fallback IP that AllocateTap created on demand
+	// (pool empty or disabled) is NOT pool-origin: ReleaseTap deletes it and frees
+	// the allocator reservation exactly as it always has, so the idle pool never
+	// grows past tapPrealloc entries and the allocator never accumulates
+	// reservations above the slot ceiling.
+	poolMu     sync.Mutex
+	pool       []net.IP
+	poolOrigin map[string]struct{}
 }
 
 // NewManager builds a serving network Manager for a bridge name and a CIDR. The
@@ -306,6 +313,7 @@ func NewManager(runner Runner, bridge, cidr, podIP string, portBase, tapPrealloc
 		portBase:    portBase,
 		dnat:        make(map[string]dnatEntry),
 		tapPrealloc: tapPrealloc,
+		poolOrigin:  make(map[string]struct{}),
 	}, nil
 }
 
@@ -323,7 +331,11 @@ func (m *Manager) CIDR() string {
 // ceiling (server.Server.SlotCeiling, ADR embervm/013 section 7): that ceiling is
 // only known once server.New has built the budget reader, which happens after this
 // Manager is constructed, so the clamp is applied as a separate step rather than a
-// NewManager argument.
+// NewManager argument. A ceiling of 0 (MaxLiveVMs configured to 0 AND the cgroup
+// memory budget unreadable/unlimited, the one combination server.Server.SlotCeiling
+// can return 0 for, see budget.SlotCeiling) disables pre-provisioning entirely
+// rather than erroring: fails safe to today's create-on-demand behaviour instead of
+// wedging a brick whose capacity cannot be observed.
 func (m *Manager) ClampTapPrealloc(ceiling int) {
 	if ceiling >= 0 && m.tapPrealloc > ceiling {
 		m.tapPrealloc = ceiling
@@ -363,32 +375,45 @@ func (m *Manager) EnsureNetwork(ctx context.Context) error {
 	return m.applyRulesetLocked(ctx)
 }
 
-// precreatePool pre-creates m.tapPrealloc taps (a no-op when it is 0) using the
-// same deterministic TapNameForIP naming AllocateTap uses on-demand, over IPs drawn
-// from the allocator's usable range. Each tap is created and attached to the bridge
-// but left DOWN (see tapPrecreateArgs); del-before-add is retained per tap, exactly
-// the #3745 stale-tap repair AllocateTap already relies on, since a daemon restart
-// re-enters here with the prior incarnation's pool taps still attached. A failure
-// mid-precreate rolls back only the failed tap's reservation; taps already pooled
-// stay pooled (a partially pre-provisioned pool degrades to more on-demand
-// allocation, not a boot failure).
+// precreatePool pre-creates up to m.tapPrealloc taps (a no-op when it is 0) using
+// the same deterministic TapNameForIP naming AllocateTap uses on-demand, over IPs
+// drawn from the allocator's usable range. Each tap is created and attached to the
+// bridge but left DOWN (see tapPrecreateArgs); del-before-add is retained per tap,
+// exactly the #3745 stale-tap repair AllocateTap already relies on, since a daemon
+// restart re-enters here with the prior incarnation's pool taps still attached.
+//
+// A single tap's precreate is best-effort: a transient ip failure (e.g. an EBUSY
+// racing a prior incarnation's teardown) rolls back that one IP's reservation and
+// CONTINUES to the next slot rather than returning an error. AllocateTap's
+// on-demand fallback covers a pool that ends up short, so a brief netlink hiccup at
+// boot degrading to a smaller (or empty) pool is the intended behaviour, never a
+// reason to fail EnsureNetwork and crash-loop the brick.
 func (m *Manager) precreatePool(ctx context.Context) error {
 	for i := 0; i < m.tapPrealloc; i++ {
 		ip, err := m.alloc.allocate()
 		if err != nil {
+			// Subnet exhausted (tapPrealloc configured larger than the CIDR can hold):
+			// nothing further to try, same as an EnsureNetwork-fatal misconfiguration
+			// elsewhere in this function (bad CIDR, sysctl failure).
 			return fmt.Errorf("serving: pre-provisioning tap %d/%d: %w", i+1, m.tapPrealloc, err)
 		}
 		tap := TapNameForIP(ip)
 		_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
+		failed := false
 		for _, argv := range tapPrecreateArgs(tap, m.bridge) {
 			if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
 				_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
 				m.alloc.release(ip)
-				return fmt.Errorf("serving: pre-provisioning tap %s: %w", tap, rerr)
+				failed = true
+				break
 			}
+		}
+		if failed {
+			continue
 		}
 		m.poolMu.Lock()
 		m.pool = append(m.pool, ip)
+		m.poolOrigin[ip.String()] = struct{}{}
 		m.poolMu.Unlock()
 	}
 	return nil
@@ -471,7 +496,7 @@ func (m *Manager) Endpoint(ip net.IP, guestPort uint32) (string, uint32) {
 func (m *Manager) AllocateTap(ctx context.Context) (tap string, ip net.IP, err error) {
 	if pooled, ok := m.popPool(); ok {
 		tap = TapNameForIP(pooled)
-		if _, rerr := m.runner.Run(ctx, "ip", tapUpArgs(tap)...); rerr != nil {
+		if _, rerr := m.runner.Run(ctx, "ip", tapUpArgs(tap)[1:]...); rerr != nil {
 			// Bringing an already-attached tap up failed: put it back rather than leak
 			// it out of the pool, then fall through to on-demand creation below so the
 			// caller still gets a usable tap.
@@ -520,7 +545,7 @@ func (m *Manager) AllocateTap(ctx context.Context) (tap string, ip net.IP, err e
 func (m *Manager) AllocateTapForIP(ctx context.Context, ip net.IP) (tap string, err error) {
 	if m.popPoolIP(ip) {
 		tap = TapNameForIP(ip)
-		if _, rerr := m.runner.Run(ctx, "ip", tapUpArgs(tap)...); rerr == nil {
+		if _, rerr := m.runner.Run(ctx, "ip", tapUpArgs(tap)[1:]...); rerr == nil {
 			return tap, nil
 		}
 		// Bringing the pool tap up failed: fall through to the on-demand path, which
@@ -545,22 +570,27 @@ func (m *Manager) AllocateTapForIP(ctx context.Context, ip net.IP) (tap string, 
 	return tap, nil
 }
 
-// ReleaseTap returns a VM's tap. When tapPrealloc is enabled AND the IP was drawn
-// from the pool (a pre-created tap, ADR embervm/014 decision 4), the tap is brought
-// down and returned to the pool instead of deleted, so a later AllocateTap can reuse
-// it without netlink create/attach work; the IP stays reserved in the allocator the
-// whole time (the tap device persists for it, up or down). Otherwise (prealloc
-// disabled, or the tap was created on-demand because the pool was exhausted) it is
-// today's behaviour: delete the tap and free the IP back to the allocator. Either
-// way this is idempotent at the ip layer (deleting/downing an absent tap is
-// tolerated) so a teardown after a partial start still frees the IP.
+// ReleaseTap returns a VM's tap. When ip is POOL-ORIGIN (a tap precreatePool
+// pre-created, ADR embervm/014 decision 4, tracked in poolOrigin regardless of
+// whether tapPrealloc is still positive), the tap is brought down and returned to
+// the pool instead of deleted, so a later AllocateTap can reuse it without netlink
+// create/attach work; the IP stays reserved in the allocator the whole time (the
+// tap device persists for it, up or down). Otherwise (prealloc disabled, or this IP
+// was created ON DEMAND by AllocateTap's fallback because the pool was exhausted)
+// it is today's behaviour: delete the tap and free the IP back to the allocator.
+// This distinction (pool-origin, not "is prealloc currently on") matters: gating on
+// tapPrealloc > 0 alone would return every fallback-created IP to the pool too,
+// letting the idle pool ratchet up past tapPrealloc entries and the allocator
+// accumulate reservations above the brick's slot ceiling. Either way this is
+// idempotent at the ip layer (deleting/downing an absent tap is tolerated) so a
+// teardown after a partial start still frees the IP.
 func (m *Manager) ReleaseTap(ctx context.Context, ip net.IP) {
 	// Drop the VM's DNAT rule first so the kernel stops advertising the endpoint before
 	// the tap goes down or disappears (no-op when DNAT is disabled).
 	m.RemoveDNAT(ctx, ip)
 	tap := TapNameForIP(ip)
-	if m.tapPrealloc > 0 {
-		if _, err := m.runner.Run(ctx, "ip", tapDownArgs(tap)...); err != nil {
+	if m.isPoolOrigin(ip) {
+		if _, err := m.runner.Run(ctx, "ip", tapDownArgs(tap)[1:]...); err != nil {
 			_ = err // best-effort: the tap stays attached (possibly still up) rather than wedging release
 		}
 		m.pushPool(ip)
@@ -589,11 +619,31 @@ func (m *Manager) popPool() (net.IP, bool) {
 	return ip, true
 }
 
-// pushPool returns an IP to the idle pool.
+// pushPool returns an IP to the idle pool. It is a no-op if ip is already present
+// in pool, so a double ReleaseTap on the same IP (a caller bug, or a retried
+// teardown racing itself) cannot duplicate the entry and later hand the same tap to
+// two different VMs out of two AllocateTap calls. Mirrors the idempotence
+// alloc.release already has for the on-demand path this replaces.
 func (m *Manager) pushPool(ip net.IP) {
 	m.poolMu.Lock()
+	defer m.poolMu.Unlock()
+	for _, pooled := range m.pool {
+		if pooled.Equal(ip) {
+			return
+		}
+	}
 	m.pool = append(m.pool, ip)
-	m.poolMu.Unlock()
+}
+
+// isPoolOrigin reports whether ip was ever given a pool identity by precreatePool
+// (ADR embervm/014 decision 4), regardless of whether it is currently idle in pool
+// or checked out. ReleaseTap uses this (not "is tapPrealloc currently positive") to
+// decide whether an IP returns to the pool or is deleted/freed on release.
+func (m *Manager) isPoolOrigin(ip net.IP) bool {
+	m.poolMu.Lock()
+	defer m.poolMu.Unlock()
+	_, ok := m.poolOrigin[ip.String()]
+	return ok
 }
 
 // popPoolIP removes a SPECIFIC IP from the idle pool if present, reporting whether
