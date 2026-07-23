@@ -4,7 +4,6 @@ go_library(
     name = "server",
     srcs = [
         "activator.go",
-        "stateful_activator.go",
         "budget.go",
         "group.go",
         "group_member.go",
@@ -17,6 +16,7 @@ go_library(
         "serving.go",
         "serving_registry.go",
         "stateful.go",
+        "stateful_activator.go",
         "stateful_registry.go",
         "store.go",
     ],
@@ -40,7 +40,6 @@ go_test(
     name = "server_test",
     srcs = [
         "activator_test.go",
-        "stateful_activator_test.go",
         "budget_test.go",
         "drain_test.go",
         "evict_local_test.go",
@@ -51,6 +50,7 @@ go_test(
         "registry_workload_test.go",
         "server_test.go",
         "serving_test.go",
+        "stateful_activator_test.go",
         "stateful_test.go",
         "store_test.go",
     ],
