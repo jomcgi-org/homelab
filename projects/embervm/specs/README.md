@@ -2,8 +2,12 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of [ADR embervm/006](../../../docs/decisions/embervm/006-tla-formal-specification-pilot.md):
-one spec (VM lifecycle + adoption), checked exhaustively over small bounds, plus
-the layer-1 vocabulary sync guard that keeps it honest against the code.
+two specs now, checked exhaustively over small bounds, plus the layer-1
+vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
+lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight
+generation pairing) is `bank_relight.tla`, added by the ADR embervm/014 PR 5
+follow-through. Both are modeled under the ADR embervm/014 worker-authoritative
+consistency rules (node state is the source of truth, node-confirmed destruction).
 
 ## What is here
 
@@ -12,13 +16,20 @@ the layer-1 vocabulary sync guard that keeps it honest against the code.
   daemon and an adversarial crash scheduler. The header carries a prose map from
   each PlusCal action to the module and function it abstracts; keep it current.
 - `adoption.cfg`, `adoption_liveness.cfg`, `adoption_wedge.cfg`,
-  `adoption_resurrection.cfg` : the four TLC run configurations (below).
-- `BUILD` : four genrules run TLC over the spec, one per cfg, via the
+  `adoption_resurrection.cfg` : the four adoption TLC run configurations (below).
+- `bank_relight.tla` : the PlusCal model of the stateful bank/relight generation
+  -pairing protocol (ADR 006 protocol 2): a volume's monotonic generation, a
+  banked snapshot's pair-key stamp, the monotonic floor (PR #3770), the isolated
+  single-use lane, and node-confirmed destruction.
+- `bank_relight.cfg`, `bank_relight_isolated.cfg`, `bank_relight_regress.cfg` :
+  the three bank/relight TLC run configurations (below).
+- `BUILD` : seven genrules run TLC over the two specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
-  (proto RPC verbs, health states, op-log kinds), what the spec models vs
-  deliberately excludes. The ExUnit test in `control/test/embervm/` asserts every
-  live enum member is classified and every modeled name appears in `adoption.tla`.
+  (proto RPC verbs, health states, op-log kinds), what the specs model vs
+  deliberately exclude. The ExUnit test in `control/test/embervm/` asserts every
+  live enum member is classified and every modeled op-kind name appears verbatim
+  in some spec `.tla`.
 
 ## The model, in one paragraph
 
@@ -101,7 +112,7 @@ fails the build if TLC finds NO violation (the model has gone blind to the bug),
 and requires the output to name an actual invariant or temporal-property
 violation so a TLC crash is not mistaken for a detection.
 
-## Invariants checked (positive mode)
+## adoption.tla invariants checked (positive mode)
 
 - `TypeOK` : state stays in its declared domains; crash budgets and channel depth
   respected.
@@ -133,12 +144,68 @@ node can always reconnect and recover, and no state constraint is needed, which
 would be unsound under liveness), and node age-out is silence-driven (a node with
 fresh status pending does not age out, so the adversary cannot starve dispatch).
 
+## Protocol 2: bank/relight generation pairing (`bank_relight.tla`)
+
+Added by the ADR embervm/014 PR 5 follow-through, modeled under the same
+worker-authoritative rules. A workload's on-disk VOLUME carries a monotonic
+generation (node ground truth); a BANKED snapshot bundle stamps the volume
+generation it was captured at (the pair key); a WARM relight is only legal when
+the banked stamp still matches the current volume generation. The control plane's
+`storedGen` is a CACHE reconciled from node volume reports, which can LAG (a node
+still reporting the pre-bank generation, or a co-located sibling brick's stale
+view). The MONOTONIC FLOOR (PR #3770) is the rule that a lagging report never
+regresses the stored pair-key generation below its current value; without it, a
+lagging report rewinds the stored generation below a just-banked bundle's stamp,
+spuriously breaking the pair and evicting a good warm bundle (the recurring
+demo-postgres `pair_broken` flap).
+
+Three protocol switches select the mode: `MonotonicFloor` (the PR #3770 floor,
+off in the negative mode), `Isolated` (the ADR 015 single-use lane), and the
+`MaxGen` bound.
+
+| cfg | bounds | switches | checks | expect | proves |
+| --- | --- | --- | --- | --- | --- |
+| `bank_relight.cfg` | MaxGen 3 | floor on, isolated off | all five invariants | pass | the shared-lane pairing protocol's safety holds (no regress, no stale relight, node-confirmed destroy) |
+| `bank_relight_isolated.cfg` | MaxGen 3 | floor on, isolated ON | all five invariants | pass | a single-use isolated instance never banks, relights, or holds a banked bundle (`SingleUseNeverReused` non-vacuous) |
+| `bank_relight_regress.cfg` | MaxGen 3 | floor OFF, isolated off | all five invariants | fail | re-finds the pre-#3770 generation regression (`GenerationNeverRegresses` violated by a lagging report) |
+
+The invariants:
+
+- `TypeOK` : generations, states, and the report channel stay in their domains.
+- `GenerationNeverRegresses` : the stored pair-key generation never drops below a
+  value it already reached (the monotonic-floor guarantee). This is the invariant
+  the negative config trips: with `MonotonicFloor = FALSE`, a lagging report
+  rewinds `storedGen`, which the driver requires to reproduce in expectation
+  `fail`.
+- `NoStaleRelight` : a warm relight only ever resumed a bundle whose stamp matched
+  the TRUE volume generation. With the floor on, a CP-believed-valid pair is always
+  truly valid; without it, a regressed `storedGen` can make a stale bundle look
+  valid, which this catches ("no wake resumes a stale snapshot").
+- `SingleUseNeverReused` : an isolated (single-use) instance never reaches a
+  banking / banked / relighting state and never holds a banked bundle. Checked
+  non-vacuously by `bank_relight_isolated.cfg` (`Isolated = TRUE`); the Bank /
+  RelightWarm `~Isolated` guards structurally forbid the reuse lifecycle.
+- `NoDestroyBeforeConfirm` : the CP records the instance destroyed only after
+  node-confirmed teardown (`cpDestroyed => instState = "destroyed"`), the same
+  ADR 014 decision 5 carve-out adoption.tla asserts for tasks.
+
+### Why the negative mode catches the pre-#3770 regression
+
+`bank_relight_regress.cfg` sets `MonotonicFloor = FALSE`, modeling the code before
+PR #3770 added the `upsert_volume` floor. Reachable trace (MaxGen 3): a running
+instance writes (volGen 1 -> 2); a node report of generation 2 advances `storedGen`
+to 2 (high-water 2); then a LAGGING report of generation 1 (a node still reporting
+the pre-bank generation) is folded WITHOUT the floor, rewinding `storedGen` to 1,
+below the high-water mark. `GenerationNeverRegresses` fails. The driver runs this
+in expectation `fail`, so a passing run would mean the model went blind to the
+regression the floor fixes.
+
 ## Running TLC
 
-CI runs all three via `bazel test //projects/embervm/specs/...`. There is no local
-Bazel test loop in this repo. To iterate on the spec locally you need a JRE (>= 11)
-and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a copy of
-this directory:
+CI runs all seven genrules via `bazel test //projects/embervm/specs/...`. There is
+no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
+(>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
+copy of this directory (swap `adoption` for `bank_relight` for protocol 2):
 
 ```
 java -cp tla2tools.jar pcal.trans adoption.tla            # retranslate after any PlusCal edit
@@ -153,8 +220,10 @@ Never hand-edit the translation region.
 
 ## Scope
 
-Per the ADR, this pilot models protocol 1 only (VM lifecycle + adoption).
-Sessions bank/relight and the quota gate are named as protocols 2 and 3 but are
-built only if this pilot earns its keep. Layer-2 trace validation (op-log events
-mapped to TLA+ actions and checked against a drill trace) is PR2 and is
-deliberately not built here.
+The pilot now models two protocols: protocol 1 (VM lifecycle + adoption,
+`adoption.tla`) and protocol 2 (session bank/relight generation pairing,
+`bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
+pilot earned its keep). Protocol 3 (the quota gate) is named in the ADR but not
+yet built. Layer-2 trace validation (op-log events mapped to TLA+ actions and
+checked against a drill trace) is a separate follow-up and is deliberately not
+built here.

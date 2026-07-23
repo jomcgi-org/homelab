@@ -19,17 +19,21 @@
 # so their vocabulary is excluded, not modeled.
 %{
   # -- node.proto RPC verbs (proto/embervm/node/v1/node.proto) ----------------
-  # The adoption spec models the R0 task-lifecycle + node-health surface: Prime a
-  # VM, Assign it to a task, Destroy it, and the WatchNode / GetNodeStatus status
-  # flow that drives the health machine and adoption reconcile.
+  # adoption.tla models the R0 task-lifecycle + node-health surface: Prime a VM,
+  # Assign it to a task, Destroy it, and the WatchNode / GetNodeStatus status flow
+  # that drives the health machine and adoption reconcile. bank_relight.tla (ADR 006
+  # protocol 2) models the Bank and Relight generation-pairing verbs.
   proto_rpcs: %{
-    modeled: ~w(Prime Assign Destroy WatchNode GetNodeStatus)a,
+    modeled: ~w(Prime Assign Destroy WatchNode GetNodeStatus Bank Relight)a,
     excluded:
       ~w(
         BuildBase
       )a ++
-        # R2 sessions: bank/relight lifecycle, out of scope (protocol 2 in the ADR).
-        ~w(SessionAssign Bank Relight EvictSnapshot)a ++
+        # R2 sessions: the remaining bank/relight lifecycle verbs bank_relight.tla
+        # does not model as distinct actions. SessionAssign (the warm session claim)
+        # and EvictSnapshot (the snapshot-only GC verb) are out of the protocol-2
+        # generation-pairing subset; Bank and Relight moved to `modeled` above.
+        ~w(SessionAssign EvictSnapshot)a ++
         # R3 serving: long-lived HTTP-over-tap VMs, out of scope.
         ~w(StartServing StopServing)a ++
         # R4 stateful: singleton volume-owning VMs + generation pairing, out of scope.
@@ -57,12 +61,24 @@
   },
 
   # -- op-log kinds (Embervm.OpLog.kinds/0) -----------------------------------
-  # The spec's durable taskState mirrors the op-log's task-lifecycle kinds:
+  # adoption.tla's durable taskState mirrors the op-log's task-lifecycle kinds:
   # submitted (a queued task at init), assigned (DispatchWarm / DispatchMiss),
-  # succeeded (Succeed), and primed (the VM Prime deposit path). These four atoms
-  # appear verbatim in adoption.tla, which the freshness test enforces.
+  # succeeded (Succeed), and primed (the VM Prime deposit path). bank_relight.tla
+  # (ADR 006 protocol 2) additionally models the session bank/relight/evict and
+  # node-confirmed-destroy kinds: session_banked (Bank), session_relit
+  # (RelightWarm), session_evicted (EvictBrokenPair), session_destroying
+  # (BeginDestroy) and session_destroyed (ConfirmDestroy). Every modeled atom
+  # appears verbatim in some spec .tla, which the freshness test enforces across
+  # the whole specs/ directory.
   op_kinds: %{
-    modeled: ~w(submitted assigned succeeded primed)a,
+    modeled:
+      ~w(submitted assigned succeeded primed)a ++
+        # R2 session protocol-2 kinds, modeled by bank_relight.tla (ADR 006
+        # protocol 2): bank/relight generation pairing + the ADR 014 node-confirmed
+        # destroy carve-out (session_destroying intent -> node confirm ->
+        # session_destroyed record).
+        ~w(session_banked session_relit session_evicted session_destroying
+           session_destroyed)a,
     excluded:
       # R0 task/VM lifecycle kinds the spec does NOT model as distinct actions.
       # vm_destroyed is the durable audit kind for a VM teardown; the spec models
@@ -74,15 +90,13 @@
       # denied are metering + drain concerns out of the adoption model's scope.
       ~w(started vm_destroyed base_built denied drain quota_enforced retried
          redrive dead_lettered failed)a ++
-        # R2 session lifecycle kinds, out of scope (protocol 2 in the ADR).
-        # session_destroying is the ADR embervm/014 node-confirmed-destroy intent kind
-        # (durable destroy intent before the confirmed teardown RPC); it rides the same
-        # out-of-scope R2 session lifecycle, so it is excluded alongside its terminal
-        # session_destroyed. The adoption spec's destroying-state + destroy invariant
-        # are added in the PR 5 TLA follow-through, not modeled off this kind's string.
-        ~w(session_created session_invoked session_banked session_relit
-           session_expired session_evicted session_destroying session_destroyed
-           session_failed)a ++
+        # Remaining R2 session lifecycle kinds still out of scope. The bank/relight,
+        # evict, and node-confirmed-destroy kinds moved to `modeled` above (bank_relight.tla,
+        # ADR 006 protocol 2). session_created / session_invoked / session_expired /
+        # session_failed are the create/invoke/expire/fail lifecycle edges bank_relight
+        # does not model (it starts from a running instance and models only the
+        # bank/relight/evict/destroy generation-pairing subset).
+        ~w(session_created session_invoked session_expired session_failed)a ++
         # R3 serving lifecycle kinds, out of scope. serving_destroying is the
         # ADR embervm/014 destroy-intent kind (see session_destroying).
         ~w(serving_started serving_published serving_unpublished serving_banked
