@@ -688,12 +688,22 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  # :assigned/:started advance the projection MONOTONICALLY (only from the state
+  # they legally follow), never as an unconditional SET. Under
+  # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2) these appends are
+  # deferred through Embervm.AsyncWriter, so a slow writer can land :assigned AFTER
+  # the terminal :succeeded already projected; a plain `SET state='assigned'` would
+  # REGRESS the durable row back to assigned. Guarding the prior state (queued for
+  # assigned, assigned for started) drops such a late append as the no-op the FSM
+  # already treats it as, so the durable projection matches the write-through
+  # (gate-off) result regardless of async append order. Inert under the gate off
+  # (the append always lands from the legal prior state).
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
-    update_task_state(conn, op.task_id, "assigned", op.ts)
+    advance_task_state(conn, op.task_id, "queued", "assigned", op.ts)
   end
 
   defp project(conn, %Op{kind: :started} = op, _seq) do
-    update_task_state(conn, op.task_id, "running", op.ts)
+    advance_task_state(conn, op.task_id, "assigned", "running", op.ts)
   end
 
   defp project(conn, %Op{kind: :succeeded} = op, _seq) do
@@ -779,8 +789,13 @@ defmodule Embervm.OpLog.SQLite do
   defp project(conn, %Op{kind: :session_created} = op, _seq) do
     payload = op.payload
 
+    # INSERT OR IGNORE: idempotent on session_id so the adopt-and-backfill repair
+    # (session_manager Direction-2, ADR embervm/014) can re-append session_created
+    # for a lost async write without a primary-key clash if the original append
+    # later drains. A row already present (created before, or a backfill that won
+    # the race) is authoritative and left untouched.
     sql = """
-    INSERT INTO sessions
+    INSERT OR IGNORE INTO sessions
       (session_id, tenant, principal, workload, state, node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason)
@@ -853,8 +868,13 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   # session_relit: restored to a live VM from its banked snapshot; back to running.
+  # Guarded against terminal states so a deferred async relit append (ADR embervm/014
+  # decision 2) that lands after the session was later destroyed/expired/failed
+  # cannot resurrect it to running; a live (running/banked/relighting) row still
+  # advances. Inert under the gate off (relit always lands from banked/relighting).
   defp project(conn, %Op{kind: :session_relit} = op, _seq) do
-    sql = "UPDATE sessions SET state='running', updated_at=? WHERE session_id=?"
+    sql =
+      "UPDATE sessions SET state='running', updated_at=? WHERE session_id=? AND state NOT IN ('destroyed','expired','evicted','failed')"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <- Sqlite3.bind(stmt, [op.ts, op.session_id]),
@@ -1822,6 +1842,22 @@ defmodule Embervm.OpLog.SQLite do
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <- Sqlite3.bind(stmt, [state, ts, task_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # Monotonic advance for a deferred async lifecycle append (see the :assigned/
+  # :started projections): SET the new state only when the row is still in the
+  # exact prior state the transition follows. A late append against a row that has
+  # already moved on (ran, succeeded, failed) matches no row and is a harmless
+  # no-op, so an out-of-order async append can never regress the durable state.
+  defp advance_task_state(conn, task_id, from_state, to_state, ts) do
+    sql = "UPDATE tasks SET state=?, updated_at=? WHERE task_id=? AND state=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [to_state, ts, task_id, from_state]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok

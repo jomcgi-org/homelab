@@ -621,4 +621,118 @@ defmodule Embervm.TaskStoreTest do
     {:ok, %{state: :queued}} = TaskStore.redrive(store, dlq_id)
     assert_receive {:queued, ^dlq_id, ^wl_dlq, "p2"}
   end
+
+  # -- async lifecycle writes (ADR embervm/014 decision 2) -------------------
+
+  # Count ops of a kind for a task in the durable log (counter-based, not
+  # identity/seq-based, per the repo's hash-fragile test lesson).
+  defp durable_kind_count(op_log, task_id, kind) do
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    ops |> Enum.filter(&(&1.task_id == task_id and &1.kind == kind)) |> length()
+  end
+
+  test "gate ON: assign/start advance ETS immediately but defer the durable append", %{path: path} do
+    {:ok, op_log} = SQLite.start_link(path: path, name: nil)
+    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
+
+    {:ok, store} =
+      TaskStore.start_link(
+        op_log: op_log,
+        name: nil,
+        id_fun: sequential_id_fun(),
+        clock: sequential_clock(),
+        on_queued: fn _ -> :ok end,
+        async_writer: writer,
+        async_lifecycle_writes: true
+      )
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    # assign/start return the advanced ETS state synchronously...
+    {:ok, %{state: :assigned}} = TaskStore.assign(store, task_id, "vm-1")
+    {:ok, %{state: :running}} = TaskStore.start(store, task_id, "vm-1")
+    assert {:ok, %{state: :running}} = TaskStore.get(store, task_id)
+
+    # ...while the durable :assigned/:started appends are deferred: drain the
+    # writer, THEN they are present exactly once each.
+    :ok = Embervm.AsyncWriter.drain(writer)
+    assert durable_kind_count(op_log, task_id, :assigned) == 1
+    assert durable_kind_count(op_log, task_id, :started) == 1
+  end
+
+  test "gate OFF: assign/start are write-through (durable append lands synchronously)", %{path: path} do
+    {:ok, op_log} = SQLite.start_link(path: path, name: nil)
+    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
+
+    {:ok, store} =
+      TaskStore.start_link(
+        op_log: op_log,
+        name: nil,
+        id_fun: sequential_id_fun(),
+        clock: sequential_clock(),
+        on_queued: fn _ -> :ok end,
+        async_writer: writer,
+        async_lifecycle_writes: false
+      )
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, _} = TaskStore.assign(store, task_id)
+    {:ok, _} = TaskStore.start(store, task_id)
+
+    # No drain: the appends are already durable (write-through), and the writer was
+    # never used (gate genuinely bypasses AsyncWriter).
+    assert durable_kind_count(op_log, task_id, :assigned) == 1
+    assert durable_kind_count(op_log, task_id, :started) == 1
+    refute Embervm.AsyncWriter.pending?(writer, "vm-1")
+  end
+
+  test "gate ON metering fail-closed: the terminal :succeeded op is synchronous, never deferred", %{
+    path: path
+  } do
+    {:ok, op_log} = SQLite.start_link(path: path, name: nil)
+    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
+
+    # Record every metering charge and the durable-op count AT charge time: the
+    # guarantee is the charge never precedes the terminal :succeeded append.
+    test_pid = self()
+
+    {:ok, store} =
+      TaskStore.start_link(
+        op_log: op_log,
+        name: nil,
+        id_fun: sequential_id_fun(),
+        clock: sequential_clock(),
+        on_queued: fn _ -> :ok end,
+        on_metered: fn event ->
+          {:ok, ops} = SQLite.read_from(op_log, 0)
+          succeeded = Enum.count(ops, &(&1.kind == :succeeded))
+          send(test_pid, {:charged, event.principal, succeeded})
+        end,
+        async_writer: writer,
+        async_lifecycle_writes: true
+      )
+
+    {:ok, :created, task_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, _} = TaskStore.assign(store, task_id, "vm-1")
+    {:ok, _} = TaskStore.start(store, task_id, "vm-1")
+
+    {:ok, _} =
+      TaskStore.succeed(
+        store,
+        task_id,
+        %{status_code: 200, body: "ok", size_bytes: 2, truncated: false},
+        %{cpu_ms: 100, peak_rss_mib: 64, wall_ms: 100}
+      )
+
+    # The metering charge fired only AFTER the terminal :succeeded op was durable
+    # (>= 1 succeeded op visible at charge time): fail-closed preserved even under
+    # the async gate.
+    assert_receive {:charged, "p1", succeeded_at_charge}
+    assert succeeded_at_charge >= 1
+  end
 end

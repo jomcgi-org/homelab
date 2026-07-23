@@ -62,14 +62,31 @@ defmodule Embervm.TaskStore do
     GenServer.call(store, {:submit, attrs})
   end
 
+  @doc """
+  Move a queued task to `:assigned`. The 3-arity form carries the `vm_id` the
+  dispatch reserved: under async lifecycle writes it registers the deferred append
+  with Embervm.AsyncWriter so the reconciler's adopt-and-backfill discriminator can
+  see a write in flight for that VM. The 1/2-arity form passes `nil` (no vm to
+  register), keeping every existing caller unchanged.
+  """
   @spec assign(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
   def assign(store \\ __MODULE__, task_id) do
-    GenServer.call(store, {:assign, task_id})
+    GenServer.call(store, {:assign, task_id, nil})
+  end
+
+  @spec assign(GenServer.server(), String.t(), binary() | nil) :: {:ok, map()} | {:error, term()}
+  def assign(store, task_id, vm_id) do
+    GenServer.call(store, {:assign, task_id, vm_id})
   end
 
   @spec start(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
   def start(store \\ __MODULE__, task_id) do
-    GenServer.call(store, {:start, task_id})
+    GenServer.call(store, {:start, task_id, nil})
+  end
+
+  @spec start(GenServer.server(), String.t(), binary() | nil) :: {:ok, map()} | {:error, term()}
+  def start(store, task_id, vm_id) do
+    GenServer.call(store, {:start, task_id, vm_id})
   end
 
   @spec succeed(GenServer.server(), String.t(), map()) :: {:ok, map()} | {:error, term()}
@@ -264,6 +281,16 @@ defmodule Embervm.TaskStore do
     # store with no metering wired (unit tests) drops the signal; the durable
     # `usage` projection is unaffected either way.
     on_metered = Keyword.get(opts, :on_metered, fn _event -> :ok end)
+    # Off-hot-path lifecycle writes (ADR embervm/014 decision 2). When
+    # async_lifecycle_writes is on, the :assigned/:started transitions advance ETS
+    # synchronously (so the FSM's later terminal transition is legal and reads are
+    # correct) but hand their durable oplog append to Embervm.AsyncWriter instead of
+    # blocking the caller on it. Off (default): exact write-through ordering (append
+    # THEN ETS, caller blocked on the durable write), today's behaviour. Never
+    # applies to :submitted or any terminal/usage op (those gate metering and stay
+    # synchronous), only the two dispatch-path transitions below.
+    async_writer = Keyword.get(opts, :async_writer, Embervm.AsyncWriter)
+    async_lifecycle_writes = Keyword.get(opts, :async_lifecycle_writes, false)
 
     tasks = :ets.new(@tasks_table, [:set, :private])
     idem = :ets.new(@idem_table, [:set, :private])
@@ -275,6 +302,8 @@ defmodule Embervm.TaskStore do
       clock: clock,
       on_queued: on_queued,
       on_metered: on_metered,
+      async_writer: async_writer,
+      async_lifecycle_writes: async_lifecycle_writes,
       tasks: tasks,
       idem: idem
     }
@@ -407,12 +436,12 @@ defmodule Embervm.TaskStore do
     end
   end
 
-  def handle_call({:assign, task_id}, _from, state) do
-    apply_transition(state, task_id, :assign, :assigned, %{})
+  def handle_call({:assign, task_id, vm_id}, _from, state) do
+    apply_lifecycle_transition(state, task_id, :assign, :assigned, vm_id)
   end
 
-  def handle_call({:start, task_id}, _from, state) do
-    apply_transition(state, task_id, :start, :started, %{})
+  def handle_call({:start, task_id, vm_id}, _from, state) do
+    apply_lifecycle_transition(state, task_id, :start, :started, vm_id)
   end
 
   def handle_call({:succeed, task_id, result, usage}, _from, state) do
@@ -671,6 +700,57 @@ defmodule Embervm.TaskStore do
         {:ok, updated} -> {:reply, {:ok, updated}, state}
         {:error, _reason} = error -> {:reply, error, state}
       end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # The two dispatch-path lifecycle transitions (:assign, :start). Gate off:
+  # identical to apply_transition (write-through, caller blocked on the durable
+  # append). Gate on (ADR embervm/014 decision 2): advance ETS SYNCHRONOUSLY so the
+  # task is immediately :assigned/:running for reads and for the FSM's later terminal
+  # transition, then hand the durable oplog append to Embervm.AsyncWriter, so the
+  # caller (the dispatch hot path) never blocks on the durable write. A CP crash
+  # before the async append lands loses the op: the task's durable row stays
+  # :queued, and the dispatcher's boot backlog sweep re-drives it (no task is ever
+  # reconcile-DESTROYED, so a lost task lifecycle write is self-healing without a
+  # discriminator). vm_id is registered as a pending write anyway, for parity with
+  # the session path and so a shared reconciler could consult it if ever needed.
+  defp apply_lifecycle_transition(state, task_id, event, op_kind, vm_id) do
+    if state.async_lifecycle_writes do
+      apply_transition_async(state, task_id, event, op_kind, vm_id)
+    else
+      apply_transition(state, task_id, event, op_kind, %{})
+    end
+  end
+
+  defp apply_transition_async(state, task_id, event, op_kind, vm_id) do
+    with {:ok, task} <- fetch_task(state, task_id),
+         {:ok, next} <- TaskState.transition(task.state, event) do
+      ts = state.clock.()
+      updated = %{task | state: next, updated_at: ts}
+      # ETS advances NOW (synchronous), so reads and the later terminal transition
+      # see the advanced state; the durable append is deferred.
+      :ets.insert(state.tasks, {task_id, updated})
+
+      op = %Op{
+        kind: op_kind,
+        tenant: task.tenant,
+        principal: task.principal,
+        workload: task.workload,
+        task_id: task_id,
+        ts: ts,
+        payload: %{}
+      }
+
+      Embervm.AsyncWriter.enqueue(state.async_writer, %{
+        op: op,
+        op_log_mod: state.op_log_mod,
+        op_log: state.op_log,
+        vm_id: vm_id
+      })
+
+      {:reply, {:ok, updated}, state}
     else
       {:error, _reason} = error -> {:reply, error, state}
     end

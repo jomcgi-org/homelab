@@ -488,8 +488,15 @@ defmodule Embervm.Dispatcher do
   defp commit_dispatch(state, wl, entry, node_id, mode, snapshot_ref, candidates, task_id, pr) do
     {state, vm_id} = reserve_vm(state, node_id, wl, mode)
 
-    with {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.assign(state.task_store, task_id) end),
-         {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.start(state.task_store, task_id) end) do
+    # Pass the reserved vm_id into assign/start so that, under
+    # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2), TaskStore
+    # registers the deferred :assigned/:started appends against this VM with
+    # Embervm.AsyncWriter; the reconciler's adopt-and-backfill discriminator then
+    # sees the write in flight. nil for a miss (its vm_id is minted in the worker);
+    # inert under the gate off. The ETS FSM advance and the queued-race guard here
+    # are unchanged (Option A): only the durable append moves off the hot path.
+    with {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.assign(state.task_store, task_id, vm_id) end),
+         {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.start(state.task_store, task_id, vm_id) end) do
       # Task left the queue: release its depth reservation and dedupe slot.
       release_depth(state, wl, pr)
 
