@@ -532,7 +532,7 @@ defmodule Embervm.SessionManagerTest do
     {:ok, _} =
       SessionStore.transition(ctx.store, created.session_id, :begin_destroy, :session_destroying, %{reason: :destroyed}, %{})
 
-    report_session_vm(ctx, created.session_id, created.workload)
+    report_session_vm(ctx, created.session_id, "wl-ncd3")
 
     :ok = SessionManager.reconcile(ctx.mgr)
 
