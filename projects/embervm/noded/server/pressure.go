@@ -70,10 +70,19 @@ const (
 // that cannot see its budget behaves exactly as it did before this predicate
 // existed rather than wedging itself out of all placement.
 func (s *Server) admitOrReject(needMib uint64, class pressureClass) error {
-	if reason, exhausted := s.underPressure(needMib, class); exhausted {
-		return status.Errorf(codes.ResourceExhausted, "noded: %s (need %d MiB, floor %d MiB)", reason, needMib, s.memRejectFloorMib())
+	reason, exhausted := s.underPressure(needMib, class)
+	if !exhausted {
+		return nil
 	}
-	return nil
+	// The machine-readable reason token leads the message (the CP classifies on it);
+	// the human context differs per reason so a taps rejection does not carry a
+	// spurious memory floor.
+	switch reason {
+	case reasonPressureMem:
+		return status.Errorf(codes.ResourceExhausted, "noded: %s (need %d MiB, floor %d MiB)", reason, needMib, s.memRejectFloorMib())
+	default: // reasonPressureTaps
+		return status.Errorf(codes.ResourceExhausted, "noded: %s (serving tap allocator exhausted)", reason)
+	}
 }
 
 // underPressure is admitOrReject's pure core: it returns the first pressure
