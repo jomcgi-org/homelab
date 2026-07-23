@@ -439,26 +439,43 @@ defmodule Embervm.GroupManager do
       ready_budget_seconds: wake_budget_seconds(state)
     }
 
-    case safe_start_group_member(state, req) do
-      {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip} = resp} when is_binary(vm_id) and vm_id != "" ->
-        case GroupStore.member_started(state.store, state.instance_id, %{
-               member_name: member.expanded_name,
-               member_index: member.index,
-               vm_id: vm_id,
-               ip: ip,
-               # The daemon's own entry-endpoint projection ({noded pod IP, vmPort}),
-               # non-empty only for the entry member. Recorded so finish_create
-               # publishes the address the DNAT actually lives at (the daemon pod),
-               # not this control plane's own pod IP.
-               endpoint_ip: resp.endpoint_ip || "",
-               endpoint_port: resp.endpoint_port || 0
-             }) do
-          {:ok, _} -> :ok
-          {:error, reason} -> {:error, {:member_record_failed, member.expanded_name, reason}}
-        end
+    # Node-anchored: a group member boots onto its group's per-instance bridge/tap
+    # on ONE node (the whole set shares one group network), so there is no alternative
+    # brick and the reject/retry frontier is a SINGLE element by construction. Routing
+    # through Embervm.Placement.Retry keeps the reject/retry POLICY one piece of code
+    # across every boot path; with one candidate it is exactly one attempt. Do NOT
+    # expand this list: a different brick does not host this group's network.
+    attempt_fun = fn _only ->
+      case safe_start_group_member(state, req) do
+        {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip} = resp} when is_binary(vm_id) and vm_id != "" ->
+          case GroupStore.member_started(state.store, state.instance_id, %{
+                 member_name: member.expanded_name,
+                 member_index: member.index,
+                 vm_id: vm_id,
+                 ip: ip,
+                 # The daemon's own entry-endpoint projection ({noded pod IP, vmPort}),
+                 # non-empty only for the entry member. Recorded so finish_create
+                 # publishes the address the DNAT actually lives at (the daemon pod),
+                 # not this control plane's own pod IP.
+                 endpoint_ip: resp.endpoint_ip || "",
+                 endpoint_port: resp.endpoint_port || 0
+               }) do
+            {:ok, _} -> {:ok, :ok}
+            {:error, reason} -> {:error, {:member_record_failed, member.expanded_name, reason}}
+          end
 
-      other ->
-        {:error, {:member_start_failed, member.expanded_name, other}}
+        {:error, %GRPC.RPCError{status: 8}} = rejected ->
+          {:reject, rejected}
+
+        other ->
+          {:error, {:member_start_failed, member.expanded_name, other}}
+      end
+    end
+
+    case Embervm.Placement.Retry.run([%{instance_id: state.instance_id}], attempt_fun) do
+      {:ok, outcome} -> outcome
+      {:error, :no_capacity} -> {:error, {:member_start_failed, member.expanded_name, {:error, :no_capacity}}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -820,30 +837,46 @@ defmodule Embervm.GroupManager do
           ready_budget_seconds: wake_budget_seconds(state)
         }
 
-        case safe_start_group_member(state, req) do
-          {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: true} = resp}
-          when is_binary(vm_id) and vm_id != "" ->
-            record_member_live(state, member, resp)
+        # Node-anchored: a group member RELIGHT resumes its banked bundle on the SAME
+        # group network on the SAME node (relight never moves nodes, ADR embervm/014),
+        # so the reject/retry frontier is a SINGLE element by construction. Routing
+        # through Embervm.Placement.Retry keeps the reject/retry POLICY one piece of
+        # code; with one candidate it is exactly one attempt. Do NOT expand this list.
+        attempt_fun = fn _only ->
+          case safe_start_group_member(state, req) do
+            {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: true} = resp}
+            when is_binary(vm_id) and vm_id != "" ->
+              {:ok, record_member_live(state, member, resp)}
 
-          # A RELIGHT that the daemon could not verify (clock-resync out of bounds,
-          # decision 7, surfaces as was_relight=false): the VM DID resume and is holding
-          # its pinned tap+IP, so RECORD it live first (so the fresh-fallback drain
-          # destroys it and frees the tap) THEN treat it as a relight failure so the
-          # whole set falls back to fresh. We never accept a half-resumed member as
-          # part of a live relit set, but we must not leak its tap either. Stamp the
-          # span's was_relight=false so the trace records the clock-resync-failed member.
-          {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: false} = resp}
-          when is_binary(vm_id) and vm_id != "" ->
-            Tracer.set_attributes(%{"ember.was_relight" => false})
-            _ = record_member_live(state, member, resp)
-            {:error, {:member_relight_unverified, member.expanded_name}}
+            # A RELIGHT that the daemon could not verify (clock-resync out of bounds,
+            # decision 7, surfaces as was_relight=false): the VM DID resume and is holding
+            # its pinned tap+IP, so RECORD it live first (so the fresh-fallback drain
+            # destroys it and frees the tap) THEN treat it as a relight failure so the
+            # whole set falls back to fresh. We never accept a half-resumed member as
+            # part of a live relit set, but we must not leak its tap either. Stamp the
+            # span's was_relight=false so the trace records the clock-resync-failed member.
+            {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: false} = resp}
+            when is_binary(vm_id) and vm_id != "" ->
+              Tracer.set_attributes(%{"ember.was_relight" => false})
+              _ = record_member_live(state, member, resp)
+              {:error, {:member_relight_unverified, member.expanded_name}}
 
-          {:ok, %StartGroupMemberResponse{was_relight: false}} ->
-            Tracer.set_attributes(%{"ember.was_relight" => false})
-            {:error, {:member_relight_unverified, member.expanded_name}}
+            {:ok, %StartGroupMemberResponse{was_relight: false}} ->
+              Tracer.set_attributes(%{"ember.was_relight" => false})
+              {:error, {:member_relight_unverified, member.expanded_name}}
 
-          other ->
-            {:error, {:member_relight_failed, member.expanded_name, other}}
+            {:error, %GRPC.RPCError{status: 8}} = rejected ->
+              {:reject, rejected}
+
+            other ->
+              {:error, {:member_relight_failed, member.expanded_name, other}}
+          end
+        end
+
+        case Embervm.Placement.Retry.run([%{instance_id: state.instance_id}], attempt_fun) do
+          {:ok, outcome} -> outcome
+          {:error, :no_capacity} -> {:error, {:member_relight_failed, member.expanded_name, {:error, :no_capacity}}}
+          {:error, reason} -> {:error, reason}
         end
 
       _ ->
