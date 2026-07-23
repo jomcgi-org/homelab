@@ -23,15 +23,21 @@ the layer-1 vocabulary sync guard that keeps it honest against the code.
 ## The model, in one paragraph
 
 VMs live on a node (durable across a control-plane crash, gone on a node crash).
+The node-side variables are the SOURCE OF TRUTH (ADR embervm/014 worker authority):
+the control-plane inventory is a reconciled cache, at all times, never the reverse.
 Node status flows to the control plane over a bounded per-node FIFO whose messages
 carry the streamer generation they were sent under; a message survives a node kill
 (that is how a straggler exists). The control plane keeps a volatile primed-pool
 inventory and a durable op-log of task state. `adopt_inventory` additively
-reconciles the node's reported primed VMs back into inventory, which is what lets
-a restarted control plane recover a warm pool it lost. The health machine ages a
-silent node to `unknown` then `down`; the down edge reassigns the node's tasks and
-forgets the streamer generation before the kill, so a straggler status is dropped
-rather than resurrecting the node.
+reconciles the node's reported primed VMs back into inventory (the cache converging
+toward node truth), which is what lets a restarted control plane recover a warm pool
+it lost. The health machine ages a silent node to `unknown` then `down`; the down
+edge reassigns the node's tasks and forgets the streamer generation before the kill,
+so a straggler status is dropped rather than resurrecting the node. Destruction is
+the consistency carve-out: a task's completion moves its VM to a `destroying` node
+state (durable `:*_destroying` intent, VM still resident) and the CP records the VM
+destroyed only after the node confirms teardown (`ConfirmDestroy`), so the CP's
+destroyed record never precedes the node's actual teardown.
 
 ## The four configurations
 
@@ -44,7 +50,7 @@ select the mode; bounds are set per cfg via the `MaxCPCrashes` / `MaxNodeCrashes
 
 | cfg | bounds (nodes,VMs,tasks,princ; CP,node crash) | switches | checks | expect | proves |
 | --- | --- | --- | --- | --- | --- |
-| `adoption.cfg` | 1,2,2,2; 1,1 | adopt+forget+aging on | all six invariants | pass | the shipped protocol's safety holds under the full crash interleaving |
+| `adoption.cfg` | 1,2,2,2; 1,1 | adopt+forget+aging on | all eight invariants | pass | the shipped protocol's safety (incl. node-confirmed destroy) holds under the full crash interleaving |
 | `adoption_liveness.cfg` | 1,2,1,1; 1,0 | adopt+forget on, aging OFF | `EventuallyDispatched` | pass | adoption makes dispatch progress across a CP restart |
 | `adoption_wedge.cfg` | 1,2,1,1; 1,0 | adopt OFF, aging OFF | `EventuallyDispatched` | fail | re-finds the dispatch restart wedge |
 | `adoption_resurrection.cfg` | 1,2,2,2; 1,1 | forget OFF, aging on | `NoResurrection` | fail | re-finds the straggler resurrection |
@@ -107,6 +113,15 @@ violation so a TLC crash is not mistaken for a detection.
 - `NoReapLive` : a reap never destroys a VM the node still hosts live.
 - `PrincipalIsolation` : a task is never assigned to a VM primed under a different
   principal (ADR 001's no-cross-principal rule).
+- `NoDestroyBeforeConfirm` : the CP records an instance destroyed only after its
+  owning node has torn it down (every VM in the CP's `cpDestroyed` set is already
+  `destroyed` in node ground truth). This is ADR embervm/014 decision 5's
+  node-confirmed destruction guarantee: only the node that performed the teardown
+  may truthfully assert it happened.
+- `DestroyIntentPrecedesRecord` : a destroy in flight (durable `:*_destroying`
+  intent recorded, node not yet confirmed) is never simultaneously recorded
+  destroyed; the intent and the destroyed record are disjoint until confirmation
+  moves the VM from one to the other.
 
 `EventuallyDispatched` (liveness, checked by `adoption_liveness.cfg`): every
 submitted task eventually reaches `assigned` or a terminal state, across a
