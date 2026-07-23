@@ -7,7 +7,21 @@ description: Use when creating, reviewing, or working with ADRs (Architecture De
 
 ADRs record architectural decisions and the reasoning behind them. Unlike ephemeral RFCs, ADRs persist even when superseded, preserving the "why" behind decisions and their evolution.
 
-**ADRs are rationale, not implementation plans.** No phase checklists, no task lists, no Go/No-Go gates. Implementation work is tracked in plans (`docs/plans/`) or PRs, never in the ADR. An ADR is done when it explains what was decided and why; it does not track whether the work shipped.
+**ADRs are rationale, not implementation plans.** No phase checklists, no task lists, no Go/No-Go gates. Outstanding implementation work is tracked in **GitHub Issues** (the repo's source of truth for what is left to build), with plans (`docs/plans/`) and PRs as supporting detail, never in the ADR. An ADR is done when it explains what was decided and why; it does not track whether the work shipped.
+
+## Tracking outstanding work (GitHub Issues)
+
+An ADR records a decision; the work it implies is tracked as **GitHub Issues**, the source of truth for outstanding work in this repo. When an ADR (or a validation pass over one) surfaces unimplemented or partial work:
+
+- File one GitHub issue per work item (`gh issue create`), titled `<area>: <summary> — ADR <category>/<NNN> #k`, with a body linking back to the ADR file (`docs/decisions/<category>/<NNN>-<slug>.md`). Label by kind: `bug` (broken), `enhancement` (feature the ADR mandates), `documentation` (todo/chore); add `agent-ready` when it can be picked up autonomously.
+- When an ADR decomposes into several items, open a **parent tracking issue** and attach the items as **sub-issues** so the hierarchy mirrors the decision:
+
+  ```bash
+  # child_node_id = the issue's GraphQL node id (gh issue view <n> --json id -q .id)
+  gh api repos/jomcgi/homelab/issues/<parent>/sub_issues -f sub_issue_id=<child_databaseId>
+  ```
+
+- Do NOT put phase checklists or task lists in the ADR itself; the issues carry the tracking. A closed issue, not an edit to the ADR, is how "the work shipped" gets recorded.
 
 ## Location
 
@@ -164,5 +178,5 @@ When a decision is reversed or evolved:
 - **Commit prefix**: `docs(adr):` for new ADRs and updates
 - **Diagrams**: Mermaid for all architecture and flow diagrams (renders natively on GitHub)
 - **Sections**: Problem, Decision, Architecture, Alternatives, Security, Risks, References
-- **No work tracking**: implementation lives in `docs/plans/` and PRs, not in the ADR
+- **No work tracking**: outstanding work lives in **GitHub Issues** (source of truth), with `docs/plans/` and PRs as supporting detail, not in the ADR
 - **Files per ADR**: the new ADR file, the regenerated `docs-manifest.json` and `repo_docs_manifest.ndjson`, and the `index.md` row. CI fails if the manifests are stale (see Step 3).
