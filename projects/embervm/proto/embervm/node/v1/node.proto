@@ -1185,6 +1185,31 @@ message RegistryEntry {
   // at, mirroring the Workload CR resources block. A zero ResourceSpec means the
   // daemon defers to the per-BuildBase request resources (wire-compatible).
   ResourceSpec sizing = 5;
+
+  // -- Node-local activator fields (ADR embervm/018 Fork A, additive) ----------
+  // These three fields carry what the brick's node-local activator needs to
+  // cold-boot a scaled-to-zero serving workload WITHOUT the control plane (which
+  // supplies them per-call in StartServingRequest today): the port and health
+  // path the guest serves on, and a per-workload gate. The daemon resolves the
+  // workload's current serving image ref from its OWN servingImage inventory (by
+  // workload) and the freshest local serving snapshot from its own inventory, so
+  // no base/snapshot ref is pushed here; only the boot knobs the request carried.
+  // All are wire-compatible with a control plane that predates them (0/false ==
+  // the pre-018 behavior: no node-local wake for this workload).
+
+  // node_local_wake gates the activator per workload: only a workload the control
+  // plane marks true is eligible for a node-local cold boot; every other workload
+  // 503s at the activator and stays CP-woken. This is the noded-side half of the
+  // catalog nodeLocalWake flag (the CP-side half drives adoption + metering).
+  bool node_local_wake = 7;
+  // serving_port is the guest TCP port the serving workload listens on over its
+  // tap (StartServingRequest.port today). Required for a node_local_wake serving
+  // workload; ignored otherwise.
+  uint32 serving_port = 8;
+  // serving_health_path is the HTTP readiness/health path the activator gates the
+  // cold boot on (StartServingRequest.health_path today). Empty falls back to the
+  // daemon default ready path, exactly as StartServing does.
+  string serving_health_path = 9;
 }
 
 // SyncRegistryRequest carries the AUTHORITATIVE full workload set the daemon must
@@ -1343,6 +1368,33 @@ message SessionSnapshot {
 // StartServing/StopServing RPC comments for the probe contract); the daemon
 // itself never acts on healthy, it only reports it. Excluded from every
 // WorkloadCapacity.primed_vm_ids list, exactly like SessionVm.
+// Endpoint is a routable {ip, port} the control plane dials. Used for the
+// node-advertised activator fallback (NodeStatus.activator_endpoint): the L7
+// address a node Envoy routes a scaled-to-zero serving workload's first request
+// to so the brick activator cold-boots it (ADR embervm/018 Fork A). Kept a
+// distinct small message rather than two loose fields so the "absent" case is a
+// single nil check on the whole endpoint.
+message Endpoint {
+  string ip = 1;
+  uint32 port = 2;
+}
+
+// InstanceOrigin marks WHO created a live VM the node reports, the discriminator
+// the control plane's orphan-destroy rule reads (ADR embervm/018 Fork A, the
+// ADR embervm/014 orphan-rule refinement). CONTROL_PLANE (the pre-018 default,
+// indistinguishable on the wire from an UNSPECIFIED reported by an old daemon)
+// means the CP issued the instance and destroy-if-no-row still applies.
+// ACTIVATOR means the brick's node-local activator minted the instance during a
+// CP gap: the CP treats it as an async-write to ADOPT and backfill (mirroring
+// SessionStore.backfill_created), never an orphan to destroy. Absent on a daemon
+// that predates this field, which reads as UNSPECIFIED == the CP-issued default,
+// so the rollout is wire-compatible with no flag day.
+enum InstanceOrigin {
+  INSTANCE_ORIGIN_UNSPECIFIED = 0;
+  INSTANCE_ORIGIN_CONTROL_PLANE = 1;
+  INSTANCE_ORIGIN_ACTIVATOR = 2;
+}
+
 message ServingVm {
   string vm_id = 1;
   string workload = 2;
@@ -1353,6 +1405,17 @@ message ServingVm {
   uint32 port = 4;
   bool healthy = 5;
   int64 last_probe_unix_ms = 6;
+  // origin marks who created this VM (ADR embervm/018 Fork A). ACTIVATOR means
+  // the brick's node-local activator minted it during a CP gap, so the control
+  // plane ADOPTS and backfills it rather than destroying it as an orphan. Absent
+  // (UNSPECIFIED) on a pre-018 daemon reads as the CP-issued default.
+  InstanceOrigin origin = 7;
+  // grant_id and generation are Fork B forward-compat: the delegated wake-grant
+  // this instance was minted under and the volume/workload generation it carries.
+  // Fork A (this phase) sets neither for serving; the control plane reads neither.
+  // They are on the wire now so the Fork B delegation lands additively.
+  string grant_id = 8;
+  uint64 generation = 9;
 }
 
 // ServingSnapshot is one BANKED serving snapshot bundle on node disk, stored
@@ -1395,6 +1458,16 @@ message StatefulVm {
   // checkpoint_token is the handle to pass to ResolveStateful for a
   // checkpoint_pending VM (empty otherwise), reported so adoption can resolve it.
   string checkpoint_token = 9;
+  // origin marks who created this VM (ADR embervm/018). ACTIVATOR is the Fork B
+  // node-local stateful relight; Fork A (this phase) never sets it for stateful
+  // (the stateful lane stays CP-woken until Fork A Phase 2), so it reads
+  // UNSPECIFIED == the CP-issued default and the orphan rule is unchanged here.
+  // On the wire now so Phase 2's adoption discriminator lands additively.
+  InstanceOrigin origin = 10;
+  // grant_id is the Fork B delegated wake-grant this relight was minted under
+  // (empty in Fork A). generation is already carried above (field 6, the volume
+  // generation), so it is not duplicated here.
+  string grant_id = 11;
 }
 
 // StatefulBundle is the ONE banked stateful bundle for a workload on node disk,
@@ -1806,4 +1879,26 @@ message NodeStatus {
   // local base inventory to sweep, exactly the pre-PR-3 behavior). Bounded by the
   // on-disk base-dir count.
   repeated BaseInventoryEntry local_bases = 31;
+
+  // -- Node-local activator facts (ADR embervm/018 Fork A, additive) -----------
+  // These two fields advertise the brick's own activator so EndpointPublisher can
+  // render the scaled-to-zero fallback route at the NODE instead of the CP pod IP
+  // that dies on a Recreate. The publisher PREFERS a node's advertised endpoint
+  // and FALLS BACK to the CP-injected activator address for any node that does
+  // not advertise one, so a half-rolled fleet is always correct (no flag day).
+  // Both are optional and wire-compatible with a daemon that predates this field
+  // (empty/nil == the pre-018 behavior, CP-pod activator).
+
+  // activator_endpoint is the L7 (serving) fallback: the routable {ip, port} a
+  // node Envoy dials to cold-boot a scaled-to-zero serving workload's first
+  // request. It is the node's STABLE address (node IP + activator port) with a
+  // startup DNAT to the current pod IP, so the advertised endpoint survives a
+  // noded pod reschedule (the pod IP churns, the node IP does not). Nil when the
+  // daemon has no activator configured.
+  Endpoint activator_endpoint = 32;
+  // activator_ip is the L4 (stateful/composite) fallback address, the node-local
+  // analog of EMBERVM_STATEFUL_ACTIVATOR_IP. Fork A advertises it for
+  // forward-compat but only the L7 serving lane consumes an activator this phase;
+  // the L4 lane moves node-local in Fork A Phase 2. Empty until then.
+  string activator_ip = 33;
 }

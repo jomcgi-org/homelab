@@ -640,6 +640,9 @@ defmodule Embervm.NodeRoundtripTest do
     assert vm.port == 8080
     assert vm.healthy == true
     assert vm.last_probe_unix_ms == 1_700_000_001_000
+    # origin (ADR embervm/018 Fork A): the activator-woken VM reports ACTIVATOR so
+    # the control plane adopts rather than orphan-destroys it.
+    assert vm.origin == :INSTANCE_ORIGIN_ACTIVATOR
 
     assert [snap] = ns.serving_snapshots
     assert snap.snapshot_ref == "serving/s-srv2"
@@ -648,6 +651,19 @@ defmodule Embervm.NodeRoundtripTest do
     assert snap.created_at_unix_ms == 1_700_000_002_000
 
     assert ns.serving_subnet_cidr == "10.99.0.0/24"
+  end
+
+  test "NodeStatus advertises the node-local activator (ADR embervm/018 Fork A)", %{
+    channel: ch
+  } do
+    {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
+
+    # The L7 fallback endpoint EndpointPublisher prefers over the CP pod activator.
+    assert ns.activator_endpoint.ip == "10.99.0.1"
+    assert ns.activator_endpoint.port == 8081
+    # The L4 activator ip (forward-compat; consumed by the stateful lane in a
+    # later phase) crosses the wire now.
+    assert ns.activator_ip == "10.99.0.1"
   end
 
   test "NodeStatus reports session facts (R2 additive fields)", %{channel: ch} do
