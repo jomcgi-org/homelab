@@ -29,6 +29,15 @@ defmodule Embervm.GroupStateTest do
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
     {:fresh_booting, :destroy} => :destroyed,
+    # Node-confirmed destroy (ADR embervm/014 decision 5): begin_destroy from every
+    # non-terminal state, then destroying -> destroy.
+    {:creating, :begin_destroy} => :destroying,
+    {:running, :begin_destroy} => :destroying,
+    {:banking, :begin_destroy} => :destroying,
+    {:banked, :begin_destroy} => :destroying,
+    {:relighting, :begin_destroy} => :destroying,
+    {:fresh_booting, :begin_destroy} => :destroying,
+    {:destroying, :destroy} => :destroyed,
     {:creating, :fail} => :failed,
     {:running, :fail} => :failed,
     {:banking, :fail} => :failed,
@@ -67,16 +76,23 @@ defmodule Embervm.GroupStateTest do
     end
   end
 
-  test "live? is the five non-terminal, non-banked states" do
-    assert GroupState.live_states() == [:creating, :running, :banking, :relighting, :fresh_booting]
+  test "live? is the non-terminal, non-banked states (destroying included)" do
+    # destroying IS live (ADR embervm/014: the per-member node-confirmed teardown
+    # RPCs are in flight, so the singleton guard must still count the group).
+    assert GroupState.live_states() ==
+             [:creating, :running, :banking, :relighting, :fresh_booting, :destroying]
 
-    for s <- [:creating, :running, :banking, :relighting, :fresh_booting], do: assert(GroupState.live?(s))
+    for s <- [:creating, :running, :banking, :relighting, :fresh_booting, :destroying],
+        do: assert(GroupState.live?(s))
+
     for s <- [:banked, :destroyed, :failed], do: refute(GroupState.live?(s))
   end
 
   test "terminal? is exactly destroyed + failed" do
     assert GroupState.terminal_states() == [:destroyed, :failed]
     for s <- [:destroyed, :failed], do: assert(GroupState.terminal?(s))
-    for s <- [:creating, :running, :banking, :banked, :relighting, :fresh_booting], do: refute(GroupState.terminal?(s))
+
+    for s <- [:creating, :running, :banking, :banked, :relighting, :fresh_booting, :destroying],
+        do: refute(GroupState.terminal?(s))
   end
 end
