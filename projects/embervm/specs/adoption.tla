@@ -364,10 +364,23 @@ Run:
                         \* Assign lands, and re-adopting it would let a second task claim
                         \* the same VM (the known_vm_ids race the adopt_inventory comment
                         \* calls out, dispatcher.ex ~L989).
+                        \*
+                        \* ALSO skip any vm the CP is tearing down (in destroying) or has
+                        \* already recorded destroyed (cpDestroyed). A destroy RPC is in
+                        \* flight but the node can still report the vm "primed" in a report
+                        \* it snapshotted BEFORE the destroy began (a straggler): adopting
+                        \* it back into inventory would let a fresh task assign a VM that is
+                        \* being (or has been) destroyed, breaking NoDestroyBeforeConfirm.
+                        \* This mirrors the real reconcile's explicit skip of a destroying
+                        \* row: session_manager.ex adopt_one/4, `session.state == :destroying
+                        \* -> state` (~L1793), whose comment is "a session being torn down
+                        \* must NOT be re-adopted to running even though the node still
+                        \* reports its live VM"; redrive_destroying owns it instead.
                         if AdoptionEnabled then
                             inventory := inventory \cup
                                 { <<n, v>> : v \in { w \in msg.primed :
-                                    w \notin KnownVMs /\ vmState[w] # "assigned" } };
+                                    w \notin KnownVMs /\ vmState[w] # "assigned"
+                                    /\ w \notin destroying /\ w \notin cpDestroyed } };
                         end if;
                     end if;
                 end with;
@@ -625,7 +638,7 @@ Run:
         end either;
     end while;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "9e0ffc06" /\ chksum(tla) = "c5cbca3")
+\* BEGIN TRANSLATION (chksum(pcal) = "cd5a042d" /\ chksum(tla) = "53e75248")
 VARIABLES vmState, vmNode, vmPrincipal, statusCh, cpAlive, health, 
           streamerGen, lastGen, inventory, inflightMeta, lastReport, 
           taskState, taskVM, taskPrincipal, destroying, cpDestroyed, 
@@ -786,7 +799,8 @@ Next == /\ \/ /\ \E n \in Nodes:
                                    /\ IF AdoptionEnabled
                                          THEN /\ inventory' = (         inventory \cup
                                                                { <<n, v>> : v \in { w \in msg.primed :
-                                                                   w \notin KnownVMs /\ vmState[w] # "assigned" } })
+                                                                   w \notin KnownVMs /\ vmState[w] # "assigned"
+                                                                   /\ w \notin destroying /\ w \notin cpDestroyed } })
                                          ELSE /\ TRUE
                                               /\ UNCHANGED inventory
                               ELSE /\ TRUE
