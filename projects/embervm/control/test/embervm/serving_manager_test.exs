@@ -62,7 +62,9 @@ defmodule Embervm.ServingManagerTest do
         capacity_table: cap_table,
         catalog_table: cat_table,
         clock: Keyword.get(opts, :clock, fn -> 1_000 end),
-        channel_fun: fn _node -> {:ok, :ch} end,
+        # Default echoes nothing (a fixed channel); a retry test overrides this to
+        # echo the dial_id so its StartServing stub can reject a SPECIFIC brick.
+        channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_serving_fun: start_serving_fun,
         op_log: op_log,
@@ -530,5 +532,95 @@ defmodule Embervm.ServingManagerTest do
 
     assert {:ok, _} = ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
     assert Agent.get(srcs, & &1) == [:relight]
+  end
+
+  # -- reject/retry placement (ADR 014 decision 3) ---------------------------
+
+  # Seed one co-located brick on `node_id` with a DISTINCT instance/pod so two
+  # bricks share a node. Base-ready + a real budget so it is a cold-placement
+  # candidate. Keyed by the {node_id, pod_uid} tuple (the per-instance key).
+  defp serving_brick(ctx, node_id, pod_uid, instance_id) do
+    NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
+      configured_id: instance_id,
+      node_id: node_id,
+      pod_uid: pod_uid,
+      instance_id: instance_id,
+      size_class: "8gi",
+      mem_headroom_mib: 8_000,
+      mem_budget_mib: 8_192,
+      serving_subnet_cidr: "10.99.0.0/24",
+      max_live_vms: 4,
+      live_vms: 0,
+      workloads: %{
+        "wl-a" => %{
+          base_state: :BASE_BUILD_STATE_READY,
+          snapshot_ref: "snap-a",
+          serving_image_ref: "base-a"
+        }
+      },
+      serving_vms: [],
+      serving_snapshots: [],
+      store_reachable: false
+    })
+  end
+
+  # A StartServing stub keyed on the dialed instance (the channel echoes the
+  # dial_id): each id in `reject_ids` returns RESOURCE_EXHAUSTED (status 8), any
+  # other id succeeds. Records the dial order for assertions.
+  defp rejecting_start_fun(reject_ids) do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    fun = fn dial_id, _req ->
+      Agent.update(dialed, fn ids -> ids ++ [dial_id] end)
+
+      if dial_id in reject_ids do
+        {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+      else
+        {:ok, %StartServingResponse{vm_id: "vm-#{dial_id}", ip: "10.99.0.5", port: 8080}}
+      end
+    end
+
+    {fun, dialed}
+  end
+
+  test "gate ON: first brick rejects under pressure -> second co-located brick serves" do
+    System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+    on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
+
+    {start_fun, dialed} = rejecting_start_fun(["node-4/pod-a"])
+    # channel echoes the dial_id so the stub sees which brick is dialed.
+    ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end)
+    serving_workload(ctx, "wl-a")
+    serving_brick(ctx, "node-4", "pod-a", "node-4/pod-a")
+    serving_brick(ctx, "node-4", "pod-b", "node-4/pod-b")
+
+    assert {:ok, %{ip: "10.99.0.5", port: 8080}} =
+             ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+
+    # BOTH bricks were dialed: the first rejected, the retry landed the second.
+    order = Agent.get(dialed, & &1)
+    assert length(order) == 2
+    assert Enum.sort(order) == ["node-4/pod-a", "node-4/pod-b"]
+    # The published instance is the one that succeeded (the non-rejecting brick).
+    assert [instance] = ServingStore.list(ctx.store, "wl-a")
+    assert instance.state == :published
+  end
+
+  test "gate OFF: a first-brick rejection is NOT retried (503, single attempt)" do
+    # Gate unset (default off): the sole cold pick is attempted once; its
+    # RESOURCE_EXHAUSTED becomes a wake failure, the second brick is never dialed.
+    System.delete_env("EMBERVM_PLACEMENT_RETRY")
+
+    {start_fun, dialed} = rejecting_start_fun(["node-4/pod-a", "node-4/pod-b"])
+    ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end)
+    serving_workload(ctx, "wl-a")
+    serving_brick(ctx, "node-4", "pod-a", "node-4/pod-a")
+    serving_brick(ctx, "node-4", "pod-b", "node-4/pod-b")
+
+    assert {:error, {:wake_failed, _}} =
+             ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+
+    # Exactly ONE dial: gate off never chased the second brick.
+    assert length(Agent.get(dialed, & &1)) == 1
   end
 end

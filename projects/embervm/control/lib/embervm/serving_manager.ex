@@ -397,13 +397,18 @@ defmodule Embervm.ServingManager do
         end
 
       {:cold, node_id, base_ref} ->
-        # A cold boot has no owning snapshot: select a mem-eligible instance on the
-        # node (a too-small classed brick is skipped, the DS wildcard is always
-        # eligible), failing cleanly if none has room.
-        case dial_instance(state, workload, entry, node_id, []) do
-          {:ok, dial_id} ->
+        # A cold boot has no owning snapshot: it may land on ANY mem-eligible,
+        # base-ready co-located brick on the node (a too-small classed brick is
+        # skipped, the DS wildcard is always eligible). Fetch the ORDERED candidate
+        # frontier (head == the single-attempt pick) so the worker can reject/retry
+        # the next brick when the first is under node pressure (ADR 014 decision 3).
+        case cold_dial_candidates(state, workload, entry, node_id) do
+          {:ok, dial_ids} ->
             req = cold_request(entry, workload, base_ref)
-            spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, dial_id, base_ref, req) end)
+
+            spawn_wake(owner, workload, fn ->
+              run_cold(state, workload, node_id, dial_ids, base_ref, req)
+            end)
 
           {:error, select_reason} ->
             send(self(), {:wake_done, workload, {:error, select_reason}})
@@ -432,6 +437,20 @@ defmodule Embervm.ServingManager do
         need_mib: Map.get(entry, :mem_mib) || 512,
         warmth_key: :serving_snapshots
       ] ++ opts
+    )
+  end
+
+  # The ORDERED cold-create dial candidates on `node_id` (ADR 014 decision 3
+  # reject/retry frontier): the ready + mem-eligible co-located bricks, head ==
+  # what dial_instance/5's cold pick returns. run_cold retries the next when the
+  # first rejects under node pressure. Same node scoping / eligibility rule as the
+  # single-attempt cold pick (WakeInstance keeps them on one predicate).
+  defp cold_dial_candidates(state, workload, entry, node_id) do
+    Embervm.WakeInstance.cold_candidates(
+      node_id,
+      table: state.capacity_table,
+      workload: workload,
+      need_mib: Map.get(entry, :mem_mib) || 512
     )
   end
 
@@ -612,23 +631,57 @@ defmodule Embervm.ServingManager do
     end
   end
 
-  # The cold-create RPC (in the spawned worker).
-  defp run_cold(state, workload, node_id, dial_id, base_ref, req) do
-    case safe_start_serving(state, dial_id, req) do
-      {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
-      when is_binary(vm_id) and vm_id != "" ->
-        attrs = %{
-          tenant: state.tenant,
-          principal: wake_principal(state, workload),
-          workload: workload,
-          node_id: node_id,
-          base_snapshot_ref: base_ref
-        }
+  # The cold-create RPC (in the spawned worker), reject/retrying across the ordered
+  # candidate bricks on the node (ADR 014 decision 3). Each attempt dials one
+  # candidate's StartServing; a node-pressure RESOURCE_EXHAUSTED rejection retries
+  # the next co-located brick (gated by EMBERVM_PLACEMENT_RETRY, off = one attempt).
+  # All candidates are on the SAME resolved node_id, so a success reports the same
+  # node_id and only the dial_id (which brick) varies, keeping the durable
+  # serving_started record's node identity stable.
+  defp run_cold(state, workload, node_id, dial_ids, base_ref, req) do
+    candidates = Enum.map(dial_ids, fn id -> %{instance_id: id} end)
 
-        {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}}
+    attempt_fun = fn %{instance_id: dial_id} ->
+      case safe_start_serving(state, dial_id, req) do
+        {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
+        when is_binary(vm_id) and vm_id != "" ->
+          attrs = %{
+            tenant: state.tenant,
+            principal: wake_principal(state, workload),
+            workload: workload,
+            node_id: node_id,
+            base_snapshot_ref: base_ref
+          }
 
-      other ->
-        {:error, {:start_failed, other}}
+          {:ok, {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}}}
+
+        {:error, %GRPC.RPCError{status: 8}} = rejected ->
+          # RESOURCE_EXHAUSTED: the brick rejected under node pressure (pressure:mem /
+          # pressure:taps). Retryable: try the next candidate brick.
+          {:reject, rejected}
+
+        other ->
+          # Any other failure (transport, readiness, bad request) is terminal for
+          # this create: retrying a DIFFERENT brick would just multiply an unrelated
+          # failure, so stop and surface it exactly as the pre-retry code did.
+          {:error, {:start_failed, other}}
+      end
+    end
+
+    # No :on_reject hook: the retry frontier already drops the rejected brick for
+    # THIS create (the in-attempt "mark ineligible"), and the authoritative headroom
+    # refresh is the node's next capacity report. A speculative ETS mutation of the
+    # shared capacity view here would risk a concurrent reader seeing a half-adjusted
+    # fact the next report immediately overwrites, so the cross-burst advisory
+    # decrement (ADR 014 decision 3, explicitly advisory) is intentionally deferred
+    # to that report rather than mutated in place.
+    case Embervm.Placement.Retry.run(candidates, attempt_fun) do
+      {:ok, outcome} -> outcome
+      # Every candidate rejected (or gate-off single attempt rejected): the fleet is
+      # under pressure. Report the existing no-capacity-shaped failure so the parked
+      # callers 503 and the next miss retries, never a queue wedge.
+      {:error, :no_capacity} -> {:error, {:start_failed, {:error, :no_capacity}}}
+      {:error, reason} -> {:error, reason}
     end
   end
 

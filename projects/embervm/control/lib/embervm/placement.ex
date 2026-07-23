@@ -160,7 +160,49 @@ defmodule Embervm.Placement do
   @spec pick_ready([brick()], term(), non_neg_integer()) :: brick() | nil
   def pick_ready(bricks, workload, need_mib) do
     bricks
-    |> Enum.filter(fn brick -> eligible?(brick, need_mib) and base_ready?(brick, workload) end)
+    |> ready_candidates(workload, need_mib)
     |> BrickLedger.choose(workload)
+  end
+
+  @doc """
+  The ORDERED cold-placement candidate list `pick_ready/3` chooses one from: the
+  bricks that are BOTH `eligible?/2` for `need_mib` AND `base_ready?/2` for
+  `workload`, sorted deterministically by the same `BrickLedger.choose/2` key
+  (`workload`) so the FIRST element is exactly what `pick_ready/3` would return and
+  the tail is the reject/retry frontier (ADR embervm/014 decision 3).
+
+  This is the reject/retry counterpart of `pick_ready/3`: a cold NEW-placement path
+  that wants to try the next co-located brick when the first rejects under node
+  pressure feeds this whole list to `Embervm.Placement.Retry.run/3`, rather than
+  picking one and failing on a reject. Sharing `ready_candidates/3` with
+  `pick_ready/3` keeps the single-attempt and retry paths on ONE eligibility +
+  ordering rule, so they cannot drift. Returns `[]` when no brick qualifies (the
+  caller's existing no-eligible outcome).
+  """
+  @spec candidates_ready([brick()], term(), non_neg_integer()) :: [brick()]
+  def candidates_ready(bricks, workload, need_mib) do
+    bricks
+    |> ready_candidates(workload, need_mib)
+    |> sort_by_choose_key(workload)
+  end
+
+  # The shared eligible + base-ready filter both pick_ready/3 and candidates_ready/3
+  # apply, so the single-attempt pick and the retry list can never diverge on which
+  # bricks are cold-placement candidates.
+  defp ready_candidates(bricks, workload, need_mib) do
+    Enum.filter(bricks, fn brick -> eligible?(brick, need_mib) and base_ready?(brick, workload) end)
+  end
+
+  # Order the candidate list the SAME way BrickLedger.choose/2 would traverse it:
+  # sorted by :instance_id, then rotated so the choose/2-selected brick is first and
+  # the deterministic sticky order continues from there. This makes candidates_ready/3
+  # head == pick_ready/3 result, and the tail the natural next-candidate sequence.
+  defp sort_by_choose_key([], _key), do: []
+
+  defp sort_by_choose_key(candidates, key) do
+    sorted = Enum.sort_by(candidates, fn c -> Map.get(c, :instance_id, "") end)
+    idx = :erlang.phash2(key, length(sorted))
+    {head, tail} = Enum.split(sorted, idx)
+    tail ++ head
   end
 end
