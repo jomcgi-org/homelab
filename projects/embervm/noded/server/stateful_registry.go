@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
@@ -93,6 +95,7 @@ type statefulEntry struct {
 	port       uint32
 	tap        string
 	generation uint64
+	origin     nodev1.InstanceOrigin
 	// snapshotRef is the stateful bundle this VM was RELIT from, or "" for a
 	// cold/fresh boot (which has no source snapshot). Mirrors servingEntry's
 	// snapshotRef, though R4 v1 does not add an in-use eviction guard on it
@@ -268,6 +271,20 @@ func (r *statefulRegistry) byWorkload(workload string) (*statefulEntry, bool) {
 	return nil, false
 }
 
+// byWorkloadCheckpoint returns the workload's live entry and its checkpoint
+// token under the registry lock, so the activator can decide whether it must
+// claim and abort a paused checkpoint before splicing.
+func (r *statefulRegistry) byWorkloadCheckpoint(workload string) (*statefulEntry, string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.vms {
+		if e.workload == workload {
+			return e, e.checkpointToken, true
+		}
+	}
+	return nil, "", false
+}
+
 // snapshotRefInUse reports whether any LIVE stateful VM was relit from the given
 // stateful bundle ref, i.e. the bundle is still needed by a running guest that
 // resumed from it. It is the in-use guard for a local STATEFUL eviction (#38):
@@ -301,6 +318,7 @@ type statefulView struct {
 	healthy         bool
 	lastProbeUnixMs int64
 	generation      uint64
+	origin          nodev1.InstanceOrigin
 	// checkpointPending + checkpointToken report a VM PAUSED awaiting a resolve
 	// (ADR embervm/008) so a restarted control plane adopts and resolves it.
 	checkpointPending bool
@@ -320,6 +338,7 @@ func (r *statefulRegistry) snapshot() []statefulView {
 			ip:                e.ip.String(),
 			port:              e.port,
 			generation:        e.generation,
+			origin:            e.origin,
 			checkpointPending: e.checkpointToken != "",
 			checkpointToken:   e.checkpointToken,
 		}

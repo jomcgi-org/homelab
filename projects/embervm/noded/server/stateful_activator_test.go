@@ -1,0 +1,235 @@
+package server
+
+import (
+	"context"
+	"io"
+	"net"
+	"strconv"
+	"testing"
+	"time"
+
+	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+)
+
+func statefulActivatorEchoServer(t *testing.T) uint32 {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("stateful echo listen: %v", err)
+	}
+	t.Cleanup(func() { _ = lis.Close() })
+	go func() {
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+	_, rawPort, err := net.SplitHostPort(lis.Addr().String())
+	if err != nil {
+		t.Fatalf("stateful echo split port: %v", err)
+	}
+	port, err := strconv.ParseUint(rawPort, 10, 32)
+	if err != nil {
+		t.Fatalf("stateful echo parse port: %v", err)
+	}
+	return uint32(port)
+}
+
+func enableStatefulActivatorWorkload(s *Server, workload string, listenPort, guestPort uint32) {
+	s.registry.sync([]workloadEntry{{
+		Workload:             workload,
+		NodeLocalWake:        true,
+		StatefulListenPort:   listenPort,
+		StatefulPort:         guestPort,
+		StatefulVolumeMount:  "/var/lib/postgresql/data",
+		StatefulBootImageRef: "img-a",
+		VCPUs:                1,
+		MemMib:               128,
+	}})
+}
+
+func startStatefulActivator(t *testing.T, s *Server) uint32 {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("stateful activator listen: %v", err)
+	}
+	s.StartStatefulActivator(ctx, []net.Listener{lis})
+	return listenerPort(lis)
+}
+
+func statefulActivatorConn(t *testing.T, listenPort uint32) net.Conn {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.FormatUint(uint64(listenPort), 10)), 2*time.Second)
+	if err != nil {
+		t.Fatalf("stateful activator dial: %v", err)
+	}
+	return conn
+}
+
+func statefulActivatorRoundTrip(t *testing.T, conn net.Conn, body string) {
+	t.Helper()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if _, err := conn.Write([]byte(body)); err != nil {
+		t.Fatalf("activator write: %v", err)
+	}
+	got := make([]byte, len(body))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("activator read: %v", err)
+	}
+	if string(got) != body {
+		t.Fatalf("activator bytes = %q, want %q", got, body)
+	}
+}
+
+func addStatefulActivatorBundle(t *testing.T, s *Server, driver *fakeStatefulDriver, workload, ref string) {
+	t.Helper()
+	if err := s.volumes.Create(workload, 1<<20); err != nil {
+		t.Fatalf("create stateful volume: %v", err)
+	}
+	driver.mu.Lock()
+	driver.banked[ref] = 0
+	driver.mu.Unlock()
+	s.statefulBundles.add(statefulBundleEntry{snapshotRef: ref, workload: workload, generation: 0})
+}
+
+func TestStatefulActivatorStragglerSplicesLiveVM(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+	s.statefulVMs.add(&statefulEntry{vmID: "already-live", workload: "wl-state", ip: net.ParseIP("127.0.0.1"), port: port})
+
+	conn := statefulActivatorConn(t, listenPort)
+	defer conn.Close()
+	statefulActivatorRoundTrip(t, conn, "live bytes")
+	if driver.claims != 0 || driver.restores != 0 {
+		t.Errorf("stateful wake calls = claims:%d restores:%d, want 0:0", driver.claims, driver.restores)
+	}
+}
+
+func TestStatefulActivatorRelightsLocalBundle(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+	addStatefulActivatorBundle(t, s, driver, "wl-state", "bundle-state")
+
+	conn := statefulActivatorConn(t, listenPort)
+	defer conn.Close()
+	statefulActivatorRoundTrip(t, conn, "relit bytes")
+	if driver.restores != 1 {
+		t.Errorf("RestoreStateful calls = %d, want 1", driver.restores)
+	}
+	if got := s.statefulVMsStatus()[0].GetOrigin(); got != nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR {
+		t.Errorf("stateful origin = %v, want ACTIVATOR", got)
+	}
+}
+
+func TestStatefulActivatorSingleFlight(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+	addStatefulActivatorBundle(t, s, driver, "wl-state", "bundle-state")
+	driver.restoreStarted = make(chan struct{}, 1)
+	driver.releaseRestore = make(chan struct{})
+
+	const clients = 8
+	conns := make(chan net.Conn, clients)
+	for i := 0; i < clients; i++ {
+		conns <- statefulActivatorConn(t, listenPort)
+	}
+	<-driver.restoreStarted
+	close(driver.releaseRestore)
+	for i := 0; i < clients; i++ {
+		conn := <-conns
+		statefulActivatorRoundTrip(t, conn, "all clients")
+		_ = conn.Close()
+	}
+	if driver.restores != 1 {
+		t.Errorf("RestoreStateful calls = %d, want 1", driver.restores)
+	}
+}
+
+func TestStatefulActivatorGateClosesIneligiblePort(t *testing.T) {
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	s.registry.sync([]workloadEntry{{Workload: "wl-state", NodeLocalWake: false, StatefulListenPort: listenPort}})
+	conn := statefulActivatorConn(t, listenPort)
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("ineligible stateful activator connection stayed open")
+	}
+	if driver.claims != 0 || driver.restores != 0 {
+		t.Errorf("stateful wake calls = claims:%d restores:%d, want 0:0", driver.claims, driver.restores)
+	}
+}
+
+func TestStatefulActivatorAbortsCheckpointAndSplices(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+	started := startFreshStateful(t, s, port, "wl-state")
+	before, err := s.volumes.Generation("wl-state")
+	if err != nil {
+		t.Fatalf("generation before checkpoint: %v", err)
+	}
+	if _, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: started.GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_CHECKPOINT,
+	}); err != nil {
+		t.Fatalf("StopStateful(checkpoint): %v", err)
+	}
+
+	conn := statefulActivatorConn(t, listenPort)
+	defer conn.Close()
+	statefulActivatorRoundTrip(t, conn, "resumed bytes")
+	after, err := s.volumes.Generation("wl-state")
+	if err != nil {
+		t.Fatalf("generation after checkpoint abort: %v", err)
+	}
+	if after != before+1 {
+		t.Errorf("generation after checkpoint abort = %d, want %d", after, before+1)
+	}
+	if driver.resumes != 1 {
+		t.Errorf("ResolveStatefulAbort calls = %d, want 1", driver.resumes)
+	}
+}
+
+func TestStatefulActivatorAndControlPlaneOrigins(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	enableStatefulActivatorWorkload(s, "activator-workload", listenPort, port)
+	addStatefulActivatorBundle(t, s, driver, "activator-workload", "bundle-activator")
+
+	conn := statefulActivatorConn(t, listenPort)
+	statefulActivatorRoundTrip(t, conn, "activator origin")
+	_ = conn.Close()
+	if got := s.statefulVMsStatus()[0].GetOrigin(); got != nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR {
+		t.Errorf("activator origin = %v, want ACTIVATOR", got)
+	}
+	if _, err := s.StopStateful(context.Background(), &nodev1.StopStatefulRequest{
+		VmId: s.statefulVMsStatus()[0].GetVmId(), Mode: nodev1.StopStatefulMode_STOP_STATEFUL_MODE_DESTROY,
+	}); err != nil {
+		t.Fatalf("StopStateful(destroy): %v", err)
+	}
+	startFreshStateful(t, s, port, "cp-workload")
+	for _, vm := range s.statefulVMsStatus() {
+		if vm.GetWorkload() == "cp-workload" && vm.GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+			t.Errorf("control-plane origin = %v, want CONTROL_PLANE", vm.GetOrigin())
+		}
+	}
+}

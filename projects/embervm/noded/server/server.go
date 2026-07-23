@@ -194,15 +194,16 @@ type Server struct {
 	// Phase 2). The daemon boots with it empty (or a STALE boot-cache load) and
 	// admits no new work until the control plane replays it over SyncRegistry
 	// (readiness gate). It replaces the retired EMBERVM_NODED_IMAGES config table.
-	registry         *workloadRegistry
-	sessionVMs       *sessionRegistry
-	sessionSnap      *sessionSnapshotRegistry
-	servingVMs       *servingRegistry
-	servingSnap      *servingSnapshotRegistry
-	servingImage     *servingImageRegistry
-	activator        *activator
-	activatorMu      sync.RWMutex
-	activatorEnabled bool
+	registry          *workloadRegistry
+	sessionVMs        *sessionRegistry
+	sessionSnap       *sessionSnapshotRegistry
+	servingVMs        *servingRegistry
+	servingSnap       *servingSnapshotRegistry
+	servingImage      *servingImageRegistry
+	activator         *activator
+	statefulActivator *statefulActivator
+	activatorMu       sync.RWMutex
+	activatorEnabled  bool
 
 	// servingNet owns the host serving network (bridge, taps, nftables, IP
 	// allocation). nil disables the serving verbs (task/session-only tests and any
@@ -424,6 +425,7 @@ func New(opts Options) *Server {
 		activeBuilds:    make(map[string]context.CancelFunc),
 	}
 	s.activator = newActivator(s)
+	s.statefulActivator = newStatefulActivator(s)
 	// VolumeRoot may be set directly on Options (mirroring how cmd/main.go wires
 	// every other stateful/serving knob explicitly) or left to fall back to
 	// Config.VolumeRoot, so a caller that only populates Config (as several
@@ -1944,6 +1946,7 @@ func (s *Server) statefulVMsStatus() []*nodev1.StatefulVm {
 			LastProbeUnixMs:   e.lastProbeUnixMs,
 			CheckpointPending: e.checkpointPending,
 			CheckpointToken:   e.checkpointToken,
+			Origin:            e.origin,
 		})
 	}
 	return out

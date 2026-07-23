@@ -22,29 +22,39 @@ type workloadEntry struct {
 	// ImageRef is the OCI ref a BuildBase resolves against to find this entry's
 	// node-side rootfs/harness (the join key the retired EMBERVM_NODED_IMAGES
 	// table keyed on). getByImageRef indexes on it.
-	ImageRef          string `json:"imageRef"`
-	RootfsRef         string `json:"rootfsRef"`
-	HarnessInit       string `json:"harnessInit"`
-	VCPUs             uint32 `json:"vcpus"`
-	MemMib            uint32 `json:"memMib"`
-	NodeLocalWake     bool   `json:"nodeLocalWake"`
-	ServingPort       uint32 `json:"servingPort"`
-	ServingHealthPath string `json:"servingHealthPath"`
+	ImageRef             string `json:"imageRef"`
+	RootfsRef            string `json:"rootfsRef"`
+	HarnessInit          string `json:"harnessInit"`
+	VCPUs                uint32 `json:"vcpus"`
+	MemMib               uint32 `json:"memMib"`
+	NodeLocalWake        bool   `json:"nodeLocalWake"`
+	ServingPort          uint32 `json:"servingPort"`
+	ServingHealthPath    string `json:"servingHealthPath"`
+	StatefulListenPort   uint32 `json:"statefulListenPort"`
+	StatefulPort         uint32 `json:"statefulPort"`
+	StatefulVolumeMount  string `json:"statefulVolumeMount"`
+	StatefulBootImageRef string `json:"statefulBootImageRef"`
+	StatefulVolumeDevice string `json:"statefulVolumeDevice"`
 }
 
 // entryFromProto lifts a wire RegistryEntry into the daemon's internal shape.
 func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 	return workloadEntry{
-		Workload:          e.GetWorkload(),
-		ImageDigest:       e.GetImageDigest(),
-		ImageRef:          e.GetImageRef(),
-		RootfsRef:         e.GetRootfsRef(),
-		HarnessInit:       e.GetHarnessInit(),
-		VCPUs:             e.GetSizing().GetVcpus(),
-		MemMib:            e.GetSizing().GetMemMib(),
-		NodeLocalWake:     e.GetNodeLocalWake(),
-		ServingPort:       e.GetServingPort(),
-		ServingHealthPath: e.GetServingHealthPath(),
+		Workload:             e.GetWorkload(),
+		ImageDigest:          e.GetImageDigest(),
+		ImageRef:             e.GetImageRef(),
+		RootfsRef:            e.GetRootfsRef(),
+		HarnessInit:          e.GetHarnessInit(),
+		VCPUs:                e.GetSizing().GetVcpus(),
+		MemMib:               e.GetSizing().GetMemMib(),
+		NodeLocalWake:        e.GetNodeLocalWake(),
+		ServingPort:          e.GetServingPort(),
+		ServingHealthPath:    e.GetServingHealthPath(),
+		StatefulListenPort:   e.GetStatefulListenPort(),
+		StatefulPort:         e.GetStatefulPort(),
+		StatefulVolumeMount:  e.GetStatefulVolumeMount(),
+		StatefulBootImageRef: e.GetStatefulBootImageRef(),
+		StatefulVolumeDevice: e.GetStatefulVolumeDevice(),
 	}
 }
 
@@ -150,6 +160,20 @@ func (r *workloadRegistry) get(workload string) (workloadEntry, bool) {
 	defer r.mu.Unlock()
 	e, ok := r.entries[workload]
 	return e, ok
+}
+
+// statefulByListenPort resolves the opaque-L4 activator identity. The local
+// accept port is the only workload discriminator, so node_local_wake and a
+// nonzero stateful listen port are both required.
+func (r *workloadRegistry) statefulByListenPort(port uint32) (workloadEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if e.NodeLocalWake && e.StatefulListenPort == port {
+			return e, true
+		}
+	}
+	return workloadEntry{}, false
 }
 
 // getByImageRef returns the entry whose ImageRef matches imageRef (the BuildBase

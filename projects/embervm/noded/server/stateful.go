@@ -47,13 +47,17 @@ const (
 // stateful contract is opaque L4 (decision 4). Every mode advances the volume's
 // generation ledger BEFORE the VM boots (via attachGeneration: RecordBlessed
 // when the request carries a nonzero blessed_generation, R7 ADR embervm/011,
-// or the legacy self-bump otherwise), so any writable attach the daemon
+// or the trusted node-local self-bump otherwise), so any writable attach the daemon
 // witnesses is unconditionally reflected in the pair key even if the boot that
 // follows fails; there is no un-bump. A readiness failure DESTROYS the VM,
 // releases the tap, and DETACHES the volume (but never rolls the generation
 // back) and returns FAILED_PRECONDITION: there is no half-alive endpoint a
 // caller could observe or publish.
 func (s *Server) StartStateful(ctx context.Context, req *nodev1.StartStatefulRequest) (*nodev1.StartStatefulResponse, error) {
+	return s.startStateful(ctx, req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE)
+}
+
+func (s *Server) startStateful(ctx context.Context, req *nodev1.StartStatefulRequest, origin nodev1.InstanceOrigin) (*nodev1.StartStatefulResponse, error) {
 	if s.servingNet == nil || s.servingDriver == nil || s.statefulDriver == nil || s.volumes == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: stateful not configured")
 	}
@@ -80,25 +84,24 @@ func (s *Server) StartStateful(ctx context.Context, req *nodev1.StartStatefulReq
 
 	switch req.GetMode() {
 	case nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH:
-		return s.startStatefulFresh(ctx, req, workload, port)
+		return s.startStatefulFresh(ctx, req, workload, port, origin)
 	case nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT:
-		return s.startStatefulRelight(ctx, req, workload, port)
+		return s.startStatefulRelight(ctx, req, workload, port, origin)
 	case nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD:
-		return s.startStatefulCold(ctx, req, workload, port)
+		return s.startStatefulCold(ctx, req, workload, port, origin)
 	default:
 		return nil, status.Error(codes.InvalidArgument, "noded: StartStateful mode must be FRESH, RELIGHT, or COLD")
 	}
 }
 
-// attachGeneration resolves the generation a writable attach records, per R7
-// standing decision 4 (the control plane becomes the sole issuer). A nonzero
+// attachGeneration resolves the generation a writable attach records. A nonzero
 // blessedGeneration on the request is recorded via volume.Manager.RecordBlessed
-// (the CP-issued value, never invented here). Zero means the legacy self-bump
-// lane: allowed only while s.cfg.RequireBlessing is false, and rejected
-// FAILED_PRECONDITION once it is true (the chart flips RequireBlessing in the
-// same version the control plane starts blessing, so a mixed state cannot
-// outlive the roll).
-func (s *Server) attachGeneration(workload string, blessedGeneration uint64) (uint64, error) {
+// (the control-plane-issued value, never invented here). Zero means the legacy self-bump
+// lane: allowed for the trusted node-local activator and, while
+// s.cfg.RequireBlessing is false, the legacy RPC path. The activator follows
+// the same self-bump discipline as checkpoint auto-abort and relies on the
+// physical volume attach fence rather than a delegated control-plane grant.
+func (s *Server) attachGeneration(workload string, blessedGeneration uint64, activatorOrigin bool) (uint64, error) {
 	if blessedGeneration > 0 {
 		gen, err := s.volumes.RecordBlessed(workload, blessedGeneration)
 		if err != nil {
@@ -106,7 +109,7 @@ func (s *Server) attachGeneration(workload string, blessedGeneration uint64) (ui
 		}
 		return gen, nil
 	}
-	if s.cfg.RequireBlessing {
+	if s.cfg.RequireBlessing && !activatorOrigin {
 		return 0, status.Errorf(codes.FailedPrecondition, "noded: writable attach for %q requires a blessed_generation (EMBERVM_NODED_REQUIRE_BLESSING is set)", workload)
 	}
 	gen, err := s.volumes.BumpGeneration(workload)
@@ -120,7 +123,7 @@ func (s *Server) attachGeneration(workload string, blessedGeneration uint64) (ui
 // FAILED_PRECONDITION when absent and create_if_missing is false), then cold
 // boots exactly like startStatefulCold. It is the only mode that may create the
 // volume; RELIGHT's fallback and COLD both require it to already exist.
-func (s *Server) startStatefulFresh(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32) (*nodev1.StartStatefulResponse, error) {
+func (s *Server) startStatefulFresh(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32, origin nodev1.InstanceOrigin) (*nodev1.StartStatefulResponse, error) {
 	// A FRESH stateful boot is new-work placement (it may create the volume). A
 	// stale registry (boot cache, no live sync) must refuse it; RELIGHT and COLD
 	// operate on EXISTING state and stay allowed so existing warmth is served.
@@ -138,7 +141,7 @@ func (s *Server) startStatefulFresh(ctx context.Context, req *nodev1.StartStatef
 			return nil, status.Errorf(codes.Internal, "noded: create stateful volume for %q: %v", workload, err)
 		}
 	}
-	return s.coldBootStateful(ctx, req, workload, port, "")
+	return s.coldBootStateful(ctx, req, workload, port, "", origin)
 }
 
 // startStatefulCold is an EXPLICIT cold boot from the existing volume (no
@@ -146,11 +149,11 @@ func (s *Server) startStatefulFresh(ctx context.Context, req *nodev1.StartStatef
 // FRESH it never creates one, matching the proto doc's "explicit cold boot from
 // the existing volume". cold_boot_reason is left empty: an explicit COLD boot
 // is not a discarded relight, so it carries no reason.
-func (s *Server) startStatefulCold(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32) (*nodev1.StartStatefulResponse, error) {
+func (s *Server) startStatefulCold(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32, origin nodev1.InstanceOrigin) (*nodev1.StartStatefulResponse, error) {
 	if !s.volumes.Exists(workload) {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful volume for workload %q does not exist (COLD requires an existing volume)", workload)
 	}
-	return s.coldBootStateful(ctx, req, workload, port, "")
+	return s.coldBootStateful(ctx, req, workload, port, "", origin)
 }
 
 // startStatefulRelight resumes the banked bundle (relight_snapshot_ref) iff its
@@ -165,7 +168,7 @@ func (s *Server) startStatefulCold(ctx context.Context, req *nodev1.StartStatefu
 // cannot trust (which could later false-match a stale bundle). The stale bundle
 // is still evicted first, and the volume bytes are never touched, so this is
 // fail-closed-but-data-safe, surfaced for an operator to repair.
-func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32) (*nodev1.StartStatefulResponse, error) {
+func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32, origin nodev1.InstanceOrigin) (*nodev1.StartStatefulResponse, error) {
 	ref := req.GetRelightSnapshotRef()
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: relight_snapshot_ref required for RELIGHT")
@@ -199,7 +202,7 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 			_ = s.statefulDriver.RemoveStatefulBundle(ref)
 			s.statefulBundles.remove(ref)
 		}
-		return s.coldBootStateful(ctx, req, workload, port, reason)
+		return s.coldBootStateful(ctx, req, workload, port, reason, origin)
 	}
 
 	// Matched pair: resume the bundle. Attach lock first, then bump (the same
@@ -219,7 +222,7 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 			s.volumes.Detach(workload)
 		}
 	}()
-	gen, err := s.attachGeneration(workload, req.GetBlessedGeneration())
+	gen, err := s.attachGeneration(workload, req.GetBlessedGeneration(), origin == nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +257,7 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight stateful snapshot %q: %v", ref, err)
 	}
 	attached = false // ownership passes to finishStatefulStart's detach-on-failure path
-	return s.finishStatefulStart(ctx, h, workload, ref, ip, port, gen, true, "", s.cfg.RestoreReadyTimeout)
+	return s.finishStatefulStart(ctx, h, workload, ref, ip, port, gen, true, "", s.cfg.RestoreReadyTimeout, origin)
 }
 
 // coldBootStateful resolves boot_image_ref against the serving-images
@@ -263,7 +266,7 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 // volume's generation, attaches the volume, allocates a tap, and cold-boots
 // with the volume as a third writable drive. Shared by FRESH, COLD, and the
 // RELIGHT fallback so all three paths boot identically once the volume exists.
-func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32, coldBootReason string) (*nodev1.StartStatefulResponse, error) {
+func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStatefulRequest, workload string, port uint32, coldBootReason string, origin nodev1.InstanceOrigin) (*nodev1.StartStatefulResponse, error) {
 	bootImageRef := req.GetBootImageRef()
 	if bootImageRef == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: boot_image_ref required")
@@ -302,7 +305,7 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 			s.volumes.Detach(workload)
 		}
 	}()
-	gen, err := s.attachGeneration(workload, req.GetBlessedGeneration())
+	gen, err := s.attachGeneration(workload, req.GetBlessedGeneration(), origin == nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +341,7 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot stateful vm: %v", err)
 	}
 	attached = false // ownership passes to finishStatefulStart's detach-on-failure path
-	return s.finishStatefulStart(ctx, h, workload, "", ip, port, gen, false, coldBootReason, s.cfg.BootReadyTimeout)
+	return s.finishStatefulStart(ctx, h, workload, "", ip, port, gen, false, coldBootReason, s.cfg.BootReadyTimeout, origin)
 }
 
 // finishStatefulStart is the shared tail of every StartStateful path: health-
@@ -346,7 +349,7 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 // stateful VM and start its TCP probe. On a readiness failure it reaps the VM,
 // releases the tap, and DETACHES the volume (never rolling the generation
 // back), returning FAILED_PRECONDITION.
-func (s *Server) finishStatefulStart(ctx context.Context, h substrate.Handle, workload, sourceRef string, ip net.IP, port uint32, generation uint64, wasRelight bool, coldBootReason string, readyBudget time.Duration) (*nodev1.StartStatefulResponse, error) {
+func (s *Server) finishStatefulStart(ctx context.Context, h substrate.Handle, workload, sourceRef string, ip net.IP, port uint32, generation uint64, wasRelight bool, coldBootReason string, readyBudget time.Duration, origin nodev1.InstanceOrigin) (*nodev1.StartStatefulResponse, error) {
 	if err := s.waitStatefulReady(ctx, ip, port, readyBudget); err != nil {
 		s.reapStateful(h, ip, workload)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful guest not ready over tap: %v", err)
@@ -364,6 +367,7 @@ func (s *Server) finishStatefulStart(ctx context.Context, h substrate.Handle, wo
 		port:        port,
 		tap:         serving.TapNameForIP(ip),
 		generation:  generation,
+		origin:      origin,
 		snapshotRef: sourceRef,
 		probe:       probe,
 	})
