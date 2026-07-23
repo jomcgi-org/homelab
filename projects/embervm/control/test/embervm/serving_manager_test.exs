@@ -299,6 +299,41 @@ defmodule Embervm.ServingManagerTest do
     assert Agent.get(ctx.starts, & &1) == 0
   end
 
+  test "adoption SKIPS a :destroying instance even though the node still reports its live VM" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: "srv-destroying",
+        tenant: "homelab",
+        principal: "serving:wl-a",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-live",
+        ip: "10.99.0.9",
+        port: 8080
+      })
+
+    # Force the instance into :destroying: mid node-confirmed teardown (ADR
+    # embervm/014 decision 5), the teardown RPC in flight.
+    _ = ServingStore.adopt_state(ctx.store, "srv-destroying", :destroying)
+
+    # The node still reports the VM as live+healthy: the exact straggler report that
+    # turns on the TLC NoDestroyBeforeConfirm violation if adoption keys off the node.
+    serving_node(ctx, "node-4",
+      serving_vms: [%{vm_id: "vm-live", workload: "wl-a", ip: "10.99.0.9", port: 8080, healthy: true, last_probe_unix_ms: 1}]
+    )
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+
+    # NOT re-adopted to :published; stays destroying for the (gated) redrive to own.
+    {:ok, inst} = ServingStore.get(ctx.store, "srv-destroying")
+    assert inst.state == :destroying
+    assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
+    assert Agent.get(ctx.starts, & &1) == 0
+  end
+
   test "adoption heals a starting-limbo instance the node reports only as a snapshot to banked" do
     ctx = start_stack()
     serving_workload(ctx, "wl-a")

@@ -801,6 +801,14 @@ defmodule Embervm.GroupWakeManager do
 
   defp adopt_one(state, instance, live_members, bundle_sets) do
     cond do
+      # A destroying instance (ADR embervm/014 decision 5) is mid node-confirmed
+      # teardown; adoption must NOT re-adopt it even though the node still reports its
+      # live members (the teardown RPCs are in flight). Keying off the CP state, not
+      # the node report, is the fix for the TLC NoDestroyBeforeConfirm violation
+      # modeled in adoption.tla. redrive_destroying (gated) owns the transition.
+      instance.state == :destroying ->
+        state
+
       # A wake stuck waking past 2 * wakeTimeoutSeconds (Task 10): the worker never
       # reported and the {:wake_timeout} timer is lost (a CP restart drops the timer
       # but the projection is rebuilt, so `waking` is empty on boot; this covers the

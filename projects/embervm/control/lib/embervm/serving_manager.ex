@@ -1001,6 +1001,14 @@ defmodule Embervm.ServingManager do
 
   defp adopt_one(state, instance, live_vms, snapshots) do
     cond do
+      # A destroying instance (ADR embervm/014 decision 5) is mid node-confirmed
+      # teardown; adoption must NOT re-bind it to published even though the node still
+      # reports its live VM (the teardown RPC is in flight). Keying off the CP state,
+      # not the node report, is the fix for the TLC NoDestroyBeforeConfirm violation
+      # modeled in adoption.tla. redrive_destroying (gated) owns the transition.
+      instance.state == :destroying ->
+        state
+
       # This manager has an in-flight wake for the workload: it owns the transition,
       # so a periodic reconcile must NOT touch its instances. On BOOT `waking` is
       # empty (fresh process), so boot adoption still fully heals every limbo.

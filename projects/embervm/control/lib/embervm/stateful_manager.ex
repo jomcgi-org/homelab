@@ -1862,6 +1862,14 @@ defmodule Embervm.StatefulManager do
 
   defp adopt_one(state, instance, live_vms, bundles) do
     cond do
+      # A destroying instance (ADR embervm/014 decision 5) is mid node-confirmed
+      # teardown; adoption must NOT re-adopt it to live even though the node still
+      # reports its VM (the teardown RPC is in flight). Keying off the CP state, not
+      # the node report, is the fix for the TLC NoDestroyBeforeConfirm violation
+      # modeled in adoption.tla. redrive_destroying (gated) owns the transition.
+      instance.state == :destroying ->
+        state
+
       # A wake stuck waking past 2 * wakeTimeoutSeconds (Task 10): the worker never
       # reported and the {:wake_timeout} timer is lost (the in-process wedge a timer
       # somehow missed). Recover it: drop the stale waking bookkeeping + err the parked
