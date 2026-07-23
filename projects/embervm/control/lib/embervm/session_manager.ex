@@ -263,6 +263,9 @@ defmodule Embervm.SessionManager do
       # only bite under the node_confirmed_destroy gate.
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
+      # Ids already alarmed for being stuck in destroying, so the error logs once
+      # per stuck id rather than every reconcile tick (pruned as ids terminalize).
+      destroying_alarmed: MapSet.new(),
       # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2). When on, the
       # Direction-2 orphan reconcile ADOPTS-and-backfills a reported session VM whose
       # store row is absent BUT a durable write is still in flight for it (a young
@@ -1583,28 +1586,41 @@ defmodule Embervm.SessionManager do
   defp redrive_destroying(state, live_vms) do
     now = state.clock.()
 
-    SessionStore.all(state.session_store)
-    |> Enum.filter(&(&1.state == :destroying))
-    |> Enum.reduce(state, fn session, acc ->
-      maybe_alarm_destroying(acc, session, now)
+    destroying =
+      SessionStore.all(state.session_store)
+      |> Enum.filter(&(&1.state == :destroying))
+
+    # Prune the alarmed set to sessions still destroying: a terminalized id must not
+    # leak (unbounded growth) and a future re-destroy of the same id should re-alarm.
+    still = MapSet.new(destroying, & &1.session_id)
+    state = %{state | destroying_alarmed: MapSet.intersection(state.destroying_alarmed, still)}
+
+    Enum.reduce(destroying, state, fn session, acc ->
+      acc = maybe_alarm_destroying(acc, session, now)
       redrive_one_destroying(acc, session, live_vms)
     end)
   end
 
+  # Alarm ONCE per stuck session (dedup via destroying_alarmed): reconcile runs every
+  # few seconds, so logging every tick would flood SigNoz for a genuinely stuck
+  # destroy. Returns the updated state (the alarmed set is threaded through redrive).
   defp maybe_alarm_destroying(state, session, now) do
+    id = session.session_id
     elapsed = now - session.updated_at
 
-    if elapsed > state.destroying_alarm_ms do
+    if elapsed > state.destroying_alarm_ms and not MapSet.member?(state.destroying_alarmed, id) do
       Logger.error("embervm session stuck in destroying",
-        session_id: session.session_id,
+        session_id: id,
         workload: session.workload,
         vm_id: session.vm_id,
         elapsed_ms: elapsed,
         alarm_threshold_ms: state.destroying_alarm_ms
       )
-    end
 
-    :ok
+      %{state | destroying_alarmed: MapSet.put(state.destroying_alarmed, id)}
+    else
+      state
+    end
   end
 
   defp redrive_one_destroying(state, session, live_vms) do

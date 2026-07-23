@@ -58,8 +58,20 @@ defmodule Embervm.SessionManagerTest do
     async = Keyword.get(opts, :async_lifecycle_writes, false)
     {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
 
+    # Optional store clock: the manager clock is fixed at 5_000_000, so a test that
+    # exercises the stuck-in-destroying alarm passes store_clock: fn -> 0 end to make
+    # a row's updated_at precede now and the elapsed compare positive.
+    store_clock_opts =
+      case Keyword.get(opts, :store_clock) do
+        nil -> []
+        c -> [clock: c]
+      end
+
     {:ok, store} =
-      SessionStore.start_link(name: nil, op_log: op_log, async_writer: writer, async_lifecycle_writes: async)
+      SessionStore.start_link(
+        [name: nil, op_log: op_log, async_writer: writer, async_lifecycle_writes: async] ++
+          store_clock_opts
+      )
 
     registry = :"sreg_#{suffix}"
     {:ok, _registry_pid} = Registry.start_link(keys: :unique, name: registry)
@@ -569,6 +581,44 @@ defmodule Embervm.SessionManagerTest do
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :destroyed
+  end
+
+  test "gated: a session stuck in destroying alarms ONCE across reconciles, not every tick" do
+    # Unconfirming teardown so the session stays destroying across both reconciles.
+    # store_clock: fn -> 0 end sets updated_at before the manager's fixed 5_000_000
+    # clock, so elapsed exceeds the alarm threshold and the alarm is eligible each tick.
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        destroying_alarm_ms: 100,
+        store_clock: fn -> 0 end,
+        session_channel_fun: fn _node -> {:ok, :ch} end,
+        destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: false}} end
+      )
+
+    put_session_workload(ctx, "wl-alarm")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-alarm", "p1")
+
+    {:ok, _} =
+      SessionStore.transition(ctx.store, created.session_id, :begin_destroy, :session_destroying, %{reason: :destroyed}, %{})
+
+    report_session_vm(ctx, created.session_id, "wl-alarm")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        :ok = SessionManager.reconcile(ctx.mgr)
+        :ok = SessionManager.reconcile(ctx.mgr)
+      end)
+
+    # Teardown never confirmed, so it is still destroying and BOTH reconciles were
+    # alarm-eligible, but the dedup logs the stuck error exactly once.
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroying
+
+    hits = (log |> String.split("session stuck in destroying") |> length()) - 1
+    assert hits == 1, "expected exactly one stuck-in-destroying alarm, got #{hits}"
+
+    assert MapSet.member?(:sys.get_state(ctx.mgr).destroying_alarmed, created.session_id)
   end
 
   test "gated: reconcile destroys an orphan reported session VM with no CP row" do
