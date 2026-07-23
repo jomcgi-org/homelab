@@ -74,4 +74,10 @@ spec:
     # The control plane reads it into StartStateful.mmds_env on a FRESH/COLD wake
     # only, never on RELIGHT.
     secretRef: {{ include "embervm.fullname" . }}-scratch-postgres
+    # Node-local activator (ADR embervm/018 Phase 2): the brick relights this
+    # scaled-to-zero demo on the first connection so it survives a control-plane
+    # Recreate. meteringFailOpen names the wake-unmetered-during-gap policy for this
+    # blessed demo.
+    nodeLocalWake: {{ .Values.scratchPostgres.nodeLocalWake }}
+    meteringFailOpen: {{ .Values.scratchPostgres.meteringFailOpen }}
 {{- end }}

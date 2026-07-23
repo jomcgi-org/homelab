@@ -609,6 +609,13 @@ scratchPostgres:
   # mode is vetted on demo-postgres under real traffic; the atomic bank is
   # unchanged while false.
   interruptibleBank: false
+  # Node-local activator (ADR embervm/018 Phase 2): the brick relights this
+  # scaled-to-zero demo on the first connection during a control-plane gap, so a
+  # psql that arrives while the CP is rolling cold-boots on the brick instead of
+  # black-holing on the dead CP-pod activator. meteringFailOpen names the
+  # wake-unmetered-during-gap policy for this blessed demo.
+  nodeLocalWake: true
+  meteringFailOpen: true
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/postgres
     tag: latest
