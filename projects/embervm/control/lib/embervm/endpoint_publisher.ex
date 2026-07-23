@@ -701,6 +701,16 @@ defmodule Embervm.EndpointPublisher do
 
   defp activator_tcp_endpoint(_ctx, _workload, _listen_port), do: nil
 
+  # Arity-2 form for the COMPOSITE lane (group_endpoint): a composite has no single
+  # volume anchor, so it keeps the pre-018 CP-injected activator_ip fallback
+  # unchanged (node-local composite relight is Phase 3, out of scope here). The
+  # stateful lane uses the arity-3 form above with its anchor-node preference.
+  defp activator_tcp_endpoint(%{activator_ip: ip}, listen_port)
+       when is_binary(ip) and ip != "" and is_integer(listen_port),
+       do: %{ip: ip, port: listen_port}
+
+  defp activator_tcp_endpoint(_ctx, _listen_port), do: nil
+
   # The advertised activator_ip of the volume's anchor node, or nil when the
   # workload has no volume yet (never woken, so no anchor) or the anchor node
   # advertises no activator (pre-018 daemon => the CP address is used instead).
