@@ -38,6 +38,16 @@ defmodule Embervm.StatefulStateTest do
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
     {:cold_booting, :destroy} => :destroyed,
+    # Node-confirmed destroy (ADR embervm/014 decision 5): begin_destroy from every
+    # non-terminal state (checkpointed included), then destroying -> destroy.
+    {:starting, :begin_destroy} => :destroying,
+    {:serving, :begin_destroy} => :destroying,
+    {:banking, :begin_destroy} => :destroying,
+    {:checkpointed, :begin_destroy} => :destroying,
+    {:banked, :begin_destroy} => :destroying,
+    {:relighting, :begin_destroy} => :destroying,
+    {:cold_booting, :begin_destroy} => :destroying,
+    {:destroying, :destroy} => :destroyed,
     {:starting, :fail} => :failed,
     {:serving, :fail} => :failed,
     {:banking, :fail} => :failed,
@@ -55,6 +65,7 @@ defmodule Embervm.StatefulStateTest do
                :banked,
                :relighting,
                :cold_booting,
+               :destroying,
                :evicted,
                :destroyed,
                :failed
@@ -77,6 +88,7 @@ defmodule Embervm.StatefulStateTest do
                :cold_ready,
                :cold_abort,
                :evict,
+               :begin_destroy,
                :destroy,
                :fail
              ])
@@ -104,13 +116,23 @@ defmodule Embervm.StatefulStateTest do
   test "terminal states are terminal and non-terminal are not" do
     for state <- [:evicted, :destroyed, :failed], do: assert(StatefulState.terminal?(state))
 
-    for state <- [:starting, :serving, :banking, :checkpointed, :banked, :relighting, :cold_booting],
+    for state <- [
+          :starting,
+          :serving,
+          :banking,
+          :checkpointed,
+          :banked,
+          :relighting,
+          :cold_booting,
+          :destroying
+        ],
         do: refute(StatefulState.terminal?(state))
   end
 
   test "live? is true for the live states and false for banked + terminals" do
-    # checkpointed IS live (ADR embervm/008: the paused VM still holds the volume).
-    for state <- [:starting, :serving, :banking, :checkpointed, :relighting, :cold_booting],
+    # checkpointed IS live (ADR embervm/008: the paused VM still holds the volume);
+    # destroying IS live (ADR embervm/014: node-confirmed teardown RPC in flight).
+    for state <- [:starting, :serving, :banking, :checkpointed, :relighting, :cold_booting, :destroying],
         do: assert(StatefulState.live?(state))
 
     # banked holds a snapshot, not a VM: NOT live (the singleton gate must let a

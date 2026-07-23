@@ -27,6 +27,14 @@ defmodule Embervm.SessionStateTest do
     {:banking, :destroy} => :destroyed,
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
+    # Node-confirmed destroy (ADR embervm/014 decision 5): begin_destroy from every
+    # non-terminal state records the destroying intent, then destroying -> destroy.
+    {:creating, :begin_destroy} => :destroying,
+    {:running, :begin_destroy} => :destroying,
+    {:banking, :begin_destroy} => :destroying,
+    {:banked, :begin_destroy} => :destroying,
+    {:relighting, :begin_destroy} => :destroying,
+    {:destroying, :destroy} => :destroyed,
     {:creating, :fail} => :failed,
     {:running, :fail} => :failed,
     {:banking, :fail} => :failed,
@@ -34,9 +42,9 @@ defmodule Embervm.SessionStateTest do
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 19
-    assert length(SessionState.events()) == 11
-    assert length(SessionState.states()) == 9
+    assert map_size(@legal) == 25
+    assert length(SessionState.events()) == 12
+    assert length(SessionState.states()) == 10
 
     for state <- SessionState.states(), event <- SessionState.events() do
       case Map.fetch(@legal, {state, event}) do

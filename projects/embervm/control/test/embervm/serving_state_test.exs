@@ -32,6 +32,15 @@ defmodule Embervm.ServingStateTest do
     {:banking, :destroy} => :destroyed,
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
+    # Node-confirmed destroy (ADR embervm/014 decision 5): begin_destroy from every
+    # non-terminal state, then destroying -> destroy.
+    {:starting, :begin_destroy} => :destroying,
+    {:published, :begin_destroy} => :destroying,
+    {:draining, :begin_destroy} => :destroying,
+    {:banking, :begin_destroy} => :destroying,
+    {:banked, :begin_destroy} => :destroying,
+    {:relighting, :begin_destroy} => :destroying,
+    {:destroying, :destroy} => :destroyed,
     {:starting, :fail} => :failed,
     {:published, :fail} => :failed,
     {:draining, :fail} => :failed,
@@ -48,6 +57,7 @@ defmodule Embervm.ServingStateTest do
                :banking,
                :banked,
                :relighting,
+               :destroying,
                :evicted,
                :destroyed,
                :failed
@@ -64,6 +74,7 @@ defmodule Embervm.ServingStateTest do
                :relight_ready,
                :relight_abort,
                :evict,
+               :begin_destroy,
                :destroy,
                :fail
              ])
@@ -91,7 +102,7 @@ defmodule Embervm.ServingStateTest do
   test "terminal states are terminal and non-terminal are not" do
     for state <- [:evicted, :destroyed, :failed], do: assert(ServingState.terminal?(state))
 
-    for state <- [:starting, :published, :draining, :banking, :banked, :relighting],
+    for state <- [:starting, :published, :draining, :banking, :banked, :relighting, :destroying],
         do: refute(ServingState.terminal?(state))
   end
 
