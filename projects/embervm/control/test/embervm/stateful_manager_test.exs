@@ -951,6 +951,55 @@ defmodule Embervm.StatefulManagerTest do
     assert still.state == :starting
   end
 
+  test "ADR embervm/018 Phase 2: adopts an origin-ACTIVATOR stateful VM by relighting the banked instance, no orphan-destroy" do
+    parent = self()
+
+    # node_confirmed_destroy on so the orphan-destroy pass is live: an ordinary
+    # rowless node VM would be destroyed, but a node-woken (ACTIVATOR) VM is adopted.
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        stop_stateful_fun: fn _ch, _req ->
+          send(parent, :stop_stateful_called)
+          {:ok, %Embervm.Node.V1.StopStatefulResponse{teardown_confirmed: true}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+
+    # A banked CP instance at generation 5 (the workload was banked before the gap).
+    seed_banked_with_pair(ctx, "stf-banked", "node-4", 5, 5)
+
+    # The brick relit it during the CP gap: origin ACTIVATOR, a NEW vm_id the CP
+    # never issued, and a forward generation 6 (the node's self-bump).
+    stateful_node(ctx, "node-4",
+      stateful_vms: [
+        %{
+          vm_id: "vm-brick",
+          workload: "wl-a",
+          ip: "10.88.0.9",
+          port: 5432,
+          healthy: true,
+          generation: 6,
+          origin: :INSTANCE_ORIGIN_ACTIVATOR
+        }
+      ]
+    )
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    # No orphan-destroy fired for the node-woken VM (it was adopted, not destroyed).
+    refute_received :stop_stateful_called
+
+    # The banked instance was relit onto the node's vm_id (reused instance_id) and
+    # published, and now serves the node-reported endpoint at the forward generation.
+    {:ok, inst} = StatefulStore.get(ctx.store, "stf-banked")
+    assert inst.state == :serving
+    assert inst.vm_id == "vm-brick"
+    assert inst.generation == 6
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.9", port: 5432}
+  end
+
   test "adoption refreshes volume facts and eager-evicts a pair broken while the control plane was down" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a")

@@ -1840,6 +1840,15 @@ defmodule Embervm.StatefulManager do
     live_vms = index_stateful_vms(facts)
     bundles = index_stateful_bundles(facts)
 
+    # ADR embervm/018 Phase 2: adopt node-woken (origin ACTIVATOR) stateful VMs
+    # BEFORE the adopt_one reduce. The brick relit a scaled-to-zero workload during
+    # a CP gap and minted a vm_id the CP never issued; this relights the workload's
+    # banked CP instance onto that vm_id (or mints a fresh lifecycle if none), so
+    # the reduce below then heals it through the normal live-VM path. The forward
+    # generation it carries is trusted by refresh_volume_facts's fenced-writer rule
+    # (ADR embervm/014), so no delegated grant is needed.
+    state = adopt_activator_stateful_vms(state, live_vms)
+
     state =
       StatefulStore.all(state.store)
       |> Enum.reject(&StatefulState.terminal?(&1.state))
@@ -1946,8 +1955,17 @@ defmodule Embervm.StatefulManager do
   defp destroy_orphan_stateful_vms(state, facts, _live_vms) do
     for fact <- facts, vm <- Map.get(fact, :stateful_vms, []) || [], reduce: state do
       acc ->
-        case Enum.find(StatefulStore.all(acc.store), &(&1.vm_id == vm.vm_id)) do
-          nil ->
+        cond do
+          # ADR embervm/018 Phase 2: an origin-ACTIVATOR stateful VM is a node-woken
+          # (brick-relit) instance adopt_activator_stateful_vms adopts on the SAME
+          # pass (which runs first). Skip it here so a live node-woken VM is never
+          # orphan-destroyed while adoption is landing (belt-and-suspenders for the
+          # window where a durable adoption write failed but the VM is live). Its
+          # forward generation is trusted by the fenced-writer rule, not the grant.
+          activator_origin?(vm) ->
+            acc
+
+          Enum.find(StatefulStore.all(acc.store), &(&1.vm_id == vm.vm_id)) == nil ->
             confirmed =
               stop_stateful_destroy(acc, %{
                 node_id: fact.configured_id,
@@ -1962,9 +1980,109 @@ defmodule Embervm.StatefulManager do
 
             acc
 
-          _instance ->
+          true ->
             acc
         end
+    end
+  end
+
+  # True when a node-reported stateful VM was minted by the brick's L4 activator
+  # (ADR embervm/018 Phase 2). A pre-018 daemon reports no origin (nil /
+  # UNSPECIFIED), the CP-issued default, which is NOT an activator VM.
+  defp activator_origin?(vm), do: Map.get(vm, :origin) == :INSTANCE_ORIGIN_ACTIVATOR
+
+  # ADR embervm/018 Phase 2: adopt every node-reported origin-ACTIVATOR stateful VM
+  # that no CP row claims (by vm_id). The brick relit a scaled-to-zero workload
+  # during a CP gap and minted a vm_id the CP never issued. Singleton, so the adopt
+  # is keyed by workload: relight the workload's BANKED CP instance onto the node's
+  # vm_id (reusing its instance_id, mirroring a CP-driven wake's finish_relit), or
+  # mint a fresh cold-booted lifecycle if the CP has no banked instance. Fires once:
+  # after the relight the instance carries the node vm_id, so the next pass matches
+  # it in adopt_one and heals it through the normal live path.
+  defp adopt_activator_stateful_vms(state, live_vms) do
+    Enum.reduce(live_vms, state, fn {vm_id, {node_id, vm}}, acc ->
+      if activator_origin?(vm) and stateful_vm_unclaimed?(acc, vm_id) do
+        adopt_activator_stateful_vm(acc, node_id, vm)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp stateful_vm_unclaimed?(state, vm_id) do
+    Enum.all?(StatefulStore.all(state.store), &(&1.vm_id != vm_id))
+  end
+
+  defp adopt_activator_stateful_vm(state, node_id, vm) do
+    workload = vm.workload
+
+    endpoint = %{
+      vm_id: vm.vm_id,
+      ip: Map.get(vm, :ip),
+      port: Map.get(vm, :port),
+      generation: Map.get(vm, :generation, 0)
+    }
+
+    case banked_instance_for(state, workload) do
+      {:ok, %{instance_id: instance_id}} ->
+        # Relight the banked instance onto the node's vm_id (reuse instance_id). mark
+        # :relight moves it banked -> relighting (ETS-only), then finish_relit lands
+        # the durable stateful_relit + stateful_published (waiters [] => no callers).
+        _ = StatefulStore.mark(state.store, instance_id, :relight)
+
+        Logger.info("embervm stateful adopted (activator-woken, relit)",
+          instance_id: instance_id,
+          workload: workload,
+          node_id: node_id
+        )
+
+        finish_relit(state, workload, instance_id, node_id, endpoint, [])
+
+      :none ->
+        # No banked CP instance: record a fresh cold-booted lifecycle for the node VM.
+        instance_id = mint_id(state)
+
+        attrs = %{
+          instance_id: instance_id,
+          tenant: state.tenant,
+          principal: wake_principal(workload),
+          workload: workload,
+          node_id: node_id,
+          vm_id: vm.vm_id,
+          generation: Map.get(vm, :generation, 0),
+          reason: "activator_adopted"
+        }
+
+        case StatefulStore.cold_boot(state.store, attrs) do
+          {:ok, _instance} ->
+            Logger.info("embervm stateful adopted (activator-woken, cold)",
+              instance_id: instance_id,
+              workload: workload,
+              node_id: node_id
+            )
+
+            publish_and_resolve(state, instance_id, workload, endpoint, :cold_booted, [])
+
+          {:error, reason} ->
+            Logger.warning("embervm stateful activator adoption cold_boot failed",
+              workload: workload,
+              reason: inspect(reason)
+            )
+
+            state
+        end
+    end
+  end
+
+  # The workload's current BANKED CP instance (the one a node-local relight
+  # resumed), or :none. Singleton, so at most one non-terminal instance exists;
+  # this returns it only when :banked (a live one would already match by vm_id).
+  defp banked_instance_for(state, workload) do
+    StatefulStore.all(state.store)
+    |> Enum.find(&(&1.workload == workload and &1.state == :banked))
+    |> case do
+      nil -> :none
+      instance -> {:ok, instance}
     end
   end
 

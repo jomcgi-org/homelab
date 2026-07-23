@@ -639,6 +639,10 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.stateful.banked_ttl_seconds == 2_592_000
     assert entry.stateful.wake_timeout_seconds == 60
     assert entry.stateful.secret_ref == "scratch-postgres-creds"
+    # ADR embervm/018 Phase 2: nodeLocalWake/meteringFailOpen default false when the
+    # CR omits them, so an unmodified stateful workload keeps CP-only wake.
+    assert entry.stateful.node_local_wake == false
+    assert entry.stateful.metering_fail_open == false
 
     assert {_ns, "scratch-postgres", status_map} = ready_status(recorded_calls(agent), "scratch-postgres")
     assert status_map["observedGeneration"] == 1

@@ -449,6 +449,30 @@ defmodule Embervm.EndpointPublisherTest do
     assert cluster.endpoints == [%{ip: "10.2.2.2", port: 9100}]
   end
 
+  test "ADR embervm/018 Phase 2: a cold stateful workload's L4 fallback prefers the anchor node's advertised activator" do
+    # CP activator_ip is 10.2.2.2; the volume's anchor node advertises its own
+    # 10.88.0.7. Only the brick holding the volume can relight it, so the render must
+    # prefer the anchor's activator over the CP address, at the workload's listen_port.
+    ctx = start_stack(activator_ip: "10.2.2.2")
+    stateful_workload(ctx, "wl-s", 9100)
+
+    StatefulStore.upsert_volume(ctx.stateful_store, "wl-s", %{node_id: "node-4", generation: 3})
+
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      configured_id: "node-4",
+      node_id: "node-4",
+      serving_subnet_cidr: "10.88.0.0/24",
+      stateful_vms: [],
+      activator_ip: "10.88.0.7"
+    })
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    assert [{"node-4", desired}] = last_puts(ctx)
+    cluster = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
+    assert cluster.endpoints == [%{ip: "10.88.0.7", port: 9100}]
+  end
+
   test "a second stateful workload falls back to the SAME activator_ip but its OWN listen_port" do
     ctx = start_stack(activator_ip: "10.2.2.2")
     stateful_workload(ctx, "wl-s", 9100)
