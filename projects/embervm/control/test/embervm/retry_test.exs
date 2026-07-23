@@ -4,7 +4,10 @@ defmodule Embervm.RetryTest do
   functions, no op-log or ETS involved, so these run fast and deterministic
   (the RNG is always seeded explicitly here).
   """
-  use ExUnit.Case, async: true
+  # async: false: this module mutates the process-global EMBERVM_PLACEMENT_RETRY
+  # env (enabled?/0 test), which would race concurrent async modules asserting the
+  # gate-off single-attempt path.
+  use ExUnit.Case, async: false
 
   alias Embervm.Retry
 
