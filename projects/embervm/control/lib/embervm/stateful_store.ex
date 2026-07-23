@@ -1587,11 +1587,34 @@ defmodule Embervm.StatefulStore do
       forward_unblessed? and checkpoint_abort_signature?(state, workload, reported_gen) ->
         auto_heal_checkpoint_abort(state, workload, reported_gen, blessed_gen)
 
-      # Fenced-writer adoption (ADR embervm/014): the reporting node IS the fenced
-      # anchor, so the fenced writer simply ran ahead of the blessed watermark (the
-      # recurring demo-postgres quarantine after a CP roll). Adopt it: advance the
-      # watermark to the reported generation and clear quarantine (ETS-only, re-derived
-      # from node reports; the next real wake blesses past it durably).
+      # Fail-closed under a live checkpoint context (ADR embervm/017): an unresolved
+      # checkpoint-dispatch record exists but the forward jump did NOT match its
+      # signature (wrong vm_id, or a jump past +1). A pending checkpoint that didn't
+      # resume cleanly is exactly the second-writer hazard quarantine guards against,
+      # so this stays quarantined even from the anchor node. This is checked BEFORE
+      # fenced-writer adoption: with checkpoint context that doesn't add up, RWO
+      # anchor identity is not enough to prove the generation is safe.
+      forward_unblessed? and has_checkpoint_dispatch?(state, workload) ->
+        if not Map.get(fact, :quarantined, false) do
+          Logger.warning(
+            "embervm stateful volume quarantined: unblessed generation with a non-matching checkpoint dispatch",
+            event: :generation_quarantined,
+            workload: workload,
+            generation: reported_gen,
+            blessed_generation: blessed_gen,
+            node_id: reporting_node,
+            anchor_node: anchor_node
+          )
+        end
+
+        :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, true)})
+        state
+
+      # Fenced-writer adoption (ADR embervm/014): no checkpoint context, and the
+      # reporting node IS the fenced anchor, so the fenced writer simply ran ahead of
+      # the blessed watermark (the recurring demo-postgres quarantine after a CP roll).
+      # Adopt it: advance the watermark to the reported generation and clear quarantine
+      # (ETS-only, re-derived from node reports; the next real wake blesses past it durably).
       forward_unblessed? and fenced_writer? ->
         Logger.info(
           "embervm stateful volume generation adopted: fenced writer ran ahead of the blessed watermark",
@@ -1638,6 +1661,15 @@ defmodule Embervm.StatefulStore do
   # real discriminator: noded's auto-abort resumes the SAME vm_id, so a fresh second
   # writer (a different vm_id, or the recorded VM already gone) fails it and stays
   # quarantined even if it happens to land at reported_gen.
+  # Whether an unresolved checkpoint-dispatch record exists for the workload at all,
+  # regardless of whether it matches the current report. Its presence means the
+  # control plane is mid-checkpoint for this volume, so an unblessed forward jump that
+  # is NOT the clean resume (checkpoint_abort_signature?) is treated as the second-writer
+  # hazard and fails closed rather than being adopted as a plain fenced-writer advance.
+  defp has_checkpoint_dispatch?(state, workload) do
+    fetch_checkpoint_dispatch(state, workload) != nil
+  end
+
   defp checkpoint_abort_signature?(state, workload, reported_gen) do
     case fetch_checkpoint_dispatch(state, workload) do
       %{vm_id: vm_id, generation: gen} ->

@@ -698,13 +698,20 @@ defmodule Embervm.StatefulStoreTest do
     assert StatefulStore.quarantined?(store, "wl-a")
   end
 
-  test "auto-heal does NOT fire without a dispatch record (stays quarantined)", %{path: path} do
-    {_op_log, store} = start_pair(path)
+  test "without a dispatch record the checkpoint-abort auto-heal does not fire; the fenced writer is adopted (ADR embervm/014), not healed", %{path: path} do
+    {op_log, store} = start_pair(path)
     {:ok, _} = start_instance(store, workload: "wl-a", vm_id: "vm-1")
     {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
 
+    # No checkpoint dispatch was recorded, so this is not a checkpoint-abort resume and
+    # the ADR-017 auto-heal path must not run. The reporting node IS the volume anchor,
+    # so this falls to ADR-014 fenced-writer adoption: the watermark advances and
+    # quarantine is cleared (ETS-only), and no checkpoint_resolved op is written.
     StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: false})
-    assert StatefulStore.quarantined?(store, "wl-a")
+    refute StatefulStore.quarantined?(store, "wl-a")
+
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    refute :checkpoint_resolved in Enum.map(ops, & &1.kind)
   end
 
   test "auto-heal survives a control-plane restart: a rebuilt store heals its own dispatched checkpoint", %{path: path} do
