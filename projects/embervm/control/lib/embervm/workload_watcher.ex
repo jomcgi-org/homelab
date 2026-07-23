@@ -1094,10 +1094,15 @@ defmodule Embervm.WorkloadWatcher do
       secret_ref: Map.get(s, "secretRef"),
       # ADR embervm/018 Fork A Phase 2: node_local_wake gates the brick's L4
       # activator per stateful workload (pushed to noded in the RegistryEntry and
-      # drives CP-side ACTIVATOR adoption). metering_fail_open is the companion
-      # named policy. Both default false: a stateful workload that sets neither keeps
-      # CP-only wake via the CP tcp_activator.
+      # drives CP-side ACTIVATOR adoption). Both default false: a stateful workload
+      # that sets neither keeps CP-only wake via the CP tcp_activator.
       node_local_wake: Map.get(s, "nodeLocalWake") == true,
+      # metering_fail_open is DECLARATIVE in Fork A: it NAMES the policy but no code
+      # reads it to suppress metering. During a CP gap the wake is unmetered by
+      # construction (the CP, which meters, is gone) and adoption backfills the
+      # lifecycle ops so accounting reconciles best-effort. It becomes an actual
+      # enforcement point in Fork B, when metering moves fully reconcile-time. Parsed
+      # now so the flag is on the CR from the start (named, not implied).
       metering_fail_open: Map.get(s, "meteringFailOpen") == true
     }
   end
