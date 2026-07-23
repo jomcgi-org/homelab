@@ -1071,28 +1071,40 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 // ---- Destroy ---------------------------------------------------------------
 
 // Destroy reaps a primed or wedged VM out of band. Idempotent: an unknown or
-// already-destroyed vm_id returns OK (the desired end-state already holds).
+// already-destroyed vm_id returns confirmed (the desired end-state already
+// holds). teardown_confirmed is true only when the reap fully completed
+// (process gone, bundle removed, tap released for tap-bearing classes); a reap
+// failure returns an error, not a false confirm, so the control plane keeps the
+// instance in destroying rather than recording a destroyed transition that did
+// not happen (ADR embervm/014 decision 5).
 func (s *Server) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
 	if e := s.vms.remove(req.GetVmId()); e != nil {
-		s.reap(e.handle, e.egressCancel)
+		if err := s.reap(e.handle, e.egressCancel); err != nil {
+			return nil, status.Errorf(codes.Internal, "noded: reap vm %q: %v", req.GetVmId(), err)
+		}
 		s.signalChange()
-		return &nodev1.DestroyResponse{}, nil
+		return &nodev1.DestroyResponse{TeardownConfirmed: true}, nil
 	}
 	// A session VM destroyed out of band (e.g. the control plane tearing down a
 	// suspect or terminal session) lives in the distinct session registry.
 	if e := s.sessionVMs.remove(req.GetVmId()); e != nil {
-		s.reap(e.handle, func() {})
+		if err := s.reap(e.handle, func() {}); err != nil {
+			return nil, status.Errorf(codes.Internal, "noded: reap session vm %q: %v", req.GetVmId(), err)
+		}
 		s.signalChange()
-		return &nodev1.DestroyResponse{}, nil
+		return &nodev1.DestroyResponse{TeardownConfirmed: true}, nil
 	}
 	// A serving VM destroyed out of band lives in the distinct serving registry; its
 	// probe loop is stopped and its tap released alongside the reap.
 	if e := s.servingVMs.remove(req.GetVmId()); e != nil {
 		e.probe.Stop()
-		s.reapServing(e.handle, e.ip)
+		if err := s.reapServing(e.handle, e.ip); err != nil {
+			return nil, status.Errorf(codes.Internal, "noded: reap serving vm %q: %v", req.GetVmId(), err)
+		}
 		s.signalChange()
 	}
-	return &nodev1.DestroyResponse{}, nil
+	// Unknown vm_id: nothing held, so the destroyed end-state already holds.
+	return &nodev1.DestroyResponse{TeardownConfirmed: true}, nil
 }
 
 // liveVMCount is the node-wide count of live microVMs for the backstop cap:
@@ -2222,16 +2234,26 @@ func (s *Server) signalChange() {
 // remove the entry from the registry FIRST, and map removal under the registry
 // lock hands the non-nil entry to exactly one caller, so reap runs once per VM.
 // Best-effort: failures are logged, never returned.
-func (s *Server) reap(h substrate.Handle, egressCancel func()) {
+// reap releases the microVM process and removes its on-disk bundle. It is
+// best-effort at the fire-and-forget call sites (bank cleanup, Assign's
+// single-use teardown), which ignore the return; the destroy-class handlers
+// inspect it so they only confirm teardown (ADR embervm/014 decision 5) when
+// both steps actually succeeded. The two failures are still logged here so a
+// swallowed error at a best-effort site is never silent.
+func (s *Server) reap(h substrate.Handle, egressCancel func()) error {
 	if egressCancel != nil {
 		egressCancel()
 	}
+	var errs []error
 	if err := s.driver.Release(context.Background(), h); err != nil {
 		s.logger.Warn("noded: release vm", "vm", h.ID, "thread", h.ThreadID, "err", err)
+		errs = append(errs, fmt.Errorf("release vm: %w", err))
 	}
 	if err := s.driver.RemoveBundle(h.ThreadID); err != nil {
 		s.logger.Warn("noded: remove bundle", "vm", h.ID, "thread", h.ThreadID, "err", err)
+		errs = append(errs, fmt.Errorf("remove bundle: %w", err))
 	}
+	return errors.Join(errs...)
 }
 
 // snapshotDiskUsage reports the sessions snapshot dir filesystem's free and used

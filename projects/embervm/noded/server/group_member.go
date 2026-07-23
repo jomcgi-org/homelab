@@ -334,7 +334,9 @@ func (s *Server) stopGroupMemberBank(ctx context.Context, req *nodev1.StopGroupM
 }
 
 // stopGroupMemberDestroy tears a member VM down with no snapshot, removes its tap,
-// and releases its pinned IP. Idempotent: an unknown vm_id returns OK.
+// and releases its pinned IP. Idempotent: an unknown vm_id returns confirmed.
+// teardown_confirmed is true only when the reap fully completed; a reap failure
+// returns an error, not a false confirm (ADR embervm/014 decision 5).
 func (s *Server) stopGroupMemberDestroy(ctx context.Context, vmID string) (*nodev1.StopGroupMemberResponse, error) {
 	// Serialize against a concurrent stop the same way BANK does, so a DESTROY racing
 	// a BANK (or another DESTROY) on one vm_id cannot double-reap.
@@ -342,7 +344,7 @@ func (s *Server) stopGroupMemberDestroy(ctx context.Context, vmID string) (*node
 	if !ok {
 		// Unknown id is an idempotent no-op; a stop already in flight is refused.
 		if s.groupMembers.get(vmID) == nil {
-			return &nodev1.StopGroupMemberResponse{}, nil
+			return &nodev1.StopGroupMemberResponse{TeardownConfirmed: true}, nil
 		}
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member %q stop already in flight", vmID)
 	}
@@ -350,19 +352,22 @@ func (s *Server) stopGroupMemberDestroy(ctx context.Context, vmID string) (*node
 	// reap it (the entry is the authoritative handle/tap/ip to tear down).
 	s.groupMembers.remove(vmID)
 	e.probe.Stop()
-	s.reapGroupMember(e.handle, e.groupInstanceID, e.tap, e.ip)
+	if err := s.reapGroupMember(e.handle, e.groupInstanceID, e.tap, e.ip); err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: reap group member %q: %v", vmID, err)
+	}
 	s.signalChange()
-	return &nodev1.StopGroupMemberResponse{}, nil
+	return &nodev1.StopGroupMemberResponse{TeardownConfirmed: true}, nil
 }
 
 // reapGroupMember tears a member VM down (release the FC process + bundle) and
 // removes its tap + pinned IP from the group bridge. Best-effort, mirroring
 // reapStateful minus the volume detach (a member has no writable volume).
-func (s *Server) reapGroupMember(h substrate.Handle, groupInstanceID, tap string, ip net.IP) {
-	s.reap(h, func() {})
+func (s *Server) reapGroupMember(h substrate.Handle, groupInstanceID, tap string, ip net.IP) error {
+	err := s.reap(h, func() {})
 	if s.groupNet != nil {
 		s.groupNet.RemoveMemberTap(context.Background(), groupInstanceID, tap, ip)
 	}
+	return err
 }
 
 // pinGroupMemberTap pins a member's NIC world on the group bridge (derive + verify
