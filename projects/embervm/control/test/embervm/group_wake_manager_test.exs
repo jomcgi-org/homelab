@@ -133,6 +133,7 @@ defmodule Embervm.GroupWakeManagerTest do
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
     {:ok, store} = GroupStore.start_link(name: nil, op_log: op_log, clock: clock)
     {:ok, pub} = FakePublisher.start_link()
+    {:ok, stop_calls} = Agent.start_link(fn -> [] end)
 
     cap_table = :"gwm_cap_#{suffix}"
     cat_table = :"gwm_cat_#{suffix}"
@@ -170,6 +171,12 @@ defmodule Embervm.GroupWakeManagerTest do
     # fixed id (:fake_supervisor) but registered under the module name the fake resolves.
     _ = start_supervised!(%{id: :fake_supervisor, start: {Agent, :start_link, [fn -> sup_state end, [name: FakeSupervisor]]}})
 
+    stop_group_member_fun =
+      Keyword.get(opts, :stop_group_member_fun, fn _channel, req ->
+        Agent.update(stop_calls, &[req | &1])
+        {:ok, %Embervm.Node.V1.StopGroupMemberResponse{teardown_confirmed: true}}
+      end)
+
     mgr_opts =
       [
         name: nil,
@@ -187,21 +194,40 @@ defmodule Embervm.GroupWakeManagerTest do
         pod_ip: "10.0.0.9",
         clock: clock,
         channel_fun: fn _node -> {:ok, :ch} end,
+        stop_group_member_fun: stop_group_member_fun,
         op_log: op_log,
         # Default the teardown seam to the no-op fake: without it an expired-wake
         # teardown would dial the real (absent) GroupSweeper and log a crash.
         sweeper_mod: FakeSweeper,
         reconcile_interval_ms: 0
-      ] ++ Keyword.take(opts, [:wake_bound_ms, :mono_clock, :restore_artifact_fun])
+      ] ++
+        Keyword.take(opts, [
+          :wake_bound_ms,
+          :mono_clock,
+          :restore_artifact_fun,
+          :node_confirmed_destroy,
+          :destroying_alarm_ms,
+          :orphan_grace_ms
+        ])
 
     {:ok, mgr} = GroupWakeManager.start_link(mgr_opts)
 
-    %{mgr: mgr, store: store, pub: pub, cap_table: cap_table, cat_table: cat_table, op_log: op_log}
+    %{
+      mgr: mgr,
+      store: store,
+      pub: pub,
+      cap_table: cap_table,
+      cat_table: cat_table,
+      op_log: op_log,
+      stop_calls: stop_calls
+    }
   end
 
   defp sup_counts do
     Agent.get(FakeSupervisor, fn s -> {s.creates, s.wakes, s.adopts} end)
   end
+
+  defp stop_calls(ctx), do: Agent.get(ctx.stop_calls, &Enum.reverse(&1))
 
   # Seed a node fact carrying the given group inventory (live members / bundle sets),
   # so the adoption reconcile has node truth to reconcile against.
@@ -460,6 +486,91 @@ defmodule Embervm.GroupWakeManagerTest do
     # NOT re-adopted to :running; stays destroying for the (gated) redrive to own.
     {:ok, inst} = GroupStore.get(ctx.store, instance_id)
     assert inst.state == :destroying
+  end
+
+  test "gated reconcile re-drives a destroying group and records it destroyed" do
+    ctx = start_stack(node_confirmed_destroy: true)
+    instance_id = "g-redrive"
+
+    _ = seed_banked(ctx, instance_id)
+    {:ok, _} = GroupStore.mark(ctx.store, instance_id, :begin_destroy)
+
+    seed_node(ctx, %{
+      group_member_vms: [
+        %{
+          vm_id: "vm-l",
+          group_instance_id: instance_id,
+          member_name: "leader",
+          ip: "10.101.0.10",
+          healthy: true
+        }
+      ]
+    })
+
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    assert {:ok, %{state: :destroyed}} = GroupStore.get(ctx.store, instance_id)
+
+    assert [
+             %{
+               vm_id: "vm-l",
+               member_name: "leader",
+               mode: :STOP_GROUP_MEMBER_MODE_DESTROY
+             }
+           ] = stop_calls(ctx)
+  end
+
+  test "gated reconcile confirms a destroying group by owner-reported absence" do
+    ctx = start_stack(node_confirmed_destroy: true)
+    instance_id = "g-absent"
+
+    _ = seed_banked(ctx, instance_id)
+    {:ok, _} = GroupStore.mark(ctx.store, instance_id, :begin_destroy)
+    seed_node(ctx, %{})
+
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    assert {:ok, %{state: :destroyed}} = GroupStore.get(ctx.store, instance_id)
+    assert stop_calls(ctx) == []
+  end
+
+  test "gated reconcile leaves a destroying group when its owner is not reporting" do
+    ctx = start_stack(node_confirmed_destroy: true)
+    instance_id = "g-disconnected"
+
+    _ = seed_banked(ctx, instance_id)
+    {:ok, _} = GroupStore.mark(ctx.store, instance_id, :begin_destroy)
+
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    assert {:ok, %{state: :destroying}} = GroupStore.get(ctx.store, instance_id)
+    assert stop_calls(ctx) == []
+  end
+
+  test "gated reconcile destroys a node-reported group member with no CP row" do
+    ctx = start_stack(node_confirmed_destroy: true)
+
+    seed_node(ctx, %{
+      group_member_vms: [
+        %{
+          vm_id: "vm-orphan",
+          group_instance_id: "g-missing",
+          member_name: "worker-0",
+          ip: "10.101.0.11",
+          healthy: true
+        }
+      ]
+    })
+
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    assert [
+             %{
+               vm_id: "vm-orphan",
+               member_name: "worker-0",
+               mode: :STOP_GROUP_MEMBER_MODE_DESTROY
+             }
+           ] = stop_calls(ctx)
   end
 
   test "adoption: a banked instance with a COMPLETE reported set heals to banked" do

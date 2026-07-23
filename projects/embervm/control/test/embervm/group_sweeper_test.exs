@@ -65,6 +65,7 @@ defmodule Embervm.GroupSweeperTest do
     {:ok, stop_calls} = Agent.start_link(fn -> [] end)
     {:ok, delete_net_calls} = Agent.start_link(fn -> [] end)
     {:ok, evict_calls} = Agent.start_link(fn -> [] end)
+    destroy_confirmed = Keyword.get(opts, :destroy_confirmed, true)
 
     # The bank drive seam: records each (workload, instance_id) and, on :ok, actually
     # banks the instance in the store (mirroring what GroupManager.bank_group does) so
@@ -93,7 +94,15 @@ defmodule Embervm.GroupSweeperTest do
 
     stop_group_member_fun = fn _ch, req ->
       Agent.update(stop_calls, &[req | &1])
-      {:ok, %Embervm.Node.V1.StopGroupMemberResponse{}}
+
+      confirmed =
+        if is_function(destroy_confirmed, 1) do
+          destroy_confirmed.(req)
+        else
+          destroy_confirmed
+        end
+
+      {:ok, %Embervm.Node.V1.StopGroupMemberResponse{teardown_confirmed: confirmed}}
     end
 
     delete_group_network_fun = fn _ch, req ->
@@ -134,6 +143,9 @@ defmodule Embervm.GroupSweeperTest do
       evict_snapshot_fun: evict_snapshot_fun,
       status_writer: status_writer,
       lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, 3_600_000),
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
+      orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       sweep_interval_ms: 0
     ]
 
@@ -486,6 +498,60 @@ defmodule Embervm.GroupSweeperTest do
     # The DEFINITION is kept: the catalog entry survives, so the next connection
     # fresh-boots.
     assert {:ok, %{class: "composite"}} = WorkloadCatalog.fetch(ctx.cat_table, "grp-a")
+  end
+
+  test "gated destroy records group_destroyed only after every member confirms" do
+    ctx = start_stack(node_confirmed_destroy: true)
+    group_workload(ctx, "grp-a", 5410)
+    group_node(ctx, "node-4")
+    running_group(ctx, "gi-1", "grp-a")
+
+    assert %{destroyed: 1, evicted: 0} = GroupSweeper.force_roll(ctx.sweeper, "grp-a")
+
+    assert {:ok, %{state: :destroyed, terminal_reason: "forced_roll"}} =
+             GroupStore.get(ctx.store, "gi-1")
+
+    assert length(stop_calls(ctx)) == 2
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    kinds = Enum.map(ops, & &1.kind)
+
+    assert Enum.find_index(kinds, &(&1 == :group_destroying)) <
+             Enum.find_index(kinds, &(&1 == :group_destroyed))
+  end
+
+  test "gated destroy leaves the group destroying when one member is unconfirmed" do
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        destroy_confirmed: fn req -> req.member_name == "a" end
+      )
+
+    group_workload(ctx, "grp-a", 5410)
+    group_node(ctx, "node-4")
+    running_group(ctx, "gi-1", "grp-a")
+
+    assert %{destroyed: 1, evicted: 0} = GroupSweeper.force_roll(ctx.sweeper, "grp-a")
+    assert {:ok, %{state: :destroying}} = GroupStore.get(ctx.store, "gi-1")
+    assert length(stop_calls(ctx)) == 2
+    assert [%{group_instance_id: "gi-1"}] = delete_net_calls(ctx)
+    assert load_ops(ctx, "group_destroying") != []
+    assert load_ops(ctx, "group_destroyed") == []
+  end
+
+  test "gate-off destroy keeps the legacy terminal result when teardown is unconfirmed" do
+    ctx = start_stack(destroy_confirmed: false)
+    group_workload(ctx, "grp-a", 5410)
+    group_node(ctx, "node-4")
+    running_group(ctx, "gi-1", "grp-a")
+
+    assert %{destroyed: 1, evicted: 0} = GroupSweeper.force_roll(ctx.sweeper, "grp-a")
+
+    assert {:ok, %{state: :destroyed, terminal_reason: "forced_roll"}} =
+             GroupStore.get(ctx.store, "gi-1")
+
+    assert length(stop_calls(ctx)) == 2
+    assert load_ops(ctx, "group_destroying") == []
   end
 
   test "forced roll evicts a banked set (keeps the definition, next connect fresh-boots)" do

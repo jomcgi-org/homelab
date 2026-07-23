@@ -89,7 +89,7 @@ defmodule Embervm.GroupWakeManager do
 
   alias Embervm.{EndpointPublisher, GroupManager, GroupState, GroupStore, NodeCapacity, WorkloadCatalog}
 
-  alias Embervm.Node.V1.{ArtifactRef, RestoreArtifactRequest, Trace}
+  alias Embervm.Node.V1.{ArtifactRef, RestoreArtifactRequest, StopGroupMemberRequest, Trace}
 
   # Wake-rate + parked-cap defaults mirror the R4 stateful values (a composite group
   # is a group-level singleton owned by one principal, so per-workload == per-
@@ -180,6 +180,8 @@ defmodule Embervm.GroupWakeManager do
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
+      stop_group_member_fun:
+        Keyword.get(opts, :stop_group_member_fun, &default_stop_group_member/2),
       op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
       # The backend module dispatched below, threaded alongside :op_log (the
       # server address) so a non-default backend never requires editing this
@@ -693,6 +695,10 @@ defmodule Embervm.GroupWakeManager do
     Embervm.Node.V1.NodeService.Stub.restore_artifact(channel, req)
   end
 
+  defp default_stop_group_member(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.stop_group_member(channel, req)
+  end
+
   # Spawn (or reuse) the GroupManager child for the banked instance and drive its
   # wake_group sequence. wake_group returns {:ok, endpoint, outcome} (relit or fresh-
   # fallback) or {:error, reason}. The child is bound in the supervisor under the
@@ -766,8 +772,171 @@ defmodule Embervm.GroupWakeManager do
     reported_sets = reported_member_sets(bundle_sets)
     _ = GroupStore.evict_partial_sets(state.store, reported_sets)
 
+    state =
+      if state.node_confirmed_destroy do
+        state
+        |> redrive_destroying(live_members)
+        |> destroy_orphan_group_vms(facts)
+      else
+        state
+      end
+
     EndpointPublisher.publish(state.publisher)
     state
+  end
+
+  # A destroying group is re-driven only while its owner reports. Reported members
+  # get another real StopGroupMember(DESTROY); authoritative absence from a reporting
+  # owner confirms the teardown. A missing owner report leaves the group destroying.
+  defp redrive_destroying(state, live_members) do
+    now = state.clock.()
+
+    GroupStore.all(state.store)
+    |> Enum.filter(&(&1.state == :destroying))
+    |> Enum.reduce(state, fn instance, acc ->
+      maybe_alarm_destroying(acc, instance, now)
+      redrive_one_destroying(acc, instance, live_members)
+    end)
+  end
+
+  defp maybe_alarm_destroying(state, instance, now) do
+    elapsed = now - instance.updated_at
+
+    if elapsed > state.destroying_alarm_ms do
+      Logger.error("embervm group stuck in destroying",
+        instance_id: instance.instance_id,
+        workload: instance.workload,
+        elapsed_ms: elapsed,
+        alarm_threshold_ms: state.destroying_alarm_ms
+      )
+    end
+
+    :ok
+  end
+
+  defp redrive_one_destroying(state, instance, live_members) do
+    case Map.get(live_members, instance.instance_id) do
+      members when is_list(members) ->
+        confirmations =
+          Enum.map(members, fn member ->
+            if is_binary(member.node_id) and is_binary(member.vm_id) do
+              stop_group_member_destroy_confirmed(
+                state,
+                instance.instance_id,
+                instance.workload,
+                member
+              )
+            else
+              true
+            end
+          end)
+
+        if Enum.all?(confirmations) do
+          record_group_destroyed(state, instance)
+        else
+          state
+        end
+
+      nil ->
+        if node_reporting?(state, instance.node_id) do
+          record_group_destroyed(state, instance)
+        else
+          state
+        end
+    end
+  end
+
+  defp record_group_destroyed(state, instance) do
+    _ =
+      GroupStore.transition(
+        state.store,
+        instance.instance_id,
+        :destroy,
+        :group_destroyed,
+        %{reason: :destroyed},
+        %{}
+      )
+
+    Logger.info("embervm group destroyed (reconcile-confirmed)",
+      instance_id: instance.instance_id,
+      workload: instance.workload
+    )
+
+    state
+  end
+
+  # A node-reported group member VM whose group_instance_id has no control-plane
+  # row is an orphan. Group writes are synchronous, so there is no async adoption
+  # discriminator: issue a plain node-confirmed destroy and never create a row.
+  defp destroy_orphan_group_vms(state, facts) do
+    for fact <- facts, member <- Map.get(fact, :group_member_vms, []) || [], reduce: state do
+      acc ->
+        case GroupStore.get(acc.store, member.group_instance_id) do
+          :error ->
+            confirmed =
+              if is_binary(fact.configured_id) and is_binary(member.vm_id) do
+                stop_group_member_destroy_confirmed(
+                  acc,
+                  member.group_instance_id,
+                  nil,
+                  %{
+                    node_id: fact.configured_id,
+                    vm_id: member.vm_id,
+                    member_name: member.member_name
+                  }
+                )
+              else
+                true
+              end
+
+            Logger.warning("embervm orphan group member vm destroyed",
+              group_instance_id: member.group_instance_id,
+              member_name: member.member_name,
+              vm_id: member.vm_id,
+              node_id: fact.configured_id,
+              teardown_confirmed: confirmed
+            )
+
+            acc
+
+          {:ok, _instance} ->
+            acc
+        end
+    end
+  end
+
+  defp stop_group_member_destroy_confirmed(
+         state,
+         group_instance_id,
+         workload,
+         %{node_id: node_id, vm_id: vm_id, member_name: member_name}
+       ) do
+    req = %StopGroupMemberRequest{
+      trace: %Trace{workload: workload},
+      vm_id: vm_id,
+      mode: :STOP_GROUP_MEMBER_MODE_DESTROY,
+      set_id: "",
+      member_name: member_name
+    }
+
+    dial_id =
+      Embervm.WakeInstance.dial_for_group(
+        state.capacity_table,
+        node_id,
+        group_instance_id
+      )
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+      try do
+        match?({:ok, %{teardown_confirmed: true}}, state.stop_group_member_fun.(channel, req))
+      rescue
+        _ -> false
+      catch
+        _, _ -> false
+      end
+    else
+      _ -> false
+    end
   end
 
   # instance_id -> [%{member_name, vm_id, ip, healthy}] of the node-reported LIVE
