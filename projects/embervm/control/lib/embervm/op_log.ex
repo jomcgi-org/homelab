@@ -100,6 +100,11 @@ defmodule Embervm.OpLog do
     :session_relit,
     :session_expired,
     :session_evicted,
+    # session_destroying is the durable destroy INTENT (ADR embervm/014 decision 5):
+    # appended BEFORE the node-confirmed teardown RPC, so a CP crash mid-destroy
+    # rebuilds as destroying and re-drives; session_destroyed follows only on node
+    # confirmation. Only written under the EMBERVM_NODE_CONFIRMED_DESTROY gate.
+    :session_destroying,
     :session_destroyed,
     :session_failed,
     # Serving lifecycle (R3). Additive to the closed enum, mirroring the R2
@@ -118,6 +123,10 @@ defmodule Embervm.OpLog do
     :serving_banked,
     :serving_relit,
     :serving_evicted,
+    # serving_destroying: the durable destroy INTENT (ADR embervm/014 decision 5), the
+    # serving counterpart of session_destroying. Only written under the
+    # EMBERVM_NODE_CONFIRMED_DESTROY gate.
+    :serving_destroying,
     :serving_destroyed,
     :serving_failed,
     :serving_stats,
@@ -142,6 +151,10 @@ defmodule Embervm.OpLog do
     :stateful_relit,
     :stateful_cold_booted,
     :stateful_evicted,
+    # stateful_destroying: the durable destroy INTENT (ADR embervm/014 decision 5),
+    # the stateful counterpart of session_destroying. Only written under the
+    # EMBERVM_NODE_CONFIRMED_DESTROY gate.
+    :stateful_destroying,
     :stateful_destroyed,
     :stateful_failed,
     :stateful_stats,
@@ -188,6 +201,10 @@ defmodule Embervm.OpLog do
     :group_fresh_booted,
     :group_set_evicted,
     :group_degraded,
+    # group_destroying: the durable destroy INTENT (ADR embervm/014 decision 5), the
+    # group counterpart of session_destroying. Only written under the
+    # EMBERVM_NODE_CONFIRMED_DESTROY gate.
+    :group_destroying,
     :group_destroyed,
     :group_failed,
     :group_stats,

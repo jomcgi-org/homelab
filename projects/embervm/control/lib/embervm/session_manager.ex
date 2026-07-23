@@ -251,7 +251,18 @@ defmodule Embervm.SessionManager do
       # keys (`sessions`/`sessionsSummary`) so it never clobbers the watcher/pool/base
       # writers' keys (the merge-patch coexistence rule).
       status_writer: Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3),
-      session_status_written: %{}
+      session_status_written: %{},
+      # EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014 decision 5). Off (default):
+      # destroyed is recorded first, then the VM is torn down asynchronously (today's
+      # behaviour). On: the durable destroying intent is recorded, the teardown RPC
+      # runs, and destroyed is recorded ONLY when the node confirms teardown; an
+      # unconfirmed teardown leaves the session in destroying for the reconcile loop.
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      # Alarm threshold (ms) for a session stuck in destroying, and the grace window
+      # (ms) before fail-closed orphan reconciliation acts (ADR embervm/014). Both
+      # only bite under the node_confirmed_destroy gate.
+      destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
+      orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000)
     }
 
     # session_opts always carry a manager reference so the per-session idle timer can
@@ -1534,7 +1545,134 @@ defmodule Embervm.SessionManager do
         adopt_one(acc, session, live_vms, snapshots)
       end)
 
-    evict_orphan_snapshots(state, facts)
+    state = evict_orphan_snapshots(state, facts)
+
+    # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
+    # gated: re-drive stuck destroying sessions (Direction 1 completion + alarm) and
+    # destroy reported session VMs with no CP row (Direction 2 orphans). Gate off:
+    # inert, so today's behaviour is unchanged.
+    if state.node_confirmed_destroy do
+      state
+      |> redrive_destroying(live_vms)
+      |> destroy_orphan_session_vms(facts, live_vms)
+    else
+      state
+    end
+  end
+
+  # Direction 1 completion: a session left in destroying (RPC unconfirmed, or a CP
+  # crash after the destroying intent) is re-driven here. If its owner still reports
+  # the VM, re-issue the node-confirmed teardown and, on confirmation, record
+  # destroyed. If the owner no longer reports the VM (teardown actually completed but
+  # the destroyed op was lost), the destruction is confirmed by absence: record
+  # destroyed. An alarm fires (error-level, SigNoz-visible) if a destroying session
+  # persists past destroying_alarm_ms.
+  defp redrive_destroying(state, live_vms) do
+    now = state.clock.()
+
+    SessionStore.all(state.session_store)
+    |> Enum.filter(&(&1.state == :destroying))
+    |> Enum.reduce(state, fn session, acc ->
+      maybe_alarm_destroying(acc, session, now)
+      redrive_one_destroying(acc, session, live_vms)
+    end)
+  end
+
+  defp maybe_alarm_destroying(state, session, now) do
+    elapsed = now - session.updated_at
+
+    if elapsed > state.destroying_alarm_ms do
+      Logger.error("embervm session stuck in destroying",
+        session_id: session.session_id,
+        workload: session.workload,
+        vm_id: session.vm_id,
+        elapsed_ms: elapsed,
+        alarm_threshold_ms: state.destroying_alarm_ms
+      )
+    end
+
+    :ok
+  end
+
+  defp redrive_one_destroying(state, session, live_vms) do
+    sid = session.session_id
+
+    cond do
+      # Owner still reports the VM: retry the node-confirmed teardown. Terminate any
+      # lingering process first (a same-CP retry after a failed RPC), then re-issue
+      # the Destroy; a CP-crash re-drive has no process, so this is a no-op there.
+      Map.has_key?(live_vms, sid) ->
+        confirmed = stop_session_process(state, sid, session)
+
+        if confirmed do
+          record_session_destroyed(state, session)
+        else
+          state
+        end
+
+      # Owner no longer reports the VM but IS reporting (its absence is authoritative):
+      # teardown completed, only the destroyed op was lost. Confirm by absence.
+      node_reporting?(state, session.node_id) ->
+        record_session_destroyed(state, session)
+
+      # Owner not reporting (a disconnect): leave it destroying, never terminalize on
+      # a transient absence of the whole node's facts.
+      true ->
+        state
+    end
+  end
+
+  defp record_session_destroyed(state, session) do
+    _ =
+      SessionStore.transition(
+        state.session_store,
+        session.session_id,
+        :destroy,
+        :session_destroyed,
+        %{reason: :destroyed},
+        %{}
+      )
+
+    Logger.info("embervm session destroyed (reconcile-confirmed)",
+      session_id: session.session_id,
+      workload: session.workload
+    )
+
+    state
+  end
+
+  # Direction 2: a node reports a live session VM that no CP session row references.
+  # It is an orphan to DESTROY (node-confirmed), never to adopt. Primed-pool VMs are
+  # reported separately (WorkloadCapacity.primed_vm_ids), never in session_vms, so a
+  # session VM here is never a primed VM; a session VM only exists after a durable
+  # session_created op today (PR 1 semantics; the async-write race and its grace-window
+  # adopt-and-backfill discriminator arrive in PR 3), so no CP row means a genuine
+  # orphan. SessionVm carries no created_at, so the young-instance grace exclusion is
+  # deferred to PR 3 (where the async-write race it guards is introduced).
+  defp destroy_orphan_session_vms(state, facts, _live_vms) do
+    for f <- facts, v <- Map.get(f, :session_vms, []) || [], reduce: state do
+      acc ->
+        case SessionStore.get(acc.session_store, v.session_id) do
+          :error ->
+            confirmed =
+              destroy_vm(acc, %{
+                node_id: f.configured_id,
+                vm_id: v.vm_id
+              })
+
+            Logger.warning("embervm orphan session vm destroyed",
+              session_id: v.session_id,
+              vm_id: v.vm_id,
+              node_id: f.configured_id,
+              teardown_confirmed: confirmed
+            )
+
+            acc
+
+          {:ok, _} ->
+            acc
+        end
+    end
   end
 
   # vm session_id -> {node_id, vm_id, dial_id}; snapshot session_id ->
@@ -1566,6 +1704,12 @@ defmodule Embervm.SessionManager do
     sid = session.session_id
 
     cond do
+      # A session being torn down (destroying, ADR embervm/014 decision 5) must NOT be
+      # re-adopted to running even though the node still reports its live VM: the
+      # teardown RPC is in flight. redrive_destroying (later in do_reconcile) owns it.
+      session.state == :destroying ->
+        state
+
       # This manager has an in-flight bank/relight for the session: it owns the
       # transition, so a periodic reconcile must NOT touch it. During a bank the node
       # still reports the live VM, and forcing ETS to running here would make the
@@ -1589,8 +1733,11 @@ defmodule Embervm.SessionManager do
       # A session the current node facts cover neither as a VM nor a snapshot. Only
       # reap if the node whose id the session records IS reporting (its absence is
       # then authoritative, the state truly vanished); if that node is not in the
-      # facts at all (a disconnect), leave the session untouched.
-      node_reporting?(state, session.node_id) ->
+      # facts at all (a disconnect), leave the session untouched. Under the
+      # node-confirmed-destroy gate a grace window (orphan_grace_ms since the row was
+      # last updated) is honoured first, so an owner-resolved dial that momentarily
+      # omits a just-created VM does not terminalize it (ADR embervm/014 decision 5).
+      node_reporting?(state, session.node_id) and orphan_grace_elapsed?(state, session) ->
         fail_session(state, sid, :failed, "vm_and_snapshot_vanished")
         state
 
@@ -1646,6 +1793,16 @@ defmodule Embervm.SessionManager do
   end
 
   defp node_reporting?(_state, _node_id), do: false
+
+  # Gate off: no grace (today's behaviour, immediate terminalization on an
+  # owner-resolved dial). Gate on: the session's row must be older than orphan_grace_ms
+  # before an owner-resolved dial may terminalize it (ADR embervm/014 decision 5), so a
+  # just-created VM that momentarily does not appear in the owner's report is not lost.
+  defp orphan_grace_elapsed?(%{node_confirmed_destroy: false}, _session), do: true
+
+  defp orphan_grace_elapsed?(state, session) do
+    state.clock.() - session.updated_at >= state.orphan_grace_ms
+  end
 
   # Evict snapshots a node reports whose session row is terminal or absent: the
   # session is gone but its snapshot squats disk. EvictSnapshot is idempotent, so a
@@ -2000,10 +2157,29 @@ defmodule Embervm.SessionManager do
 
   # Destroy a session: tear down whatever it holds. A live session (running/banking/
   # relighting) has a process + VM, stopped and destroyed here; a banked session has
-  # only a snapshot, evicted here. Then record session_destroyed. Any parked relight
-  # waiters are drained gone (the session is being destroyed). Returns {reply, state}
-  # so the drained relighting ledger is threaded back.
+  # only a snapshot, evicted here. Any parked relight waiters are drained gone (the
+  # session is being destroyed). Returns {reply, state} so the drained relighting
+  # ledger is threaded back.
+  #
+  # Two orderings, selected by EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014
+  # decision 5):
+  #   * off (default): record session_destroyed first, then tear the VM down
+  #     asynchronously (today's behaviour). A banked session (no VM) is the same
+  #     either way: evict its snapshot, record destroyed.
+  #   * on, live VM: record the destroying intent, run the node-confirmed teardown
+  #     RPC, and record session_destroyed ONLY when the node confirms teardown. An
+  #     unconfirmed teardown (RPC failure or teardown_confirmed=false) leaves the
+  #     session in destroying for the reconcile loop to re-drive.
   defp destroy_live(state, session) do
+    if state.node_confirmed_destroy and session.state != :banked do
+      destroy_live_node_confirmed(state, session)
+    else
+      destroy_live_legacy(state, session)
+    end
+  end
+
+  # Gate-off (and banked) path: record destroyed first, tear down after.
+  defp destroy_live_legacy(state, session) do
     if session.state == :banked do
       _ = evict_snapshot(state, session)
     else
@@ -2031,9 +2207,78 @@ defmodule Embervm.SessionManager do
     {reply, state}
   end
 
+  # Gate-on path for a live-VM session: destroying intent -> node-confirmed teardown
+  # -> destroyed only on confirmation. Relight waiters drain immediately (the session
+  # is going away regardless of how long teardown takes).
+  defp destroy_live_node_confirmed(state, session) do
+    # 1. Durable destroying intent BEFORE the RPC, so a CP crash mid-destroy rebuilds
+    #    as destroying and re-drives the teardown rather than forgetting it.
+    intent =
+      SessionStore.transition(
+        state.session_store,
+        session.session_id,
+        :begin_destroy,
+        :session_destroying,
+        %{reason: :destroyed},
+        %{}
+      )
+
+    state = drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
+
+    case intent do
+      {:ok, _} ->
+        # 2. Terminate the process and issue the node-confirmed teardown RPC. A
+        #    session with no reachable VM (node_id/vm_id not both set) holds nothing
+        #    on a node, so its teardown is trivially confirmed.
+        confirmed =
+          if is_binary(session.node_id) and is_binary(session.vm_id) do
+            stop_session_process(state, session.session_id, session)
+          else
+            _ = stop_session_process(state, session.session_id, session)
+            true
+          end
+
+        if confirmed do
+          # 3a. Node confirmed teardown: record the terminal destroyed op.
+          reply =
+            SessionStore.transition(
+              state.session_store,
+              session.session_id,
+              :destroy,
+              :session_destroyed,
+              %{reason: :destroyed},
+              %{}
+            )
+
+          Logger.info("embervm session destroyed",
+            session_id: session.session_id,
+            workload: session.workload,
+            principal: session.principal
+          )
+
+          {reply, state}
+        else
+          # 3b. Unconfirmed: leave the session in destroying. The reconcile loop
+          #     re-drives the teardown; the destroying-alarm fires if it persists.
+          Logger.warning("embervm session teardown unconfirmed, left destroying",
+            session_id: session.session_id,
+            workload: session.workload,
+            vm_id: session.vm_id
+          )
+
+          {{:ok, :destroying}, state}
+        end
+
+      {:error, _reason} = error ->
+        {error, state}
+    end
+  end
+
   # Terminate the session process and destroy its VM. We destroy the VM HERE (not in
   # the process's terminate, which may not run on a hard kill) so a destroy always
-  # tears down the guest even if the process is wedged.
+  # tears down the guest even if the process is wedged. Returns whether the node
+  # CONFIRMED teardown (true when the Destroy RPC returned teardown_confirmed); the
+  # legacy destroy path ignores it, the node-confirmed path gates destroyed on it.
   defp stop_session_process(state, session_id, session) do
     case Registry.lookup(state.registry, session_id) do
       [{pid, _}] ->
@@ -2047,31 +2292,42 @@ defmodule Embervm.SessionManager do
     end
   end
 
+  # Issue the Destroy RPC to the owning node and report whether teardown was
+  # confirmed. teardown_confirmed=true only when the RPC returns a response whose
+  # teardown_confirmed field is set (an old daemon leaves it false, which reads as
+  # unconfirmed). A dial failure, an RPC error, or a raised/thrown fault all read as
+  # unconfirmed (false), keeping the session in destroying under the node-confirmed
+  # gate; the legacy path discards this and proceeds as today.
   defp destroy_vm(state, %{node_id: node_id, vm_id: vm_id}) when is_binary(node_id) and is_binary(vm_id) do
     # Dial the OWNING instance running this live vm_id, not the node-name alias.
     dial_key = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id)
 
-    with {:ok, channel} <- state.channel_fun.(dial_key) do
-      opts = state.session_opts
+    case state.channel_fun.(dial_key) do
+      {:ok, channel} ->
+        opts = state.session_opts
 
-      destroy_fun =
-        Keyword.get(opts, :destroy_fun, fn ch, id ->
-          Embervm.Node.V1.NodeService.Stub.destroy(ch, %Embervm.Node.V1.DestroyRequest{vm_id: id})
-        end)
+        destroy_fun =
+          Keyword.get(opts, :destroy_fun, fn ch, id ->
+            Embervm.Node.V1.NodeService.Stub.destroy(ch, %Embervm.Node.V1.DestroyRequest{vm_id: id})
+          end)
 
-      try do
-        destroy_fun.(channel, vm_id)
-      rescue
-        _ -> :error
-      catch
-        _, _ -> :error
-      end
+        try do
+          case destroy_fun.(channel, vm_id) do
+            {:ok, %{teardown_confirmed: true}} -> true
+            _ -> false
+          end
+        rescue
+          _ -> false
+        catch
+          _, _ -> false
+        end
+
+      {:error, _} ->
+        false
     end
-
-    :ok
   end
 
-  defp destroy_vm(_state, _session), do: :ok
+  defp destroy_vm(_state, _session), do: false
 
   # -- helpers ---------------------------------------------------------------
 

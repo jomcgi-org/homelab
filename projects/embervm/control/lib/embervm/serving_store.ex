@@ -349,6 +349,7 @@ defmodule Embervm.ServingStore do
     "published" => :published,
     "draining" => :draining,
     "banked" => :banked,
+    "destroying" => :destroying,
     "evicted" => :evicted,
     "destroyed" => :destroyed,
     "failed" => :failed

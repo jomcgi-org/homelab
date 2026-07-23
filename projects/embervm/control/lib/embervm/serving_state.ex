@@ -87,6 +87,7 @@ defmodule Embervm.ServingState do
     :banking,
     :banked,
     :relighting,
+    :destroying,
     :evicted,
     :destroyed,
     :failed
@@ -104,6 +105,7 @@ defmodule Embervm.ServingState do
     :relight_ready,
     :relight_abort,
     :evict,
+    :begin_destroy,
     :destroy,
     :fail
   ]
@@ -139,13 +141,25 @@ defmodule Embervm.ServingState do
     # Banked-TTL GC / disk-pressure eviction: only a banked instance holds an
     # evictable serving snapshot.
     {:banked, :evict} => :evicted,
-    # Destroy: from every non-terminal state.
+    # Destroy: from every non-terminal state. The direct edge is today's behaviour;
+    # the begin_destroy -> destroying -> destroy path is the node-confirmed shape
+    # (ADR embervm/014 decision 5), gated by EMBERVM_NODE_CONFIRMED_DESTROY. Serving
+    # destruction is sweeper-driven today, so the node-confirmed manager wiring is a
+    # follow-up; the state + edges exist so a destroying row rebuilds and the FSM is
+    # coherent across all stores.
     {:starting, :destroy} => :destroyed,
     {:published, :destroy} => :destroyed,
     {:draining, :destroy} => :destroyed,
     {:banking, :destroy} => :destroyed,
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
+    {:starting, :begin_destroy} => :destroying,
+    {:published, :begin_destroy} => :destroying,
+    {:draining, :begin_destroy} => :destroying,
+    {:banking, :begin_destroy} => :destroying,
+    {:banked, :begin_destroy} => :destroying,
+    {:relighting, :begin_destroy} => :destroying,
+    {:destroying, :destroy} => :destroyed,
     # Fail (daemon transport/timeout, readiness timeout, unrestorable snapshot,
     # repeated bank failure): from every live state that touches the daemon.
     {:starting, :fail} => :failed,
@@ -162,6 +176,7 @@ defmodule Embervm.ServingState do
           | :banking
           | :banked
           | :relighting
+          | :destroying
           | :evicted
           | :destroyed
           | :failed
@@ -176,6 +191,7 @@ defmodule Embervm.ServingState do
           | :relight_ready
           | :relight_abort
           | :evict
+          | :begin_destroy
           | :destroy
           | :fail
 

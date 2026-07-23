@@ -470,6 +470,7 @@ defmodule Embervm.GroupStore do
     "running" => :running,
     "degraded" => :running,
     "banked" => :banked,
+    "destroying" => :destroying,
     "destroyed" => :destroyed,
     "failed" => :failed
   }

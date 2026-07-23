@@ -62,7 +62,13 @@ defmodule Embervm.SessionManagerTest do
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
         session_opts: session_opts
       ] ++
-        Keyword.take(opts, [:quota_config, :quota_table])
+        Keyword.take(opts, [
+          :quota_config,
+          :quota_table,
+          :node_confirmed_destroy,
+          :destroying_alarm_ms,
+          :orphan_grace_ms
+        ])
 
     {:ok, mgr} = SessionManager.start_link(mgr_opts)
 
@@ -453,5 +459,169 @@ defmodule Embervm.SessionManagerTest do
   test "destroy of an unknown session is :not_found" do
     ctx = start_stack()
     assert {:error, :not_found} = SessionManager.destroy(ctx.mgr, "s-nope")
+  end
+
+  # -- node-confirmed destroy (ADR embervm/014 decision 5, gated) -------------
+
+  test "gated: destroy with a confirming node records destroying then destroyed" do
+    # A destroy_fun that confirms teardown drives the full destroying -> destroyed
+    # sequence; both ops land in order and the session ends destroyed.
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end
+      )
+
+    put_session_workload(ctx, "wl-ncd")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-ncd", "p1")
+
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+
+    kinds = op_kinds_for(ctx, created.session_id)
+    assert :session_destroying in kinds
+    assert :session_destroyed in kinds
+    # destroying is appended BEFORE destroyed.
+    assert index_of(kinds, :session_destroying) < index_of(kinds, :session_destroyed)
+  end
+
+  test "gated: destroy with an unconfirming node stays destroying, no destroyed op" do
+    # teardown_confirmed=false (an old daemon, or a partial reap) must NOT record
+    # destroyed; the session stays destroying for the reconcile loop.
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: false}} end
+      )
+
+    put_session_workload(ctx, "wl-ncd2")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-ncd2", "p1")
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroying
+
+    kinds = op_kinds_for(ctx, created.session_id)
+    assert :session_destroying in kinds
+    refute :session_destroyed in kinds
+  end
+
+  test "gated: reconcile re-drives a destroying session to destroyed once confirmed" do
+    # First destroy leaves it destroying (unconfirmed); a later reconcile with a
+    # confirming node completes it. The node keeps reporting the VM, so the reconcile
+    # retries the teardown RPC.
+    parent = self()
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        session_channel_fun: fn _node -> {:ok, :ch} end,
+        destroy_fun: fn _ch, _vm ->
+          send(parent, :destroy_called)
+          {:ok, %{teardown_confirmed: true}} end
+      )
+
+    put_session_workload(ctx, "wl-ncd3")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-ncd3", "p1")
+
+    # Force the session into destroying with the node still reporting its VM, then
+    # reconcile: the re-drive re-issues destroy, confirms, and records destroyed.
+    {:ok, _} =
+      SessionStore.transition(ctx.store, created.session_id, :begin_destroy, :session_destroying, %{reason: :destroyed}, %{})
+
+    report_session_vm(ctx, created.session_id, created.workload)
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+  end
+
+  test "gated: reconcile destroys an orphan reported session VM with no CP row" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        destroy_fun: fn _ch, vm ->
+          send(parent, {:orphan_destroyed, vm})
+          {:ok, %{teardown_confirmed: true}} end
+      )
+
+    # A node reports a session VM the control plane has no row for: an orphan to
+    # destroy, not adopt.
+    report_session_vm(ctx, "s-orphan", "wl-orphan", "vm-orphan")
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    assert_received {:orphan_destroyed, "vm-orphan"}
+    # No CP row was created for it (never adopted).
+    assert :error = SessionStore.get(ctx.store, "s-orphan")
+  end
+
+  test "gated: reconcile never destroys a primed-pool VM" do
+    # A primed VM is reported in primed_vm_ids, never in session_vms, so the orphan
+    # destroy pass (which only walks session_vms) never touches it.
+    parent = self()
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        destroy_fun: fn _ch, vm ->
+          send(parent, {:destroyed, vm})
+          {:ok, %{teardown_confirmed: true}} end
+      )
+
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      workloads: %{
+        "wl-primed" => %{
+          free_primed_slots: 1,
+          snapshot_ref: "snap-primed",
+          base_state: :BASE_BUILD_STATE_READY,
+          primed_vm_ids: ["vm-primed-x"]
+        }
+      },
+      session_vms: [],
+      live_vms: 1,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 5_000_000
+    })
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    refute_received {:destroyed, "vm-primed-x"}
+  end
+
+  # -- gated-destroy test helpers --------------------------------------------
+
+  defp op_kinds_for(ctx, session_id) do
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+
+    ops
+    |> Enum.filter(&(&1.session_id == session_id))
+    |> Enum.map(& &1.kind)
+  end
+
+  defp index_of(list, elem), do: Enum.find_index(list, &(&1 == elem))
+
+  defp report_session_vm(ctx, session_id, workload, vm_id \\ nil) do
+    vm_id = vm_id || "vm-#{session_id}"
+
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      workloads: %{},
+      session_vms: [%{session_id: session_id, vm_id: vm_id, workload: workload}],
+      live_vms: 1,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 5_000_000
+    })
   end
 end

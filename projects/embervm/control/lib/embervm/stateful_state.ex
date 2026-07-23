@@ -99,6 +99,7 @@ defmodule Embervm.StatefulState do
     :banked,
     :relighting,
     :cold_booting,
+    :destroying,
     :evicted,
     :destroyed,
     :failed
@@ -112,7 +113,18 @@ defmodule Embervm.StatefulState do
   # `checkpointed` (ADR embervm/008) IS live: the interruptible-bank checkpoint
   # leaves the VM PAUSED (not destroyed), still holding the volume attach, awaiting
   # a resolve, so the singleton guard must count it.
-  @live_states [:starting, :serving, :banking, :checkpointed, :relighting, :cold_booting]
+  # `destroying` (ADR embervm/014 decision 5) also holds a live VM: the
+  # node-confirmed teardown RPC is in flight, so the singleton guard must count it
+  # until the node confirms teardown and the terminal destroyed op fires.
+  @live_states [
+    :starting,
+    :serving,
+    :banking,
+    :checkpointed,
+    :relighting,
+    :cold_booting,
+    :destroying
+  ]
 
   @events [
     :publish,
@@ -130,6 +142,7 @@ defmodule Embervm.StatefulState do
     :cold_ready,
     :cold_abort,
     :evict,
+    :begin_destroy,
     :destroy,
     :fail
   ]
@@ -187,7 +200,9 @@ defmodule Embervm.StatefulState do
     # Banked-TTL GC / broken-pair eviction: only a banked instance holds an
     # evictable snapshot bundle. reason is pair_broken or ttl.
     {:banked, :evict} => :evicted,
-    # Destroy: from every non-terminal state.
+    # Destroy: from every non-terminal state. The direct edge is today's behaviour;
+    # the begin_destroy -> destroying -> destroy path is the node-confirmed shape
+    # (ADR embervm/014 decision 5), gated by EMBERVM_NODE_CONFIRMED_DESTROY.
     {:starting, :destroy} => :destroyed,
     {:serving, :destroy} => :destroyed,
     {:banking, :destroy} => :destroyed,
@@ -195,6 +210,14 @@ defmodule Embervm.StatefulState do
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
     {:cold_booting, :destroy} => :destroyed,
+    {:starting, :begin_destroy} => :destroying,
+    {:serving, :begin_destroy} => :destroying,
+    {:banking, :begin_destroy} => :destroying,
+    {:checkpointed, :begin_destroy} => :destroying,
+    {:banked, :begin_destroy} => :destroying,
+    {:relighting, :begin_destroy} => :destroying,
+    {:cold_booting, :begin_destroy} => :destroying,
+    {:destroying, :destroy} => :destroyed,
     # Fail (daemon transport/timeout, readiness timeout, unrestorable snapshot,
     # repeated bank failure): from every LIVE state that touches the daemon. banked
     # cannot `fail` (it holds no VM); a broken banked bundle `evict`s, it does not
@@ -218,6 +241,7 @@ defmodule Embervm.StatefulState do
           | :banked
           | :relighting
           | :cold_booting
+          | :destroying
           | :evicted
           | :destroyed
           | :failed
@@ -238,6 +262,7 @@ defmodule Embervm.StatefulState do
           | :cold_ready
           | :cold_abort
           | :evict
+          | :begin_destroy
           | :destroy
           | :fail
 

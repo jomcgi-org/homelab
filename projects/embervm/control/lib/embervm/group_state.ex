@@ -113,6 +113,7 @@ defmodule Embervm.GroupState do
     :banked,
     :relighting,
     :fresh_booting,
+    :destroying,
     :destroyed,
     :failed
   ]
@@ -122,7 +123,10 @@ defmodule Embervm.GroupState do
   # The states that hold a LIVE group (member VMs up or in flight, not a banked
   # set, not terminal). A live group is the singleton the class allows exactly one
   # of. `banked` is deliberately NOT live: it holds a snapshot set, no VMs.
-  @live_states [:creating, :running, :banking, :relighting, :fresh_booting]
+  # `destroying` (ADR embervm/014 decision 5) IS live: the per-member node-confirmed
+  # teardown RPCs are in flight, so the singleton guard must count it until the node
+  # confirms teardown and the terminal destroyed op fires.
+  @live_states [:creating, :running, :banking, :relighting, :fresh_booting, :destroying]
 
   @events [
     :publish,
@@ -136,6 +140,7 @@ defmodule Embervm.GroupState do
     :fresh_boot,
     :fresh_ready,
     :fresh_abort,
+    :begin_destroy,
     :destroy,
     :fail
   ]
@@ -188,6 +193,15 @@ defmodule Embervm.GroupState do
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
     {:fresh_booting, :destroy} => :destroyed,
+    # begin_destroy -> destroying -> destroy is the node-confirmed shape (ADR
+    # embervm/014 decision 5), gated by EMBERVM_NODE_CONFIRMED_DESTROY.
+    {:creating, :begin_destroy} => :destroying,
+    {:running, :begin_destroy} => :destroying,
+    {:banking, :begin_destroy} => :destroying,
+    {:banked, :begin_destroy} => :destroying,
+    {:relighting, :begin_destroy} => :destroying,
+    {:fresh_booting, :begin_destroy} => :destroying,
+    {:destroying, :destroy} => :destroyed,
     # Fail (member-start error during create, daemon transport/timeout, unrestorable
     # set): from every LIVE state that touches the daemon. banked cannot `fail` (it
     # holds no VMs); a broken banked set `evict`s its warmth, it does not fail the
@@ -206,6 +220,7 @@ defmodule Embervm.GroupState do
           | :banked
           | :relighting
           | :fresh_booting
+          | :destroying
           | :destroyed
           | :failed
 
@@ -221,6 +236,7 @@ defmodule Embervm.GroupState do
           | :fresh_boot
           | :fresh_ready
           | :fresh_abort
+          | :begin_destroy
           | :destroy
           | :fail
 

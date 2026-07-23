@@ -864,6 +864,22 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  # session_destroying: the durable destroy INTENT (ADR embervm/014 decision 5).
+  # A non-terminal state marker appended BEFORE the node-confirmed teardown RPC, so
+  # a CP crash mid-destroy rebuilds as destroying and re-drives the destroy rather
+  # than forgetting it. session_destroyed (terminal) is appended only after the node
+  # confirms teardown.
+  defp project(conn, %Op{kind: :session_destroying} = op, _seq) do
+    sql = "UPDATE sessions SET state='destroying', updated_at=? WHERE session_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.session_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
   defp project(conn, %Op{kind: :session_expired} = op, _seq),
     do: terminate_session(conn, op, "expired")
 
@@ -1019,6 +1035,20 @@ defmodule Embervm.OpLog.SQLite do
 
   defp project(conn, %Op{kind: :serving_evicted} = op, _seq),
     do: terminate_serving(conn, op, "evicted")
+
+  # serving_destroying: the durable destroy INTENT (ADR embervm/014 decision 5), the
+  # serving counterpart of session_destroying. A non-terminal state marker (no
+  # terminal_reason) so a rebuild replays it as destroying.
+  defp project(conn, %Op{kind: :serving_destroying} = op, _seq) do
+    sql = "UPDATE serving_instances SET state='destroying', updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.serving_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
 
   defp project(conn, %Op{kind: :serving_destroyed} = op, _seq),
     do: terminate_serving(conn, op, "destroyed")
@@ -1250,6 +1280,19 @@ defmodule Embervm.OpLog.SQLite do
   defp project(conn, %Op{kind: :stateful_evicted} = op, _seq),
     do: terminate_stateful(conn, op, "evicted")
 
+  # stateful_destroying: the durable destroy INTENT (ADR embervm/014 decision 5), the
+  # stateful counterpart of session_destroying.
+  defp project(conn, %Op{kind: :stateful_destroying} = op, _seq) do
+    sql = "UPDATE stateful_instances SET state='destroying', updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.stateful_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
   defp project(conn, %Op{kind: :stateful_destroyed} = op, _seq),
     do: terminate_stateful(conn, op, "destroyed")
 
@@ -1468,6 +1511,19 @@ defmodule Embervm.OpLog.SQLite do
         nil -> :ok
         member -> set_member_health(conn, op.group_instance_id, member, false, op.ts)
       end
+    end
+  end
+
+  # group_destroying: the durable destroy INTENT (ADR embervm/014 decision 5), the
+  # group counterpart of session_destroying.
+  defp project(conn, %Op{kind: :group_destroying} = op, _seq) do
+    sql = "UPDATE group_instances SET state='destroying', updated_at=? WHERE instance_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.group_instance_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
     end
   end
 

@@ -52,6 +52,7 @@ defmodule Embervm.SessionState do
     :banking,
     :banked,
     :relighting,
+    :destroying,
     :expired,
     :evicted,
     :destroyed,
@@ -70,6 +71,7 @@ defmodule Embervm.SessionState do
     :relight_abort,
     :expire,
     :evict,
+    :begin_destroy,
     :destroy,
     :fail
   ]
@@ -98,12 +100,25 @@ defmodule Embervm.SessionState do
     {:banked, :expire} => :expired,
     # Banked-TTL GC / disk-pressure eviction: only a banked session.
     {:banked, :evict} => :evicted,
-    # Destroy (DELETE): from every non-terminal state.
+    # Destroy (DELETE). Two shapes, selected by the EMBERVM_NODE_CONFIRMED_DESTROY
+    # gate in the manager:
+    #   * gate off (today's behaviour): the direct `:destroy` edge records
+    #     destroyed first, then tears down asynchronously.
+    #   * gate on (ADR embervm/014 decision 5): `:begin_destroy` first records the
+    #     durable `destroying` intent, the node-confirmed teardown RPC runs, and
+    #     only a confirmed teardown takes the `:destroying -> :destroy -> destroyed`
+    #     edge. A crash mid-destroy rebuilds as `destroying` and re-drives it.
     {:creating, :destroy} => :destroyed,
     {:running, :destroy} => :destroyed,
     {:banking, :destroy} => :destroyed,
     {:banked, :destroy} => :destroyed,
     {:relighting, :destroy} => :destroyed,
+    {:creating, :begin_destroy} => :destroying,
+    {:running, :begin_destroy} => :destroying,
+    {:banking, :begin_destroy} => :destroying,
+    {:banked, :begin_destroy} => :destroying,
+    {:relighting, :begin_destroy} => :destroying,
+    {:destroying, :destroy} => :destroyed,
     # Fail (daemon transport/timeout, unrestorable snapshot, repeated bank failure):
     # from every live state that touches the daemon.
     {:creating, :fail} => :failed,
@@ -118,6 +133,7 @@ defmodule Embervm.SessionState do
           | :banking
           | :banked
           | :relighting
+          | :destroying
           | :expired
           | :evicted
           | :destroyed
@@ -131,6 +147,7 @@ defmodule Embervm.SessionState do
           | :relight_ready
           | :expire
           | :evict
+          | :begin_destroy
           | :destroy
           | :fail
 

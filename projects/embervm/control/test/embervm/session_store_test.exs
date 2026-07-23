@@ -223,4 +223,36 @@ defmodule Embervm.SessionStoreTest do
     # fresh boot has empty residency until the node reports.
     assert SessionStore.residency(store2, a.session_id) == :error
   end
+
+  # -- node-confirmed destroy: destroying intent (ADR embervm/014 decision 5) ---
+
+  test "begin_destroy records the destroying intent, stays live, and rebuilds", %{path: path} do
+    {op_log, store} = start_pair(path)
+
+    {:ok, a} = create(store, workload: "wl-ncd")
+    assert SessionStore.counts(store, "wl-ncd") == %{live: 1, banked: 0}
+
+    {:ok, updated} =
+      SessionStore.transition(store, a.session_id, :begin_destroy, :session_destroying, %{reason: :destroyed}, %{})
+
+    # destroying is non-terminal and still counts as live (the VM is being torn down).
+    assert updated.state == :destroying
+    assert SessionStore.counts(store, "wl-ncd") == %{live: 1, banked: 0}
+
+    # The intent op is journaled (before any destroyed op).
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    assert Enum.map(ops, & &1.kind) == [:session_created, :session_destroying]
+
+    # A fresh store rebuilds the destroying row from the projection alone.
+    {:ok, store2} = SessionStore.start_link(op_log: op_log, name: nil)
+    {:ok, sa} = SessionStore.get(store2, a.session_id)
+    assert sa.state == :destroying
+
+    # destroying -> destroy -> destroyed is the confirming edge.
+    {:ok, done} =
+      SessionStore.transition(store, a.session_id, :destroy, :session_destroyed, %{reason: :destroyed}, %{})
+
+    assert done.state == :destroyed
+    assert SessionStore.counts(store, "wl-ncd") == %{live: 0, banked: 0}
+  end
 end
