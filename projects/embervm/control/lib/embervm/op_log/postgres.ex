@@ -590,11 +590,11 @@ defmodule Embervm.OpLog.Postgres do
   # while a legitimate forward jump still applies. Inert under the gate off. See the
   # SQLite backend for the full rationale.
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
-    advance_task_state(conn, op.task_id, :assigned, op.ts)
+    advance_task_state(conn, op.task_id, :assigned, op.ts, epoch_of(op))
   end
 
   defp project(conn, %Op{kind: :started} = op, _seq) do
-    advance_task_state(conn, op.task_id, :running, op.ts)
+    advance_task_state(conn, op.task_id, :running, op.ts, epoch_of(op))
   end
 
   defp project(conn, %Op{kind: :succeeded} = op, _seq) do
@@ -1334,19 +1334,38 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   # Monotonic advance for a deferred async lifecycle append: SET `to_state` only
-  # when the row ranks strictly below it in the lifecycle partial order
-  # (see Embervm.OpLog.SQLite.advance_task_state/4 and Embervm.TaskState.states_below/1).
-  defp advance_task_state(conn, task_id, to_state, ts) do
+  # when the row ranks strictly below it in the lifecycle partial order AND the
+  # row's retry count is still below the op's issue-time attempt (see
+  # Embervm.OpLog.SQLite.advance_task_state/5 for the full attempt-aliasing
+  # rationale and Embervm.TaskState.states_below/1 for the rank order). `epoch` nil
+  # (sync write-through, or a pre-epoch op) runs only the rank guard, unchanged.
+  defp advance_task_state(conn, task_id, to_state, ts, epoch \\ nil) do
     below = Embervm.TaskState.states_below(to_state)
     # $1 to_state, $2 ts, $3 task_id, then $4.. for the state-in list.
     placeholders = below |> Enum.with_index(4) |> Enum.map_join(",", fn {_, i} -> "$#{i}" end)
 
+    {epoch_clause, epoch_args} =
+      case epoch do
+        e when is_integer(e) -> {" AND attempt < $#{4 + length(below)}", [e]}
+        _ -> {"", []}
+      end
+
     exec(
       conn,
-      "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3 AND state IN (#{placeholders})",
-      [Atom.to_string(to_state), ts, task_id | below]
+      "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3 AND state IN (#{placeholders})" <>
+        epoch_clause,
+      [Atom.to_string(to_state), ts, task_id | below] ++ epoch_args
     )
   end
+
+  # The dispatch attempt (1-based) a deferred async :assigned/:started op was issued
+  # under, from the op payload (atom key on a fresh append, string key if ever
+  # re-projected from durable JSON). nil when absent. Mirrors Embervm.OpLog.SQLite.
+  defp epoch_of(%Op{payload: payload}) when is_map(payload) do
+    Map.get(payload, :epoch) || Map.get(payload, "epoch")
+  end
+
+  defp epoch_of(_op), do: nil
 
   # -- usage accrual, mirrors Embervm.OpLog.SQLite exactly -------------------
 

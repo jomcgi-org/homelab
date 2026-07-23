@@ -740,7 +740,13 @@ defmodule Embervm.TaskStore do
         workload: task.workload,
         task_id: task_id,
         ts: ts,
-        payload: %{}
+        # The dispatch attempt (1-based ETS `attempt`, unchanged by :assign/:start)
+        # this deferred op belongs to. The op-log projection's monotonic guard
+        # (advance_task_state/5) applies it only while the durable row has not yet
+        # `:retried` past this attempt, so a stale attempt-N :assigned/:started that
+        # lands after a retry re-queued the task (attempt N+1) is dropped instead of
+        # re-assigning a worker that no longer exists.
+        payload: %{epoch: task.attempt}
       }
 
       Embervm.AsyncWriter.enqueue(state.async_writer, %{

@@ -730,11 +730,11 @@ defmodule Embervm.OpLog.SQLite do
   # live write-through path and a full oplog rebuild-replay, regardless of async
   # append order. Inert under the gate off (appends always arrive in rank order).
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
-    advance_task_state(conn, op.task_id, :assigned, op.ts)
+    advance_task_state(conn, op.task_id, :assigned, op.ts, epoch_of(op))
   end
 
   defp project(conn, %Op{kind: :started} = op, _seq) do
-    advance_task_state(conn, op.task_id, :running, op.ts)
+    advance_task_state(conn, op.task_id, :running, op.ts, epoch_of(op))
   end
 
   defp project(conn, %Op{kind: :succeeded} = op, _seq) do
@@ -1932,18 +1932,53 @@ defmodule Embervm.OpLog.SQLite do
   # so an out-of-order async append can never regress the durable state; a
   # legitimate forward jump (queued -> running when :assigned was lost) still
   # applies. Same guard, same outcome on the live path and on rebuild-replay.
-  defp advance_task_state(conn, task_id, to_state, ts) do
+  #
+  # `epoch` is the SECOND, ORTHOGONAL half of the guard: the state-rank test alone
+  # cannot catch an ATTEMPT-ALIASED stale append, because queued -> assigned is
+  # FORWARD in the rank order regardless of which dispatch attempt issued it. A task
+  # that was assigned under attempt N (deferred :assigned enqueued), then failed and
+  # `:retried` (back to queued, attempt N+1) awaiting a fresh dispatch, would have
+  # that stale attempt-N :assigned land against the now-queued row and re-assign it
+  # to a worker that no longer exists. So the deferred op carries the 1-based attempt
+  # it was issued under, and we additionally require the row's retry count (the
+  # 0-based `attempt` column) to still be BELOW that epoch: `attempt < epoch`. A
+  # stale attempt-N append (epoch N) against a row already retried to attempt N (SQL
+  # attempt column N, i.e. not < N) matches no row and is dropped; the current
+  # attempt's append (epoch N+1 against SQL attempt N) still applies. `epoch` is nil
+  # for the write-through (gate-off) path and every pre-epoch op, in which case only
+  # the rank guard runs and behaviour is exactly as before.
+  defp advance_task_state(conn, task_id, to_state, ts, epoch \\ nil) do
     below = Embervm.TaskState.states_below(to_state)
     placeholders = Enum.map_join(below, ",", fn _ -> "?" end)
-    sql = "UPDATE tasks SET state=?, updated_at=? WHERE task_id=? AND state IN (#{placeholders})"
+
+    {epoch_clause, epoch_args} =
+      case epoch do
+        e when is_integer(e) -> {" AND attempt < ?", [e]}
+        _ -> {"", []}
+      end
+
+    sql =
+      "UPDATE tasks SET state=?, updated_at=? WHERE task_id=? AND state IN (#{placeholders})" <>
+        epoch_clause
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [Atom.to_string(to_state), ts, task_id | below]),
+         :ok <- Sqlite3.bind(stmt, [Atom.to_string(to_state), ts, task_id | below] ++ epoch_args),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
     end
   end
+
+  # The dispatch attempt (1-based) a deferred async :assigned/:started op was issued
+  # under, read from the op payload (atom key on a fresh append, string key if ever
+  # re-projected from durable JSON). nil when absent (sync write-through path, or an
+  # op appended before the epoch tag existed): the caller then applies only the
+  # state-rank guard, unchanged.
+  defp epoch_of(%Op{payload: payload}) when is_map(payload) do
+    Map.get(payload, :epoch) || Map.get(payload, "epoch")
+  end
+
+  defp epoch_of(_op), do: nil
 
   # Accumulating usage upsert, run INSIDE the same transaction as the
   # :succeeded/:failed op (see project/2), so a task's usage commits with its
