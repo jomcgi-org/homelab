@@ -61,6 +61,17 @@ so this ledger is the cross-session source of truth: on every invocation, find
 the first unchecked phase and resume there. Commit each ledger update with that
 phase's PR. Always work on a worktree + feature branch (never main).
 
+**GitHub tracking issue (repo source of truth for outstanding work).** At Phase 1,
+open (or reuse) a GitHub issue for the feature (`gh issue create`, `enhancement`
+label, `agent-ready` if autonomously pickable) and record its number in the plan
+front matter and the ledger. It is the outward-facing home of "what's left"; the
+plan ledger is the mechanical phase tracker. If the feature decomposes into several
+independently-shippable pieces, open them as **sub-issues** of that tracking issue
+(`gh api repos/jomcgi/homelab/issues/<parent>/sub_issues -f sub_issue_id=<child>`).
+**Close the tracking issue when all five boxes are checked** (or let the phase-4 PR
+close it via a `Closes #<n>` line); a closed issue is how the repo records the
+feature shipped.
+
 ## The five phases
 
 | # | Phase | How it runs | Artifact | Merge |

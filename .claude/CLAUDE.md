@@ -95,6 +95,8 @@ If `gh pr merge --auto --rebase` fails with "Pull request is in clean status", t
 
 **PR safety:** Always verify PR state (`gh pr view --json state`) before pushing additional commits. Never push to a merged branch — create a new worktree instead.
 
+**Work tracking (GitHub Issues are the source of truth).** Outstanding work in this repo (bugs, features, TODOs) is tracked in **GitHub Issues**, not in ADRs or plan docs. ADRs (`docs/decisions/`) record the *decision and rationale*; plans (`docs/plans/`) record the *implementation approach*; both are supporting detail. What is *left to do* lives in an issue. When an ADR or plan surfaces unimplemented work, file it as an issue (label `bug`/`enhancement`/`documentation`, add `agent-ready` when autonomously pickable) titled `<area>: <summary> — ADR <cat>/<NNN> #k` and linking back to the doc. Decompose a multi-part initiative into a parent tracking issue with **sub-issues** (`gh api repos/jomcgi/homelab/issues/<parent>/sub_issues -f sub_issue_id=<childDatabaseId>`). Closing the issue, not editing the ADR/plan, is how "shipped" is recorded.
+
 **Commit messages MUST use [Conventional Commits](https://www.conventionalcommits.org/) format.** A `commit-msg` hook enforces this.
 
 Format: `<type>(<optional scope>): <description>`

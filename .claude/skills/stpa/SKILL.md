@@ -112,6 +112,18 @@ Unsafe states violate those.
    against `main`, watches CI, and rebase-merges once all checks pass. Report the
    PR URL and whether it merged or was left open for review.
 
+## Remediation work goes to GitHub Issues (source of truth)
+
+`STPA.md` is the safety *analysis*, not a work tracker. When the analysis surfaces
+an unmitigated UCA or unsafe-feedback finding that needs code or config work to
+close, file it as a **GitHub issue** (the repo's source of truth for outstanding
+work), titled `<system>: <finding> — STPA <ucaKey>`, labelled `bug` (a broken/unsafe
+control action) or `enhancement` (a missing safeguard), plus `critical` when the loss
+is severe. Reference the issue from the finding's evidence rather than adding a
+checklist to `STPA.md`. Do not open issues for `non_ucas` (bounded nuisances with a
+recovery path) or for findings that already have a mitigation in the control
+structure.
+
 ## Drift minimization (this is an UPDATE, not a rewrite)
 
 The rendered doc is committed and reviewed as a diff, keep churn minimal:
