@@ -118,6 +118,16 @@ defmodule Embervm.NodeRegistry do
   # its last_registered_at stays nil and expiry is skipped for it.
   @expire_after_ms 90_000
 
+  # How often the control plane re-pushes the authoritative workload registry to
+  # every CONNECTED daemon (SyncRegistry). The per-connection push in
+  # start_streamer fires ONCE per (re)connect, so a CATALOG CHANGE to an
+  # already-connected daemon (e.g. nodeLocalWake toggled on a workload, ADR
+  # embervm/018) never reaches it until the daemon reconnects. This periodic,
+  # idempotent re-push converges that drift within one interval, mirroring the
+  # WorkloadWatcher's periodic BaseBuilder resync. 0 disables the timer (tests that
+  # drive the informer manually).
+  @registry_resync_ms 60_000
+
   # Closed enum of node health states, the age-out machine's whole codomain
   # (evaluate_node_age computes exactly these). Exposed for the spec vocabulary
   # sync test (ADR embervm/006 layer 1); nothing here reads it, so behavior is
@@ -234,6 +244,13 @@ defmodule Embervm.NodeRegistry do
     # watch_startup drives the informer from init; tests set it false and drive
     # inject_status/1 + tick/1 explicitly so no background stream or timer fires.
     watch_startup = Keyword.get(opts, :watch_startup, true)
+
+    registry_resync_ms =
+      Keyword.get(
+        opts,
+        :registry_resync_ms,
+        env_ms("EMBERVM_NODE_REGISTRY_RESYNC_INTERVAL_MS", @registry_resync_ms)
+      )
     # How long an instance may go without re-registering (dial-home) before its
     # registration is LAPSED; expiry additionally requires a dead stream.
     expire_after = Keyword.get(opts, :expire_after_ms, @expire_after_ms)
@@ -289,6 +306,7 @@ defmodule Embervm.NodeRegistry do
       channel_updater_fun: channel_updater_fun,
       channel_remover_fun: channel_remover_fun,
       base_builder_updater_fun: base_builder_updater_fun,
+      registry_resync_ms: registry_resync_ms,
       node_runtime: node_runtime,
       # The process notified once per drain rising edge with {:node_draining,
       # node_id, pod_uid, deadline_ms} so it can force-bank the instance's live VMs
@@ -323,6 +341,7 @@ defmodule Embervm.NodeRegistry do
       end)
 
     schedule_age_check(state)
+    schedule_registry_resync(state)
     {:noreply, state}
   end
 
@@ -382,6 +401,41 @@ defmodule Embervm.NodeRegistry do
   def handle_info(:age_check, state) do
     state = evaluate_ages(state)
     schedule_age_check(state)
+    {:noreply, state}
+  end
+
+  # Periodic idempotent registry re-push to every CONNECTED daemon (a node with a
+  # live streamer). The per-connection push is once-per-connect, so this is what
+  # propagates a CATALOG CHANGE (e.g. nodeLocalWake toggled on a workload, ADR
+  # embervm/018) to an already-connected daemon. Each re-push runs in a spawned
+  # process over a FRESH short-lived channel so a slow dial never blocks this
+  # GenServer (or its age-out timer) and the streamer's own watch channel is
+  # untouched; SyncRegistry is idempotent, so a re-push is safe to repeat.
+  def handle_info(:resync_registry, state) do
+    connect_fun = state.connect_fun
+    disconnect_fun = state.disconnect_fun
+    sync_registry_fun = state.sync_registry_fun
+
+    for {_id, rt} <- state.node_runtime, not is_nil(rt.streamer) do
+      address = rt.address
+      node_id = rt.configured_id
+
+      spawn(fn ->
+        case connect_fun.(address) do
+          {:ok, channel} ->
+            try do
+              sync_registry_fun.(channel, node_id)
+            after
+              disconnect_fun.(channel)
+            end
+
+          _ ->
+            :ok
+        end
+      end)
+    end
+
+    schedule_registry_resync(state)
     {:noreply, state}
   end
 
@@ -1097,6 +1151,30 @@ defmodule Embervm.NodeRegistry do
 
   defp schedule_age_check(state) do
     Process.send_after(self(), :age_check, state.age_check_ms)
+  end
+
+  # Arm the periodic registry re-push. Disabled (no timer) when the interval is 0
+  # (tests drive the informer manually), so no background re-sync fires there.
+  defp schedule_registry_resync(%{registry_resync_ms: ms}) when is_integer(ms) and ms > 0 do
+    Process.send_after(self(), :resync_registry, ms)
+  end
+
+  defp schedule_registry_resync(_state), do: :ok
+
+  # Parse a non-negative-integer millisecond env var, falling back to `default` on
+  # an unset or unparseable value (a positive default is never silently disabled by
+  # a typo; only an explicit 0 disables the timer).
+  defp env_ms(var, default) do
+    case System.get_env(var) do
+      nil ->
+        default
+
+      raw ->
+        case Integer.parse(raw) do
+          {ms, _} when ms >= 0 -> ms
+          _ -> default
+        end
+    end
   end
 
   # -- dial-home registration -------------------------------------------------

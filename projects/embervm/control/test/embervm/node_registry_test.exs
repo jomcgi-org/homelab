@@ -37,7 +37,10 @@ defmodule Embervm.NodeRegistryTest do
       name: nil,
       table: table,
       nodes: [%{id: "node-4", address: "node-4.test:9090"}],
-      watch_startup: false
+      watch_startup: false,
+      # No background registry re-push unless a test opts in (mirrors the manual
+      # informer control the harness relies on).
+      registry_resync_ms: 0
     ]
 
     {:ok, pid} = NodeRegistry.start_link(Keyword.merge(defaults, opts))
@@ -352,6 +355,47 @@ defmodule Embervm.NodeRegistryTest do
     # The clean-close reconnect replayed it AGAIN (re-converge on every connect).
     assert_receive {:replayed, "node-4"}, 1_000
     eventually(fn -> length(Agent.get(syncs, & &1)) >= 2 end, 200)
+  end
+
+  test "periodically re-pushes the registry to a still-connected daemon (ADR embervm/018 catalog-change convergence)" do
+    {:ok, syncs} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> if Process.alive?(syncs), do: Agent.stop(syncs) end)
+    test_pid = self()
+
+    sync_registry_fun = fn :fake_channel, node_id ->
+      n = Agent.get_and_update(syncs, fn c -> {c + 1, c + 1} end)
+      send(test_pid, {:synced, node_id, n})
+      :ok
+    end
+
+    # A watch that STAYS open (blocks), so the streamer never reconnects: any
+    # re-push beyond the first connect-time one is the PERIODIC re-sync, which is
+    # what propagates a catalog change (e.g. nodeLocalWake) to a connected daemon.
+    watch_fun = fn :fake_channel, node_id, emit ->
+      emit.(node_status(node_id: node_id))
+      receive do: (:never -> {:ok, :closed})
+    end
+
+    {_reg, _table} =
+      start_registry(
+        watch_startup: true,
+        connect_fun: fn _address -> {:ok, :fake_channel} end,
+        watch_fun: watch_fun,
+        sync_registry_fun: sync_registry_fun,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        registry_resync_ms: 30,
+        base_backoff_ms: 60_000,
+        max_backoff_ms: 60_000,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    # The connect-time push fired once, then the periodic re-sync fires AGAIN and
+    # AGAIN with no reconnect (the streamer is still blocked in watch_fun).
+    assert_receive {:synced, "node-4", 1}, 1_000
+    assert_receive {:synced, "node-4", 2}, 1_000
+    assert_receive {:synced, "node-4", 3}, 1_000
   end
 
   # -- dial-home registration (R0 PR-2) --------------------------------------

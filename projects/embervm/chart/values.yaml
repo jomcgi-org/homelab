@@ -472,13 +472,13 @@ hotImageDemo:
     # value, so the workload spec carries none of the cluster's ingress DNS. Keep in
     # sync with each route's rewriteHost.
     host: hot-image-demo.serving.internal
-    # Floor of one warm instance: the sweeper never idle-banks the last instance, so
-    # once the workload has served its first request it STAYS live and no subsequent
-    # request waits on (or 503s from) an idle-wake. (There is no proactive primer, so
-    # the very first request after a cold start still cold-boots; steady-state is warm.)
-    # This is the cold-vs-hot contrast the demo shows: cold-image-demo boots per
-    # request, hot-image-demo stays live. Costs one resident microVM.
-    minInstances: 1
+    # Scale-to-zero (ADR embervm/018): the demo idle-banks to zero and cold-boots on
+    # the first request, which is the whole point of the node-local activator (the
+    # first request during a control-plane gap cold-boots on the brick instead of
+    # black-holing on the dead CP-pod activator). This is what makes hot-image-demo
+    # the activator showcase; the warm-vs-cold contrast now lives entirely in
+    # cold-image-demo (task-class, vsock) vs this serving-class tap boot.
+    minInstances: 0
     maxInstances: 2
     idleBankSeconds: 600
     drainSeconds: 5
