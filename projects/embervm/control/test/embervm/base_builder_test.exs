@@ -1229,6 +1229,45 @@ defmodule Embervm.BaseBuilderTest do
     refute_receive {:exported, "snap1"}, 200
   end
 
+  test "export reconcile resolves a stale placement instance_id to the current node-mate (pod-restart churn)" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+
+    export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+      send(test_pid, {:exported, ref.ref})
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+    end
+
+    builder =
+      start_builder(
+        # Both the build-time pod (big) and the post-restart pod (big2) are
+        # registered with addresses; only big is a brick, so the build places there.
+        nodes: [%{id: "node-4/big", address: "a"}, %{id: "node-4/big2", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_fun: export_fun,
+        export_reconcile_interval_ms: 20
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+    assert_receive {:exported, "snap1"}, 1_000
+
+    # The placed pod (big) restarts as a new pod (big2) on the SAME node. Only big2
+    # now reports the base READY-but-unexported; the build-time instance_id (big) is
+    # stale and no longer in the capacity table's workload facts. The reconcile must
+    # resolve big -> big2 (same node) and re-export via big2's address. Before the
+    # node-name remap this missed on the churned instance_id and the export parked.
+    put_base_fact(table, "node-4", "big2", "w", "snap1", :BASE_BUILD_STATE_READY, false)
+    assert_receive {:exported, "snap1"}, 1_000
+  end
+
   test "the reconcile does not fire a second export RPC for a ref already in flight, and re-issues once it settles" do
     # fast-durability-export fix: the CP-side in-flight set trims reconcile RPC churn
     # (noded's exportDedupe is what serializes the actual multi-minute upload). While

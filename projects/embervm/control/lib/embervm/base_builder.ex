@@ -1096,6 +1096,40 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
+  # The node-name portion of a placement instance_id ("node/pod_uid" -> "node"; a
+  # bare id with no "/" is already a node name).
+  defp node_name(id) when is_binary(id), do: id |> String.split("/", parts: 2) |> hd()
+  defp node_name(_), do: nil
+
+  # Map a (possibly stale) placement instance_id to the CURRENT registered instance
+  # on the SAME node, preferring one whose reported facts already include `workload`'s
+  # base (node-mates share the hostPath scratch, so any current instance can
+  # export/evict it). Falls back to the original id when no current node-mate is
+  # registered, so the path behaves exactly as before rather than acting on a guess.
+  #
+  # Base ownership is a NODE property: a built base lives on the node's hostPath
+  # scratch and survives a noded pod restart, but the build-time placement instance_id
+  # churns with the pod. Without this remap `find_capacity_fact`/`node_addr` miss after
+  # any pod restart (the churned pod_uid no longer matches w.node_id), which silently
+  # parks the durability export AND the local retention drain: the current base is
+  # never seen as exportable, so the sweep skips every workload as unexported.
+  defp current_instance_on_node(state, stale_id, workload) do
+    target = node_name(stale_id)
+
+    mates =
+      state.capacity_table
+      |> Embervm.NodeCapacity.all()
+      |> Enum.filter(fn f -> node_name(Map.get(f, :instance_id)) == target end)
+
+    reporter = Enum.find(mates, fn f -> get_in(f, [:workloads, workload]) != nil end)
+
+    cond do
+      reporter != nil -> Map.get(reporter, :instance_id)
+      mates != [] -> mates |> hd() |> Map.get(:instance_id)
+      true -> stale_id
+    end
+  end
+
   # An instance can build the workload when it is a wildcard (empty class or zero
   # budget: the full-node envelope, always able to boot) or its budget covers need.
   defp build_eligible?(i, need_mib) do
@@ -1450,8 +1484,10 @@ defmodule Embervm.BaseBuilder do
   # must not ship into the store), so it cannot hammer.
   defp export_reconcile(state) do
     Enum.reduce(state.workloads, state, fn {_name, w}, acc ->
-      if current_base_present_but_unexported?(acc, w) do
-        spawn_export(acc, w.node_id, w.name, w.snapshot_ref)
+      cur = current_instance_on_node(acc, w.node_id, w.name)
+
+      if current_base_present_but_unexported?(acc, cur, w) do
+        spawn_export(acc, cur, w.name, w.snapshot_ref)
       else
         acc
       end
@@ -1465,9 +1501,9 @@ defmodule Embervm.BaseBuilder do
   # against exporting a BUILDING/FAILED entry; requiring the node fact at all
   # means a base whose node has not yet reported is left for the next sweep
   # (never blindly re-exported without evidence it is present).
-  defp current_base_present_but_unexported?(state, w) do
+  defp current_base_present_but_unexported?(state, node_ref, w) do
     is_binary(w.node_id) and is_binary(w.snapshot_ref) and
-      case node_base_fact(state, w.node_id, w.name) do
+      case node_base_fact(state, node_ref, w.name) do
         {:ok, %{snapshot_ref: ref, base_state: base_state, exported: exported}} ->
           ref == w.snapshot_ref and
             base_state == :BASE_BUILD_STATE_READY and exported != true
@@ -1544,8 +1580,10 @@ defmodule Embervm.BaseBuilder do
   #   {:skip_unexported, node_id}    - current base present but not yet exported
   #   {:evict, node_id, refs, bytes} - superseded local bases to evict + their bytes
   defp workload_retention(state, w) do
+    cur = current_instance_on_node(state, w.node_id, w.name)
+
     with true <- is_binary(w.node_id) and is_binary(w.snapshot_ref),
-         {:ok, fact} <- find_capacity_fact(state.capacity_table, w.node_id),
+         {:ok, fact} <- find_capacity_fact(state.capacity_table, cur),
          locals when is_list(locals) <- Map.get(fact, :local_bases, []) do
       current_exported? =
         case get_in(fact, [:workloads, w.name]) do
@@ -1556,7 +1594,7 @@ defmodule Embervm.BaseBuilder do
       cond do
         not current_exported? ->
           # Durability floor not yet confirmed for this workload: skip it whole.
-          {:skip_unexported, w.node_id}
+          {:skip_unexported, cur}
 
         true ->
           desired = desired_refs(w)
@@ -1580,7 +1618,7 @@ defmodule Embervm.BaseBuilder do
           else
             refs = Enum.map(candidates, & &1.ref)
             bytes = candidates |> Enum.map(&(&1.size_bytes || 0)) |> Enum.sum()
-            {:evict, w.node_id, refs, bytes}
+            {:evict, cur, refs, bytes}
           end
       end
     else
