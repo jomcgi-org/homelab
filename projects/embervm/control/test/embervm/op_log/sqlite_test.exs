@@ -920,4 +920,61 @@ defmodule Embervm.OpLog.SQLiteTest do
     assert task_state(server2, "task-z") == "succeeded"
     :ok = GenServer.stop(server2)
   end
+
+  # -- attempt-aliasing epoch guard (ADR embervm/014 decision 2, async gate) --
+
+  test "attempt-aliasing: a stale :assigned from a prior attempt does NOT re-assign a task retried back to queued",
+       %{path: path} do
+    server = start_server(path)
+
+    append_task_op(server, :submitted, "task-a", 100, %{idempotency_key: nil, expires_at: nil})
+    # Attempt 1 (epoch 1) is dispatched: its deferred :assigned/:started land and
+    # advance the row to running (attempt column still 0).
+    append_task_op(server, :assigned, "task-a", 101, %{epoch: 1})
+    append_task_op(server, :started, "task-a", 102, %{epoch: 1})
+    assert task_state(server, "task-a") == "running"
+
+    # Attempt 1 fails and is retried: back to queued, attempt column now 1.
+    append_task_op(server, :failed, "task-a", 103, %{state: :failed_retryable, reason: :transport})
+    append_task_op(server, :retried, "task-a", 104)
+    assert task_state(server, "task-a") == "queued"
+
+    # The DEFERRED attempt-1 :assigned finally lands (epoch 1). queued -> assigned is
+    # FORWARD in the state-rank order, so the rank guard alone would let it through;
+    # the EPOCH guard drops it because the row has already retried to attempt 1
+    # (1 is not < 1). Without this guard the task would be re-assigned to attempt 1's
+    # worker, which no longer exists.
+    append_task_op(server, :assigned, "task-a", 105, %{epoch: 1})
+    assert task_state(server, "task-a") == "queued"
+
+    # The CURRENT attempt (epoch 2) assigns normally: the row's attempt (1) is still
+    # below the op's epoch (2), so the same guard admits it.
+    append_task_op(server, :assigned, "task-a", 106, %{epoch: 2})
+    assert task_state(server, "task-a") == "assigned"
+
+    # And the stale epoch-1 append is STILL in the durable log (audit trail), so the
+    # guard suppressed the projection effect, not the record: three :assigned ops.
+    {:ok, ops} = SQLite.read_from(server, 0)
+    assert Enum.count(ops, &(&1.task_id == "task-a" and &1.kind == :assigned)) == 3
+
+    :ok = GenServer.stop(server)
+    server2 = start_server(path)
+    assert task_state(server2, "task-a") == "assigned"
+    :ok = GenServer.stop(server2)
+  end
+
+  test "an epoch-tagged :assigned still applies on the normal forward path (no retry, attempt 0 < epoch 1)",
+       %{path: path} do
+    server = start_server(path)
+
+    append_task_op(server, :submitted, "task-b", 100, %{idempotency_key: nil, expires_at: nil})
+    # No retry has happened: attempt column is 0, below epoch 1, so the epoch guard
+    # is a no-op and the row advances exactly as the un-tagged path would.
+    append_task_op(server, :assigned, "task-b", 101, %{epoch: 1})
+    assert task_state(server, "task-b") == "assigned"
+    append_task_op(server, :started, "task-b", 102, %{epoch: 1})
+    assert task_state(server, "task-b") == "running"
+
+    :ok = GenServer.stop(server)
+  end
 end
