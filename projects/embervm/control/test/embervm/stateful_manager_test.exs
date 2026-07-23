@@ -262,16 +262,41 @@ defmodule Embervm.StatefulManagerTest do
     assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") - 1 == 1
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
 
-    # Simulate a node report of a self-bumped generation the control plane never
-    # blessed (generation 2, blessed_generation still 1): the daemon self-bumped
-    # outside the ledger.
-    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2, generation_blessed: false})
+    # A forward-unblessed generation reported by a node that is NOT the volume's
+    # anchor (the wake above anchored it to node-4) is the only genuine split-brain
+    # shape and quarantines: a second writer would have to hold the RWO attach that
+    # ADR embervm/011 fencing forbids. (A forward report from the ANCHOR node is
+    # instead adopted, see the adopt test below.)
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-9", generation: 2, generation_blessed: false})
     assert StatefulStore.quarantined?(ctx.store, "wl-a")
 
     # A quarantined volume's next wake must park (never place): destroy the live
-    # instance and rewake, which anchors to the volume's node and must refuse.
+    # instance and rewake, which must refuse.
     StatefulManager.destroy_instance(ctx.mgr, "wl-a")
     assert {:error, {:wake_failed, :volume_quarantined}} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+  end
+
+  test "a forward-unblessed report from the volume's OWN anchor node is adopted, not quarantined, and does not park the next wake" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") - 1 == 1
+
+    # node-4 holds the fenced attach. A generation it reports past the watermark is
+    # the single writer running ahead of a watermark that rewound (e.g. a CP roll),
+    # not split-brain: adopt it (advance the watermark, no quarantine) rather than
+    # deadlock the workload. This is ADR embervm/014's node-authoritative
+    # reconciliation applied to the R7 blessing watermark.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 3, generation_blessed: false})
+    refute StatefulStore.quarantined?(ctx.store, "wl-a")
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") == 4
+
+    # The next wake proceeds (the deadlock is gone): destroy the live instance and
+    # rewake, which must NOT refuse with :volume_quarantined.
+    StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
   end
 
   test "a node report that agrees with the last blessed generation (or reports generation_blessed=true) never quarantines" do
@@ -289,10 +314,11 @@ defmodule Embervm.StatefulManagerTest do
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
 
     # A report claiming the reported generation IS blessed clears any prior
-    # quarantine.
-    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2, generation_blessed: false})
+    # quarantine. Quarantine here is induced from a NON-anchor node (node-9); a
+    # forward jump from the node-4 anchor would be adopted, not quarantined.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-9", generation: 2, generation_blessed: false})
     assert StatefulStore.quarantined?(ctx.store, "wl-a")
-    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2, generation_blessed: true})
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-9", generation: 2, generation_blessed: true})
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
   end
 
@@ -319,7 +345,8 @@ defmodule Embervm.StatefulManagerTest do
     stateful_node(ctx, "node-4")
 
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
-    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2, generation_blessed: false})
+    # Quarantine from a NON-anchor node (a node-4-anchor forward report is adopted).
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-9", generation: 2, generation_blessed: false})
     assert StatefulStore.quarantined?(ctx.store, "wl-a")
 
     refute Embervm.StatefulSweeper.export_allowed?(ctx.store, "wl-a")
