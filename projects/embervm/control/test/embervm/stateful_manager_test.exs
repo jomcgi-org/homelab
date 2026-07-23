@@ -95,7 +95,10 @@ defmodule Embervm.StatefulManagerTest do
           :mono_clock,
           :wake_timeout_margin_ms,
           :restore_artifact_fun,
-          :evict_artifact_fun
+          :evict_artifact_fun,
+          :node_confirmed_destroy,
+          :destroying_alarm_ms,
+          :orphan_grace_ms
         ])
 
     {:ok, mgr} = StatefulManager.start_link(mgr_opts)
@@ -1147,6 +1150,105 @@ defmodule Embervm.StatefulManagerTest do
     assert %{destroyed: 1, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
     live = Enum.reject(StatefulStore.list(ctx.store, "wl-a"), &Embervm.StatefulState.terminal?(&1.state))
     assert live == []
+  end
+
+  # -- node-confirmed destroy (ADR embervm/014 decision 5, gated) -------------
+
+  test "gated: a confirming teardown records the stateful instance destroyed" do
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: true}} end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert %{destroyed: 1, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+    assert instance.state == :destroyed
+  end
+
+  test "gated: an unconfirmed teardown stays destroying and reconcile re-drives it" do
+    {:ok, confirmations} = Agent.start_link(fn -> [false, true] end)
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        stop_stateful_fun: fn _ch, _req ->
+          Agent.get_and_update(confirmations, fn [confirmed | rest] ->
+            {{:ok, %{teardown_confirmed: confirmed}}, rest}
+          end)
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+
+    assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+    assert instance.state == :destroying
+
+    stateful_node(ctx, "node-4",
+      stateful_vms: [%{vm_id: instance.vm_id, workload: "wl-a", ip: "10.88.0.5", port: 5432, healthy: true, generation: 1, last_probe_unix_ms: 1}]
+    )
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, instance} = StatefulStore.get(ctx.store, instance.instance_id)
+    assert instance.state == :destroyed
+  end
+
+  test "gated: a destroying instance is confirmed destroyed by owner-reported absence" do
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+
+    stateful_node(ctx, "node-4", stateful_vms: [])
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+    assert instance.state == :destroyed
+  end
+
+  test "gate-off destroy records destroyed before an unconfirmed teardown" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        stop_stateful_fun: fn _ch, _req ->
+          send(parent, :stop_stateful_called)
+          {:ok, %{teardown_confirmed: false}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert %{destroyed: 1, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert_received :stop_stateful_called
+    assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+    assert instance.state == :destroyed
+  end
+
+  test "destroy_instance leaves the volume row intact" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 1, size_bytes: 10, allocated_bytes: 1})
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert %{destroyed: 1, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert %{workload: "wl-a", node_id: "node-4", generation: 1} = StatefulStore.get_volume(ctx.store, "wl-a")
   end
 
   test "delete_volume is refused while a live instance exists, succeeds once it is gone" do
