@@ -314,11 +314,11 @@ defmodule Embervm.SessionStoreTest do
   test "backfill_created re-drives a lost session_created append from the surviving ETS row", %{
     path: path
   } do
-    # Model a lost async write: the ETS row exists (create advanced it) but the
-    # durable append never landed. We reproduce that by deleting the durable row's
-    # backing via a fresh op-log the store never appended the create to, then asserting
-    # backfill re-drives it. Simpler: create write-through, prove the append is there,
-    # then a SECOND backfill is idempotent (INSERT OR IGNORE) - the audit stays single.
+    # This covers the IDEMPOTENCY edge: a re-drive of an ALREADY-durable create must
+    # not double the projected row. The complementary CREATES-WHEN-ABSENT edge (the
+    # durable row genuinely missing, which is the case the reconciler actually repairs)
+    # is the next test, which uses a drop-first op-log double to model the lost write
+    # deterministically.
     {op_log, store} = start_pair(path)
     {:ok, created} = create(store, vm_id: "vm-bf")
 
@@ -335,5 +335,67 @@ defmodule Embervm.SessionStoreTest do
     # Unknown session: a clean error tuple, never a crash.
     assert {:error, {:not_found, "s-nonexistent"}} =
              SessionStore.backfill_created(store, "s-nonexistent")
+  end
+
+  # An op-log double that delegates to a real SQLite backend but SWALLOWS the FIRST
+  # :session_created append (returns {:ok, 0} as if durable, without persisting),
+  # modelling an async lifecycle write that was lost before it reached disk while the
+  # caller still saw success and minted its ETS row. The "already dropped one?" state
+  # lives in a test-owned public ETS table, so the drop is deterministic with ZERO
+  # timing dependence (killing the AsyncWriter mid-flight to lose the write would be
+  # flaky, which is exactly the failure mode this suite is trying to shed).
+  defmodule DropFirstCreateOpLog do
+    def append(op_log, %{kind: :session_created} = op) do
+      case :ets.update_counter(:sessionstore_drop_first, :created, {2, 1}, {:created, 0}) do
+        1 -> {:ok, 0}
+        _ -> SQLite.append(op_log, op)
+      end
+    end
+
+    def append(op_log, op), do: SQLite.append(op_log, op)
+
+    def load_sessions(op_log), do: SQLite.load_sessions(op_log)
+  end
+
+  test "backfill_created CREATES the durable session_created when it is genuinely absent (lost async write)",
+       %{path: path} do
+    # Owned by this test process, so it is auto-deleted when the test ends (no on_exit:
+    # the table is already gone by the time on_exit's separate process would run).
+    :ets.new(:sessionstore_drop_first, [:set, :public, :named_table])
+
+    {:ok, op_log} = SQLite.start_link(path: path, name: nil)
+
+    {:ok, store} =
+      SessionStore.start_link(
+        op_log: op_log,
+        op_log_mod: DropFirstCreateOpLog,
+        name: nil,
+        clock: sequential_clock(),
+        id_fun: sequential_id_fun()
+      )
+
+    # create's durable :session_created is swallowed (the lost write), but the store
+    # still minted the ETS row because append reported {:ok, _}.
+    {:ok, created} = create(store, vm_id: "vm-lost")
+
+    # The ETS row is live and routable...
+    assert {:ok, %{state: :running}} = SessionStore.get(store, created.session_id)
+    # ...while the durable projection holds NOTHING: the write never reached disk, so a
+    # fresh store rebuilding from the projection alone would lose the session entirely.
+    assert {:ok, []} = SQLite.load_sessions(op_log)
+    assert durable_session_created_count(op_log, created.session_id) == 0
+
+    # The reconciler's adopt-and-backfill repair re-drives the create from the ETS row.
+    :ok = SessionStore.backfill_created(store, created.session_id)
+
+    # Now the durable row EXISTS (0 -> 1) and matches the surviving ETS row: a rebuild
+    # would reproduce the session rather than orphaning its live VM.
+    assert durable_session_created_count(op_log, created.session_id) == 1
+    {:ok, [row]} = SQLite.load_sessions(op_log)
+    assert row.session_id == created.session_id
+    assert row.state == "running"
+
+    {:ok, store2} = SessionStore.start_link(op_log: op_log, name: nil)
+    assert {:ok, %{state: :running}} = SessionStore.get(store2, created.session_id)
   end
 end
