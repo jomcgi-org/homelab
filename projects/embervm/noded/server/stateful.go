@@ -680,28 +680,35 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 }
 
 // stopStatefulDestroy tears a stateful VM down with no snapshot, releases its
-// tap, and detaches its volume. Idempotent: an unknown vm_id returns OK.
+// tap, and detaches its volume. Idempotent: an unknown vm_id returns confirmed.
+// teardown_confirmed is true only when the reap fully completed; a reap failure
+// returns an error, not a false confirm (ADR embervm/014 decision 5). The volume
+// FILE survives (destroy tears down the VM, not its durable volume); DeleteVolume
+// is the separate explicit data verb.
 func (s *Server) stopStatefulDestroy(vmID string) (*nodev1.StopStatefulResponse, error) {
 	if removed := s.statefulVMs.remove(vmID); removed != nil {
 		removed.probe.Stop()
-		s.reapStateful(removed.handle, removed.ip, removed.workload)
+		if err := s.reapStateful(removed.handle, removed.ip, removed.workload); err != nil {
+			return nil, status.Errorf(codes.Internal, "noded: reap stateful vm %q: %v", vmID, err)
+		}
 		s.signalChange()
 	}
-	return &nodev1.StopStatefulResponse{}, nil
+	return &nodev1.StopStatefulResponse{TeardownConfirmed: true}, nil
 }
 
 // reapStateful tears a stateful VM down (release the FC process + bundle),
 // releases its tap + IP, and detaches its volume so a subsequent StartStateful
 // for the same workload is not refused by a stale attach lock. Best-effort,
 // mirroring reapServing plus the volume detach.
-func (s *Server) reapStateful(h substrate.Handle, ip net.IP, workload string) {
-	s.reap(h, func() {})
+func (s *Server) reapStateful(h substrate.Handle, ip net.IP, workload string) error {
+	err := s.reap(h, func() {})
 	if s.servingNet != nil {
 		s.servingNet.ReleaseTap(context.Background(), ip)
 	}
 	if s.volumes != nil {
 		s.volumes.Detach(workload)
 	}
+	return err
 }
 
 // DeleteVolume removes a workload's volume file and its generation ledger. It

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -42,6 +43,10 @@ type fakeDriver struct {
 	snapshots     int
 	live          int
 	failClaim     error
+	// failRelease injects a driver Release failure so a test can prove a reap
+	// failure surfaces as a Destroy error (teardown NOT confirmed), not a false
+	// confirmation (ADR embervm/014 decision 5).
+	failRelease error
 	// failSnapshotSession injects a Bank snapshot failure. The real driver tears
 	// the VM down on any snapshot error (a bank is destructive), so the fake
 	// mirrors that by decrementing live before returning the error.
@@ -90,6 +95,9 @@ func (f *fakeDriver) Release(_ context.Context, _ substrate.Handle) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.releases++
+	if f.failRelease != nil {
+		return f.failRelease
+	}
 	if f.live > 0 {
 		f.live--
 	}
@@ -606,18 +614,77 @@ func TestDestroyIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prime: %v", err)
 	}
-	if _, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: pr.GetVmId()}); err != nil {
+	dr, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: pr.GetVmId()})
+	if err != nil {
 		t.Fatalf("Destroy: %v", err)
+	}
+	// A completed reap confirms teardown (ADR embervm/014 decision 5).
+	if !dr.GetTeardownConfirmed() {
+		t.Errorf("Destroy of live VM: teardown_confirmed=false, want true")
 	}
 	if _, releases, removeBundles, _ := drv.counts(); releases != 1 || removeBundles != 1 {
 		t.Errorf("Destroy did not reap: releases=%d removeBundles=%d, want 1/1", releases, removeBundles)
 	}
-	// Idempotent: repeat Destroy is OK with no extra teardown.
-	if _, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: pr.GetVmId()}); err != nil {
+	// The VM no longer appears as live in NodeStatus.
+	ns, err := client.GetNodeStatus(ctx, &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetNodeStatus: %v", err)
+	}
+	if ns.GetLiveVms() != 0 {
+		t.Errorf("after Destroy live_vms=%d, want 0", ns.GetLiveVms())
+	}
+	// Idempotent: repeat Destroy of the now-unknown id is confirmed with no extra
+	// teardown (nothing is held, so the destroyed end-state already holds).
+	dr2, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: pr.GetVmId()})
+	if err != nil {
 		t.Fatalf("second Destroy: %v", err)
+	}
+	if !dr2.GetTeardownConfirmed() {
+		t.Errorf("second Destroy (unknown id): teardown_confirmed=false, want true")
 	}
 	if _, releases, _, _ := drv.counts(); releases != 1 {
 		t.Errorf("second Destroy re-reaped: releases=%d, want 1", releases)
+	}
+}
+
+// TestDestroyUnknownConfirmed asserts Destroy of a never-seen vm_id is confirmed
+// (nothing held => the destroyed end-state already holds) and reaps nothing.
+func TestDestroyUnknownConfirmed(t *testing.T) {
+	drv := &fakeDriver{}
+	client, _ := newTestServer(t, drv, &fakeTransport{}, 8)
+	ctx := context.Background()
+
+	dr, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: "never-existed"})
+	if err != nil {
+		t.Fatalf("Destroy unknown: %v", err)
+	}
+	if !dr.GetTeardownConfirmed() {
+		t.Errorf("Destroy of unknown id: teardown_confirmed=false, want true")
+	}
+	if _, releases, removeBundles, _ := drv.counts(); releases != 0 || removeBundles != 0 {
+		t.Errorf("Destroy of unknown id reaped: releases=%d removeBundles=%d, want 0/0", releases, removeBundles)
+	}
+}
+
+// TestDestroyReapFailureNotConfirmed asserts a reap failure surfaces as a Destroy
+// error (Internal), NOT a false teardown_confirmed. The control plane keeps the
+// instance in destroying until the retry succeeds (ADR embervm/014 decision 5).
+func TestDestroyReapFailureNotConfirmed(t *testing.T) {
+	drv := &fakeDriver{failRelease: errors.New("release wedged")}
+	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+	seedBase(srv, "echo__destroyfail01", "echo")
+	ctx := context.Background()
+
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "echo__destroyfail01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	dr, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: pr.GetVmId()})
+	if err == nil {
+		t.Fatalf("Destroy with failing reap: got confirmed=%v nil error, want error", dr.GetTeardownConfirmed())
+	}
+	if status.Code(err) != codes.Internal {
+		t.Errorf("Destroy reap failure code = %s, want Internal", status.Code(err))
 	}
 }
 

@@ -289,23 +289,28 @@ func (s *Server) stopServingBank(ctx context.Context, req *nodev1.StopServingReq
 }
 
 // stopServingDestroy tears a serving VM down with no snapshot and releases its tap.
-// Idempotent: an unknown vm_id returns OK (the desired end-state already holds).
+// Idempotent: an unknown vm_id returns confirmed (the desired end-state already
+// holds). teardown_confirmed is true only when the reap fully completed; a reap
+// failure returns an error, not a false confirm (ADR embervm/014 decision 5).
 func (s *Server) stopServingDestroy(vmID string) (*nodev1.StopServingResponse, error) {
 	if removed := s.servingVMs.remove(vmID); removed != nil {
 		removed.probe.Stop()
-		s.reapServing(removed.handle, removed.ip)
+		if err := s.reapServing(removed.handle, removed.ip); err != nil {
+			return nil, status.Errorf(codes.Internal, "noded: reap serving vm %q: %v", vmID, err)
+		}
 		s.signalChange()
 	}
-	return &nodev1.StopServingResponse{}, nil
+	return &nodev1.StopServingResponse{TeardownConfirmed: true}, nil
 }
 
 // reapServing tears a serving VM down (release the FC process + bundle) and releases
 // its tap + IP. Best-effort, mirroring reap for task/session VMs plus the tap teardown.
-func (s *Server) reapServing(h substrate.Handle, ip net.IP) {
-	s.reap(h, func() {})
+func (s *Server) reapServing(h substrate.Handle, ip net.IP) error {
+	err := s.reap(h, func() {})
 	if s.servingNet != nil {
 		s.servingNet.ReleaseTap(context.Background(), ip)
 	}
+	return err
 }
 
 // normalizePath ensures a health path has a leading slash.

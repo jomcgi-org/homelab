@@ -644,7 +644,15 @@ message DestroyRequest {
   string vm_id = 2;
 }
 
-message DestroyResponse {}
+message DestroyResponse {
+  // teardown_confirmed is true only when the daemon fully reaped the instance
+  // (microVM process gone, scratch/snapshot bundle removed, tap released for
+  // tap-bearing classes) or the vm_id was already unknown (idempotent no-op).
+  // The control plane records the destroyed transition ONLY on a confirmation
+  // (ADR embervm/014 decision 5). Old daemons leave this false, which the CP
+  // reads as unconfirmed and keeps the instance in destroying until reconcile.
+  bool teardown_confirmed = 1;
+}
 
 // ---- Session verbs (R2) ----------------------------------------------------
 
@@ -795,6 +803,10 @@ message StopServingResponse {
   // zero value for DESTROY.
   string snapshot_ref = 1;
   uint64 size_bytes = 2;
+  // teardown_confirmed is set only for mode DESTROY: true when the serving VM
+  // was fully reaped (process gone, bundle removed, tap released) or was already
+  // unknown. See DestroyResponse.teardown_confirmed (ADR embervm/014 decision 5).
+  bool teardown_confirmed = 3;
 }
 
 // ---- Stateful verbs (R4) ---------------------------------------------------
@@ -908,6 +920,11 @@ message StopStatefulResponse {
   // paused VM plus its temporary snapshot, which the control plane passes back to
   // ResolveStateful. Empty for BANK and DESTROY.
   string checkpoint_token = 4;
+  // teardown_confirmed is set only for mode DESTROY: true when the stateful VM
+  // was fully reaped (process gone, bundle removed, tap released, volume detached)
+  // or was already unknown. See DestroyResponse.teardown_confirmed (ADR embervm/014
+  // decision 5).
+  bool teardown_confirmed = 5;
 }
 
 enum ResolveMode {
@@ -1110,6 +1127,10 @@ message StopGroupMemberResponse {
   // control plane records and later passes to EvictSnapshot (R2, reused unchanged).
   string snapshot_ref = 1;
   uint64 size_bytes = 2;
+  // teardown_confirmed is set only for mode DESTROY: true when the member VM was
+  // fully reaped (process gone, bundle removed, member tap removed) or was already
+  // unknown. See DestroyResponse.teardown_confirmed (ADR embervm/014 decision 5).
+  bool teardown_confirmed = 3;
 }
 
 // ---- Node status -----------------------------------------------------------
