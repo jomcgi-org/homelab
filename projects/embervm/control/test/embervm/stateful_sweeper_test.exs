@@ -100,7 +100,7 @@ defmodule Embervm.StatefulSweeperTest do
     def load_volumes(server), do: SQLite.load_volumes(server)
     @impl true
     def load_volume_blessing(server), do: SQLite.load_volume_blessing(server)
-
+    @impl true
     def load_checkpoint_dispatches(server), do: SQLite.load_checkpoint_dispatches(server)
     @impl true
     def load_group_instances(server), do: SQLite.load_group_instances(server)
