@@ -93,6 +93,22 @@ node-confirmed.
    rule), and an instance a node reports that the CP does not recognise is an
    orphan to be destroyed, not adopted as-is.
 
+   *Amended 2026-07-23 ([ADR 018](018-node-local-activator-brick-authoritative-lifecycle.md)):
+   the orphan-destroy rule gains a provenance discriminator. A node may now
+   AUTHORITATIVELY create an instance itself (the brick activator waking a
+   scaled-to-zero workload while the CP is rolling), so "the CP does not
+   recognise it" no longer implies "orphan". A node-reported instance carrying
+   the wire marker `origin: ACTIVATOR` is an async-write to BACKFILL (append the
+   lifecycle ops late, adopt endpoint/health, publish), the wake-path analog of
+   the session async-write lane in decision 2, not a defect to destroy. For a
+   stateful workload the CP adopts INTO the workload's existing row (the class is
+   a singleton), so a brick-woken `vm_id` the CP never issued must not trip the
+   `vm_and_bundle_vanished` failure arm. The fail-closed default is unchanged for
+   everything unproven: a node VM with NO `origin: ACTIVATOR` marker, or a
+   stateful advancement no live `wake_grant` covers, is still an orphan to
+   destroy (and, if its generation ran forward, quarantined). The discriminator
+   narrows the destroy rule to the genuinely unrecognised; it does not blunt it.*
+
 6. **Isolated execution is a declared workload characteristic, not an
    inference.** Workloads carry an `isolated_execution: true` flag (name
    bikesheddable) that is a platform-enforced contract: the instance is
