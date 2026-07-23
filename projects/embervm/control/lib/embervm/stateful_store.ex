@@ -83,11 +83,18 @@ defmodule Embervm.StatefulStore do
   split-brain write). `upsert_volume/3` re-derives `quarantined` in the
   blessing table on every node refresh that carries a `generation_blessed`
   fact: true when the reported generation exceeds `blessed_generation` AND the
-  node's own `generation_blessed` fact is false; a node reporting
-  `generation_blessed: true` at or below the blessed watermark clears it. Once
-  quarantined, `Embervm.StatefulManager.plan_wake/2` parks the wake rather than
-  placing it (fail closed, no auto-heal in v1: resolution is a runbook
-  decision). A workload that has NEVER been blessed (no CP generation-blessing
+  node's own `generation_blessed` fact is false AND the forward jump comes from
+  a DIFFERENT node than the volume's current anchor. When the volume's OWN anchor
+  node (the single writer Longhorn RWO fencing, ADR embervm/011, guarantees) is
+  the one running ahead of the watermark, that is watermark lag after a CP roll,
+  not split-brain, so `update_quarantine` ADOPTS the reported generation (advances
+  the watermark, clears quarantine) rather than deadlocking the workload; only a
+  forward jump from a non-anchor node stays fail-closed. This is ADR embervm/014's
+  node-authoritative reconciliation applied to the R7 blessing watermark. A node
+  reporting `generation_blessed: true` at or below the blessed watermark clears it.
+  Once quarantined, `Embervm.StatefulManager.plan_wake/2` parks the wake rather than
+  placing it (fail closed: resolution is either the anchor-node adoption above or a
+  runbook decision). A workload that has NEVER been blessed (no CP generation-blessing
   op ever landed, e.g. every pre-R7 volume) has an absent `blessed_generation`
   and is NEVER quarantined by this alone: `quarantined?/2` treats absent as
   "not yet under CP governance" rather than "behind it", so an existing volume
@@ -845,7 +852,13 @@ defmodule Embervm.StatefulStore do
           # pair-key: an unblessed forward jump must be caught, and a settle-back
           # to the blessed watermark must clear it (see the floor comment above).
           quarantine_gen = if is_integer(reported_gen), do: reported_gen, else: Map.get(merged, :generation, 0)
-          update_quarantine(state, workload, quarantine_gen, blessed_on_wire)
+          # reporting_node is who sent THIS report (always carried, see
+          # refresh_volume_facts); anchor_node is the volume's prior holder (the
+          # pre-merge row's node_id). update_quarantine compares them to decide
+          # adopt-vs-quarantine on an unblessed forward jump (see its doc).
+          reporting_node = Map.get(fields, :node_id)
+          anchor_node = Map.get(base, :node_id)
+          update_quarantine(state, workload, quarantine_gen, blessed_on_wire, reporting_node, anchor_node)
       end
 
     {:reply, merged, state}
@@ -1435,24 +1448,79 @@ defmodule Embervm.StatefulStore do
   # it"). Logs a structured warning on a false -> true transition only (Task
   # 16's alert wiring reads the event name), never on an already-quarantined or
   # a never-quarantined report, so a stuck-quarantined workload does not spam.
-  defp update_quarantine(state, workload, reported_gen, blessed_on_wire) do
+  # Derives the blessing ledger's quarantine flag from a fresh node report, and
+  # SELF-HEALS a lagging watermark by adopting a forward generation reported by the
+  # volume's own fenced writer (ADR embervm/014's node-authoritative reconciliation,
+  # applied to the R7 blessing watermark).
+  #
+  # An unblessed forward jump (node reports generation > our blessed watermark with
+  # generation_blessed:false) has two causes that look identical on the wire but are
+  # opposite in danger:
+  #
+  #   * The volume's OWN anchor node (the single writer that Longhorn RWO fencing,
+  #     ADR embervm/011, guarantees is the only one able to attach it RW) running
+  #     ahead of a watermark that REWOUND on a control-plane roll. The op-log replay
+  #     lands the last durably-blessed generation, but the node bumps its on-disk
+  #     generation locally on every attach, so a roll can leave blessed < reported
+  #     for a volume that has exactly one writer. This is watermark lag, not
+  #     split-brain. Quarantining it deadlocks the workload forever: a quarantined
+  #     volume can never wake, so it can never re-bless to catch the watermark up
+  #     (the recurring demo-postgres quarantine after a CP roll). ADOPT it: advance
+  #     the watermark to the reported generation and clear quarantine. The adoption
+  #     is ETS-only (like `quarantined` itself, it is re-derived from node reports,
+  #     never durable); the next real wake blesses next_blessed_generation past it
+  #     durably, and any later roll simply re-adopts from the node's report.
+  #
+  #   * A DIFFERENT node than the fenced anchor reporting a forward jump. That is the
+  #     only shape that is genuine split-brain evidence, so it stays FAIL-CLOSED
+  #     (quarantine). A legitimate RWO handoff whose new anchor reports an unblessed
+  #     generation is the remaining fail-closed case, rare and manually recoverable.
+  defp update_quarantine(state, workload, reported_gen, blessed_on_wire, reporting_node, anchor_node) do
     fact = fetch_blessing(state, workload)
     blessed_gen = Map.get(fact, :blessed_generation)
 
-    quarantined? =
+    forward_unblessed? =
       not blessed_on_wire and is_integer(blessed_gen) and reported_gen > blessed_gen
 
-    if quarantined? and not Map.get(fact, :quarantined, false) do
-      Logger.warning("embervm stateful volume quarantined: unblessed generation reported past the last blessed one",
-        event: :generation_quarantined,
-        workload: workload,
-        generation: reported_gen,
-        blessed_generation: blessed_gen
-      )
-    end
+    fenced_writer? =
+      is_binary(reporting_node) and is_binary(anchor_node) and reporting_node == anchor_node
 
-    :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, quarantined?)})
-    state
+    cond do
+      forward_unblessed? and fenced_writer? ->
+        Logger.info(
+          "embervm stateful volume generation adopted: fenced writer ran ahead of the blessed watermark",
+          event: :generation_adopted,
+          workload: workload,
+          generation: reported_gen,
+          blessed_generation: blessed_gen,
+          node_id: reporting_node
+        )
+
+        :ets.insert(
+          state.blessing,
+          {workload, Map.merge(fact, %{blessed_generation: reported_gen, quarantined: false})}
+        )
+
+        state
+
+      true ->
+        quarantined? = forward_unblessed?
+
+        if quarantined? and not Map.get(fact, :quarantined, false) do
+          Logger.warning(
+            "embervm stateful volume quarantined: unblessed generation reported past the last blessed one",
+            event: :generation_quarantined,
+            workload: workload,
+            generation: reported_gen,
+            blessed_generation: blessed_gen,
+            node_id: reporting_node,
+            anchor_node: anchor_node
+          )
+        end
+
+        :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, quarantined?)})
+        state
+    end
   end
 
   # Bump the ETS volume row's pair-key generation to the value an attach (a

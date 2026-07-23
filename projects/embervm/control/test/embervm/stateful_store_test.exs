@@ -570,6 +570,54 @@ defmodule Embervm.StatefulStoreTest do
     refute StatefulStore.quarantined?(store, "wl-a")
   end
 
+  test "upsert_volume ADOPTS an unblessed forward jump from the volume's own anchor node instead of quarantining",
+       %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    # node-4 is the volume's anchor (it holds the RWO attach). A forward jump it
+    # reports is the fenced single writer running ahead of the watermark, not a
+    # split-brain: adopt it rather than quarantine (which would deadlock the wake).
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 5, generation_blessed: false})
+    refute StatefulStore.quarantined?(store, "wl-a")
+    # The watermark advanced to the adopted generation, so the next wake blesses past it.
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 6
+  end
+
+  test "upsert_volume STAYS fail-closed on an unblessed forward jump reported by a node that is NOT the anchor",
+       %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    # A DIFFERENT node than the anchor claiming a forward generation is the only
+    # genuine split-brain shape: quarantine (the watermark must not adopt it).
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-9", generation: 5, generation_blessed: false})
+    assert StatefulStore.quarantined?(store, "wl-a")
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 4
+  end
+
+  test "a CP roll that rewinds the watermark below the anchor's on-disk generation self-heals via adoption, not a permanent quarantine",
+       %{path: path} do
+    {op_log, store} = start_pair(path)
+    # The volume exists on node-4 and was durably blessed up to generation 3.
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    # A control-plane roll: rebuild the store from the same op-log. The blessing
+    # watermark replays to the last DURABLE value (3), but node-4's on-disk volume
+    # generation has since advanced to 5 (bumped locally on attach, never blessed).
+    {:ok, store2} = StatefulStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
+    assert StatefulStore.next_blessed_generation(store2, "wl-a") == 4
+
+    # The first post-roll node report used to quarantine forever (the workload can
+    # never wake to re-bless). It now adopts and recovers on its own.
+    StatefulStore.upsert_volume(store2, "wl-a", %{node_id: "node-4", generation: 5, generation_blessed: false})
+    refute StatefulStore.quarantined?(store2, "wl-a")
+    assert StatefulStore.next_blessed_generation(store2, "wl-a") == 6
+  end
+
   test "a never-blessed volume (blessed_generation nil) never quarantines from a report alone", %{path: path} do
     {_op_log, store} = start_pair(path)
     {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 5})
