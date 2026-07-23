@@ -1572,6 +1572,19 @@ func (s *Server) RegistrySynced() bool {
 	return s.registry.isSynced()
 }
 
+// SlotCeiling returns the brick's cgroup-derived live-VM slot ceiling (ADR
+// embervm/013 section 7), the same value nodeStatus reports as MaxLiveVms. The
+// daemon entrypoint uses it to size the ADR embervm/014 decision-4 tap prealloc
+// pool by default: pre-creating more taps than a brick could ever host is wasted
+// setup work, so the pool is capped at this ceiling.
+func (s *Server) SlotCeiling() int {
+	maxLive := s.cfg.MaxLiveVMs
+	if maxLive < 0 {
+		maxLive = 0
+	}
+	return int(s.slotCeiling(uint64(maxLive)))
+}
+
 // ---- Node status -----------------------------------------------------------
 
 // GetNodeStatus is the unary snapshot of the capacity facts WatchNode streams.

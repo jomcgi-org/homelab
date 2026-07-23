@@ -204,11 +204,11 @@ func TestPortForIP(t *testing.T) {
 // TestNewManagerRejectsPortOverflow proves the range guard fires when a pod IP is set
 // and the base would push the top offset past 65535, but is skipped when DNAT is off.
 func TestNewManagerRejectsPortOverflow(t *testing.T) {
-	if _, err := NewManager(&fakeRunner{}, "br0", "172.31.0.0/24", "10.42.0.9", 65500); err == nil {
+	if _, err := NewManager(&fakeRunner{}, "br0", "172.31.0.0/24", "10.42.0.9", 65500, 0); err == nil {
 		t.Error("NewManager should reject a port base that overflows with a pod IP set")
 	}
 	// The same base is fine when DNAT is disabled (empty pod IP): no derivation happens.
-	if _, err := NewManager(&fakeRunner{}, "br0", "172.31.0.0/24", "", 65500); err != nil {
+	if _, err := NewManager(&fakeRunner{}, "br0", "172.31.0.0/24", "", 65500, 0); err != nil {
 		t.Errorf("NewManager with no pod IP should not validate port base, got %v", err)
 	}
 }
@@ -217,7 +217,7 @@ func TestNewManagerRejectsPortOverflow(t *testing.T) {
 // `nft -f` apply carrying the expected DNAT rule, and that ReleaseTap drops the entry.
 func TestEnsureDNATAndRelease(t *testing.T) {
 	fr := &fakeRunner{}
-	m, err := NewManager(fr, "br0", "172.31.0.0/24", "10.42.0.9", 30000)
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "10.42.0.9", 30000, 0)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestEnsureDNATAndRelease(t *testing.T) {
 // TestEnsureDNATDisabledIsNoop asserts that with no pod IP, EnsureDNAT installs nothing.
 func TestEnsureDNATDisabledIsNoop(t *testing.T) {
 	fr := &fakeRunner{}
-	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -257,12 +257,12 @@ func TestEnsureDNATDisabledIsNoop(t *testing.T) {
 // and the tap IP unchanged when it is off.
 func TestEndpointProjection(t *testing.T) {
 	fr := &fakeRunner{}
-	on, _ := NewManager(fr, "br0", "172.31.0.0/24", "10.42.0.9", 30000)
+	on, _ := NewManager(fr, "br0", "172.31.0.0/24", "10.42.0.9", 30000, 0)
 	gotIP, gotPort := on.Endpoint(net.ParseIP("172.31.0.2"), 8080)
 	if gotIP != "10.42.0.9" || gotPort != 30002 {
 		t.Errorf("Endpoint(on) = %s:%d want 10.42.0.9:30002", gotIP, gotPort)
 	}
-	off, _ := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+	off, _ := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
 	gotIP, gotPort = off.Endpoint(net.ParseIP("172.31.0.2"), 8080)
 	if gotIP != "172.31.0.2" || gotPort != 8080 {
 		t.Errorf("Endpoint(off) = %s:%d want the tap 172.31.0.2:8080", gotIP, gotPort)
@@ -283,7 +283,7 @@ func TestEnsureNetworkTolLeratesExistingBridge(t *testing.T) {
 	fr := &fakeRunner{failOn: map[string]error{
 		"ip link": errors.New("RTNETLINK answers: File exists"),
 	}}
-	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestEnsureNetworkTolLeratesExistingBridge(t *testing.T) {
 
 func TestAllocateAndReleaseTap(t *testing.T) {
 	fr := &fakeRunner{}
-	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestAllocateTapDeletesStaleTapBeforeCreate(t *testing.T) {
 
 	t.Run("AllocateTap", func(t *testing.T) {
 		fr := &fakeRunner{}
-		m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+		m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
 		if err != nil {
 			t.Fatalf("NewManager: %v", err)
 		}
@@ -386,7 +386,7 @@ func TestAllocateTapDeletesStaleTapBeforeCreate(t *testing.T) {
 
 	t.Run("AllocateTapForIP", func(t *testing.T) {
 		fr := &fakeRunner{}
-		m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+		m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
 		if err != nil {
 			t.Fatalf("NewManager: %v", err)
 		}
@@ -401,7 +401,7 @@ func TestAllocateTapDeletesStaleTapBeforeCreate(t *testing.T) {
 
 func TestAllocateTapForIPPinsAndConflicts(t *testing.T) {
 	fr := &fakeRunner{}
-	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestAllocateTapRollsBackOnIPFailure(t *testing.T) {
 	fr := &fakeRunner{failOn: map[string]error{
 		"ip link": errors.New("boom"), // the `ip link set ... master` step fails
 	}}
-	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000)
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestAllocateTapRollsBackOnIPFailure(t *testing.T) {
 
 func TestNewManagerRejectsBadCIDR(t *testing.T) {
 	for _, cidr := range []string{"not-a-cidr", "::1/128", "10.0.0.0/31"} {
-		if _, err := NewManager(&fakeRunner{}, "br0", cidr, "", 30000); err == nil {
+		if _, err := NewManager(&fakeRunner{}, "br0", cidr, "", 30000, 0); err == nil {
 			t.Errorf("NewManager(%q) should error", cidr)
 		}
 	}
@@ -468,5 +468,263 @@ func TestTapNameDeterministicAndBounded(t *testing.T) {
 	}
 	if len(got) > 15 {
 		t.Errorf("tap name %q exceeds the 15-char ifname limit", got)
+	}
+}
+
+// ---- ADR embervm/014 decision 4: tap pre-provisioning ----------------------
+
+// countCreateCalls counts `ip tuntap add` invocations, the on-demand tap-create step
+// that a pool draw must NOT issue.
+func countCreateCalls(f *fakeRunner) int {
+	n := 0
+	for _, c := range f.calls {
+		if len(c) >= 3 && c[0] == "ip" && c[1] == "tuntap" && c[2] == "add" {
+			n++
+		}
+	}
+	return n
+}
+
+// TestEnsureNetworkPrecreatesPool asserts EnsureNetwork with tapPrealloc > 0 creates
+// exactly that many taps, attached to the bridge but left DOWN (no `ip link set ...
+// up` for a pool tap), and del-before-add is exercised for each (the #3745 repair).
+func TestEnsureNetworkPrecreatesPool(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 3)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
+	}
+	if n := countCreateCalls(fr); n != 3 {
+		t.Errorf("precreate calls = %d, want 3", n)
+	}
+	wantTaps := []string{TapNameForIP(net.ParseIP("172.31.0.2")), TapNameForIP(net.ParseIP("172.31.0.3")), TapNameForIP(net.ParseIP("172.31.0.4"))}
+	for _, tap := range wantTaps {
+		delIdx, addIdx, masterIdx, upIdx := -1, -1, -1, -1
+		for i, c := range fr.calls {
+			if len(c) >= 4 && c[0] == "ip" && c[1] == "link" && c[2] == "del" && c[3] == tap {
+				delIdx = i
+			}
+			if len(c) >= 5 && c[0] == "ip" && c[1] == "tuntap" && c[2] == "add" && c[4] == tap {
+				addIdx = i
+			}
+			if len(c) >= 4 && c[0] == "ip" && c[1] == "link" && c[2] == "set" && c[3] == tap && len(c) >= 5 && c[4] == "master" {
+				masterIdx = i
+			}
+			if len(c) == 5 && c[0] == "ip" && c[1] == "link" && c[2] == "set" && c[3] == tap && c[4] == "up" {
+				upIdx = i
+			}
+		}
+		if delIdx == -1 || addIdx == -1 {
+			t.Fatalf("tap %s: missing del (%d) or add (%d); calls: %v", tap, delIdx, addIdx, fr.argvStrings())
+		}
+		if delIdx > addIdx {
+			t.Errorf("tap %s: del-before-add violated (del=%d add=%d)", tap, delIdx, addIdx)
+		}
+		if masterIdx == -1 {
+			t.Errorf("tap %s: not attached to bridge (no `ip link set %s master br0`)", tap, tap)
+		}
+		if upIdx != -1 {
+			t.Errorf("tap %s: pre-created tap must be left DOWN, but `ip link set %s up` was issued", tap, tap)
+		}
+	}
+}
+
+// TestAllocateTapDrawsFromPoolWithoutCreate asserts a pool draw brings the link up
+// with no `ip tuntap add`/`master` create-attach work, unlike on-demand allocation.
+func TestAllocateTapDrawsFromPoolWithoutCreate(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 2)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
+	}
+	createsBefore := countCreateCalls(fr)
+	tap, ip, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap: %v", err)
+	}
+	if ip.String() != "172.31.0.2" {
+		t.Errorf("pool draw = %s, want the first pre-created IP 172.31.0.2", ip)
+	}
+	if tap != TapNameForIP(ip) {
+		t.Errorf("tap name %q != deterministic %q", tap, TapNameForIP(ip))
+	}
+	if got := countCreateCalls(fr); got != createsBefore {
+		t.Errorf("AllocateTap from a non-empty pool issued a create call: before=%d after=%d", createsBefore, got)
+	}
+	// The draw brought the tap up.
+	sawUp := false
+	for _, c := range fr.calls {
+		if fmt.Sprint(c) == fmt.Sprint(tapUpArgs(tap)) {
+			sawUp = true
+		}
+	}
+	if !sawUp {
+		t.Errorf("AllocateTap pool draw did not bring the tap up; calls: %v", fr.argvStrings())
+	}
+}
+
+// TestPoolDrainedThenRefilledOnRelease drains a 2-tap pool with two AllocateTap
+// calls, then asserts ReleaseTap returns a tap to the pool (down, no delete) so a
+// third AllocateTap reuses it without any create call.
+func TestPoolDrainedThenRefilledOnRelease(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 2)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
+	}
+	_, ip1, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap 1: %v", err)
+	}
+	_, ip2, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap 2: %v", err)
+	}
+	if ip1.String() == ip2.String() {
+		t.Fatalf("pool draws returned the same IP twice: %s", ip1)
+	}
+	createsAfterDrain := countCreateCalls(fr)
+
+	// Release ip1: prealloc is on, so it must go DOWN and back to the pool, not be
+	// deleted.
+	m.ReleaseTap(context.Background(), ip1)
+	tap1 := TapNameForIP(ip1)
+	for _, c := range fr.calls {
+		if len(c) >= 4 && c[0] == "ip" && c[1] == "link" && c[2] == "del" && c[3] == tap1 {
+			t.Errorf("ReleaseTap deleted a pooled tap %s; prealloc mode must return it, not delete it", tap1)
+		}
+	}
+	sawDown := false
+	for _, c := range fr.calls {
+		if fmt.Sprint(c) == fmt.Sprint(tapDownArgs(tap1)) {
+			sawDown = true
+		}
+	}
+	if !sawDown {
+		t.Errorf("ReleaseTap did not bring the pooled tap down; calls: %v", fr.argvStrings())
+	}
+
+	// A third AllocateTap must reuse ip1 from the pool with no new create call.
+	_, ip3, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap 3: %v", err)
+	}
+	if ip3.String() != ip1.String() {
+		t.Errorf("refilled draw = %s, want the just-released %s", ip3, ip1)
+	}
+	if got := countCreateCalls(fr); got != createsAfterDrain {
+		t.Errorf("reused pool tap issued a create call: before=%d after=%d", createsAfterDrain, got)
+	}
+}
+
+// TestAllocateTapFallsBackWhenPoolExhausted asserts a drained pool falls through to
+// on-demand creation (today's AllocateTap path) rather than erroring, and that the
+// fallback IP is a fresh one, not a pool member.
+func TestAllocateTapFallsBackWhenPoolExhausted(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
+	}
+	_, poolIP, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap (pool draw): %v", err)
+	}
+	createsBeforeFallback := countCreateCalls(fr)
+	tap, fallbackIP, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap (fallback): %v", err)
+	}
+	if fallbackIP.String() == poolIP.String() {
+		t.Fatalf("fallback allocation reused the checked-out pool IP %s", poolIP)
+	}
+	if got := countCreateCalls(fr); got != createsBeforeFallback+1 {
+		t.Errorf("fallback allocation did not create a fresh tap: creates before=%d after=%d", createsBeforeFallback, got)
+	}
+	if tap != TapNameForIP(fallbackIP) {
+		t.Errorf("fallback tap name %q != deterministic %q", tap, TapNameForIP(fallbackIP))
+	}
+}
+
+// TestReleaseTapDeletesWhenPreallocDisabled locks in that ReleaseTap's pool-return
+// behaviour is gated strictly on tapPrealloc > 0: with it unset (0, the default),
+// release still deletes the tap and frees the IP to the allocator exactly as before
+// this feature existed.
+func TestReleaseTapDeletesWhenPreallocDisabled(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	_, ip, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap: %v", err)
+	}
+	m.ReleaseTap(context.Background(), ip)
+	tap := TapNameForIP(ip)
+	sawDelete := false
+	for _, c := range fr.calls {
+		if len(c) >= 4 && c[0] == "ip" && c[1] == "link" && c[2] == "del" && c[3] == tap {
+			sawDelete = true
+		}
+	}
+	if !sawDelete {
+		t.Errorf("ReleaseTap with prealloc disabled must delete the tap; calls: %v", fr.argvStrings())
+	}
+	// The IP is free again in the allocator (not held for a pool that does not exist).
+	_, ip2, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap after release: %v", err)
+	}
+	if ip2.String() != ip.String() {
+		t.Errorf("released IP not reused: got %s want %s", ip2, ip)
+	}
+}
+
+// TestAllocateTapForIPDrawsPooledPin asserts a relight pin (D-R3.4.1) whose recorded
+// IP happens to be idle in the prealloc pool is drawn out of the pool (bring up,
+// no create/attach), rather than failing "already allocated" against the
+// allocator's permanent pool reservation.
+func TestAllocateTapForIPDrawsPooledPin(t *testing.T) {
+	fr := &fakeRunner{}
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 2)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
+	}
+	pin := net.ParseIP("172.31.0.2") // the first IP precreatePool reserved.
+	createsBefore := countCreateCalls(fr)
+	tap, err := m.AllocateTapForIP(context.Background(), pin)
+	if err != nil {
+		t.Fatalf("AllocateTapForIP: %v", err)
+	}
+	if tap != TapNameForIP(pin) {
+		t.Errorf("tap name %q != deterministic %q", tap, TapNameForIP(pin))
+	}
+	if got := countCreateCalls(fr); got != createsBefore {
+		t.Errorf("AllocateTapForIP on a pooled IP issued a create call: before=%d after=%d", createsBefore, got)
+	}
+	// The pool must no longer offer this IP: a subsequent AllocateTap draw gets the
+	// OTHER pooled IP, not this one.
+	_, drawn, err := m.AllocateTap(context.Background())
+	if err != nil {
+		t.Fatalf("AllocateTap: %v", err)
+	}
+	if drawn.String() == pin.String() {
+		t.Errorf("pool still offered the pinned IP %s after AllocateTapForIP drew it", pin)
 	}
 }

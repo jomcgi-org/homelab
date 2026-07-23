@@ -238,6 +238,16 @@ type Config struct {
 	// re-pointed pod IP propagates. Default 30s. Env EMBERVM_NODED_REGISTER_INTERVAL.
 	RegisterInterval time.Duration
 
+	// TapPrealloc is the number of serving taps EnsureNetwork pre-creates at brick
+	// boot (ADR embervm/014 decision 4), left down until AllocateTap draws one:
+	// pre-provisioning removes netlink create/attach work from the instance boot
+	// path. Zero (the default) disables pre-provisioning; AllocateTap/ReleaseTap
+	// fall back to today's create-on-demand/delete-on-release behaviour. The
+	// daemon entrypoint clamps a positive value to the brick's slot ceiling
+	// (server.Server.SlotCeiling): pre-creating more taps than a brick could ever
+	// host wastes boot-time setup. Env EMBERVM_NODED_TAP_PREALLOC.
+	TapPrealloc int
+
 	// ServingPortBase is the base of the deterministic per-VM DNAT port space:
 	// vmPort = ServingPortBase + hostOffset(tapIP). A /24 yields ports base+2..base+254,
 	// clear of noded's own 8080/9090. Default 30000. NewManager rejects a base that
@@ -349,6 +359,7 @@ func Load() (Config, error) {
 		ControlPlaneTokenPath: getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 		RegisterInterval:      30 * time.Second,
 
+		TapPrealloc:               atoiDefault("EMBERVM_NODED_TAP_PREALLOC", 0),
 		ServingPortBase:           atoiDefault("EMBERVM_NODED_SERVING_PORT_BASE", 30000),
 		ServingBridge:             getenvDefault("EMBERVM_NODED_SERVING_BRIDGE", "embervm-serv0"),
 		ServingSubnetCIDR:         getenvDefault("EMBERVM_NODED_SERVING_SUBNET_CIDR", "172.31.0.0/24"),

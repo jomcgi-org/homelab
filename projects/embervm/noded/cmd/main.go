@@ -102,7 +102,9 @@ func run(logger *slog.Logger) error {
 	// loudly. The same restore driver serves the serving driver mechanics: it gains a
 	// cold-boot-with-NIC ClaimServing plus SnapshotServing/RestoreServing under the
 	// serving/ prefix, and its live map counts serving VMs against the node cap.
-	servingNet, err := serving.NewManager(serving.ExecRunner{}, cfg.ServingBridge, cfg.ServingSubnetCIDR, cfg.PodIP, cfg.ServingPortBase)
+	// cfg.TapPrealloc (ADR embervm/014 decision 4) is clamped to the brick's slot
+	// ceiling below, once server.New has built the budget reader that ceiling reads.
+	servingNet, err := serving.NewManager(serving.ExecRunner{}, cfg.ServingBridge, cfg.ServingSubnetCIDR, cfg.PodIP, cfg.ServingPortBase, cfg.TapPrealloc)
 	if err != nil {
 		return err
 	}
@@ -180,6 +182,10 @@ func run(logger *slog.Logger) error {
 		opts.Store = artStore
 	}
 	srv := server.New(opts)
+	// Cap the tap-prealloc pool (ADR embervm/014 decision 4) at the brick's
+	// cgroup-derived slot ceiling: pre-creating more taps than the brick could ever
+	// host wastes boot-time netlink work. Must run before EnsureNetwork below.
+	servingNet.ClampTapPrealloc(srv.SlotCeiling())
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.
 	srv.ReconcileBasesFromDisk()
