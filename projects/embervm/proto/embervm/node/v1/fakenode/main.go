@@ -445,6 +445,9 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 				Healthy:         true,
 				Generation:      5,
 				LastProbeUnixMs: 1_700_000_003_000,
+				// origin (ADR embervm/018 Phase 2): a node-woken stateful VM the
+				// control plane adopts (fenced-writer adoption trusts its generation).
+				Origin: nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR,
 			},
 			// A second VM PAUSED awaiting a resolve (ADR embervm/008), so the
 			// client can assert the checkpoint_pending inventory fields adoption

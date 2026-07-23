@@ -1210,6 +1210,37 @@ message RegistryEntry {
   // cold boot on (StartServingRequest.health_path today). Empty falls back to the
   // daemon default ready path, exactly as StartServing does.
   string serving_health_path = 9;
+
+  // -- Node-local stateful activator fields (ADR embervm/018 Fork A Phase 2) ----
+  // What the brick's node-local L4 activator needs to RELIGHT (or COLD-boot) a
+  // scaled-to-zero stateful workload without the control plane (which supplies
+  // these per-call in StartStatefulRequest today). The activator resolves the
+  // banked bundle from its OWN local inventory (by workload) and self-bumps the
+  // generation; the fenced-writer anchor-adoption rule (ADR embervm/014) trusts
+  // that generation on CP return, so no delegated grant is carried (Fork A). All
+  // wire-compatible with a control plane that predates them (0/empty == not
+  // node-local-wakeable for stateful; node_local_wake (field 7) is the shared,
+  // class-agnostic gate).
+
+  // stateful_listen_port is the L4 port the brick activator binds AND resolves the
+  // workload by (the workload's stateful.listenPort; opaque L4 has no header, so
+  // the accept port IS the identity, mirroring the CP tcp_activator). Required for
+  // a node_local_wake stateful workload.
+  uint32 stateful_listen_port = 10;
+  // stateful_port is the guest TCP port the relit VM serves on over its tap
+  // (StartStatefulRequest.port today), health-gated by TCP CONNECT.
+  uint32 stateful_port = 11;
+  // stateful_volume_mount is the guest mount path (StartStatefulRequest.volume_mount).
+  string stateful_volume_mount = 12;
+  // stateful_boot_image_ref is the cold-boot source for the COLD fallback when the
+  // banked bundle is absent (StartStatefulRequest.boot_image_ref). The RELIGHT path
+  // resolves the bundle from local inventory and never needs this.
+  string stateful_boot_image_ref = 13;
+  // stateful_volume_device is the resolved host block-device path (e.g.
+  // /dev/longhorn/<name>) for the workload's Longhorn-native volume
+  // (StartStatefulRequest.volume_device). Empty means the legacy vol.img lane
+  // (VolumeRoot/<workload>/vol.img), exactly as StartStateful falls back.
+  string stateful_volume_device = 14;
 }
 
 // SyncRegistryRequest carries the AUTHORITATIVE full workload set the daemon must
