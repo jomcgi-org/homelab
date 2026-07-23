@@ -447,7 +447,7 @@ defmodule Embervm.GroupWakeManagerTest do
     # Seed an instance, then force it into :destroying: mid node-confirmed teardown
     # (ADR embervm/014 decision 5), the per-member teardown RPCs in flight.
     _ = seed_banked(ctx, instance_id)
-    _ = GroupStore.adopt_state(ctx.store, instance_id, :destroying)
+    {:ok, _} = GroupStore.mark(ctx.store, instance_id, :begin_destroy)
 
     # The node still reports the group's members live: the straggler report that turns
     # on the TLC NoDestroyBeforeConfirm violation if adoption keys off the node.

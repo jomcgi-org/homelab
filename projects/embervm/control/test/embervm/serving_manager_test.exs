@@ -315,9 +315,9 @@ defmodule Embervm.ServingManagerTest do
         port: 8080
       })
 
-    # Force the instance into :destroying: mid node-confirmed teardown (ADR
-    # embervm/014 decision 5), the teardown RPC in flight.
-    _ = ServingStore.adopt_state(ctx.store, "srv-destroying", :destroying)
+    # Drive the instance into :destroying via the begin_destroy FSM edge: mid
+    # node-confirmed teardown (ADR embervm/014 decision 5), the teardown RPC in flight.
+    {:ok, _} = ServingStore.mark(ctx.store, "srv-destroying", :begin_destroy)
 
     # The node still reports the VM as live+healthy: the exact straggler report that
     # turns on the TLC NoDestroyBeforeConfirm violation if adoption keys off the node.
