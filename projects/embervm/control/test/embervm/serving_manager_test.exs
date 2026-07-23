@@ -572,16 +572,19 @@ defmodule Embervm.ServingManagerTest do
     })
   end
 
-  # A StartServing stub keyed on the dialed instance (the channel echoes the
-  # dial_id): each id in `reject_ids` returns RESOURCE_EXHAUSTED (status 8), any
-  # other id succeeds. Records the dial order for assertions.
-  defp rejecting_start_fun(reject_ids) do
+  # A StartServing stub that rejects the FIRST `reject_count` bricks DIALED with
+  # RESOURCE_EXHAUSTED (status 8) and succeeds any later dial. Counter-based, NOT
+  # identity-based: the frontier head is chosen by a workload hash (phash2), so
+  # which co-located brick is dialed first is not knowable at test-authoring time;
+  # rejecting by DIAL ORDER makes the retry fire regardless of the hash. Records
+  # the dial order for assertions.
+  defp rejecting_start_fun(reject_count) do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
 
     fun = fn dial_id, _req ->
-      Agent.update(dialed, fn ids -> ids ++ [dial_id] end)
+      n = Agent.get_and_update(dialed, fn ids -> {length(ids), ids ++ [dial_id]} end)
 
-      if dial_id in reject_ids do
+      if n < reject_count do
         {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
       else
         {:ok, %StartServingResponse{vm_id: "vm-#{dial_id}", ip: "10.99.0.5", port: 8080}}
@@ -595,7 +598,9 @@ defmodule Embervm.ServingManagerTest do
     System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
     on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
 
-    {start_fun, dialed} = rejecting_start_fun(["node-4/pod-a"])
+    # Reject the FIRST brick dialed (whichever the hash picks as head), succeed the
+    # second: the retry fires regardless of frontier order.
+    {start_fun, dialed} = rejecting_start_fun(1)
     # channel echoes the dial_id so the stub sees which brick is dialed.
     ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end)
     serving_workload(ctx, "wl-a")
@@ -619,7 +624,9 @@ defmodule Embervm.ServingManagerTest do
     # RESOURCE_EXHAUSTED becomes a wake failure, the second brick is never dialed.
     System.delete_env("EMBERVM_PLACEMENT_RETRY")
 
-    {start_fun, dialed} = rejecting_start_fun(["node-4/pod-a", "node-4/pod-b"])
+    # Reject every brick dialed (a high count) so the single gate-off attempt
+    # rejects whichever head the hash picks.
+    {start_fun, dialed} = rejecting_start_fun(99)
     ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end)
     serving_workload(ctx, "wl-a")
     serving_brick(ctx, "node-4", "pod-a", "node-4/pod-a")

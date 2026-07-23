@@ -522,10 +522,15 @@ defmodule Embervm.DispatcherTest do
     open_gate(gate)
   end
 
-  test "gate OFF: a first-brick Prime rejection is NOT retried (single attempt)" do
-    # Gate unset (default off): the committed brick is Primed once; a
-    # RESOURCE_EXHAUSTED is a prime failure that fails the task transport-style
-    # (retryable at the task level), and the OTHER brick is never dialed.
+  test "gate OFF: a Prime rejection never advances placement to the sibling brick" do
+    # Gate unset (default off): Retry.run makes exactly ONE placement attempt, so a
+    # RESOURCE_EXHAUSTED on the committed head must NEVER advance to the sibling
+    # co-located brick. The task itself may re-dispatch (a transport failure is
+    # retryable at the TASK level, orthogonal to placement retry), and each
+    # re-dispatch re-dials the SAME deterministic head; that is expected. The
+    # gate-off property is specifically "placement does not advance to the other
+    # candidate", so we assert the SIBLING is never dialed rather than "only one
+    # dial ever" (which task re-dispatch would spuriously trip).
     System.delete_env("EMBERVM_PLACEMENT_RETRY")
 
     parent = self()
@@ -537,41 +542,23 @@ defmodule Embervm.DispatcherTest do
           send(parent, {:dialed, instance})
           {:ok, instance}
         end,
-        # BOTH bricks reject: gate-off must still only ever dial ONE (no retry).
+        # Every brick rejects, so if placement ever advanced it WOULD dial the
+        # sibling. Gate-off must not.
         prime_fun: fn _channel, _req ->
           {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
         end,
         assign_fun: fn _ch, _req -> {:ok, success_resp()} end
       )
 
-    # max_attempts: 1 so a failed dispatch does NOT re-queue and dispatch AGAIN
-    # (task-level retry would confound the placement-retry assertion): this isolates
-    # exactly one placement attempt.
-    put_catalog(ctx, "wl-a",
-      cap: 10,
-      mem_mib: 4_000,
-      retry: %{max_attempts: 1, backoff_ms: 1, backoff_cap_ms: 1, retry_on: []}
-    )
-
-    for {pod, iid} <- [{"a", "node-4/a"}, {"b", "node-4/b"}] do
-      put_facts(ctx, "wl-a",
-        key: {"node-4", pod},
-        instance_id: iid,
-        size_class: "8gi",
-        mem_budget: 8_192,
-        mem_headroom: 8_000,
-        free: 0,
-        live: 0,
-        max: 8
-      )
-    end
+    two_colocated_bricks(ctx, "wl-a")
 
     _tid = submit(ctx, "wl-a", "p1")
 
-    # Exactly ONE Prime dial happened (the committed brick); gate off never chased
-    # the second. We assert the first dial arrives and no second dial follows.
-    assert_receive {:dialed, _first}, 2_000
-    refute_receive {:dialed, _second}, 300
+    # The head brick is dialed (deterministic hash); capture it, derive the sibling,
+    # and assert the sibling is NEVER dialed (placement did not advance under gate off).
+    assert_receive {:dialed, head}, 2_000
+    sibling = if head == "node-4/a", do: "node-4/b", else: "node-4/a"
+    refute_receive {:dialed, ^sibling}, 500
   end
 
   test "gate OFF: the single Prime succeeds on the committed brick and meta.node_id is that brick" do
