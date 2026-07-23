@@ -88,6 +88,7 @@ defmodule Embervm.NodeRegistry do
     GroupBundleSet,
     GroupMemberVm,
     BaseInventoryEntry,
+    Endpoint,
     GroupNetwork,
     NodeService,
     NodeStatus,
@@ -622,6 +623,14 @@ defmodule Embervm.NodeRegistry do
       serving_vms: serving_vms_from_status(s),
       serving_snapshots: serving_snapshots_from_status(s),
       serving_subnet_cidr: s.serving_subnet_cidr,
+      # Node-local activator fact (ADR embervm/018 Fork A, additive): the brick's
+      # own advertised activator endpoint. EndpointPublisher PREFERS this over the
+      # CP-injected activator address when rendering the scaled-to-zero serving
+      # fallback route, so the wake target is a node address that survives a CP
+      # Recreate rather than the dying CP pod IP. nil on a daemon that predates the
+      # field, which the publisher falls back to the CP address for (no flag day).
+      activator_endpoint: activator_endpoint_from_status(s),
+      activator_ip: s.activator_ip,
       # Stateful facts (R4, additive): the node's LIVE stateful VMs, BANKED
       # bundle inventory, and the per-workload volume ledger (generation +
       # allocated bytes). These are the source of truth
@@ -720,7 +729,13 @@ defmodule Embervm.NodeRegistry do
         ip: v.ip,
         port: v.port,
         healthy: v.healthy,
-        last_probe_unix_ms: v.last_probe_unix_ms
+        last_probe_unix_ms: v.last_probe_unix_ms,
+        # origin (ADR embervm/018 Fork A): who minted this VM. ServingManager's
+        # reconcile reads it to ADOPT an :INSTANCE_ORIGIN_ACTIVATOR VM (the brick
+        # woke it during a CP gap) instead of orphan-destroying it. Absent on a
+        # pre-018 daemon decodes to :INSTANCE_ORIGIN_UNSPECIFIED, which the
+        # discriminator treats as the CP-issued default (destroy-if-no-row).
+        origin: v.origin
       }
     end
   end
@@ -742,6 +757,19 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp serving_snapshots_from_status(_s), do: []
+
+  # The node's advertised L7 activator endpoint (ADR embervm/018 Fork A), as a
+  # %{ip, port} the publisher renders as the scaled-to-zero fallback, or nil when
+  # the daemon advertises none (pre-018, or a node with no activator configured):
+  # the publisher then falls back to the CP-injected activator address. A present
+  # Endpoint with a blank ip is treated as absent (nil), never rendered as a
+  # black-hole endpoint.
+  defp activator_endpoint_from_status(%NodeStatus{activator_endpoint: %Endpoint{ip: ip, port: port}})
+       when is_binary(ip) and ip != "" and is_integer(port) and port > 0 do
+    %{ip: ip, port: port}
+  end
+
+  defp activator_endpoint_from_status(_s), do: nil
 
   defp stateful_vms_from_status(%NodeStatus{stateful_vms: vms}) when is_list(vms) do
     for %StatefulVm{} = v <- vms do
@@ -1443,13 +1471,23 @@ defmodule Embervm.NodeRegistry do
         image_ref = entry[:image_ref] || ""
         {rootfs_ref, harness_init} = Map.get(identity, image_ref, {"", ""})
 
+        # Serving-activation facts (ADR embervm/018 Fork A): pushed so the brick
+        # activator can cold-boot a scaled-to-zero serving workload without the CP
+        # (which supplies port/health_path per-call today). Absent/zero for a
+        # non-serving workload or one that did not opt into nodeLocalWake, which the
+        # daemon reads as "not node-local-wakeable" (503 at the activator).
+        serving = entry[:serving] || %{}
+
         %RegistryEntry{
           workload: name,
           image_digest: "",
           image_ref: image_ref,
           rootfs_ref: rootfs_ref,
           harness_init: harness_init,
-          sizing: %ResourceSpec{vcpus: entry[:vcpus] || 0, mem_mib: entry[:mem_mib] || 0}
+          sizing: %ResourceSpec{vcpus: entry[:vcpus] || 0, mem_mib: entry[:mem_mib] || 0},
+          node_local_wake: Map.get(serving, :node_local_wake, false),
+          serving_port: Map.get(serving, :port) || 0,
+          serving_health_path: Map.get(serving, :health_path) || ""
         }
       end
 

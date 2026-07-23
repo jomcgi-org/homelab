@@ -926,7 +926,16 @@ defmodule Embervm.WorkloadWatcher do
       # TTL never outlives what a live instance would.
       banked_ttl_seconds:
         Map.get(s, "bankedTtlSeconds") || Map.get(s, "maxLifetimeSeconds") ||
-          @serving_defaults.banked_ttl_seconds
+          @serving_defaults.banked_ttl_seconds,
+      # ADR embervm/018 Fork A. node_local_wake gates the brick activator per
+      # workload: only a true workload is eligible for a node-local cold boot (it is
+      # pushed to noded in the RegistryEntry and drives CP-side ACTIVATOR adoption).
+      # metering_fail_open is the companion, EXPLICIT policy that a node_local_wake
+      # workload wakes unmetered during a CP gap and reconciles best-effort on adopt
+      # (named, not implied). Both default false: a workload that sets neither keeps
+      # today's CP-only wake with synchronous metering.
+      node_local_wake: Map.get(s, "nodeLocalWake") == true,
+      metering_fail_open: Map.get(s, "meteringFailOpen") == true
     }
   end
 

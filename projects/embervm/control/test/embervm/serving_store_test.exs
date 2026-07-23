@@ -236,6 +236,54 @@ defmodule Embervm.ServingStoreTest do
     assert still.state == :destroyed
   end
 
+  test "adopt_activator mints a published row from node truth; backfill_created makes it durable and idempotent",
+       %{path: path} do
+    {op_log, store} = start_pair(path)
+
+    # ADR embervm/018 Fork A: the brick woke a VM during a CP gap, so NO CP row
+    # exists. Mint it from node truth (ETS-only, already published/in the fan-out).
+    :ok =
+      ServingStore.adopt_activator(store, %{
+        instance_id: "vm-brick-1",
+        tenant: "homelab",
+        principal: nil,
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-brick-1",
+        ip: "10.99.0.7",
+        port: 8080
+      })
+
+    {:ok, got} = ServingStore.get(store, "vm-brick-1")
+    assert got.state == :published
+    assert ServingStore.published_endpoints(store, "wl-a") == [%{ip: "10.99.0.7", port: 8080}]
+    # Nothing durable yet: adoption is ETS-only, like adopt_state/adopt_endpoint.
+    assert {:ok, []} = SQLite.load_serving_instances(op_log)
+
+    # backfill_created writes the durable serving_started + serving_published.
+    assert :ok = ServingStore.backfill_created(store, "vm-brick-1")
+    {:ok, [row]} = SQLite.load_serving_instances(op_log)
+    assert row.state == "published"
+
+    # Idempotent (INSERT OR IGNORE): a re-drive leaves exactly the same durable row.
+    assert :ok = ServingStore.backfill_created(store, "vm-brick-1")
+    {:ok, [row2]} = SQLite.load_serving_instances(op_log)
+    assert row2.state == "published"
+
+    # A NEW store over the SAME op-log recovers the published endpoint from the
+    # backfilled projection (the durable record now matches the live fan-out).
+    {:ok, store2} = ServingStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
+    assert ServingStore.published_endpoints(store2, "wl-a") == [%{ip: "10.99.0.7", port: 8080}]
+
+    # adopt_activator is a no-op once a row exists (the mint is strictly once-only).
+    :ok = ServingStore.adopt_activator(store, %{instance_id: "vm-brick-1", tenant: "homelab", workload: "wl-a"})
+    {:ok, still} = ServingStore.get(store, "vm-brick-1")
+    assert still.state == :published
+
+    # An unknown instance backfills to an error (never a silent success).
+    assert {:error, _} = ServingStore.backfill_created(store, "nope")
+  end
+
   test "adopt_endpoint rebinds the routable endpoint without an op", %{path: path} do
     {_op_log, store} = start_pair(path)
     {:ok, _} = start_instance(store)

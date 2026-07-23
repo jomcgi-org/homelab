@@ -181,6 +181,49 @@ defmodule Embervm.EndpointPublisherTest do
     refute Enum.any?(cluster.endpoints, &(&1.ip == "10.1.1.1"))
   end
 
+  test "ADR embervm/018: cold render prefers a READY node's advertised activator over the CP address" do
+    # The CP-injected activator is 10.1.1.1:7000 (start_stack default). A node that
+    # advertises its OWN activator must be preferred, so the wake target is a node
+    # address that survives a CP Recreate rather than the dying CP pod IP.
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a", "wl-a.example")
+
+    # node-4 advertises but its base is still BUILDING; node-5 advertises AND is
+    # READY. Sort order (by configured_id) would pick node-4 first, so a correct
+    # render must prefer node-5 by READY, not by name (#3993 flagged this).
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      configured_id: "node-4",
+      node_id: "node-4",
+      serving_subnet_cidr: "10.99.0.0/24",
+      serving_vms: [],
+      serving_snapshots: [],
+      activator_endpoint: %{ip: "10.99.0.4", port: 8081},
+      workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_BUILDING}}
+    })
+
+    NodeCapacity.put(ctx.cap_table, "node-5", %{
+      configured_id: "node-5",
+      node_id: "node-5",
+      serving_subnet_cidr: "10.99.0.0/24",
+      serving_vms: [],
+      serving_snapshots: [],
+      activator_endpoint: %{ip: "10.99.0.5", port: 8081},
+      workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY}}
+    })
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    # Every serving node receives the SAME global fallback: node-5's READY
+    # activator, never the CP-injected 10.1.1.1:7000 nor node-4's non-READY one.
+    puts = last_puts(ctx)
+    assert length(puts) == 2
+
+    for {_node, desired} <- puts do
+      assert [cluster] = desired.clusters
+      assert cluster.endpoints == [%{ip: "10.99.0.5", port: 8081}]
+    end
+  end
+
   test "unpublishing the last instance swaps the activator back IN" do
     ctx = start_stack()
     serving_workload(ctx, "wl-a", "wl-a.example")

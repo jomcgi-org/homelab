@@ -448,6 +448,48 @@ defmodule Embervm.ServingManagerTest do
     assert ServingStore.all(ctx.store) == []
   end
 
+  test "ADR embervm/018: reconcile ADOPTS an origin-ACTIVATOR serving VM instead of orphan-destroying it" do
+    # node_confirmed_destroy on so the orphan-destroy pass is live: an ordinary
+    # rowless VM would be destroyed here (the test above), but an ACTIVATOR VM is
+    # adopted and skipped, never double-killed.
+    ctx = start_stack(node_confirmed_destroy: true)
+    serving_workload(ctx, "wl-a")
+
+    # The brick woke a VM during a CP gap: reported origin ACTIVATOR with a vm_id
+    # the control plane never issued and NO matching CP row.
+    serving_node(ctx, "node-4",
+      serving_vms: [
+        %{
+          vm_id: "vm-brick",
+          workload: "wl-a",
+          ip: "10.99.0.9",
+          port: 8080,
+          healthy: true,
+          origin: :INSTANCE_ORIGIN_ACTIVATOR
+        }
+      ]
+    )
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+
+    # No StopServing(DESTROY) fired for it (contrast the rowless-orphan test above).
+    assert stop_calls(ctx) == []
+
+    # A published CP row was minted from node truth and its endpoint is in the
+    # fan-out, keyed by the brick-minted vm_id (used as the instance id).
+    assert [instance] = ServingStore.all(ctx.store)
+    assert instance.vm_id == "vm-brick"
+    assert instance.workload == "wl-a"
+    assert instance.state == :published
+    assert ServingStore.published_endpoints(ctx.store, "wl-a") == [%{ip: "10.99.0.9", port: 8080}]
+
+    # A second reconcile is a no-op (the row now exists, so the mint path is not
+    # re-entered and the VM heals through the normal adopt_live path).
+    :ok = ServingManager.reconcile(ctx.mgr)
+    assert stop_calls(ctx) == []
+    assert length(ServingStore.all(ctx.store)) == 1
+  end
+
   test "adoption heals a starting-limbo instance the node reports only as a snapshot to banked" do
     ctx = start_stack()
     serving_workload(ctx, "wl-a")
