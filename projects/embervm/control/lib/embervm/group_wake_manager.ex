@@ -185,6 +185,10 @@ defmodule Embervm.GroupWakeManager do
       # server address) so a non-default backend never requires editing this
       # module. Defaults to the same SQLite module :op_log defaults to.
       op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
+      orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # The composite supernet + DNAT port base + control-plane pod IP, the SAME
       # shared values that feed the GroupManager (and noded's CompositeSupernet /
       # ServingPortBase). Adoption re-derives the entry DNAT endpoint `{pod_ip,
