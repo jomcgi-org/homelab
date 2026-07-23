@@ -235,6 +235,10 @@ defmodule Embervm.GroupManager do
         Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2),
       get_secret_fun: Keyword.get(opts, :get_secret_fun, &Embervm.K8s.get_secret/2),
       secret_fun: Keyword.get(opts, :secret_fun, &mint_secret/0),
+      # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
+      orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # The bank set_id minter (injected in tests to pin the opaque set directory);
       # production mints instance_id + bank-start clock (see mint_set_id/2).
       set_id_fun: Keyword.get(opts, :set_id_fun),

@@ -191,6 +191,10 @@ defmodule Embervm.ServingSweeper do
       # uses Process.send_after; a test injects a function that records the delay and
       # lets the test send {:bank_drained, id} by hand.
       timer_fun: Keyword.get(opts, :timer_fun, &default_timer/2),
+      # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
+      orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # status.serving {live,banked,published} writer (Task 10). Defaults to the K8s
       # merge-patch on the workload status subresource (the session writer's seam);
       # tests inject a recorder. Disjoint status keys from status.sessions and the

@@ -214,6 +214,10 @@ defmodule Embervm.GroupSweeper do
       # on the same trigger (banked TTL, forced roll). Injected for tests; production
       # dials the real NodeService stub.
       evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
+      # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
+      orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # status.group {state, members{live,degraded}, setId, subnetCidr} + groupSummary
       # writer (Task 9). Defaults to the K8s merge-patch on the workload status
       # subresource, the SAME seam StatefulSweeper.status_writer uses; tests inject a

@@ -802,7 +802,13 @@ defmodule Embervm.Application do
   # values) and the adoption reconcile cadence. Defaults keep the reconcile timer ON
   # in production; the module defaults the caps (30/min wake, 64 parked).
   defp serving_manager_opts do
-    [op_log_mod: op_log_mod(), reconcile_interval_ms: serving_reconcile_interval_ms()] ++ serving_wake_opts()
+    [
+      op_log_mod: op_log_mod(),
+      reconcile_interval_ms: serving_reconcile_interval_ms(),
+      node_confirmed_destroy: node_confirmed_destroy_enabled(),
+      destroying_alarm_ms: destroying_alarm_ms(),
+      orphan_grace_ms: orphan_grace_ms()
+    ] ++ serving_wake_opts()
   end
 
   # Serving adoption reconcile cadence (EMBERVM_SERVING_RECONCILE_INTERVAL_MS);
@@ -842,6 +848,9 @@ defmodule Embervm.Application do
   defp serving_sweeper_opts do
     [
       op_log_mod: op_log_mod(),
+      node_confirmed_destroy: node_confirmed_destroy_enabled(),
+      destroying_alarm_ms: destroying_alarm_ms(),
+      orphan_grace_ms: orphan_grace_ms(),
       sweep_interval_ms: serving_sweep_interval_ms(),
       stats_base: sweeper_stats_base(),
       bank_concurrency: int_env_or_nil("EMBERVM_SERVING_BANK_CONCURRENCY")
@@ -905,6 +914,9 @@ defmodule Embervm.Application do
   defp group_sweeper_opts do
     [
       op_log_mod: op_log_mod(),
+      node_confirmed_destroy: node_confirmed_destroy_enabled(),
+      destroying_alarm_ms: destroying_alarm_ms(),
+      orphan_grace_ms: orphan_grace_ms(),
       sweep_interval_ms: group_sweep_interval_ms(),
       stats_base: sweeper_stats_base(),
       splices_table: Embervm.ActivatorSplices,
@@ -926,7 +938,13 @@ defmodule Embervm.Application do
   # of magnitude below serving's because a stateful workload is a
   # singleton-owned sandbox, not multi-tenant fan-in.
   defp stateful_manager_opts do
-    [op_log_mod: op_log_mod(), reconcile_interval_ms: stateful_reconcile_interval_ms()] ++ stateful_wake_opts()
+    [
+      op_log_mod: op_log_mod(),
+      reconcile_interval_ms: stateful_reconcile_interval_ms(),
+      node_confirmed_destroy: node_confirmed_destroy_enabled(),
+      destroying_alarm_ms: destroying_alarm_ms(),
+      orphan_grace_ms: orphan_grace_ms()
+    ] ++ stateful_wake_opts()
   end
 
   # Stateful adoption reconcile cadence (EMBERVM_STATEFUL_RECONCILE_INTERVAL_MS);
@@ -1200,6 +1218,9 @@ defmodule Embervm.Application do
   # run still allocates from a sane /16.
   defp group_manager_supervisor_opts do
     [
+      node_confirmed_destroy: node_confirmed_destroy_enabled(),
+      destroying_alarm_ms: destroying_alarm_ms(),
+      orphan_grace_ms: orphan_grace_ms(),
       defaults: [
         supernet: composite_supernet_env(),
         port_base: composite_port_base_env(),
@@ -1216,6 +1237,9 @@ defmodule Embervm.Application do
   defp group_wake_manager_opts do
     [
       op_log_mod: op_log_mod(),
+      node_confirmed_destroy: node_confirmed_destroy_enabled(),
+      destroying_alarm_ms: destroying_alarm_ms(),
+      orphan_grace_ms: orphan_grace_ms(),
       reconcile_interval_ms: group_reconcile_interval_ms(),
       # The shared supernet + DNAT port base + pod IP the adoption reconcile re-derives
       # the entry DNAT endpoint from (the SAME values group_manager_supervisor_opts

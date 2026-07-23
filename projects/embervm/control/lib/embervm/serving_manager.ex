@@ -193,6 +193,10 @@ defmodule Embervm.ServingManager do
       wake_max: Keyword.get(opts, :wake_max, @default_wake_max),
       wake_window_ms: Keyword.get(opts, :wake_window_ms, @default_wake_window_ms),
       park_cap: Keyword.get(opts, :park_cap, @default_park_cap),
+      # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
+      orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # The adoption reconcile cadence (0 = off, tests drive reconcile/1).
       reconcile_interval_ms: Keyword.get(opts, :reconcile_interval_ms, 0)
     }

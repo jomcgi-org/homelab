@@ -334,6 +334,10 @@ defmodule Embervm.StatefulManager do
       wake_max: Keyword.get(opts, :wake_max, @default_wake_max),
       wake_window_ms: Keyword.get(opts, :wake_window_ms, @default_wake_window_ms),
       park_cap: Keyword.get(opts, :park_cap, @default_park_cap),
+      # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
+      orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # workload -> monotonic ms the in-flight wake started (Task 10). Feeds the
       # adoption self-recovery + the park_full oldest-waiter age: a workload still
       # waking past 2 * wakeTimeoutSeconds is a wedged wake whose worker never
