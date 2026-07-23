@@ -831,6 +831,7 @@ defmodule Embervm.OpLog.SQLiteTest do
         kind: kind,
         tenant: "t1",
         principal: "p1",
+        workload: "wl-x",
         task_id: task_id,
         ts: ts,
         payload: payload
