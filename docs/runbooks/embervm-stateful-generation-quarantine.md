@@ -41,15 +41,31 @@ fix has the CP bless the abort generation before dispatch and noded `RecordBless
 a CP-driven abort never quarantines. If you see this on a build that predates the fix, the
 recovery below clears it.
 
-## Cause 2 (residual, accepted): node self-abort with no CP reachable
+## Cause 2 (residual): node self-abort with no CP reachable
 
 `autoAbortCheckpoint` (noded's resolve-timeout backstop) resumes a paused VM when the
 control plane did not resolve the checkpoint in time. With no CP reachable to issue a
-generation, it self-bumps (`blessed_generation` 0). The next report can quarantine the
-volume. This is CORRECT fail-closed behaviour: the CP genuinely never witnessed that
-resume, so refusing to wake until a human blesses it is the safe default. It is rare (the
-CP pre-blesses before the timeout in the common case) and always accompanied by the
-`:generation_quarantined` warning above.
+generation, it self-bumps (`blessed_generation` 0), advancing the volume by exactly `+1`
+on the SAME `vm_id`. The next report would quarantine the volume.
+
+**This now self-heals in the normal case** (ADR embervm/017). The control plane durably
+records each checkpoint it dispatches (`{workload, vm_id, generation}`), so when the
+would-quarantine report arrives it recognizes its OWN auto-aborted checkpoint (an
+unresolved record for that `vm_id` at exactly `reported_gen - 1`) and blesses the
+generation forward instead of quarantining. This is logged as:
+
+```
+embervm stateful volume auto-healed: blessed the control plane's own checkpoint-abort generation
+  event=:generation_auto_healed workload=<wl> generation=<G+1> previous_blessed_generation=<G>
+```
+
+The auto-heal survives a control-plane restart (the record is durable), which is the case
+that previously required a manual re-bless. It fires only for the provably self-inflicted
+signature; a different `vm_id`, a jump past `+1`, or a missing record stays quarantined
+(fail-closed), which is the genuine, rare, human-decision case handled by the recovery
+below. **A quarantine that does not clear itself within a node-report interval is that
+remainder** (for example the narrow window where the control plane died before durably
+recording the dispatch), and only then does the manual break-glass apply.
 
 ## Recovery (break-glass): bless the reported generation forward
 

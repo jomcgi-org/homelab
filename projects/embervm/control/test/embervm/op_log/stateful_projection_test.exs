@@ -556,4 +556,85 @@ defmodule Embervm.OpLog.StatefulProjectionTest do
     assert blessed.payload["generation"] == 3
     :ok = GenServer.stop(server2)
   end
+
+  # -- checkpoint-dispatch record (R7, ADR embervm/017) -----------------------
+
+  defp dispatched_op(ts, vm_id, generation) do
+    %Op{
+      kind: :checkpoint_dispatched,
+      tenant: "t1",
+      principal: "p1",
+      workload: "scratch-postgres",
+      ts: ts,
+      payload: %{vm_id: vm_id, generation: generation}
+    }
+  end
+
+  defp dispatches_by_workload(server) do
+    {:ok, rows} = SQLite.load_checkpoint_dispatches(server)
+    Map.new(rows, &{&1.workload, &1})
+  end
+
+  test "checkpoint_dispatched projects into checkpoint_dispatch and load returns {vm_id, generation}", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, dispatched_op(90, "vm-1", 5))
+
+    rec = dispatches_by_workload(server)["scratch-postgres"]
+    assert rec.vm_id == "vm-1"
+    assert rec.generation == 5
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "a second checkpoint_dispatched upserts (one row per workload)", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, dispatched_op(90, "vm-1", 5))
+    {:ok, _} = SQLite.append(server, dispatched_op(91, "vm-2", 8))
+
+    dispatches = dispatches_by_workload(server)
+    assert map_size(dispatches) == 1
+    assert dispatches["scratch-postgres"].vm_id == "vm-2"
+    assert dispatches["scratch-postgres"].generation == 8
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "checkpoint_resolved deletes the dispatch row, and it stays gone across a reopen", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, dispatched_op(90, "vm-1", 5))
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :checkpoint_resolved,
+        tenant: "t1",
+        principal: "p1",
+        workload: "scratch-postgres",
+        ts: 91,
+        payload: %{}
+      })
+
+    assert dispatches_by_workload(server) == %{}
+    :ok = GenServer.stop(server)
+
+    # An unresolved row must survive a reopen (the durability the auto-heal relies
+    # on); a resolved one must stay deleted.
+    server2 = start_server(path)
+    assert dispatches_by_workload(server2) == %{}
+    :ok = GenServer.stop(server2)
+  end
+
+  test "an UNRESOLVED checkpoint_dispatched survives a reopen (durable across a CP restart)", %{path: path} do
+    server = start_server(path)
+    {:ok, _} = SQLite.append(server, dispatched_op(90, "vm-1", 5))
+    :ok = GenServer.stop(server)
+
+    server2 = start_server(path)
+    rec = dispatches_by_workload(server2)["scratch-postgres"]
+    assert rec.vm_id == "vm-1"
+    assert rec.generation == 5
+    :ok = GenServer.stop(server2)
+  end
 end

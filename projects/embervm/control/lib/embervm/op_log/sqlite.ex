@@ -313,6 +313,25 @@ defmodule Embervm.OpLog.SQLite do
       updated_at INTEGER NOT NULL
     )
     """,
+    # Checkpoint-dispatch record (R7, ADR embervm/017): one row per workload with an
+    # in-flight interruptible-bank CHECKPOINT the control plane dispatched, so a
+    # recovered control plane can recognize its OWN auto-aborted checkpoint (noded's
+    # resolve-timeout self-bump advances the volume generation by exactly +1 on the
+    # same vm_id) and auto-heal only that provably self-inflicted quarantine.
+    # Written by checkpoint_dispatched, deleted by checkpoint_resolved. One row per
+    # workload (the stop-serialization guard means one in-flight checkpoint at a
+    # time), keyed by workload the same way volume_blessing is. An UNRESOLVED row
+    # must outlive its ops against compaction (see compactor); it is tiny and
+    # short-lived (cleared at the next resolve or auto-heal).
+    """
+    CREATE TABLE IF NOT EXISTS checkpoint_dispatch (
+      workload TEXT PRIMARY KEY,
+      vm_id TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+    """,
     # Composite-group instance projection (R5): the durable lifecycle + entry-
     # endpoint + set row per group instance, write-through projected from the
     # group_* ops (see project/2), mirroring stateful_instances above. A composite
@@ -442,6 +461,11 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def load_checkpoint_dispatches(server \\ __MODULE__) do
+    GenServer.call(server, :load_checkpoint_dispatches)
+  end
+
+  @impl Embervm.OpLog
   def load_group_instances(server \\ __MODULE__) do
     GenServer.call(server, :load_group_instances)
   end
@@ -558,6 +582,10 @@ defmodule Embervm.OpLog.SQLite do
 
   def handle_call(:load_volume_blessing, _from, state) do
     {:reply, do_load_volume_blessing(state.conn), state}
+  end
+
+  def handle_call(:load_checkpoint_dispatches, _from, state) do
+    {:reply, do_load_checkpoint_dispatches(state.conn), state}
   end
 
   def handle_call(:load_group_instances, _from, state) do
@@ -1181,6 +1209,51 @@ defmodule Embervm.OpLog.SQLite do
              op.ts,
              op.ts
            ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # checkpoint_dispatched (R7, ADR embervm/017): upsert the one-per-workload
+  # in-flight checkpoint record {vm_id, generation}. Upserted so a later checkpoint
+  # for the same workload replaces the prior (a stale record can only heal a +1 on
+  # its exact vm_id, so replacement is always safe).
+  defp project(conn, %Op{kind: :checkpoint_dispatched} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO checkpoint_dispatch (workload, vm_id, generation, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(workload) DO UPDATE SET
+      vm_id = excluded.vm_id,
+      generation = excluded.generation,
+      updated_at = excluded.updated_at
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.workload,
+             Map.get(payload, :vm_id),
+             Map.get(payload, :generation),
+             op.ts,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # checkpoint_resolved (R7, ADR embervm/017): the control plane drove this
+  # workload's checkpoint resolve (or auto-heal consumed the record), so drop the
+  # in-flight row. Idempotent (a DELETE of an absent row is a no-op).
+  defp project(conn, %Op{kind: :checkpoint_resolved} = op, _seq) do
+    sql = "DELETE FROM checkpoint_dispatch WHERE workload = ?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.workload]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -2395,6 +2468,30 @@ defmodule Embervm.OpLog.SQLite do
         }
 
         collect_volume_blessing(conn, stmt, [row | acc])
+
+      :done ->
+        Enum.reverse(acc)
+    end
+  end
+
+  defp do_load_checkpoint_dispatches(conn) do
+    sql = """
+    SELECT workload, vm_id, generation
+    FROM checkpoint_dispatch
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      rows = collect_checkpoint_dispatches(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, rows}
+    end
+  end
+
+  defp collect_checkpoint_dispatches(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [workload, vm_id, generation]} ->
+        row = %{workload: workload, vm_id: vm_id, generation: generation}
+        collect_checkpoint_dispatches(conn, stmt, [row | acc])
 
       :done ->
         Enum.reverse(acc)

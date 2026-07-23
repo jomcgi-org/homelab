@@ -220,6 +220,20 @@ defmodule Embervm.OpLog.Postgres do
       updated_at BIGINT NOT NULL
     )
     """,
+    # Checkpoint-dispatch record (R7, ADR embervm/017): one row per workload with an
+    # in-flight CHECKPOINT the control plane dispatched, so a recovered control plane
+    # can auto-heal ONLY its own auto-aborted checkpoint (same vm_id, exactly +1).
+    # Written by checkpoint_dispatched, deleted by checkpoint_resolved. Mirrors the
+    # SQLite backend's table (see that comment for the full rationale).
+    """
+    CREATE TABLE IF NOT EXISTS checkpoint_dispatch (
+      workload TEXT PRIMARY KEY,
+      vm_id TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS group_instances (
       instance_id TEXT PRIMARY KEY,
@@ -311,6 +325,11 @@ defmodule Embervm.OpLog.Postgres do
   @impl Embervm.OpLog
   def load_volume_blessing(server \\ __MODULE__) do
     GenServer.call(server, :load_volume_blessing)
+  end
+
+  @impl Embervm.OpLog
+  def load_checkpoint_dispatches(server \\ __MODULE__) do
+    GenServer.call(server, :load_checkpoint_dispatches)
   end
 
   @impl Embervm.OpLog
@@ -449,6 +468,10 @@ defmodule Embervm.OpLog.Postgres do
 
   def handle_call(:load_volume_blessing, _from, state) do
     {:reply, do_load_volume_blessing(state.conn), state}
+  end
+
+  def handle_call(:load_checkpoint_dispatches, _from, state) do
+    {:reply, do_load_checkpoint_dispatches(state.conn), state}
   end
 
   def handle_call(:load_group_instances, _from, state) do
@@ -870,6 +893,35 @@ defmodule Embervm.OpLog.Postgres do
       op.ts,
       op.ts
     ])
+  end
+
+  # checkpoint_dispatched (R7, ADR embervm/017): upsert the one-per-workload
+  # in-flight checkpoint record {vm_id, generation}; SQLite-backend parity.
+  defp project(conn, %Op{kind: :checkpoint_dispatched} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO checkpoint_dispatch (workload, vm_id, generation, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT(workload) DO UPDATE SET
+      vm_id = excluded.vm_id,
+      generation = excluded.generation,
+      updated_at = excluded.updated_at
+    """
+
+    exec(conn, sql, [
+      op.workload,
+      Map.get(payload, :vm_id),
+      Map.get(payload, :generation),
+      op.ts,
+      op.ts
+    ])
+  end
+
+  # checkpoint_resolved (R7, ADR embervm/017): drop the in-flight row when the
+  # control plane drove the resolve or auto-heal consumed it. Idempotent.
+  defp project(conn, %Op{kind: :checkpoint_resolved} = op, _seq) do
+    exec(conn, "DELETE FROM checkpoint_dispatch WHERE workload=$1", [op.workload])
   end
 
   defp project(conn, %Op{kind: :stateful_started} = op, _seq) do
@@ -1701,6 +1753,24 @@ defmodule Embervm.OpLog.Postgres do
              created_at: created_at,
              updated_at: updated_at
            }
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_load_checkpoint_dispatches(conn) do
+    sql = """
+    SELECT workload, vm_id, generation
+    FROM checkpoint_dispatch
+    """
+
+    case Postgrex.query(conn, sql, []) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [workload, vm_id, generation] ->
+           %{workload: workload, vm_id: vm_id, generation: generation}
          end)}
 
       {:error, reason} ->

@@ -110,6 +110,10 @@
            stateful_published stateful_unpublished stateful_banked stateful_relit
            stateful_cold_booted stateful_evicted stateful_destroying stateful_destroyed
            stateful_failed stateful_stats)a ++
+        # R7 checkpoint-abort auto-heal (ADR embervm/017): the durable
+        # checkpoint-dispatch record that lets the control plane auto-heal its own
+        # auto-aborted checkpoint. Part of the same out-of-scope stateful machinery.
+        ~w(checkpoint_dispatched checkpoint_resolved)a ++
         # R5 composite-group lifecycle kinds, out of scope. group_destroying is the
         # ADR embervm/014 destroy-intent kind.
         ~w(group_created group_net_created group_net_deleted group_member_started
