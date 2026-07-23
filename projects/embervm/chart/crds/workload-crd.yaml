@@ -536,6 +536,29 @@ spec:
                         scratch tier only: the decoded value rides the guest
                         kernel command line for that one boot. Omit for a
                         workload with no first-boot secrets to deliver.
+                    nodeLocalWake:
+                      type: boolean
+                      default: false
+                      description: >-
+                        Node-local activator (ADR embervm/018 Phase 2). When true,
+                        the brick's node-local L4 activator is eligible to relight a
+                        scaled-to-zero instance of this stateful workload on the first
+                        inbound TCP connection, so the wake survives a control-plane
+                        Recreate instead of black-holing on the dead CP-pod activator.
+                        The activator self-bumps the volume generation; the returning
+                        control plane trusts it via the fenced-writer anchor-adoption
+                        rule (ADR embervm/014), so no delegated grant is issued.
+                        Pushed to the node daemon in the workload registry. Defaults
+                        false (CP-only wake via the CP tcp_activator).
+                    meteringFailOpen:
+                      type: boolean
+                      default: false
+                      description: >-
+                        Companion, EXPLICIT policy for nodeLocalWake (ADR embervm/018):
+                        a true workload wakes UNMETERED during a control-plane gap and
+                        reconciles accounting best-effort on adoption. Named here rather
+                        than implied; allowlisted to blessed homelab demos. Defaults
+                        false.
                 group:
                   type: object
                   description: >-
