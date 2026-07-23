@@ -1251,44 +1251,84 @@ defmodule Embervm.StatefulManager do
   # -- wake RPC workers ---------------------------------------------------------
 
   defp run_relight(state, instance, node_id, dial_id, req) do
-    case safe_start_stateful(state, dial_id, req) do
-      {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
-      when is_binary(vm_id) and vm_id != "" ->
-        {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}
+    # Node-anchored: a stateful RELIGHT can ONLY land on the instance that holds the
+    # volume + banked bundle on disk (ADR embervm/014: "placement never picks a
+    # different node for a relight"), so the reject/retry frontier is a SINGLE
+    # element by construction. Routing through Retry.run keeps the reject/retry
+    # POLICY one piece of code (a node-pressure RESOURCE_EXHAUSTED still maps to the
+    # existing no-capacity-shaped failure); with one candidate it is exactly one
+    # attempt, gate on or off. Do NOT expand this list: a cross-node retry would
+    # dial a brick that does not hold this volume.
+    attempt_fun = fn _only ->
+      case safe_start_stateful(state, dial_id, req) do
+        {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
+        when is_binary(vm_id) and vm_id != "" ->
+          {:ok, {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}}
 
-      # A RELIGHT call that fell back to a cold boot on the daemon side
-      # (generation mismatch discovered only at the daemon, or an unreadable
-      # ledger): treat it as a fresh instance, not a relit one, and let the
-      # ORIGINAL banked row be evicted (it never resumed). was_relight=false on
-      # a RELIGHT-mode response is exactly that fallback signal.
-      {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: false, cold_boot_reason: reason}}
-      when is_binary(vm_id) and vm_id != "" ->
-        {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}
+        # A RELIGHT call that fell back to a cold boot on the daemon side
+        # (generation mismatch discovered only at the daemon, or an unreadable
+        # ledger): treat it as a fresh instance, not a relit one, and let the
+        # ORIGINAL banked row be evicted (it never resumed). was_relight=false on
+        # a RELIGHT-mode response is exactly that fallback signal.
+        {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: false, cold_boot_reason: reason}}
+        when is_binary(vm_id) and vm_id != "" ->
+          {:ok, {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}}
 
-      other ->
-        {:error, {:relight_failed, instance.instance_id, other}}
+        {:error, %GRPC.RPCError{status: 8}} = rejected ->
+          {:reject, rejected}
+
+        other ->
+          {:error, {:relight_failed, instance.instance_id, other}}
+      end
     end
+
+    single_candidate_boot(dial_id, attempt_fun, {:relight_failed, instance.instance_id, {:error, :no_capacity}})
   end
 
   defp run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req) do
-    case safe_start_stateful(state, dial_id, req) do
-      {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
-      when is_binary(vm_id) and vm_id != "" ->
-        attrs = %{
-          tenant: state.tenant,
-          principal: wake_principal(workload),
-          workload: workload,
-          node_id: node_id,
-          generation: generation,
-          # The volume the daemon reported it created/attached at (size the request
-          # asked for); FRESH boots record a volume_created off this (see finish_created).
-          volume_size_bytes: cold_volume_size_bytes(state, workload)
-        }
+    # Node-anchored (volume-anchored): a stateful boot targets the node that owns the
+    # workload's volume, so the reject/retry frontier is a SINGLE element. Same
+    # one-policy routing as run_relight; one attempt by construction. Do NOT expand:
+    # the volume lives on exactly this node.
+    attempt_fun = fn _only ->
+      case safe_start_stateful(state, dial_id, req) do
+        {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
+        when is_binary(vm_id) and vm_id != "" ->
+          attrs = %{
+            tenant: state.tenant,
+            principal: wake_principal(workload),
+            workload: workload,
+            node_id: node_id,
+            generation: generation,
+            # The volume the daemon reported it created/attached at (size the request
+            # asked for); FRESH boots record a volume_created off this (see finish_created).
+            volume_size_bytes: cold_volume_size_bytes(state, workload)
+          }
 
-        {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref, reason}
+          {:ok, {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref, reason}}
 
-      other ->
-        {:error, {:start_failed, other}}
+        {:error, %GRPC.RPCError{status: 8}} = rejected ->
+          {:reject, rejected}
+
+        other ->
+          {:error, {:start_failed, other}}
+      end
+    end
+
+    single_candidate_boot(dial_id, attempt_fun, {:start_failed, {:error, :no_capacity}})
+  end
+
+  # Route a NODE-ANCHORED boot (stateful volume-anchored, no cross-node move) through
+  # the shared Embervm.Placement.Retry policy with a SINGLE-element candidate list, so
+  # the reject/retry code is one piece across all boot paths while these paths remain
+  # exactly one attempt by construction. `no_capacity_outcome` is the failure tuple to
+  # surface when that sole candidate rejects under node pressure (mapped from the
+  # Retry :no_capacity), keeping the existing wake-failure shape unchanged.
+  defp single_candidate_boot(dial_id, attempt_fun, no_capacity_outcome) do
+    case Embervm.Placement.Retry.run([%{instance_id: dial_id}], attempt_fun) do
+      {:ok, outcome} -> outcome
+      {:error, :no_capacity} -> {:error, no_capacity_outcome}
+      {:error, reason} -> {:error, reason}
     end
   end
 
