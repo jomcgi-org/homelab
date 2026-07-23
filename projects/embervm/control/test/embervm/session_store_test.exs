@@ -332,7 +332,8 @@ defmodule Embervm.SessionStoreTest do
     assert row.session_id == created.session_id
     assert row.state == "running"
 
-    # Unknown session: a clean :error, never a crash.
-    assert :error = SessionStore.backfill_created(store, "s-nonexistent")
+    # Unknown session: a clean error tuple, never a crash.
+    assert {:error, {:not_found, "s-nonexistent"}} =
+             SessionStore.backfill_created(store, "s-nonexistent")
   end
 end
