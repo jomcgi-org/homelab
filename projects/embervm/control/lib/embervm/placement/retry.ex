@@ -148,13 +148,22 @@ defmodule Embervm.Placement.Retry do
         # into `rest`, and `rest` never contains it again: candidates are unique by
         # instance_id). The advisory downward-headroom refresh is the caller's view
         # concern, delegated to on_reject.
+        # Whether a further attempt will actually run: budget left AND a candidate
+        # left. Under the gate-off single-attempt path (max == 1) this is false, so
+        # the log must NOT claim "retrying" when the very next call stops on the
+        # tried >= max guard (the historic mislead).
+        next = tried + 1
+        will_retry? = next < ctx.max and rest != []
+
         Logger.debug(fn ->
+          outcome = if will_retry?, do: "retrying next candidate", else: "no capacity left within budget"
+
           "embervm placement: brick #{inspect(Map.get(brick, :instance_id))} rejected " <>
-            "(#{inspect(reason)}); retrying next candidate (attempt #{tried + 1}/#{ctx.max})"
+            "(#{inspect(reason)}); #{outcome} (attempt #{next}/#{ctx.max})"
         end)
 
         safe_on_reject(ctx.on_reject, brick, reason)
-        attempt(rest, ctx, tried + 1)
+        attempt(rest, ctx, next)
     end
   end
 

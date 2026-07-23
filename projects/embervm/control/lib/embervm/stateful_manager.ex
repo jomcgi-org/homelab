@@ -338,6 +338,8 @@ defmodule Embervm.StatefulManager do
       node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
+      # Ids already alarmed for being stuck in destroying (log once per id, not per tick).
+      destroying_alarmed: MapSet.new(),
       # workload -> monotonic ms the in-flight wake started (Task 10). Feeds the
       # adoption self-recovery + the park_full oldest-waiter age: a workload still
       # waking past 2 * wakeTimeoutSeconds is a wedged wake whose worker never
@@ -1867,28 +1869,39 @@ defmodule Embervm.StatefulManager do
   defp redrive_destroying(state, live_vms) do
     now = state.clock.()
 
-    StatefulStore.all(state.store)
-    |> Enum.filter(&(&1.state == :destroying))
-    |> Enum.reduce(state, fn instance, acc ->
-      maybe_alarm_destroying(acc, instance, now)
+    destroying =
+      StatefulStore.all(state.store)
+      |> Enum.filter(&(&1.state == :destroying))
+
+    # Prune the alarmed set to instances still destroying (see session_manager).
+    still = MapSet.new(destroying, & &1.instance_id)
+    state = %{state | destroying_alarmed: MapSet.intersection(state.destroying_alarmed, still)}
+
+    Enum.reduce(destroying, state, fn instance, acc ->
+      acc = maybe_alarm_destroying(acc, instance, now)
       redrive_one_destroying(acc, instance, live_vms)
     end)
   end
 
+  # Alarm ONCE per stuck instance (dedup via destroying_alarmed): every-tick logging
+  # would flood SigNoz for a genuinely stuck destroy. Returns the updated state.
   defp maybe_alarm_destroying(state, instance, now) do
+    id = instance.instance_id
     elapsed = now - instance.updated_at
 
-    if elapsed > state.destroying_alarm_ms do
+    if elapsed > state.destroying_alarm_ms and not MapSet.member?(state.destroying_alarmed, id) do
       Logger.error("embervm stateful instance stuck in destroying",
-        instance_id: instance.instance_id,
+        instance_id: id,
         workload: instance.workload,
         vm_id: instance.vm_id,
         elapsed_ms: elapsed,
         alarm_threshold_ms: state.destroying_alarm_ms
       )
-    end
 
-    :ok
+      %{state | destroying_alarmed: MapSet.put(state.destroying_alarmed, id)}
+    else
+      state
+    end
   end
 
   defp redrive_one_destroying(state, instance, live_vms) do
