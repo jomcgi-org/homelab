@@ -75,24 +75,33 @@
       ~w(started vm_destroyed base_built denied drain quota_enforced retried
          redrive dead_lettered failed)a ++
         # R2 session lifecycle kinds, out of scope (protocol 2 in the ADR).
+        # session_destroying is the ADR embervm/014 node-confirmed-destroy intent kind
+        # (durable destroy intent before the confirmed teardown RPC); it rides the same
+        # out-of-scope R2 session lifecycle, so it is excluded alongside its terminal
+        # session_destroyed. The adoption spec's destroying-state + destroy invariant
+        # are added in the PR 5 TLA follow-through, not modeled off this kind's string.
         ~w(session_created session_invoked session_banked session_relit
-           session_expired session_evicted session_destroyed session_failed)a ++
-        # R3 serving lifecycle kinds, out of scope.
+           session_expired session_evicted session_destroying session_destroyed
+           session_failed)a ++
+        # R3 serving lifecycle kinds, out of scope. serving_destroying is the
+        # ADR embervm/014 destroy-intent kind (see session_destroying).
         ~w(serving_started serving_published serving_unpublished serving_banked
-           serving_relit serving_evicted serving_destroyed serving_failed
-           serving_stats)a ++
+           serving_relit serving_evicted serving_destroying serving_destroyed
+           serving_failed serving_stats)a ++
         # R4 stateful lifecycle + volume kinds, out of scope. generation_blessed
         # is the volume-generation blessing ledger audit kind (control plane as
         # sole generation issuer), part of the same out-of-scope volume machinery.
+        # stateful_destroying is the ADR embervm/014 destroy-intent kind.
         ~w(volume_created volume_deleted generation_blessed stateful_started
            stateful_published stateful_unpublished stateful_banked stateful_relit
-           stateful_cold_booted stateful_evicted stateful_destroyed stateful_failed
-           stateful_stats)a ++
-        # R5 composite-group lifecycle kinds, out of scope.
+           stateful_cold_booted stateful_evicted stateful_destroying stateful_destroyed
+           stateful_failed stateful_stats)a ++
+        # R5 composite-group lifecycle kinds, out of scope. group_destroying is the
+        # ADR embervm/014 destroy-intent kind.
         ~w(group_created group_net_created group_net_deleted group_member_started
            group_running group_published group_unpublished group_banked group_relit
-           group_fresh_booted group_set_evicted group_degraded group_destroyed
-           group_failed group_stats)a ++
+           group_fresh_booted group_set_evicted group_degraded group_destroying
+           group_destroyed group_failed group_stats)a ++
         # R6 continuity (node drain + off-node artifact) kinds, out of scope.
         ~w(node_drain_started node_drain_finished artifact_exported
            artifact_restored artifact_evicted_remote)a
