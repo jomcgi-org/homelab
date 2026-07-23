@@ -1054,7 +1054,10 @@ defmodule Embervm.ServingManager do
       node_id: node_id,
       vm_id: vm.vm_id,
       ip: Map.get(vm, :ip),
-      port: Map.get(vm, :port)
+      port: Map.get(vm, :port),
+      # Health from node truth, not assumed: a VM the brick reports unhealthy is
+      # minted unhealthy and stays out of the fan-out until adopt_live heals it.
+      healthy: Map.get(vm, :healthy, true)
     })
 
     case ServingStore.backfill_created(state.store, instance_id) do

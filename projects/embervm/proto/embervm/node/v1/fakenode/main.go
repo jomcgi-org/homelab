@@ -525,9 +525,9 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 		},
 		// Node-local activator facts (ADR embervm/018 Fork A): a fixed advertised
 		// L7 endpoint and L4 ip so the client can assert the new node-level
-		// activator fields round-trip. The node advertises its STABLE address
-		// (node IP + activator port); EndpointPublisher prefers this over the CP
-		// pod activator for the scaled-to-zero fallback route.
+		// activator fields round-trip. The node advertises its own pod IP +
+		// activator port; EndpointPublisher prefers this over the CP pod activator
+		// for the scaled-to-zero fallback route.
 		ActivatorEndpoint: &nodev1.Endpoint{Ip: "10.99.0.1", Port: 8081},
 		ActivatorIp:       "10.99.0.1",
 	}, nil

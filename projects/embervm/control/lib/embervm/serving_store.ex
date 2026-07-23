@@ -272,7 +272,9 @@ defmodule Embervm.ServingStore do
   row, for an instance adopted from node truth whose ops the control plane never
   wrote (the ADR embervm/018 activator adoption, the serving analog of
   `SessionStore.backfill_created`). Appends SYNCHRONOUSLY (reconcile is not a hot
-  path); the projection is INSERT OR IGNORE so a re-drive is idempotent. A no-op /
+  path). Idempotent via an ETS `backfilled` flag: a re-drive after the ops have
+  landed is a no-op (the serving projection's `serving_started` is a plain INSERT,
+  so re-appending would collide on the instance_id UNIQUE constraint). A no-op /
   `:error` for an unknown instance.
   """
   @spec backfill_created(GenServer.server(), String.t()) :: :ok | {:error, term()}
@@ -566,8 +568,12 @@ defmodule Embervm.ServingStore do
       {:error, _} ->
         ts = state.clock.()
         # Mint the row already :published from node truth: the brick woke the VM and
-        # reports it live-and-healthy, so it is in the fan-out immediately (the ETS
-        # row is what published_endpoints reads). backfill_created writes the durable
+        # reports it live, so it is in the fan-out immediately (the ETS row is what
+        # published_endpoints reads). Health is taken from the node fact, not assumed:
+        # a VM the brick reports unhealthy is minted unhealthy and stays out of the
+        # fan-out (publishable? requires healthy) until adopt_live heals it, rather
+        # than routing traffic to a failing guest. backfilled=false gates the durable
+        # backfill so it appends exactly once. backfill_created writes the durable
         # serving_started/serving_published ops from this row on the same pass.
         instance = %{
           instance_id: instance_id,
@@ -579,13 +585,14 @@ defmodule Embervm.ServingStore do
           vm_id: Map.get(attrs, :vm_id),
           ip: Map.get(attrs, :ip),
           port: Map.get(attrs, :port),
-          healthy: true,
+          healthy: Map.get(attrs, :healthy, true),
           drain_reason: nil,
           base_snapshot_ref: nil,
           base_digest: nil,
           generation: 0,
           snapshot_ref: nil,
           snapshot_size_bytes: nil,
+          backfilled: false,
           created_at: ts,
           last_active_at: nil,
           updated_at: ts,
@@ -600,10 +607,17 @@ defmodule Embervm.ServingStore do
 
   def handle_call({:backfill_created, instance_id}, _from, state) do
     case fetch(state, instance_id) do
+      # Already backfilled: a no-op. The serving projection's serving_started is a
+      # plain INSERT (unlike the session lane's INSERT OR IGNORE), so re-appending
+      # would collide on the instance_id UNIQUE constraint; this flag is what makes a
+      # re-drive idempotent instead. (In the reconcile flow the mint-once structure
+      # already calls this once per instance; the flag guards a defensive re-drive.)
+      {:ok, %{backfilled: true}} ->
+        {:reply, :ok, state}
+
       {:ok, instance} ->
         # serving_started reconstructs the lifecycle birth op; serving_published
-        # follows it when the row is live-and-published (the activator case always
-        # is). Both are INSERT OR IGNORE at projection, so a re-drive is idempotent.
+        # follows it when the row is live-and-published (the activator case always is).
         started = %Op{
           kind: :serving_started,
           tenant: instance.tenant,
@@ -627,7 +641,18 @@ defmodule Embervm.ServingStore do
             maybe_backfill_published(state, instance)
           end
 
-        {:reply, backfill_reply(result), state}
+        case result do
+          {:error, _} = error ->
+            {:reply, backfill_reply(error), state}
+
+          ok ->
+            # Both durable ops landed: mark the row so a re-drive is a no-op. The flag
+            # is ETS-only; on a CP restart the projection rebuilds a durable row and
+            # the reconcile finds it (never re-minting), so backfill is never re-driven
+            # against an already-durable instance across a restart either.
+            :ets.insert(state.instances, {instance_id, Map.put(instance, :backfilled, true)})
+            {:reply, backfill_reply(ok), state}
+        end
 
       {:error, _reason} = error ->
         {:reply, error, state}
