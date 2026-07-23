@@ -48,4 +48,9 @@ spec:
     idleBankSeconds: {{ .Values.hotImageDemo.serving.idleBankSeconds }}
     drainSeconds: {{ .Values.hotImageDemo.serving.drainSeconds }}
     maxLifetimeSeconds: {{ .Values.hotImageDemo.serving.maxLifetimeSeconds }}
+    # Node-local activator (ADR embervm/018 Fork A): the brick cold-boots this
+    # scaled-to-zero demo's first request so it survives a control-plane Recreate;
+    # meteringFailOpen names the wake-unmetered-during-gap policy for this blessed demo.
+    nodeLocalWake: {{ .Values.hotImageDemo.serving.nodeLocalWake }}
+    meteringFailOpen: {{ .Values.hotImageDemo.serving.meteringFailOpen }}
 {{- end }}

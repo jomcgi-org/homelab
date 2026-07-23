@@ -120,6 +120,12 @@ containers:
       - name: health
         containerPort: {{ $ctx.Values.noded.healthPort }}
         protocol: TCP
+      # Node-local activator (ADR embervm/018 Fork A): the HTTP listener a node
+      # Envoy routes a scaled-to-zero serving workload's first request to, so the
+      # cold boot happens on the brick and survives a CP Recreate.
+      - name: activator
+        containerPort: {{ $ctx.Values.noded.activatorPort }}
+        protocol: TCP
     env:
       - name: EMBERVM_NODED_LISTEN_ADDR
         value: ":{{ $ctx.Values.noded.grpcPort }}"
@@ -139,6 +145,15 @@ containers:
         valueFrom:
           fieldRef:
             fieldPath: status.podIP
+      # Node-local activator listener (ADR embervm/018 Fork A). The daemon serves
+      # cold-boot wakes for scaled-to-zero serving workloads here, and advertises
+      # its own pod IP + this port as NodeStatus.activator_endpoint (the address a
+      # pod-network Envoy dials, exactly as it dials serving VMs at pod_ip:vmPort;
+      # advertising the node IP would black-hole since the serving DNAT lives in
+      # noded's own netns). The pod IP is stable across a control-plane Recreate,
+      # which is the failure this survives.
+      - name: EMBERVM_NODED_ACTIVATOR_ADDR
+        value: ":{{ $ctx.Values.noded.activatorPort }}"
       # The pod's own UID (Downward API metadata.uid), the daemon's INSTANCE
       # identity. Reported as NodeStatus.pod_uid and advertised in the
       # dial-home registration, so the control plane keys its registry and
