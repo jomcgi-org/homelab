@@ -418,6 +418,10 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 				Port:            8080,
 				Healthy:         true,
 				LastProbeUnixMs: 1_700_000_001_000,
+				// origin (ADR embervm/018): this VM was woken by the brick
+				// activator, so the client can assert the adoption discriminator
+				// round-trips (UNSPECIFIED on the other VMs proves the default).
+				Origin: nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR,
 			},
 		},
 		ServingSnapshots: []*nodev1.ServingSnapshot{
@@ -519,6 +523,13 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 				Exported: true,
 			},
 		},
+		// Node-local activator facts (ADR embervm/018 Fork A): a fixed advertised
+		// L7 endpoint and L4 ip so the client can assert the new node-level
+		// activator fields round-trip. The node advertises its STABLE address
+		// (node IP + activator port); EndpointPublisher prefers this over the CP
+		// pod activator for the scaled-to-zero fallback route.
+		ActivatorEndpoint: &nodev1.Endpoint{Ip: "10.99.0.1", Port: 8081},
+		ActivatorIp:       "10.99.0.1",
 	}, nil
 }
 
