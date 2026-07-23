@@ -1091,7 +1091,14 @@ defmodule Embervm.WorkloadWatcher do
       # when absent, matching every other optional stateful field's shape.
       # Embervm.StatefulManager reads it (via Embervm.K8s.get_secret) ONLY on a
       # FRESH/COLD wake, never on RELIGHT.
-      secret_ref: Map.get(s, "secretRef")
+      secret_ref: Map.get(s, "secretRef"),
+      # ADR embervm/018 Fork A Phase 2: node_local_wake gates the brick's L4
+      # activator per stateful workload (pushed to noded in the RegistryEntry and
+      # drives CP-side ACTIVATOR adoption). metering_fail_open is the companion
+      # named policy. Both default false: a stateful workload that sets neither keeps
+      # CP-only wake via the CP tcp_activator.
+      node_local_wake: Map.get(s, "nodeLocalWake") == true,
+      metering_fail_open: Map.get(s, "meteringFailOpen") == true
     }
   end
 

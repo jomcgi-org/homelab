@@ -678,15 +678,43 @@ defmodule Embervm.EndpointPublisher do
         %{ip: ip, port: port}
 
       _ ->
-        activator_tcp_endpoint(ctx, listen_port)
+        activator_tcp_endpoint(ctx, workload, listen_port)
     end
   end
 
-  defp activator_tcp_endpoint(%{activator_ip: ip}, listen_port)
-       when is_binary(ip) and ip != "" and is_integer(listen_port),
-       do: %{ip: ip, port: listen_port}
+  # The L4 activator fallback for a cold stateful workload (ADR embervm/018 Phase
+  # 2): PREFER the workload's ANCHOR node's advertised activator_ip, falling back
+  # to the CP-injected activator_ip. Unlike serving (any READY node can cold-boot),
+  # only the brick that physically holds the volume can relight a stateful workload,
+  # so the fallback must point at the volume's anchor node. Rendered at the
+  # workload's OWN listen_port (the activator resolves the workload from the local
+  # accept port). nil (no anchor advert and no CP address) => skipped upstream.
+  defp activator_tcp_endpoint(ctx, workload, listen_port) when is_integer(listen_port) do
+    ip = anchor_activator_ip(ctx, workload) || Map.get(ctx, :activator_ip)
 
-  defp activator_tcp_endpoint(_ctx, _listen_port), do: nil
+    if is_binary(ip) and ip != "" do
+      %{ip: ip, port: listen_port}
+    else
+      nil
+    end
+  end
+
+  defp activator_tcp_endpoint(_ctx, _workload, _listen_port), do: nil
+
+  # The advertised activator_ip of the volume's anchor node, or nil when the
+  # workload has no volume yet (never woken, so no anchor) or the anchor node
+  # advertises no activator (pre-018 daemon => the CP address is used instead).
+  defp anchor_activator_ip(ctx, workload) do
+    with %{node_id: anchor} when is_binary(anchor) <-
+           StatefulStore.get_volume(ctx.stateful_store, workload),
+         fact when is_map(fact) <-
+           Enum.find(Map.get(ctx, :node_facts, []), &(Map.get(&1, :configured_id) == anchor)),
+         ip when is_binary(ip) and ip != "" <- Map.get(fact, :activator_ip) do
+      ip
+    else
+      _ -> nil
+    end
+  end
 
   # -- composite (L4) projection (R5) ----------------------------------------
 

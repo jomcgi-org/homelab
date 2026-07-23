@@ -840,7 +840,12 @@ defmodule Embervm.NodeRegistry do
         # adoption resolves a stranded checkpoint (default abort) after a
         # control-plane restart.
         checkpoint_pending: v.checkpoint_pending,
-        checkpoint_token: v.checkpoint_token
+        checkpoint_token: v.checkpoint_token,
+        # origin (ADR embervm/018 Phase 2): a node-woken (brick-relit) stateful VM.
+        # StatefulManager adopts it (the fenced-writer rule already trusts its
+        # forward generation) instead of orphan-destroying it. Absent on a pre-018
+        # daemon reads :INSTANCE_ORIGIN_UNSPECIFIED == the CP-issued default.
+        origin: v.origin
       }
     end
   end
@@ -1555,6 +1560,16 @@ defmodule Embervm.NodeRegistry do
         # non-serving workload or one that did not opt into nodeLocalWake, which the
         # daemon reads as "not node-local-wakeable" (503 at the activator).
         serving = entry[:serving] || %{}
+        # Stateful boot params (ADR embervm/018 Phase 2): the L4 activator binds and
+        # resolves by listen_port, health-gates the guest port, and threads the mount.
+        # boot_image_ref and volume_device stay noded-local (the daemon resolves the
+        # base from its own inventory and the volume from local disk, exactly as the
+        # serving activator resolves its image), so they are NOT pushed here.
+        stateful = entry[:stateful] || %{}
+        # node_local_wake is class-agnostic (a workload is exactly one class), so read
+        # it from whichever class block carries it.
+        node_local_wake =
+          Map.get(serving, :node_local_wake, false) or Map.get(stateful, :node_local_wake, false)
 
         %RegistryEntry{
           workload: name,
@@ -1563,9 +1578,12 @@ defmodule Embervm.NodeRegistry do
           rootfs_ref: rootfs_ref,
           harness_init: harness_init,
           sizing: %ResourceSpec{vcpus: entry[:vcpus] || 0, mem_mib: entry[:mem_mib] || 0},
-          node_local_wake: Map.get(serving, :node_local_wake, false),
+          node_local_wake: node_local_wake,
           serving_port: Map.get(serving, :port) || 0,
-          serving_health_path: Map.get(serving, :health_path) || ""
+          serving_health_path: Map.get(serving, :health_path) || "",
+          stateful_listen_port: Map.get(stateful, :listen_port) || 0,
+          stateful_port: Map.get(stateful, :port) || 0,
+          stateful_volume_mount: Map.get(stateful, :volume_mount_path) || ""
         }
       end
 
