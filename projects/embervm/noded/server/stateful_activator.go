@@ -215,10 +215,19 @@ func (a *statefulActivator) wake(ctx context.Context, reg workloadEntry) (*state
 		return resumed, nil
 	}
 
+	// Resolve boot_image_ref from the daemon's OWN base registry by workload (the
+	// control plane supplies it per-call today, but the activator has no control
+	// plane during a gap; the base key is node-local so it cannot ride the global
+	// workload registry). Threaded into BOTH modes so a RELIGHT that falls back to
+	// a cold boot (generation mismatch or an unreadable ledger) still has a base.
+	// A COLD wake with no ready base fails cleanly (the workload stays dark until
+	// the control plane returns), the accepted node-local degradation.
+	bootImageRef, _ := a.server.bases.readyByWorkload(reg.Workload)
+
 	req := &nodev1.StartStatefulRequest{
 		Trace:             &nodev1.Trace{Workload: reg.Workload},
 		Port:              reg.StatefulPort,
-		BootImageRef:      reg.StatefulBootImageRef,
+		BootImageRef:      bootImageRef,
 		VolumeMount:       reg.StatefulVolumeMount,
 		VolumeDevice:      reg.StatefulVolumeDevice,
 		BlessedGeneration: 0,
