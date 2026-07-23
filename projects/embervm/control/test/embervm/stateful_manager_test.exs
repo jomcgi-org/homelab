@@ -845,9 +845,9 @@ defmodule Embervm.StatefulManagerTest do
         generation: 1
       })
 
-    # Force the instance into :destroying: mid node-confirmed teardown (ADR
-    # embervm/014 decision 5), the teardown RPC in flight.
-    _ = StatefulStore.adopt_state(ctx.store, "stf-destroying", :destroying)
+    # Drive the instance into :destroying via the begin_destroy FSM edge: mid
+    # node-confirmed teardown (ADR embervm/014 decision 5), the teardown RPC in flight.
+    {:ok, _} = StatefulStore.mark(ctx.store, "stf-destroying", :begin_destroy)
 
     # The node still reports the VM live: the straggler report that turns on the TLC
     # NoDestroyBeforeConfirm violation if adoption keys off the node, not the CP state.
