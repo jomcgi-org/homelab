@@ -123,13 +123,26 @@ defmodule Embervm.StatefulManagerTest do
   # check, retry.
   defp flush_mgr(ctx), do: :sys.get_state(ctx.mgr)
 
+  # Number of callers currently parked (owner + parkers) for a workload. Reads the
+  # manager's `waking` map directly so a test can poll for a wake to register as
+  # in-flight instead of guessing with a fixed Process.sleep.
+  defp waiter_count(ctx, workload),
+    do: length(Map.get(:sys.get_state(ctx.mgr).waking, workload, []))
+
   defp poll_mgr(ctx, fun, tries \\ 50) do
     flush_mgr(ctx)
 
     cond do
       fun.() -> :ok
       tries <= 0 -> flunk("poll_mgr: condition never held")
-      true -> poll_mgr(ctx, fun, tries - 1)
+      true ->
+        # Yield a scheduler slot between tries. flush_mgr only drains the
+        # manager's own mailbox; a spawned {:wake_done} worker is a separate
+        # process that must actually be scheduled before the condition can hold.
+        # Without this backoff the loop spins through all tries in a couple of ms
+        # and starves the worker under the 8-way parallel CI runner.
+        Process.sleep(10)
+        poll_mgr(ctx, fun, tries - 1)
     end
   end
 
@@ -540,11 +553,12 @@ defmodule Embervm.StatefulManagerTest do
     # First caller kicks the wake; two more park (filling the cap of 3 with the
     # owner); a fourth is denied.
     first = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
-    # Give the first call time to register and become the in-flight wake owner.
-    Process.sleep(20)
+    # Wait for the first call to register as the in-flight wake owner (waiter #1).
+    poll_mgr(ctx, fn -> waiter_count(ctx, "wl-a") >= 1 end)
 
     parked = for _ <- 1..2, do: Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
-    Process.sleep(20)
+    # Wait for both parkers to register so the park (cap 3) is exactly full.
+    poll_mgr(ctx, fn -> waiter_count(ctx, "wl-a") == 3 end)
 
     assert {:error, {:park_full, _}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
 
@@ -998,7 +1012,7 @@ defmodule Embervm.StatefulManagerTest do
     refute StatefulManager.parked?(ctx.mgr, "wl-a")
 
     first = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
-    Process.sleep(20)
+    poll_mgr(ctx, fn -> StatefulManager.parked?(ctx.mgr, "wl-a") end)
 
     assert StatefulManager.parked?(ctx.mgr, "wl-a")
 
@@ -1015,7 +1029,7 @@ defmodule Embervm.StatefulManagerTest do
 
     # The wake must PARK, not boot: run it in a task so it blocks.
     waiter = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
-    Process.sleep(30)
+    poll_mgr(ctx, fn -> StatefulManager.parked?(ctx.mgr, "wl-a") end)
 
     # No StartStateful was issued (parked, not cold-booted).
     assert Agent.get(ctx.starts, & &1) == 0
@@ -1063,7 +1077,7 @@ defmodule Embervm.StatefulManagerTest do
     checkpointed_instance(ctx, "stf-ck", "wl-a", "vm-ck")
 
     waiter = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
-    Process.sleep(30)
+    poll_mgr(ctx, fn -> StatefulManager.parked?(ctx.mgr, "wl-a") end)
     assert Agent.get(ctx.starts, & &1) == 0
 
     # Simulate the sweeper's COMMIT: the temp becomes the bundle (checkpointed ->
@@ -1180,8 +1194,9 @@ defmodule Embervm.StatefulManagerTest do
     seed_banked_with_pair(ctx, "stf-banked", "node-4", 3, 3)
 
     caller = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
-    # Let the wake register as in-flight (mark :relighting, stamp wake_started at 0).
-    Process.sleep(50)
+    # Wait for the wake to register as in-flight (mark :relighting, stamp
+    # wake_started at 0) before advancing the clock past the stuck threshold.
+    poll_mgr(ctx, fn -> StatefulManager.parked?(ctx.mgr, "wl-a") end)
 
     # Advance mono past 2 * wakeTimeoutSeconds (2 * 60s = 120_000ms).
     Agent.update(mono, fn _ -> 200_000 end)

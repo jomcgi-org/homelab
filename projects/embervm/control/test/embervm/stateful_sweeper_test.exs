@@ -303,7 +303,15 @@ defmodule Embervm.StatefulSweeperTest do
     cond do
       fun.() -> :ok
       tries <= 0 -> flunk("wait_until: condition never held")
-      true -> wait_until(ctx, fun, tries - 1)
+      true ->
+        # Yield a scheduler slot between tries. flush only drains the sweeper's
+        # own mailbox; a spawned bank worker (posts {:bank_done}) is a separate
+        # process that must be scheduled before the store reaches :banked.
+        # Without this backoff the loop spins through all tries in a couple of ms
+        # and starves the worker under the 8-way parallel CI runner (the historic
+        # "condition never held" idle-bank flake).
+        Process.sleep(10)
+        wait_until(ctx, fun, tries - 1)
     end
   end
 
