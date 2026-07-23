@@ -37,6 +37,41 @@ func TestAllocatorLowestFreeAndReuse(t *testing.T) {
 	}
 }
 
+// TestAllocatorFreeCount checks the O(1) freelist size the tap-pressure predicate
+// reads (ADR embervm/014 decision 3): it starts at the full usable range, drops
+// as IPs are allocated, rises on release, and hits 0 exactly at exhaustion.
+func TestAllocatorFreeCount(t *testing.T) {
+	// A /29 has usable VM range .2..6 (five addresses), gateway .1, broadcast .7.
+	a := mustAllocator(t, "172.31.0.0/29")
+	if got := a.freeCount(); got != 5 {
+		t.Fatalf("initial freeCount = %d want 5", got)
+	}
+	first, err := a.allocate()
+	if err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	if got := a.freeCount(); got != 4 {
+		t.Fatalf("freeCount after one allocate = %d want 4", got)
+	}
+	// Drain the rest; the last free count is 0 and the next allocate errors.
+	for i := 0; i < 4; i++ {
+		if _, err := a.allocate(); err != nil {
+			t.Fatalf("allocate %d: %v", i, err)
+		}
+	}
+	if got := a.freeCount(); got != 0 {
+		t.Fatalf("freeCount at exhaustion = %d want 0", got)
+	}
+	if _, err := a.allocate(); err == nil {
+		t.Error("allocate on exhausted subnet should error")
+	}
+	// Releasing one raises the free count back to 1 (a released tap is reusable).
+	a.release(first)
+	if got := a.freeCount(); got != 1 {
+		t.Fatalf("freeCount after release = %d want 1", got)
+	}
+}
+
 func TestAllocatorSkipsGatewayAndBroadcast(t *testing.T) {
 	// A /29 has hosts .1..6 with .0 network and .7 broadcast; gateway is .1, so the
 	// usable VM range is .2..6 (five addresses).

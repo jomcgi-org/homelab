@@ -63,6 +63,12 @@ func (s *Server) StartStateful(ctx context.Context, req *nodev1.StartStatefulReq
 	if s.cfg.MaxLiveVMs > 0 && s.liveVMCount() >= s.cfg.MaxLiveVMs {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.cfg.MaxLiveVMs)
 	}
+	// Cheap rejection under real memory/tap pressure (ADR embervm/014 decision 3),
+	// BEFORE the tap allocation and boot below. Stateful is tap-bearing; the
+	// workload's mem need comes from the request's ResourceSpec.
+	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classTapBearing); err != nil {
+		return nil, err
+	}
 	workload := req.GetTrace().GetWorkload()
 	if workload == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: trace.workload required")

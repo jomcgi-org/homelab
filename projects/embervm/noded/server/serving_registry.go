@@ -41,6 +41,11 @@ type servingNetwork interface {
 	PrefixLen() int
 	// CIDR reports the serving subnet CIDR for NodeStatus.serving_subnet_cidr.
 	CIDR() string
+	// AvailableTaps reports how many tap IPs are currently free (the IP
+	// allocator's freelist size), for the node-side tap-pressure predicate (ADR
+	// embervm/014 decision 3). An O(1) counter read: a zero count is the
+	// `pressure:taps` cheap rejection. Never does netlink work.
+	AvailableTaps() int
 }
 
 // servingDriver is the subset of the fcvm driver the serving verbs need on top of

@@ -317,6 +317,19 @@ func NewManager(runner Runner, bridge, cidr, podIP string, portBase, tapPrealloc
 	}, nil
 }
 
+// AvailableTaps reports how many serving tap IPs are currently free (the IP
+// allocator's freelist size). It is an O(1) counter read the node-side
+// tap-pressure predicate calls on the reject hot path (ADR embervm/014 decision
+// 3): a zero count is the `pressure:taps` rejection. A nil Manager (serving
+// disabled) reports 0, but the server-side predicate guards that case separately
+// (a nil servingNet is "no tap notion", not "exhausted").
+func (m *Manager) AvailableTaps() int {
+	if m == nil || m.alloc == nil {
+		return 0
+	}
+	return m.alloc.freeCount()
+}
+
 // CIDR reports the serving subnet CIDR string for NodeStatus.serving_subnet_cidr.
 func (m *Manager) CIDR() string {
 	if m == nil || m.cidr == nil {

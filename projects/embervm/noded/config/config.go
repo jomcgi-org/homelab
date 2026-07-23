@@ -91,6 +91,18 @@ type Config struct {
 	// NodeStatus for the control plane to consume.
 	MaxLiveVMs int
 
+	// MemRejectFloorMib is the memory cushion (MiB) the node-side cheap-rejection
+	// predicate keeps free above a workload's need before it admits a boot verb
+	// (Prime/Start*): free schedulable memory must exceed need + this floor or the
+	// verb is rejected RESOURCE_EXHAUSTED with reason `pressure:mem` (ADR
+	// embervm/014 decision 3). It is one smallest-workload footprint by default
+	// (minSlotWorkloadMib, 512) so a brick never admits a boot that would drive it
+	// to the memory edge; a zero/unset value falls back to that same default in
+	// the predicate (the floor is never accidentally disabled). Env
+	// EMBERVM_NODED_MEM_REJECT_FLOOR_MIB. Read only by the pressure predicate; a
+	// cgroup reporting unknown (unlimited) headroom fails the check open regardless.
+	MemRejectFloorMib int
+
 	// DaemonReserveMib is subtracted from the cgroup memory.max ceiling
 	// before it is reported as NodeStatus.mem_budget_mib, covering the
 	// daemon's own RSS so the reported budget is guest-schedulable memory,
@@ -327,15 +339,19 @@ type Config struct {
 // optional fields. It errors only on values that are present but malformed.
 func Load() (Config, error) {
 	c := Config{
-		ListenAddr:          getenvDefault("EMBERVM_NODED_LISTEN_ADDR", ":9090"),
-		HealthAddr:          getenvDefault("EMBERVM_NODED_HEALTH_ADDR", ":8080"),
-		Node:                os.Getenv("EMBERVM_NODED_NODE"),
-		Arch:                os.Getenv("EMBERVM_NODED_ARCH"),
-		CpuVendor:           os.Getenv("EMBERVM_NODED_CPU_VENDOR"),
-		CpuTemplate:         os.Getenv("EMBERVM_NODED_CPU_TEMPLATE"),
-		BearerToken:         os.Getenv("EMBERVM_NODED_BEARER_TOKEN"),
-		MaxLiveVMs:          atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
-		DaemonReserveMib:    atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
+		ListenAddr:       getenvDefault("EMBERVM_NODED_LISTEN_ADDR", ":9090"),
+		HealthAddr:       getenvDefault("EMBERVM_NODED_HEALTH_ADDR", ":8080"),
+		Node:             os.Getenv("EMBERVM_NODED_NODE"),
+		Arch:             os.Getenv("EMBERVM_NODED_ARCH"),
+		CpuVendor:        os.Getenv("EMBERVM_NODED_CPU_VENDOR"),
+		CpuTemplate:      os.Getenv("EMBERVM_NODED_CPU_TEMPLATE"),
+		BearerToken:      os.Getenv("EMBERVM_NODED_BEARER_TOKEN"),
+		MaxLiveVMs:       atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
+		DaemonReserveMib: atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
+		// Default 512 == server.minSlotWorkloadMib (one smallest-workload
+		// footprint); the two live in different packages (config cannot import
+		// server), so the literal is duplicated with this note tying them together.
+		MemRejectFloorMib:   atoiDefault("EMBERVM_NODED_MEM_REJECT_FLOOR_MIB", 512),
 		SnapshotRoot:        os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
 		BinPath:             getenvDefault("EMBERVM_NODED_FIRECRACKER_BIN", "/opt/fc/firecracker"),
 		KernelImagePath:     getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
