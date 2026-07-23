@@ -180,3 +180,35 @@ auto-abort, where no control plane is reachable to issue a generation; its
 resulting quarantine is accepted as correct fail-closed behaviour, with a
 break-glass recovery documented in
 `docs/runbooks/embervm-stateful-generation-quarantine.md`.
+
+## Amendment (2026-07-23): the sole-issuer rule now has exceptions, and is delegated to the anchor brick
+
+The "control plane is the sole issuer of a volume generation" rule (standing
+decision 4) now has three recorded shapes, listed here as the canonical
+exception table so the invariant is never read as unqualified again:
+
+1. **CP-issued, pre-dispatch (the original).** The CP blesses the next
+   generation before dispatching a wake/attach, and noded `RecordBlessed`s it.
+   The default path.
+2. **Checkpoint-abort issuer ([ADR 017](017-checkpoint-abort-quarantine-auto-heal.md)).**
+   The CP blesses on the interruptible-bank ABORT lane too (the 2026-07-22
+   amendment above), and auto-heals a noded resolve-timeout self-bump only when
+   a durable `checkpoint_dispatched{workload, vm_id, generation}` record proves
+   the `+1` was its own checkpoint. Everything unproven stays quarantined.
+3. **Delegated advancement ([ADR 018](018-node-local-activator-brick-authoritative-lifecycle.md)).**
+   The CP issues a durable, bounded `wake_grant{workload, volume_node, grant_id,
+   gen_floor, gen_ceiling, expires_at}` that authorises the volume's ANCHOR
+   brick to advance the generation without the CP present (Fork A, a bounded gap
+   budget), and under Fork B a renewable time-lease that delegates
+   generation-advancement to the anchor brick in steady state, with the CP as
+   sole ADJUDICATOR (forward-only watermark, quarantine on any advancement no
+   live grant covers).
+
+The load-bearing point for this invariant: the delegation changes who may
+ISSUE a generation, never who may WRITE a volume. Single-writer exclusion still
+rests entirely on the PHYSICAL fence recorded above (one-node volume, one
+writable attach per volume in noded's `volume.Manager`, Longhorn attach
+exclusivity). The grant is provenance, not exclusion; widening its generation
+ceiling or switching to a time-bounded cadence class only widens
+anomaly-detection, and can never admit a second writer. See ADR 018's two-writer
+safety argument.
