@@ -367,6 +367,252 @@ defmodule Embervm.DispatcherTest do
     assert state_of(ctx, tid) == :queued
   end
 
+  # -- reject/retry placement (ADR 014 decision 3) ---------------------------
+
+  # Seed two co-located big bricks on one node so the miss frontier has a real
+  # next candidate to retry onto.
+  defp two_colocated_bricks(ctx, wl) do
+    put_catalog(ctx, wl, cap: 10, mem_mib: 4_000)
+
+    for {pod, iid} <- [{"a", "node-4/a"}, {"b", "node-4/b"}] do
+      put_facts(ctx, wl,
+        key: {"node-4", pod},
+        instance_id: iid,
+        size_class: "8gi",
+        mem_budget: 8_192,
+        mem_headroom: 8_000,
+        free: 0,
+        live: 0,
+        max: 8
+      )
+    end
+  end
+
+  test "gate ON: first brick rejects Prime under pressure -> miss retries the second brick" do
+    System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+    on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
+
+    parent = self()
+    # Reject the FIRST brick Primed (whichever the frontier head is, which depends on
+    # the workload hash), succeed the second: the retry then always fires regardless
+    # of which co-located brick the deterministic pick puts first.
+    {:ok, primes} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        # Channel echoes the dialed instance so assign_fun can assert the winner.
+        channel_fun: fn instance ->
+          send(parent, {:dialed, instance})
+          {:ok, instance}
+        end,
+        prime_fun: fn channel, _req ->
+          n = Agent.get_and_update(primes, fn n -> {n, n + 1} end)
+
+          if n == 0 do
+            {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+          else
+            {:ok, %PrimeResponse{vm_id: "vm-on-#{channel}"}}
+          end
+        end,
+        # Assign must dial the WINNING brick's channel (the second one primed),
+        # proving the retry re-pointed the Assign, not just the Prime.
+        assign_fun: fn channel, _req ->
+          send(parent, {:assigned_on, channel})
+          {:ok, success_resp()}
+        end
+      )
+
+    two_colocated_bricks(ctx, "wl-a")
+
+    tid = submit(ctx, "wl-a", "p1")
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+
+    # BOTH bricks were dialed for Prime (the head rejected, the retry hit the other).
+    assert_receive {:dialed, first}, 2_000
+    assert_receive {:dialed, second}, 2_000
+    assert Enum.sort([first, second]) == ["node-4/a", "node-4/b"]
+    # The Assign landed on the SECOND brick (the one that actually primed), proving
+    # the retry re-pointed the Assign channel to the winning brick, not the head
+    # (mandatory node-reassignment assertion #1: Assign dials B).
+    assert_receive {:assigned_on, assigned_on}, 2_000
+    assert assigned_on == second
+    assert assigned_on != first
+  end
+
+  test "gate ON: after a cross-brick retry, meta.node_id follows the VM to B and A never double-adopts" do
+    # This is THE node-reassignment accounting test (ADR 014 decision 3): on a retry
+    # onto brick B, the worker's meta.node_id must become B (so reconcile keys against
+    # the brick that actually holds the VM), and the originally-attempted brick A must
+    # NOT retain the VM in adopt inventory (no double-adopt). We hold the worker at
+    # Assign with a gate so the post-Prime state is inspectable mid-flight.
+    System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+    on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
+
+    parent = self()
+    gate = new_gate()
+    # Reject the FIRST brick dialed and succeed the SECOND, regardless of which the
+    # frontier hash puts first (hash-agnostic). The winner's identity is encoded into
+    # the vm_id (vm-on-<channel>) AND the dialed order is reported, so the assertions
+    # name B by what actually primed, never by guessing the hash.
+    {:ok, primes} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        channel_fun: fn instance ->
+          send(parent, {:dialed, instance})
+          {:ok, instance}
+        end,
+        prime_fun: fn channel, _req ->
+          n = Agent.get_and_update(primes, fn n -> {n, n + 1} end)
+
+          if n == 0 do
+            {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+          else
+            {:ok, %PrimeResponse{vm_id: "vm-on-#{channel}"}}
+          end
+        end,
+        assign_fun: fn _ch, _req ->
+          send(parent, :at_assign)
+          wait_open(gate)
+          {:ok, success_resp()}
+        end
+      )
+
+    two_colocated_bricks(ctx, "wl-a")
+
+    _tid = submit(ctx, "wl-a", "p1")
+
+    # A (first dial) rejected, B (second dial) primed. Capture both so B is named by
+    # what actually happened, not by the hash.
+    assert_receive {:dialed, _brick_a}, 2_000
+    assert_receive {:dialed, brick_b}, 2_000
+    # Worker is now blocked at Assign, after {:vm_primed, "vm-on-<B>", B} was sent.
+    assert_receive :at_assign, 2_000
+
+    vm_on_b = "vm-on-#{brick_b}"
+
+    stats = Dispatcher.stats(ctx.name)
+    # #2: meta.node_id followed the VM to B (the brick that actually primed), not the
+    # committed head. worker_nodes is keyed by vm_id -> node_id.
+    assert Map.get(stats.worker_nodes, vm_on_b) == brick_b
+
+    # #3: no double-adopt. B reports vm-on-<B> primed (the in-flight window); a sweep
+    # must SKIP it (known via meta.vm_id) and adopt it under NO instance's inventory.
+    put_facts(ctx, "wl-a",
+      key: {"node-4", "b"},
+      instance_id: brick_b,
+      size_class: "8gi",
+      mem_budget: 8_192,
+      mem_headroom: 8_000,
+      free: 1,
+      primed_ids: [vm_on_b],
+      live: 0,
+      max: 8
+    )
+
+    Dispatcher.sweep(ctx.name)
+    stats2 = Dispatcher.stats(ctx.name)
+    refute Map.has_key?(stats2.inventory, {"node-4/a", "wl-a"})
+    refute Map.has_key?(stats2.inventory, {"node-4/b", "wl-a"})
+
+    open_gate(gate)
+  end
+
+  test "gate OFF: a first-brick Prime rejection is NOT retried (single attempt)" do
+    # Gate unset (default off): the committed brick is Primed once; a
+    # RESOURCE_EXHAUSTED is a prime failure that fails the task transport-style
+    # (retryable at the task level), and the OTHER brick is never dialed.
+    System.delete_env("EMBERVM_PLACEMENT_RETRY")
+
+    parent = self()
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        channel_fun: fn instance ->
+          send(parent, {:dialed, instance})
+          {:ok, instance}
+        end,
+        # BOTH bricks reject: gate-off must still only ever dial ONE (no retry).
+        prime_fun: fn _channel, _req ->
+          {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+        end,
+        assign_fun: fn _ch, _req -> {:ok, success_resp()} end
+      )
+
+    # max_attempts: 1 so a failed dispatch does NOT re-queue and dispatch AGAIN
+    # (task-level retry would confound the placement-retry assertion): this isolates
+    # exactly one placement attempt.
+    put_catalog(ctx, "wl-a",
+      cap: 10,
+      mem_mib: 4_000,
+      retry: %{max_attempts: 1, backoff_ms: 1, backoff_cap_ms: 1, retry_on: []}
+    )
+
+    for {pod, iid} <- [{"a", "node-4/a"}, {"b", "node-4/b"}] do
+      put_facts(ctx, "wl-a",
+        key: {"node-4", pod},
+        instance_id: iid,
+        size_class: "8gi",
+        mem_budget: 8_192,
+        mem_headroom: 8_000,
+        free: 0,
+        live: 0,
+        max: 8
+      )
+    end
+
+    _tid = submit(ctx, "wl-a", "p1")
+
+    # Exactly ONE Prime dial happened (the committed brick); gate off never chased
+    # the second. We assert the first dial arrives and no second dial follows.
+    assert_receive {:dialed, _first}, 2_000
+    refute_receive {:dialed, _second}, 300
+  end
+
+  test "gate OFF: the single Prime succeeds on the committed brick and meta.node_id is that brick" do
+    # Mandatory node-reassignment assertion #4 (the node_id half): gate off, the ONE
+    # attempt lands on the committed head, meta.node_id == that brick, byte-for-byte
+    # today's single-attempt behaviour. Held at Assign so meta is inspectable.
+    System.delete_env("EMBERVM_PLACEMENT_RETRY")
+
+    parent = self()
+    gate = new_gate()
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        channel_fun: fn instance ->
+          send(parent, {:dialed, instance})
+          {:ok, instance}
+        end,
+        prime_fun: fn channel, _req -> {:ok, %PrimeResponse{vm_id: "vm-on-#{channel}"}} end,
+        assign_fun: fn _ch, _req ->
+          send(parent, :at_assign)
+          wait_open(gate)
+          {:ok, success_resp()}
+        end
+      )
+
+    two_colocated_bricks(ctx, "wl-a")
+
+    _tid = submit(ctx, "wl-a", "p1")
+
+    # Exactly one dial (the committed head); no retry even though a second brick exists.
+    assert_receive {:dialed, committed}, 2_000
+    refute_receive {:dialed, _second}, 300
+    assert_receive :at_assign, 2_000
+
+    stats = Dispatcher.stats(ctx.name)
+    # meta.node_id is the committed brick (== dial_id, no reassignment when nothing
+    # rejected), exactly as before this change.
+    assert Map.get(stats.worker_nodes, "vm-on-#{committed}") == committed
+
+    open_gate(gate)
+  end
+
   # -- fail-closed -----------------------------------------------------------
 
   test "no capacity facts: task stays queued, denial recorded as :no_capacity" do
