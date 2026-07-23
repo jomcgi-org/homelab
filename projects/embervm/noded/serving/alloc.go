@@ -79,6 +79,26 @@ func (a *ipAllocator) reserve(ip net.IP) error {
 	return nil
 }
 
+// freeCount returns how many host IPs in the usable [first,last] range are not
+// currently allocated. It is an O(1) read of already-maintained counters (the
+// range size minus the used-set size), so a pressure check can query it on the
+// hot reject path without a netlink enumeration or a scan of the range. Used by
+// the node-side tap-pressure predicate (ADR embervm/014 decision 3): a zero free
+// count is the `pressure:taps` rejection.
+func (a *ipAllocator) freeCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Range size is (last - first + 1); both bounds are inclusive and last >=
+	// first is guaranteed by parseServingCIDR (it rejects a CIDR too small to hold
+	// a gateway plus one VM). Subtract the allocated set to get the free count.
+	total := ipRangeSize(a.first, a.last)
+	free := total - len(a.used)
+	if free < 0 {
+		return 0
+	}
+	return free
+}
+
 // release returns an IP to the free pool (idempotent: releasing an unheld IP is a
 // no-op).
 func (a *ipAllocator) release(ip net.IP) {
@@ -181,6 +201,19 @@ func broadcastIP(ipnet *net.IPNet) net.IP {
 		out[i] = base[i] | ^mask[i]
 	}
 	return out
+}
+
+// ipRangeSize returns the count of addresses in the inclusive range [first,last]
+// (first == last is a range of 1). Both are 4-byte IPv4; the serving CIDR is a
+// /24-scale range, so the difference fits an int comfortably.
+func ipRangeSize(first, last net.IP) int {
+	f, l := first.To4(), last.To4()
+	fu := uint32(f[0])<<24 | uint32(f[1])<<16 | uint32(f[2])<<8 | uint32(f[3])
+	lu := uint32(l[0])<<24 | uint32(l[1])<<16 | uint32(l[2])<<8 | uint32(l[3])
+	if lu < fu {
+		return 0
+	}
+	return int(lu-fu) + 1
 }
 
 // compareIP returns -1, 0, 1 comparing two 4-byte IPs big-endian.

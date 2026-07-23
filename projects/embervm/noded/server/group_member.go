@@ -46,6 +46,17 @@ func (s *Server) StartGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	if s.cfg.MaxLiveVMs > 0 && s.liveVMCount() >= s.cfg.MaxLiveVMs {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.cfg.MaxLiveVMs)
 	}
+	// Cheap rejection under real memory pressure (ADR embervm/014 decision 3),
+	// BEFORE the member cold boot below. A group member's tap is pinned on its
+	// PER-GROUP bridge (groupNet), not the serving IP allocator (servingNet), and
+	// group tap pre-provisioning is explicitly out of scope (ADR 014 PR 4: "group
+	// bridges/taps stay on-demand"), so this predicate is memory-only here: the
+	// serving-allocator tap freelist is the wrong pool for a group member and
+	// checking it would reject on unrelated serving pressure. Its mem need comes
+	// from the request's ResourceSpec.
+	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classMemOnly); err != nil {
+		return nil, err
+	}
 	groupInstanceID := req.GetGroupInstanceId()
 	if groupInstanceID == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: group_instance_id required")

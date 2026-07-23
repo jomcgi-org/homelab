@@ -46,10 +46,20 @@ type fakeServingNet struct {
 	// existing tests that assert resp.ip == 127.0.0.1 are unchanged).
 	podIP   string
 	podPort uint32
+	// availableTaps is what AvailableTaps reports (the tap-pressure freelist).
+	// Defaults to a large value (never exhausted) so existing serving tests admit;
+	// a pressure test sets it to 0 to exercise the `pressure:taps` rejection.
+	availableTaps int
 }
 
 func newFakeServingNet() *fakeServingNet {
-	return &fakeServingNet{live: map[string]int{}}
+	return &fakeServingNet{live: map[string]int{}, availableTaps: 1 << 20}
+}
+
+func (f *fakeServingNet) AvailableTaps() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.availableTaps
 }
 
 func (f *fakeServingNet) EnsureNetwork(_ context.Context) error { return nil }

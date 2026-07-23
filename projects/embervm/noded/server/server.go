@@ -921,6 +921,14 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: base %q not ready (state %s)", ref, base.state)
 	}
+	// Cheap rejection under real memory pressure (ADR embervm/014 decision 3), read
+	// AFTER the base is resolved (so the workload's mem footprint is known) but
+	// BEFORE the expensive Claim/restore. Prime is vsock-only (no tap), so it is
+	// memory-only. The base is resolved above; its workload's registry sizing gives
+	// the need (0 when unknown, gating on the floor alone).
+	if err := s.admitOrReject(s.primeNeedMib(base.workload), classMemOnly); err != nil {
+		return nil, err
+	}
 	// While the registry is stale, a Prime that would be the FIRST warm VM for a
 	// workload is cold placement (refused); a Prime that refills an already-warm
 	// workload keeps existing warmth topped up (allowed). This preserves "serve
