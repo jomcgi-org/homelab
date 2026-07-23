@@ -3,7 +3,7 @@
   // The console is a real database: every click here connects to the actual
   // demo VM through the same wake-on-connect path the private panel uses,
   // Turnstile-gated and rate-limited for public traffic (see the design doc,
-  // docs/plans/2026-07-18-ember-public-pages-design.md).
+  // the ember public-pages design).
   //
   // Visual language: the /ember/* pages are their own small site in the
   // fcstory palette (lib/public/ember/ember.css), not the neobrutalist

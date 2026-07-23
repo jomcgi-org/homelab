@@ -1,8 +1,8 @@
 # EmberVM R0: deviations and judgment calls
 
 A running log of where the implementation departs from, tightens, or resolves an
-ambiguity in `docs/plans/2026-07-12-embervm-r0-tasks-spec-and-plan.md`, so the
-spec and the code can be reconciled retrospectively. Each entry says WHAT changed,
+ambiguity in the R0 tasks spec and plan, so the spec and the code can be
+reconciled retrospectively. Each entry says WHAT changed,
 WHY, and whether it was approved. Newest phase last.
 
 Deviations here are intentional. Bugs are not deviations; they get fixed.

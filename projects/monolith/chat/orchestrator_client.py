@@ -19,7 +19,7 @@ There is still no per-provider retry loop (contrast with build_llm_caller's 3
 retries), because escalations must degrade quickly, not stall on any single call.
 
 ``call_tool`` is the typed sibling used for the runtime ``submit_plan``
-plan (ADR 036 amendment, docs/plans/2026-07-03-deepseek-runtime-recipes.md):
+plan (ADR 036 amendment, DeepSeek runtime recipes):
 it forces a tool call against a caller-supplied JSON Schema instead of
 parsing free-text content. The probe at
 ``scratchpad/probe_submit_plan.py`` validated a forced tool call

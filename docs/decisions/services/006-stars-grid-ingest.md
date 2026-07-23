@@ -146,4 +146,4 @@ rules (no raw Kubernetes NetworkPolicies in meshed namespaces).
 | `docs/decisions/platform/002-cdn-cached-data-fetching.md` | The read-endpoint caching model the viewport API must fit     |
 | `projects/monolith/stars/seed.py`                         | The curated list this grid supersedes/augments                |
 | `projects/stargazer/backend/`                             | The original geospatial grid computation to lift into the job |
-| `docs/plans/2026-06-13-stars-into-monolith.md`            | The self-contained stars design this extends                  |
+| Stars-into-monolith design                                | The self-contained stars design this extends                  |

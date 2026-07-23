@@ -5,8 +5,6 @@
 **Created:** 2026-06-30
 **Builds on:** [019 - Substrate Executor + AgentWorkflow](019-substrate-executor-agentworkflow.md) (implements its stubbed `Exec` seam), [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the `fcvm/driver` and warm-base mechanics this consumes), [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (the server-side secret model the workload config preserves), [026 - Fast MicroVM Starts](026-fast-microvm-starts-and-stateful-artifact-iteration.md) (the external-state, disposable-VM iteration model this generalizes)
 **Supersedes in part:** [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md): keeps its goose-agnostic-substrate principle, but folds the reusable orchestration into a new `fc-invoke` daemon, renames the home to `projects/firecracker/`, makes `semgrep` a peer workload, and drops the `discord` directory (025 decision 4).
-**Detailed design:** [docs/plans/2026-06-30-fc-invoke-design.md](../../plans/2026-06-30-fc-invoke-design.md)
-
 ---
 
 ## Problem
@@ -121,4 +119,4 @@ Settled during execution, not gates.
 | [023 - Egress Secret Proxy](023-egress-secret-proxy.md)                                 | Server-side secret model the config preserves                          |
 | [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md)            | Partially superseded: principle kept, layout and orchestration revised |
 | [026 - Fast MicroVM Starts](026-fast-microvm-starts-and-stateful-artifact-iteration.md) | External-state, disposable-VM model generalized here                   |
-| [docs/plans/2026-06-30-fc-invoke-design.md](../../plans/2026-06-30-fc-invoke-design.md) | Full design: schema, data flow, error handling, testing, migration     |
+| Full design: schema, data flow, error handling, testing, migration                      | Covered in this ADR's implementation work                              |

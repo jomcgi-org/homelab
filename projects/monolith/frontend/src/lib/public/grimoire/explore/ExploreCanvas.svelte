@@ -1,6 +1,6 @@
 <script>
   // Force-directed EXPLORE canvas: ported from the interaction/render spec at
-  // docs/plans/assets/2026-07-05-grimoire-reskin-mockup.html (the EXPLORE view's
+  // the grimoire reskin mockup (the EXPLORE view's
   // exTick/exDraw/exHit/pan/zoom code), swapped from globals to a Svelte 5
   // component. Purely presentational: the parent owns data-fetching, scope/lens
   // state, and the current selection; this component only simulates layout,

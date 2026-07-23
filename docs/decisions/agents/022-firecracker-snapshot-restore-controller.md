@@ -144,7 +144,7 @@ Baseline in `docs/security.md`. Notes specific to this controller:
 
 ## Open Questions
 
-The execution-level questions are settled and recorded in the implementation plan (`docs/plans/2026-06-27-firecracker-snapshot-restore-controller.md`): full snapshots first with diffs as a fast follow; the registry in Postgres (decision 5); idle detection via the in-VM wrapper with a Goose-routine timeout backstop; two repo-specific warm bases rebuilt every 15 to 30 minutes when `main` advances. What remains genuinely open:
+The execution-level questions are settled and recorded in the implementation work: full snapshots first with diffs as a fast follow; the registry in Postgres (decision 5); idle detection via the in-VM wrapper with a Goose-routine timeout backstop; two repo-specific warm bases rebuilt every 15 to 30 minutes when `main` advances. What remains genuinely open:
 
 1. Scale characteristics (deferred, homelab-fine for now; revisit before any open-sourcing): diff sizes per idle thread, GC budget, restore p50/p99 under contention, arch-affine bin-packing across a future multi-node same-ISA pool.
 2. When to revisit FC-direct vs firecracker-containerd / a patched kata-fc shim, if kubelet-managed pod semantics become worth the integration.

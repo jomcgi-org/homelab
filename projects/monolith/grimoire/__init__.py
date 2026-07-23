@@ -2,7 +2,7 @@
 
 Follows ADR 010 (privilege-typed module) and ADR 011 (hot-tier schema).
 register_public exposes a corpus-global, no-grants read surface for the
-public tier (Task 2 of docs/plans/2026-07-03-grimoire-public-readonly.md);
+public tier (Task 2 of the public-readonly design);
 campaign/grant CRUD stays private-tier only.
 """
 

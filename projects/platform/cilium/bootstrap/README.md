@@ -31,7 +31,7 @@ by ArgoCD. Once the node is up and Cilium owns the datapath, the manual-sync
 
 ## Apply (interactive sudo, during the maintenance window)
 
-Per the full runbook in `docs/plans/2026-07-10-cilium-migration.md` (Track 2):
+Per the full cilium migration runbook (Track 2):
 
 1. **Every server node (node-1, node-2, node-3):** append the flannel-disable
    fragment to the k3s config:

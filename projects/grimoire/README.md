@@ -10,8 +10,7 @@ name-only recognition.
 The design decisions live in [ADR 011](../../docs/decisions/services/011-grimoire-hot-tier-schema.md)
 (schema) and [ADR 012](../../docs/decisions/services/012-grimoire-postgres-first-loom-shaped.md)
 (why Postgres first, and how the schema stays compatible with a future Loom
-migration). The concrete v1 build is spelled out in
-[docs/plans/2026-07-02-grimoire-pg-first-spec.md](../../docs/plans/2026-07-02-grimoire-pg-first-spec.md).
+migration), which also covers the concrete v1 build.
 
 ## What lives here vs. in the monolith
 

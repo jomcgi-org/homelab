@@ -340,7 +340,7 @@ gardener:
     itemPath: "vaults/k8s-homelab/items/litellm-claude-auth"
 
 # Grimoire D&D ingest pipeline (private tier only; spec
-# docs/plans/2026-07-02-grimoire-pg-first-spec.md). Enabled here so the two
+# the grimoire pg-first design). Enabled here so the two
 # daily jobs register. The v2 production re-extraction runs on DeepSeek V4 Flash
 # via OpenRouter (spec #5): cheap, fast, honors json_schema, reasoning disabled
 # per call. OPENROUTER_API_KEY comes from the "goosecracker" Secret, cloned into

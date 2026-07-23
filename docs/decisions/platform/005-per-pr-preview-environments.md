@@ -82,7 +82,7 @@ graph TD
 
 ## Implementation
 
-See the companion plan: [`docs/plans/2026-06-12-per-pr-preview-environments-plan.md`](../../plans/2026-06-12-per-pr-preview-environments-plan.md). High-level phases:
+See GitHub Issues for implementation tracking. High-level phases:
 
 - [ ] **Phase 1: Mute side effects.** Add `PR_ENV` plumbing; gate the scheduler loop and Discord bot startup on it. (Pure app change, independently testable.)
 - [ ] **Phase 2: CoW Postgres.** Add volume-snapshot backup config to `monolith-pg`; parameterise the chart to optionally template a per-PR CNPG clone bootstrapped from a snapshot.

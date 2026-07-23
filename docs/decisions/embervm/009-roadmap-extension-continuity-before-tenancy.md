@@ -94,6 +94,44 @@ choice open) but shipped nothing that used them. R6 generalizes those verbs from
 serving, stateful bundles, group sets, volumes) and puts them on a real durability and
 rebalancing path.
 
+### R6 continuity implementation decisions (recorded)
+
+These standing decisions were made while implementing R6 and are recorded here so
+the rationale survives (they were previously kept only in an implementation log that
+has since been folded into GitHub issues and removed):
+
+- **Drain holds the whole gRPC surface up; noded does not GracefulStop early.** On
+  SIGTERM the node keeps serving lifecycle RPCs (only new BuildBase/Prime/Assign are
+  refused via a draining flag) and waits on a managed-drain barrier until the
+  session/serving/stateful/group registry empties or the deadline, then GracefulStop
+  drains in-flight Assigns. The pre-R6 immediate GracefulStop rejected the control
+  plane's own Bank/Stop calls, which is exactly what a clean drain needs. The barrier
+  wakes on the existing NodeStatus change broadcast plus a 500ms backstop ticker and
+  the deadline timer, not a fake clock.
+- **All-classes force-bank on drain, encapsulated per sweeper.** A thin DrainCoordinator
+  fans out to a per-class `drain_node/2` that routes each class's live instances through
+  its existing bank machinery. Stateful drain force-banks unconditionally (a small
+  `draining_workloads` set flips the raced/scrape-fail/at-cap aborts to commit even
+  against a parked connection) and bypasses the per-node bank cap, because a drain
+  evacuates every instance and deferring at-cap would strand them; the 120s deadline and
+  the daemon hold bound concurrency instead. Serving and session drains keep their caps.
+- **Async object-store exports never block the bank path or the drain deadline.** Exports
+  are a fire-and-forget bounded worker pool; an enqueue that would block is dropped, and a
+  startup reconcile sweep re-enqueues any artifact whose store copy is missing or stale.
+  This is the hard rule that keeps durability write-back off the latency-critical path.
+- **Restore-on-miss is optimistic for warmth, fail-closed for data.** Bundle and set
+  restores (pure warmth) are attempted on any local miss whenever the store is reachable
+  and degrade to a logged cold boot when absent. A volume restore is a data action, so it
+  stays gated on the durable `exported_generation` and never blindly restores. An
+  unreachable store never blocks a local-state wake; only a true local miss consults the
+  store.
+- **The four continuity alerts ship disabled (dry-run) by deliberate posture.** No
+  op-log/log to metrics bridge exists yet, so an enabled alert would query a non-existent
+  metric. A disabled placeholder is the honest posture (no fake-but-passing query firing
+  silently) and matches the existing embervm alert convention; the alerts are promoted
+  during the live closure drills. Outstanding closure work is tracked in GitHub issues,
+  not here.
+
 ## Consequences
 
 What becomes possible:

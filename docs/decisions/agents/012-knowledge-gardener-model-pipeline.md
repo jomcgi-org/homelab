@@ -132,7 +132,7 @@ _None — all design questions resolved._
 
 | Resource                                                                                                  | Relevance                                |
 | --------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [docs/plans/2026-04-08-knowledge-gardener-design.md](../../plans/2026-04-08-knowledge-gardener-design.md) | Original single-model design             |
-| [docs/plans/2026-04-09-gardener-claude-cli.md](../../plans/2026-04-09-gardener-claude-cli.md)             | Claude CLI subprocess plan (predecessor) |
+| Original single-model design                                                                             | Superseded by this ADR's two-tier pipeline |
+| Claude CLI subprocess plan (predecessor)                                                                  | Superseded by the current gardener implementation |
 | [projects/monolith/knowledge/gardener.py](../../../projects/monolith/knowledge/gardener.py)               | Current gardener implementation          |
 | [projects/monolith/knowledge/frontmatter.py](../../../projects/monolith/knowledge/frontmatter.py)         | Frontmatter schema (Pydantic models)     |

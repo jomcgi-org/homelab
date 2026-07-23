@@ -5,7 +5,7 @@
 # and captures each run's span tree via the demo trace endpoint.
 #
 # Cold: the daemon only cold-boots once per workload at startup (see the
-# Task 1 addendum in docs/plans/2026-07-08-firecracker-public-explainer.md),
+# Task 1 addendum to the firecracker public explainer design),
 # rooted in a `base_snapshot_build` span that the demo trace endpoint cannot
 # see (it only resolves demo-rooted traces). That one run is fetched straight
 # from SigNoz's ClickHouse backing store instead.
@@ -108,9 +108,9 @@ bundle. Strips everything except phase names and millisecond durations: no
 hostnames, IPs, node names, image refs, pod names, or trace ids reach the
 output.
 
-Two independent sources, per the Task 1 addendum in
-docs/plans/2026-07-08-firecracker-public-explainer.md: the daemon only cold
-boots once per workload at startup (rooted in a `base_snapshot_build` span),
+Two independent sources, per the Task 1 addendum to the firecracker public
+explainer design: the daemon only cold boots once per workload at startup
+(rooted in a `base_snapshot_build` span),
 so it never appears on the demo-rooted trace path and is fetched straight
 from ClickHouse instead. Every subsequent request is a snapshot restore,
 captured through the demo API as before.

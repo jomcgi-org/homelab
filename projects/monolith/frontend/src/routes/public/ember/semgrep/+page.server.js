@@ -1,5 +1,5 @@
 // The public Turnstile site key gates scans on the demo (see design doc
-// docs/plans/2026-07-19-ember-semgrep-demo.md). It is PUBLIC by design
+// the ember semgrep demo design). It is PUBLIC by design
 // (it identifies the widget, not a credential); the Turnstile *secret* never
 // enters the frontend, only the FastAPI backend. Read from the environment,
 // same convention as routes/public/ember/postgres/+page.server.js.

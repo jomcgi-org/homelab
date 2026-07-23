@@ -6,14 +6,14 @@ Sourced ENTIRELY from the cached control-plane status read
 the demo VM, since an asleep demo is healthy and a health probe that woke it
 would defeat the whole sleep story.
 
-Five unhealthy conditions (see docs/plans/2026-07-18-ember-public-pages-design.md
-"Health + alerting"), checked in order and short-circuited at the first hit:
+Five unhealthy conditions (see the ember public-pages design, "Health +
+alerting"), checked in order and short-circuited at the first hit:
 
 1. The control plane is unreachable or the demo is unconfigured.
 2. The workload reports a broken snapshot/volume pairing while banked.
 3. The workload is stuck in a fault eviction (pair_broken) past the same 90s
    window, a passive sign the wake path is broken (a benign ttl eviction is
-   never flagged). See docs/plans/2026-07-19-embervm-demo-postgres-provisioning-wedge-rca.md.
+   never flagged). See the demo-postgres provisioning wedge RCA.
 4. A transitional state (relighting/cold_booting/starting/banking) has
    persisted past 90s (wakeTimeoutSeconds is 60s plus margin), a passive
    sign of a wedged cold boot.

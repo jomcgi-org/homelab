@@ -99,5 +99,5 @@ Baseline per `docs/security.md`. New considerations:
 | [ADR 029](029-discord-bot-feature-acl.md)                                   | Feature ACL pattern the household tier extends         |
 | [ADR 034](034-per-tier-guest-mcp-acl.md)                                    | Per-tier guest tool ACLs applied to household sessions |
 | [ADR 035](035-discord-multiplayer-agent-ux.md)                              | Attention/depth classifier, checklist, steering reused |
-| Spec: `docs/plans/2026-07-02-whatsapp-gateway-spec.md`                      | Behaviour and data contracts                           |
-| Plan: `docs/plans/2026-07-02-whatsapp-gateway.md`                           | Phased implementation                                  |
+| WhatsApp gateway spec                                                       | Behaviour and data contracts                           |
+| WhatsApp gateway implementation plan                                        | Phased implementation                                  |

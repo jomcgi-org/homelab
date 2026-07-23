@@ -1,5 +1,5 @@
 // The public Turnstile site key gates inserts on the demo (see design doc
-// docs/plans/2026-07-18-ember-public-pages-design.md). It is PUBLIC by design
+// the ember public-pages design). It is PUBLIC by design
 // (it identifies the widget, not a credential); the Turnstile *secret* never
 // enters the frontend, only the FastAPI backend. Read from the environment,
 // same convention as routes/public/chat/+page.server.js and app/notes.

@@ -128,7 +128,7 @@ ALLOWED_PREFIXES = (
     "/api/wc2026",
     "/api/knowledge/public",
     "/api/home/observability",
-    # Grimoire public tier (Task 2 of docs/plans/2026-07-03-grimoire-public-readonly.md):
+    # Grimoire public tier (public-readonly design):
     # no campaign/grant params, whole corpus is a single global read view.
     "/api/grimoire",
     # Internal-only public chat API. It is mounted on the public binary but is
@@ -153,7 +153,7 @@ ALLOWED_PREFIXES = (
     # register_public). The router filters visibility=public, so a private
     # function 404s here (faas/invoke_router_public_test.py asserts it).
     "/functions",
-    # Ember public tier (docs/plans/2026-07-18-ember-public-pages.md): the
+    # Ember public tier (public pages design): the
     # scale-to-zero demo-postgres exhibit, Turnstile-gated when public,
     # mounted identically on the private tier's demos panel.
     "/api/ember",

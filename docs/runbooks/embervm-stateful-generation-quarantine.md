@@ -32,8 +32,7 @@ wake (no auto-heal by design). See the "generation blessing and quarantine" modu
 
 ## Cause 1 (fixed): checkpoint-abort self-bump
 
-Before the abort-blessing fix
-(`docs/plans/2026-07-22-embervm-abort-generation-blessing.md`), the ADR-008
+Before the abort-blessing fix, the ADR-008
 interruptible-bank ABORT path self-bumped the volume generation
 (`volume.Manager.BumpGeneration`) without the CP blessing it, so a normal abort (a parked
 connection resuming the VM hot) left the volume unblessed and quarantined it forever. The

@@ -1,6 +1,5 @@
 # Historical documentation directories contain intentional references to the
 # old directory layout and should not be flagged by structural linting rules.
-docs/plans/
 docs/decisions/
 
 # Generated public docs manifest: it bakes the full markdown bodies of every

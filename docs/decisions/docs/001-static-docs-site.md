@@ -9,7 +9,7 @@
 ## Problem
 
 The homelab repository contains ~99 markdown files (~19,100 lines) spread across
-`architecture/`, `services/*/`, `charts/*/`, `operators/`, `docs/plans/`,
+`architecture/`, `services/*/`, `charts/*/`, `operators/`,
 `.claude/skills/`, and assorted READMEs. This documentation is only accessible by
 navigating the raw repository, which creates friction for day-to-day reference and
 makes it harder to share context.
@@ -346,7 +346,6 @@ Content that must remain excluded:
 | `.claude/AGENTS.md`                    | Internal agent capabilities and permissions        |
 | `.claude/skills/`                      | Prompt engineering — internal tooling              |
 | `.claude/templates/`                   | Internal workflow templates                        |
-| `docs/plans/`                          | Ephemeral design documents, not reference material |
 | `advent_of_code/`                      | Puzzle solutions, not homelab docs                 |
 | `websites/jomcgi.dev/src/assets/cv.md` | Personal CV, not homelab docs                      |
 

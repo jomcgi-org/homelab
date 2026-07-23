@@ -442,7 +442,7 @@ spec:
             {{- end }}
             {{- if .Values.grimoire.enabled }}
             # Grimoire D&D ingest pipeline (private tier only; spec
-            # docs/plans/2026-07-02-grimoire-pg-first-spec.md #4.3). The S3
+            # the grimoire pg-first design, section 4.3). The S3
             # endpoint/creds the loader reads (SEAWEEDFS_S3_ENDPOINT,
             # S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) are the shared SeaweedFS
             # ones emitted under the stars block above (always set). Only the

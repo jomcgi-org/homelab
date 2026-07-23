@@ -7,7 +7,7 @@ description: Use when creating, reviewing, or working with ADRs (Architecture De
 
 ADRs record architectural decisions and the reasoning behind them. Unlike ephemeral RFCs, ADRs persist even when superseded, preserving the "why" behind decisions and their evolution.
 
-**ADRs are rationale, not implementation plans.** No phase checklists, no task lists, no Go/No-Go gates. Outstanding implementation work is tracked in **GitHub Issues** (the repo's source of truth for what is left to build), with plans (`docs/plans/`) and PRs as supporting detail, never in the ADR. An ADR is done when it explains what was decided and why; it does not track whether the work shipped.
+**ADRs are rationale, not implementation plans.** No phase checklists, no task lists, no Go/No-Go gates. Outstanding implementation work is tracked in **GitHub Issues** (the repo's source of truth for what is left to build), with PRs as supporting detail, never in the ADR. An ADR is done when it explains what was decided and why; it does not track whether the work shipped.
 
 ## Tracking outstanding work (GitHub Issues)
 
@@ -178,5 +178,5 @@ When a decision is reversed or evolved:
 - **Commit prefix**: `docs(adr):` for new ADRs and updates
 - **Diagrams**: Mermaid for all architecture and flow diagrams (renders natively on GitHub)
 - **Sections**: Problem, Decision, Architecture, Alternatives, Security, Risks, References
-- **No work tracking**: outstanding work lives in **GitHub Issues** (source of truth), with `docs/plans/` and PRs as supporting detail, not in the ADR
+- **No work tracking**: outstanding work lives in **GitHub Issues** (source of truth), with PRs as supporting detail, not in the ADR
 - **Files per ADR**: the new ADR file, the regenerated `docs-manifest.json` and `repo_docs_manifest.ndjson`, and the `index.md` row. CI fails if the manifests are stale (see Step 3).

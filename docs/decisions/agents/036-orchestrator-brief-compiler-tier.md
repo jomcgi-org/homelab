@@ -102,4 +102,4 @@ Baseline per `docs/security.md`. New surface: channel content leaves the cluster
 | [ADR 030](030-fc-invoke-configurable-firecracker-surface.md) | Executor substrate the briefs feed                                                        |
 | [ADR 023](023-egress-secret-proxy.md)                        | Guest egress boundary; the OpenRouter key stays host-side, outside it                     |
 | /improve-recipes (#3037)                                     | Evidence that task framing drives session quality; consumer of brief telemetry            |
-| docs/plans/2026-07-02-discord-multiplayer-agent-ux.md        | Implementation plan whose Phase 4 this ADR redirects host-side                            |
+| Discord multiplayer agent UX implementation plan              | Whose Phase 4 this ADR redirects host-side                                                |

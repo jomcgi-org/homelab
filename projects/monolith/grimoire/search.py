@@ -1,6 +1,6 @@
 """Grant-filtered vector search over entities and chunks.
 
-Spec #5 (docs/plans/2026-07-02-grimoire-pg-first-spec.md, ``GET
+Spec #5 of the pg-first design (``GET
 /campaigns/{id}/search``): embed the query, over-fetch nearest neighbors from
 the generic ``embedding`` table, then apply the same visibility predicate the
 entity endpoints use before shaping and trimming to ``k`` results.

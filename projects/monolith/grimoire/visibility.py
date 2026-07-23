@@ -3,7 +3,7 @@
 Implements the read predicate from ADR 011
 (docs/decisions/services/011-grimoire-hot-tier-schema.md, "Read predicate"
 section) and the spec's visibility semantics
-(docs/plans/2026-07-02-grimoire-pg-first-spec.md #3.3). Every read path
+(the pg-first design #3.3). Every read path
 (entity lookup, relationships, vector search) is meant to build its query on
 top of visible_entities_query() and shape its response with project_entity(),
 so the visibility rules live in exactly one place.

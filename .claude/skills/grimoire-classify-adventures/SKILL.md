@@ -62,6 +62,6 @@ Turn a loaded book's section outline into rows in `grimoire.adventure`, delivere
 
 ## Reference example
 
-`20260705170000_grimoire_adventure_seed.sql` seeded the initial 13 books; `docs/plans/2026-07-05-grimoire-adventures.md` records the method and the boundary decisions (e.g. ToC false matches in Tales from the Yawning Portal, the Adventures in Saltmarsh overview chapter contaminating title matches, Candlekeep front matter ending at seq 70).
+`20260705170000_grimoire_adventure_seed.sql` seeded the initial 13 books. Boundary decisions to mirror when classifying new books (folded from the original method notes): watch for ToC false matches (Tales from the Yawning Portal), an overview chapter contaminating title matches (Adventures in Saltmarsh), and front matter that ends mid-book (Candlekeep front matter ends at seq 70). Boundaries are always resolved to contiguous `seq` ranges, never matched by breadcrumb strings, because level-2 segments are noisy for some single-adventure books.
 
 Known pending case: `planescape-adventures-in-the-multiverse` has only its setting-guide volume loaded (chunks end at Chapter 3: The Outlands). When the Turn of Fortune's Wheel volume lands, classify it via this skill.

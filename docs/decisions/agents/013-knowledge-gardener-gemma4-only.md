@@ -196,8 +196,8 @@ _None — all design questions resolved._
 | Resource                                                                                                  | Relevance                                      |
 | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
 | [ADR 012](012-knowledge-gardener-model-pipeline.md)                                                       | Superseded two-tier design                     |
-| [docs/plans/2026-04-08-knowledge-gardener-design.md](../../plans/2026-04-08-knowledge-gardener-design.md) | Original single-model design                   |
-| [docs/plans/2026-04-09-gardener-claude-cli.md](../../plans/2026-04-09-gardener-claude-cli.md)             | Claude CLI subprocess plan (current gardener)  |
+| Original single-model design                                                                              | Superseded by ADR 012's two-tier pipeline      |
+| Claude CLI subprocess plan (current gardener)                                                              | Predecessor to this ADR's Gemma4-only design   |
 | [projects/monolith/knowledge/gardener.py](../../../projects/monolith/knowledge/gardener.py)               | Current gardener implementation to be replaced |
 | [projects/monolith/knowledge/frontmatter.py](../../../projects/monolith/knowledge/frontmatter.py)         | Frontmatter schema (Pydantic models)           |
 | [projects/monolith/chat/agent.py](../../../projects/monolith/chat/agent.py)                               | Existing Gemma4 PydanticAI client pattern      |

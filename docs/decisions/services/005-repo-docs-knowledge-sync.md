@@ -8,7 +8,7 @@
 
 ## Problem
 
-The homelab repo contains markdown files spread across the entire tree — ADRs in `docs/decisions/`, design plans in `docs/plans/`, operational docs (`security.md`, `observability.md`), service-level READMEs, operator best practices (`projects/operators/best-practices.md`), `CLAUDE.md` files, and more. None of this is visible to the knowledge graph.
+The homelab repo contains markdown files spread across the entire tree: ADRs in `docs/decisions/`, operational docs (`security.md`, `observability.md`), service-level READMEs, operator best practices (`projects/operators/best-practices.md`), `CLAUDE.md` files, and more. None of this is visible to the knowledge graph.
 
 This means:
 
@@ -216,6 +216,6 @@ The OCI artifact contains only markdown files already public in the GitHub repo.
 | `projects/monolith/knowledge/models.py`                              | `AtomRawProvenance` model for provenance tracking     |
 | `docs/decisions/agents/012-knowledge-gardener-model-pipeline.md`     | Gardener's two-tier model architecture                |
 | `docs/decisions/agents/013-knowledge-gardener-gemma4-only.md`        | Current gardener model (supersedes 012)               |
-| `docs/plans/2026-04-09-vault-git-sync.md`                            | Vault git clone pattern (related but separate)        |
+| Vault git sync design                                                 | Vault git clone pattern (related but separate)        |
 | [apko](https://github.com/chainguard-dev/apko)                       | Image build tool used for OCI artifact                |
 | [ArgoCD Image Updater](https://argocd-image-updater.readthedocs.io/) | Digest-based auto-update for the docs image           |

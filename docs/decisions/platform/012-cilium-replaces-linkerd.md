@@ -153,7 +153,7 @@ three servers, bring Cilium up, restart k3s (servers then agent), then restart
 workload pods so they trade flannel IPs for Cilium-managed ones. Existing pods
 keep talking over flannel until restarted. On a 4-node homelab a short window is
 acceptable. Detailed sequencing (and the rollback path to flannel + Linkerd)
-belongs in a `docs/plans/` plan, not this ADR.
+belongs in a GitHub Issue, not this ADR.
 
 ---
 
@@ -213,8 +213,7 @@ Baseline: `docs/security.md`. Deviations from today's posture:
 
 ## Open Questions
 
-Resolved in the implementation plan
-(`docs/plans/2026-07-10-cilium-migration.md`):
+Resolved in the implementation plan (tracked via GitHub Issues):
 
 1. **Cutover mechanism:** single coordinated window. The per-node
    `CiliumNodeConfig` migration is rejected because it assumes the old CNI is a
