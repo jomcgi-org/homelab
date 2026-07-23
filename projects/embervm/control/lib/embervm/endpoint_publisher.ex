@@ -544,7 +544,11 @@ defmodule Embervm.EndpointPublisher do
   # rebuilds (the byte-identical render property). nil when no node advertises one.
   defp node_advertised_activator(ctx, workload) do
     advertisers =
-      ctx.node_facts
+      ctx
+      # A ctx built by a path that predates node-local activators (e.g. the group
+      # render's own ctx) carries no node_facts: treat it as no advertisers, so the
+      # CP-injected fallback is used and that render is unchanged.
+      |> Map.get(:node_facts, [])
       |> Enum.filter(&is_map(Map.get(&1, :activator_endpoint)))
       |> Enum.sort_by(& &1.configured_id)
 

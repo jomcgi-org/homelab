@@ -783,8 +783,10 @@ noded:
   # Node-local activator HTTP listener (ADR embervm/018 Fork A): a node Envoy
   # routes a scaled-to-zero serving workload's first request here, so the cold
   # boot happens on the brick and survives a control-plane Recreate. Advertised as
-  # NodeStatus.activator_endpoint at {node hostIP, activatorPort} with a startup
-  # DNAT to the current pod IP.
+  # NodeStatus.activator_endpoint at {noded pod IP, activatorPort}, the address a
+  # pod-network Envoy dials (the serving DNAT lives in noded's own netns, so a
+  # node-IP advert would black-hole; ADR 018 as amended). The pod IP is stable
+  # across a control-plane Recreate, the failure this survives.
   activatorPort: 8081
 
   # node-4 pinning: the lone Firecracker node (homelab.io/firecracker=true).

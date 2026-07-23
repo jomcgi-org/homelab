@@ -1891,10 +1891,11 @@ message NodeStatus {
 
   // activator_endpoint is the L7 (serving) fallback: the routable {ip, port} a
   // node Envoy dials to cold-boot a scaled-to-zero serving workload's first
-  // request. It is the node's STABLE address (node IP + activator port) with a
-  // startup DNAT to the current pod IP, so the advertised endpoint survives a
-  // noded pod reschedule (the pod IP churns, the node IP does not). Nil when the
-  // daemon has no activator configured.
+  // request. It is the daemon's own POD IP + activator port, the address a
+  // pod-network Envoy dials exactly as it dials serving VMs at pod_ip:vmPort (the
+  // serving DNAT lives in noded's own netns, so a node-IP advert would black-hole;
+  // ADR 018 as amended). Stable across a control-plane Recreate, the failure this
+  // survives. Nil when the daemon has no activator configured.
   Endpoint activator_endpoint = 32;
   // activator_ip is the L4 (stateful/composite) fallback address, the node-local
   // analog of EMBERVM_STATEFUL_ACTIVATOR_IP. Fork A advertises it for

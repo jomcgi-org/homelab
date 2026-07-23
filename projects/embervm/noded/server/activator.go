@@ -94,6 +94,13 @@ func (a *activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Straggler splice: if a VM is already live for this workload, proxy straight
+	// through instead of waking. There is a narrow window where a request passes
+	// this check while no VM is live, the prior leader then completes and deletes
+	// its flight, and this request becomes a fresh leader and boots a second VM.
+	// That is bounded by the node live-VM cap and the workload max-instances and
+	// reaped by idle-bank, so it self-heals; Phase 1 tolerates it rather than
+	// holding a lock across the whole boot.
 	if live, ok := a.server.servingVMs.firstByWorkload(workload); ok {
 		a.proxy(w, r, live)
 		return
