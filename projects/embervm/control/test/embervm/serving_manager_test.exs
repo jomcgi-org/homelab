@@ -14,7 +14,7 @@ defmodule Embervm.ServingManagerTest do
 
   alias Embervm.{NodeCapacity, ServingManager, ServingStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.StartServingResponse
+  alias Embervm.Node.V1.{StartServingResponse, StopServingResponse}
 
   # A no-op publisher (a GenServer that counts publish/1 casts) so the manager's
   # EndpointPublisher.publish call has a live target without a real sidecar.
@@ -48,6 +48,8 @@ defmodule Embervm.ServingManagerTest do
     # Injected StartServing seam: counts calls (single-flight proof) and returns a
     # deterministic endpoint, with optional latency so concurrent misses overlap.
     {:ok, starts} = Agent.start_link(fn -> 0 end)
+    {:ok, stop_calls} = Agent.start_link(fn -> [] end)
+    {:ok, destroy_confirmed} = Agent.start_link(fn -> Keyword.get(opts, :destroy_confirmed, true) end)
 
     start_serving_fun =
       Keyword.get(opts, :start_serving_fun, fn _ch, _req ->
@@ -55,6 +57,11 @@ defmodule Embervm.ServingManagerTest do
         if sleep = opts[:start_sleep_ms], do: Process.sleep(sleep)
         {:ok, %StartServingResponse{vm_id: "vm-woken-#{System.unique_integer([:positive])}", ip: "10.99.0.5", port: 8080}}
       end)
+
+    stop_serving_fun = fn _ch, req ->
+      Agent.update(stop_calls, &[req | &1])
+      {:ok, %StopServingResponse{teardown_confirmed: Agent.get(destroy_confirmed, & &1)}}
+    end
 
     mgr_opts =
       [
@@ -69,15 +76,30 @@ defmodule Embervm.ServingManagerTest do
         channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_serving_fun: start_serving_fun,
+        stop_serving_fun: Keyword.get(opts, :stop_serving_fun, stop_serving_fun),
         op_log: op_log,
         reconcile_interval_ms: 0,
-        id_fun: id_seq(suffix)
+        id_fun: id_seq(suffix),
+        node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+        destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000)
       ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap, :restore_artifact_fun])
 
     {:ok, mgr} = ServingManager.start_link(mgr_opts)
 
-    %{mgr: mgr, store: store, cap_table: cap_table, cat_table: cat_table, starts: starts, pub: pub, op_log: op_log}
+    %{
+      mgr: mgr,
+      store: store,
+      cap_table: cap_table,
+      cat_table: cat_table,
+      starts: starts,
+      stop_calls: stop_calls,
+      destroy_confirmed: destroy_confirmed,
+      pub: pub,
+      op_log: op_log
+    }
   end
+
+  defp stop_calls(ctx), do: Agent.get(ctx.stop_calls, &Enum.reverse(&1))
 
   defp id_seq(suffix) do
     {:ok, counter} = Agent.start_link(fn -> 0 end)
@@ -332,6 +354,98 @@ defmodule Embervm.ServingManagerTest do
     assert inst.state == :destroying
     assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
     assert Agent.get(ctx.starts, & &1) == 0
+  end
+
+  test "node-confirmed reconcile leaves an unconfirmed destroy intent and re-drives it" do
+    ctx = start_stack(node_confirmed_destroy: true, destroy_confirmed: false)
+    serving_workload(ctx, "wl-a")
+
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: "srv-destroying",
+        tenant: "homelab",
+        principal: "serving:wl-a",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-live",
+        ip: "10.99.0.9",
+        port: 8080
+      })
+
+    {:ok, _} =
+      ServingStore.transition(
+        ctx.store,
+        "srv-destroying",
+        :begin_destroy,
+        :serving_destroying,
+        %{reason: :forced_roll},
+        %{}
+      )
+
+    serving_node(ctx, "node-4",
+      serving_vms: [%{vm_id: "vm-live", workload: "wl-a", ip: "10.99.0.9", port: 8080, healthy: true}]
+    )
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+    {:ok, destroying} = ServingStore.get(ctx.store, "srv-destroying")
+    assert destroying.state == :destroying
+    assert [%{mode: :STOP_SERVING_MODE_DESTROY, vm_id: "vm-live"}] = stop_calls(ctx)
+
+    Agent.update(ctx.destroy_confirmed, fn _ -> true end)
+    :ok = ServingManager.reconcile(ctx.mgr)
+
+    {:ok, destroyed} = ServingStore.get(ctx.store, "srv-destroying")
+    assert destroyed.state == :destroyed
+    assert [_, %{mode: :STOP_SERVING_MODE_DESTROY, vm_id: "vm-live"}] = stop_calls(ctx)
+  end
+
+  test "node-confirmed reconcile confirms a destroying serving VM by reported absence" do
+    ctx = start_stack(node_confirmed_destroy: true)
+    serving_workload(ctx, "wl-a")
+
+    {:ok, _} =
+      ServingStore.start(ctx.store, %{
+        instance_id: "srv-gone",
+        tenant: "homelab",
+        principal: "serving:wl-a",
+        workload: "wl-a",
+        node_id: "node-4",
+        vm_id: "vm-gone",
+        ip: "10.99.0.9",
+        port: 8080
+      })
+
+    {:ok, _} =
+      ServingStore.transition(
+        ctx.store,
+        "srv-gone",
+        :begin_destroy,
+        :serving_destroying,
+        %{reason: :forced_roll},
+        %{}
+      )
+
+    serving_node(ctx, "node-4", serving_vms: [])
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+
+    {:ok, destroyed} = ServingStore.get(ctx.store, "srv-gone")
+    assert destroyed.state == :destroyed
+    assert stop_calls(ctx) == []
+  end
+
+  test "node-confirmed reconcile destroys a rowless reported serving VM" do
+    ctx = start_stack(node_confirmed_destroy: true)
+    serving_workload(ctx, "wl-a")
+
+    serving_node(ctx, "node-4",
+      serving_vms: [%{vm_id: "vm-orphan", workload: "wl-a", ip: "10.99.0.9", port: 8080, healthy: true}]
+    )
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+
+    assert [%{mode: :STOP_SERVING_MODE_DESTROY, vm_id: "vm-orphan"}] = stop_calls(ctx)
+    assert ServingStore.all(ctx.store) == []
   end
 
   test "adoption heals a starting-limbo instance the node reports only as a snapshot to banked" do

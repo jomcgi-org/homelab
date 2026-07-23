@@ -922,10 +922,19 @@ defmodule Embervm.ServingSweeper do
 
   # -- destroy / evict RPCs + durable ops ------------------------------------
 
-  # Destroy a live instance: StopServing(DESTROY) on its node (best-effort; the
-  # durable serving_destroyed lands regardless so the row goes terminal and the
-  # snapshot/VM is reaped by adoption if the RPC was lost), then the terminal op.
+  # Destroy a live instance. The gate-off branch is the existing best-effort
+  # StopServing(DESTROY) followed by serving_destroyed path. The ADR embervm/014
+  # branch durably records destroying first and waits for the daemon's real
+  # teardown_confirmed response before recording serving_destroyed.
   defp destroy_instance(state, instance, reason) do
+    if state.node_confirmed_destroy do
+      destroy_instance_node_confirmed(state, instance, reason)
+    else
+      destroy_instance_legacy(state, instance, reason)
+    end
+  end
+
+  defp destroy_instance_legacy(state, instance, reason) do
     _ = stop_serving_destroy(state, instance)
 
     _ =
@@ -939,6 +948,56 @@ defmodule Embervm.ServingSweeper do
       )
 
     state
+  end
+
+  defp destroy_instance_node_confirmed(state, instance, reason) do
+    intent =
+      ServingStore.transition(
+        state.store,
+        instance.instance_id,
+        :begin_destroy,
+        :serving_destroying,
+        %{reason: reason},
+        %{}
+      )
+
+    case intent do
+      {:ok, _} ->
+        # A row without a reachable VM holds nothing on a node, so teardown is
+        # confirmed by construction. Otherwise this issues the real StopServing
+        # destroy RPC and accepts only the daemon's teardown_confirmed=true reply.
+        confirmed =
+          if is_binary(instance.node_id) and is_binary(instance.vm_id) do
+            stop_serving_destroy_confirmed(state, instance)
+          else
+            true
+          end
+
+        if confirmed do
+          _ =
+            ServingStore.transition(
+              state.store,
+              instance.instance_id,
+              :destroy,
+              :serving_destroyed,
+              %{reason: reason},
+              %{}
+            )
+
+          state
+        else
+          Logger.warning("embervm serving teardown unconfirmed, left destroying",
+            instance_id: instance.instance_id,
+            workload: instance.workload,
+            vm_id: instance.vm_id
+          )
+
+          state
+        end
+
+      {:error, _reason} ->
+        state
+    end
   end
 
   defp evict_banked(state, instance, reason) do
@@ -1019,6 +1078,30 @@ defmodule Embervm.ServingSweeper do
   end
 
   defp stop_serving_destroy(_state, _instance), do: :ok
+
+  # The node-confirmed destroy path uses the same real StopServing(DESTROY) RPC as
+  # the legacy sweeper path, but requires the daemon's explicit confirmation. RPC,
+  # dial, and fault failures are all unconfirmed and leave the durable row in
+  # destroying for ServingManager reconciliation to re-drive.
+  defp stop_serving_destroy_confirmed(state, %{node_id: node_id, vm_id: vm_id})
+       when is_binary(node_id) and is_binary(vm_id) do
+    req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
+    dial_key = dial_for_serving_vm(state, node_id, vm_id)
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+      try do
+        match?({:ok, %{teardown_confirmed: true}}, state.stop_serving_fun.(channel, req))
+      rescue
+        _ -> false
+      catch
+        _, _ -> false
+      end
+    else
+      _ -> false
+    end
+  end
+
+  defp stop_serving_destroy_confirmed(_state, _instance), do: false
 
   # -- per-node bank cap -----------------------------------------------------
 

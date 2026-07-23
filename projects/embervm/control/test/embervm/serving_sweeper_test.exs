@@ -73,6 +73,7 @@ defmodule Embervm.ServingSweeperTest do
     # scripted failure via the fail agent).
     {:ok, stop_calls} = Agent.start_link(fn -> [] end)
     {:ok, bank_fail} = Agent.start_link(fn -> false end)
+    {:ok, destroy_confirmed} = Agent.start_link(fn -> Keyword.get(opts, :destroy_confirmed, true) end)
 
     stop_serving_fun = fn _ch, req ->
       Agent.update(stop_calls, &[req | &1])
@@ -85,7 +86,7 @@ defmodule Embervm.ServingSweeperTest do
           {:ok, %StopServingResponse{snapshot_ref: "snap-#{req.vm_id}", size_bytes: 4_096}}
 
         true ->
-          {:ok, %StopServingResponse{}}
+          {:ok, %StopServingResponse{teardown_confirmed: Agent.get(destroy_confirmed, & &1)}}
       end
     end
 
@@ -110,6 +111,7 @@ defmodule Embervm.ServingSweeperTest do
         stop_serving_fun: stop_serving_fun,
         timer_fun: timer_fun,
         bank_concurrency: Keyword.get(opts, :bank_concurrency, 1),
+        node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
         sweep_interval_ms: 0
       ]
 
@@ -138,6 +140,7 @@ defmodule Embervm.ServingSweeperTest do
       scrape_agent: scrape_agent,
       stop_calls: stop_calls,
       bank_fail: bank_fail,
+      destroy_confirmed: destroy_confirmed,
       timers: timers,
       status_calls: status_calls
     }
@@ -565,6 +568,54 @@ defmodule Embervm.ServingSweeperTest do
     assert [%{mode: :STOP_SERVING_MODE_DESTROY, vm_id: "vm-1"}] = stop_calls(ctx)
     # The fan-out is empty (both gone).
     assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
+  end
+
+  test "node-confirmed forced roll records serving_destroyed only after confirmation" do
+    ctx = start_stack(node_confirmed_destroy: true)
+    serving_workload(ctx, "wl-a", %{max_lifetime_seconds: 1_000_000})
+    serving_node(ctx, "node-4")
+    published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+
+    assert %{destroyed: 1, evicted: 0} = ServingSweeper.force_roll(ctx.sweeper, "wl-a")
+
+    {:ok, instance} = ServingStore.get(ctx.store, "srv-1")
+    assert instance.state == :destroyed
+    assert instance.terminal_reason == "forced_roll"
+    assert [%{mode: :STOP_SERVING_MODE_DESTROY, vm_id: "vm-1"}] = stop_calls(ctx)
+
+    seqs = op_seqs(ctx, ["serving_destroying", "serving_destroyed"])
+    assert seqs["serving_destroying"] < seqs["serving_destroyed"]
+  end
+
+  test "node-confirmed forced roll leaves an unconfirmed teardown destroying" do
+    ctx = start_stack(node_confirmed_destroy: true, destroy_confirmed: false)
+    serving_workload(ctx, "wl-a", %{max_lifetime_seconds: 1_000_000})
+    serving_node(ctx, "node-4")
+    published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+
+    assert %{destroyed: 1, evicted: 0} = ServingSweeper.force_roll(ctx.sweeper, "wl-a")
+
+    {:ok, instance} = ServingStore.get(ctx.store, "srv-1")
+    assert instance.state == :destroying
+    assert [%{mode: :STOP_SERVING_MODE_DESTROY, vm_id: "vm-1"}] = stop_calls(ctx)
+
+    kinds = load_ops(ctx, "serving_destroying") |> Enum.map(& &1.kind)
+    assert :serving_destroying in kinds
+    assert load_ops(ctx, "serving_destroyed") == []
+  end
+
+  test "gate-off forced roll keeps the current destroy behavior when teardown is unconfirmed" do
+    ctx = start_stack(destroy_confirmed: false)
+    serving_workload(ctx, "wl-a", %{max_lifetime_seconds: 1_000_000})
+    serving_node(ctx, "node-4")
+    published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+
+    assert %{destroyed: 1, evicted: 0} = ServingSweeper.force_roll(ctx.sweeper, "wl-a")
+
+    {:ok, instance} = ServingStore.get(ctx.store, "srv-1")
+    assert instance.state == :destroyed
+    assert [%{mode: :STOP_SERVING_MODE_DESTROY, vm_id: "vm-1"}] = stop_calls(ctx)
+    assert load_ops(ctx, "serving_destroying") == []
   end
 
   test "forced roll on a workload with no instances is a no-op 200 (zero counts)" do

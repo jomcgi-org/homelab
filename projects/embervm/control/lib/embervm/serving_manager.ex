@@ -74,6 +74,7 @@ defmodule Embervm.ServingManager do
     RestoreArtifactRequest,
     StartServingRequest,
     StartServingResponse,
+    StopServingRequest,
     Trace
   }
 
@@ -162,6 +163,7 @@ defmodule Embervm.ServingManager do
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       start_serving_fun: Keyword.get(opts, :start_serving_fun, &default_start_serving/2),
+      stop_serving_fun: Keyword.get(opts, :stop_serving_fun, &default_stop_serving/2),
       # Restore-on-miss seam (R6, Task 8): (channel, %RestoreArtifactRequest{}) ->
       # {:ok, %RestoreArtifactResponse{}} | {:error, _}. Fetches a banked SERVING
       # bundle back onto local disk from the object store before a relight on a TRUE
@@ -983,6 +985,18 @@ defmodule Embervm.ServingManager do
 
     state = evict_orphan_snapshots(state, facts)
 
+    # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
+    # gated: re-drive stuck destroying instances and destroy reported serving VMs
+    # with no CP row. Gate off is inert, preserving today's adoption behavior.
+    state =
+      if state.node_confirmed_destroy do
+        state
+        |> redrive_destroying(live_vms)
+        |> destroy_orphan_serving_vms(facts, live_vms)
+      else
+        state
+      end
+
     # Re-derive + re-push after adoption so the fan-out reflects the healed facts.
     EndpointPublisher.publish(state.publisher)
     state
@@ -1068,6 +1082,99 @@ defmodule Embervm.ServingManager do
   end
 
   defp node_reporting?(_state, _node_id), do: false
+
+  # Direction 1: a serving instance left in destroying after an unconfirmed RPC (or
+  # a CP crash after recording intent) is re-driven here. A reported owner VM gets
+  # another real StopServing(DESTROY); authoritative absence from a reporting owner
+  # confirms the teardown completed and lets the durable terminal op land.
+  defp redrive_destroying(state, live_vms) do
+    now = state.clock.()
+
+    ServingStore.all(state.store)
+    |> Enum.filter(&(&1.state == :destroying))
+    |> Enum.reduce(state, fn instance, acc ->
+      maybe_alarm_destroying(acc, instance, now)
+      redrive_one_destroying(acc, instance, live_vms)
+    end)
+  end
+
+  defp maybe_alarm_destroying(state, instance, now) do
+    elapsed = now - instance.updated_at
+
+    if elapsed > state.destroying_alarm_ms do
+      Logger.error("embervm serving stuck in destroying",
+        instance_id: instance.instance_id,
+        workload: instance.workload,
+        vm_id: instance.vm_id,
+        elapsed_ms: elapsed,
+        alarm_threshold_ms: state.destroying_alarm_ms
+      )
+    end
+
+    :ok
+  end
+
+  defp redrive_one_destroying(state, instance, live_vms) do
+    cond do
+      is_binary(instance.vm_id) and Map.has_key?(live_vms, instance.vm_id) ->
+        if stop_serving_destroy_confirmed(state, instance) do
+          record_serving_destroyed(state, instance)
+        else
+          state
+        end
+
+      node_reporting?(state, instance.node_id) ->
+        record_serving_destroyed(state, instance)
+
+      true ->
+        state
+    end
+  end
+
+  defp record_serving_destroyed(state, instance) do
+    _ =
+      ServingStore.transition(
+        state.store,
+        instance.instance_id,
+        :destroy,
+        :serving_destroyed,
+        %{reason: :destroyed},
+        %{}
+      )
+
+    Logger.info("embervm serving destroyed (reconcile-confirmed)",
+      instance_id: instance.instance_id,
+      workload: instance.workload
+    )
+
+    state
+  end
+
+  # Direction 2: serving_vms carry no serving instance id, so a reported VM is an
+  # orphan only when no ServingStore row claims its vm_id. Serving lifecycle writes
+  # are synchronous, so unlike sessions this has no async-write discriminator.
+  defp destroy_orphan_serving_vms(state, facts, _live_vms) do
+    for fact <- facts, vm <- Map.get(fact, :serving_vms, []) || [], reduce: state do
+      acc ->
+        case find_instance_by_vm(acc, vm.vm_id) do
+          :none ->
+            _ = stop_serving_destroy_confirmed(acc, %{node_id: fact.configured_id, vm_id: vm.vm_id})
+            acc
+
+          {:ok, _instance} ->
+            acc
+        end
+    end
+  end
+
+  defp find_instance_by_vm(state, vm_id) do
+    ServingStore.all(state.store)
+    |> Enum.find(:none, fn instance -> instance.vm_id == vm_id end)
+    |> case do
+      :none -> :none
+      instance -> {:ok, instance}
+    end
+  end
 
   # Evict serving snapshots a node reports whose instance row is terminal or absent
   # (the instance is gone but its snapshot squats disk). StopServing is not the
@@ -1231,6 +1338,30 @@ defmodule Embervm.ServingManager do
 
   defp default_start_serving(channel, req) do
     Embervm.Node.V1.NodeService.Stub.start_serving(channel, req)
+  end
+
+  defp stop_serving_destroy_confirmed(state, %{node_id: node_id, vm_id: vm_id})
+       when is_binary(node_id) and is_binary(vm_id) do
+    req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
+    dial_key = Embervm.WakeInstance.dial_for_serving_vm(state.capacity_table, node_id, vm_id)
+
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+      try do
+        match?({:ok, %{teardown_confirmed: true}}, state.stop_serving_fun.(channel, req))
+      rescue
+        _ -> false
+      catch
+        _, _ -> false
+      end
+    else
+      _ -> false
+    end
+  end
+
+  defp stop_serving_destroy_confirmed(_state, _instance), do: false
+
+  defp default_stop_serving(channel, req) do
+    Embervm.Node.V1.NodeService.Stub.stop_serving(channel, req)
   end
 
   # -- restore-on-miss RPC (R6, Task 8) ---------------------------------------
