@@ -169,7 +169,10 @@ defmodule Embervm.GroupManagerTest do
           {:ok, %Embervm.Node.V1.StopGroupMemberResponse{snapshot_ref: "snap-#{req.set_id}-#{req.member_name}", size_bytes: 4_096}}
 
         true ->
-          {:ok, %Embervm.Node.V1.StopGroupMemberResponse{}}
+          {:ok,
+           %Embervm.Node.V1.StopGroupMemberResponse{
+             teardown_confirmed: Keyword.get(opts, :destroy_confirmed, true)
+           }}
       end
     end
 
@@ -208,6 +211,7 @@ defmodule Embervm.GroupManagerTest do
       evict_snapshot_fun: evict_snapshot_fun,
       get_secret_fun: get_secret_fun,
       secret_fun: Keyword.get(opts, :secret_fun, fn -> "minted-secret" end),
+      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       clock: fn -> 1_000 end
     ]
 
@@ -535,6 +539,28 @@ defmodule Embervm.GroupManagerTest do
     # Fresh starts happen both at create AND at the fallback: the fallback set is the
     # last three.
     assert Enum.take(fresh, -3) |> Enum.sort() == ["leader", "worker-0", "worker-1"]
+  end
+
+  test "gated relight cleanup defers fresh boot when a member teardown is unconfirmed" do
+    ctx =
+      start_group(
+        relight_fail_member: "worker-1",
+        node_confirmed_destroy: true,
+        destroy_confirmed: false
+      )
+
+    {:ok, _} = GroupManager.create_group(ctx.mgr)
+    :ok = bank_complete(ctx)
+
+    assert {:error, {:member_teardown_unconfirmed, _}} = GroupManager.wake_group(ctx.mgr)
+    assert {:ok, %{state: :banked}} = GroupStore.get(ctx.store, "g-1")
+
+    destroyed =
+      for {:stop_member, vm_id, :STOP_GROUP_MEMBER_MODE_DESTROY, _set, _name} <- events(ctx.rec),
+          do: vm_id
+
+    assert "vm-leader" in destroyed
+    assert "vm-worker-0" in destroyed
   end
 
   test "wake_group treats an UNVERIFIED relight (clock-resync) as a failure and fresh-boots" do

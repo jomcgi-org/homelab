@@ -717,7 +717,43 @@ defmodule Embervm.GroupManager do
     # Free tap+IP for any member that DID resume before the relight aborted, so the
     # fresh re-pin does not collide on an occupied tap. Drains from the instance's
     # stored live member rows (member_started recorded each resumed member).
-    _ = destroy_live_members(state)
+    case destroy_live_members(state) do
+      false ->
+        Logger.warning("embervm group relight cleanup unconfirmed, fresh boot deferred",
+          workload: state.workload,
+          instance_id: instance.instance_id
+        )
+
+        {{:error, {:member_teardown_unconfirmed, reason}}, state}
+
+      _ ->
+        continue_fallback_fresh(
+          state,
+          instance,
+          subnet_cidr,
+          secret,
+          group,
+          plan,
+          reason,
+          fresh_reason
+        )
+    end
+  rescue
+    e ->
+      teardown_failed(state, {:fresh_fallback_crashed, e})
+      {{:error, {:fresh_fallback_crashed, e}}, state}
+  end
+
+  defp continue_fallback_fresh(
+         state,
+         instance,
+         subnet_cidr,
+         secret,
+         group,
+         plan,
+         reason,
+         fresh_reason
+       ) do
     # Evict the WHOLE banked set (all-or-nothing, decision 3): the per-member bundle
     # refs come from the `plan` captured at wake start (wake_plan read the banked rows
     # BEFORE any relight cleared them), NOT the current live rows, which the resume /
@@ -757,10 +793,6 @@ defmodule Embervm.GroupManager do
         teardown_failed(state, {:fresh_fallback_failed, fresh_error})
         {{:error, {:fresh_fallback_failed, fresh_error}}, state}
     end
-  rescue
-    e ->
-      teardown_failed(state, {:fresh_fallback_crashed, e})
-      {{:error, {:fresh_fallback_crashed, e}}, state}
   end
 
   # RELIGHT every member in role order (all of one startOrder in parallel, gated,
@@ -1493,12 +1525,39 @@ defmodule Embervm.GroupManager do
   # per member (a failed DESTROY leaves its tap held, which the fresh boot's own
   # collision surfaces loudly rather than being silently skipped here).
   defp destroy_live_members(state) do
+    if state.node_confirmed_destroy do
+      destroy_live_members_node_confirmed(state)
+    else
+      destroy_live_members_legacy(state)
+    end
+  end
+
+  defp destroy_live_members_legacy(state) do
     state.store
     |> GroupStore.members(state.instance_id)
     |> Enum.filter(fn m -> is_binary(m.vm_id) and m.vm_id != "" end)
     |> Enum.each(fn m -> _ = destroy_one_member(state, m) end)
 
     :ok
+  end
+
+  # This is the relight-to-fresh cleanup path, not a terminal group destroy, so it
+  # does not write group lifecycle ops. Under the gate it still collects the real
+  # daemon confirmation for every reachable member; an unconfirmed member defers the
+  # fresh boot so it never re-pins over a tap the daemon may still hold.
+  defp destroy_live_members_node_confirmed(state) do
+    confirmations =
+      state.store
+      |> GroupStore.members(state.instance_id)
+      |> Enum.map(fn member ->
+        if is_binary(state.node_id) and is_binary(member.vm_id) do
+          destroy_one_member_confirmed(state, member)
+        else
+          true
+        end
+      end)
+
+    Enum.all?(confirmations)
   end
 
   defp destroy_one_member(state, member) do
@@ -1521,6 +1580,28 @@ defmodule Embervm.GroupManager do
     end
 
     :ok
+  end
+
+  defp destroy_one_member_confirmed(state, member) do
+    req = %StopGroupMemberRequest{
+      trace: %Trace{workload: state.workload},
+      vm_id: member.vm_id,
+      mode: :STOP_GROUP_MEMBER_MODE_DESTROY,
+      set_id: "",
+      member_name: member.member_name
+    }
+
+    with {:ok, channel} <- safe_channel(state, state.dial_id) do
+      try do
+        match?({:ok, %{teardown_confirmed: true}}, state.stop_group_member_fun.(channel, req))
+      rescue
+        _ -> false
+      catch
+        _, _ -> false
+      end
+    else
+      _ -> false
+    end
   end
 
   # Best-effort EvictSnapshot of one member's banked bundle (group bundles reuse the

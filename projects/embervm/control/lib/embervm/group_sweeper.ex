@@ -975,6 +975,16 @@ defmodule Embervm.GroupSweeper do
   # forced-roll path; a lifetime destroy re-derives here (a single instance) so the
   # activator swap lands.
   defp destroy_live_group(state, instance, reason) do
+    if state.node_confirmed_destroy do
+      destroy_live_group_node_confirmed(state, instance, reason)
+    else
+      destroy_live_group_legacy(state, instance, reason)
+    end
+  end
+
+  # Gate-off path: preserve the existing member teardown, network delete, then
+  # record-destroyed ordering exactly.
+  defp destroy_live_group_legacy(state, instance, reason) do
     # The terminal group_destroyed clears the entry endpoint (the store's
     # post_transition_endpoint nils it on a terminal), and the re-publish below swaps
     # in the activator, so a racing connection parks rather than hitting a dead socket.
@@ -1000,6 +1010,56 @@ defmodule Embervm.GroupSweeper do
     )
 
     state
+  end
+
+  # Gate-on path: persist the destroying intent before contacting the node, then
+  # record destroyed only after every reachable member confirms its teardown.
+  defp destroy_live_group_node_confirmed(state, instance, reason) do
+    intent =
+      GroupStore.transition(
+        state.store,
+        instance.instance_id,
+        :begin_destroy,
+        :group_destroying,
+        %{reason: reason},
+        %{}
+      )
+
+    case intent do
+      {:ok, _} ->
+        confirmed = destroy_all_members_node_confirmed(state, instance)
+        _ = delete_network(state, instance)
+
+        if confirmed do
+          _ =
+            GroupStore.transition(
+              state.store,
+              instance.instance_id,
+              :destroy,
+              :group_destroyed,
+              %{reason: reason},
+              %{}
+            )
+
+          Embervm.EndpointPublisher.publish(state.publisher)
+
+          Logger.info("embervm group destroyed",
+            workload: instance.workload,
+            instance_id: instance.instance_id,
+            reason: reason
+          )
+        else
+          Logger.warning("embervm group teardown unconfirmed, left destroying",
+            workload: instance.workload,
+            instance_id: instance.instance_id
+          )
+        end
+
+        state
+
+      {:error, _reason} ->
+        state
+    end
   end
 
   # Destroy a BANKED instance: best-effort EvictSnapshot each member's bundle (the set
@@ -1042,6 +1102,21 @@ defmodule Embervm.GroupSweeper do
     :ok
   end
 
+  defp destroy_all_members_node_confirmed(state, instance) do
+    confirmations =
+      state.store
+      |> GroupStore.members(instance.instance_id)
+      |> Enum.map(fn member ->
+        if is_binary(instance.node_id) and is_binary(member.vm_id) do
+          stop_group_member_destroy_confirmed(state, instance, member)
+        else
+          true
+        end
+      end)
+
+    Enum.all?(confirmations)
+  end
+
   # StopGroupMember DESTROY dials the INSTANCE's node (a composite group is anchored to
   # one node; members carry no per-member node_id).
   defp stop_group_member_destroy(state, instance, member) do
@@ -1064,6 +1139,30 @@ defmodule Embervm.GroupSweeper do
     end
 
     :ok
+  end
+
+  # The node-confirmed path issues the same real StopGroupMember(DESTROY) RPC as
+  # the legacy path and accepts only teardown_confirmed=true from the daemon.
+  defp stop_group_member_destroy_confirmed(state, instance, member) do
+    req = %StopGroupMemberRequest{
+      trace: %Trace{workload: nil},
+      vm_id: member.vm_id,
+      mode: :STOP_GROUP_MEMBER_MODE_DESTROY,
+      set_id: "",
+      member_name: member.member_name
+    }
+
+    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+      try do
+        match?({:ok, %{teardown_confirmed: true}}, state.stop_group_member_fun.(channel, req))
+      rescue
+        _ -> false
+      catch
+        _, _ -> false
+      end
+    else
+      _ -> false
+    end
   end
 
   # Evict every member's banked bundle (best-effort; the daemon's own bundle GC
