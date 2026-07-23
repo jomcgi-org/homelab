@@ -84,9 +84,20 @@ checks for an unresolved dispatch record for the same workload whose `vm_id`
 equals the reporting instance's `vm_id` and whose `generation` is exactly
 `reported_gen - 1`. If it matches, the control plane blesses `reported_gen` (the
 same `bless_generation/3` write-through path a CP-driven abort uses) instead of
-quarantining, and consumes the record. If it does not match (a different
-`vm_id`, a jump past `+1`, or no record at all), the volume is quarantined
-exactly as today.
+quarantining, and consumes the record. If a dispatch record exists but does not
+match (a different `vm_id`, or a jump past `+1`), the volume is quarantined
+fail-closed, ahead of ADR 014 adoption: a pending checkpoint that did not resume
+cleanly is exactly the second-writer hazard, so anchor identity alone is not
+enough to trust the generation.
+
+When there is no dispatch record at all, this branch does not apply and control
+passes to ADR 014's fenced-writer adoption: a forward-unblessed report from the
+volume's own anchor is a fenced writer that ran ahead of a rewound watermark and
+is adopted, not quarantined (the recurring demo-postgres-after-CP-roll case).
+A forward-unblessed report from a node that is not the anchor still quarantines,
+fail-closed, as genuine split-brain evidence. Auto-heal thus refines only the
+`vm_id`/`+1` fingerprint atop the existing adoption; it does not change the
+no-checkpoint-context behaviour that ADR 014 already owns.
 
 The safety argument is that the match conditions are precisely the fingerprint
 `autoAbortCheckpoint` leaves and nothing else can forge cheaply: the same
