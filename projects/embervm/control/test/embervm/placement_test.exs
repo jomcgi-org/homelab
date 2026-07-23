@@ -169,4 +169,69 @@ defmodule Embervm.PlacementTest do
       assert Placement.pick_ready([ds], "wl", 16_000) == nil
     end
   end
+
+  describe "candidates_ready/3 (the reject/retry frontier)" do
+    test "HEAD == pick_ready/3 result (single-attempt and retry pick the same brick first)" do
+      # Several ready+eligible bricks; the ordered candidate head must equal the
+      # deterministic single pick for the same key, so gate-off is output-equivalent.
+      bricks =
+        for id <- ~w(n/a n/b n/c n/d),
+            do: brick(instance_id: id, workloads: advertising("wl"))
+
+      chosen = Placement.pick_ready(bricks, "wl", 4_000)
+      [head | _] = Placement.candidates_ready(bricks, "wl", 4_000)
+      assert head.instance_id == chosen.instance_id
+    end
+
+    test "returns ALL ready+eligible bricks (the full frontier), too-small ones excluded" do
+      big1 = brick(instance_id: "n/b1", workloads: advertising("wl"))
+      big2 = brick(instance_id: "n/b2", workloads: advertising("wl"))
+
+      small =
+        brick(
+          instance_id: "n/small",
+          size_class: "2gi",
+          mem_headroom_mib: 100,
+          mem_budget_mib: 2_048,
+          workloads: advertising("wl")
+        )
+
+      ids =
+        [big1, big2, small]
+        |> Placement.candidates_ready("wl", 4_000)
+        |> Enum.map(& &1.instance_id)
+        |> Enum.sort()
+
+      assert ids == ["n/b1", "n/b2"]
+    end
+
+    test "a not-base-ready brick is excluded from the frontier" do
+      ready = brick(instance_id: "n/ready", workloads: advertising("wl"))
+      not_ready = brick(instance_id: "n/nr", workloads: advertising("wl", :absent))
+
+      ids =
+        [ready, not_ready]
+        |> Placement.candidates_ready("wl", 4_000)
+        |> Enum.map(& &1.instance_id)
+
+      assert ids == ["n/ready"]
+    end
+
+    test "no eligible brick yields an empty frontier" do
+      small = brick(instance_id: "n/s", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048, workloads: advertising("wl"))
+      assert Placement.candidates_ready([small], "wl", 4_000) == []
+    end
+
+    test "the whole frontier is a permutation of the ready bricks (no dropped or duplicated candidate)" do
+      bricks = for id <- ~w(n/a n/b n/c), do: brick(instance_id: id, workloads: advertising("wl"))
+
+      frontier_ids =
+        bricks
+        |> Placement.candidates_ready("wl", 4_000)
+        |> Enum.map(& &1.instance_id)
+
+      assert Enum.sort(frontier_ids) == ["n/a", "n/b", "n/c"]
+      assert length(frontier_ids) == length(Enum.uniq(frontier_ids))
+    end
+  end
 end

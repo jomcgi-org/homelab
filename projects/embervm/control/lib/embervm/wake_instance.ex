@@ -102,6 +102,47 @@ defmodule Embervm.WakeInstance do
   def select(_node_id, _opts), do: {:error, :no_eligible_instance}
 
   @doc """
+  The ORDERED cold-placement dial-id candidates on `node_id`, for the reject/retry
+  path (ADR embervm/014 decision 3): the ready + mem-eligible co-located bricks,
+  in the deterministic order whose HEAD is exactly what `select/2`'s cold pick
+  returns and whose tail is the next-candidate frontier. Returns
+  `{:ok, [dial_id]}` (never empty on success) or `{:error, :no_eligible_instance}`.
+
+  Same node scoping, same `Embervm.Placement` readiness/eligibility rule, and the
+  same Axis-C denial note as `cold_instance/4`, so the single-attempt cold pick and
+  the retry candidate list cannot drift. A cold create passes NO `:warmth_key`
+  (there is no owning snapshot to prefer); this is the cold frontier only.
+  """
+  @spec cold_candidates(String.t(), keyword()) ::
+          {:ok, [String.t()]} | {:error, :no_eligible_instance}
+  def cold_candidates(node_id, opts) when is_binary(node_id) do
+    table = Keyword.get(opts, :table, NodeCapacity.table())
+    workload = Keyword.fetch!(opts, :workload)
+    need_mib = Keyword.fetch!(opts, :need_mib)
+
+    node_bricks =
+      table
+      |> BrickLedger.bricks()
+      |> Enum.filter(fn brick -> brick.node_id == node_id end)
+
+    case Embervm.Placement.candidates_ready(node_bricks, workload, need_mib) do
+      [] ->
+        # Same demand-signal discrimination as cold_instance/4: only a true
+        # no-eligible-brick wall feeds the autoscaler, not a base-not-ready wait.
+        unless Enum.any?(node_bricks, &Embervm.Placement.eligible?(&1, need_mib)) do
+          Embervm.BrickController.note_denial(need_mib)
+        end
+
+        {:error, :no_eligible_instance}
+
+      bricks ->
+        {:ok, Enum.map(bricks, &dial_id_from_brick/1)}
+    end
+  end
+
+  def cold_candidates(_node_id, _opts), do: {:error, :no_eligible_instance}
+
+  @doc """
   The channel key of the instance on `node_id` currently RUNNING `vm_id` (its
   per-instance capacity fact reports the `vm_id` in `stateful_vms`), or the bare
   `node_id` when no reporting instance is found (a legacy/single-instance fact, or
