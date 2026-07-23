@@ -822,4 +822,94 @@ defmodule Embervm.OpLog.SQLiteTest do
     assert legacy.payload == %{"status_code" => 200, "body" => "legacy", "size_bytes" => 6}
     :ok = GenServer.stop(server2)
   end
+
+  # -- monotonic lifecycle-projection guard (ADR embervm/014 decision 2) -----
+
+  defp append_task_op(server, kind, task_id, ts, payload \\ %{}) do
+    {:ok, _} =
+      SQLite.append(server, %Op{kind: kind, tenant: "t1", task_id: task_id, ts: ts, payload: payload})
+
+    :ok
+  end
+
+  defp task_state(server, task_id) do
+    {:ok, tasks} = SQLite.load_tasks(server)
+    tasks |> Map.new(&{&1.task_id, &1}) |> Map.get(task_id) |> Map.get(:state)
+  end
+
+  test "a stale :assigned appended AFTER :succeeded does NOT regress the durable state, but IS still recorded",
+       %{path: path} do
+    server = start_server(path)
+
+    append_task_op(server, :submitted, "task-x", 100, %{idempotency_key: nil, expires_at: nil})
+    append_task_op(server, :assigned, "task-x", 101)
+    append_task_op(server, :started, "task-x", 102)
+
+    append_task_op(server, :succeeded, "task-x", 103, %{
+      status_code: 200,
+      body: "ok",
+      size_bytes: 2,
+      truncated: false,
+      expires_at: 9_999
+    })
+
+    # A DEFERRED async :assigned lands late (out of order relative to :succeeded).
+    append_task_op(server, :assigned, "task-x", 104)
+
+    # Projection did NOT regress: the monotonic guard made the late append a no-op.
+    assert task_state(server, "task-x") == "succeeded"
+
+    # ...but the op is STILL in the durable log (audit trail): two :assigned ops, and
+    # the state survives a full reopen (rebuild reads the projected table).
+    {:ok, ops} = SQLite.read_from(server, 0)
+    assert Enum.count(ops, &(&1.task_id == "task-x" and &1.kind == :assigned)) == 2
+
+    :ok = GenServer.stop(server)
+    server2 = start_server(path)
+    assert task_state(server2, "task-x") == "succeeded"
+    :ok = GenServer.stop(server2)
+  end
+
+  test "a :started whose own :assigned was lost still advances queued -> running (forward jump)", %{
+    path: path
+  } do
+    server = start_server(path)
+
+    append_task_op(server, :submitted, "task-y", 100, %{idempotency_key: nil, expires_at: nil})
+    # :assigned append was LOST (never arrived); :started lands against a queued row.
+    append_task_op(server, :started, "task-y", 102)
+
+    # The partial-order guard advances queued -> running (queued ranks below running),
+    # rather than stalling at queued the way an exact-prior guard would.
+    assert task_state(server, "task-y") == "running"
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "replaying [submitted, assigned, started, succeeded, LATE assigned] in log order lands succeeded",
+       %{path: path} do
+    server = start_server(path)
+
+    # This is exactly the rebuild-replay order the reviewer asked to pin: an out-of-
+    # order async append at the tail must not undo the terminal projection.
+    append_task_op(server, :submitted, "task-z", 100, %{idempotency_key: nil, expires_at: nil})
+    append_task_op(server, :assigned, "task-z", 101)
+    append_task_op(server, :started, "task-z", 102)
+
+    append_task_op(server, :succeeded, "task-z", 103, %{
+      status_code: 200,
+      body: "ok",
+      size_bytes: 2,
+      truncated: false,
+      expires_at: 9_999
+    })
+
+    append_task_op(server, :assigned, "task-z", 104)
+
+    # Reopen forces a fresh rebuild from the projected table (the recovery path).
+    :ok = GenServer.stop(server)
+    server2 = start_server(path)
+    assert task_state(server2, "task-z") == "succeeded"
+    :ok = GenServer.stop(server2)
+  end
 end

@@ -126,4 +126,44 @@ defmodule Embervm.TaskState do
         raise IllegalTransition, state: state, event: event
     end
   end
+
+  # The lifecycle-forward rank: a monotone partial order over the states along the
+  # normal progression queued -> assigned -> running -> {terminal or the retry
+  # branch}. It exists so the op-log projection can apply a DEFERRED, possibly
+  # out-of-order async lifecycle append (:assigned/:started under
+  # EMBERVM_ASYNC_LIFECYCLE_WRITES, ADR embervm/014 decision 2) MONOTONICALLY: an
+  # append that targets a state advances the durable projection only from a
+  # strictly-lower-ranked state, so a stale late-arriving :assigned cannot regress a
+  # row that already ran or terminalized, while a legitimate forward jump (queued ->
+  # running when the :assigned append was lost) still applies. failed_retryable and
+  # every terminal state rank ABOVE running so neither :assigned (rank 1) nor
+  # :started (rank 2) can ever pull them backward; a genuine re-run re-enters at
+  # queued (rank 0) via :retry/:redrive and is advanced by fresh appends. This is
+  # the single source of truth for that order; the SQLite/Postgres projections
+  # derive their guard predicate from it (see states_below/1).
+  @forward_rank %{
+    queued: 0,
+    assigned: 1,
+    running: 2,
+    failed_retryable: 3,
+    succeeded: 3,
+    failed_permanent: 3,
+    dead_lettered: 3
+  }
+
+  @spec forward_rank(state()) :: non_neg_integer()
+  def forward_rank(state), do: Map.fetch!(@forward_rank, state)
+
+  @doc """
+  The set of state NAMES (as strings, matching the durable `tasks.state` column)
+  ranked strictly below `target`. A deferred async append that moves the projection
+  to `target` may only do so from one of these, so the projection stays monotone
+  under out-of-order/replayed appends. `target` is an atom state.
+  """
+  @spec states_below(state()) :: [String.t()]
+  def states_below(target) do
+    target_rank = forward_rank(target)
+
+    for {state, rank} <- @forward_rank, rank < target_rank, do: Atom.to_string(state)
+  end
 end
