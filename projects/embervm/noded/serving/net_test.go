@@ -838,7 +838,7 @@ func TestReleaseTapDeletesFallbackTapUnderPrealloc(t *testing.T) {
 
 // TestPrecreatePoolDegradesOnTransientFailure locks in the PR4-review fix: a single
 // tap's precreate failure (a transient ip error, e.g. an EBUSY racing a prior
-// incarnation's teardown) must be best-effort — EnsureNetwork still succeeds with a
+// incarnation's teardown) must be best-effort, EnsureNetwork still succeeds with a
 // SHORTER pool, never propagating the error and crash-looping the brick.
 func TestPrecreatePoolDegradesOnTransientFailure(t *testing.T) {
 	// tapPrealloc is 2 (.2 and .3); fail only .3's `ip tuntap add`, leaving .2 to

@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 
+	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
@@ -179,6 +181,7 @@ type servingEntry struct {
 	handle   substrate.Handle
 	ip       net.IP
 	port     uint32
+	origin   nodev1.InstanceOrigin
 	tap      string
 	// snapshotRef is the serving snapshot this VM was RELIT from, or "" for a fresh
 	// cold boot (which has no source snapshot). It correlates a live serving VM to the
@@ -213,6 +216,19 @@ func (r *servingRegistry) add(e *servingEntry) {
 	r.mu.Lock()
 	r.vms[e.vmID] = e
 	r.mu.Unlock()
+}
+
+// firstByWorkload returns any live serving VM for workload. The activator uses
+// this to serve Envoy stragglers that arrive after another path made the VM live.
+func (r *servingRegistry) firstByWorkload(workload string) (*servingEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.vms {
+		if e.workload == workload {
+			return e, true
+		}
+	}
+	return nil, false
 }
 
 // beginBank marks a serving VM busy for a StopServing(BANK). It returns (entry, true)
@@ -257,6 +273,7 @@ type servingView struct {
 	healthy         bool
 	lastProbeUnixMs int64
 	snapshotRef     string
+	origin          nodev1.InstanceOrigin
 }
 
 // snapshot returns a copy of every live serving VM including its current health
@@ -272,6 +289,7 @@ func (r *servingRegistry) snapshot() []servingView {
 			workload: e.workload,
 			ip:       e.ip.String(),
 			port:     e.port,
+			origin:   e.origin,
 		}
 		if e.probe != nil {
 			res := e.probe.Result()
@@ -373,4 +391,24 @@ func (r *servingSnapshotRegistry) snapshot() []servingSnapshotEntry {
 		out = append(out, *e)
 	}
 	return out
+}
+
+// freshestByWorkload returns the most recently banked serving snapshot for a
+// workload. A lexical ref tie-break makes equal timestamps deterministic.
+func (r *servingSnapshotRegistry) freshestByWorkload(workload string) (servingSnapshotEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var best *servingSnapshotEntry
+	for _, e := range r.snaps {
+		if e.workload != workload {
+			continue
+		}
+		if best == nil || e.createdAtUnixMs > best.createdAtUnixMs || (e.createdAtUnixMs == best.createdAtUnixMs && e.snapshotRef > best.snapshotRef) {
+			best = e
+		}
+	}
+	if best == nil {
+		return servingSnapshotEntry{}, false
+	}
+	return *best, true
 }

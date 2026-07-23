@@ -22,23 +22,29 @@ type workloadEntry struct {
 	// ImageRef is the OCI ref a BuildBase resolves against to find this entry's
 	// node-side rootfs/harness (the join key the retired EMBERVM_NODED_IMAGES
 	// table keyed on). getByImageRef indexes on it.
-	ImageRef    string `json:"imageRef"`
-	RootfsRef   string `json:"rootfsRef"`
-	HarnessInit string `json:"harnessInit"`
-	VCPUs       uint32 `json:"vcpus"`
-	MemMib      uint32 `json:"memMib"`
+	ImageRef          string `json:"imageRef"`
+	RootfsRef         string `json:"rootfsRef"`
+	HarnessInit       string `json:"harnessInit"`
+	VCPUs             uint32 `json:"vcpus"`
+	MemMib            uint32 `json:"memMib"`
+	NodeLocalWake     bool   `json:"nodeLocalWake"`
+	ServingPort       uint32 `json:"servingPort"`
+	ServingHealthPath string `json:"servingHealthPath"`
 }
 
 // entryFromProto lifts a wire RegistryEntry into the daemon's internal shape.
 func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 	return workloadEntry{
-		Workload:    e.GetWorkload(),
-		ImageDigest: e.GetImageDigest(),
-		ImageRef:    e.GetImageRef(),
-		RootfsRef:   e.GetRootfsRef(),
-		HarnessInit: e.GetHarnessInit(),
-		VCPUs:       e.GetSizing().GetVcpus(),
-		MemMib:      e.GetSizing().GetMemMib(),
+		Workload:          e.GetWorkload(),
+		ImageDigest:       e.GetImageDigest(),
+		ImageRef:          e.GetImageRef(),
+		RootfsRef:         e.GetRootfsRef(),
+		HarnessInit:       e.GetHarnessInit(),
+		VCPUs:             e.GetSizing().GetVcpus(),
+		MemMib:            e.GetSizing().GetMemMib(),
+		NodeLocalWake:     e.GetNodeLocalWake(),
+		ServingPort:       e.GetServingPort(),
+		ServingHealthPath: e.GetServingHealthPath(),
 	}
 }
 

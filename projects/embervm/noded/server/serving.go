@@ -24,6 +24,10 @@ import (
 // unrestorable ref; RESOURCE_EXHAUSTED at the node live-VM cap. The daemon is off the
 // request hit path after this: requests reach the guest directly over ip:port.
 func (s *Server) StartServing(ctx context.Context, req *nodev1.StartServingRequest) (*nodev1.StartServingResponse, error) {
+	return s.startServing(ctx, req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE)
+}
+
+func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingRequest, origin nodev1.InstanceOrigin) (*nodev1.StartServingResponse, error) {
 	if s.servingNet == nil || s.servingDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: serving not configured")
 	}
@@ -54,9 +58,9 @@ func (s *Server) StartServing(ctx context.Context, req *nodev1.StartServingReque
 	// GetFresh()/GetRelight() return nil for the unset arm.
 	switch {
 	case req.GetFresh() != nil:
-		return s.startServingFresh(ctx, req, req.GetFresh().GetServingImageRef(), workload, port, healthPath)
+		return s.startServingFresh(ctx, req, req.GetFresh().GetServingImageRef(), workload, port, healthPath, origin)
 	case req.GetRelight() != nil:
-		return s.startServingRelight(ctx, req, req.GetRelight().GetSnapshotRef(), workload, port, healthPath)
+		return s.startServingRelight(ctx, req, req.GetRelight().GetSnapshotRef(), workload, port, healthPath, origin)
 	default:
 		return nil, status.Error(codes.InvalidArgument, "noded: exactly one of fresh|relight source required")
 	}
@@ -68,7 +72,7 @@ func (s *Server) StartServing(ctx context.Context, req *nodev1.StartServingReque
 // cold-boot handler artifact in the serving-images inventory), NOT a base snapshot to
 // resume (D-R3.4.2, D-R3.11.2): the runtime rootfs is drive 1 and the handler artifact
 // is drive 2, from which the guest imports the handler before serving.
-func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServingRequest, servingImageRef, workload string, port uint32, healthPath string) (*nodev1.StartServingResponse, error) {
+func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServingRequest, servingImageRef, workload string, port uint32, healthPath string, origin nodev1.InstanceOrigin) (*nodev1.StartServingResponse, error) {
 	// A FRESH serving cold boot is new-work placement. A stale registry (boot
 	// cache, no live sync) refuses it; RELIGHT of an existing serving snapshot
 	// stays allowed so existing warmth is served.
@@ -120,13 +124,13 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot serving vm: %v", err)
 	}
 	// A fresh cold boot has NO source snapshot ref (empty), so it never guards a bundle.
-	return s.finishServingStart(ctx, h, workload, "", ip, port, healthPath, s.cfg.BootReadyTimeout)
+	return s.finishServingStart(ctx, h, workload, "", ip, port, healthPath, s.cfg.BootReadyTimeout, origin)
 }
 
 // startServingRelight resumes a banked serving snapshot (which already carries its NIC
 // because the fresh path cold-booted one before the bank) and RE-PINS the same host IP
 // the snapshot recorded (D-R3.4.1), so the resumed guest's baked eth0 IP still routes.
-func (s *Server) startServingRelight(ctx context.Context, req *nodev1.StartServingRequest, ref, workload string, port uint32, healthPath string) (*nodev1.StartServingResponse, error) {
+func (s *Server) startServingRelight(ctx context.Context, req *nodev1.StartServingRequest, ref, workload string, port uint32, healthPath string, origin nodev1.InstanceOrigin) (*nodev1.StartServingResponse, error) {
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: relight.snapshot_ref required")
 	}
@@ -161,14 +165,14 @@ func (s *Server) startServingRelight(ctx context.Context, req *nodev1.StartServi
 	}
 	// The relit VM depends on ref: record it so EvictSnapshot refuses to delete the
 	// bundle out from under this live VM (D-R3.4.1 relight-from state).
-	return s.finishServingStart(ctx, h, workload, ref, ip, port, healthPath, s.cfg.RestoreReadyTimeout)
+	return s.finishServingStart(ctx, h, workload, ref, ip, port, healthPath, s.cfg.RestoreReadyTimeout, origin)
 }
 
 // finishServingStart is the shared tail of both source modes: health-gate the guest
 // over the tap, and on success register the live serving VM and start its health
 // probe. On a readiness failure it reaps the VM and releases the tap (no half-alive
 // endpoint), returning FAILED_PRECONDITION.
-func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, workload, sourceRef string, ip net.IP, port uint32, healthPath string, readyBudget time.Duration) (*nodev1.StartServingResponse, error) {
+func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, workload, sourceRef string, ip net.IP, port uint32, healthPath string, readyBudget time.Duration, origin nodev1.InstanceOrigin) (*nodev1.StartServingResponse, error) {
 	if err := s.waitServingReady(ctx, ip, port, healthPath, readyBudget); err != nil {
 		s.reapServing(h, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving guest not ready over tap: %v", err)
@@ -192,6 +196,7 @@ func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, wor
 		tap:         serving.TapNameForIP(ip),
 		probe:       probe,
 		snapshotRef: sourceRef,
+		origin:      origin,
 	})
 	s.signalChange()
 	// Report the projected endpoint (pod IP + DNAT port), NOT the node-internal tap IP.
