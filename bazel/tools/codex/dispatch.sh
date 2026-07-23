@@ -35,7 +35,7 @@ usage() {
 case "$1" in
 luna) MODEL="gpt-5.6-luna" EFFORT="medium" ;;
 terra) MODEL="gpt-5.6-terra" EFFORT="high" ;;
-frontier) MODEL="gpt-5.5" EFFORT="high" ;;
+frontier) MODEL="gpt-5.6-sol" EFFORT="high" ;;
 *) usage ;;
 esac
 

@@ -47,7 +47,13 @@ Tiers:
 | ---------- | ------------- | ------ | ----------------------------------------- |
 | `luna`     | gpt-5.6-luna  | medium | Mechanical edits, boilerplate, renames    |
 | `terra`    | gpt-5.6-terra | high   | Standard implementation bulk (default)    |
-| `frontier` | gpt-5.5       | high   | Hardest specs; cross-vendor second opinion |
+| `frontier` | gpt-5.6-sol   | high   | Hardest specs; cross-vendor second opinion |
+
+Quota discipline on the $20 Plus plan: `terra` stays the default for the
+bulk; reserve `frontier` (Sol) for tasks you would otherwise have given
+Opus hands, and for second-opinion reviews of the riskiest diffs. Making
+Sol the default would burn the rolling-window limit on work Terra handles
+fine, triggering the exit-42 fallback early.
 
 Rules:
 
