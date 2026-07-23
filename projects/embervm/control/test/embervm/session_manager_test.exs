@@ -666,6 +666,45 @@ defmodule Embervm.SessionManagerTest do
     assert :error = SessionStore.get(ctx.store, "s-orphan2")
   end
 
+  test "gated async: a rowless report whose vm a LIVE row owns is adopted+backfilled, not destroyed" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        async_lifecycle_writes: true,
+        node_confirmed_destroy: true,
+        destroy_fun: fn _ch, vm ->
+          send(parent, {:destroyed, vm})
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    # A live session row owns vm-owned (created here so its ETS row + durable create
+    # exist). The node reports a DIFFERENT session_id but the SAME vm: the report's
+    # session_id resolves to :error, yet the vm is owned by a live row -> the
+    # discriminator picks the backfill arm and re-drives session_created (idempotent),
+    # never destroying the legitimately-owned VM.
+    {:ok, owned} =
+      SessionStore.create(ctx.store, %{
+        tenant: "homelab",
+        principal: "p1",
+        workload: "wl-owned",
+        node_id: "node-4",
+        vm_id: "vm-owned",
+        base_snapshot_ref: "base@sha256:abc",
+        base_digest: "sha256:abc",
+        expires_at: 9_999_999
+      })
+
+    report_session_vm(ctx, "s-report-mismatch", "wl-owned", "vm-owned")
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    refute_received {:destroyed, "vm-owned"}
+    # The owning row is intact and non-terminal (never destroyed).
+    {:ok, still} = SessionStore.get(ctx.store, owned.session_id)
+    refute still.state in [:destroyed, :failed, :expired, :evicted]
+  end
+
   test "gated: reconcile never destroys a primed-pool VM" do
     # A primed VM is reported in primed_vm_ids, never in session_vms, so the orphan
     # destroy pass (which only walks session_vms) never touches it.

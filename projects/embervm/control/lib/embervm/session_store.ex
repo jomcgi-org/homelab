@@ -210,6 +210,20 @@ defmodule Embervm.SessionStore do
   end
 
   @doc """
+  Re-drive the durable `session_created` append for a session whose ETS row
+  survived but whose deferred async append was lost (ADR embervm/014 decision 2's
+  adopt-and-backfill repair, called by the reconciler). Reconstructs the op from
+  the live ETS row and appends it SYNCHRONOUSLY (reconcile is not a hot path, and a
+  synchronous append guarantees the durable row lands before the next pass). The
+  projection is INSERT OR IGNORE, so a re-drive that races the original append (or
+  runs twice) is idempotent. A no-op / `:error` for an unknown session.
+  """
+  @spec backfill_created(GenServer.server(), String.t()) :: :ok | {:error, term()}
+  def backfill_created(store \\ __MODULE__, session_id) do
+    GenServer.call(store, {:backfill_created, session_id})
+  end
+
+  @doc """
   Pages sessions for `workload`, newest-created first, by `:limit` (default 50)
   and `:offset` (default 0). A full ETS scan (bounded, listing is rare), never
   the op-log; serves `GET /v1/workloads/{name}/sessions`.
@@ -392,6 +406,36 @@ defmodule Embervm.SessionStore do
     {:reply, all, state}
   end
 
+  def handle_call({:backfill_created, session_id}, _from, state) do
+    case fetch(state, session_id) do
+      {:ok, session} ->
+        # Reconstruct the session_created op from the surviving ETS row and append it
+        # synchronously. The projection is INSERT OR IGNORE, so this is idempotent
+        # even if the original deferred append later drains or this runs twice.
+        op = %Op{
+          kind: :session_created,
+          tenant: session.tenant,
+          principal: session.principal,
+          workload: session.workload,
+          session_id: session_id,
+          ts: state.clock.(),
+          payload: %{
+            node_id: session.node_id,
+            base_snapshot_ref: session.base_snapshot_ref,
+            base_digest: session.base_digest,
+            token_sha256: session.token_sha256,
+            expires_at: session.expires_at,
+            state: to_string(session.state)
+          }
+        }
+
+        {:reply, backfill_reply(state.op_log_mod.append(state.op_log, op)), state}
+
+      :error ->
+        {:reply, :error, state}
+    end
+  end
+
   def handle_call({:adopt_state, session_id, new_state}, _from, state)
       when new_state in [:running, :banked] do
     case fetch(state, session_id) do
@@ -542,6 +586,9 @@ defmodule Embervm.SessionStore do
     put_residency(state, session)
     :ok
   end
+
+  defp backfill_reply({:ok, _seq}), do: :ok
+  defp backfill_reply({:error, _reason} = error), do: error
 
   # -- transition ------------------------------------------------------------
 

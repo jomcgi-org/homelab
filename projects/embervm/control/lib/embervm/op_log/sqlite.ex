@@ -688,22 +688,25 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  # :assigned/:started advance the projection MONOTONICALLY (only from the state
-  # they legally follow), never as an unconditional SET. Under
-  # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2) these appends are
-  # deferred through Embervm.AsyncWriter, so a slow writer can land :assigned AFTER
-  # the terminal :succeeded already projected; a plain `SET state='assigned'` would
-  # REGRESS the durable row back to assigned. Guarding the prior state (queued for
-  # assigned, assigned for started) drops such a late append as the no-op the FSM
-  # already treats it as, so the durable projection matches the write-through
-  # (gate-off) result regardless of async append order. Inert under the gate off
-  # (the append always lands from the legal prior state).
+  # :assigned/:started advance the projection MONOTONICALLY along the task-lifecycle
+  # partial order (queued < assigned < running < terminal), never as an
+  # unconditional SET. Under EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014
+  # decision 2) these appends are deferred through Embervm.AsyncWriter, so an append
+  # can arrive out of order relative to a later synchronous op: a stale :assigned
+  # landing AFTER :succeeded, or a :started landing after its own :assigned was lost.
+  # advance_task_state SETs the target state only from a STRICTLY-LOWER-ranked state
+  # (Embervm.TaskState.forward_rank/1), so a stale late append against an equal-or-
+  # higher-ranked row is the no-op the FSM already treats it as, while a legitimate
+  # forward jump (queued -> running when :assigned was lost) still applies. The
+  # durable projection therefore converges to the same terminal state on BOTH the
+  # live write-through path and a full oplog rebuild-replay, regardless of async
+  # append order. Inert under the gate off (appends always arrive in rank order).
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
-    advance_task_state(conn, op.task_id, "queued", "assigned", op.ts)
+    advance_task_state(conn, op.task_id, :assigned, op.ts)
   end
 
   defp project(conn, %Op{kind: :started} = op, _seq) do
-    advance_task_state(conn, op.task_id, "assigned", "running", op.ts)
+    advance_task_state(conn, op.task_id, :running, op.ts)
   end
 
   defp project(conn, %Op{kind: :succeeded} = op, _seq) do
@@ -1849,15 +1852,20 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   # Monotonic advance for a deferred async lifecycle append (see the :assigned/
-  # :started projections): SET the new state only when the row is still in the
-  # exact prior state the transition follows. A late append against a row that has
-  # already moved on (ran, succeeded, failed) matches no row and is a harmless
-  # no-op, so an out-of-order async append can never regress the durable state.
-  defp advance_task_state(conn, task_id, from_state, to_state, ts) do
-    sql = "UPDATE tasks SET state=?, updated_at=? WHERE task_id=? AND state=?"
+  # :started projections): SET `to_state` (an atom) only when the row's current
+  # state ranks STRICTLY BELOW it in the task-lifecycle partial order
+  # (Embervm.TaskState.states_below/1). A late append against a row that already
+  # ran/terminalized (equal or higher rank) matches no row and is a harmless no-op,
+  # so an out-of-order async append can never regress the durable state; a
+  # legitimate forward jump (queued -> running when :assigned was lost) still
+  # applies. Same guard, same outcome on the live path and on rebuild-replay.
+  defp advance_task_state(conn, task_id, to_state, ts) do
+    below = Embervm.TaskState.states_below(to_state)
+    placeholders = Enum.map_join(below, ",", fn _ -> "?" end)
+    sql = "UPDATE tasks SET state=?, updated_at=? WHERE task_id=? AND state IN (#{placeholders})"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [to_state, ts, task_id, from_state]),
+         :ok <- Sqlite3.bind(stmt, [Atom.to_string(to_state), ts, task_id | below]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok

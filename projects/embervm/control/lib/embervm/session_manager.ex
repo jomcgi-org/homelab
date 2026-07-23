@@ -1654,24 +1654,28 @@ defmodule Embervm.SessionManager do
     state
   end
 
-  # Direction 2: a node reports a live session VM that no CP session row references.
+  # Direction 2: a node reports a live session VM whose session_id no CP row matches.
   # It is an orphan to DESTROY (node-confirmed), UNLESS it is a young async-write
   # race (ADR embervm/014 decision 2): under EMBERVM_ASYNC_LIFECYCLE_WRITES the
   # durable session_created append is deferred, so between an interactive VM and its
-  # durable row there is a window where a fresh report shows the VM but no row yet
-  # matches. The adopt-vs-destroy discriminator (extending PR 1's Direction-2 pass):
+  # durable row there is a window where a fresh report shows the VM but its durable
+  # row is not yet written. Under Option A the create's ETS row IS advanced
+  # synchronously at commit, so the discriminator queries the LIVE store/writer
+  # state (present in the commit..append window), not only durable rows:
   #
-  #   * a pending async write references this vm_id (Embervm.AsyncWriter.pending?/2),
-  #     OR any live session row still references this vm_id (defence in depth)
-  #     => ADOPT: the deferred write is landing (or already did on another row); the
-  #        VM is legitimate. Do NOT destroy; the pending append backfills the durable
-  #        row, and adopt_one rebinds residency/process once the row is visible.
+  #   * a pending async write references this vm_id (Embervm.AsyncWriter.pending?/2)
+  #     => ADOPT: the deferred append is in flight and IS the backfill; leave the VM.
+  #   * a live in-memory session row references this vm_id (its durable append was
+  #     lost, e.g. writer crash, but the ETS row survived) => ADOPT and actively
+  #     RE-DRIVE the missing session_created append from that row so the durable
+  #     projection catches up (the "resurfaces and adopts+backfills" ADR repair).
   #   * neither => a genuine orphan (a leaked VM with no owning write): destroy it,
   #     node-confirmed, exactly as PR 1 did.
   #
   # Primed-pool VMs are reported separately (WorkloadCapacity.primed_vm_ids), never
   # in session_vms, so a session VM here is never a primed VM. The gate-off path is
-  # unchanged from PR 1 (no pending writes exist, so every rowless VM is an orphan).
+  # unchanged from PR 1 (no pending writes / async rows exist, so every rowless VM
+  # is an orphan).
   defp destroy_orphan_session_vms(state, facts, _live_vms) do
     for f <- facts, v <- Map.get(f, :session_vms, []) || [], reduce: state do
       acc ->
@@ -1686,51 +1690,72 @@ defmodule Embervm.SessionManager do
   end
 
   defp reconcile_rowless_session_vm(state, fact, v) do
-    if adopt_async_race?(state, v.vm_id) do
-      Logger.info("embervm session vm adopted (async-write race backfill)",
-        session_id: v.session_id,
-        vm_id: v.vm_id,
-        node_id: fact.configured_id
-      )
+    case adopt_discriminator(state, v.vm_id) do
+      :pending ->
+        # The deferred append is still in flight: it will create the durable row.
+        Logger.info("embervm session vm adopted (async write in flight)",
+          session_id: v.session_id,
+          vm_id: v.vm_id,
+          node_id: fact.configured_id
+        )
 
-      # ADOPT: leave the VM running. The deferred session_created append backfills
-      # the durable row; the next adoption pass (adopt_one) rebinds it once visible.
-      state
-    else
-      confirmed =
-        destroy_vm(state, %{
+        state
+
+      {:backfill, row} ->
+        # A live ETS row references the vm but its durable append was lost: actively
+        # re-drive session_created from the surviving row (idempotent via INSERT OR
+        # IGNORE) so the durable projection catches up. adopt_one rebinds it after.
+        _ = SessionStore.backfill_created(state.session_store, row.session_id)
+
+        Logger.info("embervm session vm adopted+backfilled (async write lost)",
+          session_id: row.session_id,
+          vm_id: v.vm_id,
+          node_id: fact.configured_id
+        )
+
+        state
+
+      :orphan ->
+        confirmed =
+          destroy_vm(state, %{
+            node_id: fact.configured_id,
+            vm_id: v.vm_id
+          })
+
+        Logger.warning("embervm orphan session vm destroyed",
+          session_id: v.session_id,
+          vm_id: v.vm_id,
           node_id: fact.configured_id,
-          vm_id: v.vm_id
-        })
+          teardown_confirmed: confirmed
+        )
 
-      Logger.warning("embervm orphan session vm destroyed",
-        session_id: v.session_id,
-        vm_id: v.vm_id,
-        node_id: fact.configured_id,
-        teardown_confirmed: confirmed
-      )
-
-      state
+        state
     end
   end
 
-  # The adopt-and-backfill discriminator: is this reported-but-rowless VM a young
-  # async-write race rather than a true orphan? Only meaningful under the async
-  # gate (gate off: no deferred writes exist, so this is always false and every
-  # rowless VM is an orphan, PR 1 behaviour). A pending async write for the vm_id,
-  # OR any live session row that still references it, means the VM is owned by a
-  # write that is landing; adopt it rather than destroy.
-  defp adopt_async_race?(%{async_lifecycle_writes: false}, _vm_id), do: false
+  # The adopt-vs-destroy discriminator. Only meaningful under the async gate (gate
+  # off: no deferred writes / async rows, so always :orphan, PR 1 behaviour). Prefers
+  # the pending-write signal (the append is landing on its own); else looks for a
+  # live in-memory row referencing the vm (a lost append to re-drive); else :orphan.
+  defp adopt_discriminator(%{async_lifecycle_writes: false}, _vm_id), do: :orphan
 
-  defp adopt_async_race?(state, vm_id) do
-    Embervm.AsyncWriter.pending?(state.async_writer, vm_id) or
-      session_row_references_vm?(state, vm_id)
+  defp adopt_discriminator(state, vm_id) do
+    cond do
+      Embervm.AsyncWriter.pending?(state.async_writer, vm_id) ->
+        :pending
+
+      row = session_row_for_vm(state, vm_id) ->
+        {:backfill, row}
+
+      true ->
+        :orphan
+    end
   end
 
-  defp session_row_references_vm?(state, vm_id) do
+  defp session_row_for_vm(state, vm_id) do
     state.session_store
     |> SessionStore.all()
-    |> Enum.any?(fn s -> s.vm_id == vm_id and not SessionState.terminal?(s.state) end)
+    |> Enum.find(fn s -> s.vm_id == vm_id and not SessionState.terminal?(s.state) end)
   end
 
   # vm session_id -> {node_id, vm_id, dial_id}; snapshot session_id ->

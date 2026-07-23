@@ -561,15 +561,17 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   # Monotonic advance for the deferred async lifecycle appends (ADR embervm/014
-  # decision 2), mirroring Embervm.OpLog.SQLite: only from the exact prior state, so
-  # a late async :assigned/:started append cannot regress a row that already ran or
-  # terminalized. Inert under the gate off. See the SQLite backend for the rationale.
+  # decision 2), mirroring Embervm.OpLog.SQLite: SET only from a strictly-lower-
+  # ranked state (Embervm.TaskState.states_below/1), so a late/out-of-order async
+  # :assigned/:started append cannot regress a row that already ran or terminalized,
+  # while a legitimate forward jump still applies. Inert under the gate off. See the
+  # SQLite backend for the full rationale.
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
-    advance_task_state(conn, op.task_id, "queued", "assigned", op.ts)
+    advance_task_state(conn, op.task_id, :assigned, op.ts)
   end
 
   defp project(conn, %Op{kind: :started} = op, _seq) do
-    advance_task_state(conn, op.task_id, "assigned", "running", op.ts)
+    advance_task_state(conn, op.task_id, :running, op.ts)
   end
 
   defp project(conn, %Op{kind: :succeeded} = op, _seq) do
@@ -1279,13 +1281,18 @@ defmodule Embervm.OpLog.Postgres do
     exec(conn, "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3", [state, ts, task_id])
   end
 
-  # Monotonic advance for a deferred async lifecycle append: SET only when the row
-  # is still in the exact prior state (see Embervm.OpLog.SQLite.advance_task_state/5).
-  defp advance_task_state(conn, task_id, from_state, to_state, ts) do
+  # Monotonic advance for a deferred async lifecycle append: SET `to_state` only
+  # when the row ranks strictly below it in the lifecycle partial order
+  # (see Embervm.OpLog.SQLite.advance_task_state/4 and Embervm.TaskState.states_below/1).
+  defp advance_task_state(conn, task_id, to_state, ts) do
+    below = Embervm.TaskState.states_below(to_state)
+    # $1 to_state, $2 ts, $3 task_id, then $4.. for the state-in list.
+    placeholders = below |> Enum.with_index(4) |> Enum.map_join(",", fn {_, i} -> "$#{i}" end)
+
     exec(
       conn,
-      "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3 AND state=$4",
-      [to_state, ts, task_id, from_state]
+      "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3 AND state IN (#{placeholders})",
+      [Atom.to_string(to_state), ts, task_id | below]
     )
   end
 
