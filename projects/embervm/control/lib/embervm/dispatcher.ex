@@ -314,15 +314,22 @@ defmodule Embervm.Dispatcher do
     {:noreply, finish_worker(state, pid, outcome, :flush)}
   end
 
-  # A miss worker reports the vm_id it just primed. Stamp it into the worker's meta
-  # so known_vm_ids counts it immediately, closing the window where adopt_inventory
-  # would see the node reporting a just-primed miss VM as primed and re-adopt it
-  # (the VM is single-use and about to be assigned by this same worker). Ignored if
-  # the worker already finished (pid gone).
-  def handle_info({:vm_primed, pid, vm_id}, state) do
+  # A miss worker reports the vm_id it just primed AND the instance it primed on.
+  # Stamp BOTH into the worker's meta so:
+  #   * known_vm_ids counts the vm_id immediately, closing the window where
+  #     adopt_inventory would see the node reporting a just-primed miss VM as primed
+  #     and re-adopt it (the VM is single-use and about to be assigned by this worker);
+  #   * meta.node_id tracks the brick the VM ACTUALLY primed on (== the committed head
+  #     with no retry, or the winning candidate after a cross-brick reject/retry), so
+  #     any reconcile/adopt logic keys against the brick that really holds the VM, not
+  #     the committed head. THIS is the node-reassignment update the ADR 014 decision 3
+  #     retry requires (see prime_with_retry): the single source of truth for "which
+  #     brick did this miss land on" after a retry. Ignored if the worker already
+  #     finished (pid gone).
+  def handle_info({:vm_primed, pid, vm_id, primed_node_id}, state) do
     case Map.get(state.workers, pid) do
       nil -> {:noreply, state}
-      meta -> {:noreply, put_in(state.workers[pid], %{meta | vm_id: vm_id})}
+      meta -> {:noreply, put_in(state.workers[pid], %{meta | vm_id: vm_id, node_id: primed_node_id})}
     end
   end
 
@@ -414,8 +421,8 @@ defmodule Embervm.Dispatcher do
           {:error, kind} ->
             bump_denial(state, kind)
 
-          {:ok, node_id, mode, snapshot_ref} ->
-            dispatch_one(state, wl, entry, node_id, mode, snapshot_ref)
+          {:ok, node_id, mode, snapshot_ref, candidates} ->
+            dispatch_one(state, wl, entry, node_id, mode, snapshot_ref, candidates)
         end
     end
   end
@@ -423,7 +430,7 @@ defmodule Embervm.Dispatcher do
   # Try to commit exactly one task, then recurse to keep draining. A share-capped
   # or empty rotation stops the loop; a task that will not `assign` (a lost race)
   # is dropped and the loop continues.
-  defp dispatch_one(state, wl, entry, node_id, mode, snapshot_ref) do
+  defp dispatch_one(state, wl, entry, node_id, mode, snapshot_ref, candidates) do
     share = share_cap(state, wl, entry)
     blocked = over_budget_principals(state, wl)
 
@@ -444,7 +451,7 @@ defmodule Embervm.Dispatcher do
 
       {:ok, task_id, pr, fq} ->
         state = %{state | queues: Map.put(state.queues, wl, fq)}
-        commit(state, wl, entry, node_id, mode, snapshot_ref, task_id, pr)
+        commit(state, wl, entry, node_id, mode, snapshot_ref, candidates, task_id, pr)
     end
   end
 
@@ -456,14 +463,14 @@ defmodule Embervm.Dispatcher do
   # consumed), then the loop continues draining. This runs BEFORE reserve_vm so an
   # expired task cannot burn a primed VM. Wall clock, to match the wall-time
   # `expires_at` the submit stamped.
-  defp commit(state, wl, entry, node_id, mode, snapshot_ref, task_id, pr) do
+  defp commit(state, wl, entry, node_id, mode, snapshot_ref, candidates, task_id, pr) do
     if expired?(state, task_id) do
       _ = safe(fn -> Embervm.TaskStore.expire(state.task_store, task_id) end)
       release_depth(state, wl, pr)
       state = Map.update!(state, :queued_ids, &MapSet.delete(&1, task_id))
       drain_loop(state, wl, entry)
     else
-      commit_dispatch(state, wl, entry, node_id, mode, snapshot_ref, task_id, pr)
+      commit_dispatch(state, wl, entry, node_id, mode, snapshot_ref, candidates, task_id, pr)
     end
   end
 
@@ -478,7 +485,7 @@ defmodule Embervm.Dispatcher do
     end
   end
 
-  defp commit_dispatch(state, wl, entry, node_id, mode, snapshot_ref, task_id, pr) do
+  defp commit_dispatch(state, wl, entry, node_id, mode, snapshot_ref, candidates, task_id, pr) do
     {state, vm_id} = reserve_vm(state, node_id, wl, mode)
 
     with {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.assign(state.task_store, task_id) end),
@@ -491,7 +498,7 @@ defmodule Embervm.Dispatcher do
         |> Map.update!(:queued_ids, &MapSet.delete(&1, task_id))
         |> inc_inflight(wl, pr)
         |> tally(mode)
-        |> spawn_assign_worker(task_id, pr, wl, node_id, mode, vm_id, snapshot_ref, entry)
+        |> spawn_assign_worker(task_id, pr, wl, node_id, mode, vm_id, snapshot_ref, candidates, entry)
 
       drain_loop(state, wl, entry)
     else
@@ -590,13 +597,39 @@ defmodule Embervm.Dispatcher do
                 {:error, :no_capacity}
 
               f ->
-                {:ok, instance_id_of(f), :miss, snapshot_ref_of(f, wl)}
+                # The ORDERED miss frontier (ADR 014 decision 3 reject/retry): the
+                # eligible bricks in the SAME order BrickLedger.choose traverses, so
+                # its HEAD is exactly `f` (today's single pick, gate-off equivalence)
+                # and the tail is the next-candidate sequence the worker retries when
+                # a brick rejects under node pressure. Each entry carries the
+                # instance_id to dial AND that instance's base snapshot_ref for Prime.
+                miss_frontier = miss_candidate_frontier(miss_candidates, wl)
+                {:ok, instance_id_of(f), :miss, snapshot_ref_of(f, wl), miss_frontier}
             end
 
           warm ->
-            {:ok, instance_id_of(warm), :warm, snapshot_ref_of(warm, wl)}
+            # Warm has exactly one reserved VM on one instance: a single-element
+            # frontier (no cross-brick retry; the VM is already primed HERE).
+            {:ok, instance_id_of(warm), :warm, snapshot_ref_of(warm, wl),
+             [{instance_id_of(warm), snapshot_ref_of(warm, wl)}]}
         end
     end
+  end
+
+  # Order raw capacity FACTS the same way BrickLedger.choose/2 traverses them
+  # (sorted by :instance_id, rotated so the choose-selected fact is first), then
+  # project each to the {instance_id, snapshot_ref} pair the miss worker Primes.
+  # HEAD == BrickLedger.choose(facts, key), so a gate-off single attempt dials
+  # exactly the brick today's code would; the tail is the deterministic retry
+  # frontier. Mirrors Embervm.Placement's sort_by_choose_key rotation, but over
+  # raw facts (which carry `workloads` for snapshot_ref_of) rather than bricks.
+  defp miss_candidate_frontier(facts, key) do
+    sorted = Enum.sort_by(facts, fn f -> instance_id_of(f) end)
+    idx = :erlang.phash2(key, length(sorted))
+    {head, tail} = Enum.split(sorted, idx)
+
+    (tail ++ head)
+    |> Enum.map(fn f -> {instance_id_of(f), snapshot_ref_of(f, key)} end)
   end
 
   # The instance handle the dispatcher keys inventory / NodeChannel / BaseBuilder
@@ -668,7 +701,7 @@ defmodule Embervm.Dispatcher do
 
   # -- assign worker ---------------------------------------------------------
 
-  defp spawn_assign_worker(state, task_id, pr, wl, node_id, mode, vm_id, snapshot_ref, entry) do
+  defp spawn_assign_worker(state, task_id, pr, wl, node_id, mode, vm_id, snapshot_ref, candidates, entry) do
     owner = self()
     channel_fun = state.channel_fun
     invalidate_fun = state.invalidate_fun
@@ -691,6 +724,12 @@ defmodule Embervm.Dispatcher do
       # briefly re-adopt.
       owner: owner,
       snapshot_ref: snapshot_ref,
+      # The ORDERED miss candidate frontier [{instance_id, snapshot_ref}]: the worker
+      # reject/retries Prime across these under EMBERVM_PLACEMENT_RETRY (ADR 014
+      # decision 3). HEAD == node_id above (the committed brick, today's single
+      # attempt). Warm mode carries a single-element list (its VM is already primed
+      # on node_id, nothing to retry). Unused by the warm path.
+      candidates: candidates,
       invoke_path: entry.invoke_path,
       timeout_ms: entry.timeout_ms,
       result_max_bytes: entry.result_max_bytes,
@@ -790,34 +829,137 @@ defmodule Embervm.Dispatcher do
   defp parse_traceparent(_), do: :error
 
   defp do_run_assign(ctx, req_env, channel_fun, invalidate_fun, assign_fun, prime_fun) do
-    case channel_fun.(ctx.node_id) do
-      {:ok, channel} ->
-        with {:ok, vm_id} <- ensure_vm(ctx, channel, prime_fun) do
-          guest_req = build_guest_request(req_env, ctx.invoke_path)
+    # Resolve the VM to Assign and the {node_id, channel} it actually lives on. Warm
+    # reuses its reserved VM on ctx.node_id; a miss Primes one, reject/retrying across
+    # the candidate frontier (ADR 014 decision 3) and returning the node it ACTUALLY
+    # primed on (which may differ from the committed head under retry), so the Assign
+    # below dials the winning brick's channel, not the committed one.
+    case acquire_vm(ctx, channel_fun, invalidate_fun, prime_fun) do
+      {:ok, vm_id, node_id, channel} ->
+        guest_req = build_guest_request(req_env, ctx.invoke_path)
 
-          assign_req = %AssignRequest{
-            trace: %Trace{workload: ctx.workload, task_id: ctx.task_id},
-            vm_id: vm_id,
-            request: guest_req,
-            timeout_ms: ctx.timeout_ms
-          }
+        assign_req = %AssignRequest{
+          trace: %Trace{workload: ctx.workload, task_id: ctx.task_id},
+          vm_id: vm_id,
+          request: guest_req,
+          timeout_ms: ctx.timeout_ms
+        }
 
-          case guest_exec(assign_fun, channel, assign_req, ctx) do
-            {:ok, %AssignResponse{response: %GuestResponse{} = resp, usage: usage}} ->
-              classify_response(resp, ctx, usage)
+        case guest_exec(assign_fun, channel, assign_req, ctx) do
+          {:ok, %AssignResponse{response: %GuestResponse{} = resp, usage: usage}} ->
+            classify_response(resp, ctx, usage)
 
-            {:error, reason} ->
-              _ = invalidate_fun.(ctx.node_id, channel)
-              classify_error(reason)
-          end
-        else
-          {:error, :prime_failed, reason} ->
-            _ = invalidate_fun.(ctx.node_id, channel)
+          {:error, reason} ->
+            _ = invalidate_fun.(node_id, channel)
             classify_error(reason)
         end
 
-      {:error, reason} ->
+      {:error, :no_channel, reason} ->
         {:failed, :transport, {:no_channel, reason}, nil}
+
+      {:error, :prime_failed, reason} ->
+        classify_error(reason)
+    end
+  end
+
+  # Warm: the VM is already reserved on ctx.node_id; just acquire that node's channel.
+  defp acquire_vm(%{mode: :warm, vm_id: vm_id} = ctx, channel_fun, _invalidate_fun, _prime_fun)
+       when is_binary(vm_id) do
+    case channel_fun.(ctx.node_id) do
+      {:ok, channel} -> {:ok, vm_id, ctx.node_id, channel}
+      {:error, reason} -> {:error, :no_channel, reason}
+    end
+  end
+
+  # Miss: Prime a VM, reject/retrying across the candidate frontier. Returns the
+  # winning {vm_id, node_id, channel} so the Assign dials the brick that actually
+  # primed, and reports that node back to the dispatcher (meta / adopt-inventory).
+  defp acquire_vm(ctx, channel_fun, invalidate_fun, prime_fun) do
+    prime_with_retry(ctx, channel_fun, invalidate_fun, prime_fun)
+  end
+
+  # Reject/retry Prime across ctx.candidates (ADR 014 decision 3). Each attempt
+  # acquires THAT candidate's channel and Primes on it; a RESOURCE_EXHAUSTED (the
+  # node-side pressure rejection) retries the next brick, a no-channel is likewise
+  # advanced past (that brick is unreachable), any other Prime error is terminal.
+  # Gate OFF => Retry.run makes exactly one attempt on the head candidate, i.e.
+  # today's single Prime on the committed brick. On success it reports the ACTUAL
+  # primed vm_id + node back to the owner so meta.node_id and the known_vm_ids view
+  # track the brick the VM really lives on (not the committed head), which keeps
+  # adopt_inventory and the Assign channel correct after a cross-brick retry.
+  defp prime_with_retry(ctx, channel_fun, invalidate_fun, prime_fun) do
+    attempt_fun = fn {dial_id, snapshot_ref} ->
+      case channel_fun.(dial_id) do
+        {:ok, channel} ->
+          case prime_on(ctx, dial_id, channel, snapshot_ref, prime_fun) do
+            {:ok, vm_id} ->
+              {:ok, {vm_id, dial_id, channel}}
+
+            {:reject, reason} ->
+              # Node-pressure RESOURCE_EXHAUSTED: this brick is full; drop its
+              # channel (best-effort) and let Retry try the next candidate.
+              _ = invalidate_fun.(dial_id, channel)
+              {:reject, reason}
+
+            {:error, reason} ->
+              _ = invalidate_fun.(dial_id, channel)
+              {:error, {:prime_failed, reason}}
+          end
+
+        {:error, reason} ->
+          # No channel to this brick: treat as a retryable rejection so the frontier
+          # advances to a reachable candidate rather than failing the whole dispatch
+          # on one unreachable brick (gate-off degrades to the single committed brick,
+          # whose unreachability is the same terminal no-channel as before).
+          {:reject, {:no_channel, reason}}
+      end
+    end
+
+    case Embervm.Placement.Retry.run(ctx.candidates, attempt_fun) do
+      {:ok, {vm_id, node_id, channel}} ->
+        {:ok, vm_id, node_id, channel}
+
+      {:error, {:prime_failed, reason}} ->
+        {:error, :prime_failed, reason}
+
+      # Every candidate rejected (pressure or unreachable), or the gate-off single
+      # attempt rejected: surface as a prime failure so the task retries at-least-once
+      # exactly like a downed node, never a wedge. Carry the last reason shape.
+      {:error, :no_capacity} ->
+        {:error, :prime_failed, {:rpc, :resource_exhausted}}
+    end
+  end
+
+  # One Prime attempt on an already-acquired channel for the candidate `dial_id`.
+  # Classifies a RESOURCE_EXHAUSTED (gRPC status 8) as a retryable {:reject, _}; any
+  # other error is terminal. On success it reports the vm_id AND `dial_id` back to the
+  # owner immediately (the adopt-inventory race window the original ensure_vm
+  # documented) and returns the vm_id.
+  defp prime_on(ctx, dial_id, channel, snapshot_ref, prime_fun) do
+    req = %PrimeRequest{trace: %Trace{workload: ctx.workload}, snapshot_ref: snapshot_ref || ""}
+
+    result =
+      Tracer.with_span "embervm.prime", %{
+        attributes: %{"ember.workload" => ctx.workload, "ember.task_id" => ctx.task_id}
+      } do
+        prime_fun.(channel, req)
+      end
+
+    case result do
+      {:ok, %PrimeResponse{vm_id: vm_id}} ->
+        # Report the vm_id AND the brick (dial_id) it primed on so the dispatcher
+        # stamps BOTH into this worker's meta immediately: until then adopt_inventory
+        # cannot see this in-flight miss VM (the node reports it primed) and could
+        # re-adopt it, and a cross-brick retry means dial_id differs from the committed
+        # head, so meta.node_id must follow the VM to the brick it actually landed on.
+        send(ctx.owner, {:vm_primed, self(), vm_id, dial_id})
+        {:ok, vm_id}
+
+      {:error, %GRPC.RPCError{status: 8}} = rejected ->
+        {:reject, rejected}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -825,33 +967,6 @@ defmodule Embervm.Dispatcher do
     case safe_call(fn -> get_request_fun.(task_id) end) do
       {:ok, {:ok, env}} when is_map(env) -> env
       _ -> %{}
-    end
-  end
-
-  defp ensure_vm(%{mode: :warm, vm_id: vm_id}, _channel, _prime_fun) when is_binary(vm_id) do
-    {:ok, vm_id}
-  end
-
-  defp ensure_vm(%{workload: wl, snapshot_ref: ref} = ctx, channel, prime_fun) do
-    req = %PrimeRequest{trace: %Trace{workload: wl}, snapshot_ref: ref || ""}
-
-    result =
-      Tracer.with_span "embervm.prime", %{
-        attributes: %{"ember.workload" => wl, "ember.task_id" => ctx.task_id}
-      } do
-        prime_fun.(channel, req)
-      end
-
-    case result do
-      {:ok, %PrimeResponse{vm_id: vm_id}} ->
-        # Tell the dispatcher the vm_id we just primed so it lands in this worker's
-        # meta immediately; until then adopt_inventory cannot see this in-flight
-        # miss VM (the node reports it primed) and could briefly re-adopt it.
-        send(ctx.owner, {:vm_primed, self(), vm_id})
-        {:ok, vm_id}
-
-      {:error, reason} ->
-        {:error, :prime_failed, reason}
     end
   end
 
@@ -1310,7 +1425,13 @@ defmodule Embervm.Dispatcher do
       queue_depth:
         for(wl <- Map.keys(state.queues), into: %{}, do: {wl, fq_depth(Map.get(state.queues, wl))}),
       inventory: for({k, q} <- state.inventory, into: %{}, do: {k, :queue.len(q)}),
-      workers: map_size(state.workers)
+      workers: map_size(state.workers),
+      # The instance each in-flight worker's VM is currently attributed to, keyed by
+      # vm_id (nil until a miss worker reports its Prime). Observability for tests +
+      # ops: after an ADR 014 decision 3 cross-brick retry, a miss worker's node_id is
+      # the brick that ACTUALLY primed (the {:vm_primed, vm_id, dial_id} update), not
+      # the committed head, so this is how the node-reassignment invariant is asserted.
+      worker_nodes: for({_pid, m} <- state.workers, into: %{}, do: {Map.get(m, :vm_id), m.node_id})
     }
   end
 
