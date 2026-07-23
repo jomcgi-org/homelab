@@ -9,6 +9,24 @@
 (* forget-before-kill straggler resurrection, and the reap-would-wipe-fleet   *)
 (* guard.                                                                     *)
 (*                                                                           *)
+(* WORKER AUTHORITY (ADR embervm/014). The node-side variables (vmState,      *)
+(* vmNode, vmPrincipal) are the TRUTH: what the node holds is what exists.    *)
+(* The control-plane inventory is a reconciled CACHE, at all times and not    *)
+(* only across a restart: it is volatile (wiped on CrashCP), it is rebuilt    *)
+(* additively from node reports (AdoptInventory), and the CP never destroys or *)
+(* asserts state off its own cache when a fresh node report contradicts it     *)
+(* (the reap guard reads the node's last accepted report, never the cache      *)
+(* alone). Adoption's additive-only reconcile IS the "cache converges toward   *)
+(* node truth" rule; nothing here lets the cache overwrite node ground truth.  *)
+(*                                                                           *)
+(* NODE-CONFIRMED DESTRUCTION (ADR embervm/014 decision 5). Destruction is the *)
+(* one carve-out from relaxed consistency: the CP may record an instance       *)
+(* destroyed only AFTER its owning node confirms teardown. This spec models    *)
+(* that as a two-phase destroy (BeginDestroy records durable intent while the  *)
+(* VM is still live on the node; ConfirmDestroy fires only once the node has    *)
+(* torn the VM down), and the NoDestroyBeforeConfirm invariant asserts the CP's *)
+(* destroyed record never precedes the node's actual teardown.                 *)
+(*                                                                           *)
 (* PROSE MAP: each PlusCal action abstracts a concrete implementation site.   *)
 (* Keep this current with the actions below (the layer-1 vocabulary test      *)
 (* asserts the modeled names appear in this file).                           *)
@@ -59,7 +77,18 @@
 (*   Reconnect(n)        ~ NodeRegistry backoff reconnect after a stream ends /   *)
 (*                          node-down (node_registry.ex ~L742 schedule_reconnect, *)
 (*                          start_streamer): a new streamer under a fresh gen.    *)
-(*   Succeed(t)          ~ a task's assigned VM completes and is torn down.       *)
+(*   Succeed(t)          ~ a task's assigned VM completes: the CP appends the      *)
+(*                          durable :*_destroying intent op and issues the         *)
+(*                          Destroy RPC, but the VM stays LIVE on the node until    *)
+(*                          it confirms teardown (session_manager.ex do_destroy/2   *)
+(*                          under EMBERVM_NODE_CONFIRMED_DESTROY: intent op ->       *)
+(*                          RPC -> confirmed -> :*_destroyed).                       *)
+(*   ConfirmDestroy(v)   ~ noded Destroy/reap completes and returns                 *)
+(*                          teardown_confirmed=true (server.go Destroy, reap):       *)
+(*                          the node tears the microVM + scratch down, THEN the CP   *)
+(*                          appends the durable :*_destroyed record and drops the    *)
+(*                          instance. The node teardown always precedes the CP's     *)
+(*                          destroyed record, never the reverse (decision 5).        *)
 (*****************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -143,6 +172,15 @@ variables
     taskVM = [t \in Tasks |-> NULL],
     taskPrincipal = [t \in Tasks |-> InitPrincipal[t]],
 
+    \* -- node-confirmed destruction (durable, mirrors the op-log) -------------
+    \* The CP's :*_destroying intent set (BeginDestroy appended it, before the
+    \* Destroy RPC, so a CP crash mid-destroy resumes the destroy). Durable.
+    destroying = {},
+    \* The CP's :*_destroyed records (ConfirmDestroy appended them, ONLY after the
+    \* node confirmed teardown). Durable. NoDestroyBeforeConfirm asserts every
+    \* member's VM is already torn down on the node (vmState = "destroyed").
+    cpDestroyed = {},
+
     \* -- history + budgets ---------------------------------------------------
     \* Set when a reap ever destroyed a VM the node still reported (bug witness).
     reapedLive = FALSE,
@@ -177,12 +215,14 @@ define
 
     \* -- Invariants ---------------------------------------------------------
     TypeOK ==
-        /\ vmState \in [VMs -> {"free", "primed", "assigned", "destroyed"}]
+        /\ vmState \in [VMs -> {"free", "primed", "assigned", "destroying", "destroyed"}]
         /\ health \in [Nodes -> Health]
         /\ taskState \in [Tasks -> {"queued", "assigned", "succeeded"}]
         /\ cpCrashes <= MaxCPCrashes
         /\ nodeCrashes <= MaxNodeCrashes
         /\ \A n \in Nodes : Len(statusCh[n]) <= ChanDepth
+        /\ destroying \subseteq VMs
+        /\ cpDestroyed \subseteq VMs
 
     \* No two live tasks ever share a VM. The second clause is the real safety
     \* content: whenever an assigned task's VM is STILL LIVE on a node it is in
@@ -215,6 +255,22 @@ define
     PrincipalIsolation ==
         \A t \in LiveTasks :
             taskVM[t] # NULL => vmPrincipal[taskVM[t]] = taskPrincipal[t]
+
+    \* The node-confirmed destruction guarantee (ADR embervm/014 decision 5): the
+    \* CP records an instance destroyed only AFTER its owning node has torn it
+    \* down. Every VM the CP has appended a :*_destroyed record for is already
+    \* "destroyed" on the node (the ground-truth vmState). The buggy inverse (CP
+    \* asserts destroyed while the VM is still live on the node) is exactly what
+    \* worker authority forbids: only the node that performed the teardown may
+    \* truthfully assert it happened.
+    NoDestroyBeforeConfirm ==
+        \A v \in cpDestroyed : vmState[v] = "destroyed"
+
+    \* A destroy in flight (intent recorded, node not yet confirmed) has NOT been
+    \* recorded destroyed by the CP: the durable :*_destroying and :*_destroyed
+    \* records are mutually exclusive for a given VM until confirmation moves it.
+    DestroyIntentPrecedesRecord ==
+        \A v \in destroying : v \notin cpDestroyed
 
     \* -- Temporal property --------------------------------------------------
     \* Every task that was submitted eventually reaches a terminal-or-assigned
@@ -267,6 +323,12 @@ Run:
             with v \in VMs do
                 await vmState[v] = "destroyed" /\ v \notin KnownVMs;
                 vmState[v] := "free" || vmNode[v] := NULL || vmPrincipal[v] := NULL;
+                \* The slot forgets its destroy history too: a recycled id backs a
+                \* FRESH instance, so its old :*_destroyed / :*_destroying records no
+                \* longer apply. Dropping it from cpDestroyed keeps NoDestroyBeforeConfirm
+                \* about the CURRENT occupant (else a re-primed slot would trip it).
+                destroying := destroying \ {v};
+                cpDestroyed := cpDestroyed \ {v};
             end with;
 
         or
@@ -520,21 +582,54 @@ Run:
             end with;
 
         or
-            \* -- Succeed(t): an assigned task completes and frees its VM. -------
+            \* -- Succeed(t): an assigned task completes and BEGINS destroy. -----
+            \* Node-confirmed destruction (ADR embervm/014 decision 5): the task
+            \* is done, so the CP appends the durable :*_destroying intent op and
+            \* dispatches Destroy, but the VM stays LIVE on the node until it
+            \* confirms teardown (ConfirmDestroy). The CP does NOT record the VM
+            \* destroyed here: asserting destroyed before the node tore it down is
+            \* exactly the drift NoDestroyBeforeConfirm forbids. Guarded so a VM is
+            \* not double-entered into the intent set.
             with t \in Tasks do
                 await cpAlive /\ taskState[t] = "assigned" /\ taskVM[t] # NULL;
+                await taskVM[t] \notin destroying;
                 taskState[t] := "succeeded";
-                vmState[taskVM[t]] := "destroyed";
-                vmNode[taskVM[t]] := NULL;
+                \* The VM moves to the node-side "destroying" state: still RESIDENT on
+                \* the node (not torn down), but no longer assignable. Because every
+                \* claim/adopt/revert guard keys off "primed"/"assigned"/"free", a
+                \* "destroying" VM is automatically ineligible for AdoptInventory,
+                \* DispatchWarm/Miss, and the assigned->primed reversion on the down
+                \* edge / CP restart: it cannot be handed to a second task while its
+                \* destroy is in flight. It stays owned by this doomed lifecycle until
+                \* ConfirmDestroy (or a node crash) tears it down.
+                vmState[taskVM[t]] := "destroying";
+                destroying := destroying \cup {taskVM[t]};
+            end with;
+
+        or
+            \* -- ConfirmDestroy(v): node completes teardown, THEN the CP records
+            \* destroyed. This is the Destroy RPC returning teardown_confirmed=true:
+            \* the node-side teardown (vmState -> "destroyed") and the CP's durable
+            \* :*_destroyed record land together, with the teardown logically first.
+            \* If a node crash already destroyed the VM (vmState "destroyed", off
+            \* node), teardown is idempotent; either way cpDestroyed only ever gains a
+            \* VM whose node ground truth is "destroyed" in this same step, so
+            \* NoDestroyBeforeConfirm holds. The intent is cleared as it is fulfilled.
+            with v \in destroying do
+                await cpAlive;
+                vmState[v] := "destroyed" ||
+                vmNode[v] := NULL;
+                destroying := destroying \ {v};
+                cpDestroyed := cpDestroyed \cup {v};
             end with;
         end either;
     end while;
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "650acfb8" /\ chksum(tla) = "b57e4add")
+\* BEGIN TRANSLATION (chksum(pcal) = "9e0ffc06" /\ chksum(tla) = "c5cbca3")
 VARIABLES vmState, vmNode, vmPrincipal, statusCh, cpAlive, health, 
           streamerGen, lastGen, inventory, inflightMeta, lastReport, 
-          taskState, taskVM, taskPrincipal, reapedLive, cpCrashes, 
-          nodeCrashes, genCtr
+          taskState, taskVM, taskPrincipal, destroying, cpDestroyed, 
+          reapedLive, cpCrashes, nodeCrashes, genCtr
 
 (* define statement *)
 InventoryVMs == { p[2] : p \in inventory }
@@ -560,12 +655,14 @@ LiveTasks == { t \in Tasks : taskState[t] = "assigned" }
 
 
 TypeOK ==
-    /\ vmState \in [VMs -> {"free", "primed", "assigned", "destroyed"}]
+    /\ vmState \in [VMs -> {"free", "primed", "assigned", "destroying", "destroyed"}]
     /\ health \in [Nodes -> Health]
     /\ taskState \in [Tasks -> {"queued", "assigned", "succeeded"}]
     /\ cpCrashes <= MaxCPCrashes
     /\ nodeCrashes <= MaxNodeCrashes
     /\ \A n \in Nodes : Len(statusCh[n]) <= ChanDepth
+    /\ destroying \subseteq VMs
+    /\ cpDestroyed \subseteq VMs
 
 
 
@@ -603,14 +700,30 @@ PrincipalIsolation ==
 
 
 
+
+
+
+NoDestroyBeforeConfirm ==
+    \A v \in cpDestroyed : vmState[v] = "destroyed"
+
+
+
+
+DestroyIntentPrecedesRecord ==
+    \A v \in destroying : v \notin cpDestroyed
+
+
+
+
+
 EventuallyDispatched ==
     \A t \in Tasks : (taskState[t] = "queued") ~> (taskState[t] \in {"assigned", "succeeded"})
 
 
 vars == << vmState, vmNode, vmPrincipal, statusCh, cpAlive, health, 
            streamerGen, lastGen, inventory, inflightMeta, lastReport, 
-           taskState, taskVM, taskPrincipal, reapedLive, cpCrashes, 
-           nodeCrashes, genCtr >>
+           taskState, taskVM, taskPrincipal, destroying, cpDestroyed, 
+           reapedLive, cpCrashes, nodeCrashes, genCtr >>
 
 Init == (* Global variables *)
         /\ vmState = [v \in VMs |-> "free"]
@@ -627,6 +740,8 @@ Init == (* Global variables *)
         /\ taskState = [t \in Tasks |-> "queued"]
         /\ taskVM = [t \in Tasks |-> NULL]
         /\ taskPrincipal = [t \in Tasks |-> InitPrincipal[t]]
+        /\ destroying = {}
+        /\ cpDestroyed = {}
         /\ reapedLive = FALSE
         /\ cpCrashes = 0
         /\ nodeCrashes = 0
@@ -641,12 +756,14 @@ Next == /\ \/ /\ \E n \in Nodes:
                           /\ vmPrincipal' = [vmPrincipal EXCEPT ![v] = p]
                           /\ vmState' = [vmState EXCEPT ![v] = "primed"]
                        /\ inventory' = (inventory \cup {<<n, v>>})
-              /\ UNCHANGED <<statusCh, cpAlive, health, streamerGen, lastGen, inflightMeta, lastReport, taskState, taskVM, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<statusCh, cpAlive, health, streamerGen, lastGen, inflightMeta, lastReport, taskState, taskVM, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E v \in VMs:
                    /\ vmState[v] = "destroyed" /\ v \notin KnownVMs
                    /\ /\ vmNode' = [vmNode EXCEPT ![v] = NULL]
                       /\ vmPrincipal' = [vmPrincipal EXCEPT ![v] = NULL]
                       /\ vmState' = [vmState EXCEPT ![v] = "free"]
+                   /\ destroying' = destroying \ {v}
+                   /\ cpDestroyed' = cpDestroyed \ {v}
               /\ UNCHANGED <<statusCh, cpAlive, health, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E n \in Nodes:
                    /\ streamerGen[n] # NULL
@@ -657,7 +774,7 @@ Next == /\ \/ /\ \E n \in Nodes:
                          ELSE /\ statusCh' = [statusCh EXCEPT ![n] = Append(Tail(statusCh[n]), ([ gen |-> streamerGen[n],
                                                                                                   primed |-> { v \in VMs : vmNode[v] = n /\ vmState[v] = "primed" },
                                                                                                   assigned |-> { v \in VMs : vmNode[v] = n /\ vmState[v] = "assigned" } ]))]
-              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, cpAlive, health, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, cpAlive, health, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E n \in Nodes:
                    /\ cpAlive /\ statusCh[n] # << >>
                    /\ LET msg == Head(statusCh[n]) IN
@@ -675,7 +792,7 @@ Next == /\ \/ /\ \E n \in Nodes:
                               ELSE /\ TRUE
                                    /\ UNCHANGED << health, inventory, 
                                                    lastReport >>
-              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, cpAlive, streamerGen, lastGen, inflightMeta, taskState, taskVM, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, cpAlive, streamerGen, lastGen, inflightMeta, taskState, taskVM, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E t \in Tasks:
                    \E pair \in inventory:
                      /\ cpAlive /\ taskState[t] = "queued"
@@ -685,7 +802,7 @@ Next == /\ \/ /\ \E n \in Nodes:
                      /\ taskVM' = [taskVM EXCEPT ![t] = pair[2]]
                      /\ taskState' = [taskState EXCEPT ![t] = "assigned"]
                      /\ vmState' = [vmState EXCEPT ![pair[2]] = "assigned"]
-              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inflightMeta, lastReport, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inflightMeta, lastReport, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E t \in Tasks:
                    \E v \in VMs:
                      \E n \in Nodes:
@@ -697,7 +814,7 @@ Next == /\ \/ /\ \E n \in Nodes:
                           /\ vmState' = [vmState EXCEPT ![v] = "primed"]
                        /\ inflightMeta' = (inflightMeta \cup {v})
                        /\ taskVM' = [taskVM EXCEPT ![t] = v]
-              /\ UNCHANGED <<statusCh, cpAlive, health, streamerGen, lastGen, inventory, lastReport, taskState, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<statusCh, cpAlive, health, streamerGen, lastGen, inventory, lastReport, taskState, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E t \in Tasks:
                    /\ cpAlive /\ taskState[t] = "queued" /\ taskVM[t] # NULL
                    /\ vmState[taskVM[t]] = "primed"
@@ -707,7 +824,7 @@ Next == /\ \/ /\ \E n \in Nodes:
                    /\ taskState' = [taskState EXCEPT ![t] = "assigned"]
                    /\ vmState' = [vmState EXCEPT ![taskVM[t]] = "assigned"]
                    /\ inflightMeta' = inflightMeta \ {taskVM[t]}
-              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, lastReport, taskVM, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, lastReport, taskVM, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E t \in Tasks:
                    /\ cpAlive /\ taskState[t] = "queued" /\ taskVM[t] # NULL
                    /\ \/ vmState[taskVM[t]] # "primed"
@@ -720,11 +837,11 @@ Next == /\ \/ /\ \E n \in Nodes:
                          ELSE /\ TRUE
                               /\ UNCHANGED << vmState, vmNode >>
                    /\ taskVM' = [taskVM EXCEPT ![t] = NULL]
-              /\ UNCHANGED <<vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, lastReport, taskState, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, lastReport, taskState, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E n \in Nodes:
                    /\ AgingEnabled /\ cpAlive /\ health[n] \in {"healthy", "starting"}
                    /\ health' = [health EXCEPT ![n] = "unknown"]
-              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, statusCh, cpAlive, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, statusCh, cpAlive, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E n \in Nodes:
                    /\ AgingEnabled /\ cpAlive /\ health[n] \in {"unknown", "starting", "healthy"}
                    /\ health' = [health EXCEPT ![n] = "down"]
@@ -741,13 +858,13 @@ Next == /\ \/ /\ \E n \in Nodes:
                    /\ lastReport' = [lastReport EXCEPT ![n] = NULL]
                    /\ /\ lastGen' = [lastGen EXCEPT ![n] = streamerGen[n]]
                       /\ streamerGen' = [streamerGen EXCEPT ![n] = NULL]
-              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, cpAlive, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, cpAlive, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E n \in Nodes:
                    /\ cpAlive /\ streamerGen[n] = NULL
                    /\ /\ health' = [health EXCEPT ![n] = IF health[n] = "down" THEN "starting" ELSE health[n]]
                       /\ streamerGen' = [streamerGen EXCEPT ![n] = genCtr]
                    /\ genCtr' = (genCtr % MaxGen) + 1
-              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, statusCh, cpAlive, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, reapedLive, cpCrashes, nodeCrashes>>
+              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, statusCh, cpAlive, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes>>
            \/ /\ \E n \in Nodes:
                    \E v \in VMs:
                      /\ cpAlive /\ <<n, v>> \in inventory
@@ -757,13 +874,13 @@ Next == /\ \/ /\ \E n \in Nodes:
                            ELSE /\ TRUE
                                 /\ UNCHANGED reapedLive
                      /\ inventory' = { p \in inventory : p[2] # v }
-              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inflightMeta, lastReport, taskState, taskVM, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inflightMeta, lastReport, taskState, taskVM, destroying, cpDestroyed, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ cpAlive /\ cpCrashes < MaxCPCrashes
               /\ cpAlive' = FALSE
               /\ cpCrashes' = cpCrashes + 1
               /\ inventory' = {}
               /\ inflightMeta' = {}
-              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, statusCh, health, streamerGen, lastGen, lastReport, taskState, taskVM, reapedLive, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmState, vmNode, vmPrincipal, statusCh, health, streamerGen, lastGen, lastReport, taskState, taskVM, destroying, cpDestroyed, reapedLive, nodeCrashes, genCtr>>
            \/ /\ ~cpAlive
               /\ cpAlive' = TRUE
               /\ health' = [n \in Nodes |-> "starting"]
@@ -775,19 +892,27 @@ Next == /\ \/ /\ \E n \in Nodes:
               /\ vmState' =        [ v \in VMs |->
                             IF vmState[v] = "assigned" THEN "primed" ELSE vmState[v] ]
               /\ taskVM' = [ t \in Tasks |-> NULL ]
-              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, inventory, inflightMeta, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, inventory, inflightMeta, destroying, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
            \/ /\ \E n \in Nodes:
                    /\ nodeCrashes < MaxNodeCrashes
                    /\ nodeCrashes' = nodeCrashes + 1
                    /\ vmState' = [ v \in VMs |-> IF vmNode[v] = n THEN "destroyed" ELSE vmState[v] ]
                    /\ vmNode' = [ v \in VMs |-> IF vmNode[v] = n THEN NULL ELSE vmNode[v] ]
-              /\ UNCHANGED <<vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, reapedLive, cpCrashes, genCtr>>
+              /\ UNCHANGED <<vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, destroying, cpDestroyed, reapedLive, cpCrashes, genCtr>>
            \/ /\ \E t \in Tasks:
                    /\ cpAlive /\ taskState[t] = "assigned" /\ taskVM[t] # NULL
+                   /\ taskVM[t] \notin destroying
                    /\ taskState' = [taskState EXCEPT ![t] = "succeeded"]
-                   /\ vmState' = [vmState EXCEPT ![taskVM[t]] = "destroyed"]
-                   /\ vmNode' = [vmNode EXCEPT ![taskVM[t]] = NULL]
-              /\ UNCHANGED <<vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskVM, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+                   /\ vmState' = [vmState EXCEPT ![taskVM[t]] = "destroying"]
+                   /\ destroying' = (destroying \cup {taskVM[t]})
+              /\ UNCHANGED <<vmNode, vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskVM, cpDestroyed, reapedLive, cpCrashes, nodeCrashes, genCtr>>
+           \/ /\ \E v \in destroying:
+                   /\ cpAlive
+                   /\ /\ vmNode' = [vmNode EXCEPT ![v] = NULL]
+                      /\ vmState' = [vmState EXCEPT ![v] = "destroyed"]
+                   /\ destroying' = destroying \ {v}
+                   /\ cpDestroyed' = (cpDestroyed \cup {v})
+              /\ UNCHANGED <<vmPrincipal, statusCh, cpAlive, health, streamerGen, lastGen, inventory, inflightMeta, lastReport, taskState, taskVM, reapedLive, cpCrashes, nodeCrashes, genCtr>>
         /\ UNCHANGED taskPrincipal
 
 Spec == /\ Init /\ [][Next]_vars
