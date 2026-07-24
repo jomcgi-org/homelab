@@ -1168,6 +1168,13 @@ message GroupMemberPlanEntry {
   uint32 entry_guest_port = 5;
   // sizing is the member VM resource shape.
   ResourceSpec sizing = 6;
+  // ready_budget_seconds is the workload's wake/ready budget (its
+  // wakeTimeoutSeconds), forwarded so the brick's node-local relight uses the SAME
+  // deadline the control plane grants for both the clock-resync and the health
+  // gate. Without it the brick falls back to the 2s RestoreReadyTimeout default,
+  // which a resumed k3s member cannot meet (it reaps the member mid-relight). 0
+  // keeps the daemon default.
+  uint32 ready_budget_seconds = 7;
 }
 
 // RegistryEntry is the node-side identity of ONE workload the daemon can build a
@@ -1285,6 +1292,16 @@ message RegistryEntry {
 message SyncRegistryRequest {
   repeated RegistryEntry entries = 1;
   Trace trace = 2;
+  // control_plane_activator_ip is the control plane's OWN L4 activator address
+  // (the same activator_ip it advertises for the pre-018 CP-side fallback). The
+  // node-local activator dials {control_plane_activator_ip, listen_port} and
+  // splices the parked connection through when its own relight fails or the local
+  // set is incomplete, instead of closing: a fallback-of-the-fallback that keeps a
+  // banked workload from black-holing while the control plane is reachable
+  // (pre-018 recovery), and that simply fails-and-closes during a CP gap (bounded
+  // by CP recreate). Empty disables the forward. Pushed on the SyncRegistry
+  // envelope so it tracks CP pod recreation for free.
+  string control_plane_activator_ip = 3;
 }
 
 // SyncRegistryResponse echoes the resulting registry size after convergence, for
