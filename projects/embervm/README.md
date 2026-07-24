@@ -1,19 +1,67 @@
 # EmberVM
 
-EmberVM runs untrusted code in Firecracker microVMs behind an HTTP control
-plane. An Elixir/OTP control plane schedules work onto a Go node daemon
-(noded, forked from the [fc-invoke substrate](../firecracker/)) that drives
-Firecracker directly on node-4. Workloads are
-declared as Kubernetes `Workload` CRs in one of three classes:
+Self-hosted Firecracker orchestration with **Lambda-shaped ergonomics on metal
+you already own**.
 
-- **task**: one-shot execution in a fresh or snapshot-restored VM. No NIC.
-  The guest speaks only vsock to the daemon.
-- **session**: a stateful sandbox that survives across invocations. Idle
-  sessions are banked (snapshotted to disk) and relit (restored) on the next
-  invoke.
-- **serving**: a warm HTTP endpoint. The guest answers TCP over a tap NIC and
-  a per-node Envoy routes to it. The control plane programs that Envoy over
-  xDS and stays off the request hit path.
+An organization sizes (or elastically bounds) a Firecracker nodepool. EmberVM
+provides placement, fairness, isolation, metering, and lifecycle so internal
+workloads get predictable Lambda-like submit / scale-to-zero / warm-serve
+behaviour without a public FaaS product and without putting every invocation
+through etcd or a per-job pod.
+
+The reference deployment in this monorepo is the homelab (control plane on
+Kubernetes, noded on labelled Firecracker hosts). The product shape is the
+installable control plane + node daemon, not a hosted multi-tenant cloud.
+
+## Goals and non-goals
+
+### Goals
+
+- **Private Lambda-equiv:** run untrusted or tenant-scoped code on *your*
+  nodes with Lambda-style contracts (HTTP invoke, zip or image source, caps,
+  quotas, usage for internal chargeback).
+- **Org-bounded capacity:** the adopter owns the nodepool; EmberVM schedules
+  honestly on finite capacity (fair queues, admission, fail-closed quotas).
+- **Isolation by default:** no VM or snapshot lineage crosses a principal;
+  task-class VMs are vsock-only with no NIC.
+- **Control plane off the hit path:** steady-state serving traffic is Envoy to
+  the VM; the control plane is only on lifecycle actions (create, wake, bank).
+- **One operable component:** BEAM control plane + Go node daemon + Workload
+  CRD; kubectl / Helm / ArgoCD as the management surface.
+- **Correctness over infinite scale theater:** durable task records, worker-
+  authoritative runtime state, and continuity across routine rolls where the
+  architecture permits.
+
+### Non-goals
+
+- **Not a hosted FaaS product.** No multi-tenant public Lambda, no customer
+  isolation as a cloud, no virtual control planes until real demand (facade
+  demoted in [ADR embervm/009](../../docs/decisions/embervm/009-roadmap-extension-continuity-before-tenancy.md)).
+- **Not “agent platform as the product.”** Agents (e.g. goosecracker on
+  sessions) are valuable dogfood and internal consumers, not the definition of
+  success. Success is an org can run scan fleets and internal functions on
+  their own pool.
+- **Not every advanced class as equal pillars.** Task, serving, and session
+  form the Lambda-shaped core. Stateful and composite are optional advanced
+  classes (scale-to-zero datastores, multi-VM groups) with named consumers;
+  they are not required for the private-Lambda pitch.
+- **Not infinite capacity.** Queue depth, saturation, and admission control
+  are the product surface instead of pretending the pool is unbounded.
+
+Design rationale: [ADR embervm/001](../../docs/decisions/embervm/001-embervm-beam-firecracker-workload-orchestrator.md).
+
+## Workload classes
+
+Workloads are Kubernetes `Workload` CRs. **Zip is a source lane**
+(`source.zip` or `source.image`), not a class.
+
+| Class | Role | When it matters |
+| ----- | ---- | --------------- |
+| **task** | One-shot execution in a fresh or snapshot-restored VM. Vsock only, no NIC. | Core private-Lambda path (scans, jobs, zip functions). |
+| **serving** | Warm HTTP endpoint. Guest on a tap NIC; node Envoy routes hits; CP only on miss/wake. | Core warm HTTP / scale-to-zero APIs. |
+| **session** | Bank/relight sandbox; idle snapshotted to disk, restored on next invoke. | Long sandboxes, agent threads, notebook-shaped work. |
+| **stateful** | Singleton L4 scale-to-zero with a durable volume (wake-on-connect). | Optional: scratch DBs and similar (e.g. scratch-postgres). |
+| **composite** | Multi-VM group with a private subnet; whole-set bank/relight. | Optional: ephemeral environments (e.g. scratch-k8s). |
 
 ## Architecture
 
@@ -21,11 +69,11 @@ declared as Kubernetes `Workload` CRs in one of three classes:
 graph LR
     subgraph cp [Control plane, Elixir/OTP]
         API[HTTP API<br/>/v1/workloads, /v1/usage]
-        OPLOG[(op-log<br/>Postgres)]
+        OPLOG[(op-log<br/>SQLite / Postgres)]
         XDS[xDS publisher]
     end
 
-    subgraph node4 [node-4]
+    subgraph brick [Firecracker node]
         NODED[noded, Go<br/>Firecracker driver]
         ENVOY[node Envoy]
         VM1[task/session VM<br/>vsock only, no NIC]
@@ -42,10 +90,11 @@ graph LR
 
 Task and session requests go through the control plane, which dispatches over
 gRPC to noded; noded talks to those guests over vsock. Serving requests never
-touch the control plane: the edge gateway routes to the node Envoy, which the
-control plane has already programmed via xDS, and the node's kernel DNATs the
-connection into the VM's tap network. State lives in a Postgres op-log
-(30-day journal, 7-day terminal-task retention), not in etcd.
+touch the control plane on a hit: the edge gateway routes to the node Envoy,
+which the control plane has already programmed via xDS, and the node's kernel
+DNATs the connection into the VM's tap network. Execution state lives in an
+op-log (SQLite-WAL by default for a single-active control plane; Postgres
+available for HA cells) plus an ETS hot set, not in etcd.
 
 ## Isolation model
 
@@ -130,43 +179,47 @@ kubectl taint nodes <node> embervm.jomcgi.dev/node=true:NoSchedule
 
 ## Roadmap
 
-The milestone log with full candour, including post-ship defects and what
-each live drill caught, is [DECISIONS.md](../../DECISIONS.md) at the repo
-root.
+The product bar is **private Lambda on your nodepool**, not more workload
+classes. Capability rungs R0–R5 and R6 Continuity are shipped; remaining work
+is adopters (packaging, multi-node), dogfood (agents on sessions), and
+continuity polish. Full milestone candour lives in
+[DECISIONS.md](../../DECISIONS.md).
 
-- [x] **R0 tasks**: dispatch, fair round-robin pooling, metering and quotas,
-      OTLP tracing, semgrep scan cutover from fc-invoke.
-- [x] **R1 FaaS**: function registry, zip-lane hydration over vsock, public
-      og-image function, op-log retention and compaction (ADR embervm/002).
-- [x] **R2 sessions**: bank/relight, primed-VM adoption across control-plane
-      restarts, sandbox consumer. The live drill then caught four real defects
-      that CI-green unit tests missed (session registry adoption, guest path
-      default, rootfs versioning, console logging); all fixed and recorded in
-      DECISIONS.md D-R2.7.2 through D-R2.7.5.
-- [x] **R3 serving**: xDS endpoint publishing, per-node Envoy, DNAT data
-      path, operator-owned Gateway API exposure, public warm og-image route.
-- [ ] **Goosecracker migration** onto the session class, retiring the
-      fc-invoke substrate (the R2.x follow-on in DECISIONS.md).
-- [ ] **Offsite snapshot distribution** and rootfs reaping
-      (ADR embervm/003; designed, not built).
-- [ ] **EKS scale-out**: multi-daemon bricks and the EmberPool CRD
-      (ADR embervm/005; designed, not built).
-- [x] **CPU headroom reporting** from cgroups in NodeStatus (R0 PR-1: the
-      budget-agnostic daemon reads mem_budget_mib / cpu_budget_millicores
-      from its own cgroup and reports real cpu_headroom_millicores, ADR
-      embervm/005 item 4, ADR embervm/013 section 7).
+- [x] **R0 tasks**: dispatch, fair pooling, metering and quotas, OTLP, semgrep
+      cutover from fc-invoke.
+- [x] **R1 zip lane**: runtime bases, zip hydration, public og-image function,
+      op-log retention (ADR embervm/002).
+- [x] **R2 sessions**: bank/relight, adoption across CP restarts, sandbox
+      consumer.
+- [x] **R3 serving**: xDS, per-node Envoy, DNAT data path, public warm route.
+- [x] **R4 stateful**: volume-backed L4 scale-to-zero (scratch-postgres).
+- [x] **R5 composite**: multi-VM groups (scratch-k8s).
+- [x] **R6 Continuity**: drain, artifact export/restore; routine rolls do not
+      cold-boot committed stateful state (ADR embervm/009).
+- [ ] **R7 Distribution**: multi-node pre-warm and copy-not-rebuild placement
+      (needs more than one FC node to matter).
+- [ ] **R8 Consumers**: agent-thread tier on EmberVM sessions; retire
+      fc-invoke for goosecracker (dogfood, not product definition).
+- [ ] **R9 Packaging**: standalone install / quickstart for external adopters
+      (closer to the product than more classes).
+- [x] **CPU headroom reporting** from cgroups in NodeStatus.
+- [ ] **Node-local activator (ADR embervm/018 Fork A)**: brick-side wake so
+      demos survive CP Recreate; partial land, soak ongoing.
+- [ ] **Conciseness** (shared wake/adopt/drain, placement collapse, dual-path
+      cleanup): tracking [#4009](https://github.com/jomcgi/homelab/issues/4009).
 
 ## Layout
 
 | Directory   | What it is                                                              |
 | ----------- | ----------------------------------------------------------------------- |
-| `control/`  | Elixir control plane: dispatcher, op-log, sessions, serving manager     |
-| `noded/`    | Forked Go node daemon: Firecracker driver, vsock, tap/DNAT serving      |
-| `crd/`      | Workload CRD and sample resources                                      |
+| `control/`  | Elixir control plane: dispatcher, op-log, class managers, xDS publisher |
+| `noded/`    | Go node daemon: Firecracker driver, vsock, tap/DNAT, node-local activators |
+| `crd/`      | Workload CRD samples                                                   |
 | `proto/`    | gRPC contract between the control plane and noded                      |
 | `runtimes/` | Guest runtimes (Python zip lane; vsock guest contract in its README)   |
-| `xds/`      | Envoy endpoint publisher                                               |
+| `xds/`      | Envoy endpoint publisher sidecar                                       |
 | `chart/`, `deploy/` | Helm chart and ArgoCD wiring                                   |
+| `specs/`    | TLA+ pilots for adoption and bank/relight protocols                    |
 
 Everything builds in Bazel, including the Elixir control plane via a hermetic
 OTP toolchain with pinned hex dependencies. Images are apko-based; noded
