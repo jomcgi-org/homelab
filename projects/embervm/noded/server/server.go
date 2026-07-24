@@ -1552,7 +1552,7 @@ func (s *Server) SyncRegistry(_ context.Context, req *nodev1.SyncRegistryRequest
 	for _, e := range req.GetEntries() {
 		entries = append(entries, entryFromProto(e))
 	}
-	n := s.registry.sync(entries)
+	n := s.registry.syncFromControlPlane(entries, req.GetControlPlaneActivatorIp())
 	s.logger.Info("workload registry synced", "entries", n)
 	// A sync can flip the daemon ready; wake any WatchNode observers so the
 	// control plane sees the new registry-derived facts promptly.

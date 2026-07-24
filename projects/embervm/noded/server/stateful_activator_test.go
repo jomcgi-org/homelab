@@ -262,3 +262,24 @@ func TestStatefulActivatorAndControlPlaneOrigins(t *testing.T) {
 		}
 	}
 }
+
+func TestStatefulActivatorWakeFailureForwardsToControlPlane(t *testing.T) {
+	port := statefulActivatorEchoServer(t)
+	s, _, driver := newStatefulTestServer(t)
+	listenPort := startStatefulActivator(t, s)
+	controlPlaneIP, cpAccepted := controlPlaneActivatorEchoServer(t, listenPort)
+	s.registry.setControlPlaneActivator(controlPlaneIP)
+	enableStatefulActivatorWorkload(s, "wl-state", listenPort, port)
+
+	conn := statefulActivatorConn(t, listenPort)
+	defer conn.Close()
+	statefulActivatorRoundTrip(t, conn, "forwarded stateful bytes")
+	select {
+	case <-cpAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control-plane activator did not receive the failed stateful wake")
+	}
+	if driver.claims != 0 || driver.restores != 0 {
+		t.Errorf("stateful wake calls = claims:%d restores:%d, want 0:0", driver.claims, driver.restores)
+	}
+}

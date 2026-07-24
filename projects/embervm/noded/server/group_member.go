@@ -194,7 +194,7 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 	// over the port-1024 length-prefixed JSON agent channel (NOT the old HTTP
 	// /shim/clock path). A read-back more than one second off fails the call.
 	uds := s.driver.VsockUDSPath(h.ThreadID)
-	clockCtx, cancelClock := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	clockCtx, cancelClock := context.WithTimeout(ctx, groupMemberReadyBudget(req, s.cfg.RestoreReadyTimeout))
 	clockErr := s.groupClock.Resync(clockCtx, uds)
 	cancelClock()
 	if clockErr != nil {

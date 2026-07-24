@@ -124,8 +124,13 @@ func (a *groupActivator) handle(ctx context.Context, conn net.Conn, listenPort u
 		_ = conn.Close()
 		return
 	}
-	if flight.err != nil || flight.entry == nil {
+	if flight.err != nil {
 		a.server.logger.Warn("group activator: wake failed", "workload", reg.Workload, "err", flight.err)
+		a.forwardToControlPlane(ctx, conn, listenPort)
+		return
+	}
+	if flight.entry == nil {
+		a.server.logger.Warn("group activator: wake returned no entry", "workload", reg.Workload)
 		_ = conn.Close()
 		return
 	}
@@ -237,21 +242,7 @@ func (a *groupActivator) wake(ctx context.Context, reg workloadEntry) (*groupMem
 		for _, member := range members[first:last] {
 			member := member
 			go func() {
-				resp, startErr := a.server.startGroupMember(ctx, &nodev1.StartGroupMemberRequest{
-					Trace:           &nodev1.Trace{Workload: reg.Workload},
-					Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
-					GroupInstanceId: groupInstanceID,
-					MemberName:      member.plan.MemberName,
-					MemberIndex:     member.plan.MemberIndex,
-					Ip:              member.bundle.pinnedIP,
-					SnapshotRef:     member.bundle.snapshotRef,
-					HealthPort:      member.plan.HealthPort,
-					Resources: &nodev1.ResourceSpec{
-						Vcpus:  member.plan.VCPUs,
-						MemMib: member.plan.MemMib,
-					},
-					EntryGuestPort: member.plan.EntryGuestPort,
-				}, nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR)
+				resp, startErr := a.server.startGroupMember(ctx, groupActivatorRelightRequest(reg.Workload, groupInstanceID, member), nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR)
 				results <- result{member: member, resp: resp, err: startErr}
 			}()
 		}
@@ -281,6 +272,25 @@ func (a *groupActivator) wake(ctx context.Context, reg workloadEntry) (*groupMem
 		return nil, fmt.Errorf("noded: relit group %q has no live entry member", groupInstanceID)
 	}
 	return entry, nil
+}
+
+func groupActivatorRelightRequest(workload, groupInstanceID string, member groupRelightMember) *nodev1.StartGroupMemberRequest {
+	return &nodev1.StartGroupMemberRequest{
+		Trace:              &nodev1.Trace{Workload: workload},
+		Mode:               nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
+		GroupInstanceId:    groupInstanceID,
+		MemberName:         member.plan.MemberName,
+		MemberIndex:        member.plan.MemberIndex,
+		Ip:                 member.bundle.pinnedIP,
+		SnapshotRef:        member.bundle.snapshotRef,
+		HealthPort:         member.plan.HealthPort,
+		ReadyBudgetSeconds: member.plan.ReadyBudgetSeconds,
+		Resources: &nodev1.ResourceSpec{
+			Vcpus:  member.plan.VCPUs,
+			MemMib: member.plan.MemMib,
+		},
+		EntryGuestPort: member.plan.EntryGuestPort,
+	}
 }
 
 func groupEntryPlan(plan []groupMemberPlanEntry) (groupMemberPlanEntry, error) {
@@ -409,24 +419,22 @@ func (a *groupActivator) splice(ctx context.Context, client net.Conn, entry *gro
 		_ = client.Close()
 		return
 	}
-	guest, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(entry.ip.String(), strconv.FormatUint(uint64(entry.entryGuestPort), 10)))
-	if err != nil {
+	address := net.JoinHostPort(entry.ip.String(), strconv.FormatUint(uint64(entry.entryGuestPort), 10))
+	if err := spliceTCP(ctx, client, address); err != nil {
 		a.server.logger.Warn("group activator: entry dial failed", "workload", entry.workload, "err", err)
+		_ = client.Close()
+	}
+}
+
+func (a *groupActivator) forwardToControlPlane(ctx context.Context, client net.Conn, listenPort uint32) {
+	ip := a.server.registry.controlPlaneActivator()
+	if ip == "" {
 		_ = client.Close()
 		return
 	}
-	defer client.Close()
-	defer guest.Close()
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		pumpTCP(guest, client)
-	}()
-	go func() {
-		defer wg.Done()
-		pumpTCP(client, guest)
-	}()
-	wg.Wait()
+	address := net.JoinHostPort(ip, strconv.FormatUint(uint64(listenPort), 10))
+	if err := spliceTCP(ctx, client, address); err != nil {
+		a.server.logger.Warn("group activator: control-plane forward dial failed", "address", address, "err", err)
+		_ = client.Close()
+	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -126,8 +125,13 @@ func (a *statefulActivator) handle(ctx context.Context, conn net.Conn, listenPor
 		_ = conn.Close()
 		return
 	}
-	if flight.err != nil || flight.entry == nil {
+	if flight.err != nil {
 		a.server.logger.Warn("stateful activator: wake failed", "workload", reg.Workload, "err", flight.err)
+		a.forwardToControlPlane(ctx, conn, listenPort)
+		return
+	}
+	if flight.entry == nil {
+		a.server.logger.Warn("stateful activator: wake returned no entry", "workload", reg.Workload)
 		_ = conn.Close()
 		return
 	}
@@ -254,33 +258,22 @@ func (a *statefulActivator) splice(ctx context.Context, client net.Conn, entry *
 		_ = client.Close()
 		return
 	}
-	guest, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(entry.ip.String(), strconv.FormatUint(uint64(entry.port), 10)))
-	if err != nil {
+	address := net.JoinHostPort(entry.ip.String(), strconv.FormatUint(uint64(entry.port), 10))
+	if err := spliceTCP(ctx, client, address); err != nil {
 		a.server.logger.Warn("stateful activator: guest dial failed", "workload", entry.workload, "err", err)
+		_ = client.Close()
+	}
+}
+
+func (a *statefulActivator) forwardToControlPlane(ctx context.Context, client net.Conn, listenPort uint32) {
+	ip := a.server.registry.controlPlaneActivator()
+	if ip == "" {
 		_ = client.Close()
 		return
 	}
-	defer client.Close()
-	defer guest.Close()
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		pumpTCP(guest, client)
-	}()
-	go func() {
-		defer wg.Done()
-		pumpTCP(client, guest)
-	}()
-	wg.Wait()
-}
-
-func pumpTCP(dst, src net.Conn) {
-	_, _ = io.Copy(dst, src)
-	if conn, ok := dst.(*net.TCPConn); ok {
-		_ = conn.CloseWrite()
-		return
+	address := net.JoinHostPort(ip, strconv.FormatUint(uint64(listenPort), 10))
+	if err := spliceTCP(ctx, client, address); err != nil {
+		a.server.logger.Warn("stateful activator: control-plane forward dial failed", "address", address, "err", err)
+		_ = client.Close()
 	}
-	_ = dst.Close()
 }
