@@ -81,9 +81,9 @@ func groupActivatorRoundTrip(t *testing.T, conn net.Conn, body string) {
 
 func groupActivatorPlan(port uint32) []groupMemberPlanEntry {
 	return []groupMemberPlanEntry{
-		{MemberName: "server", MemberIndex: 0, StartOrder: 0, HealthPort: port, EntryGuestPort: port, VCPUs: 1, MemMib: 128},
-		{MemberName: "agent-0", MemberIndex: 1, StartOrder: 1, HealthPort: port, VCPUs: 1, MemMib: 128},
-		{MemberName: "agent-1", MemberIndex: 2, StartOrder: 1, HealthPort: port, VCPUs: 1, MemMib: 128},
+		{MemberName: "server", MemberIndex: 0, StartOrder: 0, HealthPort: port, EntryGuestPort: port, ReadyBudgetSeconds: 30, VCPUs: 1, MemMib: 128},
+		{MemberName: "agent-0", MemberIndex: 1, StartOrder: 1, HealthPort: port, ReadyBudgetSeconds: 30, VCPUs: 1, MemMib: 128},
+		{MemberName: "agent-1", MemberIndex: 2, StartOrder: 1, HealthPort: port, ReadyBudgetSeconds: 30, VCPUs: 1, MemMib: 128},
 	}
 }
 
@@ -125,10 +125,65 @@ func assertGroupActivatorClosed(t *testing.T, conn net.Conn) {
 	}
 }
 
+func controlPlaneActivatorEchoServer(t *testing.T, listenPort uint32) (string, <-chan struct{}) {
+	t.Helper()
+	const ip = "127.0.0.2"
+	lis, err := net.Listen("tcp", net.JoinHostPort(ip, strconv.FormatUint(uint64(listenPort), 10)))
+	if err != nil {
+		t.Fatalf("control-plane activator listen: %v", err)
+	}
+	t.Cleanup(func() { _ = lis.Close() })
+	accepted := make(chan struct{}, 1)
+	go func() {
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			select {
+			case accepted <- struct{}{}:
+			default:
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+	return ip, accepted
+}
+
+func assertNoControlPlaneForward(t *testing.T, accepted <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-accepted:
+		t.Fatal("connection was forwarded to the control-plane activator")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestGroupActivatorRelightRequestCarriesReadyBudget(t *testing.T) {
+	req := groupActivatorRelightRequest("scratch-k8s", "grp-A", groupRelightMember{
+		plan: groupMemberPlanEntry{
+			MemberName:         "server",
+			ReadyBudgetSeconds: 47,
+		},
+		bundle: groupBundleEntry{
+			pinnedIP:    "127.0.0.1",
+			snapshotRef: "group/set-1/server",
+		},
+	})
+	if got := req.GetReadyBudgetSeconds(); got != 47 {
+		t.Errorf("relight ready budget = %d, want 47", got)
+	}
+}
+
 func TestGroupActivatorStragglerSplicesLiveEntry(t *testing.T) {
 	port := groupActivatorEchoServer(t)
 	s, _, driver, _ := newGroupMemberTestServer(t)
 	listenPort := startGroupActivator(t, s)
+	controlPlaneIP, cpAccepted := controlPlaneActivatorEchoServer(t, listenPort)
+	s.registry.setControlPlaneActivator(controlPlaneIP)
 	enableGroupActivatorWorkload(s, "scratch-k8s", listenPort, port)
 	s.groupMembers.add(&groupMemberEntry{
 		vmID:            "already-live",
@@ -144,15 +199,16 @@ func TestGroupActivatorStragglerSplicesLiveEntry(t *testing.T) {
 	defer conn.Close()
 	groupActivatorRoundTrip(t, conn, "live group bytes")
 	driver.mu.Lock()
-	defer driver.mu.Unlock()
 	if driver.restores != 0 || driver.claims != 0 {
 		t.Errorf("group wake calls = claims:%d restores:%d, want 0:0", driver.claims, driver.restores)
 	}
+	driver.mu.Unlock()
+	assertNoControlPlaneForward(t, cpAccepted)
 }
 
 func TestGroupActivatorRelightsCompleteSetInRoleOrder(t *testing.T) {
 	port := groupActivatorEchoServer(t)
-	s, _, driver, _ := newGroupMemberTestServer(t)
+	s, _, driver, clock := newGroupMemberTestServer(t)
 	listenPort := startGroupActivator(t, s)
 	enableGroupActivatorWorkload(s, "scratch-k8s", listenPort, port)
 	addCompleteGroupActivatorSet(s, driver, port)
@@ -178,6 +234,17 @@ func TestGroupActivatorRelightsCompleteSetInRoleOrder(t *testing.T) {
 	for _, member := range status {
 		if member.GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR {
 			t.Errorf("member %q origin = %v, want ACTIVATOR", member.GetMemberName(), member.GetOrigin())
+		}
+	}
+	clock.mu.Lock()
+	deadlines := append([]time.Time(nil), clock.deadlines...)
+	clock.mu.Unlock()
+	if len(deadlines) != 3 {
+		t.Fatalf("clock resync deadlines = %d, want 3", len(deadlines))
+	}
+	for _, deadline := range deadlines {
+		if remaining := time.Until(deadline); remaining < 20*time.Second {
+			t.Errorf("clock resync deadline remaining = %v, want plan budget near 30s", remaining)
 		}
 	}
 }
@@ -295,4 +362,69 @@ func TestGroupActivatorRelightFailureReapsStartedMembers(t *testing.T) {
 	if got := len(s.groupBundles.snapshot()); got != 3 {
 		t.Errorf("banked bundles after failed relight = %d, want 3", got)
 	}
+}
+
+func TestGroupActivatorWakeFailureForwardsToControlPlane(t *testing.T) {
+	port := groupActivatorEchoServer(t)
+	s, _, driver, _ := newGroupMemberTestServer(t)
+	listenPort := startGroupActivator(t, s)
+	controlPlaneIP, cpAccepted := controlPlaneActivatorEchoServer(t, listenPort)
+	s.registry.setControlPlaneActivator(controlPlaneIP)
+	enableGroupActivatorWorkload(s, "scratch-k8s", listenPort, port)
+
+	conn := groupActivatorConn(t, listenPort)
+	defer conn.Close()
+	groupActivatorRoundTrip(t, conn, "forwarded group bytes")
+	select {
+	case <-cpAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control-plane activator did not receive the failed group wake")
+	}
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	if driver.restores != 0 {
+		t.Errorf("RestoreGroupMember calls = %d, want 0 for incomplete set", driver.restores)
+	}
+}
+
+func TestGroupActivatorWakeFailureWithoutControlPlaneAddressCloses(t *testing.T) {
+	port := groupActivatorEchoServer(t)
+	s, _, _, _ := newGroupMemberTestServer(t)
+	listenPort := startGroupActivator(t, s)
+	enableGroupActivatorWorkload(s, "scratch-k8s", listenPort, port)
+
+	assertGroupActivatorClosed(t, groupActivatorConn(t, listenPort))
+}
+
+func TestGroupActivatorWakeFailureControlPlaneDialFailureCloses(t *testing.T) {
+	port := groupActivatorEchoServer(t)
+	s, _, _, _ := newGroupMemberTestServer(t)
+	listenPort := startGroupActivator(t, s)
+	const controlPlaneIP = "127.0.0.2"
+	probe, err := net.Listen("tcp", net.JoinHostPort(controlPlaneIP, strconv.FormatUint(uint64(listenPort), 10)))
+	if err != nil {
+		t.Fatalf("reserve control-plane activator address: %v", err)
+	}
+	_ = probe.Close()
+	s.registry.setControlPlaneActivator(controlPlaneIP)
+	enableGroupActivatorWorkload(s, "scratch-k8s", listenPort, port)
+
+	assertGroupActivatorClosed(t, groupActivatorConn(t, listenPort))
+}
+
+func TestGroupActivatorRateLimitDoesNotForward(t *testing.T) {
+	port := groupActivatorEchoServer(t)
+	s, _, _, _ := newGroupMemberTestServer(t)
+	listenPort := startGroupActivator(t, s)
+	controlPlaneIP, cpAccepted := controlPlaneActivatorEchoServer(t, listenPort)
+	s.registry.setControlPlaneActivator(controlPlaneIP)
+	enableGroupActivatorWorkload(s, "scratch-k8s", listenPort, port)
+	s.groupActivator.mu.Lock()
+	for i := 0; i < activatorWakeMax; i++ {
+		s.groupActivator.wakes = append(s.groupActivator.wakes, time.Now())
+	}
+	s.groupActivator.mu.Unlock()
+
+	assertGroupActivatorClosed(t, groupActivatorConn(t, listenPort))
+	assertNoControlPlaneForward(t, cpAccepted)
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,11 +21,12 @@ func TestGroupByListenPortRequiresNodeLocalWakeAndPlan(t *testing.T) {
 		NodeLocalWake:   true,
 		GroupListenPort: 5410,
 		GroupMemberPlan: []*nodev1.GroupMemberPlanEntry{{
-			MemberName:     "server",
-			StartOrder:     0,
-			HealthPort:     6443,
-			EntryGuestPort: 6443,
-			Sizing:         &nodev1.ResourceSpec{Vcpus: 2, MemMib: 1024},
+			MemberName:         "server",
+			StartOrder:         0,
+			HealthPort:         6443,
+			EntryGuestPort:     6443,
+			ReadyBudgetSeconds: 180,
+			Sizing:             &nodev1.ResourceSpec{Vcpus: 2, MemMib: 1024},
 		}},
 	})
 	r.sync([]workloadEntry{group})
@@ -35,11 +37,32 @@ func TestGroupByListenPortRequiresNodeLocalWakeAndPlan(t *testing.T) {
 	if got.GroupMemberPlan[0].MemMib != 1024 || got.GroupMemberPlan[0].EntryGuestPort != 6443 {
 		t.Errorf("group plan = %+v", got.GroupMemberPlan[0])
 	}
+	if got.GroupMemberPlan[0].ReadyBudgetSeconds != 180 {
+		t.Errorf("group ready budget = %d, want 180", got.GroupMemberPlan[0].ReadyBudgetSeconds)
+	}
 
 	group.NodeLocalWake = false
 	r.sync([]workloadEntry{group})
 	if _, ok := r.groupByListenPort(5410); ok {
 		t.Error("groupByListenPort accepted a workload without node_local_wake")
+	}
+}
+
+func TestSyncRegistryStoresControlPlaneActivator(t *testing.T) {
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	if _, err := s.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{
+		ControlPlaneActivatorIp: "10.42.0.19",
+	}); err != nil {
+		t.Fatalf("SyncRegistry: %v", err)
+	}
+	if got := s.registry.controlPlaneActivator(); got != "10.42.0.19" {
+		t.Errorf("control-plane activator = %q, want %q", got, "10.42.0.19")
+	}
+	if _, err := s.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{}); err != nil {
+		t.Fatalf("SyncRegistry(empty activator): %v", err)
+	}
+	if got := s.registry.controlPlaneActivator(); got != "" {
+		t.Errorf("control-plane activator after empty sync = %q, want empty", got)
 	}
 }
 

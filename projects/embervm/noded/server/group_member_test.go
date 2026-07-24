@@ -166,17 +166,21 @@ func (a groupMemberVMDriverAdapter) LiveCount() int {
 // that Resync was called so a test can assert the resync ran on RELIGHT (and never
 // on FRESH).
 type fakeGroupClock struct {
-	mu      sync.Mutex
-	calls   int
-	err     error
-	lastUDS string
+	mu        sync.Mutex
+	calls     int
+	err       error
+	lastUDS   string
+	deadlines []time.Time
 }
 
-func (c *fakeGroupClock) Resync(_ context.Context, uds string) error {
+func (c *fakeGroupClock) Resync(ctx context.Context, uds string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls++
 	c.lastUDS = uds
+	if deadline, ok := ctx.Deadline(); ok {
+		c.deadlines = append(c.deadlines, deadline)
+	}
 	if c.err != nil {
 		return fmt.Errorf("fake group clock resync: %w", c.err)
 	}

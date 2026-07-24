@@ -297,3 +297,34 @@ func allowedHeaders(headers http.Header) http.Header {
 	}
 	return allowed
 }
+
+func spliceTCP(ctx context.Context, client net.Conn, address string) error {
+	guest, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	defer guest.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		pumpTCP(guest, client)
+	}()
+	go func() {
+		defer wg.Done()
+		pumpTCP(client, guest)
+	}()
+	wg.Wait()
+	return nil
+}
+
+func pumpTCP(dst, src net.Conn) {
+	_, _ = io.Copy(dst, src)
+	if conn, ok := dst.(*net.TCPConn); ok {
+		_ = conn.CloseWrite()
+		return
+	}
+	_ = dst.Close()
+}

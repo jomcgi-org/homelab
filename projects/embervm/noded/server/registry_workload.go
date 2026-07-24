@@ -40,13 +40,14 @@ type workloadEntry struct {
 }
 
 type groupMemberPlanEntry struct {
-	MemberName     string `json:"memberName"`
-	MemberIndex    uint32 `json:"memberIndex"`
-	StartOrder     uint32 `json:"startOrder"`
-	HealthPort     uint32 `json:"healthPort"`
-	EntryGuestPort uint32 `json:"entryGuestPort"`
-	VCPUs          uint32 `json:"vcpus"`
-	MemMib         uint32 `json:"memMib"`
+	MemberName         string `json:"memberName"`
+	MemberIndex        uint32 `json:"memberIndex"`
+	StartOrder         uint32 `json:"startOrder"`
+	HealthPort         uint32 `json:"healthPort"`
+	EntryGuestPort     uint32 `json:"entryGuestPort"`
+	ReadyBudgetSeconds uint32 `json:"readyBudgetSeconds"`
+	VCPUs              uint32 `json:"vcpus"`
+	MemMib             uint32 `json:"memMib"`
 }
 
 // entryFromProto lifts a wire RegistryEntry into the daemon's internal shape.
@@ -54,13 +55,14 @@ func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 	groupPlan := make([]groupMemberPlanEntry, 0, len(e.GetGroupMemberPlan()))
 	for _, member := range e.GetGroupMemberPlan() {
 		groupPlan = append(groupPlan, groupMemberPlanEntry{
-			MemberName:     member.GetMemberName(),
-			MemberIndex:    member.GetMemberIndex(),
-			StartOrder:     member.GetStartOrder(),
-			HealthPort:     member.GetHealthPort(),
-			EntryGuestPort: member.GetEntryGuestPort(),
-			VCPUs:          member.GetSizing().GetVcpus(),
-			MemMib:         member.GetSizing().GetMemMib(),
+			MemberName:         member.GetMemberName(),
+			MemberIndex:        member.GetMemberIndex(),
+			StartOrder:         member.GetStartOrder(),
+			HealthPort:         member.GetHealthPort(),
+			EntryGuestPort:     member.GetEntryGuestPort(),
+			ReadyBudgetSeconds: member.GetReadyBudgetSeconds(),
+			VCPUs:              member.GetSizing().GetVcpus(),
+			MemMib:             member.GetSizing().GetMemMib(),
 		})
 	}
 	return workloadEntry{
@@ -102,6 +104,9 @@ func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 type workloadRegistry struct {
 	mu      sync.Mutex
 	entries map[string]workloadEntry
+	// controlPlaneActivatorIP is supplied only by a live SyncRegistry. It is
+	// intentionally absent from the persisted workload-entry cache.
+	controlPlaneActivatorIP string
 	// synced is true once the daemon has applied at least one live SyncRegistry
 	// this process lifetime (readiness gate). A cache load does NOT set it.
 	synced bool
@@ -128,6 +133,14 @@ func newWorkloadRegistry(cachePath string) *workloadRegistry {
 // applying the same set twice yields the same table and the same on-disk cache.
 // Returns the resulting entry count.
 func (r *workloadRegistry) sync(entries []workloadEntry) int {
+	return r.syncEntries(entries, "", false)
+}
+
+func (r *workloadRegistry) syncFromControlPlane(entries []workloadEntry, controlPlaneActivatorIP string) int {
+	return r.syncEntries(entries, controlPlaneActivatorIP, true)
+}
+
+func (r *workloadRegistry) syncEntries(entries []workloadEntry, controlPlaneActivatorIP string, updateControlPlaneActivator bool) int {
 	r.mu.Lock()
 	next := make(map[string]workloadEntry, len(entries))
 	for _, e := range entries {
@@ -137,6 +150,9 @@ func (r *workloadRegistry) sync(entries []workloadEntry) int {
 		next[e.Workload] = e
 	}
 	r.entries = next
+	if updateControlPlaneActivator {
+		r.controlPlaneActivatorIP = controlPlaneActivatorIP
+	}
 	r.synced = true
 	r.stale = false
 	snapshot := r.snapshotLocked()
@@ -214,6 +230,18 @@ func (r *workloadRegistry) groupByListenPort(port uint32) (workloadEntry, bool) 
 		}
 	}
 	return workloadEntry{}, false
+}
+
+func (r *workloadRegistry) setControlPlaneActivator(ip string) {
+	r.mu.Lock()
+	r.controlPlaneActivatorIP = ip
+	r.mu.Unlock()
+}
+
+func (r *workloadRegistry) controlPlaneActivator() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.controlPlaneActivatorIP
 }
 
 // getByImageRef returns the entry whose ImageRef matches imageRef (the BuildBase
