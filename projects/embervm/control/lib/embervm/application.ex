@@ -131,7 +131,7 @@ defmodule Embervm.Application do
       # it) and after WorkloadWatcher; it dials the daemon directly over its own
       # Mint gRPC connection, so it does not depend on the Finch pool. With no node
       # wired (empty address), it supervises an empty node list and does nothing.
-      {Embervm.NodeRegistry, nodes: configured_nodes()},
+      {Embervm.NodeRegistry, node_registry_opts()},
       # The shared per-node gRPC channel holder (Task 11): one long-lived, reused
       # Mint channel per node for the Prime/Assign hot path (unlike NodeRegistry/
       # BaseBuilder, which each own their own channel and can afford a per-op
@@ -753,6 +753,13 @@ defmodule Embervm.Application do
       activator_endpoint: activator_endpoint(),
       activator_ip: stateful_activator_ip()
     ] ++ repush_opt()
+  end
+
+  defp node_registry_opts do
+    [
+      nodes: configured_nodes(),
+      control_plane_activator_ip: stateful_activator_ip()
+    ]
   end
 
   # The activator endpoint the node Envoy routes to when a serving workload has no

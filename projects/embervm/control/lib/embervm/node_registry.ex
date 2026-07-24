@@ -229,11 +229,14 @@ defmodule Embervm.NodeRegistry do
     watch_fun = Keyword.get(opts, :watch_fun, &default_watch/3)
     disconnect_fun = Keyword.get(opts, :disconnect_fun, &default_disconnect/1)
     # Artifact-decoupling Phase 2: the on-(re)connect registry replay seam. The
-    # default reads the control plane's workload view (WorkloadCatalog + the
-    # chart-delivered node-side image identity) and pushes SyncRegistry over the
-    # just-connected channel. Tests inject a fake to assert the replay fires (and
-    # with what entries) without a real daemon or catalog.
-    sync_registry_fun = Keyword.get(opts, :sync_registry_fun, &default_sync_registry/2)
+    # default pushes the constructed SyncRegistry envelope over the just-connected
+    # channel. Tests inject a fake to assert the replay fires (and with what
+    # entries) without a real daemon or catalog.
+    sync_registry_fun = Keyword.get(opts, :sync_registry_fun, &default_sync_registry/3)
+    # ADR embervm/018 Phase 3: when a brick cannot complete a node-local group
+    # relight, it forwards the held connection to the control plane's own L4
+    # activator. This is the CP address, never a daemon-advertised activator_ip.
+    control_plane_activator_ip = Keyword.get(opts, :control_plane_activator_ip, "") || ""
     clock = Keyword.get(opts, :clock, &default_clock/0)
     reassign_fun = Keyword.get(opts, :reassign_fun, &default_reassign/1)
     unknown_after = Keyword.get(opts, :unknown_after_ms, @unknown_after_ms)
@@ -296,6 +299,7 @@ defmodule Embervm.NodeRegistry do
       watch_fun: watch_fun,
       disconnect_fun: disconnect_fun,
       sync_registry_fun: sync_registry_fun,
+      control_plane_activator_ip: control_plane_activator_ip,
       reassign_fun: reassign_fun,
       unknown_after_ms: unknown_after,
       down_after_ms: down_after,
@@ -425,7 +429,7 @@ defmodule Embervm.NodeRegistry do
         case connect_fun.(address) do
           {:ok, channel} ->
             try do
-              sync_registry_fun.(channel, node_id)
+              sync_registry(sync_registry_fun, channel, node_id, state.control_plane_activator_ip)
             after
               disconnect_fun.(channel)
             end
@@ -1085,7 +1089,7 @@ defmodule Embervm.NodeRegistry do
                 # reconnect. A push failure is logged and non-fatal (the daemon
                 # simply stays not-ready and the next reconnect retries); we still
                 # enter the watch so capacity facts flow either way.
-                sync_registry_fun.(channel, configured_id)
+                sync_registry(sync_registry_fun, channel, configured_id, state.control_plane_activator_ip)
 
                 watch_fun.(channel, configured_id, fn status ->
                   send(owner, {:node_status, streamer, status})
@@ -1509,10 +1513,8 @@ defmodule Embervm.NodeRegistry do
   # or an EXIT is caught and logged too. The daemon simply stays not-ready and the
   # next reconnect retries; crashing the streamer here would take down capacity
   # reporting for the node, which is strictly worse than a missed replay.
-  defp default_sync_registry(channel, node_id) do
-    entries = registry_entries()
-
-    case NodeService.Stub.sync_registry(channel, %SyncRegistryRequest{entries: entries}) do
+  defp default_sync_registry(channel, node_id, request) do
+    case NodeService.Stub.sync_registry(channel, request) do
       {:ok, %{entry_count: n}} ->
         Logger.info("embervm node registry: replayed #{n} workload registry entries to #{node_id}")
         :ok
@@ -1529,6 +1531,25 @@ defmodule Embervm.NodeRegistry do
     kind, reason ->
       Logger.warning("embervm node registry: SyncRegistry to #{node_id} exited: #{inspect({kind, reason})}")
       :ok
+  end
+
+  defp sync_registry(sync_registry_fun, channel, node_id, control_plane_activator_ip) do
+    sync_registry_fun.(channel, node_id, sync_registry_request(control_plane_activator_ip))
+  rescue
+    e ->
+      Logger.warning("embervm node registry: SyncRegistry to #{node_id} raised: #{inspect(e)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("embervm node registry: SyncRegistry to #{node_id} exited: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  defp sync_registry_request(control_plane_activator_ip) do
+    %SyncRegistryRequest{
+      entries: registry_entries(),
+      control_plane_activator_ip: control_plane_activator_ip
+    }
   end
 
   # Build the authoritative RegistryEntry set from the control plane's workload
@@ -1636,6 +1657,7 @@ defmodule Embervm.NodeRegistry do
     entry = Map.get(group, :entry, %{})
     entry_member = Map.get(entry, :member)
     entry_port = Map.get(entry, :port) || 0
+    ready_budget_seconds = Map.get(group, :wake_timeout_seconds) || 0
 
     group
     |> Map.get(:members, [])
@@ -1648,7 +1670,8 @@ defmodule Embervm.NodeRegistry do
         start_order: member.start_order,
         health_port: member.health_port,
         entry_guest_port: if(member.name == entry_member, do: entry_port, else: 0),
-        sizing: %ResourceSpec{vcpus: member.vcpus, mem_mib: member.mem_mib}
+        sizing: %ResourceSpec{vcpus: member.vcpus, mem_mib: member.mem_mib},
+        ready_budget_seconds: ready_budget_seconds
       }
     end)
   end
