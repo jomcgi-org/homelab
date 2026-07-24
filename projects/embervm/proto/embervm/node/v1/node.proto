@@ -1148,6 +1148,28 @@ message GetNodeStatusRequest {
 
 // ---- Workload registry (artifact-decoupling Phase 2) -----------------------
 
+// GroupMemberPlanEntry is pushed per composite member so the brick can relight a
+// complete local banked set in role order without the CP; pinned IPs and snapshot
+// refs are NOT here, the brick reads them from its own bank metadata +
+// groupBundleRegistry.
+message GroupMemberPlanEntry {
+  // member_name is the stable member name, matching the banked bundle member.
+  string member_name = 1;
+  // member_index is the declaration-ordered, replica-expanded index, used only
+  // for local bank-metadata lookup, NOT for IP derivation.
+  uint32 member_index = 2;
+  // start_order is the role resume order: the activator relights all members of
+  // order N, health-gates, then order N+1.
+  uint32 start_order = 3;
+  // health_port is the guest port the relight health-gate probes.
+  uint32 health_port = 4;
+  // entry_guest_port is, for the entry member only, the guest port the accepted
+  // L4 connection splices to; 0 for non-entry members.
+  uint32 entry_guest_port = 5;
+  // sizing is the member VM resource shape.
+  ResourceSpec sizing = 6;
+}
+
 // RegistryEntry is the node-side identity of ONE workload the daemon can build a
 // base for and prime/serve, pushed by the control plane over SyncRegistry /
 // RegisterWorkload. It carries exactly what the retired EMBERVM_NODED_IMAGES env
@@ -1241,6 +1263,20 @@ message RegistryEntry {
   // (StartStatefulRequest.volume_device). Empty means the legacy vol.img lane
   // (VolumeRoot/<workload>/vol.img), exactly as StartStateful falls back.
   string stateful_volume_device = 14;
+
+  // -- Node-local composite activator fields (ADR embervm/018 Phase 3) --------
+  // The group listen port is the L4 accept identity for the node-local group
+  // activator. The expanded member plan gives the brick everything it needs to
+  // role-order-relight a complete local banked composite set; node_local_wake
+  // (field 7) remains the shared, class-agnostic gate.
+
+  // group_listen_port is the composite entry listen port
+  // (spec.group.entry.listenPort), the L4 accept identity for the node-local
+  // group activator, analogous to stateful_listen_port.
+  uint32 group_listen_port = 15;
+  // group_member_plan is the full expanded member plan for a node-local-wakeable
+  // composite; empty for non-composite or non-node-local-wake workloads.
+  repeated GroupMemberPlanEntry group_member_plan = 16;
 }
 
 // SyncRegistryRequest carries the AUTHORITATIVE full workload set the daemon must
@@ -1566,6 +1602,10 @@ message GroupMemberVm {
   string ip = 4;
   bool healthy = 5;
   int64 last_probe_unix_ms = 6;
+  // origin marks who created this member VM (CONTROL_PLANE vs ACTIVATOR =
+  // node-local wake). Absent (UNSPECIFIED) reads as the CP-issued default, so
+  // orphan-destroy stays correct.
+  InstanceOrigin origin = 7;
 }
 
 // GroupBundleMember is one member's banked snapshot within a group bundle set: the
