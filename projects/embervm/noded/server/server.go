@@ -202,6 +202,7 @@ type Server struct {
 	servingImage      *servingImageRegistry
 	activator         *activator
 	statefulActivator *statefulActivator
+	groupActivator    *groupActivator
 	activatorMu       sync.RWMutex
 	activatorEnabled  bool
 
@@ -426,6 +427,7 @@ func New(opts Options) *Server {
 	}
 	s.activator = newActivator(s)
 	s.statefulActivator = newStatefulActivator(s)
+	s.groupActivator = newGroupActivator(s)
 	// VolumeRoot may be set directly on Options (mirroring how cmd/main.go wires
 	// every other stateful/serving knob explicitly) or left to fall back to
 	// Config.VolumeRoot, so a caller that only populates Config (as several

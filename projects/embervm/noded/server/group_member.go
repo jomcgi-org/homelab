@@ -37,6 +37,10 @@ func (realGroupClock) Resync(ctx context.Context, udsPath string) error {
 // clock is more than one second off, and only then TCP-health-gates. A member VM
 // counts against max_live_vms and is EXCLUDED from primed_vm_ids.
 func (s *Server) StartGroupMember(ctx context.Context, req *nodev1.StartGroupMemberRequest) (*nodev1.StartGroupMemberResponse, error) {
+	return s.startGroupMember(ctx, req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE)
+}
+
+func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMemberRequest, origin nodev1.InstanceOrigin) (*nodev1.StartGroupMemberResponse, error) {
 	if s.groupNet == nil || s.groupDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: group member lifecycle not configured")
 	}
@@ -79,9 +83,9 @@ func (s *Server) StartGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 
 	switch req.GetMode() {
 	case nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH:
-		return s.startGroupMemberFresh(ctx, req, groupInstanceID, memberName, pinnedIP, healthPort)
+		return s.startGroupMemberFresh(ctx, req, groupInstanceID, memberName, pinnedIP, healthPort, origin)
 	case nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT:
-		return s.startGroupMemberRelight(ctx, req, groupInstanceID, memberName, pinnedIP, healthPort)
+		return s.startGroupMemberRelight(ctx, req, groupInstanceID, memberName, pinnedIP, healthPort, origin)
 	default:
 		return nil, status.Error(codes.InvalidArgument, "noded: StartGroupMember mode must be FRESH or RELIGHT")
 	}
@@ -93,7 +97,7 @@ func (s *Server) StartGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 // snapshot, D-R3.4.2), pins the member tap on the group bridge, cold-boots with the
 // first-boot env carried, and health-gates {ip, health_port}. A readiness failure
 // reaps the VM and removes the tap.
-func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGroupMemberRequest, groupInstanceID, memberName string, pinnedIP net.IP, healthPort uint32) (*nodev1.StartGroupMemberResponse, error) {
+func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGroupMemberRequest, groupInstanceID, memberName string, pinnedIP net.IP, healthPort uint32, origin nodev1.InstanceOrigin) (*nodev1.StartGroupMemberResponse, error) {
 	// A FRESH member cold boot is new-work placement. A stale registry (boot
 	// cache, no live sync) refuses it; RELIGHT of an existing member bundle stays
 	// allowed so existing warmth is served.
@@ -137,7 +141,7 @@ func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGro
 		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot group member: %v", err)
 	}
-	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), false, "", groupMemberReadyBudget(req, s.cfg.BootReadyTimeout))
+	return s.finishGroupMemberStart(ctx, h, req.GetTrace().GetWorkload(), groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), false, "", groupMemberReadyBudget(req, s.cfg.BootReadyTimeout), origin)
 }
 
 // groupMemberReadyBudget resolves the readiness budget for one member start: the
@@ -160,7 +164,7 @@ func groupMemberReadyBudget(req *nodev1.StartGroupMemberRequest, fallback time.D
 // snapshot_ref (group/<set_id>/<member_name>): the ref names the set and member, so
 // the daemon re-derives the bundle path from it. On a failed restore the bundle is
 // NEVER deleted (a lost member surfaces loudly).
-func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartGroupMemberRequest, groupInstanceID, memberName string, pinnedIP net.IP, healthPort uint32) (*nodev1.StartGroupMemberResponse, error) {
+func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartGroupMemberRequest, groupInstanceID, memberName string, pinnedIP net.IP, healthPort uint32, origin nodev1.InstanceOrigin) (*nodev1.StartGroupMemberResponse, error) {
 	ref := req.GetSnapshotRef()
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required for RELIGHT")
@@ -198,14 +202,14 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member %q clock resync failed: %v", ref, clockErr)
 	}
 
-	return s.finishGroupMemberStart(ctx, h, groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), true, ref, groupMemberReadyBudget(req, s.cfg.RestoreReadyTimeout))
+	return s.finishGroupMemberStart(ctx, h, req.GetTrace().GetWorkload(), groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), true, ref, groupMemberReadyBudget(req, s.cfg.RestoreReadyTimeout), origin)
 }
 
 // finishGroupMemberStart is the shared tail of both member start paths: TCP-health-
 // gate {ip, health_port}, register the live member, and start its probe. On a
 // readiness failure it reaps the VM and removes the tap, returning
 // FAILED_PRECONDITION (no half-alive member is ever published).
-func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle, groupInstanceID, memberName string, memberIndex uint32, tap string, ip net.IP, healthPort, entryGuestPort uint32, wasRelight bool, snapshotRef string, readyBudget time.Duration) (*nodev1.StartGroupMemberResponse, error) {
+func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle, workload, groupInstanceID, memberName string, memberIndex uint32, tap string, ip net.IP, healthPort, entryGuestPort uint32, wasRelight bool, snapshotRef string, readyBudget time.Duration, origin nodev1.InstanceOrigin) (*nodev1.StartGroupMemberResponse, error) {
 	if err := s.waitStatefulReady(ctx, ip, healthPort, readyBudget); err != nil {
 		// Loud on purpose: this reap is the daemon KILLING a member that missed its
 		// readiness budget. Silent, it reads as a mystery VM disappearance (the R6
@@ -231,6 +235,7 @@ func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle,
 	probe := serving.StartTCPProbe(s.newGroupTCPProber(), ip, healthPort)
 	s.groupMembers.add(&groupMemberEntry{
 		vmID:            h.ID,
+		workload:        workload,
 		groupInstanceID: groupInstanceID,
 		memberName:      memberName,
 		memberIndex:     memberIndex,
@@ -238,6 +243,9 @@ func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle,
 		tap:             tap,
 		port:            healthPort,
 		handle:          h,
+		isEntry:         entryGuestPort > 0,
+		entryGuestPort:  entryGuestPort,
+		origin:          origin,
 		snapshotRef:     snapshotRef,
 		probe:           probe,
 	})
@@ -322,6 +330,13 @@ func (s *Server) stopGroupMemberBank(ctx context.Context, req *nodev1.StopGroupM
 		s.reapGroupMember(removed.handle, removed.groupInstanceID, removed.tap, removed.ip)
 	}
 	s.logger.Info("noded: banked group member", "group", e.groupInstanceID, "set", setID, "member", memberName, "ref", ref.ID, "pause_to_snapshot_ms", bankDuration.Milliseconds())
+	metadataPersisted := s.writeGroupMemberMetadata(setID, memberName, e.ip, e.port)
+	pinnedIP := ""
+	var port uint32
+	if metadataPersisted {
+		pinnedIP = e.ip.String()
+		port = e.port
+	}
 	s.groupBundles.add(groupBundleEntry{
 		setID:           setID,
 		memberName:      memberName,
@@ -329,6 +344,8 @@ func (s *Server) stopGroupMemberBank(ctx context.Context, req *nodev1.StopGroupM
 		snapshotRef:     ref.ID,
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
+		pinnedIP:        pinnedIP,
+		port:            port,
 	})
 	// Persist the group_instance_id binding beside the member bundle so a boot-scan
 	// reconciliation (which reads only set_id + member_name off the dir) can recover

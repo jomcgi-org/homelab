@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,13 +27,18 @@ import (
 // the env each FRESH boot carried and the set/member each bank wrote under, mirroring
 // fakeStatefulDriver's shape.
 type fakeGroupMemberDriver struct {
-	mu           sync.Mutex
-	live         int
-	claims       int
-	lastEnv      map[string]string
-	banked       map[string]bool // "set/member" -> banked
-	failClaim    error
-	groupSetsDir string
+	mu                sync.Mutex
+	live              int
+	claims            int
+	restores          int
+	restoreOrder      []string
+	lastEnv           map[string]string
+	banked            map[string]bool // "set/member" -> banked
+	failClaim         error
+	groupSetsDir      string
+	restoreStarted    chan struct{}
+	releaseRestore    chan struct{}
+	failRestoreMember string
 }
 
 func newFakeGroupMemberDriver(dir string) *fakeGroupMemberDriver {
@@ -56,16 +62,37 @@ func (f *fakeGroupMemberDriver) SnapshotGroupMember(_ context.Context, _ substra
 	defer f.mu.Unlock()
 	ref := "group/" + setID + "/" + memberName
 	f.banked[setID+"/"+memberName] = true
+	if err := os.MkdirAll(filepath.Join(f.groupSetsDir, setID, memberName), 0o700); err != nil {
+		return substrate.SnapshotRef{}, err
+	}
 	return substrate.SnapshotRef{ID: ref, SizeBytes: 5120}, nil
 }
 
 func (f *fakeGroupMemberDriver) RestoreGroupMember(_ context.Context, setID, memberName string) (substrate.Handle, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if !f.banked[setID+"/"+memberName] {
+		f.mu.Unlock()
 		return substrate.Handle{}, status.Errorf(codes.FailedPrecondition, "no such banked member %s/%s", setID, memberName)
 	}
+	f.restores++
+	f.restoreOrder = append(f.restoreOrder, memberName)
+	if memberName == f.failRestoreMember {
+		f.mu.Unlock()
+		return substrate.Handle{}, status.Errorf(codes.FailedPrecondition, "scripted restore failure for %s", memberName)
+	}
 	f.live++
+	started := f.restoreStarted
+	release := f.releaseRestore
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		<-release
+	}
 	return substrate.Handle{ID: "relit-" + setID + "-" + memberName, ThreadID: "t-relit", Node: "node-4"}, nil
 }
 
@@ -293,6 +320,9 @@ func TestStartGroupMemberFreshBootsOnGroupBridge(t *testing.T) {
 	m := ns.GetGroupMemberVms()[0]
 	if m.GetGroupInstanceId() != "grp-A" || m.GetMemberName() != "worker-0" || !m.GetHealthy() {
 		t.Errorf("member status = %+v", m)
+	}
+	if m.GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+		t.Errorf("member origin = %v want CONTROL_PLANE", m.GetOrigin())
 	}
 	// member_count on the network must reflect the live member.
 	if len(ns.GetGroupNetworks()) != 1 || ns.GetGroupNetworks()[0].GetMemberCount() != 1 {
@@ -587,6 +617,17 @@ func TestStopGroupMemberBankWritesSetDirLayout(t *testing.T) {
 	}
 	if !gmd.banked["set-1/worker-0"] {
 		t.Error("driver did not bank under set-1/worker-0")
+	}
+	raw, err := os.ReadFile(filepath.Join(gmd.GroupSetsDir(), "set-1", "worker-0", substrate.GroupBundleMemberMetadataFile))
+	if err != nil {
+		t.Fatalf("read member metadata: %v", err)
+	}
+	var meta substrate.GroupBundleMemberMetadata
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("decode member metadata: %v", err)
+	}
+	if meta.PinnedIP != "127.0.0.1" || meta.Port != port {
+		t.Errorf("member metadata = %+v want pinned IP 127.0.0.1 and port %d", meta, port)
 	}
 	// The banked bundle is reported grouped by set in NodeStatus.
 	ns := s.nodeStatus()

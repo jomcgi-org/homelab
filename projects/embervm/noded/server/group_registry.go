@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 
+	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
@@ -126,6 +128,7 @@ type groupRecordStore interface {
 // statefulEntry so Task 5 can extend it with a probe, generation-free.
 type groupMemberEntry struct {
 	vmID            string
+	workload        string
 	groupInstanceID string
 	memberName      string
 	memberIndex     uint32
@@ -139,6 +142,12 @@ type groupMemberEntry struct {
 	handle substrate.Handle
 	// isEntry marks the group's entry member (the one exposed via the entry DNAT).
 	isEntry bool
+	// entryGuestPort is the entry service port accepted activator connections
+	// splice to. Zero for non-entry members.
+	entryGuestPort uint32
+	// origin marks whether the control plane or the node-local activator started
+	// this member.
+	origin nodev1.InstanceOrigin
 	// snapshotRef is the group member bundle this VM was RELIT from
 	// (group/<set_id>/<member_name>), or "" for a fresh/cold boot (which has no
 	// source snapshot). Mirrors statefulEntry.snapshotRef; it is the primary key
@@ -234,6 +243,31 @@ func (r *groupMemberRegistry) hasMembers(groupInstanceID string) bool {
 	return r.memberCount(groupInstanceID) > 0
 }
 
+// entryByWorkload returns the live entry member for a workload. The workload is
+// threaded from StartGroupMember.trace so identical member names in different
+// composite instances never alias at the opaque-L4 activator.
+func (r *groupMemberRegistry) entryByWorkload(workload, memberName string) (*groupMemberEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.members {
+		if e.workload == workload && e.memberName == memberName && e.isEntry {
+			return e, true
+		}
+	}
+	return nil, false
+}
+
+func (r *groupMemberRegistry) entryByGroup(groupInstanceID, memberName string) (*groupMemberEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.members {
+		if e.groupInstanceID == groupInstanceID && e.memberName == memberName && e.isEntry {
+			return e, true
+		}
+	}
+	return nil, false
+}
+
 // memberInUse reports whether a LIVE member VM is currently attached that was
 // relit from the given bundle, i.e. removing the bundle would lose the state a
 // running member needs to re-bank. It is the in-use guard for a per-member local
@@ -269,6 +303,7 @@ type groupMemberView struct {
 	ip              string
 	healthy         bool
 	lastProbeUnixMs int64
+	origin          nodev1.InstanceOrigin
 }
 
 // snapshot returns a copy of every live member VM, for NodeStatus.group_member_vms.
@@ -283,6 +318,7 @@ func (r *groupMemberRegistry) snapshot() []groupMemberView {
 			groupInstanceID: e.groupInstanceID,
 			memberName:      e.memberName,
 			ip:              e.ip.String(),
+			origin:          e.origin,
 		}
 		if e.probe != nil {
 			res := e.probe.Result()
@@ -315,6 +351,8 @@ type groupBundleEntry struct {
 	snapshotRef     string
 	sizeBytes       int64
 	createdAtUnixMs int64
+	pinnedIP        string
+	port            uint32
 }
 
 // groupBundleRegistry is the in-memory banked-group-bundle inventory, keyed by the

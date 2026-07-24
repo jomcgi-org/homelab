@@ -894,9 +894,9 @@ func TestServingSnapshotRoundTrip(t *testing.T) {
 // mechanic on the real driver: cold-boot a member on a group NIC (ClaimGroupMember),
 // snapshot it into a self-contained bundle under group/<set_id>/<member_name>/
 // (SnapshotGroupMember, no resume, so the caller destroys), then relight a fresh VM
-// from that bundle (RestoreGroupMember). The bundle carries NO sidecar (the pinned
-// world is derivable). RemoveGroupMemberBundle reclaims it and a subsequent relight
-// fails.
+// from that bundle (RestoreGroupMember). The server, not this driver method,
+// writes member.json after the snapshot is complete. RemoveGroupMemberBundle
+// reclaims it and a subsequent relight fails.
 func TestDriverGroupMemberSnapshotRestoreRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	d := testDriver(t)
@@ -918,9 +918,9 @@ func TestDriverGroupMemberSnapshotRestoreRoundTrip(t *testing.T) {
 	if _, err := os.Stat(d.groupMemberSnapfile("set-abc", "worker-0")); err != nil {
 		t.Fatalf("member bundle snapfile missing under group/set-abc/worker-0: %v", err)
 	}
-	// No sidecar: a member's pinned world is derivable, not banked.
+	// SnapshotGroupMember itself writes no sidecar; the server owns member.json.
 	if _, err := os.Stat(filepath.Join(d.groupMemberDir("set-abc", "worker-0"), "ip")); !os.IsNotExist(err) {
-		t.Errorf("a member bundle must carry no ip sidecar (pinned world is derivable), stat err=%v", err)
+		t.Errorf("SnapshotGroupMember unexpectedly wrote an ip sidecar, stat err=%v", err)
 	}
 	// SnapshotGroupMember does not resume; the caller destroys.
 	if err := d.Release(ctx, h); err != nil {
@@ -981,6 +981,13 @@ func TestDriverScanGroupBundleSets(t *testing.T) {
 	bank("set-1", "worker-0")
 	bank("set-1", "worker-1")
 	bank("set-2", "leader")
+	meta, err := json.Marshal(substrate.GroupBundleMemberMetadata{PinnedIP: "10.101.1.10", Port: 10250})
+	if err != nil {
+		t.Fatalf("marshal member metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(d.groupMemberDir("set-1", "worker-0"), substrate.GroupBundleMemberMetadataFile), meta, 0o600); err != nil {
+		t.Fatalf("write member metadata: %v", err)
+	}
 
 	// A half-written member dir (no snapfile) under set-1 must be skipped.
 	if err := os.MkdirAll(d.groupMemberDir("set-1", "ghost"), 0o700); err != nil {
@@ -992,9 +999,11 @@ func TestDriverScanGroupBundleSets(t *testing.T) {
 		t.Fatalf("ScanGroupBundleSets found %d sets, want 2: %+v", len(sets), sets)
 	}
 	bySet := map[string][]string{}
+	byMember := map[string]substrate.GroupBundleMemberInfo{}
 	for _, s := range sets {
 		for _, m := range s.Members {
 			bySet[s.SetID] = append(bySet[s.SetID], m.MemberName)
+			byMember[s.SetID+"/"+m.MemberName] = m
 			if m.SnapshotRef != filepath.Join("group", s.SetID, m.MemberName) {
 				t.Errorf("member ref = %q want group/%s/%s", m.SnapshotRef, s.SetID, m.MemberName)
 			}
@@ -1008,6 +1017,12 @@ func TestDriverScanGroupBundleSets(t *testing.T) {
 	}
 	if len(bySet["set-2"]) != 1 {
 		t.Errorf("set-2 members = %v want [leader]", bySet["set-2"])
+	}
+	if got := byMember["set-1/worker-0"]; got.PinnedIP != "10.101.1.10" || got.Port != 10250 {
+		t.Errorf("worker-0 metadata = %+v, want pinned IP and port", got)
+	}
+	if got := byMember["set-1/worker-1"]; got.PinnedIP != "" || got.Port != 0 {
+		t.Errorf("legacy worker-1 metadata = %+v, want empty values", got)
 	}
 }
 

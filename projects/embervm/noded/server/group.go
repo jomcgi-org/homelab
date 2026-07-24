@@ -214,6 +214,8 @@ func (s *Server) ReconcileGroupBundlesFromDisk() {
 				snapshotRef:     m.SnapshotRef,
 				sizeBytes:       m.SizeBytes,
 				createdAtUnixMs: set.CreatedAtUnixMs,
+				pinnedIP:        m.PinnedIP,
+				port:            m.Port,
 			})
 			seeded++
 		}
@@ -294,6 +296,7 @@ func (s *Server) groupMemberVmsStatus() []*nodev1.GroupMemberVm {
 			Ip:              e.ip,
 			Healthy:         e.healthy,
 			LastProbeUnixMs: e.lastProbeUnixMs,
+			Origin:          e.origin,
 		})
 	}
 	return out

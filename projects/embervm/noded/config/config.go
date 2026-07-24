@@ -58,6 +58,10 @@ type Config struct {
 	// node-local stateful wake. A zero range disables the listeners. Env
 	// EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE.
 	StatefulActivatorPortRange [2]uint32
+	// GroupActivatorPortRange is the inclusive L4 listener range for node-local
+	// composite-group wake. A zero range disables the listeners. Env
+	// EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE.
+	GroupActivatorPortRange [2]uint32
 	// Node identifies the Kubernetes node this daemon is pinned to (injected via
 	// the Downward API as EMBERVM_NODED_NODE / spec.nodeName). Reported as
 	// node_id in NodeStatus and stamped into snapshot node-pinning.
@@ -416,6 +420,15 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE: %w", err)
 	}
 	c.StatefulActivatorPortRange = statefulActivatorRange
+	groupActivatorRangeRaw := "5410-5419"
+	if raw, ok := os.LookupEnv("EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE"); ok {
+		groupActivatorRangeRaw = raw
+	}
+	groupActivatorRange, err := parsePortRange(groupActivatorRangeRaw)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE: %w", err)
+	}
+	c.GroupActivatorPortRange = groupActivatorRange
 
 	if c.Node == "" {
 		c.Node = os.Getenv("NODE_NAME")
