@@ -316,9 +316,8 @@ defmodule Embervm.GroupManager.Supervisor do
   defp prefer_warm_nodes(facts, group_instance_id) when is_binary(group_instance_id) and group_instance_id != "" do
     {warm, cold} =
       Enum.split_with(facts, fn fact ->
-        fact
-        |> Map.get(:group_bundle_sets, [])
-        |> Enum.any?(fn set -> Map.get(set, :group_instance_id) == group_instance_id end)
+        hosts_instance?(fact, :group_bundle_sets, group_instance_id) or
+          hosts_instance?(fact, :group_member_vms, group_instance_id)
       end)
 
     warm ++ cold
@@ -326,11 +325,34 @@ defmodule Embervm.GroupManager.Supervisor do
 
   defp prefer_warm_nodes(facts, _group_instance_id), do: facts
 
+  # True when a node fact reports the instance under `key` (a list of rows keyed by
+  # group_instance_id: group_bundle_sets for a banked instance, group_member_vms for
+  # a running one).
+  defp hosts_instance?(fact, key, group_instance_id) do
+    fact
+    |> Map.get(key, [])
+    |> Kernel.||([])
+    |> Enum.any?(fn row -> Map.get(row, :group_instance_id) == group_instance_id end)
+  end
+
   # Warmth selection for a wake/bank/adopt (the banked instance's set): match the
   # node's group_bundle_sets by the group_instance_id the set is keyed on. A fresh
   # CREATE (nil id) carries no warmth, so it goes straight to the mem-eligible pick.
   defp warmth_opts(group_instance_id) when is_binary(group_instance_id) and group_instance_id != "" do
-    [warmth_key: :group_bundle_sets, warmth_match_field: :group_instance_id, warmth_ref: group_instance_id]
+    # A bank/wake/adopt of an ALREADY-PLACED instance must target the node it is on,
+    # not re-pick by free capacity. A banked instance is found by its group_bundle_sets;
+    # a RUNNING instance being banked has no set yet, so it is found by its LIVE
+    # group_member_vms (warmth_also_keys). Both match on group_instance_id. Without the
+    # live-member key, banking a group that occupies most of a node fails
+    # :no_eligible_instance (its own memory counts against the free-capacity check) and
+    # wedges in :banking (#4006). A fresh CREATE (nil id) carries no warmth and still
+    # cold-picks a node with room, which is correct.
+    [
+      warmth_key: :group_bundle_sets,
+      warmth_also_keys: [:group_member_vms],
+      warmth_match_field: :group_instance_id,
+      warmth_ref: group_instance_id
+    ]
   end
 
   defp warmth_opts(_group_instance_id), do: []
