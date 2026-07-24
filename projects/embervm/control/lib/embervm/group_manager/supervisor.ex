@@ -280,28 +280,51 @@ defmodule Embervm.GroupManager.Supervisor do
   # {:error, :no_capacity} (no group-capable node) / {:error, :no_eligible_instance}
   # (a node exists but no instance on it can host the group).
   defp anchor_instance(capacity_table, entry, workload, group_instance_id) do
+    need_mib = group_mem_mib(entry)
+    select_opts = [table: capacity_table, workload: workload, need_mib: need_mib] ++ warmth_opts(group_instance_id)
+
     NodeCapacity.all(capacity_table)
     |> Enum.filter(&group_capable?/1)
     |> case do
       [] ->
         {:error, :no_capacity}
 
-      [fact | _] ->
-        node_id = fact.configured_id
-
-        select_opts =
-          [
-            table: capacity_table,
-            workload: workload,
-            need_mib: group_mem_mib(entry)
-          ] ++ warmth_opts(group_instance_id)
-
-        case Embervm.WakeInstance.select(node_id, select_opts) do
-          {:ok, dial_id} -> {:ok, node_id, dial_id}
-          {:error, reason} -> {:error, reason}
-        end
+      facts ->
+        # Try EVERY group-capable node, warmth-matching nodes first, and take the
+        # first whose per-node select fits the group's total member memory + base.
+        # The prior code probed only the FIRST group-capable node, so a small brick
+        # sorted ahead of the only node large enough (the fleet's 2Gi co-located
+        # bricks vs a ~10Gi composite) failed the whole create/wake with
+        # :no_eligible_instance without ever trying the big node. Warmth ordering is
+        # preserved so a wake/adopt still relights on the node holding the banked set.
+        facts
+        |> prefer_warm_nodes(group_instance_id)
+        |> Enum.uniq_by(& &1.configured_id)
+        |> Enum.find_value({:error, :no_eligible_instance}, fn fact ->
+          case Embervm.WakeInstance.select(fact.configured_id, select_opts) do
+            {:ok, dial_id} -> {:ok, fact.configured_id, dial_id}
+            {:error, _reason} -> false
+          end
+        end)
     end
   end
+
+  # Order group-capable node facts so any node already reporting the banked group's
+  # SET (its group_bundle_sets carries group_instance_id) is tried before cold nodes,
+  # so a wake/adopt relights on the anchor instead of cold-booting elsewhere. A fresh
+  # CREATE (nil id) has no owning set, so the order is left unchanged.
+  defp prefer_warm_nodes(facts, group_instance_id) when is_binary(group_instance_id) and group_instance_id != "" do
+    {warm, cold} =
+      Enum.split_with(facts, fn fact ->
+        fact
+        |> Map.get(:group_bundle_sets, [])
+        |> Enum.any?(fn set -> Map.get(set, :group_instance_id) == group_instance_id end)
+      end)
+
+    warm ++ cold
+  end
+
+  defp prefer_warm_nodes(facts, _group_instance_id), do: facts
 
   # Warmth selection for a wake/bank/adopt (the banked instance's set): match the
   # node's group_bundle_sets by the group_instance_id the set is keyed on. A fresh
