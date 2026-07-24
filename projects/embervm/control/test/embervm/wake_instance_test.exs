@@ -53,11 +53,56 @@ defmodule Embervm.WakeInstanceTest do
         stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
         serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
         group_bundle_sets: Keyword.get(opts, :group_bundle_sets, []),
+        group_member_vms: Keyword.get(opts, :group_member_vms, []),
         updated_at: Keyword.get(opts, :updated_at, 0)
       }
 
     NodeCapacity.put(table, {node_id, pod_uid}, facts)
     instance_id
+  end
+
+  describe "warmth_also_keys (a bank of a RUNNING group resolves to its node, #4006)" do
+    test "matches a LIVE group member even when the node has no free capacity", %{table: table} do
+      # The running group occupies node-4, so it has NO room for a second copy. A bank
+      # must still resolve to this node via its live group_member_vms, not fail the
+      # free-capacity cold-pick (which would wedge the bank in :banking).
+      owner =
+        put_instance(table, "node-4", "pod-a",
+          mem_headroom_mib: 100,
+          group_member_vms: [%{group_instance_id: "grp-1", member_name: "server"}]
+        )
+
+      assert {:ok, ^owner} =
+               WakeInstance.select("node-4",
+                 table: table,
+                 workload: "gwl",
+                 need_mib: 7_168,
+                 warmth_key: :group_bundle_sets,
+                 warmth_also_keys: [:group_member_vms],
+                 warmth_match_field: :group_instance_id,
+                 warmth_ref: "grp-1"
+               )
+    end
+
+    test "without warmth_also_keys a running-only instance still fails the capacity pick", %{table: table} do
+      # Same node, same lack of capacity, but no live-member fallback key: the bank
+      # would fail (the pre-#4006 behaviour), confirming the fix is what rescues it.
+      _owner =
+        put_instance(table, "node-4", "pod-a",
+          mem_headroom_mib: 100,
+          group_member_vms: [%{group_instance_id: "grp-1", member_name: "server"}]
+        )
+
+      assert {:error, :no_eligible_instance} =
+               WakeInstance.select("node-4",
+                 table: table,
+                 workload: "gwl",
+                 need_mib: 7_168,
+                 warmth_key: :group_bundle_sets,
+                 warmth_match_field: :group_instance_id,
+                 warmth_ref: "grp-1"
+               )
+    end
   end
 
   describe "warmth ownership (a relight lands on the bundle-owning instance)" do

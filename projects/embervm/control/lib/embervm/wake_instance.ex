@@ -296,11 +296,19 @@ defmodule Embervm.WakeInstance do
     warmth_key = Keyword.get(opts, :warmth_key)
     warmth_ref = Keyword.get(opts, :warmth_ref)
     match_field = Keyword.get(opts, :warmth_match_field, :snapshot_ref)
+    # Additional fact keys that also count as "this node owns the instance", tried
+    # after warmth_key. The group lane passes group_member_vms here so a bank of a
+    # RUNNING instance (which has no banked set yet) still resolves to the node it is
+    # on rather than cold-picking by free capacity (#4006). Other lanes pass none.
+    also_keys = Keyword.get(opts, :warmth_also_keys, [])
 
     if is_atom(warmth_key) and is_binary(warmth_ref) and warmth_ref != "" do
       table
       |> instances_on(node_id)
-      |> Enum.find(fn fact -> fact_reports_warmth?(fact, warmth_key, warmth_ref, match_field) end)
+      |> Enum.find(fn fact ->
+        fact_reports_warmth?(fact, warmth_key, warmth_ref, match_field) or
+          Enum.any?(also_keys, fn k -> fact_reports_warmth?(fact, k, warmth_ref, match_field) end)
+      end)
       |> case do
         nil -> :none
         fact -> {:ok, dial_id(fact)}
