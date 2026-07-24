@@ -12,7 +12,7 @@ defmodule Embervm.NodeRegistryTest do
   # test), proving connect -> emit -> ETS publish -> reconnect-on-drop.
   use ExUnit.Case, async: true
 
-  alias Embervm.NodeRegistry
+  alias Embervm.{NodeRegistry, WorkloadCatalog}
   alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, WorkloadCapacity}
 
   # -- helpers ---------------------------------------------------------------
@@ -263,7 +263,7 @@ defmodule Embervm.NodeRegistryTest do
         # Stub the registry replay: the real default dials NodeService.Stub over
         # the fake channel, which is not a real gRPC channel. The replay is not
         # under test here (see the dedicated reconnect-replays-registry test).
-        sync_registry_fun: fn :fake_channel, _id -> :ok end,
+        sync_registry_fun: fn :fake_channel, _id, _request -> :ok end,
         disconnect_fun: fn :fake_channel -> :ok end,
         # Small backoff so the reconnect fires quickly; large age-out so the
         # real-time ticks do not race the assertions.
@@ -311,7 +311,7 @@ defmodule Embervm.NodeRegistryTest do
         watch_fun: watch_fun,
         # Stub the registry replay: the real default dials NodeService.Stub over
         # the fake channel (not a real gRPC channel); the replay is not under test.
-        sync_registry_fun: fn :fake_channel, _id -> :ok end,
+        sync_registry_fun: fn :fake_channel, _id, _request -> :ok end,
         disconnect_fun: fn :fake_channel -> :ok end,
         reassign_fun: fn id -> send(test_pid, {:reassigned, id}) end,
         # Small age-out windows and backoff so the wedge is detected and the kill
@@ -344,7 +344,7 @@ defmodule Embervm.NodeRegistryTest do
     # Record each replay (channel, node_id) and let the streamer proceed. The
     # sync_registry_fun is the seam the production default reads the catalog and
     # calls SyncRegistry through; here we just assert it fires on each connect.
-    sync_registry_fun = fn :fake_channel, node_id ->
+    sync_registry_fun = fn :fake_channel, node_id, _request ->
       Agent.update(syncs, &[node_id | &1])
       send(test_pid, {:replayed, node_id})
       :ok
@@ -385,7 +385,7 @@ defmodule Embervm.NodeRegistryTest do
     on_exit(fn -> if Process.alive?(syncs), do: Agent.stop(syncs) end)
     test_pid = self()
 
-    sync_registry_fun = fn :fake_channel, node_id ->
+    sync_registry_fun = fn :fake_channel, node_id, _request ->
       n = Agent.get_and_update(syncs, fn c -> {c + 1, c + 1} end)
       send(test_pid, {:synced, node_id, n})
       :ok
@@ -421,6 +421,75 @@ defmodule Embervm.NodeRegistryTest do
     assert_receive {:synced, "node-4", 3}, 1_000
   end
 
+  test "a node-local-wake composite registry plan carries the group's ready budget" do
+    workload = "registry-group-#{System.unique_integer([:positive])}"
+
+    WorkloadCatalog.upsert(WorkloadCatalog.table(), workload, %{
+      image_ref: "registry-group-image",
+      vcpus: 2,
+      mem_mib: 1024,
+      group: %{
+        node_local_wake: true,
+        wake_timeout_seconds: 47,
+        entry: %{member: "api", port: 8080, listen_port: 5410},
+        members: [
+          %{name: "api", start_order: 10, health_port: 8080, vcpus: 2, mem_mib: 1024},
+          %{name: "worker", replicas: 2, start_order: 20, health_port: 9090, vcpus: 1, mem_mib: 512}
+        ]
+      }
+    })
+
+    on_exit(fn -> WorkloadCatalog.drop(WorkloadCatalog.table(), workload) end)
+    test_pid = self()
+
+    {_reg, _table} =
+      start_registry(
+        watch_startup: true,
+        connect_fun: fn _address -> {:ok, :fake_channel} end,
+        watch_fun: blocking_watch(),
+        sync_registry_fun: fn :fake_channel, "node-4", request ->
+          send(test_pid, {:registry_sync, request})
+          :ok
+        end,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    assert_receive {:registry_sync, request}, 1_000
+    entry = Enum.find(request.entries, &(&1.workload == workload))
+
+    assert Enum.map(entry.group_member_plan, & &1.member_name) == ["api", "worker-0", "worker-1"]
+    assert Enum.all?(entry.group_member_plan, &(&1.ready_budget_seconds == 47))
+  end
+
+  test "SyncRegistry carries the configured control-plane activator IP, or empty when unset" do
+    test_pid = self()
+
+    sync_registry_fun = fn :fake_channel, node_id, request ->
+      send(test_pid, {:registry_sync, node_id, request})
+      :ok
+    end
+
+    registry_opts = [
+      watch_startup: true,
+      connect_fun: fn _address -> {:ok, :fake_channel} end,
+      watch_fun: blocking_watch(),
+      sync_registry_fun: sync_registry_fun,
+      disconnect_fun: fn :fake_channel -> :ok end,
+      age_check_ms: 60_000,
+      unknown_after_ms: 60_000,
+      down_after_ms: 60_000
+    ]
+
+    {_configured, _table} = start_registry(Keyword.put(registry_opts, :control_plane_activator_ip, "10.0.0.12"))
+    assert_receive {:registry_sync, "node-4", %{control_plane_activator_ip: "10.0.0.12"}}, 1_000
+
+    {_unset, _table} = start_registry(registry_opts)
+    assert_receive {:registry_sync, "node-4", %{control_plane_activator_ip: ""}}, 1_000
+  end
+
   # -- dial-home registration (R0 PR-2) --------------------------------------
 
   # A watch that stays open (blocks) so a per-instance streamer persists and the
@@ -439,7 +508,7 @@ defmodule Embervm.NodeRegistryTest do
         nodes: [],
         connect_fun: fn _addr -> {:ok, :fake_channel} end,
         watch_fun: blocking_watch(),
-        sync_registry_fun: fn _ch, _id -> :ok end,
+        sync_registry_fun: fn _ch, _id, _request -> :ok end,
         disconnect_fun: fn :fake_channel -> :ok end,
         channel_updater_fun: fn _id, _addr -> :ok end,
         age_check_ms: 60_000,
