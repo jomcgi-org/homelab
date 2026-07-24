@@ -701,22 +701,28 @@ defmodule Embervm.EndpointPublisher do
 
   defp activator_tcp_endpoint(_ctx, _workload, _listen_port), do: nil
 
-  # Arity-2 form for the COMPOSITE lane (group_endpoint): a composite has no single
-  # volume anchor, so it keeps the pre-018 CP-injected activator_ip fallback
-  # unchanged (node-local composite relight is Phase 3, out of scope here). The
-  # stateful lane uses the arity-3 form above with its anchor-node preference.
-  defp activator_tcp_endpoint(%{activator_ip: ip}, listen_port)
-       when is_binary(ip) and ip != "" and is_integer(listen_port),
-       do: %{ip: ip, port: listen_port}
-
-  defp activator_tcp_endpoint(_ctx, _listen_port), do: nil
-
   # The advertised activator_ip of the volume's anchor node, or nil when the
   # workload has no volume yet (never woken, so no anchor) or the anchor node
   # advertises no activator (pre-018 daemon => the CP address is used instead).
   defp anchor_activator_ip(ctx, workload) do
     with %{node_id: anchor} when is_binary(anchor) <-
            StatefulStore.get_volume(ctx.stateful_store, workload),
+         fact when is_map(fact) <-
+           Enum.find(Map.get(ctx, :node_facts, []), &(Map.get(&1, :configured_id) == anchor)),
+         ip when is_binary(ip) and ip != "" <- Map.get(fact, :activator_ip) do
+      ip
+    else
+      _ -> nil
+    end
+  end
+
+  # The advertised activator_ip of the banked group's anchor brick. A composite
+  # has no volume row, so its anchor is the node retaining the complete banked set.
+  # GroupStore keeps multiple historical rows, hence the :banked selection instead
+  # of GroupStore.get/2, whose key is an instance id.
+  defp group_anchor_activator_ip(ctx, workload) do
+    with %{node_id: anchor} when is_binary(anchor) <-
+           Enum.find(GroupStore.list(ctx.group_store, workload), &(&1.state == :banked)),
          fact when is_map(fact) <-
            Enum.find(Map.get(ctx, :node_facts, []), &(Map.get(&1, :configured_id) == anchor)),
          ip when is_binary(ip) and ip != "" <- Map.get(fact, :activator_ip) do
@@ -798,9 +804,21 @@ defmodule Embervm.EndpointPublisher do
         %{ip: ip, port: port}
 
       _ ->
-        activator_tcp_endpoint(ctx, listen_port)
+        group_activator_tcp_endpoint(ctx, workload, listen_port)
     end
   end
+
+  defp group_activator_tcp_endpoint(ctx, workload, listen_port) when is_integer(listen_port) do
+    ip = group_anchor_activator_ip(ctx, workload) || Map.get(ctx, :activator_ip)
+
+    if is_binary(ip) and ip != "" do
+      %{ip: ip, port: listen_port}
+    else
+      nil
+    end
+  end
+
+  defp group_activator_tcp_endpoint(_ctx, _workload, _listen_port), do: nil
 
   # -- version ---------------------------------------------------------------
 

@@ -758,6 +758,25 @@ spec:
                         retries.
                       minimum: 1
                       default: 120
+                    nodeLocalWake:
+                      type: boolean
+                      default: false
+                      description: >-
+                        Node-local activator (ADR embervm/018 Phase 3). When true,
+                        the brick's composite L4 activator is eligible to relight a
+                        complete banked group on the first inbound TCP connection, so
+                        the wake survives a control-plane Recreate instead of
+                        black-holing on the dead CP-pod activator. Pushed to the node
+                        daemon in the workload registry. Defaults false (CP-only wake).
+                    meteringFailOpen:
+                      type: boolean
+                      default: false
+                      description: >-
+                        Companion, EXPLICIT policy for nodeLocalWake (ADR embervm/018
+                        Fork A): a true workload wakes UNMETERED during a control-plane
+                        gap and reconciles accounting best-effort on adoption. Named here
+                        rather than implied; allowlisted to blessed homelab demos.
+                        Defaults false.
                 invocation:
                   type: object
                   description: Task execution policy. All fields defaulted.

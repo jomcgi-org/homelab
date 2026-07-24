@@ -669,6 +669,11 @@ scratchK8s:
   # the first port of the range and the first production composite claim. Shared
   # with the monolith kubeconfig wiring.
   listenPort: 5410
+  # Node-local activator (ADR embervm/018 Phase 3): the brick relights this
+  # complete banked group on the first connection during a control-plane gap.
+  # meteringFailOpen names the declarative wake-unmetered policy for this demo.
+  nodeLocalWake: true
+  meteringFailOpen: true
   onepassword:
     # 1Password item path (vaults/<vault>/items/<item>) whose EMBER_GROUP_SECRET
     # field syncs into the STABLE <fullname>-scratch-k8s Secret. Empty leaves the

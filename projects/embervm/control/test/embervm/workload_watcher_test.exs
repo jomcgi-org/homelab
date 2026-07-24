@@ -920,10 +920,30 @@ defmodule Embervm.WorkloadWatcherTest do
     assert entry.group.banked_ttl_seconds == 604_800
     assert entry.group.wake_timeout_seconds == 120
     assert entry.group.secret_ref == nil
+    assert entry.group.node_local_wake == false
+    assert entry.group.metering_fail_open == false
 
     assert {_ns, "demo-group", status_map} = ready_status(recorded_calls(agent), "demo-group")
     assert status_map["observedGeneration"] == 1
     refute Map.has_key?(status_map, "conditions")
+  end
+
+  test "composite class: nodeLocalWake and declarative meteringFailOpen are cataloged" do
+    table = unique_table()
+    agent = start_recorder()
+
+    cr =
+      composite_cr(%{
+        "spec" => %{"group" => %{"nodeLocalWake" => true, "meteringFailOpen" => true}}
+      })
+
+    watcher = start_watcher(fn -> {:ok, [cr]} end, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "demo-group")
+    assert entry.group.node_local_wake == true
+    assert entry.group.metering_fail_open == true
   end
 
   test "composite class: group block timer defaults apply when omitted" do

@@ -58,6 +58,11 @@ spec:
   # No concurrency block: a composite's size is fixed by its member set (sum of
   # replicas), so spec.concurrency is forbidden by the watcher.
   group:
+    # Node-local activator (ADR embervm/018 Phase 3): the anchor brick relights
+    # this complete banked group during a control-plane gap. meteringFailOpen is
+    # the named declarative wake-unmetered policy for this blessed demo.
+    nodeLocalWake: {{ .Values.scratchK8s.nodeLocalWake }}
+    meteringFailOpen: {{ .Values.scratchK8s.meteringFailOpen }}
     members:
       # The server member: one VM, boots first (startOrder 0). k3s server with the
       # sqlite datastore, flannel host-gw, EMBER_GROUP_SECRET as the cluster token

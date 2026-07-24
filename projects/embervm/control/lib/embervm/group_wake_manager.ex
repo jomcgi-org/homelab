@@ -884,8 +884,15 @@ defmodule Embervm.GroupWakeManager do
   defp destroy_orphan_group_vms(state, facts) do
     for fact <- facts, member <- Map.get(fact, :group_member_vms, []) || [], reduce: state do
       acc ->
-        case GroupStore.get(acc.store, member.group_instance_id) do
-          :error ->
+        cond do
+          # ADR embervm/018 Phase 3: an origin-ACTIVATOR member belongs to a
+          # node-relit group adopt_one heals on this same pass. Skip it explicitly
+          # as a belt-and-suspenders guard for the adoption/orphan ordering window:
+          # never destroy a live node-relit group member, let adoption retry.
+          activator_origin?(member) ->
+            acc
+
+          GroupStore.get(acc.store, member.group_instance_id) == :error ->
             confirmed =
               if is_binary(fact.configured_id) and is_binary(member.vm_id) do
                 stop_group_member_destroy_confirmed(
@@ -912,11 +919,15 @@ defmodule Embervm.GroupWakeManager do
 
             acc
 
-          {:ok, _instance} ->
+          true ->
             acc
         end
     end
   end
+
+  # True when a node-reported group member was relit by the brick's composite
+  # activator. A pre-018 daemon reports nil / UNSPECIFIED, the CP-issued default.
+  defp activator_origin?(member), do: Map.get(member, :origin) == :INSTANCE_ORIGIN_ACTIVATOR
 
   defp stop_group_member_destroy_confirmed(
          state,
@@ -962,7 +973,8 @@ defmodule Embervm.GroupWakeManager do
           member_name: m.member_name,
           vm_id: m.vm_id,
           ip: m.ip,
-          healthy: Map.get(m, :healthy, true)
+          healthy: Map.get(m, :healthy, true),
+          origin: Map.get(m, :origin)
         }
 
         Map.update(acc, m.group_instance_id, [entry], &[entry | &1])

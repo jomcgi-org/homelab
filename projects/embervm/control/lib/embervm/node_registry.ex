@@ -86,6 +86,7 @@ defmodule Embervm.NodeRegistry do
 
   alias Embervm.Node.V1.{
     GroupBundleSet,
+    GroupMemberPlanEntry,
     GroupMemberVm,
     BaseInventoryEntry,
     Endpoint,
@@ -750,7 +751,8 @@ defmodule Embervm.NodeRegistry do
         member_name: v.member_name,
         ip: v.ip,
         healthy: v.healthy,
-        last_probe_unix_ms: v.last_probe_unix_ms
+        last_probe_unix_ms: v.last_probe_unix_ms,
+        origin: v.origin
       }
     end
   end
@@ -1566,10 +1568,13 @@ defmodule Embervm.NodeRegistry do
         # base from its own inventory and the volume from local disk, exactly as the
         # serving activator resolves its image), so they are NOT pushed here.
         stateful = entry[:stateful] || %{}
+        group = entry[:group] || %{}
         # node_local_wake is class-agnostic (a workload is exactly one class), so read
         # it from whichever class block carries it.
         node_local_wake =
-          Map.get(serving, :node_local_wake, false) or Map.get(stateful, :node_local_wake, false)
+          Map.get(serving, :node_local_wake, false) or
+            Map.get(stateful, :node_local_wake, false) or
+            Map.get(group, :node_local_wake, false)
 
         %RegistryEntry{
           workload: name,
@@ -1583,7 +1588,9 @@ defmodule Embervm.NodeRegistry do
           serving_health_path: Map.get(serving, :health_path) || "",
           stateful_listen_port: Map.get(stateful, :listen_port) || 0,
           stateful_port: Map.get(stateful, :port) || 0,
-          stateful_volume_mount: Map.get(stateful, :volume_mount_path) || ""
+          stateful_volume_mount: Map.get(stateful, :volume_mount_path) || "",
+          group_listen_port: group_listen_port(group, node_local_wake),
+          group_member_plan: group_member_plan(group, node_local_wake)
         }
       end
 
@@ -1612,6 +1619,61 @@ defmodule Embervm.NodeRegistry do
       end
 
     catalog_entries ++ identity_entries
+  end
+
+  # The composite plan is pushed only with the explicit node-local-wake opt-in.
+  # Its declaration-ordered replica expansion mirrors GroupManager.member_plan/2
+  # and noded's local bank metadata lookup.
+  defp group_listen_port(group, true) do
+    group
+    |> Map.get(:entry, %{})
+    |> Map.get(:listen_port, 0)
+  end
+
+  defp group_listen_port(_group, false), do: 0
+
+  defp group_member_plan(group, true) do
+    entry = Map.get(group, :entry, %{})
+    entry_member = Map.get(entry, :member)
+    entry_port = Map.get(entry, :port) || 0
+
+    group
+    |> Map.get(:members, [])
+    |> Enum.flat_map(&expand_group_member/1)
+    |> Enum.with_index()
+    |> Enum.map(fn {member, index} ->
+      %GroupMemberPlanEntry{
+        member_name: member.name,
+        member_index: index,
+        start_order: member.start_order,
+        health_port: member.health_port,
+        entry_guest_port: if(member.name == entry_member, do: entry_port, else: 0),
+        sizing: %ResourceSpec{vcpus: member.vcpus, mem_mib: member.mem_mib}
+      }
+    end)
+  end
+
+  defp group_member_plan(_group, false), do: []
+
+  defp expand_group_member(member) do
+    replicas =
+      case Map.get(member, :replicas) do
+        n when is_integer(n) and n > 0 -> n
+        _ -> 1
+      end
+
+    common = %{
+      start_order: Map.get(member, :start_order) || 0,
+      health_port: Map.get(member, :health_port) || 0,
+      vcpus: Map.get(member, :vcpus) || 1,
+      mem_mib: Map.get(member, :mem_mib) || 512
+    }
+
+    if replicas > 1 do
+      Enum.map(0..(replicas - 1), fn index -> Map.put(common, :name, "#{member.name}-#{index}") end)
+    else
+      [Map.put(common, :name, member.name)]
+    end
   end
 
   # Parse EMBERVM_NODE_IMAGE_IDENTITY (chart-rendered from the same values that
