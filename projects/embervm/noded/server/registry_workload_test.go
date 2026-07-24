@@ -3,11 +3,44 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
 func entry(workload, digest, rootfs string) workloadEntry {
 	return workloadEntry{Workload: workload, ImageDigest: digest, RootfsRef: rootfs, HarnessInit: "/init"}
+}
+
+func TestGroupByListenPortRequiresNodeLocalWakeAndPlan(t *testing.T) {
+	r := newWorkloadRegistry("")
+	group := entryFromProto(&nodev1.RegistryEntry{
+		Workload:        "scratch-k8s",
+		NodeLocalWake:   true,
+		GroupListenPort: 5410,
+		GroupMemberPlan: []*nodev1.GroupMemberPlanEntry{{
+			MemberName:     "server",
+			StartOrder:     0,
+			HealthPort:     6443,
+			EntryGuestPort: 6443,
+			Sizing:         &nodev1.ResourceSpec{Vcpus: 2, MemMib: 1024},
+		}},
+	})
+	r.sync([]workloadEntry{group})
+	got, ok := r.groupByListenPort(5410)
+	if !ok || got.Workload != "scratch-k8s" || len(got.GroupMemberPlan) != 1 {
+		t.Fatalf("groupByListenPort = %+v, %v", got, ok)
+	}
+	if got.GroupMemberPlan[0].MemMib != 1024 || got.GroupMemberPlan[0].EntryGuestPort != 6443 {
+		t.Errorf("group plan = %+v", got.GroupMemberPlan[0])
+	}
+
+	group.NodeLocalWake = false
+	r.sync([]workloadEntry{group})
+	if _, ok := r.groupByListenPort(5410); ok {
+		t.Error("groupByListenPort accepted a workload without node_local_wake")
+	}
 }
 
 // TestSyncConvergesDropsStaleEntry is the C1 converge-drops-stale-entry case: a
@@ -43,7 +76,7 @@ func TestSyncIdempotentUnderReplay(t *testing.T) {
 	first, _ := r.get("a")
 	r.sync(set)
 	second, _ := r.get("a")
-	if first != second || r.count() != 2 {
+	if !reflect.DeepEqual(first, second) || r.count() != 2 {
 		t.Errorf("replay changed state: first=%+v second=%+v count=%d", first, second, r.count())
 	}
 }
@@ -186,7 +219,7 @@ func TestPersistAtomicRoundTrip(t *testing.T) {
 	r2 := newWorkloadRegistry(path)
 	r2.loadCache()
 	got, ok := r2.get("a")
-	if !ok || got != want {
+	if !ok || !reflect.DeepEqual(got, want) {
 		t.Errorf("round-trip mismatch: got %+v (ok=%v), want %+v", got, ok, want)
 	}
 }

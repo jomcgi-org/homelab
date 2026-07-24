@@ -22,23 +22,47 @@ type workloadEntry struct {
 	// ImageRef is the OCI ref a BuildBase resolves against to find this entry's
 	// node-side rootfs/harness (the join key the retired EMBERVM_NODED_IMAGES
 	// table keyed on). getByImageRef indexes on it.
-	ImageRef             string `json:"imageRef"`
-	RootfsRef            string `json:"rootfsRef"`
-	HarnessInit          string `json:"harnessInit"`
-	VCPUs                uint32 `json:"vcpus"`
-	MemMib               uint32 `json:"memMib"`
-	NodeLocalWake        bool   `json:"nodeLocalWake"`
-	ServingPort          uint32 `json:"servingPort"`
-	ServingHealthPath    string `json:"servingHealthPath"`
-	StatefulListenPort   uint32 `json:"statefulListenPort"`
-	StatefulPort         uint32 `json:"statefulPort"`
-	StatefulVolumeMount  string `json:"statefulVolumeMount"`
-	StatefulBootImageRef string `json:"statefulBootImageRef"`
-	StatefulVolumeDevice string `json:"statefulVolumeDevice"`
+	ImageRef             string                 `json:"imageRef"`
+	RootfsRef            string                 `json:"rootfsRef"`
+	HarnessInit          string                 `json:"harnessInit"`
+	VCPUs                uint32                 `json:"vcpus"`
+	MemMib               uint32                 `json:"memMib"`
+	NodeLocalWake        bool                   `json:"nodeLocalWake"`
+	ServingPort          uint32                 `json:"servingPort"`
+	ServingHealthPath    string                 `json:"servingHealthPath"`
+	StatefulListenPort   uint32                 `json:"statefulListenPort"`
+	StatefulPort         uint32                 `json:"statefulPort"`
+	StatefulVolumeMount  string                 `json:"statefulVolumeMount"`
+	StatefulBootImageRef string                 `json:"statefulBootImageRef"`
+	StatefulVolumeDevice string                 `json:"statefulVolumeDevice"`
+	GroupListenPort      uint32                 `json:"groupListenPort"`
+	GroupMemberPlan      []groupMemberPlanEntry `json:"groupMemberPlan,omitempty"`
+}
+
+type groupMemberPlanEntry struct {
+	MemberName     string `json:"memberName"`
+	MemberIndex    uint32 `json:"memberIndex"`
+	StartOrder     uint32 `json:"startOrder"`
+	HealthPort     uint32 `json:"healthPort"`
+	EntryGuestPort uint32 `json:"entryGuestPort"`
+	VCPUs          uint32 `json:"vcpus"`
+	MemMib         uint32 `json:"memMib"`
 }
 
 // entryFromProto lifts a wire RegistryEntry into the daemon's internal shape.
 func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
+	groupPlan := make([]groupMemberPlanEntry, 0, len(e.GetGroupMemberPlan()))
+	for _, member := range e.GetGroupMemberPlan() {
+		groupPlan = append(groupPlan, groupMemberPlanEntry{
+			MemberName:     member.GetMemberName(),
+			MemberIndex:    member.GetMemberIndex(),
+			StartOrder:     member.GetStartOrder(),
+			HealthPort:     member.GetHealthPort(),
+			EntryGuestPort: member.GetEntryGuestPort(),
+			VCPUs:          member.GetSizing().GetVcpus(),
+			MemMib:         member.GetSizing().GetMemMib(),
+		})
+	}
 	return workloadEntry{
 		Workload:             e.GetWorkload(),
 		ImageDigest:          e.GetImageDigest(),
@@ -55,6 +79,8 @@ func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 		StatefulVolumeMount:  e.GetStatefulVolumeMount(),
 		StatefulBootImageRef: e.GetStatefulBootImageRef(),
 		StatefulVolumeDevice: e.GetStatefulVolumeDevice(),
+		GroupListenPort:      e.GetGroupListenPort(),
+		GroupMemberPlan:      groupPlan,
 	}
 }
 
@@ -170,6 +196,20 @@ func (r *workloadRegistry) statefulByListenPort(port uint32) (workloadEntry, boo
 	defer r.mu.Unlock()
 	for _, e := range r.entries {
 		if e.NodeLocalWake && e.StatefulListenPort == port {
+			return e, true
+		}
+	}
+	return workloadEntry{}, false
+}
+
+// groupByListenPort resolves the opaque-L4 composite activator identity. The
+// accept port is the only workload discriminator, so the shared node-local-wake
+// gate, a nonzero group listen port, and a nonempty member plan are required.
+func (r *workloadRegistry) groupByListenPort(port uint32) (workloadEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if e.NodeLocalWake && e.GroupListenPort == port && len(e.GroupMemberPlan) > 0 {
 			return e, true
 		}
 	}

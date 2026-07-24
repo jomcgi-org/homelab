@@ -1899,14 +1899,11 @@ func (d *Driver) ScanGroupNetworks() []substrate.GroupNetworkRecord {
 // session/serving/stateful VM (memfile + snapfile, no archive backing file), but
 // the bundle layout is group/<set_id>/<member_name>/ so the control plane can
 // address a whole RELIGHTABLE SET by set_id and the daemon reports member bundles
-// GROUPED BY set dir (ScanGroupBundleSets). A member bundle carries NO sidecar: the
-// member's pinned tap/MAC/IP are DETERMINISTIC from (group_instance_id, member_name,
-// member_index) via Task 4's addressing, so a relight re-derives the pinned world
-// from the request identity rather than reading it back, and there is no generation
-// ledger for a member the way a stateful volume has one. The pinned world (tap name
-// + MAC + IP) MUST be recreated identically BEFORE the resume, because the guest's
-// eth0 keeps the address baked at fresh boot and a snapshot resume never re-runs
-// kernel init (the D-R3.4.1 pin, applied to a member's group bridge).
+// GROUPED BY set dir (ScanGroupBundleSets). The server writes member.json beside
+// each completed bundle with the exact pinned IP and guest health port held at
+// bank time. The pinned world (tap name + MAC + IP) MUST be recreated identically
+// BEFORE the resume, because the guest's eth0 keeps the address baked at fresh
+// boot and a snapshot resume never re-runs kernel init.
 
 // GroupSetsDir is the parent directory holding all banked GROUP member bundles,
 // under the group/ prefix of the snapshot root (a sibling of bases/, sessions/,
@@ -1957,10 +1954,11 @@ func (d *Driver) ClaimGroupMember(ctx context.Context, rootfsPath, harnessInit s
 // SnapshotGroupMember pauses a live member VM and writes a self-contained member
 // bundle (memfile + snapfile) under group/<set_id>/<member_name>/. It does NOT
 // resume: the caller Releases the VM immediately after (StopGroupMember BANK
-// destroys). It mirrors SnapshotSession exactly (no sidecar: a member's pinned
-// world is derivable, not banked). On any failure after the handle is confirmed the
-// VM is torn down (a bank is destructive), so a failed bank never leaves a live/
-// paused handle behind for the server to misreport as capacity.
+// destroys). It mirrors SnapshotSession exactly; the server publishes member.json
+// after this returns because the live registry owns the pinned IP and port. On any
+// failure after the handle is confirmed the VM is torn down (a bank is destructive),
+// so a failed bank never leaves a live/paused handle behind for the server to
+// misreport as capacity.
 func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, setID, memberName string) (substrate.SnapshotRef, error) {
 	if setID == "" || memberName == "" {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: SnapshotGroupMember requires a set_id and member_name")
@@ -2014,9 +2012,9 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 // bundle (group/<set_id>/<member_name>/), resuming it so the guest continues exactly
 // where it was banked, WITH the NIC it captured at bank time. It mirrors
 // RestoreServing. The caller has already recreated the host tap (same name + MAC)
-// and configured the pinned IP on the group bridge BEFORE this runs (the pinned
-// world is derived from the group + member + index, not read from a sidecar), so the
-// resumed guest's baked eth0 still routes. A missing bundle is an error the caller
+// and configured the pinned IP on the group bridge BEFORE this runs (the node-local
+// activator reads that exact IP from member.json), so the resumed guest's baked
+// eth0 still routes. A missing bundle is an error the caller
 // maps to FAILED_PRECONDITION (the bundle is NEVER deleted on a failed restore: a
 // lost member must surface loudly).
 func (d *Driver) RestoreGroupMember(ctx context.Context, setID, memberName string) (substrate.Handle, error) {
@@ -2086,10 +2084,19 @@ func (d *Driver) ScanGroupBundleSets() []substrate.GroupBundleSetInfo {
 			if mfi, err := os.Stat(d.groupMemberMemfile(setID, memberName)); err == nil {
 				size += mfi.Size()
 			}
+			var meta substrate.GroupBundleMemberMetadata
+			if raw, err := os.ReadFile(filepath.Join(d.groupMemberDir(setID, memberName), substrate.GroupBundleMemberMetadataFile)); err == nil {
+				var decoded substrate.GroupBundleMemberMetadata
+				if json.Unmarshal(raw, &decoded) == nil {
+					meta = decoded
+				}
+			}
 			members = append(members, substrate.GroupBundleMemberInfo{
 				MemberName:  memberName,
 				SnapshotRef: filepath.Join("group", setID, memberName),
 				SizeBytes:   size,
+				PinnedIP:    meta.PinnedIP,
+				Port:        meta.Port,
 			})
 		}
 		if len(members) == 0 {

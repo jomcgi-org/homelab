@@ -277,6 +277,20 @@ func run(logger *slog.Logger) error {
 		}
 		srv.StartStatefulActivator(ctx, statefulActivatorListeners)
 	}
+	var groupActivatorListeners []net.Listener
+	if lo, hi := cfg.GroupActivatorPortRange[0], cfg.GroupActivatorPortRange[1]; lo != 0 && hi >= lo && cfg.CompositeSupernet != "" {
+		for port := lo; port <= hi; port++ {
+			groupLis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+			if err != nil {
+				for _, bound := range groupActivatorListeners {
+					_ = bound.Close()
+				}
+				return fmt.Errorf("group activator listen on port %d: %w", port, err)
+			}
+			groupActivatorListeners = append(groupActivatorListeners, groupLis)
+		}
+		srv.StartGroupActivator(ctx, groupActivatorListeners)
+	}
 
 	// Plain-HTTP /healthz for kubelet probes (a privileged single-replica pod does
 	// not warrant gRPC health-checking machinery).

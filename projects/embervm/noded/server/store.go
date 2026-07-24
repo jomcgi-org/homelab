@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
 // artifactStore is the seam the R6 continuity verbs and the async export queue
@@ -210,6 +214,33 @@ func (s *Server) writeGroupInstanceSidecar(setID, memberName, groupInstanceID st
 	if err := os.WriteFile(path, []byte(groupInstanceID), 0o600); err != nil {
 		s.logger.Warn("noded: write group instance sidecar (bundle still usable, will seed empty on restart)", "set", setID, "member", memberName, "gid", groupInstanceID, "err", err)
 	}
+}
+
+// writeGroupMemberMetadata records the exact network identity held by a member
+// when it was banked. Best-effort: a missing sidecar makes the bundle ineligible
+// for node-local relight, while the control plane can still relight it.
+func (s *Server) writeGroupMemberMetadata(setID, memberName string, pinnedIP net.IP, port uint32) bool {
+	if s.groupDriver == nil || pinnedIP == nil || setID == "" || memberName == "" {
+		return false
+	}
+	root := s.groupDriver.GroupSetsDir()
+	if root == "" {
+		return false
+	}
+	raw, err := json.Marshal(substrate.GroupBundleMemberMetadata{
+		PinnedIP: pinnedIP.String(),
+		Port:     port,
+	})
+	if err != nil {
+		s.logger.Warn("noded: encode group member metadata", "set", setID, "member", memberName, "err", err)
+		return false
+	}
+	path := filepath.Join(root, setID, memberName, substrate.GroupBundleMemberMetadataFile)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		s.logger.Warn("noded: write group member metadata (bundle remains control-plane relightable)", "set", setID, "member", memberName, "err", err)
+		return false
+	}
+	return true
 }
 
 // readGroupInstanceSidecar reads the group_instance_id a member bundle was banked

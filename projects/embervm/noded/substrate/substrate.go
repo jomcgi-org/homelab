@@ -216,11 +216,10 @@ type GroupNetworkRecord struct {
 // GroupBundleMemberInfo is one member's banked snapshot discovered within a group
 // bundle set on disk (R5), returned by the driver's startup rescan
 // (ScanGroupBundleSets). The member subdir name is the member_name; the ref is the
-// opaque per-member bundle handle (group/<set_id>/<member_name>). A member bundle
-// carries NO sidecar: the member IP is DETERMINISTIC from the group + member +
-// index (Task 4's addressing), so a relight re-derives it rather than reading it
-// back, and there is no generation ledger for a member the way a stateful volume
-// has one.
+// opaque per-member bundle handle (group/<set_id>/<member_name>). New bundles
+// carry member.json with the exact pinned IP and guest health port held at bank
+// time. Older bundles have empty metadata and remain control-plane relightable,
+// but are not eligible for node-local group activation.
 type GroupBundleMemberInfo struct {
 	// MemberName is the member subdir name within the set dir.
 	MemberName string
@@ -228,7 +227,22 @@ type GroupBundleMemberInfo struct {
 	SnapshotRef string
 	// SizeBytes is the member bundle's on-disk size (snapfile + memfile).
 	SizeBytes int64
+	// PinnedIP is the exact group-subnet IP baked into the member snapshot.
+	// Empty when member.json is absent or unreadable.
+	PinnedIP string
+	// Port is the guest TCP health port held by the member at bank time.
+	// Zero when member.json is absent or unreadable.
+	Port uint32
 }
+
+// GroupBundleMemberMetadata is the minimal per-member bank sidecar used by a
+// restarted daemon to reconstruct the snapshot's pinned network world.
+type GroupBundleMemberMetadata struct {
+	PinnedIP string `json:"pinnedIp"`
+	Port     uint32 `json:"port"`
+}
+
+const GroupBundleMemberMetadataFile = "member.json"
 
 // GroupBundleSetInfo is the per-member banked snapshots the driver's startup rescan
 // (ScanGroupBundleSets) found grouped under one set directory (group/<set_id>/), so

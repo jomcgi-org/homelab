@@ -131,6 +131,39 @@ func TestLoadStatefulActivatorPortRangeEmptyDisables(t *testing.T) {
 	}
 }
 
+func TestLoadGroupActivatorPortRange(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE", "15410-15419")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.GroupActivatorPortRange != [2]uint32{15410, 15419} {
+		t.Errorf("GroupActivatorPortRange = %v, want [15410 15419]", c.GroupActivatorPortRange)
+	}
+}
+
+func TestLoadGroupActivatorPortRangeDisabled(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE", "0")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.GroupActivatorPortRange != [2]uint32{} {
+		t.Errorf("GroupActivatorPortRange = %v, want disabled", c.GroupActivatorPortRange)
+	}
+}
+
+func TestLoadGroupActivatorPortRangeEmptyDisables(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.GroupActivatorPortRange != [2]uint32{} {
+		t.Errorf("GroupActivatorPortRange = %v, want disabled", c.GroupActivatorPortRange)
+	}
+}
+
 // TestLoadCpuTemplateDefaultsPerVendor proves CpuTemplate resolves to the
 // conservative per-vendor default (PR-E) when EMBERVM_NODED_CPU_TEMPLATE is
 // unset and CpuVendor is known, for both fleet vendors.
