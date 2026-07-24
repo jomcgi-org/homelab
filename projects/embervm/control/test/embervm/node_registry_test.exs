@@ -13,7 +13,7 @@ defmodule Embervm.NodeRegistryTest do
   use ExUnit.Case, async: true
 
   alias Embervm.NodeRegistry
-  alias Embervm.Node.V1.{NodeStatus, WorkloadCapacity}
+  alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, WorkloadCapacity}
 
   # -- helpers ---------------------------------------------------------------
 
@@ -100,6 +100,29 @@ defmodule Embervm.NodeRegistryTest do
     snapshot = NodeRegistry.status(reg)
     assert snapshot["node-4"].health == :healthy
     assert snapshot["node-4"].dispatchable
+  end
+
+  test "a group member's ACTIVATOR origin is retained in node facts for adoption" do
+    {clock, _advance} = new_clock()
+    {reg, table} = start_registry(clock: clock)
+
+    status = %NodeStatus{
+      node_status()
+      | group_member_vms: [
+          %GroupMemberVm{
+            vm_id: "vm-relit",
+            group_instance_id: "group-relit",
+            member_name: "leader",
+            ip: "10.101.0.10",
+            healthy: true,
+            origin: :INSTANCE_ORIGIN_ACTIVATOR
+          }
+        ]
+    }
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", status)
+
+    assert [%{group_member_vms: [%{origin: :INSTANCE_ORIGIN_ACTIVATOR}]}] = NodeRegistry.capacity(table)
   end
 
   test "registry projects the CPU-vendor fact (Bug B: restore-on-miss vendor keying)" do

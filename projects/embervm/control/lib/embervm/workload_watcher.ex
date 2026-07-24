@@ -1306,7 +1306,12 @@ defmodule Embervm.WorkloadWatcher do
       idle_bank_seconds: Map.get(g, "idleBankSeconds") || @group_defaults.idle_bank_seconds,
       max_lifetime_seconds: Map.get(g, "maxLifetimeSeconds") || @group_defaults.max_lifetime_seconds,
       banked_ttl_seconds: Map.get(g, "bankedTtlSeconds") || @group_defaults.banked_ttl_seconds,
-      wake_timeout_seconds: Map.get(g, "wakeTimeoutSeconds") || @group_defaults.wake_timeout_seconds
+      wake_timeout_seconds: Map.get(g, "wakeTimeoutSeconds") || @group_defaults.wake_timeout_seconds,
+      # ADR embervm/018 Phase 3: node_local_wake gates the brick's complete-set
+      # relight for a composite workload. metering_fail_open is declarative in Fork
+      # A, named rather than implied, and is not an enforcement point here.
+      node_local_wake: Map.get(g, "nodeLocalWake") == true,
+      metering_fail_open: Map.get(g, "meteringFailOpen") == true
     }
   end
 

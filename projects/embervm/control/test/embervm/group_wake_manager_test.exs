@@ -466,6 +466,43 @@ defmodule Embervm.GroupWakeManagerTest do
     assert FakePublisher.count(ctx.pub) >= 1
   end
 
+  test "adoption: a node-relit banked group is adopted op-free without orphan destroy" do
+    ctx = start_stack()
+    instance_id = "g-activator-relit"
+    _ = seed_banked(ctx, instance_id)
+
+    # The brick relit the complete local set while the control plane was absent.
+    # The returning CP adopts node truth only: no lifecycle backfill op exists for
+    # composites because they are warmth-only.
+    seed_node(ctx, %{
+      group_member_vms: [
+        %{
+          vm_id: "vm-relit",
+          group_instance_id: instance_id,
+          member_name: "leader",
+          ip: "10.101.0.10",
+          healthy: true,
+          origin: :INSTANCE_ORIGIN_ACTIVATOR
+        }
+      ]
+    })
+
+    {:ok, ops_before} = SQLite.read_from(ctx.op_log, 0)
+
+    :ok = GroupWakeManager.reconcile(ctx.mgr)
+
+    {:ok, inst} = GroupStore.get(ctx.store, instance_id)
+    assert inst.state == :running
+    assert %{ip: "10.0.0.9", port: 30_010} = GroupStore.entry_endpoint(ctx.store, "grp-a")
+    assert inst.entry_ip == "10.0.0.9"
+    assert inst.entry_port_published == 30_010
+    assert {0, 0, 1} = sup_counts()
+    assert stop_calls(ctx) == []
+
+    {:ok, ops_after} = SQLite.read_from(ctx.op_log, 0)
+    assert ops_after == ops_before
+  end
+
   test "adoption SKIPS a :destroying group even though the node still reports live members" do
     ctx = start_stack()
     instance_id = "g-destroying"

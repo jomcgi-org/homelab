@@ -41,6 +41,7 @@ defmodule Embervm.EndpointPublisherGroupTest do
       catalog_table: stack.cat_table,
       activator_endpoint: Keyword.get(opts, :activator_endpoint, %{ip: "10.1.1.1", port: 7000}),
       activator_ip: Keyword.get(opts, :activator_ip, nil),
+      node_facts: Keyword.get(opts, :node_facts, []),
       connect_timeout_ms: 1_000
     }
   end
@@ -114,6 +115,37 @@ defmodule Embervm.EndpointPublisherGroupTest do
     ctx = build_ctx(stack, activator_ip: "10.2.2.2")
     desired = EndpointPublisher.desired_for_node(ctx, "v1")
 
+    cluster = Enum.find(desired.clusters, &(&1.name == "group|grp-a"))
+    assert cluster.endpoints == [%{ip: "10.2.2.2", port: 5412}]
+  end
+
+  test "a banked composite workload prefers its anchor brick advertised activator" do
+    stack = start_stack()
+    composite_workload(stack, "grp-a", 5412)
+    running_group(stack, "g-1", "grp-a", "10.0.0.9", 30_010)
+    {:ok, _} = GroupStore.mark(stack.group_store, "g-1", :bank)
+    {:ok, _} = GroupStore.bank_ready(stack.group_store, "g-1", "set-1", [%{name: "leader", snapshot_ref: "snap-l"}])
+
+    ctx =
+      build_ctx(stack,
+        activator_ip: "10.2.2.2",
+        node_facts: [%{configured_id: "node-4", activator_ip: "10.4.4.4"}]
+      )
+
+    desired = EndpointPublisher.desired_for_node(ctx, "v1")
+    cluster = Enum.find(desired.clusters, &(&1.name == "group|grp-a"))
+    assert cluster.endpoints == [%{ip: "10.4.4.4", port: 5412}]
+  end
+
+  test "a banked composite workload without an anchor advertisement falls back to the CP activator" do
+    stack = start_stack()
+    composite_workload(stack, "grp-a", 5412)
+    running_group(stack, "g-1", "grp-a", "10.0.0.9", 30_010)
+    {:ok, _} = GroupStore.mark(stack.group_store, "g-1", :bank)
+    {:ok, _} = GroupStore.bank_ready(stack.group_store, "g-1", "set-1", [%{name: "leader", snapshot_ref: "snap-l"}])
+
+    ctx = build_ctx(stack, activator_ip: "10.2.2.2", node_facts: [%{configured_id: "node-4"}])
+    desired = EndpointPublisher.desired_for_node(ctx, "v1")
     cluster = Enum.find(desired.clusters, &(&1.name == "group|grp-a"))
     assert cluster.endpoints == [%{ip: "10.2.2.2", port: 5412}]
   end
