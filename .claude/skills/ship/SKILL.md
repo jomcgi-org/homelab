@@ -35,34 +35,57 @@ If feature, scope, success criteria, or systems touched are unclear, ask 2-4
 questions (`AskUserQuestion`). Restate the agreed direction in one sentence,
 then proceed.
 
-## State ledger (GitHub Issues)
+## State ledger (GitHub Issues — forced tracking)
 
-Open or reuse a tracking issue (`enhancement`, `agent-ready` if pickable). Body:
-
-```
-## Lifecycle state
-- [ ] 1-plan      pr=
-- [ ] 2-adr       pr=
-- [ ] 3-bdd       pr=
-- [ ] 4-implement pr=
-- [ ] 5-stpa      pr=  systems=
-```
-
-Plan text lives in the issue (or an uncommitted working file), never
-`docs/plans/` (retired). Multi-part work: parent + **sub-issues**. Close the
-issue when all five boxes are checked. Always worktree + feature branch,
+Open or reuse a tracking issue (`enhancement`, `agent-ready` if pickable).
+**The issue body is the source of truth for what is left to do.** Put the plan
+and the checklists below into the issue (never `docs/plans/`, which is retired).
+Multi-part work: parent + **sub-issues**. Always worktree + feature branch,
 never main.
 
-On every `/ship` resume: read the issue, first unchecked phase, continue there.
+On every `/ship` resume: `gh issue view <n>`, find the first unchecked box,
+continue there. Update the issue (`gh issue edit <n> --body-file …` or equivalent)
+as each gate is met. Closing the issue is how "shipped" is recorded.
+
+### Issue body template (paste at create time)
+
+```markdown
+## Summary
+<!-- one sentence: what we are shipping and why -->
+
+## Plan
+<!-- full plan lives HERE, not in the repo. Tasks, acceptance, systems touched. -->
+
+## Lifecycle
+- [ ] 1-plan        done=  notes=
+- [ ] 2-adr         pr=    path=docs/decisions/...
+- [ ] 3-bdd         pr=    specs=
+- [ ] 4-implement   pr=    <!-- must include Closes #<this issue> -->
+- [ ] 5-stpa        pr=    systems=
+
+## Phase 4 gates (must all be checked before "ready for review")
+- [ ] `ci` green on the worktree (or at least `ci test` 1:1 with Workflows Test)
+- [ ] Implement PR body contains `Closes #<this issue>` (or parent if sub-issue)
+- [ ] Chart bump if the change must deploy (`bazel/tools/git/bump-chart.sh projects/<svc>`)
+      N/A if docs/test-only: write `n/a — <reason>`
+- [ ] Branch up to date with main (strict required checks; rebase if BEHIND)
+- [ ] Opus review of the full PR diff done (agent); human review requested
+
+## Notes / blockers
+<!-- Discord notify only for blockers that need Joe -->
+```
+
+Sub-issues inherit the same **Phase 4 gates** section; lifecycle phase 1–5 stays on
+the parent unless the sub-issue is independently shippable end-to-end.
 
 ## The five phases
 
 | # | Phase | How | Artifact | Merge |
 |---|-------|-----|----------|-------|
-| 1 | Plan | brainstorm + writing-plans in main loop (Opus) | Tracking issue holds plan + ledger | n/a |
+| 1 | Plan | Clarify + write plan **into the tracking issue** (Opus) | Issue body | n/a |
 | 2 | ADR | `adr` skill | `docs/decisions/<cat>/NNN-*.md` | auto rebase |
-| 3 | Failing BDD | author `bdd_test(future = True, ...)` with `@covers_*` | Red future specs | auto rebase |
-| 4 | Implement | **Codex Luna** (default) / Terra if needed / Sonnet fallback; Opus for CI-only-hard slices; **`ci` before push**; one human PR review | Feature code | **pause for human** |
+| 3 | Failing BDD | `bdd_test(future = True, ...)` with `@covers_*` | Red future specs | auto rebase |
+| 4 | Implement | Codex Luna (default) / Terra if needed / Sonnet fallback; Opus for CI-only-hard slices; **all Phase 4 gates** | Feature PR | **pause for human** |
 | 5 | STPA | `stpa` skill per touched system | `<system>/STPA.md` | auto rebase |
 
 ### Phase 3 — Failing BDD
@@ -71,24 +94,28 @@ Specs define done. Gating Test excludes `-future`; informational "BDD future
 features" runs them. Include `@covers_*` markers
 (`shared/testing/markers.py`). Merging red specs is intentional.
 
-### Phase 4 — Implement
+### Phase 4 — Implement (gates are non-optional)
 
 1. Split the plan into tasks. Prefer **parallel Codex Luna** dispatches (one
    worktree per worker) for independent mechanical/standard work.
 2. Keep on **Opus** anything only slow CI can verify (deep Helm, Bazel/apko,
    RBAC verbs, migration ordering, cross-service wiring).
-3. After implementation chunks: dispatching agent reviews the diff (Opus
-   eyes), runs **`ci`** (or at least `ci lint` + `ci test`), commits
-   Conventional Commits, pushes, opens/updates the PR.
-4. **One comprehensive human code review** per PR (not per sub-task). Do not
-   auto-merge phase 4. Report PR URL and **stop** until merged.
-5. Codex exit 42: one Discord notify (main loop only), fall back to Sonnet;
+3. After implementation chunks: Opus reviews the diff, runs **`ci`** (full, or
+   `ci lint` + `ci test`), commits Conventional Commits.
+4. **Before calling the PR "ready for review"** every Phase 4 gate on the
+   tracking issue must be checked. Especially:
+   - Green `ci` (do not open "ready" on hope that Workflows will pass first)
+   - PR description includes `Closes #<tracking issue>`
+   - Chart version bumped in the **same** PR if code must deploy
+5. One comprehensive **human** code review per PR. Do not auto-merge phase 4.
+   Report PR URL and **stop** until merged. Then tick lifecycle `4-implement`.
+6. Codex exit 42: one Discord notify (main loop only), fall back to Sonnet;
    do not re-notify in-session.
 
 ### Phase 5 — STPA
 
 For each system subtree touched by phase 4, run `stpa` (`system =
-projects/monolith`, etc.). Rebase-merge on green. Record systems in the ledger.
+projects/monolith`, etc.). Rebase-merge on green. Record systems on the issue.
 
 ## Merge cadence
 
@@ -97,9 +124,9 @@ human review only. Branch must stay up to date with main (strict checks).
 
 ## Stop conditions
 
-- Phase 0 blocked on unanswered clarification: ask and stop.
-- Phase 4 PR awaiting human review: stop, report URL.
-- CI red on a real failure out of scope: stop, diagnose (prefer `ci test` /
-  BuildBuddy MCP logs).
-- All five boxes checked: report shipped with PR links.
+- Phase 0 blocked on unanswered clarification: ask and stop (Discord if Joe may be away).
+- Phase 4 gates incomplete: do not request human review yet; finish gates.
+- Phase 4 PR awaiting human review (gates green): stop, report URL.
+- CI red on a real failure out of scope: stop, diagnose (`ci test` / BuildBuddy MCP).
+- All lifecycle boxes checked and issue closed: report shipped with PR links.
 - User says stop: stop.

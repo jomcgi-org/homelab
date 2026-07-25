@@ -15,8 +15,9 @@ homelab/
 │   │   └── deploy/        # ArgoCD Application, values, kustomization
 │   └── home-cluster/      # Auto-generated ArgoCD root kustomization
 ├── bazel/               # All Bazel build infrastructure (rules, tools, images, semgrep, patches)
-├── docs/               # Design docs, ADRs, and plans — ls to discover available docs
-│   └── decisions/       # Architecture Decision Records — ls decisions/<category>/
+├── docs/               # Design docs, ADRs, runbooks (plans live in GitHub Issues)
+│   ├── decisions/       # Architecture Decision Records — ls decisions/<category>/
+│   └── runbooks/        # Explicit-only procedures (not auto skills)
 ├── MODULE.bazel         # Bazel dependency management (bzlmod, not WORKSPACE)
 └── buildbuddy.yaml      # CI pipeline definition
 ```
@@ -248,7 +249,9 @@ Runs on every push/PR:
 - **Format check** — standalone formatters + gazelle, auto-commits fixes on PR branches (as `ci-format-bot`)
 - **Test and push** — `bazel test //...`, pushes images on main branch
 
-**Inner loop is `ci`, then push.** Run `ci` (or at least `ci test`) before pushing so PR Workflows mostly cache-hit. After push, monitor with `gh pr checks <number> --watch`. Read failures via `mcp__buildbuddy__get_invocation` + `get_log` (see Cluster Investigation table).
+**Inner loop is `ci`, then push.** Run `ci` (or at least `ci test`) before pushing so PR Workflows mostly cache-hit. Pre-push hook runs `ci test` when installed (`pre-commit install --hook-type pre-push`); skip with `SKIP_CI_TEST=1` for docs-only. After push, monitor with `gh pr checks <number> --watch`. Read failures via `mcp__buildbuddy__get_invocation` + `get_log` (see Cluster Investigation table).
+
+**Ship / multi-phase work:** lifecycle + Phase 4 gates live on the **GitHub tracking issue** (see `ship` skill template): green `ci`, `Closes #<issue>`, chart bump if deployable, up-to-date with main, review. Do not call a PR ready until those boxes are checked on the issue.
 
 **CI failure diagnosis — quote before hypothesizing.** When CI is red, the first action is to fetch the actual log: `mcp__buildbuddy__get_invocation` (use `commitSha` selector to skip the invocation-ID lookup) → `get_target` to find failing targets → `get_log` for the trace.
 
