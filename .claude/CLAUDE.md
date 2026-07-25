@@ -181,6 +181,11 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 **Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,
 `codex-implement`, `pr-workflow`, `ci-triage`.
 
+**Agents** (`.claude/agents/`): `implementer` (Luna), `reviewer` (Opus),
+`adr-author` and `stpa-analyst` (Sonnet), `escalation` (Fable). Dispatch work to
+these rather than doing it in the main loop: each gets its own context, and the
+three that must not write code have no `Write` or `Edit` tool.
+
 **Runbooks** (`docs/runbooks/`) are explicit-only. Open one when Joe names it,
 when a row above points at it, or when a `claude_routines/*.yaml` prompt does.
 Index: `docs/runbooks/README.md`. Do not turn runbook content into skills.
