@@ -38,11 +38,17 @@ recommendation, then wait. Skip that for config fixes, renames, and anything he
 has already scoped.
 
 Once a plan exists, do not offer a mode-choice prompt: announce Task 1, dispatch
-implementers (Codex Luna preferred, see the `codex-implement` skill), run `ci`,
-and review as Opus. Do **one** comprehensive review per PR at the end rather than
-per sub-task; the PR is the review boundary. That overrides the per-task review
-steps in `superpowers:subagent-driven-development`, which was calibrated for a
-more autonomous setting.
+implementers, run `ci`, and review as Opus. Do **one** comprehensive review per
+PR at the end rather than per sub-task; the PR is the review boundary. That
+overrides the per-task review steps in
+`superpowers:subagent-driven-development`, which was calibrated for a more
+autonomous setting.
+
+Implementation bulk goes to **Codex Luna** via the `codex-implement` skill, which
+bills OpenAI rather than the Claude weekly limit. On exit 42 (quota exhausted),
+send one `warn` notify and fall back to Sonnet, with no retry loop and no second
+notify. Keep Opus on the review and on anything only a slow CI round-trip would
+catch. Fable is a last resort for a genuine wall, not an upgrade path.
 
 If you end a turn blocked on a decision only Joe can make and he may be away,
 send one `monolith-monolith-agent-notify` line saying what you need. Main loop
@@ -111,7 +117,12 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
   hardcode one.
 - **Nothing is exposed to the internet directly.** All traffic goes through
   Cloudflare.
-- **Check upstream for an existing Helm chart** before writing a custom one.
+- **The kubernetes, ArgoCD, and SigNoz MCP servers do not exist.** Context Forge
+  serves only the GitHub and monolith gateways, so do not spend turns on
+  `ToolSearch +kubernetes`, `+argocd`, or `+signoz`. Use `kubectl`, and the UIs
+  at `private.jomcgi.dev/app/argocd` and `private.jomcgi.dev/app/signoz`. The
+  BuildBuddy MCP needs `${BUILDBUDDY_API_KEY}` in the shell env *before* the
+  session starts, and there is no fallback for inspecting CI without it.
 - **New service:** copy a recent `deploy/` directory (`projects/monolith/deploy/`
   is a good template) for the multi-source pattern, an OCI chart from
   `ghcr.io/jomcgi/homelab/charts` with a pinned `targetRevision` plus a `$values`
@@ -129,8 +140,6 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 | Observability work | `docs/observability.md` |
 | Alerting work | `docs/reference/observability-alerting.md` |
 | Operator changes | `projects/operators/best-practices.md` |
-| Which model or CLI should do this work | `docs/reference/model-routing.md` |
-| Reaching the cluster, CI, or Joe from a session | `docs/reference/agent-tooling.md` |
 | Design proposals | `docs/decisions/`, numbered per category |
 
 **Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,
