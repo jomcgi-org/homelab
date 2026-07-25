@@ -10,6 +10,9 @@ npm_link_all_packages(name = "node_modules")
 
 # gazelle:prefix github.com/jomcgi/homelab
 # gazelle:exclude .claude
+# Explicit-only agent procedures + helper scripts (not py packages; imports are
+# runtime/monolith paths Gazelle cannot resolve). Same class as .claude/skills.
+# gazelle:exclude docs/runbooks
 
 # gazelle:semgrep_target_kinds py_venv_binary
 
