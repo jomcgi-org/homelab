@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# ci — local feedback loop that matches PR CI so Workflows mostly cache-hit.
+# ci: local feedback loop that matches PR CI so Workflows mostly cache-hit.
 #
 # Steps:
-#   1. lint   — format only files changed vs origin/main (ruff/shfmt/gofumpt/prettier/buildifier)
-#   2. regen  — run generators only when their inputs changed
-#   3. test   — bb remote (Linux) bazel test with the same flags as buildbuddy.yaml "Test"
+#   1. lint   format only files changed vs origin/main
+#   2. regen  generators/gazelle only when their inputs changed
+#   3. test   bb remote (Linux) bazel test with the same flags as buildbuddy.yaml "Test"
 #
 # Usage:
 #   ci              # lint + regen + remote test
 #   ci lint         # format changed files only
 #   ci regen        # selective generators (+ gazelle when go/py/BUILD changed)
-#   ci test         # bb remote test only
+#   ci test         # bb remote test only (optional: ci test -- //path:target ...)
 #   ci --help
 #
 # Env:
@@ -19,6 +19,10 @@
 #
 # Test flags are locked to buildbuddy.yaml "Test" for action-cache sharing:
 #   test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+#
+# Secrets: `ci test` passes include-secrets=true so the remote runner matches CI
+# (Docker Hub etc.). That widens org secrets from CI-only runners to any local
+# `ci test` (including agent-driven). Treat the working tree as CI-equivalent.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -31,7 +35,6 @@ cd "$ROOT"
 if [[ -d "$ROOT/.tools/bin" ]]; then
 	export PATH="$ROOT/.tools/bin:$PATH"
 fi
-# Vendored tools from bootstrap.sh / direnv
 if [[ -d "${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin" ]]; then
 	export PATH="${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin:$PATH"
 fi
@@ -46,7 +49,7 @@ err() { printf '%s✗%s %s\n' "$RED" "$NC" "$*" >&2; }
 dim() { printf '%s%s%s\n' "$DIM" "$*" "$NC"; }
 
 usage() {
-	sed -n '2,20p' "$0" | sed 's/^# \?//'
+	sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d' | sed 's/^# \?//'
 }
 
 # Changed paths vs merge-base with BASE_REF, plus unstaged and staged worktree edits.
@@ -64,7 +67,23 @@ changed_files() {
 	} | sed '/^$/d' | sort -u
 }
 
+# True if any changed path is "code" (not pure docs/agent prose). Used by pre-push.
+code_changed() {
+	local f
+	while IFS= read -r f; do
+		case "$f" in
+		docs/* | .claude/* | *.md | */*.md) continue ;;
+		"") continue ;;
+		*) return 0 ;;
+		esac
+	done < <(changed_files)
+	return 1
+}
+
 # ---------- lint (file-selective format) ----------
+# Extension list is what standalone prettier/ruff/etc. can format without extra
+# plugins. prettier.config.cjs has no svelte plugin, so *.svelte is intentionally
+# omitted (CI format_multirun uses the same prettier binary).
 cmd_lint() {
 	local -a files=()
 	local f
@@ -134,11 +153,9 @@ need_generators() {
 	local f
 	while IFS= read -r f; do
 		case "$f" in
-		# home-cluster kustomization + push-all image list
 		projects/*/deploy/* | projects/home-cluster/* | bazel/images/* | projects/*/image/*)
 			return 0
 			;;
-		# monolith routes + docs manifests + orchestrator bundle
 		projects/monolith/generate-routes.sh | projects/monolith/*/router.py | \
 			projects/monolith/*/module.py | projects/monolith/knowledge/tools/* | \
 			projects/monolith/chat/* | \
@@ -146,7 +163,6 @@ need_generators() {
 			projects/firecracker/*/guest/env-notes.md)
 			return 0
 			;;
-		# markdown feeds both docs manifests
 		*.md | */*.md) return 0 ;;
 		*/deploy/application.yaml | */deploy/kustomization.yaml | */apko.yaml | */apko.lock.json)
 			return 0
@@ -209,34 +225,51 @@ cmd_regen() {
 # remote action cache is shared with PR CI (cache hits = green PR immediately).
 # Workflows Test runs:
 #   bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
-#
-# Do not add extra flags here. Extra args after `ci test` are appended only for
-# debugging (e.g. a single target); default invocation is the CI line above.
 cmd_test() {
 	if ! command -v bb >/dev/null 2>&1; then
 		err "bb (BuildBuddy CLI) not found. Install: https://www.buildbuddy.io/cli/"
 		exit 1
 	fi
 
-	# Exact bazel argv from buildbuddy.yaml "Test" (no CI_TEST_TARGETS override:
-	# a different target set cannot share the same cache as CI //...).
-	local -a bazel_args=(
-		test
-		//...
+	local -a targets=()
+	local -a extra=()
+	local saw_ddash=0
+	local a
+	for a in "$@"; do
+		if [[ $saw_ddash -eq 1 ]]; then
+			extra+=("$a")
+			continue
+		fi
+		if [[ "$a" == "--" ]]; then
+			saw_ddash=1
+			continue
+		fi
+		if [[ "$a" == -* ]]; then
+			err "ci test: unexpected flag '$a' (would break CI argv parity)."
+			err "Usage: ci test                  # full //... like Workflows Test"
+			err "       ci test -- //pkg:tgt     # focused targets (same --config flags)"
+			exit 2
+		fi
+		targets+=("$a")
+	done
+
+	local -a bazel_args=(test)
+	if [[ ${#targets[@]} -eq 0 ]]; then
+		bazel_args+=(//...)
+	else
+		bazel_args+=("${targets[@]}")
+	fi
+	bazel_args+=(
 		--config=ci
 		--deleted_packages=bazel/tools/python
 		--test_tag_filters=-external,-future
 	)
-	if [[ $# -gt 0 ]]; then
-		# Escape hatch: replace //... with caller targets for focused debugging.
-		bazel_args=(test "$@" --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future)
-	fi
+	[[ ${#extra[@]} -gt 0 ]] && bazel_args+=("${extra[@]}")
 
-	log "test: bb remote (linux/amd64) — 1:1 with buildbuddy.yaml Test"
+	log "test: bb remote (linux/amd64) 1:1 with buildbuddy.yaml Test"
 	dim "  bb remote --os=linux --arch=amd64 ${bazel_args[*]}"
+	dim "  (include-secrets=true: runner may receive org secrets; treat as CI)"
 
-	# include-secrets: same Docker Hub login env CI uses when secrets are set
-	# in BuildBuddy (avoids anonymous pull 429s on rules_oci bases).
 	bb remote --os=linux --arch=amd64 \
 		--runner_exec_properties=include-secrets=true \
 		"${bazel_args[@]}"

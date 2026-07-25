@@ -17,6 +17,24 @@ sh_test(
 )
 
 sh_test(
+    name = "check_large_migration_sql_test",
+    srcs = ["check-large-migration-sql_test.sh"],
+    data = [":check-large-migration-sql.sh"],
+)
+
+sh_test(
+    name = "check_constant_change_test_grep_test",
+    srcs = ["check-constant-change-test-grep_test.sh"],
+    data = [":check-constant-change-test-grep.sh"],
+)
+
+sh_test(
+    name = "check_chart_version_targetrevision_sync_test",
+    srcs = ["check-chart-version-targetrevision-sync_test.sh"],
+    data = [":check-chart-version-targetrevision-sync.sh"],
+)
+
+sh_test(
     name = "validate_hooks_executable_test",
     srcs = ["validate-hooks-executable_test.sh"],
     data = [":validate-hooks-executable.sh"],
