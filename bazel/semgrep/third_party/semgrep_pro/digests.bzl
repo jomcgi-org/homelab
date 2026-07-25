@@ -5,16 +5,16 @@ Do not edit manually — changes will be overwritten.
 """
 
 SEMGREP_PRO_DIGESTS = {
-    "engine_amd64": "sha256:7219f4484a266ae09cf28f120819df1dfbd35645418e08f88eab618eeef71691",
-    "engine_arm64": "sha256:628b1bb44cabf668ef689ed49e6e6d07d38284ed7312914bcd6d064b1038fbae",
-    "engine_osx_arm64": "sha256:fa3d28a159b038b8af92bc7ec63a267e6b7fa9c4e69da03c65b0ea67183a9bd9",
-    "engine_osx_x86_64": "sha256:3e385d9810dabb139d3e13ed2c22e986a4143a9a1c72b715467dc786878689b2",
+    "engine_amd64": "sha256:0fde3f7913f60f6955bcd81d213ba16dc749cfcda041fcd94e5f3e74496e3c3a",
+    "engine_arm64": "sha256:8e15343cfb1b7ab5eb8863b6fd7c0c5e2bea864df544fabecc46ce6ad673eaeb",
+    "engine_osx_arm64": "sha256:75ed92bb0cc0a0897d898d14cd796f3643bbd04e6ab48e019651dd27ff7e8a12",
+    "engine_osx_x86_64": "sha256:11bc6e91174642261df7b8c711afe89154d1349d033ce275e8be1d9b567e3c3e",
     "rules_golang": "sha256:3b4962725eeba008159cff4140cab426439277a8f4cc80187690ba5154d0d11b",
-    "rules_python": "sha256:f5c804cce9467e4f5482cac14d527c68c8095f1370650597dadee2b36dcd0f7b",
+    "rules_python": "sha256:5e3665e2b804e4c459e286436b56abd4fe8bc27ffb0e7e09bcb61c57027bb20f",
     "rules_javascript": "sha256:d9789e2eba75c0cb1317a4a1b1838bae6a571e6bf83c87992f762221b95ba69c",
     "rules_kubernetes": "sha256:eaeeeff194bad2f8ab7433a172e6968b853a2cf3be358563b1134f0b4a447602",
     "rules_rust": "sha256:14f66ffe8d3250b8855a0fced76de01942bb30b52d7be40d123e874ab337a7d7",
     "rules_sca_golang": "sha256:55407da26caf4fdb18e3bbcd4ae88f0746d5354ba5b28d39f2f08381d96706cc",
-    "rules_sca_python": "sha256:3faab14de3da7eae5dc47e2a946f54590a42432cdf599afb41ac137fe0714bf2",
-    "rules_sca_javascript": "sha256:31abcb698a9c782c5250fe38eee585ab92b6991959f493be8ed1176d554fe27a",
+    "rules_sca_python": "sha256:1aa0607ee539ea0033ea8233a5485364a10388354f8b3cb69804de2d8b53c6d9",
+    "rules_sca_javascript": "sha256:50cf286e2ca6e4700492e4729e3867d57b46c655352e4db44c980d0f25fd522d",
 }
