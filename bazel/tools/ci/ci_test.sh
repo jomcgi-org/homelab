@@ -20,8 +20,14 @@ fi
 
 PASS=0
 FAIL=0
-pass() { echo "PASS [$1]"; PASS=$((PASS + 1)); }
-fail() { echo "FAIL [$1]: $2"; FAIL=$((FAIL + 1)); }
+pass() {
+	echo "PASS [$1]"
+	PASS=$((PASS + 1))
+}
+fail() {
+	echo "FAIL [$1]: $2"
+	FAIL=$((FAIL + 1))
+}
 
 if grep -q 'local feedback loop' "$CI" &&
 	grep -q 'SKIP_REMOTE=1' "$CI" &&
