@@ -86,7 +86,7 @@ cmd_lint() {
 		BUILD | BUILD.bazel | *.bzl | WORKSPACE | WORKSPACE.bazel | */BUILD | */BUILD.bazel)
 			star+=("$f")
 			;;
-		*.js | *.jsx | *.ts | *.tsx | *.mjs | *.cjs | *.json | *.yaml | *.yml | *.md | *.css | *.html | *.svelte)
+		*.js | *.jsx | *.ts | *.tsx | *.mjs | *.cjs | *.json | *.yaml | *.yml | *.md | *.css | *.html)
 			pretty+=("$f")
 			;;
 		esac
