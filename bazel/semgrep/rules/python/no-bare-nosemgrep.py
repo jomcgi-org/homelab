@@ -7,7 +7,7 @@
 # Note: semgrep-core does NOT honour inline `# nosemgrep` annotations, so the
 # positive case below IS detected when scanned with semgrep-core (used in Bazel
 # CI). In pysemgrep (pre-commit hooks), bare `# nosemgrep` self-suppresses the
-# no-bare-nosemgrep rule; enforcement there is via the check-bare-nosemgrep.sh
+# no-bare-nosemgrep rule; enforced by bazel semgrep tests (CI)
 # hook.
 
 # ruleid: no-bare-nosemgrep

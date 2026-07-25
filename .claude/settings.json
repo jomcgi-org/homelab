@@ -21,6 +21,7 @@
       "Bash(gh:*)",
       "Bash(bazelisk:*)",
       "Bash(format:*)",
+      "Bash(ci:*)",
       "Bash(helm template:*)",
       "Bash(helm lint:*)",
       "Bash(helm dependency:*)",
@@ -72,137 +73,7 @@
           },
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-unnecessary-chart-bump.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-python-file-shadows-package.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-bdd-shared-testing-dep.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-deployment-component-label.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-hardcoded-model-subprocess.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-allowed-tools-prompt-sync.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-mcp-docstring-forbidden-patterns.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-migration-timestamp-order.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-constant-change-test-grep.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-public-route-visibility-filter.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-semgrep-rule-has-fixture.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-semgrep-helm-fixture-has-template-syntax.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-semgrep-exclude-coverage.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-public-svelte-notepanel-apibase.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-sveltekit-duplicate-api-base.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-classifier-version-bump.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-oci-values-image-tag.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-chart-version-targetrevision-sync.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-bare-nosemgrep.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-asyncio-mark-build-dep.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-generated-file-edit.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-em-dash.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-cfingress-httpcheck-url.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-lifespan-startup-mock-sync.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-large-migration-sql.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-cronworkflow-custom-sa-executor-rbac.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-hpa-ignoredifferences-replicas.sh",
             "timeout": 10
           },
           {
@@ -220,5 +91,12 @@
     "playwright@claude-plugins-official": true,
     "impeccable@impeccable": true
   },
-  "skillListingBudgetFraction": 0.02
+  "skillListingBudgetFraction": 0.02,
+  "skillOverrides": {
+    "add-httpcheck-alert": "name-only",
+    "chart-upgrades": "name-only",
+    "grimoire-classify-adventures": "name-only",
+    "model-bench-eval": "name-only",
+    "refresh-context-forge-tools": "name-only"
+  }
 }

@@ -59,13 +59,20 @@ Objective for this repo: lowest wall-time-to-outcome at maximum quality, within 
 ci              # lint changed files + selective regen + bb remote Linux test
 ci lint         # format only files changed vs origin/main
 ci regen        # generators/gazelle only when inputs changed
-ci test         # bb remote --os=linux --arch=amd64 test //... --config=ci
+ci test         # 1:1 with buildbuddy.yaml Test (see below)
 
 helm template <release> projects/<service>/chart/ -f projects/<service>/deploy/values.yaml  # NEVER helm install
 bazel/tools/git/bump-chart.sh projects/<service>  # Chart.yaml + targetRevision together
 ```
 
-**`ci` is the feedback loop.** It runs selective local lint/regen, then [BuildBuddy Remote Bazel](https://www.buildbuddy.io/docs/remote-bazel/) (`bb remote`) on Linux with the same flags as the Workflows **Test** action (`//... --config=ci --test_tag_filters=-external,-future`). That shares the remote cache with PR CI, so a green `ci` should make PR checks mostly cache-hit.
+**`ci` is the feedback loop.** Lint/regen are file-selective locally; the test step is [BuildBuddy Remote Bazel](https://www.buildbuddy.io/docs/remote-bazel/) with the **exact** Workflows **Test** argv (so the action cache is shared with PR CI):
+
+```bash
+bb remote --os=linux --arch=amd64 \
+  test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+```
+
+A green `ci test` should make the PR **Test** check mostly cache-hit.
 
 Do **not** run bare `bazel`/`bazelisk` on the Mac (no darwin workflow executors; wrong platforms). `bb remote` is allowed; prefer `ci`. Image push stays CI-only on merge/push to main.
 

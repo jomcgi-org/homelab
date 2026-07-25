@@ -11,7 +11,7 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 | [format](format/) | The top-level `format` multirun target plus helper scripts for updating apko locks, Python requirements, and Atlas migration checksums | No new `.bzl` rules; orchestrates aspect_rules_lint |
 | [git](git/) | Git hook scripts: commit-message ASCII check, stale-PR guard, post-rewrite format trigger, and main-branch protection | Shell scripts; no `.bzl` files |
 | [hf2oci](hf2oci/README.md) | Go binary that streams HuggingFace model weights directly into OCI layers without writing temporary files to disk | See linked README |
-| [hooks](hooks/) | CI and pre-commit shell check scripts (em-dash detection, chart-version/targetRevision sync, semgrep coverage, SvelteKit patterns, etc.) exported as Bazel files and tested with `sh_test` | Shell scripts; no `.bzl` files |
+| [hooks](hooks/) | Minimal Claude PreToolUse hooks (prefer `ci`/`bb remote`, em-dash, public_reader grants, plans-retired) | Shell scripts + `sh_test` |
 | [http](http/) | `multiarch_http_archive` and `multiarch_http_file` repository rules for downloading dual-arch binaries from HTTP archives and packaging them as platform-specific tars for apko images | `//bazel/tools/http:multiarch_http_archive.bzl` |
 | [image](image/README.md) | Builds the developer tools OCI image (vendored CLI tools, Node.js, Python, pnpm, prettier, homelab CLI) and exposes `multitool_tar`, `node_tar`, and `python_tar` macros | See linked README |
 | [js](js/README.md) | Bazel macros for frontend builds: `vite_build`, `tailwind_build`, `exec_filegroup`, and `node_modules_tar` | See linked README |

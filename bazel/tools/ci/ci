@@ -16,7 +16,9 @@
 # Env:
 #   CI_BASE_REF     git ref to diff against (default: origin/main)
 #   SKIP_REMOTE=1   skip the remote test step when running full `ci`
-#   CI_TEST_TARGETS override test targets (default: //...)
+#
+# Test flags are locked to buildbuddy.yaml "Test" for action-cache sharing:
+#   test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -203,22 +205,41 @@ cmd_regen() {
 }
 
 # ---------- test (bb remote = Workflows backend, Linux) ----------
+# MUST stay byte-for-byte identical to buildbuddy.yaml action "Test" so the
+# remote action cache is shared with PR CI (cache hits = green PR immediately).
+# Workflows Test runs:
+#   bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+#
+# Do not add extra flags here. Extra args after `ci test` are appended only for
+# debugging (e.g. a single target); default invocation is the CI line above.
 cmd_test() {
 	if ! command -v bb >/dev/null 2>&1; then
 		err "bb (BuildBuddy CLI) not found. Install: https://www.buildbuddy.io/cli/"
 		exit 1
 	fi
 
-	local targets="${CI_TEST_TARGETS:-//...}"
-	log "test: bb remote (linux/amd64) — same filters as buildbuddy.yaml Test"
-	dim "  bb remote --os=linux --arch=amd64 test $targets --config=ci --test_tag_filters=-external,-future"
+	# Exact bazel argv from buildbuddy.yaml "Test" (no CI_TEST_TARGETS override:
+	# a different target set cannot share the same cache as CI //...).
+	local -a bazel_args=(
+		test
+		//...
+		--config=ci
+		--deleted_packages=bazel/tools/python
+		--test_tag_filters=-external,-future
+	)
+	if [[ $# -gt 0 ]]; then
+		# Escape hatch: replace //... with caller targets for focused debugging.
+		bazel_args=(test "$@" --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future)
+	fi
 
-	# shellcheck disable=SC2086
+	log "test: bb remote (linux/amd64) — 1:1 with buildbuddy.yaml Test"
+	dim "  bb remote --os=linux --arch=amd64 ${bazel_args[*]}"
+
+	# include-secrets: same Docker Hub login env CI uses when secrets are set
+	# in BuildBuddy (avoids anonymous pull 429s on rules_oci bases).
 	bb remote --os=linux --arch=amd64 \
-		test $targets \
-		--config=ci \
-		--test_tag_filters=-external,-future \
-		"$@"
+		--runner_exec_properties=include-secrets=true \
+		"${bazel_args[@]}"
 }
 
 cmd_all() {
