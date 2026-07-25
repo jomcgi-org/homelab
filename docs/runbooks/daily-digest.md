@@ -1,12 +1,11 @@
 ---
 name: daily-digest
-description: >
-  Produce a prioritised digest of outstanding work, things you started but
-  have not finished, by scanning open GitHub issues, ADRs, and pull
-  requests, then post it to Discord. Use when the user asks "what should I follow through
-  on", "what's outstanding", "daily digest", or when the daily-digest
-  routine fires.
+invoke: explicit
+summary: Prioritised outstanding-work digest for Discord
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Daily Digest: what to follow through on
 
@@ -124,3 +123,4 @@ useful signal for a daily cadence.
 - Prefer `gh` and local file reads; this skill needs no cluster access.
 - If a data source errors, degrade gracefully and report the rest, do not
   abort the digest.
+

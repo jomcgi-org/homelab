@@ -1,13 +1,11 @@
 ---
 name: scheduler
-description: >
-  Inspect and trigger Postgres-backed scheduled jobs (calendar poll, knowledge
-  ingest, gap discovery, etc.) via the homelab CLI. Use when investigating
-  "did the ingest run", "kick the calendar poll", "are any jobs failing or
-  stuck", or when you need to trigger a job to run on the next scheduler tick
-  without redeploying. Also use to spot orphan job rows whose handlers were
-  removed but whose database row still exists.
+invoke: explicit
+summary: Inspect and trigger Postgres-backed scheduled jobs
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Scheduler
 
@@ -102,3 +100,4 @@ Exits non-zero if the name is unknown.
   changed. Check application logs in SigNoz for the body of the run.
 - Triggering a `run-now` does **not** wait — it returns immediately after the
   DB row is updated. Wait for the scheduler tick (~30s) before re-checking.
+

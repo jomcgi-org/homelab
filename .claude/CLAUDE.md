@@ -168,13 +168,15 @@ Breaking changes: add `!` after type/scope — `feat!: redesign auth token forma
 
 ### Skills vs runbooks
 
-- **Skills** (`.claude/skills/`): auto-matchable agent workflows (`ship`, `adr`,
-  `stpa`, `codex-implement`, `knowledge` search, etc.).
-- **Runbooks** (`docs/runbooks/`): **explicit-only**. Open only when Joe asks
-  for that procedure, a rule above names the file, or a
-  `projects/monolith/claude_routines/*.yaml` prompt points at the path. Do not
-  invent skills for runbook content. Index: `docs/runbooks/README.md`.
-  Knowledge pipeline + improve-* loops live under runbooks, not skills.
+- **Skills** (`.claude/skills/`): only four auto-matchable workflows: `ship`,
+  `adr`, `stpa`, `codex-implement`.
+- **Runbooks** (`docs/runbooks/`): **explicit-only** (knowledge, improve-*,
+  scheduler, digests, bazel/apko patterns, etc.). Open only when Joe asks, a
+  rule above names the file, or a `claude_routines/*.yaml` prompt points at the
+  path. Index: `docs/runbooks/README.md`. Do not invent skills for runbook
+  content. Image builds and `bazel test` run via **`ci` / Workflows**, not
+  local bare `bazel`; the bazel/apko runbooks are pattern docs, not a local
+  test loop.
 
 ## Key Patterns
 

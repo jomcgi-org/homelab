@@ -1,7 +1,11 @@
 ---
 name: update-claude-routines
-description: Reconcile claude.ai scheduled-agent routines from version-controlled YAML in projects/monolith/claude_routines/. Resolves environment and mcp_connectors names against live claude.ai state at sync time. Invoke via /update-claude-routines, or use when the user has edited a routine YAML, asks to sync scheduled remote agents, or asks how the homelab's routine schema works.
+invoke: explicit
+summary: Sync claude.ai routines from version-controlled YAML
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # /update-claude-routines
 
@@ -261,3 +265,4 @@ spaces). The short names above already conform.
 - The `data[i]` items on a `list` response include the full `job_config`
   and `mcp_connections` — there is no follow-up `get` needed for matching
   or to read fields. Save the API call.
+

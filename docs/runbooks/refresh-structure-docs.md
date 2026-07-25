@@ -1,7 +1,11 @@
 ---
 name: refresh-structure-docs
-description: Freshen the root README's structural prose against the real repository, the judgment half that the CI structure check cannot cover, and land any change as a reviewable PR against main (never auto-merged). Use when asked to "refresh the README", "the README is out of date", "update the repo structure docs", or when the weekly refresh-structure-docs routine fires. The deterministic guardrail (broken links, unmentioned projects) is enforced separately in CI by bazel/tools/format/readme_structure; this skill handles the prose a test cannot judge.
+invoke: explicit
+summary: Freshen root README structural prose and open a PR
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 Freshen the top-level `README.md` so its prose matches what the repository has
 actually become, and open a PR with any change. This is the judgment half of a
@@ -72,3 +76,4 @@ routine): README prose is a human-voice artifact and Joe reviews it.
   `COVERAGE_ALLOWLIST` entry); do not paper over a genuinely undocumented new
   project just to green the check, surface it.
 - **One PR per run, small diff, no auto-merge.**
+

@@ -18,8 +18,8 @@ prompt: |
   bazel/tools/format/readme_structure, so do NOT re-police those, handle the
   staleness a test cannot judge.
 
-  Follow the `refresh-structure-docs` skill in this repo
-  (.claude/skills/refresh-structure-docs/SKILL.md) for the full method. In brief:
+  Follow the refresh-structure-docs runbook in this repo
+  (docs/runbooks/refresh-structure-docs.md) for the full method. In brief:
 
   1. Read README.md and run
      `python3 ./bazel/tools/format/readme_structure/check_readme_structure.py`
