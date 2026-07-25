@@ -91,12 +91,5 @@
     "playwright@claude-plugins-official": true,
     "impeccable@impeccable": true
   },
-  "skillListingBudgetFraction": 0.02,
-  "skillOverrides": {
-    "add-httpcheck-alert": "name-only",
-    "chart-upgrades": "name-only",
-    "grimoire-classify-adventures": "name-only",
-    "model-bench-eval": "name-only",
-    "refresh-context-forge-tools": "name-only"
-  }
+  "skillListingBudgetFraction": 0.02
 }

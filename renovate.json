@@ -39,14 +39,14 @@
       "enabled": false
     },
     {
-      "description": "Keep upstream chart majors as separate, clearly labelled PRs so the chart-upgrades skill can judge them in isolation.",
+      "description": "Keep upstream chart majors as separate, clearly labelled PRs so a human can judge them in isolation.",
       "matchManagers": ["argocd", "helmv3"],
       "matchUpdateTypes": ["major"],
       "addLabels": ["major-upgrade"],
       "separateMajorMinor": true
     },
     {
-      "description": "Never automerge. The chart-upgrades skill (or a human) reads the changelog and decides.",
+      "description": "Never automerge. A human reads the changelog and decides.",
       "matchManagers": ["argocd", "helmv3"],
       "automerge": false
     }
