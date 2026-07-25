@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run format after rebase/amend to catch formatting drift.
+# Run selective lint after rebase to catch formatting drift.
 # Installed via: pre-commit install --hook-type post-rewrite
 set -euo pipefail
 
@@ -15,16 +15,16 @@ fi
 
 cd "$(git rev-parse --show-toplevel)"
 
-echo "Running format after rebase..."
-if command -v format >/dev/null; then
-	format
+echo "Running ci lint after rebase..."
+if command -v ci >/dev/null; then
+	ci lint
 else
-	bazel/tools/format/fast-format.sh
+	bazel/tools/ci/ci lint
 fi
 
 if ! git diff --quiet; then
 	echo ""
-	echo "⚠️  Format found changes after rebase. Stage and amend:"
+	echo "Format found changes after rebase. Stage and amend:"
 	echo "   git add -u && git commit --amend --no-edit"
 	echo ""
 	git diff --stat

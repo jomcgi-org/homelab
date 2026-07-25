@@ -7,6 +7,7 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 | [agent-run](agent-run/) | Go CLI binary that creates `SandboxClaim` resources and exec's into Goose sandbox pods to run agent tasks against a given task description or GitHub issue | Go binary; no `.bzl` files |
 | [cdk8s](cdk8s/) | Shared Python cdk8s constructs (resource requirements, standard labels) for generating Kubernetes manifests | Python library; no `.bzl` files |
 | [cluster](cluster/) | Read-only `sh_binary` wrappers around kubectl for cluster inspection: `pods`, `events`, `status`, `argocd` | Script helpers; no `.bzl` files |
+| [ci](ci/) | Unified local feedback loop: selective lint/regen + `bb remote` Linux test (matches Workflows Test flags) | `ci` on PATH via direnv; `bazel/tools/ci/ci` |
 | [format](format/) | The top-level `format` multirun target plus helper scripts for updating apko locks, Python requirements, and Atlas migration checksums | No new `.bzl` rules; orchestrates aspect_rules_lint |
 | [git](git/) | Git hook scripts: commit-message ASCII check, stale-PR guard, post-rewrite format trigger, and main-branch protection | Shell scripts; no `.bzl` files |
 | [hf2oci](hf2oci/README.md) | Go binary that streams HuggingFace model weights directly into OCI layers without writing temporary files to disk | See linked README |

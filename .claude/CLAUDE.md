@@ -55,21 +55,23 @@ Objective for this repo: lowest wall-time-to-outcome at maximum quality, within 
 ## Essential Commands
 
 ```bash
-# Local development (no Bazel needed)
-bazel/tools/format/fast-format.sh  # Format code + update BUILD files (standalone; same list as CI). The bare `format` shim is not on PATH in worktree shells: use this repo-relative path.
-helm template <release> projects/<service>/chart/ -f projects/<service>/deploy/values.yaml  # Render Helm templates (NEVER helm install)
-bazel/tools/git/bump-chart.sh projects/<service>  # Race-free chart bump: Chart.yaml + targetRevision together, numbered from origin/main tip
+# Local feedback loop (direnv puts `ci` on PATH; else bazel/tools/ci/ci)
+ci              # lint changed files + selective regen + bb remote Linux test
+ci lint         # format only files changed vs origin/main
+ci regen        # generators/gazelle only when inputs changed
+ci test         # bb remote --os=linux --arch=amd64 test //... --config=ci
 
-# Tests run automatically on push via BuildBuddy CI — there is no local
-# test loop. Implement, commit, push the branch, and watch the PR's CI run.
-bazel run //projects/<service>/image:push  # Push container images (CI only)
+helm template <release> projects/<service>/chart/ -f projects/<service>/deploy/values.yaml  # NEVER helm install
+bazel/tools/git/bump-chart.sh projects/<service>  # Chart.yaml + targetRevision together
 ```
 
-**No local test loop.** Don't run `bazel test` from a workstation. Mac runners aren't provisioned in the BuildBuddy `workflows` pool (`darwin/arm64` returns "No registered executors"), and the linux fallback is too slow/flaky to be the inner loop. Implement all changes for a task (or batch of tasks), commit with Conventional Commits, push the branch, then monitor the CI run via `gh pr checks <number> --watch`. Iterate on failures by reading the CI output via the `mcp__buildbuddy__*` tools (see Cluster Investigation), pushing fixes.
+**`ci` is the feedback loop.** It runs selective local lint/regen, then [BuildBuddy Remote Bazel](https://www.buildbuddy.io/docs/remote-bazel/) (`bb remote`) on Linux with the same flags as the Workflows **Test** action (`//... --config=ci --test_tag_filters=-external,-future`). That shares the remote cache with PR CI, so a green `ci` should make PR checks mostly cache-hit.
 
-For multi-task plans (subagent-driven flow): implementers implement, reviewers review from code reading; **defer all test execution to end-of-plan CI on the pushed branch.**
+Do **not** run bare `bazel`/`bazelisk` on the Mac (no darwin workflow executors; wrong platforms). `bb remote` is allowed; prefer `ci`. Image push stays CI-only on merge/push to main.
 
-**Vendored tools** (available via `./bootstrap.sh` + `direnv allow`): `format`, `helm`, `crane`, `kind`, `go`, `python`, `pnpm`, `node`, `buildifier`, `buildozer`, `ruff`, `gofumpt`, `shfmt`, `prettier`, `gazelle`
+For multi-task plans: implementers can run `ci` (or `ci test`) before handoff; still push the branch so required GitHub checks run. Inspect failures via `mcp__buildbuddy__*` if needed.
+
+**Vendored tools** (`./bootstrap.sh` + `direnv allow`): `ci`, `helm`, `crane`, `kind`, `go`, `python`, `pnpm`, `node`, `buildifier`, `buildozer`, `ruff`, `gofumpt`, `shfmt`, `prettier`, `gazelle`, `bb`
 
 ## Development Workflow
 
@@ -79,8 +81,9 @@ The main repo at `~/repos/homelab` auto-fetches every 60s — always use worktre
 
 1. `git -C ~/repos/homelab worktree add -b feat/my-feature /tmp/claude-worktrees/my-feature origin/main`
 2. Make changes in `/tmp/claude-worktrees/my-feature`
-3. Commit, push, create PR
-4. Merge after CI passes
+3. Run `ci` (lint + regen + remote test) until green
+4. Commit, push, create PR (PR checks should mostly cache-hit)
+5. Merge after required checks pass
 
 **PR merge method:** This repo only allows **rebase merging** — use `gh pr merge --rebase` (or `--auto --rebase`). Squash and merge commits are disabled.
 
@@ -199,7 +202,7 @@ Runs on every push/PR:
 - **Format check** — standalone formatters + gazelle, auto-commits fixes on PR branches (as `ci-format-bot`)
 - **Test and push** — `bazel test //...`, pushes images on main branch
 
-**Push to test.** This is the inner loop. After the run starts, monitor with `gh pr checks <number> --watch`. Read failures via `mcp__buildbuddy__get_invocation` + `get_log` (see Cluster Investigation table). Don't try to short-circuit by running `bazel test` from your workstation.
+**Inner loop is `ci`, then push.** Run `ci` (or at least `ci test`) before pushing so PR Workflows mostly cache-hit. After push, monitor with `gh pr checks <number> --watch`. Read failures via `mcp__buildbuddy__get_invocation` + `get_log` (see Cluster Investigation table).
 
 **CI failure diagnosis — quote before hypothesizing.** When CI is red, the first action is to fetch the actual log: `mcp__buildbuddy__get_invocation` (use `commitSha` selector to skip the invocation-ID lookup) → `get_target` to find failing targets → `get_log` for the trace.
 
@@ -212,7 +215,7 @@ Quote the actual assertion error or exception message verbatim before proposing 
 - **Using Dockerfiles** — this repo uses apko exclusively for container images
 - **Running as root** — always use non-root (uid 65532)
 - **Direct internet exposure** — all traffic goes through Cloudflare
-- **Running tests locally** — no `pytest`, `go test`, `npm test`, or `bazel test` from a workstation; the BuildBuddy `workflows` pool has no darwin runners and the linux fallback is too unreliable for inner-loop work. Implement, commit, push, watch CI.
+- **Bare `bazel test` on the Mac** — use `ci` / `bb remote` (Linux Remote Bazel) instead; no darwin workflow executors
 - **Using `@rules_python` syntax** — this repo uses `@aspect_rules_py`
 - **Building a custom Helm chart when upstream provides one** — always check the upstream project repo for an existing chart before creating a custom one
 - **Hardcoding `.svc.cluster.local` URLs in Go defaults** — when a Helm release is renamed the service name prefix changes silently; set via `envOr("URL", "")` (no default) and configure in `values.yaml`; semgrep rule `no-hardcoded-k8s-service-url` catches this in CI

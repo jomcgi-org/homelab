@@ -157,7 +157,7 @@ run_test "git_commit_mentioning_bazel_allowed" \
 	'{"tool_input":{"command":"git commit -m \"fix bazel build\""}}' \
 	0 ""
 
-# 7. format command (wraps gazelle/bazel internally) → allowed
+# 7. format command (legacy) → allowed
 run_test "format_command_allowed" \
 	'{"tool_input":{"command":"format"}}' \
 	0 ""
@@ -167,6 +167,14 @@ run_test "format_with_flags_allowed" \
 	'{"tool_input":{"command":"format --check"}}' \
 	0 ""
 
+# 8b. unified `ci` gate → allowed (may appear with bazel in script path only)
+run_test "ci_command_allowed" \
+	'{"tool_input":{"command":"ci test"}}' \
+	0 ""
+
+run_test "ci_script_path_allowed" \
+	'{"tool_input":{"command":"bazel/tools/ci/ci lint"}}' \
+	0 ""
 # 9. cat a file whose path contains "bazel" → allowed (not a bazel invocation)
 run_test "cat_file_with_bazel_in_path_allowed" \
 	'{"tool_input":{"command":"cat some/bazel/BUILD"}}' \

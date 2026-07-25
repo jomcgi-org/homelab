@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# ci — local feedback loop that matches PR CI so Workflows mostly cache-hit.
+#
+# Steps:
+#   1. lint   — format only files changed vs origin/main (ruff/shfmt/gofumpt/prettier/buildifier)
+#   2. regen  — run generators only when their inputs changed
+#   3. test   — bb remote (Linux) bazel test with the same flags as buildbuddy.yaml "Test"
+#
+# Usage:
+#   ci              # lint + regen + remote test
+#   ci lint         # format changed files only
+#   ci regen        # selective generators (+ gazelle when go/py/BUILD changed)
+#   ci test         # bb remote test only
+#   ci --help
+#
+# Env:
+#   CI_BASE_REF     git ref to diff against (default: origin/main)
+#   SKIP_REMOTE=1   skip the remote test step when running full `ci`
+#   CI_TEST_TARGETS override test targets (default: //...)
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$ROOT" ]]; then
+	echo "ci: not inside a git work tree" >&2
+	exit 1
+fi
+cd "$ROOT"
+
+if [[ -d "$ROOT/.tools/bin" ]]; then
+	export PATH="$ROOT/.tools/bin:$PATH"
+fi
+# Vendored tools from bootstrap.sh / direnv
+if [[ -d "${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin" ]]; then
+	export PATH="${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin:$PATH"
+fi
+
+BASE_REF="${CI_BASE_REF:-origin/main}"
+GREEN=$'\033[0;32m'
+RED=$'\033[0;31m'
+DIM=$'\033[0;2m'
+NC=$'\033[0m'
+log() { printf '%s▶%s %s\n' "$GREEN" "$NC" "$*"; }
+err() { printf '%s✗%s %s\n' "$RED" "$NC" "$*" >&2; }
+dim() { printf '%s%s%s\n' "$DIM" "$*" "$NC"; }
+
+usage() {
+	sed -n '2,20p' "$0" | sed 's/^# \?//'
+}
+
+# Changed paths vs merge-base with BASE_REF, plus unstaged and staged worktree edits.
+changed_files() {
+	local base
+	if git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
+		base="$(git merge-base HEAD "$BASE_REF" 2>/dev/null || echo "$BASE_REF")"
+	else
+		base="HEAD"
+	fi
+	{
+		git diff --name-only --diff-filter=ACMR "$base" 2>/dev/null || true
+		git diff --name-only --diff-filter=ACMR 2>/dev/null || true
+		git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true
+	} | sed '/^$/d' | sort -u
+}
+
+# ---------- lint (file-selective format) ----------
+cmd_lint() {
+	local -a files=()
+	local f
+	while IFS= read -r f; do
+		[[ -n "$f" && -f "$f" ]] && files+=("$f")
+	done < <(changed_files)
+
+	if [[ ${#files[@]} -eq 0 ]]; then
+		log "lint: no changed files vs $BASE_REF"
+		return 0
+	fi
+
+	local -a py=() sh=() go=() star=() pretty=()
+	for f in "${files[@]}"; do
+		case "$f" in
+		*.py) py+=("$f") ;;
+		*.sh) sh+=("$f") ;;
+		*.go) go+=("$f") ;;
+		BUILD | BUILD.bazel | *.bzl | WORKSPACE | WORKSPACE.bazel | */BUILD | */BUILD.bazel)
+			star+=("$f")
+			;;
+		*.js | *.jsx | *.ts | *.tsx | *.mjs | *.cjs | *.json | *.yaml | *.yml | *.md | *.css | *.html | *.svelte)
+			pretty+=("$f")
+			;;
+		esac
+	done
+
+	log "lint: ${#files[@]} changed file(s)"
+	local missing=0
+	for tool in ruff shfmt gofumpt prettier; do
+		if ! command -v "$tool" >/dev/null 2>&1; then
+			err "missing tool: $tool (run ./bootstrap.sh && direnv allow)"
+			missing=1
+		fi
+	done
+	[[ $missing -eq 0 ]] || exit 1
+
+	[[ ${#py[@]} -gt 0 ]] && {
+		dim "  ruff format (${#py[@]})"
+		ruff format "${py[@]}"
+	}
+	[[ ${#sh[@]} -gt 0 ]] && {
+		dim "  shfmt (${#sh[@]})"
+		shfmt -w "${sh[@]}"
+	}
+	[[ ${#go[@]} -gt 0 ]] && {
+		dim "  gofumpt (${#go[@]})"
+		gofumpt -w "${go[@]}"
+	}
+	[[ ${#pretty[@]} -gt 0 ]] && {
+		dim "  prettier (${#pretty[@]})"
+		prettier --write "${pretty[@]}" >/dev/null
+	}
+	if [[ ${#star[@]} -gt 0 ]]; then
+		if command -v buildifier >/dev/null 2>&1; then
+			dim "  buildifier (${#star[@]})"
+			buildifier "${star[@]}"
+		else
+			dim "  buildifier skipped (not on PATH; CI format will cover BUILD files)"
+		fi
+	fi
+	log "lint: done"
+}
+
+# ---------- regen (file-selective generators + gazelle) ----------
+need_generators() {
+	local f
+	while IFS= read -r f; do
+		case "$f" in
+		# home-cluster kustomization + push-all image list
+		projects/*/deploy/* | projects/home-cluster/* | bazel/images/* | projects/*/image/*)
+			return 0
+			;;
+		# monolith routes + docs manifests + orchestrator bundle
+		projects/monolith/generate-routes.sh | projects/monolith/*/router.py | \
+			projects/monolith/*/module.py | projects/monolith/knowledge/tools/* | \
+			projects/monolith/chat/* | \
+			projects/firecracker/*/guest/apko.lock.json | \
+			projects/firecracker/*/guest/env-notes.md)
+			return 0
+			;;
+		# markdown feeds both docs manifests
+		*.md | */*.md) return 0 ;;
+		*/deploy/application.yaml | */deploy/kustomization.yaml | */apko.yaml | */apko.lock.json)
+			return 0
+			;;
+		esac
+	done < <(changed_files)
+	return 1
+}
+
+need_gazelle() {
+	local f
+	while IFS= read -r f; do
+		case "$f" in
+		*.go | *.py | BUILD | BUILD.bazel | */BUILD | */BUILD.bazel | *.bzl)
+			return 0
+			;;
+		esac
+	done < <(changed_files)
+	return 1
+}
+
+need_migration_check() {
+	local f
+	while IFS= read -r f; do
+		case "$f" in
+		*/migrations/*.sql) return 0 ;;
+		esac
+	done < <(changed_files)
+	return 1
+}
+
+cmd_regen() {
+	if need_generators; then
+		log "regen: running generators (inputs changed)"
+		./bazel/tools/format/run-generators.sh
+	else
+		log "regen: generators skipped (no matching inputs)"
+	fi
+
+	if need_gazelle; then
+		if command -v gazelle >/dev/null 2>&1; then
+			log "regen: gazelle"
+			gazelle
+		else
+			dim "regen: gazelle not on PATH; skipped"
+		fi
+	else
+		log "regen: gazelle skipped"
+	fi
+
+	if need_migration_check; then
+		log "regen: migration ordering check"
+		./bazel/tools/format/check-migration-ordering.sh
+	fi
+	log "regen: done"
+}
+
+# ---------- test (bb remote = Workflows backend, Linux) ----------
+cmd_test() {
+	if ! command -v bb >/dev/null 2>&1; then
+		err "bb (BuildBuddy CLI) not found. Install: https://www.buildbuddy.io/cli/"
+		exit 1
+	fi
+
+	local targets="${CI_TEST_TARGETS:-//...}"
+	log "test: bb remote (linux/amd64) — same filters as buildbuddy.yaml Test"
+	dim "  bb remote --os=linux --arch=amd64 test $targets --config=ci --test_tag_filters=-external,-future"
+
+	# shellcheck disable=SC2086
+	bb remote --os=linux --arch=amd64 \
+		test $targets \
+		--config=ci \
+		--test_tag_filters=-external,-future \
+		"$@"
+}
+
+cmd_all() {
+	cmd_lint
+	cmd_regen
+	if [[ "${SKIP_REMOTE:-0}" == "1" ]]; then
+		log "test: skipped (SKIP_REMOTE=1)"
+		return 0
+	fi
+	cmd_test "$@"
+}
+
+main() {
+	local cmd="${1:-}"
+	case "$cmd" in
+	"" | all)
+		[[ "$cmd" == "all" ]] && shift || true
+		cmd_all "$@"
+		;;
+	lint)
+		shift
+		cmd_lint "$@"
+		;;
+	regen)
+		shift
+		cmd_regen "$@"
+		;;
+	test)
+		shift
+		cmd_test "$@"
+		;;
+	-h | --help | help)
+		usage
+		;;
+	*)
+		err "unknown command: $cmd (try: ci | ci lint | ci regen | ci test)"
+		exit 2
+		;;
+	esac
+}
+
+main "$@"

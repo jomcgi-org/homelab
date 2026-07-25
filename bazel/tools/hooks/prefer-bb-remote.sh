@@ -1,15 +1,11 @@
 #!/bin/bash
-# PreToolUse hook: blocks direct bazel/bazelisk invocations.
-# All real Bazel work happens in CI (push the branch). Locally, use `format`
-# for formatting, gazelle, and apko lockfile updates; use the
-# `mcp__buildbuddy__*` tools for inspecting CI runs.
+# PreToolUse hook: blocks direct bazel/bazelisk invocations on the Mac.
 #
-# (Filename retained for backwards-compat with .claude/settings.json and
-# the BUILD/test wiring; rename is a follow-up cleanup.)
+# Local verification is `ci` (bazel/tools/ci/ci): selective lint/regen, then
+# `bb remote` Linux tests (BuildBuddy Remote Bazel, same backend as Workflows).
+# Direct `bazel` on darwin has no workflow executors and is the wrong loop.
 #
-# Input: JSON on stdin from Claude Code hook system
-# Exit 0: allow the command
-# Exit 2: block the command (reason shown to Claude)
+# Exit 0: allow; exit 2: block (reason on stderr).
 
 set -euo pipefail
 
@@ -26,35 +22,36 @@ if [[ "$COMMAND" == git\ * ]]; then
 	exit 0
 fi
 
-# Allow format command (runs gazelle which wraps bazel internally)
-if [[ "$COMMAND" == format* ]]; then
+# Allow the unified local gate
+if [[ "$COMMAND" == ci\ * ]] || [[ "$COMMAND" == ci ]] || [[ "$COMMAND" == */ci\ * ]] || [[ "$COMMAND" == */ci ]]; then
 	exit 0
 fi
 
-# Allow bb commands (already using BuildBuddy CLI)
+# Allow format / fast-format (legacy; prefer `ci lint`)
+if [[ "$COMMAND" == format* ]] || [[ "$COMMAND" == *fast-format.sh* ]]; then
+	exit 0
+fi
+
+# Allow bb commands (BuildBuddy CLI, including `bb remote`)
 if [[ "$COMMAND" == bb\ * ]] || [[ "$COMMAND" == */bb\ * ]]; then
 	exit 0
 fi
 
-# Block direct bazel/bazelisk invocations. The chained patterns require a
-# trailing space so repo-relative script paths under bazel/ (e.g.
-# "cd /tmp/wt && bazel/tools/format/fast-format.sh") are not false positives.
+# Block direct bazel/bazelisk. Trailing space so paths under bazel/ are ok.
 if [[ "$COMMAND" == bazel\ * ]] || [[ "$COMMAND" == bazelisk\ * ]] || [[ "$COMMAND" == *"&& bazel "* ]] || [[ "$COMMAND" == *"; bazel "* ]]; then
 	cat >&2 <<-'EOF'
-		BLOCKED: Direct bazel/bazelisk invocations are not allowed locally.
+		BLOCKED: Direct bazel/bazelisk on the workstation is not the feedback loop.
 
-		All Bazel work happens in CI:
-		  - Tests / builds / image pushes: commit + push the branch, watch via
-		    `gh pr checks <number> --watch`.
-		  - Apko lockfile updates: run `format` (regenerates all locks via
-		    bazel internally; allowed by this hook).
-		  - Gazelle / BUILD file generation: also part of `format`.
+		Use the unified gate (BuildBuddy Remote Bazel under the hood):
+		  ci              # lint changed files + selective regen + bb remote test
+		  ci lint         # format only files changed vs origin/main
+		  ci regen        # generators/gazelle only when inputs changed
+		  ci test         # bb remote --os=linux --arch=amd64 test //... --config=ci
 
-		For CI debugging, use the BuildBuddy MCP tools:
-		  mcp__buildbuddy__get_invocation   # Look up by commitSha or invocationId
-		  mcp__buildbuddy__get_target       # Find failing targets in an invocation
-		  mcp__buildbuddy__get_log          # Read the build/test log
-		  mcp__buildbuddy__get_file_range   # Range-read CAS blob artifacts
+		PR Workflows use the same remote cache; a green `ci test` should make
+		the PR "Test" action mostly cache-hit.
+
+		Inspect CI: mcp__buildbuddy__get_invocation (commitSha or invocationId)
 	EOF
 	exit 2
 fi
