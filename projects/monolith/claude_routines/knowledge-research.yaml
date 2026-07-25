@@ -14,8 +14,8 @@ prompt: |
   Expand Joe's knowledge graph: web-research external gaps and write fileless
   atoms for the terms.
 
-  Use the `knowledge-research` skill (read and follow
-  .claude/skills/knowledge-research/SKILL.md from the cloned homelab repo).
+  Read and follow docs/runbooks/knowledge/research.md from the cloned
+  homelab repo.
 
   In short:
   1. Acquire the `knowledge.research` lock via
@@ -36,7 +36,7 @@ prompt: |
   routine's job). Creating the atom auto-commits the matching open gap row via
   the resolve_gaps_for_note hook in create-atom, so you do not commit it yourself.
   Never research
-  internal/hybrid gaps. Follow the skill's schema, visibility, aliases, and
+  internal/hybrid gaps. Follow the runbook's schema, visibility, aliases, and
   wikilink guardrails exactly; create-atom enforces the schema server-side and
   returns an error you must correct. On a hard failure, notify via
   monolith-monolith-agent-notify.

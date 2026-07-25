@@ -13,8 +13,8 @@ mcp_connectors:
 prompt: |
   Distil reusable learnings from completed tasks into atom/fact notes.
 
-  Use the `knowledge-distill` skill (read and follow
-  .claude/skills/knowledge-distill/SKILL.md from the cloned homelab repo).
+  Read and follow docs/runbooks/knowledge/distill.md from the cloned
+  homelab repo.
 
   In short:
   1. Acquire the `knowledge.distill` lock (ttl ~600s). If held, exit.
@@ -25,5 +25,5 @@ prompt: |
      edges derives_from the task note. Routine tasks: create nothing.
   4. Release the lock.
 
-  Follow the skill's visibility and wikilink guardrails. Default visibility to
+  Follow the runbook's visibility and wikilink guardrails. Default visibility to
   private when uncertain.

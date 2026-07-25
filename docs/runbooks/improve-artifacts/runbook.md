@@ -1,13 +1,11 @@
 ---
 name: improve-artifacts
-description: >
-  UI/UX quality feedback loop over published goosecracker artifacts: screenshot
-  each artifact in the window, score it against a fixed design rubric, and open
-  evidence-backed PRs editing the artifact recipe YAMLs. Use when asked to
-  "improve the artifacts", "/improve-artifacts", "why do the artifacts look
-  samey / like AI slop", or "design feedback loop". For mechanics failures
-  (routing, turns, wall time) use improve-recipes instead.
+invoke: explicit
+summary: Explicit improve loop for artifacts
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # improve-artifacts
 
@@ -53,7 +51,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   gather --since 2026-06-28T00:00:00Z \
-  < .claude/skills/improve-artifacts/scripts/improve_artifacts_tool.py
+  < docs/runbooks/improve-artifacts/scripts/improve_artifacts_tool.py
 ```
 
 `put-eval` takes the eval JSON base64-encoded as an argv argument (stdin
@@ -64,7 +62,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   put-eval <artifact_id> <base64-encoded-eval-json> \
-  < .claude/skills/improve-artifacts/scripts/improve_artifacts_tool.py
+  < docs/runbooks/improve-artifacts/scripts/improve_artifacts_tool.py
 ```
 
 Default `--since` window: the merge date of the last commit touching
@@ -209,3 +207,4 @@ Recipes reach production through the existing pipeline: the merged PR's CI
 rebuilds the goosecracker guest apko image and bumps the substrate chart. The
 next `/improve-artifacts` run's before/after table is the verdict on whether
 the change worked.
+

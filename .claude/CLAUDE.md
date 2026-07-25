@@ -37,20 +37,47 @@ Output shape: "Option A (simplest): …; Option B: … — recommend A unless yo
 
 ## Model Routing & Wall-Time
 
-Objective for this repo: lowest wall-time-to-outcome at maximum quality, within the weekly subscription budget. The budget is to be spent, not minimized: optimize outcomes per unit of wall time. The deciding question for model choice is not raw quality but verification cost: route work to the cheapest model whose mistakes are caught cheaply, and reserve the quality tier for mistakes that only slow CI can catch.
+Objective: lowest wall-time-to-outcome at maximum quality within the weekly
+subscription budget. The budget is to be spent, not minimized. Route work to the
+cheapest model whose mistakes are caught cheaply; reserve quality tiers for
+mistakes only slow CI can catch.
 
-- **Opus 4.8 for judgment and CI-only-verifiable work**: the main loop, code review, planning, and subtle or architectural implementation where only the slow BuildBuddy CI cycle can catch a miss (Helm value plumbing several levels deep, Bazel/apko, RBAC verb coverage, cross-service URL wiring, migration ordering). Here Opus's higher first-pass-correct rate avoids expensive CI round-trips, so its slower turns still win on wall time.
-- **Codex (OpenAI subscription) is the first choice for the implementation bulk**: well-specified, locally-verifiable tasks (boilerplate, config plumbing, mechanical edits, clearly-spec'd functions). This repo's dense edit-time hooks plus local renders (`format`, `helm template`, type-check) catch most misses before CI, so fast hands here are close to a pure wall-time win, and Codex bills the OpenAI quota instead of the Claude weekly limit. Dispatch ONLY via `bazel/tools/codex/dispatch.sh` (see the `codex-implement` skill): tiers `luna` (mechanical), `terra` (standard, default), `frontier` (hardest specs / cross-vendor second opinion). One worktree per worker; workers cannot commit, push, or reach the network; the dispatching Opus agent reviews and commits the diff.
-- **Codex quota exhaustion (dispatch exit code 42)**: send exactly one Discord notification to Joe via `monolith-monolith-agent-notify` (level `warn`, main-loop agent only) saying Codex quota is out and work is falling back, then continue the plan with Sonnet implementers. Do not retry codex in a loop, and do not re-notify in the same session.
-- **Sonnet 4.6 is the fallback implementation tier** when Codex is unavailable, out of quota, or the task needs Claude-side context (skills, MCP tools, repo memory). Same slot, same rules; dispatch Sonnet implementers via the per-call `model` parameter.
-- **Opus reviewers are the safety net** that makes fast Codex/Sonnet implementers safe: an Opus reviewer reading the diff before the end-of-plan CI run catches subtle misses cheaply (code-reading review, no CI cost). Codex/Sonnet hands, Opus eyes. Do not downgrade the reviewer to a fast tier; a `frontier` Codex dispatch may be ADDED as a cross-vendor second opinion on the hardest diffs, never substituted.
-- **Reject downgrades done purely to save quota.** Using Sonnet because it is a genuine wall-time win on cheaply-verified work is correct; using it to stretch the weekly budget at the cost of more CI round-trips is not.
-- **Fable 5 is the upgrade path** (`/model fable`) for the genuinely hardest design or debugging calls, not just a fallback.
-- **Search is already cheap and fast.** The built-in `Explore` agent runs on Haiku; prefer it over `general-purpose` for read-only search and lookup so that work stays fast and off the Opus tier. Keep `general-purpose` (which inherits Opus) for anything needing judgment.
-- **Prefer parallel fan-out over serial** for independent work. Dispatch multiple implementer / reviewer / explorer subagents in a single turn, or use a Workflow, so wall-clock overlaps. Spending more concurrent budget to compress wall time is the intended trade here.
-- **Write the full task spec up front.** Opus 4.8 one-shots better with the complete task stated in one turn; fewer round-trips means less wall time and fewer slow-CI cycles. Use `/goal` for multi-step runs.
-- **Effort default is `high`** (set globally in `~/.claude/settings.json`). On 4.8, `high` is the recommended default and is often equal quality and faster than `xhigh` (which can overthink), so it is the lower-wall-time choice. Bump to `/effort xhigh` per session for the genuinely hardest long-horizon runs; never drop below `high`, and never cut effort merely to save budget.
-- **Fast mode (`/fast`) is off by default.** It is the same Opus 4.8 quality at faster output, but it bills usage credits (cash, roughly 2x) and bypasses the weekly limit rather than drawing from it. Use only as a deliberate cash-for-speed bypass when blocked at the weekly wall, not as a routine setting.
+- **Opus 5 for judgment and CI-only-verifiable work**: main loop, code review,
+  planning, and subtle or architectural implementation (deep Helm, Bazel/apko,
+  RBAC verbs, migration ordering, cross-service wiring). Higher first-pass-correct
+  rate avoids expensive CI round-trips.
+- **Codex for implementation bulk** (OpenAI subscription, bills off the Claude
+  weekly limit). Dispatch ONLY via `bazel/tools/codex/dispatch.sh` (see
+  `codex-implement`):
+  - **`luna` (default):** most of the value at far lower cost; mechanical *and*
+    standard well-specified work
+  - **`terra`:** only when Luna is too weak for that task
+  - **`frontier` (Sol):** rare cross-vendor second opinion; **never** a default
+  One worktree per worker; workers cannot commit, push, or reach the network;
+  the dispatching Opus agent reviews, runs `ci`, and commits.
+- **Codex quota exhaustion (exit 42):** one Discord notify via
+  `monolith-monolith-agent-notify` (level `warn`, main-loop only), then Sonnet
+  implementers. No codex retry loop; no re-notify in the same session.
+- **Sonnet is the fallback implementer** when Codex is unavailable, out of
+  quota, or the task needs Claude-side skills/MCP/context.
+- **Opus reviewers are the safety net.** Codex/Sonnet hands, Opus eyes. Do not
+  downgrade the reviewer. Sol may be *added* as a second opinion on the hardest
+  diffs, never substituted for Opus review.
+- **Reject downgrades done purely to save Claude quota** when they buy more CI
+  round-trips. Prefer Luna over Sol to save *OpenAI* cost without quality loss
+  on bulk work.
+- **Fable is last resort only** (`/model fable`). Not a normal-day upgrade path.
+  Use only when Opus 5 is stuck on a genuine hard design/debug wall after a real
+  attempt; do not open Fable for routine features.
+- **Search is cheap.** Prefer Explore (Haiku) for read-only lookup; keep
+  `general-purpose` (inherits Opus) for judgment.
+- **Prefer parallel fan-out** for independent work (multiple Codex Luna workers
+  or subagents in one turn).
+- **Write the full task spec up front** so one-shot implementers succeed.
+- **Effort default is `high`** (global settings). Bump to `xhigh` only for the
+  hardest long-horizon runs; never drop below `high` to save budget.
+- **Fast mode (`/fast`) is off by default.** Cash-for-speed bypass only when
+  blocked at the weekly wall.
 
 ## Essential Commands
 
@@ -138,6 +165,16 @@ Breaking changes: add `!` after type/scope — `feat!: redesign auth token forma
 - **Alerting work**: Read `docs/reference/observability-alerting.md`
 - **Operator changes**: Read `projects/operators/best-practices.md`
 - **Design proposals**: Check `docs/decisions/` for ADRs (numbered per category)
+
+### Skills vs runbooks
+
+- **Skills** (`.claude/skills/`): auto-matchable agent workflows (`ship`, `adr`,
+  `stpa`, `codex-implement`, `knowledge` search, etc.).
+- **Runbooks** (`docs/runbooks/`): **explicit-only**. Open only when Joe asks
+  for that procedure, a rule above names the file, or a
+  `projects/monolith/claude_routines/*.yaml` prompt points at the path. Do not
+  invent skills for runbook content. Index: `docs/runbooks/README.md`.
+  Knowledge pipeline + improve-* loops live under runbooks, not skills.
 
 ## Key Patterns
 

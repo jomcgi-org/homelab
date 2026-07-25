@@ -1,21 +1,11 @@
 ---
 name: improve-safeguards
-description: >
-  Correctness feedback loop over Bosun's trust & safety ledger (ADR chat/003):
-  review moderation decisions, especially the near-boundary and cross-lane
-  ones, and judge each as a false positive (a benign message flagged, worst
-  when it locked a user out), a false negative (real abuse scored clean), or a
-  correct call, then open evidence-backed PRs tuning the responsible lever (a
-  heuristic pattern, the LLM intent prompt, a signal weight, or the lockout
-  threshold) and flag mislabeled rows for a human pardon/relabel. Use when
-  asked to "improve the safeguards", "/improve-safeguards", "was that lockout
-  right", "why did Bosun ignore/brig <person>", "is the trust ledger
-  over-flagging", or "false positive/negative in moderation". Sister to
-  improve-ambient (engagement fluidity) and improve-recipes (agent-run
-  mechanics); this one owns the ledger's correctness. The heuristic/LLM/weight/
-  threshold levers are human-reviewed here; the shadow random forest retrains
-  itself out of band (chat/safeguards_train_job.py).
+invoke: explicit
+summary: Explicit improve loop for safeguards
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # improve-safeguards
 
@@ -201,7 +191,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   gather --since 2026-07-11T00:00:00Z \
-  < .claude/skills/improve-safeguards/scripts/improve_safeguards_tool.py
+  < docs/runbooks/improve-safeguards/scripts/improve_safeguards_tool.py
 ```
 
 `fetch-decision` is the same shape with the subcommand and an event id:
@@ -211,7 +201,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   fetch-decision <event_id> \
-  < .claude/skills/improve-safeguards/scripts/improve_safeguards_tool.py
+  < docs/runbooks/improve-safeguards/scripts/improve_safeguards_tool.py
 ```
 
 `put-eval` takes the eval JSON base64-encoded as an argv argument (the script
@@ -222,7 +212,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   put-eval <event_id> <base64-encoded-eval-json> \
-  < .claude/skills/improve-safeguards/scripts/improve_safeguards_tool.py
+  < docs/runbooks/improve-safeguards/scripts/improve_safeguards_tool.py
 ```
 
 ## eval JSON contract
@@ -252,3 +242,4 @@ PR's chart bump rolls them out. A flagged label correction takes effect when a
 human runs `monolith-chat-trust-pardon`. The next `/improve-safeguards` run's
 before/after aggregates (especially the false-positive lockout rate) are the
 verdict on whether the change worked.
+

@@ -1,18 +1,11 @@
 ---
 name: improve-ambient
-description: >
-  Fluidity + productivity feedback loop over ambient Discord chat activations:
-  score each engagement (was it wanted, was the reply fluid, did it land) from
-  attention decisions, reactions, and follow-up, then open evidence-backed PRs
-  tuning the ambient system prompt, the agent-reply voice prompt, and the
-  attention gate, and stage channel directives (or flag per-person style prefs)
-  where behaviour must diverge. Use when asked to "improve the ambient chat",
-  "/improve-ambient", "why did Bosun barge in / miss that", or "ambient feedback
-  loop". This is the on-demand, human-reviewed half; the directive autopilot
-  (chat/autopilot_job.py) is the autonomous background half. For goosecracker
-  agent-run mechanics use improve-recipes; for artifact design use
-  improve-artifacts.
+invoke: explicit
+summary: Explicit improve loop for ambient
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # improve-ambient
 
@@ -242,7 +235,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   gather --since 2026-06-28T00:00:00Z \
-  < .claude/skills/improve-ambient/scripts/improve_ambient_tool.py
+  < docs/runbooks/improve-ambient/scripts/improve_ambient_tool.py
 ```
 
 `fetch-episode` is the same shape with the subcommand and an episode id:
@@ -252,7 +245,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   fetch-episode <episode_id> \
-  < .claude/skills/improve-ambient/scripts/improve_ambient_tool.py
+  < docs/runbooks/improve-ambient/scripts/improve_ambient_tool.py
 ```
 
 `put-eval` cannot take both the script and the payload over stdin, so it takes
@@ -264,7 +257,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   put-eval <episode_id> <base64-encoded-eval-json> \
-  < .claude/skills/improve-ambient/scripts/improve_ambient_tool.py
+  < docs/runbooks/improve-ambient/scripts/improve_ambient_tool.py
 ```
 
 ## eval JSON contract
@@ -289,3 +282,4 @@ Prompt and gate edits ship with the MONOLITH image: the merged PR's chart bump
 rolls them out. Channel directive proposals land as inactive rows and take
 effect on a human 👍 in Discord. The next `/improve-ambient` run's before/after
 aggregates are the verdict on whether the change worked.
+

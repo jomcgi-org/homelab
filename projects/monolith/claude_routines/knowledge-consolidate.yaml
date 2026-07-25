@@ -13,8 +13,8 @@ mcp_connectors:
 prompt: |
   Refresh Joe's daily and weekly task rollup notes.
 
-  Use the `knowledge-consolidate` skill (read and follow
-  .claude/skills/knowledge-consolidate/SKILL.md from the cloned homelab repo).
+  Read and follow docs/runbooks/knowledge/consolidate.md from the cloned
+  homelab repo.
 
   In short:
   1. Acquire the `knowledge.consolidate` lock (ttl ~300s). If held, exit.
