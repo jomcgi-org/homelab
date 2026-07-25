@@ -12,16 +12,13 @@ direction, holds the phase sequence and review gate, runs git, and owns the
 ledger. It dispatches implementation bulk to Codex (Luna preferred) via
 `codex-implement`, verification via `ci`, and STPA via the `stpa` skill.
 
-## Model / multi-CLI flow (house style)
+## Model / multi-CLI flow
 
-| Role | Who | Notes |
-|------|-----|--------|
-| Main loop, plan, ADR, review | **Opus 5** | Judgment and CI-only-verifiable work |
-| Implementation bulk | **Codex Luna** (default), Terra only when Luna is too weak | `bazel/tools/codex/dispatch.sh` |
-| Fallback implementers | **Sonnet** | When Codex quota exhausted (exit 42) |
-| Cross-vendor second opinion | Codex `frontier` (Sol) | Rare; never default |
-| Escalation of last resort | **Fable** (`/model fable`) | Not a normal-day tool |
-| Local verification | **`ci`** | lint + regen + `bb remote` Test 1:1 with Workflows |
+Routing is owned by `.claude/CLAUDE.md` Model routing and is not restated here:
+Opus orchestrates and reviews, Luna implements, Fable is a context-window
+escalation of last resort. `/ship` adds one wrinkle, Codex `frontier` (Sol) as a
+rare cross-vendor second opinion on the hardest Phase 4 diffs, added alongside
+the Opus review and never substituted for it.
 
 Do **not** open bare `bazel` on the Mac. Do **not** treat PR CI as the first
 test run: run `ci` (or `ci test`) before push so Workflows mostly cache-hit.
