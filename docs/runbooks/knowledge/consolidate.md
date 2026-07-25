@@ -1,11 +1,11 @@
 ---
 name: knowledge-consolidate
-description: >
-  Generate daily and weekly task rollup notes in Joe's knowledge graph, over
-  MCP. Use when running the knowledge-consolidate routine (or asked to refresh
-  task rollups). Reads active tasks with due dates and writes/refreshes a
-  daily and a weekly rollup atom. No filesystem.
+invoke: explicit
+summary: Generate daily/weekly task rollup notes in the knowledge graph
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Knowledge Consolidate
 
@@ -32,3 +32,4 @@ Rollups are derived views: it is fine to regenerate their body each run. Do not 
 ## Limits
 
 Two notes per run (daily + weekly). Hold `knowledge.consolidate` lock. Daily cadence. Rollups are always `private`.
+

@@ -14,8 +14,8 @@ prompt: |
   Classify Joe's unclassified knowledge gaps: route each discovered gap to
   external, internal, hybrid, or parked using his privacy rubric.
 
-  Use the `knowledge-classify` skill (read and follow
-  .claude/skills/knowledge-classify/SKILL.md from the cloned homelab repo).
+  Read and follow docs/runbooks/knowledge/classify.md from the cloned
+  homelab repo.
 
   In short:
   1. Acquire the `knowledge.classify` lock via

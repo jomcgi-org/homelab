@@ -13,8 +13,8 @@ mcp_connectors:
 prompt: |
   Garden Joe's knowledge graph: decompose pending raw captures into atomic notes.
 
-  Use the `knowledge-gardener` skill (read and follow
-  .claude/skills/knowledge-gardener/SKILL.md from the cloned homelab repo).
+  Read and follow docs/runbooks/knowledge/gardener.md from the cloned
+  homelab repo.
 
   In short:
   1. Acquire the `knowledge.garden` lock via
@@ -27,6 +27,6 @@ prompt: |
      monolith-record-provenance outcome no-new-notes; on failure, outcome failed.
   4. Release the lock.
 
-  Follow the skill's schema, visibility, aliases, wikilink, and edge guardrails
+  Follow the runbook's schema, visibility, aliases, wikilink, and edge guardrails
   exactly. create-atom enforces the schema server-side and returns an error you
   must correct. On a hard failure, notify via monolith-monolith-agent-notify.

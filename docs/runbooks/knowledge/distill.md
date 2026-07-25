@@ -1,11 +1,11 @@
 ---
 name: knowledge-distill
-description: >
-  Distil reusable learnings from completed tasks in Joe's knowledge graph into
-  atom/fact notes, over MCP. Use when running the knowledge-distill routine (or
-  asked to distil completed tasks). Reads done tasks and extracts patterns,
-  gotchas, and facts worth keeping as standalone atoms. No filesystem.
+invoke: explicit
+summary: Distil reusable learnings from completed knowledge tasks
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Knowledge Distill
 
@@ -40,3 +40,4 @@ Default `private` when uncertain. `public`: general engineering concepts/heurist
 ## Limits
 
 Bounded batch per run (~5). Hold `knowledge.distill` lock. Daily cadence.
+

@@ -1,13 +1,11 @@
 ---
 name: knowledge-classify
-description: >
-  Classify unresolved knowledge gaps in Joe's knowledge graph into external,
-  internal, hybrid, or parked, over MCP. Use when running the knowledge-classify
-  routine (or asked to "classify gaps" / "triage the gap queue"). Reads
-  discovered gaps with no class yet, applies Joe's relevance + privacy rubric,
-  and sets the class via set-gap-class. No filesystem: everything is Postgres
-  via MCP.
+invoke: explicit
+summary: Classify unresolved knowledge gaps (external/internal/hybrid/parked)
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Knowledge Classify
 
@@ -200,3 +198,4 @@ Joe. Bias toward the cheap error.
   gap that already has a class or has left the `discovered` state.
 - On a hard failure (repeated `set-gap-class` errors, tool outages), call
   `monolith-agent-notify` once with `level: "error"` and exit.
+

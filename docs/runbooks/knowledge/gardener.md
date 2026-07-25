@@ -1,12 +1,11 @@
 ---
 name: knowledge-gardener
-description: >
-  Decompose raw captures in Joe's knowledge graph into atomic notes, over MCP.
-  Use when running the knowledge-gardener routine (or asked to "garden" the
-  knowledge graph / process pending raws). Reads pending raws, finds related
-  existing atoms, and creates schema-valid atom/fact/active notes via the
-  monolith knowledge MCP tools. No filesystem: everything is Postgres via MCP.
+invoke: explicit
+summary: Decompose pending knowledge raws into atoms over MCP
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Knowledge Gardener
 
@@ -99,3 +98,4 @@ When in doubt: `private`.
 - Process at most the `limit` raws returned (default 5) per run.
 - Hold the `knowledge.garden` lock for the whole run; skip if held.
 - A raw that has failed 3 times is no longer returned by `list-raws-needing-decomposition` (retry ceiling). Record genuine failures so the ceiling is respected.
+

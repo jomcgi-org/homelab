@@ -1,99 +1,66 @@
 ---
 name: codex-implement
 description: >
-  Dispatch implementation work to the Codex CLI (OpenAI subscription) via the
-  deterministic wrapper bazel/tools/codex/dispatch.sh, so the implementation
-  bulk drains the OpenAI quota instead of the Claude weekly limit. Use when
-  executing implementation tasks that are locally verifiable (boilerplate,
-  config plumbing, mechanical edits, clearly-spec'd functions), when a plan's
-  implementer subagents would otherwise go to Sonnet, or when the user says
-  "use codex", "dispatch to codex", or "/codex-implement". Also defines the
-  mandatory quota-exhaustion handling: Discord-notify Joe once and fall back
-  to Sonnet.
+  Dispatch implementation work to the Codex CLI (OpenAI subscription) via
+  bazel/tools/codex/dispatch.sh so bulk work bills OpenAI instead of the Claude
+  weekly limit. Prefer Luna (most value per dollar). Use when executing
+  locally-verifiable tasks, when implementers would otherwise be Sonnet, or when
+  the user says "use codex", "dispatch to codex", or "/codex-implement".
 ---
 
 # Codex Implement
 
-Dispatch well-specified implementation tasks to Codex CLI workers instead of
-Sonnet subagents. Same routing philosophy as CLAUDE.md Model Routing: fast
-hands on cheaply-verified work, Opus eyes on the diff. Codex workers bill the
-OpenAI subscription, preserving the Claude weekly budget for judgment work.
+Dispatch well-specified implementation tasks to Codex CLI workers. House style:
+**Luna first**, Terra only when needed, Sol (`frontier`) almost never. Opus 5
+reviews diffs. Verification is **`ci`** (bb remote Test 1:1 with Workflows), not
+bare Mac `bazel`.
 
 ## When to Use
 
-- Implementation-bulk tasks that local hooks and renders can verify
-  (`fast-format.sh`, `helm template`, type checks): the Sonnet slot
-- Parallel fan-out of independent implementation tasks in a plan
-- NOT for CI-only-verifiable work (Helm value plumbing several levels deep,
-  Bazel/apko, RBAC verbs, migration ordering): keep that on Opus/Fable
-- NOT for review: the safety-net reviewer stays Opus (never downgrade it)
+- Implementation bulk that `ci lint` / local renders catch cheaply
+- Parallel fan-out of independent tasks (one worktree each)
+- NOT for CI-only-verifiable work (deep Helm, Bazel/apko, RBAC, migration
+  ordering): keep that on **Opus 5**
+- NOT for review: reviewer stays Opus (never downgrade)
 
 ## How to Dispatch
 
-Always through the wrapper, never raw `codex exec` (the wrapper pins the
-sandbox, appends repo guardrails, and classifies quota exhaustion):
+Always through the wrapper:
 
 ```bash
 bazel/tools/codex/dispatch.sh <tier> <workdir> "<full task spec>"
-# or pipe a long spec:
-bazel/tools/codex/dispatch.sh terra /tmp/claude-worktrees/my-task - <<'SPEC'
+# or:
+bazel/tools/codex/dispatch.sh luna /tmp/claude-worktrees/my-task - <<'SPEC'
 ...multi-line spec...
 SPEC
 ```
 
-Tiers:
-
-| Tier       | Model         | Effort | Use for                                   |
-| ---------- | ------------- | ------ | ----------------------------------------- |
-| `luna`     | gpt-5.6-luna  | medium | Mechanical edits, boilerplate, renames    |
-| `terra`    | gpt-5.6-terra | high   | Standard implementation bulk (default)    |
-| `frontier` | gpt-5.6-sol   | high   | Hardest specs; cross-vendor second opinion |
-
-Quota discipline on the $20 Plus plan: `terra` stays the default for the
-bulk; reserve `frontier` (Sol) for tasks you would otherwise have given
-Opus hands, and for second-opinion reviews of the riskiest diffs. Making
-Sol the default would burn the rolling-window limit on work Terra handles
-fine, triggering the exit-42 fallback early.
+| Tier       | Model         | Effort | Use for |
+| ---------- | ------------- | ------ | ------- |
+| **`luna`** | gpt-5.6-luna  | medium | **Default.** Mechanical + standard bulk; most of the value at far lower cost |
+| `terra`    | gpt-5.6-terra | high   | Only when Luna failed or the spec is clearly above Luna |
+| `frontier` | gpt-5.6-sol   | high   | **Rare.** Hardest cross-vendor second opinion only; never default |
 
 Rules:
 
-1. **One worktree per worker.** Workers write files only; they cannot commit,
-   push, or reach the network (workspace-write sandbox). Parallel workers
-   must not share a worktree.
-2. **Write the full spec up front**: files to touch, acceptance criteria,
-   patterns to follow (point at an existing file to imitate). Codex has no
-   conversation memory across dispatches.
-3. **Fan out in parallel** for independent tasks: run several dispatches with
-   `run_in_background: true` Bash calls in one turn.
-4. **Review before committing.** The dispatching (Opus) agent reads the diff,
-   runs `bazel/tools/format/fast-format.sh`, and commits with Conventional
-   Commits. Test execution stays deferred to CI on the pushed branch.
+1. **Prefer Luna.** Do not default to Terra or Sol to "be safe."
+2. **One worktree per worker.** No commit/push/network in the sandbox.
+3. **Full spec up front** (files, acceptance, patterns to imitate).
+4. **Fan out in parallel** for independent tasks.
+5. **Opus reviews** the diff, runs **`ci`** (or `ci lint` + `ci test`), then
+   commits Conventional Commits. Do not skip `ci` and hope PR CI is the first
+   signal.
 
 ## Quota Exhaustion (exit code 42)
 
-Exit 42 plus a `CODEX_QUOTA_EXHAUSTED` line on stderr means the OpenAI
-subscription is out of quota or rate-limited. The dispatching agent MUST:
+1. One Discord `monolith-monolith-agent-notify` (level `warn`, main-loop only).
+2. Fall back to Sonnet implementers for remaining tasks.
+3. Do not retry codex in a loop; do not re-notify in the same session.
 
-1. Send exactly ONE Discord notification via
-   `monolith-monolith-agent-notify` (level `warn`), e.g.
-   "Codex quota exhausted mid-plan (task N of M); falling back to Sonnet
-   implementers." Main-loop agent only, per the single-voice rule; a
-   subagent that sees exit 42 reports it to the dispatcher instead.
-2. Fall back to Sonnet subagents (Agent tool, `model: sonnet`) for the
-   remaining implementation tasks. Do not retry codex in a loop.
-3. Not re-notify for subsequent 42s in the same session.
-
-Any other non-zero exit is an ordinary worker failure: read the transcript
-the wrapper printed, fix the spec or fall back to Sonnet for that one task.
-No Discord notification.
-
-## Preflight (once per session, optional)
-
-If codex has not been used yet this session and the plan leans on it:
+## Preflight (optional)
 
 ```bash
 codex login status   # expect "Logged in using ChatGPT"
 ```
 
-If not logged in, tell Joe to run `! codex login` rather than attempting it
-headlessly.
+If not logged in, ask Joe to run `codex login` (not headless).

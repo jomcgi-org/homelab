@@ -1,12 +1,11 @@
 ---
 name: improve-recipes
-description: >
-  Classify goosecracker agent sessions from prod data and open evidence-backed
-  PRs editing the recipe levers (guest sub-recipe YAMLs, the DeepSeek plan
-  system prompt, and the recipe catalog). Use when asked to "improve the goose
-  recipes", "/improve-recipes", "why did that agent session go badly", "classify
-  agent sessions", or "recipe feedback loop".
+invoke: explicit
+summary: Explicit improve loop for recipes
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # improve-recipes
 
@@ -80,7 +79,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   gather --since 2026-06-28T00:00:00Z \
-  < .claude/skills/improve-recipes/scripts/improve_recipes_tool.py
+  < docs/runbooks/improve-recipes/scripts/improve_recipes_tool.py
 ```
 
 `put-eval` cannot take both the script and the payload over stdin, so it
@@ -91,7 +90,7 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   put-eval <session_id> <base64-encoded-eval-json> \
-  < .claude/skills/improve-recipes/scripts/improve_recipes_tool.py
+  < docs/runbooks/improve-recipes/scripts/improve_recipes_tool.py
 ```
 
 Default `--since` window: the merge date of the last commit touching ANY recipe
@@ -254,3 +253,4 @@ The deploy path depends on which lever you edited:
 A PR that touches both levers needs both bumps. The next `/improve-recipes` run
 is what tells you whether the change actually worked, that is the point of the
 before/after aggregates table.
+

@@ -5,7 +5,8 @@
 #   bazel/tools/codex/dispatch.sh <tier> <workdir> "<task spec>"
 #   echo "<task spec>" | bazel/tools/codex/dispatch.sh <tier> <workdir> -
 #
-#   tier:    luna | terra | frontier   (mechanical | standard | hardest)
+#   tier:    luna | terra | frontier
+#            luna = default (most value / $); terra = step-up; frontier/Sol = rare
 #   workdir: directory the worker may write to (a /tmp/claude-worktrees/* worktree)
 #   spec:    full task spec as one argument, or "-" to read from stdin
 #
@@ -57,7 +58,8 @@ fi
 
 GUARDRAILS='
 --- Repo guardrails (do not violate) ---
-- Do NOT run tests (no pytest, go test, npm test, bazel test). CI runs them on push.
+- Do NOT run pytest/go test/npm test/bazel test on the Mac. The orchestrator
+  runs `ci` (bb remote Linux Test) after reviewing your diff.
 - Do NOT run git commit, git push, or any git state-changing command. The
   orchestrator reviews and commits your diff.
 - Never use em-dashes in anything you write.

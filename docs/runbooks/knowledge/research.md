@@ -1,13 +1,11 @@
 ---
 name: knowledge-research
-description: >
-  Fill external knowledge gaps in Joe's knowledge graph by web-researching the
-  term and writing a fileless atom, over MCP. Use when running the
-  knowledge-research routine (or asked to "research gaps" / "expand the graph").
-  Reads external gaps as a worklist, web-researches each, and creates a
-  schema-valid atom via create-atom. No filesystem: everything is Postgres via
-  MCP.
+invoke: explicit
+summary: Fill external knowledge gaps via web research over MCP
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Knowledge Research
 
@@ -155,3 +153,4 @@ When in doubt: `private`.
   researching them would fabricate his personal context. External only.
 - On a hard failure (repeated `create-atom` errors, tool outages), call
   `monolith-agent-notify` once with `level: "error"` and exit.
+
