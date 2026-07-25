@@ -74,10 +74,10 @@ images` action with the exact fix command.
 
 ## Issues
 
-Outstanding work lives in GitHub Issues, never in a committed plan file. File
-issues as `<area>: <summary>` with `bug` / `enhancement` / `documentation`, plus
-`agent-ready` when autonomously pickable, and append `, ADR <cat>/<NNN>` when the
-work came out of an ADR. Closing the issue is how "shipped" is recorded.
+Outstanding work lives in GitHub Issues, never in a committed plan file. Title
+them `<area>: <summary>`, label `agent-ready` when autonomously pickable, and
+append `, ADR <cat>/<NNN>` when the work came out of an ADR. Closing the issue is
+how "shipped" is recorded.
 
 Multi-part work gets a parent tracking issue with sub-issues:
 
