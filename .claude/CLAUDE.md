@@ -9,7 +9,7 @@ Hosted at **https://github.com/jomcgi/homelab**. The `gh` CLI is authenticated.
 ```
 homelab/
 ├── projects/            # All services, operators, websites — colocated with deploy configs
-│   ├── platform/          # Cluster-critical infra (ArgoCD, Linkerd, SigNoz, etc.)
+│   ├── platform/          # Cluster-critical infra (ArgoCD, Cilium, SigNoz, etc.)
 │   ├── {service}/         # Each service has chart/, deploy/, backend/ as needed
 │   │   ├── chart/         # Helm chart (if custom)
 │   │   └── deploy/        # ArgoCD Application, values, kustomization
