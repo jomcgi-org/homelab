@@ -23,8 +23,7 @@
   // paths un-prefixed), but strip a literal /private prefix too in case a
   // route is hit directly.
   let showBack = $derived.by(() => {
-    const path =
-      $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
+    const path = $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
     if (/^\/(app|demos|review|chat|notes)(\/|$)/.test(path)) return false;
     return true;

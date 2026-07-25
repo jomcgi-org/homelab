@@ -113,7 +113,10 @@
       const coldSat = 52 + Math.random() * 14;
       const coldLight = 60 + Math.random() * 12;
       d.style.setProperty("--hot", `hsl(${hotHue} ${hotSat}% ${hotLight}%)`);
-      d.style.setProperty("--cold", `hsl(${coldHue} ${coldSat}% ${coldLight}%)`);
+      d.style.setProperty(
+        "--cold",
+        `hsl(${coldHue} ${coldSat}% ${coldLight}%)`,
+      );
       gridEl.appendChild(d);
       cells.push({
         el: d,
@@ -193,12 +196,18 @@
       if (now - flickerTickAt > 900) {
         flickerTickAt = now;
         const hotCells = cells.filter((c) => c.hot && !c.twinkling);
-        const n = Math.min(hotCells.length, Math.max(1, Math.round(cells.length * 0.008)));
+        const n = Math.min(
+          hotCells.length,
+          Math.max(1, Math.round(cells.length * 0.008)),
+        );
         for (let i = 0; i < n; i++) {
           const c = hotCells[Math.floor(Math.random() * hotCells.length)];
           if (!c || c.twinkling) continue;
           c.twinkling = true;
-          c.el.style.setProperty("--tw-dur", `${(1.4 + Math.random() * 1.2).toFixed(2)}s`);
+          c.el.style.setProperty(
+            "--tw-dur",
+            `${(1.4 + Math.random() * 1.2).toFixed(2)}s`,
+          );
           c.el.style.setProperty("--flicker", "1");
           c.el.addEventListener(
             "animationend",
@@ -327,7 +336,11 @@
 <div class="ember-stage">
   <div class="es-grid" bind:this={gridEl} aria-hidden="true"></div>
   {#if reduced}
-    <div class="es-grid es-static" class:es-static-hot={staticHot} aria-hidden="true"></div>
+    <div
+      class="es-grid es-static"
+      class:es-static-hot={staticHot}
+      aria-hidden="true"
+    ></div>
   {/if}
 
   <div class="es-overlay">
@@ -341,7 +354,8 @@
         <span class="es-watchers" in:fade={{ duration: 260 }}>
           <span class="es-watchers-dot" aria-hidden="true"></span>
           {#key watchers}
-            <span class="fade-swap" in:fade={{ duration: 260 }}>{watchers}</span>
+            <span class="fade-swap" in:fade={{ duration: 260 }}>{watchers}</span
+            >
           {/key}
         </span>
       {/if}
@@ -351,9 +365,12 @@
         <div class="es-hero-inner" in:fade={{ duration: 260 }}>
           {#if heroKind === "cold"}
             <span class="es-hero-value">{gbHours(totalSavedMibS)}</span>
-            <span class="es-hero-caption">saved all-time by scaling to zero</span>
+            <span class="es-hero-caption"
+              >saved all-time by scaling to zero</span
+            >
           {:else if heroKind === "waking"}
-            <span class="es-hero-value">{ms(running ? stopwatchMs : null)}</span>
+            <span class="es-hero-value">{ms(running ? stopwatchMs : null)}</span
+            >
             <span class="es-hero-caption">waking up</span>
           {:else}
             <span class="es-hero-value">512 MiB</span>

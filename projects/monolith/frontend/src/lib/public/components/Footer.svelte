@@ -24,7 +24,9 @@
   </svg>
 
   <div class="wrap footer-content">
-    <Sticker color="var(--coral)" rotate={-4} class="footer-sticker">GET IN TOUCH</Sticker>
+    <Sticker color="var(--coral)" rotate={-4} class="footer-sticker"
+      >GET IN TOUCH</Sticker
+    >
     <h2 class="footer-headline">LET'S<br />BUILD SOMETHING.</h2>
     <div class="footer-links">
       <a href="mailto:joe@jomcgi.dev" class="btn btn-primary">JOE@JOMCGI.DEV</a>
@@ -78,7 +80,6 @@
     flex-wrap: wrap;
     margin-bottom: 48px;
   }
-
 
   /* Off-axis on purpose: the sticker hangs left of the centered headline. */
   :global(.footer-sticker) {

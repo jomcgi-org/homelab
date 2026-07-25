@@ -365,10 +365,7 @@
 
   function fadeFrame() {
     if (viewAnim) {
-      const p = Math.min(
-        1,
-        (performance.now() - viewAnim.start) / CAMERA_MS,
-      );
+      const p = Math.min(1, (performance.now() - viewAnim.start) / CAMERA_MS);
       const e = 1 - Math.pow(1 - p, 3);
       view = {
         k: viewAnim.from.k + (viewAnim.to.k - viewAnim.from.k) * e,

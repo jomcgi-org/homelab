@@ -51,10 +51,10 @@ overrides:
 
 patchedDependencies:
   '@sveltejs/kit':
-    hash: ioxopooydvkqrz5sfysetr3ozi
+    hash: f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4
     path: bazel/patches/@sveltejs__kit.patch
   rollup:
-    hash: ucodry5rwsvqoy3uc2v6oocfeq
+    hash: f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248
     path: bazel/patches/rollup.patch
 
 importers:
@@ -134,6 +134,12 @@ importers:
       prettier:
         specifier: ^3.8.1
         version: 3.8.1
+      prettier-plugin-svelte:
+        specifier: ^4.1.1
+        version: 4.1.1(prettier@3.8.1)(svelte@5.56.4(@typescript-eslint/types@8.53.1))
+      svelte:
+        specifier: ^5.56.4
+        version: 5.56.4(@typescript-eslint/types@8.53.1)
       tailwindcss:
         specifier: ^3.4.19
         version: 3.4.19(tsx@4.21.0)
@@ -251,10 +257,10 @@ importers:
         version: 4.59.0
       '@sveltejs/adapter-node':
         specifier: ^5.0.0
-        version: 5.5.4(@sveltejs/kit@2.69.2(patch_hash=ioxopooydvkqrz5sfysetr3ozi)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))
+        version: 5.5.4(@sveltejs/kit@2.69.2(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))
       '@sveltejs/kit':
         specifier: '>=2.60.1 <3'
-        version: 2.69.2(patch_hash=ioxopooydvkqrz5sfysetr3ozi)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
+        version: 2.69.2(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
       '@sveltejs/vite-plugin-svelte':
         specifier: ^4.0.0
         version: 4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
@@ -2739,6 +2745,13 @@ packages:
     resolution: {integrity: sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==}
     engines: {node: '>= 0.8.0'}
 
+  prettier-plugin-svelte@4.1.1:
+    resolution: {integrity: sha512-wXvbXMjSvb4C9ENWTHXyd+ihakKCsJ6rJhLP6/8HFNj4GkZr48jqL9PoKsl2sk7SyCZRTnJ7O2TTowUpOxP/KA==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      prettier: ^3.0.0
+      svelte: '>=5.55.7 <6'
+
   prettier@3.8.1:
     resolution: {integrity: sha512-UOnG6LftzbdaHZcKoPFtOcCKztrQ57WkHDeRD9t/PTQtmT0NHSeWWepj6pS0z/N7+08BHFDQVUrfmfMRcZwbMg==}
     engines: {node: '>=14'}
@@ -3832,9 +3845,9 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 
-  '@rollup/plugin-commonjs@29.0.2(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))':
+  '@rollup/plugin-commonjs@29.0.2(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
     dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))
+      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
       commondir: 1.0.1
       estree-walker: 2.0.2
       fdir: 6.5.0(picomatch@4.0.4)
@@ -3842,31 +3855,31 @@ snapshots:
       magic-string: 0.30.21
       picomatch: 4.0.4
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq)
+      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
 
-  '@rollup/plugin-json@6.1.0(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))':
+  '@rollup/plugin-json@6.1.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
     dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))
+      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq)
+      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
 
-  '@rollup/plugin-node-resolve@16.0.3(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))':
+  '@rollup/plugin-node-resolve@16.0.3(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
     dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))
+      '@rollup/pluginutils': 5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
       '@types/resolve': 1.20.2
       deepmerge: 4.3.1
       is-module: 1.0.0
       resolve: 1.22.11
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq)
+      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
 
-  '@rollup/pluginutils@5.3.0(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))':
+  '@rollup/pluginutils@5.3.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))':
     dependencies:
       '@types/estree': 1.0.8
       estree-walker: 2.0.2
       picomatch: 4.0.4
     optionalDependencies:
-      rollup: 4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq)
+      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
 
   '@rollup/rollup-android-arm-eabi@4.59.0':
     optional: true
@@ -3948,15 +3961,15 @@ snapshots:
     dependencies:
       acorn: 8.16.0
 
-  '@sveltejs/adapter-node@5.5.4(@sveltejs/kit@2.69.2(patch_hash=ioxopooydvkqrz5sfysetr3ozi)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))':
+  '@sveltejs/adapter-node@5.5.4(@sveltejs/kit@2.69.2(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))':
     dependencies:
-      '@rollup/plugin-commonjs': 29.0.2(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))
-      '@rollup/plugin-json': 6.1.0(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))
-      '@rollup/plugin-node-resolve': 16.0.3(rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq))
-      '@sveltejs/kit': 2.69.2(patch_hash=ioxopooydvkqrz5sfysetr3ozi)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
-      rollup: 4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq)
+      '@rollup/plugin-commonjs': 29.0.2(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
+      '@rollup/plugin-json': 6.1.0(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
+      '@rollup/plugin-node-resolve': 16.0.3(rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248))
+      '@sveltejs/kit': 2.69.2(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
+      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
 
-  '@sveltejs/kit@2.69.2(patch_hash=ioxopooydvkqrz5sfysetr3ozi)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))':
+  '@sveltejs/kit@2.69.2(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.4(@typescript-eslint/types@8.53.1))(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.4(@typescript-eslint/types@8.53.1))(typescript@5.9.3)(vite@6.4.3(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))':
     dependencies:
       '@standard-schema/spec': 1.1.0
       '@sveltejs/acorn-typescript': 1.0.11(acorn@8.16.0)
@@ -5785,6 +5798,11 @@ snapshots:
 
   prelude-ls@1.2.1: {}
 
+  prettier-plugin-svelte@4.1.1(prettier@3.8.1)(svelte@5.56.4(@typescript-eslint/types@8.53.1)):
+    dependencies:
+      prettier: 3.8.1
+      svelte: 5.56.4(@typescript-eslint/types@8.53.1)
+
   prettier@3.8.1: {}
 
   pretty-format@27.5.1:
@@ -5906,7 +5924,7 @@ snapshots:
 
   robust-predicates@3.0.3: {}
 
-  rollup@4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq):
+  rollup@4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248):
     dependencies:
       '@types/estree': 1.0.8
     optionalDependencies:
@@ -6286,7 +6304,7 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
       postcss: 8.5.17
-      rollup: 4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq)
+      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 22.19.7
@@ -6301,7 +6319,7 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
       postcss: 8.5.17
-      rollup: 4.59.0(patch_hash=ucodry5rwsvqoy3uc2v6oocfeq)
+      rollup: 4.59.0(patch_hash=f31ed8307e22e66f5490b9eb104740c54dc64c6c68d19857b9917fb809d3b248)
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 25.5.2

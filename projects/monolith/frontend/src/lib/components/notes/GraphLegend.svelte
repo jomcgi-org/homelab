@@ -10,9 +10,7 @@
       return acc;
     }, {}),
   );
-  let entries = $derived(
-    Object.entries(counts).sort((a, b) => b[1] - a[1]),
-  );
+  let entries = $derived(Object.entries(counts).sort((a, b) => b[1] - a[1]));
 </script>
 
 <div class="legend">

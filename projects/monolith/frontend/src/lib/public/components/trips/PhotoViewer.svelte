@@ -46,29 +46,44 @@
 </script>
 
 {#if photo}
-  <div class="overlay" role="dialog" aria-modal="true" aria-label="Photo viewer">
-    <button class="backdrop" onclick={onClose} aria-label="Close photo viewer"></button>
+  <div
+    class="overlay"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Photo viewer"
+  >
+    <button class="backdrop" onclick={onClose} aria-label="Close photo viewer"
+    ></button>
     <button class="close" onclick={onClose} aria-label="Close">&times;</button>
 
     {#if hasPrev}
-      <button class="nav prev" onclick={prev} aria-label="Previous photo">&larr;</button>
+      <button class="nav prev" onclick={prev} aria-label="Previous photo"
+        >&larr;</button
+      >
     {/if}
 
     <figure class="frame">
-      <img src={photo.imgDisplay} alt={`Photo ${index + 1} of ${photos.length}`} />
+      <img
+        src={photo.imgDisplay}
+        alt={`Photo ${index + 1} of ${photos.length}`}
+      />
       <figcaption>
         <span class="count">{index + 1} / {photos.length}</span>
         {#if photo.taken_at}<span>{fmtTime(photo.taken_at)}</span>{/if}
-        {#if photo.focal_length_35mm}<span>{photo.focal_length_35mm}mm</span>{/if}
+        {#if photo.focal_length_35mm}<span>{photo.focal_length_35mm}mm</span
+          >{/if}
         {#if photo.aperture}<span>&fnof;/{photo.aperture}</span>{/if}
         {#if photo.iso}<span>ISO {photo.iso}</span>{/if}
         {#if photo.shutter_speed}<span>{photo.shutter_speed}</span>{/if}
-        {#if photo.elevation != null}<span>{Math.round(photo.elevation)}m</span>{/if}
+        {#if photo.elevation != null}<span>{Math.round(photo.elevation)}m</span
+          >{/if}
       </figcaption>
     </figure>
 
     {#if hasNext}
-      <button class="nav next" onclick={next} aria-label="Next photo">&rarr;</button>
+      <button class="nav next" onclick={next} aria-label="Next photo"
+        >&rarr;</button
+      >
     {/if}
   </div>
 {/if}

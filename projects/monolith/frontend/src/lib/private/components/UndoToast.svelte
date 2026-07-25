@@ -8,12 +8,7 @@
   //   onUndo   — () => void, invoked when the user clicks Undo
   //   onDismiss — () => void, invoked on auto-timeout or X click
   //   durationMs — auto-dismiss delay (default 10s)
-  let {
-    label,
-    onUndo,
-    onDismiss,
-    durationMs = 10_000,
-  } = $props();
+  let { label, onUndo, onDismiss, durationMs = 10_000 } = $props();
 
   // Restart the auto-dismiss timer whenever the label changes — useful
   // when the user deletes another item before the previous toast has
@@ -34,8 +29,8 @@
     type="button"
     class="toast-dismiss"
     aria-label="Dismiss"
-    onclick={() => onDismiss?.()}
-  >×</button>
+    onclick={() => onDismiss?.()}>×</button
+  >
 </div>
 
 <style>

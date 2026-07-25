@@ -53,7 +53,9 @@
 </script>
 
 <svelte:head>
-  <title>{trip ? `${trip.short_title ?? trip.title} - Timeline` : "Timeline"}</title>
+  <title
+    >{trip ? `${trip.short_title ?? trip.title} - Timeline` : "Timeline"}</title
+  >
 </svelte:head>
 
 <div class="page">
@@ -61,7 +63,9 @@
     <nav class="crumb" aria-label="Breadcrumb">
       <a class="crumb-link" href="/app/trips">trips</a>
       <span class="crumb-sep">/</span>
-      <a class="crumb-link" href={`/app/trips/${trip?.slug}`}>{trip?.short_title ?? trip?.slug}</a>
+      <a class="crumb-link" href={`/app/trips/${trip?.slug}`}
+        >{trip?.short_title ?? trip?.slug}</a
+      >
       <span class="crumb-sep">/</span>
       <span class="crumb-name">timeline</span>
     </nav>
@@ -88,7 +92,8 @@
     <div class="map-box">
       <TripMap
         {days}
-        onDayClick={(n) => (window.location.href = `/app/trips/${trip.slug}/day/${n}`)}
+        onDayClick={(n) =>
+          (window.location.href = `/app/trips/${trip.slug}/day/${n}`)}
       />
     </div>
   {:else}

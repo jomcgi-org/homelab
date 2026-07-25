@@ -87,7 +87,10 @@
     const x = (i) => padL + (W - padL - padR) * (i / (n - 1));
     const y = (v) => padT + (H - padT - padB) * (1 - (v - ymin) / yrange);
     const line = pts
-      .map((p, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(p.speedup).toFixed(1)}`)
+      .map(
+        (p, i) =>
+          `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(p.speedup).toFixed(1)}`,
+      )
       .join(" ");
     const area = `${line} L ${x(n - 1).toFixed(1)} ${H - padB} L ${x(0).toFixed(1)} ${H - padB} Z`;
     return {
@@ -137,12 +140,15 @@
       <h1 class="greeting">
         Semgrep scan performance<span class="greeting-mark">.</span>
       </h1>
-      <p class="masthead-lead">homelab (self-hosted) vs Semgrep managed scans</p>
+      <p class="masthead-lead">
+        homelab (self-hosted) vs Semgrep managed scans
+      </p>
       {#if data.counts}
         <p class="masthead-sub">
           <span class="mono">{data.counts.homelab ?? 0}</span> homelab
           <span class="sub-sep">&middot;</span>
-          <span class="mono">{data.counts.managed ?? 0}</span> managed{#if data.windowStart}
+          <span class="mono">{data.counts.managed ?? 0}</span>
+          managed{#if data.windowStart}
             <span class="sub-sep">&middot;</span> since {formatDay(
               data.windowStart,
             )}{/if}
@@ -188,7 +194,9 @@
                 </div>
               </div>
               <p class="agg-foot">
-                {agg.pairs} matched pair{agg.pairs === 1 ? "" : "s"}{#if agg.findings_pairs > 0}
+                {agg.pairs} matched pair{agg.pairs === 1
+                  ? ""
+                  : "s"}{#if agg.findings_pairs > 0}
                   <span class="sub-sep">&middot;</span> findings agree on {agg.findings_agree}/{agg.findings_pairs}{/if}
               </p>
             {:else}
@@ -232,7 +240,8 @@
               <span class="trend-meta"
                 >{data.trend.window_days}-day rolling &middot; latest
                 <span class="mono">{chart.latest.speedup.toFixed(1)}x</span>
-                (was <span class="mono">{chart.first.speedup.toFixed(1)}x</span
+                (was
+                <span class="mono">{chart.first.speedup.toFixed(1)}x</span
                 >)</span
               >
             </div>
@@ -247,9 +256,10 @@
               {#each chart.dots as d}
                 <circle class="trend-dot" cx={d.cx} cy={d.cy} r="2.5">
                   <title
-                    >{formatDay(d.date)}: {d.speedup.toFixed(1)}x &middot; homelab {formatDuration(
-                      d.homelab_median,
-                    )} vs managed {formatDuration(d.managed_median)} &middot; {d.pairs}
+                    >{formatDay(d.date)}: {d.speedup.toFixed(1)}x &middot;
+                    homelab {formatDuration(d.homelab_median)} vs managed {formatDuration(
+                      d.managed_median,
+                    )} &middot; {d.pairs}
                     pairs</title
                   >
                 </circle>
@@ -275,8 +285,8 @@
             </svg>
             <p class="trend-note">
               Higher is a wider lead. A drop means our advantage is narrowing
-              &mdash; hover a point to see whether homelab slowed or managed sped
-              up.
+              &mdash; hover a point to see whether homelab slowed or managed
+              sped up.
             </p>
           </section>
         {/if}
@@ -286,8 +296,8 @@
         <section class="card cohorts">
           <h2 class="section-label">Speedup by diff cohort</h2>
           <p class="cohort-note">
-            {data.cohorts.total_pairs} matched PR pair{data.cohorts.total_pairs ===
-            1
+            {data.cohorts.total_pairs} matched PR pair{data.cohorts
+              .total_pairs === 1
               ? ""
               : "s"} segmented by diff shape &mdash; which cohorts are at parity vs
             a major speedup.
@@ -349,7 +359,8 @@
         {#if data.comparisons.length > matchedComparisons.length}
           <label class="onesided-toggle">
             <input type="checkbox" bind:checked={showOneSided} />
-            show one-sided ({data.comparisons.length - matchedComparisons.length}
+            show one-sided ({data.comparisons.length -
+              matchedComparisons.length}
             scans with no counterpart yet)
           </label>
         {/if}

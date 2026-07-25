@@ -409,8 +409,8 @@
         type="button"
         class="banner-dismiss"
         onclick={() => (pendingError = null)}
-        aria-label="Dismiss error"
-      >×</button>
+        aria-label="Dismiss error">×</button
+      >
     </div>
   {/if}
 

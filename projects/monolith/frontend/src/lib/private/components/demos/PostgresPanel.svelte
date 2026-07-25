@@ -217,10 +217,16 @@
     const next = new Date(now);
     next.setMinutes(0, 0, 0);
     next.setHours(next.getHours() + 1);
-    const remainingS = Math.max(0, Math.round((next.getTime() - now.getTime()) / 1000));
+    const remainingS = Math.max(
+      0,
+      Math.round((next.getTime() - now.getTime()) / 1000),
+    );
     const mm = String(Math.floor(remainingS / 60)).padStart(2, "0");
     const ss = String(remainingS % 60).padStart(2, "0");
-    const clockLabel = next.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const clockLabel = next.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
     return { mmss: `${mm}:${ss}`, clockLabel };
   });
 
@@ -234,7 +240,12 @@
   let lastOwnActivityAt = 0;
   let othersWoke = $state(false);
 
-  const WAKING_STATES = new Set(["relighting", "cold_booting", "starting", "serving"]);
+  const WAKING_STATES = new Set([
+    "relighting",
+    "cold_booting",
+    "starting",
+    "serving",
+  ]);
 
   async function pollStatus() {
     try {
@@ -283,7 +294,10 @@
       return { ok: false, permanent: true, error: body.detail };
     }
     if (!resp.ok) {
-      return { ok: false, error: body?.detail || `query failed (${resp.status})` };
+      return {
+        ok: false,
+        error: body?.detail || `query failed (${resp.status})`,
+      };
     }
     if (body.error) {
       return { ok: false, error: body.error };
@@ -452,7 +466,9 @@
   }
 
   function mibSeconds(v) {
-    return v < 1024 ? `${Math.round(v)} MiB·s` : `${(v / 1024).toFixed(1)} GiB·s`;
+    return v < 1024
+      ? `${Math.round(v)} MiB·s`
+      : `${(v / 1024).toFixed(1)} GiB·s`;
   }
 
   // Compact number formatting shared by the aggregate headline and the
@@ -519,7 +535,7 @@
   });
 
   let maxRevenue = $derived(
-    Math.max(1, ...((lastRun?.breakdown ?? []).map((b) => b.revenue))),
+    Math.max(1, ...(lastRun?.breakdown ?? []).map((b) => b.revenue)),
   );
 
   // Asleep hero copy: the volume size and best-known relight time, so the
@@ -530,7 +546,9 @@
       : "some",
   );
 
-  let asleepWake = $derived(tiers.relight != null ? ms(tiers.relight) : "under 100 ms");
+  let asleepWake = $derived(
+    tiers.relight != null ? ms(tiers.relight) : "under 100 ms",
+  );
 
   // Dozing narration while serving-but-idle: an approach, not a countdown.
   let dozeHint = $derived(
@@ -570,7 +588,9 @@
           {asleepWake}.
         </p>
       {:else}
-        <p class="state-sentence">{dozeHint ?? othersHint ?? stateView.sentence}</p>
+        <p class="state-sentence">
+          {dozeHint ?? othersHint ?? stateView.sentence}
+        </p>
       {/if}
       <dl class="state-facts">
         <div>
@@ -579,7 +599,13 @@
         </div>
         <div>
           <dt>snapshot pairs</dt>
-          <dd>{status?.pair_valid == null ? "–" : status.pair_valid ? "yes" : "no"}</dd>
+          <dd>
+            {status?.pair_valid == null
+              ? "–"
+              : status.pair_valid
+                ? "yes"
+                : "no"}
+          </dd>
         </div>
         <div>
           <dt>volume</dt>
@@ -632,8 +658,8 @@
         </button>
       </div>
       <p class="destructive-caption">
-        cold boot destroys the VM but keeps the data; the ledger clears
-        itself on the hour
+        cold boot destroys the VM but keeps the data; the ledger clears itself
+        on the hour
       </p>
     </div>
 
@@ -641,7 +667,8 @@
       <p class="run-error">
         {runError}
         <span class="run-error-hint">
-          (a refused connect usually means the wake-rate limiter; wait a beat and retry)
+          (a refused connect usually means the wake-rate limiter; wait a beat
+          and retry)
         </span>
       </p>
     {/if}
@@ -655,15 +682,25 @@
           <span class="last-run-label">wake + connect</span>
         </div>
         <div class="last-run-big">
-          <span class="last-run-value">{running ? "–" : ms(lastRun?.query_ms)}</span>
+          <span class="last-run-value"
+            >{running ? "–" : ms(lastRun?.query_ms)}</span
+          >
           <span class="last-run-label">query</span>
         </div>
       </div>
-      <p class="last-run-narration">{running ? wakeNarration : lastRunSentence}</p>
+      <p class="last-run-narration">
+        {running ? wakeNarration : lastRunSentence}
+      </p>
       <div class="timing-bar" aria-hidden="true">
         {#if lastRun}
-          <span class="bar-connect" style:width="{barPct(lastRun, lastRun.connect_ms)}%"></span>
-          <span class="bar-query" style:width="{barPct(lastRun, lastRun.query_ms)}%"></span>
+          <span
+            class="bar-connect"
+            style:width="{barPct(lastRun, lastRun.connect_ms)}%"
+          ></span>
+          <span
+            class="bar-query"
+            style:width="{barPct(lastRun, lastRun.query_ms)}%"
+          ></span>
         {/if}
       </div>
     </div>
@@ -734,13 +771,25 @@
             <tfoot>
               <tr class="summary-total">
                 <td>Σ total</td>
-                <td class="col-numeric">{lastRun?.total_orders != null ? countHeadline((lastRun.breakdown ?? []).reduce((n, b) => n + b.units, 0)) : "–"} units</td>
-                <td class="col-numeric">{moneyHeadline(lastRun?.total_revenue)}</td>
+                <td class="col-numeric"
+                  >{lastRun?.total_orders != null
+                    ? countHeadline(
+                        (lastRun.breakdown ?? []).reduce(
+                          (n, b) => n + b.units,
+                          0,
+                        ),
+                      )
+                    : "–"} units</td
+                >
+                <td class="col-numeric"
+                  >{moneyHeadline(lastRun?.total_revenue)}</td
+                >
               </tr>
             </tfoot>
           </table>
           <p class="result-footer">
-            ({(lastRun?.breakdown ?? []).length} groups from {lastRun?.total_orders ?? 0} orders)
+            ({(lastRun?.breakdown ?? []).length} groups from {lastRun?.total_orders ??
+              0} orders)
           </p>
         </div>
       {:else}
@@ -749,7 +798,11 @@
             <thead>
               <tr>
                 {#each ORDER_COLUMNS as col (col.key)}
-                  <th class={col.key === "qty" || col.key === "unit_price" ? "col-numeric" : ""}>
+                  <th
+                    class={col.key === "qty" || col.key === "unit_price"
+                      ? "col-numeric"
+                      : ""}
+                  >
                     <span class="col-name">{col.label}</span>
                     <span class="col-type">{col.type}</span>
                   </th>
@@ -786,8 +839,8 @@
           <p class="result-footer">({lastRun?.total_orders ?? 0} rows)</p>
           <p class="result-note">
             Bands group rows written by the same database process. A new band
-            means the VM was rebuilt from scratch; older rows surviving it
-            show the data outlives the VM.
+            means the VM was rebuilt from scratch; older rows surviving it show
+            the data outlives the VM.
           </p>
         </div>
       {/if}

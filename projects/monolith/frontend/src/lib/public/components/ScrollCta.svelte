@@ -11,7 +11,11 @@
 </script>
 
 {#if visible}
-  <button class="scroll-bar" onclick={handleClick} transition:fade={{ duration: 300 }}>
+  <button
+    class="scroll-bar"
+    onclick={handleClick}
+    transition:fade={{ duration: 300 }}
+  >
     <span class="scroll-bar-inner">
       <span class="scroll-bar-label">HOMELAB SLOS</span>
       <span class="scroll-bar-arrow">↓</span>
@@ -59,8 +63,13 @@
   }
 
   @keyframes nudge {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(3px); }
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(3px);
+    }
   }
 
   .scroll-bar:hover .scroll-bar-arrow {

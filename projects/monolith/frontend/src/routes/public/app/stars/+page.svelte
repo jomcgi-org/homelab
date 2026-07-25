@@ -264,7 +264,8 @@
       <div class="crumb-row">
         <nav class="crumb" aria-label="Breadcrumb">
           <a class="crumb-home" href="https://jomcgi.dev/"
-            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true"
+              >&nearr;</span
             ></a
           >
           <span class="crumb-sep">/</span>
@@ -358,9 +359,9 @@
            twilight windows (down to -10 deg) and says so. -->
       {#if darkness === "none"}
         <div class="panel disclaimer" role="status">
-          No usable stargazing windows in Scotland this week: right now the summer
-          sky never gets dark enough, even for twilight. Astronomical darkness
-          returns by August.
+          No usable stargazing windows in Scotland this week: right now the
+          summer sky never gets dark enough, even for twilight. Astronomical
+          darkness returns by August.
         </div>
       {:else if darkness === "twilight"}
         <div class="panel disclaimer" role="status">
@@ -428,8 +429,8 @@
         </div>
       {:else if histReady && histCount === 0}
         <div class="panel empty-state" role="status">
-          No clear dark hours {historyScope}. The seasonal baseline comes from the
-          ERA5 reanalysis backfill.
+          No clear dark hours {historyScope}. The seasonal baseline comes from
+          the ERA5 reanalysis backfill.
         </div>
       {/if}
     {/if}

@@ -14,7 +14,8 @@
     const k = stats?.knowledge;
     const d = stats?.deploy;
 
-    if (c?.nodes != null && c?.pods != null) items.push(`${c.nodes} nodes · ${c.pods} pods`);
+    if (c?.nodes != null && c?.pods != null)
+      items.push(`${c.nodes} nodes · ${c.pods} pods`);
     if (c?.cpu_used_cores != null && c?.cpu_capacity_cores != null) {
       items.push(`cpu: ${c.cpu_used_cores} / ${c.cpu_capacity_cores} cores`);
     }
@@ -22,9 +23,10 @@
       items.push(`mem: ${c.memory_used_gb} / ${c.memory_capacity_gb} gb`);
     }
     if (g?.utilization_pct != null) {
-      const memPart = g?.memory_used_gb != null && g?.memory_total_gb != null
-        ? ` · ${g.memory_used_gb} / ${g.memory_total_gb} gb`
-        : "";
+      const memPart =
+        g?.memory_used_gb != null && g?.memory_total_gb != null
+          ? ` · ${g.memory_used_gb} / ${g.memory_total_gb} gb`
+          : "";
       items.push(`gpu: ${g.utilization_pct}%${memPart}`);
     }
     if (c?.argocd_apps != null) items.push(`argocd: ${c.argocd_apps} apps`);
@@ -92,85 +94,134 @@
 <Marquee items={MARQUEE_ITEMS} />
 
 <div class="above-fold">
-<!-- ═══ Hero ═══ -->
-<section class="hero">
-  <!-- decorative shapes -->
-  <svg class="deco deco-diamond-1" width="28" height="28" viewBox="0 0 24 24"
-    ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
-  >
-  <svg class="deco deco-circle-1" width="18" height="18" viewBox="0 0 24 24"
-    ><circle cx="12" cy="12" r="10" fill="var(--coral)" stroke="var(--ink)" stroke-width="2" /></svg
-  >
-  <svg class="deco deco-star" width="56" height="56" viewBox="0 0 40 40"
-    ><path
-      d="M20,2 L22.5,14 L34,10 L26,20 L34,30 L22.5,26 L20,38 L17.5,26 L6,30 L14,20 L6,10 L17.5,14 Z"
-      fill="var(--blue)"
-      stroke="var(--ink)"
-      stroke-width="2"
-      stroke-linejoin="round"
-    /></svg
-  >
-  <svg class="deco deco-cloud" width="120" height="60" viewBox="0 0 120 60"
-    ><path
-      d="M10,45 Q 8,30 22,28 Q 26,14 42,18 Q 54,10 66,20 Q 82,16 88,30 Q 104,28 108,44 Q 108,52 98,52 L 20,52 Q 10,52 10,45 Z"
-      fill="none"
-      stroke="var(--ink)"
-      stroke-width="2.5"
-      stroke-linejoin="round"
-    /></svg
-  >
-  <svg class="deco deco-squiggle" width="80" height="24" viewBox="0 0 80 24"
-    ><path
-      d="M2,12 Q 10,2 18,12 T 34,12 T 50,12 T 66,12 T 78,12"
-      fill="none"
-      stroke="var(--ink)"
-      stroke-width="2.5"
-      stroke-linecap="round"
-    /></svg
-  >
-  <svg class="deco deco-diamond-2" width="18" height="18" viewBox="0 0 24 24"
-    ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
-  >
+  <!-- ═══ Hero ═══ -->
+  <section class="hero">
+    <!-- decorative shapes -->
+    <svg class="deco deco-diamond-1" width="28" height="28" viewBox="0 0 24 24"
+      ><path
+        d="M12,2 L22,12 L12,22 L2,12 Z"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2"
+      /></svg
+    >
+    <svg class="deco deco-circle-1" width="18" height="18" viewBox="0 0 24 24"
+      ><circle
+        cx="12"
+        cy="12"
+        r="10"
+        fill="var(--coral)"
+        stroke="var(--ink)"
+        stroke-width="2"
+      /></svg
+    >
+    <svg class="deco deco-star" width="56" height="56" viewBox="0 0 40 40"
+      ><path
+        d="M20,2 L22.5,14 L34,10 L26,20 L34,30 L22.5,26 L20,38 L17.5,26 L6,30 L14,20 L6,10 L17.5,14 Z"
+        fill="var(--blue)"
+        stroke="var(--ink)"
+        stroke-width="2"
+        stroke-linejoin="round"
+      /></svg
+    >
+    <svg class="deco deco-cloud" width="120" height="60" viewBox="0 0 120 60"
+      ><path
+        d="M10,45 Q 8,30 22,28 Q 26,14 42,18 Q 54,10 66,20 Q 82,16 88,30 Q 104,28 108,44 Q 108,52 98,52 L 20,52 Q 10,52 10,45 Z"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2.5"
+        stroke-linejoin="round"
+      /></svg
+    >
+    <svg class="deco deco-squiggle" width="80" height="24" viewBox="0 0 80 24"
+      ><path
+        d="M2,12 Q 10,2 18,12 T 34,12 T 50,12 T 66,12 T 78,12"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2.5"
+        stroke-linecap="round"
+      /></svg
+    >
+    <svg class="deco deco-diamond-2" width="18" height="18" viewBox="0 0 24 24"
+      ><path
+        d="M12,2 L22,12 L12,22 L2,12 Z"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2"
+      /></svg
+    >
 
-  <div class="wrap hero-content">
-    <h1 class="hero-headline">ten years ago i was underwriting policies and winning insurance hackathons. now i'm building <span class="hl hl-yellow">production grade infra</span> for weekend side quests and keeping <a href="https://semgrep.dev" class="hero-mono">semgrep</a> online.</h1>
-    <div class="hero-cta-row">
-      <a href="#homelab" class="btn btn-primary">SEE MY HOMELAB <span class="btn-arr">→</span></a>
-      <a href="/app/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
+    <div class="wrap hero-content">
+      <h1 class="hero-headline">
+        ten years ago i was underwriting policies and winning insurance
+        hackathons. now i'm building <span class="hl hl-yellow"
+          >production grade infra</span
+        >
+        for weekend side quests and keeping
+        <a href="https://semgrep.dev" class="hero-mono">semgrep</a> online.
+      </h1>
+      <div class="hero-cta-row">
+        <a href="#homelab" class="btn btn-primary"
+          >SEE MY HOMELAB <span class="btn-arr">→</span></a
+        >
+        <a href="/app/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
+      </div>
+      <Sticker color="var(--coral)" rotate={-5} class="sticker-hero"
+        >← BUILT THIS SITE TOO</Sticker
+      >
     </div>
-    <Sticker color="var(--coral)" rotate={-5} class="sticker-hero">← BUILT THIS SITE TOO</Sticker>
-  </div>
-</section>
+  </section>
 
-<!-- ═══ Bio panel (yellow) ═══ -->
-<section class="bio-panel reveal">
-  <!-- decorative shapes -->
-  <svg class="deco deco-bio-squiggle" width="80" height="24" viewBox="0 0 80 24"
-    ><path
-      d="M2,12 Q 10,2 18,12 T 34,12 T 50,12 T 66,12 T 78,12"
-      fill="none"
-      stroke="var(--ink)"
-      stroke-width="2.5"
-      stroke-linecap="round"
-    /></svg
-  >
-  <svg class="deco deco-bio-diamond" width="20" height="20" viewBox="0 0 24 24"
-    ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
-  >
-  <svg class="deco deco-bio-circle" width="24" height="24" viewBox="0 0 24 24"
-    ><circle cx="12" cy="12" r="10" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
-  >
-  <div class="wrap bio-content">
-    <div class="bio-left">
-      <Sticker color="var(--paper)" rotate={-3} class="sticker-bio">A LITTLE ABOUT ME</Sticker>
-      <p class="bio-sub">
-        I'm Joe, from Scotland, living in Vancouver.<br />
-        Monorepo enthusiast. Care<em>mad</em> about developer experience.
-      </p>
+  <!-- ═══ Bio panel (yellow) ═══ -->
+  <section class="bio-panel reveal">
+    <!-- decorative shapes -->
+    <svg
+      class="deco deco-bio-squiggle"
+      width="80"
+      height="24"
+      viewBox="0 0 80 24"
+      ><path
+        d="M2,12 Q 10,2 18,12 T 34,12 T 50,12 T 66,12 T 78,12"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2.5"
+        stroke-linecap="round"
+      /></svg
+    >
+    <svg
+      class="deco deco-bio-diamond"
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      ><path
+        d="M12,2 L22,12 L12,22 L2,12 Z"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2"
+      /></svg
+    >
+    <svg class="deco deco-bio-circle" width="24" height="24" viewBox="0 0 24 24"
+      ><circle
+        cx="12"
+        cy="12"
+        r="10"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2"
+      /></svg
+    >
+    <div class="wrap bio-content">
+      <div class="bio-left">
+        <Sticker color="var(--paper)" rotate={-3} class="sticker-bio"
+          >A LITTLE ABOUT ME</Sticker
+        >
+        <p class="bio-sub">
+          I'm Joe, from Scotland, living in Vancouver.<br />
+          Monorepo enthusiast. Care<em>mad</em> about developer experience.
+        </p>
+      </div>
     </div>
-  </div>
-</section>
-
+  </section>
 </div>
 
 <!-- ═══ Project stack ═══ -->
@@ -178,7 +229,6 @@
 
 <!-- ═══ Footer ═══ -->
 <Footer />
-
 
 <style>
   /* ── Above-fold wrapper ─────────────────── */

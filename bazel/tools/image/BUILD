@@ -57,23 +57,58 @@ genrule(
     """,
 )
 
-# Package prettier from the pnpm lockfile-managed npm package.
-# Places the package at /usr/local/lib/node_modules/prettier/
-# with a symlink at /usr/bin/prettier for PATH discovery.
+# Package prettier + prettier-plugin-svelte (+ peer svelte) from the pnpm
+# lockfile-managed npm packages. Plugins live next to prettier under
+# /usr/local/lib/node_modules/; /usr/bin/prettier is a wrapper that sets
+# NODE_PATH so require("prettier-plugin-svelte") from the repo config resolves
+# without a full workspace node_modules tree (bootstrap / ci lint path).
+# nosemgrep: single-npm-package-in-apko-genrule -- intentional multi-package node_modules for PATH prettier plugins
 genrule(
     name = "prettier_tar",
-    srcs = ["//:node_modules/prettier"],
+    srcs = [
+        "//:node_modules/prettier",
+        "//:node_modules/prettier-plugin-svelte",
+        "//:node_modules/svelte",
+    ],
     outs = ["prettier.tar"],
     cmd = """
         set -e
         WORK=$$(mktemp -d)
-        DEST="$$WORK/usr/local/lib/node_modules/prettier"
-        mkdir -p "$$DEST"
-        SRC_DIR=$$(echo '$(locations //:node_modules/prettier)' | tr ' ' '\\n' | grep 'prettier$$' | head -1)
-        cp -rL "$$SRC_DIR/." "$$DEST/"
-        chmod 755 "$$DEST/bin/prettier.cjs"
-        mkdir -p "$$WORK/usr/bin"
-        ln -s "../local/lib/node_modules/prettier/bin/prettier.cjs" "$$WORK/usr/bin/prettier"
+        NM="$$WORK/usr/local/lib/node_modules"
+        mkdir -p "$$NM" "$$WORK/usr/bin"
+
+        copy_pkg() {
+            local name="$$1"
+            local locations="$$2"
+            local dest="$$NM/$$name"
+            mkdir -p "$$dest"
+            local src
+            src=$$(echo "$$locations" | tr ' ' '\\n' | grep "/$${name}$$" | head -1)
+            if [[ -z "$$src" ]]; then
+                src=$$(echo "$$locations" | tr ' ' '\\n' | grep "$${name}$$" | head -1)
+            fi
+            if [[ -z "$$src" || ! -d "$$src" ]]; then
+                echo "ERROR: could not locate package dir for $$name in: $$locations" >&2
+                exit 1
+            fi
+            cp -rL "$$src/." "$$dest/"
+        }
+
+        copy_pkg prettier '$(locations //:node_modules/prettier)'
+        copy_pkg prettier-plugin-svelte '$(locations //:node_modules/prettier-plugin-svelte)'
+        copy_pkg svelte '$(locations //:node_modules/svelte)'
+
+        chmod 755 "$$NM/prettier/bin/prettier.cjs"
+        cat > "$$WORK/usr/bin/prettier" << 'WRAPPER'
+#!/usr/bin/env bash
+# Ensure plugins packaged next to prettier resolve from any config require().
+export NODE_PATH="/usr/local/lib/node_modules$${NODE_PATH:+:$$NODE_PATH}"
+if [[ -x /usr/bin/node ]]; then
+  exec /usr/bin/node /usr/local/lib/node_modules/prettier/bin/prettier.cjs "$$@"
+fi
+exec /usr/local/lib/node_modules/prettier/bin/prettier.cjs "$$@"
+WRAPPER
+        chmod 755 "$$WORK/usr/bin/prettier"
         tar -cf $@ -C "$$WORK" .
         rm -rf "$$WORK"
     """,

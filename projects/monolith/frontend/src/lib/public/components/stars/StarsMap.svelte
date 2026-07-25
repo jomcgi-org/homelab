@@ -615,8 +615,10 @@
         <p class="card-title">
           {mode === "historical" ? "Clear dark hours by month" : windowsTitle}
         </p>
-        <button class="card-close" onclick={closeCard} aria-label="Close site card"
-          >&times;</button
+        <button
+          class="card-close"
+          onclick={closeCard}
+          aria-label="Close site card">&times;</button
         >
       </header>
 
@@ -675,7 +677,8 @@
                 >{bar.value}</text
               >
             {/if}
-            <text x={x + bw / 2} y={100} class="chart-tick">{bar.short[0]}</text>
+            <text x={x + bw / 2} y={100} class="chart-tick">{bar.short[0]}</text
+            >
           {/each}
         </svg>
         <p class="card-empty">

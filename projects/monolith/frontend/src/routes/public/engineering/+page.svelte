@@ -1,7 +1,12 @@
 <script>
   import { onMount } from "svelte";
   import { Footer, Sticker, Marquee } from "$lib/public/components";
-  import { intro, marqueeItems, categories, projects } from "./engineering-data.js";
+  import {
+    intro,
+    marqueeItems,
+    categories,
+    projects,
+  } from "./engineering-data.js";
   import { diagrams } from "./diagrams/index.js";
 
   // Stable two-digit section numbers derived from roster order. The repo
@@ -68,7 +73,9 @@
     const marquee = document.querySelector(".marquee");
     const updateRail = () => {
       const navBottom = nav ? nav.getBoundingClientRect().bottom : 0;
-      const marqueeBottom = marquee ? marquee.getBoundingClientRect().bottom : 0;
+      const marqueeBottom = marquee
+        ? marquee.getBoundingClientRect().bottom
+        : 0;
       const top = Math.max(0, navBottom, marqueeBottom);
       railY = top + (window.innerHeight - top) / 2;
     };
@@ -100,12 +107,21 @@
       <h1 class="display eng-title">{intro.title}</h1>
       <div class="hero-stickers">
         {#each stickers as s, i}
-          <Sticker color={stickerColors[i % stickerColors.length]} rotate={i % 2 ? 3 : -3}>
+          <Sticker
+            color={stickerColors[i % stickerColors.length]}
+            rotate={i % 2 ? 3 : -3}
+          >
             {s}
           </Sticker>
         {/each}
-        <a class="sticker-link" href={intro.source.href} target="_blank" rel="noreferrer">
-          <Sticker color="var(--paper)" rotate={2}>{intro.source.label}</Sticker>
+        <a
+          class="sticker-link"
+          href={intro.source.href}
+          target="_blank"
+          rel="noreferrer"
+        >
+          <Sticker color="var(--paper)" rotate={2}>{intro.source.label}</Sticker
+          >
         </a>
       </div>
       <p class="lede">{intro.lede}</p>
@@ -125,7 +141,11 @@
   </nav>
 
   <!-- ═══ Scroll-spy rail (desktop) ═══ -->
-  <nav class="rail mono" aria-label="Sections" style:top={railY ? `${railY}px` : null}>
+  <nav
+    class="rail mono"
+    aria-label="Sections"
+    style:top={railY ? `${railY}px` : null}
+  >
     {#each numbered as p}
       <a
         class="rail-link"
@@ -147,7 +167,12 @@
           <span class="dive-num mono">{p.num}</span>
           <h2 class="dive-title" id={`${p.id}-h`}>
             {#if p.repoHref}
-              <a class="title-link" href={p.repoHref} target="_blank" rel="noreferrer">
+              <a
+                class="title-link"
+                href={p.repoHref}
+                target="_blank"
+                rel="noreferrer"
+              >
                 {p.title}<span class="title-arrow" aria-hidden="true">↗</span>
               </a>
             {:else}
@@ -155,7 +180,10 @@
             {/if}
           </h2>
           <span class="tag mono">
-            <span class="tag-dot" style:background={categories[p.category].color}></span>
+            <span
+              class="tag-dot"
+              style:background={categories[p.category].color}
+            ></span>
             {categories[p.category].label}
           </span>
           {#if p.status}
@@ -175,7 +203,10 @@
           {/each}
         </div>
 
-        <div class="motivation" style:border-left-color={categories[p.category].color}>
+        <div
+          class="motivation"
+          style:border-left-color={categories[p.category].color}
+        >
           <span class="motivation-label mono">Motivation</span>
           <p>{p.motivation}</p>
         </div>

@@ -138,7 +138,10 @@
             <span class="pub-chapters-row-title">{node.title}</span>
           </button>
           {#if isOpen}
-            <div class="pub-chapters-list--nested" id={"pub-chapter-" + nodePath}>
+            <div
+              class="pub-chapters-list--nested"
+              id={"pub-chapter-" + nodePath}
+            >
               {@render branch(node.children)}
             </div>
           {/if}

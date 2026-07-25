@@ -12,9 +12,7 @@
   } = $props();
 
   let byId = $derived(new Map(nodes.map((n) => [n.id, n])));
-  let titleMap = $derived(
-    new Map(nodes.map((n) => [n.title, { id: n.id }])),
-  );
+  let titleMap = $derived(new Map(nodes.map((n) => [n.title, { id: n.id }])));
   let selectedNode = $derived(byId.get(selectedId));
 
   // Dedupe per column: a single source/target pair can have multiple
@@ -63,10 +61,7 @@
     // Drop trailing `## links` / `## related` / `## related links`
     // section through end of document. Case-insensitive, optional
     // pluralisation.
-    s = s.replace(
-      /\n##+\s+(?:related\s+)?links?\b[^\n]*\n[\s\S]*$/i,
-      "",
-    );
+    s = s.replace(/\n##+\s+(?:related\s+)?links?\b[^\n]*\n[\s\S]*$/i, "");
     s = s.replace(/\n##+\s+related\b[^\n]*\n[\s\S]*$/i, "");
     return s.trimEnd();
   }
@@ -87,7 +82,9 @@
     fetch(`${apiBase}/${encodeURIComponent(selectedId)}`, {
       signal: controller.signal,
     })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("fetch failed"))))
+      .then((r) =>
+        r.ok ? r.json() : Promise.reject(new Error("fetch failed")),
+      )
       .then((data) => {
         // Private endpoint returns `content` (raw markdown incl. frontmatter,
         // trimmed client-side); public endpoint returns `body` (already
@@ -114,14 +111,16 @@
 {#if selectedNode}
   <aside class="panel">
     <div class="panel-head">
-      <span class="panel-dot" style:background={colorFor(selectedNode.type)}></span>
+      <span class="panel-dot" style:background={colorFor(selectedNode.type)}
+      ></span>
       <div class="panel-titlewrap">
         <div class="panel-eyebrow">
           {labelFor(selectedNode.type).toUpperCase()}
         </div>
         <div class="panel-title">{selectedNode.title}</div>
       </div>
-      <button class="panel-close" onclick={onClose} aria-label="close">×</button>
+      <button class="panel-close" onclick={onClose} aria-label="close">×</button
+      >
     </div>
 
     <div
@@ -147,8 +146,13 @@
         <ul class="link-list">
           {#each backlinks.slice(0, 10) as nb}
             <li>
-              <button type="button" class="link-row" onclick={() => onSelect(nb.id)}>
-                <span class="swatch" style:background={colorFor(nb.type)}></span>
+              <button
+                type="button"
+                class="link-row"
+                onclick={() => onSelect(nb.id)}
+              >
+                <span class="swatch" style:background={colorFor(nb.type)}
+                ></span>
                 <span>{nb.title}</span>
               </button>
             </li>
@@ -166,8 +170,13 @@
         <ul class="link-list">
           {#each outgoing.slice(0, 10) as nb}
             <li>
-              <button type="button" class="link-row" onclick={() => onSelect(nb.id)}>
-                <span class="swatch" style:background={colorFor(nb.type)}></span>
+              <button
+                type="button"
+                class="link-row"
+                onclick={() => onSelect(nb.id)}
+              >
+                <span class="swatch" style:background={colorFor(nb.type)}
+                ></span>
                 <span>{nb.title}</span>
               </button>
             </li>

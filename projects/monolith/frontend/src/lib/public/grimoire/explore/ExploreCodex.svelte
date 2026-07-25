@@ -59,7 +59,8 @@
     ]);
     relationships =
       egoRes.status === "fulfilled" ? buildRelationships(id, egoRes.value) : [];
-    mentions = mentionsRes.status === "fulfilled" ? (mentionsRes.value ?? []) : [];
+    mentions =
+      mentionsRes.status === "fulfilled" ? (mentionsRes.value ?? []) : [];
     loading = false;
   }
 
@@ -165,7 +166,11 @@
 
       {#if artUrl}
         <div class="art">
-          <img src={artUrl} alt={`Illustration of ${entity.name}`} loading="lazy" />
+          <img
+            src={artUrl}
+            alt={`Illustration of ${entity.name}`}
+            loading="lazy"
+          />
         </div>
       {:else}
         <div

@@ -17,12 +17,15 @@ Python services, nginx frontends), those live in [`//bazel/tools/oci`](../oci/RE
 | `node`                                 | `@nodejs_{platform}//:node_bin` from rules_nodejs          |
 | Python runtime + stdlib + pip packages | `py_image_layer` from `@aspect_rules_py`, with platform transitions |
 | `pnpm`                                 | `@pnpm//:pkg` (aspect_rules_js)                            |
-| `prettier`                             | `//:node_modules/prettier` (pnpm lockfile)                 |
+| `prettier` (+ `prettier-plugin-svelte`, peer `svelte`) | `//:node_modules/*` (pnpm lockfile); wrapper sets `NODE_PATH` |
 | `homelab` CLI                          | Source from `//tools/cli:*`, wrapped in a bash exec script |
 
 All binaries land under `/usr/bin/`; Python's stdlib is in the runfiles tree
-alongside the interpreter. pnpm and prettier are installed under
-`/usr/local/lib/node_modules/` with symlinks at `/usr/bin/`.
+alongside the interpreter. pnpm and prettier (with the Svelte plugin) are
+installed under `/usr/local/lib/node_modules/`; `/usr/bin/prettier` is a
+wrapper that sets `NODE_PATH` so `require("prettier-plugin-svelte")` from
+`bazel/tools/format/prettier.config.cjs` resolves without a workspace
+`node_modules` tree.
 
 ## Build targets
 

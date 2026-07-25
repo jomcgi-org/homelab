@@ -23,8 +23,10 @@
 <div class="statusbar">
   <div class="statusbar-track">
     <span class="stat">~/KG</span>
-    <span class="stat"><strong>{nodeCount.toLocaleString()}</strong> NOTES</span>
-    <span class="stat"><strong>{edgeCount.toLocaleString()}</strong> LINKS</span>
+    <span class="stat"><strong>{nodeCount.toLocaleString()}</strong> NOTES</span
+    >
+    <span class="stat"><strong>{edgeCount.toLocaleString()}</strong> LINKS</span
+    >
     <span class="stat"><strong>{clusterCount}</strong> CLUSTERS</span>
     <span class="stat">ZOOM <strong>{zoom.toFixed(2)}</strong>×</span>
     <span class="stat">HOVER <strong>{hoverTitle}</strong></span>

@@ -11,7 +11,13 @@
   {#if label}<span class="darrow-label">{label}</span>{/if}
   <svg viewBox="0 0 34 12" width="34" height="12">
     <line x1="0" y1="6" x2="26" y2="6" stroke="var(--ink)" stroke-width="2.5" />
-    <path d="M24,1 L33,6 L24,11" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linejoin="round" />
+    <path
+      d="M24,1 L33,6 L24,11"
+      fill="none"
+      stroke="var(--ink)"
+      stroke-width="2.5"
+      stroke-linejoin="round"
+    />
   </svg>
 </span>
 

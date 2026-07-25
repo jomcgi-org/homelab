@@ -25,6 +25,12 @@ sh_test(
 js_library(
     name = "prettierrc",
     srcs = ["prettier.config.cjs"],
+    # Plugin + peer must be in runfiles so require("prettier-plugin-svelte")
+    # from the config resolves under the hermetic prettier binary.
+    deps = [
+        "//:node_modules/prettier-plugin-svelte",
+        "//:node_modules/svelte",
+    ],
 )
 
 prettier.prettier_binary(
@@ -54,6 +60,14 @@ format_multirun(
     starlark = "@buildifier_prebuilt//:buildifier",
 )
 
+# aspect_rules_lint has no Svelte dialect; format tracked *.svelte via the same
+# hermetic prettier (plugin loaded from :prettierrc).
+sh_binary(
+    name = "format_svelte",
+    srcs = ["format-svelte.sh"],
+    data = [":prettier"],
+)
+
 # All committed-artifact generators live in ONE list (run-generators.sh), shared
 # with fast-format.sh, so the local and CI format paths cannot drift.
 sh_binary(
@@ -66,6 +80,7 @@ multirun(
     commands = [
         ":run_generators",
         ":format_code",
+        ":format_svelte",
         "//:gazelle",
     ],
     jobs = 10,
