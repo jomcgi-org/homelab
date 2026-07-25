@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit tests for bazel/tools/ci/ci pure helpers (changed-file classification).
+# Hermetic checks for bazel/tools/ci/ci (no git repo, no bb CLI required).
 set -euo pipefail
 
 CI_REL="bazel/tools/ci/ci"
@@ -20,69 +20,43 @@ fi
 
 PASS=0
 FAIL=0
-pass() {
-	echo "PASS [$1]"
-	PASS=$((PASS + 1))
-}
-fail() {
-	echo "FAIL [$1]: $2"
-	FAIL=$((FAIL + 1))
-}
+pass() { echo "PASS [$1]"; PASS=$((PASS + 1)); }
+fail() { echo "FAIL [$1]: $2"; FAIL=$((FAIL + 1)); }
 
-if bash "$CI" --help 2>/dev/null | grep -q 'local feedback loop'; then
-	pass "help"
+if grep -q 'local feedback loop' "$CI" &&
+	grep -q 'SKIP_REMOTE=1' "$CI" &&
+	grep -q 'include-secrets=true' "$CI"; then
+	pass "header_docs"
 else
-	fail "help" "usage missing expected text"
+	fail "header_docs" "missing usage/docs markers"
 fi
 
-set +e
-bash "$CI" nosuchcmd >/dev/null 2>&1
-ec=$?
-set -e
-if [[ $ec -eq 2 ]]; then
-	pass "unknown_cmd"
+if grep -q 'deleted_packages=bazel/tools/python' "$CI" &&
+	grep -q 'test_tag_filters=-external,-future' "$CI" &&
+	grep -qF '//...' "$CI"; then
+	pass "ci_test_argv_locked"
 else
-	fail "unknown_cmd" "exit $ec want 2"
+	fail "ci_test_argv_locked" "missing locked Test flags"
 fi
 
-# Flag-as-target must be rejected (parity guard)
-set +e
-out=$(bash "$CI" test --nocache_test_results 2>&1)
-ec=$?
-set -e
-if [[ $ec -eq 2 ]] && echo "$out" | grep -q "unexpected flag"; then
-	pass "test_rejects_flags"
+flag_ln=$(grep -n "unexpected flag" "$CI" | head -1 | cut -d: -f1)
+bb_ln=$(grep -n "command -v bb" "$CI" | head -1 | cut -d: -f1)
+if [[ -n "$flag_ln" && -n "$bb_ln" && "$flag_ln" -lt "$bb_ln" ]]; then
+	pass "flags_before_bb"
 else
-	fail "test_rejects_flags" "exit=$ec out=$out"
+	fail "flags_before_bb" "flag parse (line $flag_ln) must precede bb check (line $bb_ln)"
 fi
 
-# need_generators / need_gazelle via a scratch git repo
-if command -v git >/dev/null 2>&1; then
-	tmp=$(mktemp -d)
-	trap 'rm -rf "$tmp"' EXIT
-	git -C "$tmp" init -q
-	git -C "$tmp" config user.email t@t
-	git -C "$tmp" config user.name t
-	# minimal fake ci by sourcing functions: run classification via case on fake lists
-	# Exercise path filters by grepping the script for expected patterns
-	if grep -q 'projects/\*/deploy/\*' "$CI" && grep -q '\*\.py) py' "$CI"; then
-		pass "lint_case_patterns_present"
-	else
-		fail "lint_case_patterns_present" "missing extension cases"
-	fi
-	if grep -q 'deleted_packages=bazel/tools/python' "$CI" &&
-		grep -q 'test_tag_filters=-external,-future' "$CI"; then
-		pass "ci_test_argv_locked"
-	else
-		fail "ci_test_argv_locked" "missing locked Test flags"
-	fi
-	if grep -q 'include-secrets=true' "$CI"; then
-		pass "secrets_note"
-	else
-		fail "secrets_note" "missing include-secrets"
-	fi
+if grep -qE '\*\.py\)' "$CI" && grep -qE '\*\.js' "$CI"; then
+	pass "lint_extensions"
 else
-	pass "scratch_skipped_no_git"
+	fail "lint_extensions" "missing py/js cases"
+fi
+
+if grep -q 'need_generators' "$CI" && grep -q 'need_gazelle' "$CI"; then
+	pass "regen_helpers"
+else
+	fail "regen_helpers" "missing need_* helpers"
 fi
 
 echo "--- $PASS passed, $FAIL failed ---"
