@@ -44,7 +44,7 @@ Ownership therefore needs its own ADR, extending ADR 018's grant model rather th
 
 Candidates must be filtered by cell and by CPU vendor. On the current fleet (one AMD warm node) a pressured node-4 has no valid session peer, so this decision is a scale-out mechanism, not a homelab one.
 
-**5. Pressure response is three loops at three timescales, and only the slowest talks to the CP.**
+**5. Pressure response is three loops at three timescales, none of which needs a control-plane round trip.** The CP learns what happened from the existing dial-home report, after the fact.
 
 | Loop | Trigger | Actor | Budget | Nature |
 | ---- | ------- | ----- | ------ | ------ |
