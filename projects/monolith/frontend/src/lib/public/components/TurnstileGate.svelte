@@ -116,9 +116,7 @@
     {#if status === "verifying"}
       <p class="turnstile-gate__note">Verifying…</p>
     {:else if status === "error"}
-      <p class="turnstile-gate__note">
-        Verification failed. Please try again.
-      </p>
+      <p class="turnstile-gate__note">Verification failed. Please try again.</p>
     {/if}
   </div>
 {/if}

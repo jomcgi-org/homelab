@@ -64,17 +64,18 @@
       <span class="kn">demo</span>
     </div>
     <p class="block-lede">
-      The same entity renders differently
-      for each player character, depending on the scope their DM has granted.
-      The creature below is invented for this demo; the real corpus works the
-      same way.
+      The same entity renders differently for each player character, depending
+      on the scope their DM has granted. The creature below is invented for this
+      demo; the real corpus works the same way.
     </p>
     <div class="grant-row">
       <article class="grant-card">
         <p class="scope scope-full">full</p>
         <h3 class="grim-title card-name">Vellum Lurker</h3>
         <p class="card-type">Medium aberration</p>
-        <p class="card-stats">AC 15 <span class="dot">/</span> HP 66 <span class="dot">/</span> CR 4</p>
+        <p class="card-stats">
+          AC 15 <span class="dot">/</span> HP 66 <span class="dot">/</span> CR 4
+        </p>
         <p class="card-body">
           A predator that folds itself flat between the pages of unattended
           books. Vulnerable to fire; regenerates in libraries.
@@ -349,7 +350,6 @@
   /* ── Responsive ── */
 
   @media (max-width: 960px) {
-
     .grant-row {
       grid-template-columns: 1fr 1fr;
     }
@@ -359,7 +359,6 @@
     .home {
       padding: 36px 20px 60px;
     }
-
 
     .grant-row {
       grid-template-columns: 1fr;

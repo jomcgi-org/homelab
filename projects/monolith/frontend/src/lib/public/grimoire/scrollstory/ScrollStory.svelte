@@ -72,9 +72,7 @@
 
   const segHtml = (segs) =>
     segs
-      .map((s) =>
-        s.c ? `<mark data-c="${s.c}">${esc(s.t)}</mark>` : esc(s.t),
-      )
+      .map((s) => (s.c ? `<mark data-c="${s.c}">${esc(s.t)}</mark>` : esc(s.t)))
       .join("");
 
   // Chunk cards: section breadcrumb + highlighted body. bodyHtml is built once
@@ -109,9 +107,7 @@
         pi,
         html: segmentize(sentence, PHRASES)
           .map((s) =>
-            s.c
-              ? `<mark style="color:${s.c}">${esc(s.t)}</mark>`
-              : esc(s.t),
+            s.c ? `<mark style="color:${s.c}">${esc(s.t)}</mark>` : esc(s.t),
           )
           .join(""),
       });
@@ -623,8 +619,7 @@
         fromX = W * 0.74;
         fromY = H * 0.5;
         opa =
-          Math.min(raw * 3, 1) *
-          lerp(1, 0.4, Math.max(shrink * 0.5, graphDim));
+          Math.min(raw * 3, 1) * lerp(1, 0.4, Math.max(shrink * 0.5, graphDim));
         scl = lerp(0.4, 1, pop) * lerp(1, 0.66, shrink);
       }
       lastNodePos[i] = [gx, gy];
@@ -959,8 +954,8 @@
                 togglePopout(i);
               }}
             >
-              <span class="dot" style="background:{typeVar(n.type)}"></span
-              >{n.name}
+              <span class="dot" style="background:{typeVar(n.type)}"
+              ></span>{n.name}
             </button>
           {/each}
         </div>
@@ -972,7 +967,9 @@
         {#if popData}
           <span
             class="ptype"
-            style="color:{typeVar(popData.type)};background:color-mix(in srgb, {typeVar(
+            style="color:{typeVar(
+              popData.type,
+            )};background:color-mix(in srgb, {typeVar(
               popData.type,
             )} 12%, transparent)">{popData.type}</span
           >
@@ -993,7 +990,9 @@
       </div>
 
       <div class="scale-panel" bind:this={scalePanelEl}>
-        <div class="scale-head grim-title section-head">Unearthed from this page</div>
+        <div class="scale-head grim-title section-head">
+          Unearthed from this page
+        </div>
         <div class="this-page">
           <span>{story.bboxes.length} blocks</span><span class="k">/</span>
           <span>{story.chunks.length} chunks</span><span class="k">/</span>
@@ -1054,8 +1053,8 @@
                 togglePopout(viewIdxById[n.id] ?? -1, [r.left, r.top - 250]);
               }}
             >
-              <span class="dot" style="background:{typeVar(n.type)}"></span
-              >{n.name}
+              <span class="dot" style="background:{typeVar(n.type)}"
+              ></span>{n.name}
             </button>
           {/each}
         </div>
@@ -1106,7 +1105,10 @@
     </section>
 
     <section class="static-scene">
-      <p class="static-cap"><b>1 / Layout detection.</b> Marker reads the scanned page and finds its structure: headers, columns, asides, art.</p>
+      <p class="static-cap">
+        <b>1 / Layout detection.</b> Marker reads the scanned page and finds its structure:
+        headers, columns, asides, art.
+      </p>
       <div class="static-page" style="aspect-ratio:{aspect}">
         <img
           src={story.image}
@@ -1131,7 +1133,10 @@
     </section>
 
     <section class="static-scene">
-      <p class="static-cap"><b>2 / Structural chunking.</b> Blocks become chunks in reading order, keyed to the section they belong to.</p>
+      <p class="static-cap">
+        <b>2 / Structural chunking.</b> Blocks become chunks in reading order, keyed
+        to the section they belong to.
+      </p>
       <div class="static-cards">
         {#each cards as c (c.id)}
           <div class="chunk-card">
@@ -1143,8 +1148,17 @@
     </section>
 
     <section class="static-scene">
-      <p class="static-cap"><b>3 / Entity extraction.</b> An LLM reads each chunk and emits typed entities and how they relate.</p>
-      <svg class="static-graph" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Relationship graph of the entities on this page">
+      <p class="static-cap">
+        <b>3 / Entity extraction.</b> An LLM reads each chunk and emits typed entities
+        and how they relate.
+      </p>
+      <svg
+        class="static-graph"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label="Relationship graph of the entities on this page"
+      >
         {#each graphEdges as e, i (i)}
           <line
             x1={50 + nById[e.from].x * 40}
@@ -1154,20 +1168,29 @@
           />
         {/each}
         {#each nodes as n (n.id)}
-          <circle cx={50 + n.x * 40} cy={50 + n.y * 32} r="1.4" fill={typeVar(n.type)} />
+          <circle
+            cx={50 + n.x * 40}
+            cy={50 + n.y * 32}
+            r="1.4"
+            fill={typeVar(n.type)}
+          />
         {/each}
       </svg>
       <ul class="static-roster">
         {#each nodes as n (n.id)}
           <li>
-            <span class="dot" style="background:{typeVar(n.type)}"></span>{n.name}
+            <span class="dot" style="background:{typeVar(n.type)}"
+            ></span>{n.name}
           </li>
         {/each}
       </ul>
     </section>
 
     <section class="static-scene">
-      <p class="static-cap"><b>4 / The entire compendium.</b> You just watched a single page unearthed. Every book in the compendium gets the same treatment.</p>
+      <p class="static-cap">
+        <b>4 / The entire compendium.</b> You just watched a single page unearthed.
+        Every book in the compendium gets the same treatment.
+      </p>
       <div class="static-counters">
         {#each COUNTS as [label, value] (label)}
           <div class="counter">
@@ -1187,7 +1210,10 @@
     </section>
 
     <section class="static-scene">
-      <p class="static-cap"><b>5 / Grounded answers.</b> Every claim cites the chunks and entities it came from.</p>
+      <p class="static-cap">
+        <b>5 / Grounded answers.</b> Every claim cites the chunks and entities it
+        came from.
+      </p>
       <div class="chat static-chat">
         {#if isPlaceholder}
           <div class="mock-note">mock transcript</div>
@@ -1206,8 +1232,8 @@
           <span class="lbl">GROUNDED IN</span>
           {#each groundedNodes as n (n.id)}
             <span class="gchip">
-              <span class="dot" style="background:{typeVar(n.type)}"></span
-              >{n.name}
+              <span class="dot" style="background:{typeVar(n.type)}"
+              ></span>{n.name}
             </span>
           {/each}
         </div>
@@ -1525,7 +1551,8 @@
       0 2px 8px rgba(10, 14, 22, 0.2);
   }
   .chip.open {
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--grim-accent) 45%, transparent);
+    box-shadow: 0 0 0 3px
+      color-mix(in srgb, var(--grim-accent) 45%, transparent);
   }
 
   /* entity pop-out */

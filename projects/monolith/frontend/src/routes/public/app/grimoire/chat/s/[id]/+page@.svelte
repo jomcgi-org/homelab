@@ -88,7 +88,8 @@
   <header class="app-header">
     <nav class="crumb" aria-label="Breadcrumb">
       <a class="crumb-home" href="https://jomcgi.dev/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
+        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+        ></a
       >
       <span class="crumb-sep">/</span>
       <span class="crumb-name">shared grimoire chat</span>
@@ -101,7 +102,11 @@
       <span class="panel-readonly">READ-ONLY</span>
       <span class="panel-spacer"></span>
       {#if canFork && !forking}
-        <button type="button" class="bar-btn bar-btn-primary" onclick={startFork}>
+        <button
+          type="button"
+          class="bar-btn bar-btn-primary"
+          onclick={startFork}
+        >
           CONTINUE THIS CHAT
         </button>
       {/if}
@@ -121,7 +126,9 @@
             <article class="turn turn-bot">
               <p class="bot-label">{BOT_LABEL}</p>
               <div class="turn-card">
-                <div class="turn-md">{@html renderReply(m.content, m.touched)}</div>
+                <div class="turn-md">
+                  {@html renderReply(m.content, m.touched)}
+                </div>
                 {#if m.touched && m.touched.length}
                   <!-- The same GROUNDED IN set the live app shows, persisted on
                        the assistant turn and carried into the snapshot.
@@ -177,8 +184,8 @@
 
     <div class="share-foot">
       <p class="share-foot-copy">
-        This is a read-only snapshot of a conversation with the Grimoire, a
-        sage grounded in the D&D sourcebooks loaded on my homelab cluster.
+        This is a read-only snapshot of a conversation with the Grimoire, a sage
+        grounded in the D&D sourcebooks loaded on my homelab cluster.
       </p>
       <a class="share-cta" href="/app/grimoire/chat">Ask the Grimoire &rarr;</a>
     </div>
@@ -552,7 +559,11 @@
   .touched-chip-entity:focus-visible {
     color: var(--chip-color, var(--grim-ink));
     border-color: var(--chip-color, var(--grim-accent));
-    background: color-mix(in srgb, var(--chip-color, var(--grim-accent)) 12%, transparent);
+    background: color-mix(
+      in srgb,
+      var(--chip-color, var(--grim-accent)) 12%,
+      transparent
+    );
   }
 
   .share-foot {

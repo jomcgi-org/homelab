@@ -123,8 +123,18 @@
   );
 
   const MONTHS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
   ];
   const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -243,7 +253,8 @@
       <div class="crumb-row">
         <nav class="crumb" aria-label="Breadcrumb">
           <a class="crumb-home" href="https://jomcgi.dev/"
-            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true"
+              >&nearr;</span
             ></a
           >
           <span class="crumb-sep">/</span>
@@ -302,7 +313,14 @@
                     onclick={() => choose(t.fifa_code)}
                   >
                     {#if t.flag_url}
-                      <img class="flag" src={t.flag_url} alt="" width="20" height="14" loading="lazy" />
+                      <img
+                        class="flag"
+                        src={t.flag_url}
+                        alt=""
+                        width="20"
+                        height="14"
+                        loading="lazy"
+                      />
                     {/if}
                     <span class="picker-opt-name">{t.name}</span>
                     <span class="picker-opt-grp">{t.group_name}</span>
@@ -322,7 +340,10 @@
       <p class="headline-label">
         {countryName}'s chance of reaching the Round of 32
       </p>
-      <p class="headline-figure" class:verdict={q.status === "qualified" || q.status === "eliminated"}>
+      <p
+        class="headline-figure"
+        class:verdict={q.status === "qualified" || q.status === "eliminated"}
+      >
         {headline}
       </p>
 
@@ -363,7 +384,6 @@
           <strong>{elimPct}%</strong>
         </li>
       </ul>
-
     </section>
 
     <!-- HOW IT WORKS (expandable, directly under the headline) -->
@@ -375,39 +395,39 @@
       <div class="explainer-body">
         <p>
           It's a Monte Carlo simulation. Every remaining group game is played
-          out {nSims} times, and Scotland's chance is the share of those runs
-          where they reach the Round of 32.
+          out {nSims} times, and Scotland's chance is the share of those runs where
+          they reach the Round of 32.
         </p>
         <ol class="explainer-steps">
           <li>
-            <strong>Rate each team, with uncertainty.</strong> Every team starts
-            from a pre-tournament Elo rating, then moves up or down with the
-            group results already played, so a side that has over-performed
-            carries that into its remaining games. Because a rating is an
-            estimate and not a fact, each run draws the team's strength from a
-            range around that value (wider for teams who have played fewer
-            games), so a heavy favourite is never treated as a sure thing.
+            <strong>Rate each team, with uncertainty.</strong> Every team starts from
+            a pre-tournament Elo rating, then moves up or down with the group results
+            already played, so a side that has over-performed carries that into its
+            remaining games. Because a rating is an estimate and not a fact, each
+            run draws the team's strength from a range around that value (wider for
+            teams who have played fewer games), so a heavy favourite is never treated
+            as a sure thing.
           </li>
           <li>
-            <strong>Score each match.</strong> For an unplayed match, each
-            team's Poisson scoring rate is built from both sides' drawn strengths
-            and from how freely it has actually scored and conceded so far, so a
-            strong attack and a leaky defence are modelled separately. Scorelines
-            are sampled with a small low-score correction, so the stronger team
-            scores more and evenly matched sides draw about a quarter of the time.
+            <strong>Score each match.</strong> For an unplayed match, each team's
+            Poisson scoring rate is built from both sides' drawn strengths and from
+            how freely it has actually scored and conceded so far, so a strong attack
+            and a leaky defence are modelled separately. Scorelines are sampled with
+            a small low-score correction, so the stronger team scores more and evenly
+            matched sides draw about a quarter of the time.
           </li>
           <li>
-            <strong>Rank by the real rules.</strong> Each simulated tournament
-            applies the actual 2026 rules: top two of every group, plus the
-            eight best third-placed teams. Within a group, a tie on points is
-            settled head-to-head first (the result between the level teams), then
-            overall goal difference and goals scored; the third-placed teams, who
-            never met, are compared on points, goal difference and goals scored.
+            <strong>Rank by the real rules.</strong> Each simulated tournament applies
+            the actual 2026 rules: top two of every group, plus the eight best third-placed
+            teams. Within a group, a tie on points is settled head-to-head first (the
+            result between the level teams), then overall goal difference and goals
+            scored; the third-placed teams, who never met, are compared on points,
+            goal difference and goals scored.
           </li>
           <li>
-            <strong>Aggregate over the runs.</strong> Across all {nSims} runs,
-            the qualify chance, the top-two versus best-third split, and each
-            match's swing are all just counts from the same set of simulations.
+            <strong>Aggregate over the runs.</strong> Across all {nSims} runs, the
+            qualify chance, the top-two versus best-third split, and each match's
+            swing are all just counts from the same set of simulations.
           </li>
         </ol>
         <p class="explainer-fine">
@@ -452,7 +472,14 @@
                 <td class="col-team">
                   <span class="team">
                     {#if t.flag_url}
-                      <img class="flag" src={t.flag_url} alt="" width="22" height="15" loading="lazy" />
+                      <img
+                        class="flag"
+                        src={t.flag_url}
+                        alt=""
+                        width="22"
+                        height="15"
+                        loading="lazy"
+                      />
                     {/if}
                     <span class="team-name">{t.name}</span>
                   </span>
@@ -472,7 +499,9 @@
                     <span class="verdict out">Out</span>
                   {:else}
                     <span class="chance">
-                      <span class="chance-num">{pctClamped(ql.prob_qualify)}</span>
+                      <span class="chance-num"
+                        >{pctClamped(ql.prob_qualify)}</span
+                      >
                       <span class="chance-bar">
                         <span
                           class="chance-fill"
@@ -499,8 +528,8 @@
       <h2 class="block-title">Matches that could change it</h2>
       <p class="block-sub">
         Each remaining match, ranked by how much its result moves {countryName}'s
-        qualify chance. The three figures are {countryName}'s qualify chance after
-        each outcome.
+        qualify chance. The three figures are {countryName}'s qualify chance
+        after each outcome.
       </p>
 
       {#if swings.length === 0}
@@ -518,7 +547,8 @@
               <div class="swing-head">
                 <span class="fixture">
                   <span class="rank">{String(i + 1).padStart(2, "0")}</span>
-                  {m.home_code} <span class="v">v</span> {m.away_code}
+                  {m.home_code} <span class="v">v</span>
+                  {m.away_code}
                   {#if m.is_own_match}
                     <span class="badge own">{countryName}</span>
                   {/if}
@@ -529,9 +559,7 @@
                   title="How much this match moves {countryName}'s chance"
                 >
                   <span class="swing-track">
-                    <span
-                      class="swing-fill"
-                      style="width:{swingBar(m.swing)}%"
+                    <span class="swing-fill" style="width:{swingBar(m.swing)}%"
                     ></span>
                   </span>
                   &plusmn;{points(m.swing)}
@@ -541,9 +569,7 @@
 
               <div class="line">
                 <span class="line-track">
-                  <span
-                    class="line-span"
-                    style="left:{lo}%; right:{100 - hi}%"
+                  <span class="line-span" style="left:{lo}%; right:{100 - hi}%"
                   ></span>
                   <span class="dot dot-lo" style="left:{lo}%"></span>
                   <span class="dot dot-hi" style="left:{hi}%"></span>
@@ -609,8 +635,9 @@
     <!-- FOOTER -->
     <footer class="foot">
       <p>
-        Data from <a href="https://worldcup26.ir" rel="external noopener">worldcup26.ir</a>.
-        Odds from an Elo-weighted Monte Carlo, {nSims} simulations.
+        Data from <a href="https://worldcup26.ir" rel="external noopener"
+          >worldcup26.ir</a
+        >. Odds from an Elo-weighted Monte Carlo, {nSims} simulations.
       </p>
       <p class="caveat">
         The final two FIFA tiebreakers (disciplinary record and FIFA ranking)

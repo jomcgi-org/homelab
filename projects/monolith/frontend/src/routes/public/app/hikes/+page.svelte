@@ -9,7 +9,10 @@
     filterWalksByLocation,
     upcomingUkDays,
   } from "$lib/public/hikes/filters.js";
-  import { readHikeParams, writeHikeParams } from "$lib/public/hikes/urlParams.js";
+  import {
+    readHikeParams,
+    writeHikeParams,
+  } from "$lib/public/hikes/urlParams.js";
 
   let { data } = $props();
 
@@ -61,10 +64,7 @@
   // restores it) and mirrored back as it changes (see the $effect below). The
   // numeric fields stay strings to match the <input bind:value>; "" means "no
   // constraint" (the filters module reads undefined/NaN as unbounded).
-  const initial = readHikeParams(
-    $page.url.searchParams,
-    VALID_NEAR_KEYS,
-  );
+  const initial = readHikeParams($page.url.searchParams, VALID_NEAR_KEYS);
 
   // The five numeric filters.
   let minDuration = $state(initial.minDuration);
@@ -313,7 +313,8 @@
       <div class="crumb-row">
         <nav class="crumb" aria-label="Breadcrumb">
           <a class="crumb-home" href="https://jomcgi.dev/"
-            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true"
+              >&nearr;</span
             ></a
           >
           <span class="crumb-sep">/</span>
@@ -397,7 +398,8 @@
           </label>
         </div>
 
-        <button type="button" class="reset" onclick={resetFilters}>Reset</button>
+        <button type="button" class="reset" onclick={resetFilters}>Reset</button
+        >
       </div>
     {/if}
   </div>

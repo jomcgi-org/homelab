@@ -15,7 +15,8 @@
   <div class="marquee-track" style="animation-duration: {duration};">
     {#each { length: 3 } as _}
       {#each items as item}
-        <span class="marquee-item"><span class="marquee-dot"></span>{item}</span>
+        <span class="marquee-item"><span class="marquee-dot"></span>{item}</span
+        >
       {/each}
     {/each}
   </div>

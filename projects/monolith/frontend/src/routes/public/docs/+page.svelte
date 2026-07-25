@@ -5,7 +5,11 @@
   let { data } = $props();
 </script>
 
-<Seo title="Documentation · jomcgi.dev" description={data.meta.description} path="/docs" />
+<Seo
+  title="Documentation · jomcgi.dev"
+  description={data.meta.description}
+  path="/docs"
+/>
 
 <DocsShell sidebar={data.sidebar} activeSlug="">
   <header class="docs-hero">

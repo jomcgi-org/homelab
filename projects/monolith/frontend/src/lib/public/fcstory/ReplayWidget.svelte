@@ -129,8 +129,8 @@
     {/each}
   </div>
   <div class="provenance">
-    Every number on this page is a real measurement exported by the daemon's
-    own tracing, recorded and baked in at build time. Warm restores: {restores.length}
+    Every number on this page is a real measurement exported by the daemon's own
+    tracing, recorded and baked in at build time. Warm restores: {restores.length}
     consecutive live runs.
     <br />
     source:

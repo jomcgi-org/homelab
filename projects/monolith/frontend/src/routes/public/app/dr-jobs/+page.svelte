@@ -56,8 +56,18 @@
   });
 
   const MONTHS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
   ];
 
   function fmtDate(iso) {
@@ -142,7 +152,8 @@
       <div class="crumb-row">
         <nav class="crumb" aria-label="Breadcrumb">
           <a class="crumb-home" href="https://jomcgi.dev/"
-            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true"
+              >&nearr;</span
             ></a
           >
           <span class="crumb-sep">/</span>
@@ -194,8 +205,8 @@
     {#if visible.length === 0}
       <p class="empty">
         {#if view === "live"}
-          No live anaesthetics consultant posts right now. Try History for recent
-          listings.
+          No live anaesthetics consultant posts right now. Try History for
+          recent listings.
         {:else}
           No past listings recorded yet.
         {/if}
@@ -234,7 +245,10 @@
               </span>
               <span class="r-when">
                 <span class="r-date">{fmtDate(j.closing_date)}</span>
-                <span class="r-rel" class:urgent={isClosingSoon(j.closing_date)}>
+                <span
+                  class="r-rel"
+                  class:urgent={isClosingSoon(j.closing_date)}
+                >
                   {closesLabel(j.closing_date)}
                 </span>
               </span>

@@ -393,8 +393,7 @@
         spellcheck="false"
         autocapitalize="off"
         autocorrect="off"
-        aria-label="code snippet to scan"
-      ></textarea>
+        aria-label="code snippet to scan"></textarea>
     </div>
 
     <div class="editor-footer">
@@ -441,14 +440,15 @@
       >
       <div class="track">
         <div class="fill" style:width="{ghostPct}%"></div>
-        <span class="seg" class:show={segShow[0]} style:left="2%"
-          >booting…</span
+        <span class="seg" class:show={segShow[0]} style:left="2%">booting…</span
         >
         <span class="seg" class:show={segShow[1]} style:left="{BOOT_END * 100}%"
           >loading rules…</span
         >
-        <span class="seg" class:show={segShow[2]} style:left="{RULES_END * 100}%"
-          >scanning…</span
+        <span
+          class="seg"
+          class:show={segShow[2]}
+          style:left="{RULES_END * 100}%">scanning…</span
         >
       </div>
       <span class="stat">{ghostStat || " "}</span>
@@ -474,8 +474,7 @@
               class:finding-row-active={f.line === highlightedLine}
               onclick={() => selectFinding(f)}
             >
-              <span
-                class="severity-badge severity-{f.severity?.toLowerCase()}"
+              <span class="severity-badge severity-{f.severity?.toLowerCase()}"
                 >{f.severity}</span
               >
               <span class="finding-main">
@@ -712,7 +711,8 @@
     right: 0;
     height: 2px;
     background: var(--em-ember);
-    box-shadow: 0 0 10px 1px color-mix(in srgb, var(--em-ember) 50%, transparent);
+    box-shadow: 0 0 10px 1px
+      color-mix(in srgb, var(--em-ember) 50%, transparent);
     pointer-events: none;
   }
 

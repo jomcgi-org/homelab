@@ -29,7 +29,9 @@
   let events = $derived(
     dash?.today && !dash.today.error ? (dash.today.events ?? []) : null,
   );
-  let health = $derived(dash?.health && !dash.health.error ? dash.health : null);
+  let health = $derived(
+    dash?.health && !dash.health.error ? dash.health : null,
+  );
   let alerts = $derived(
     dash?.alerts && !dash.alerts.error ? (dash.alerts.firing ?? []) : null,
   );
@@ -198,7 +200,8 @@
     <!-- Cluster pulse ribbon -->
     <section
       class="pulse"
-      class:pulse--bad={health != null && (!health.healthy || (alerts?.length ?? 0) > 0)}
+      class:pulse--bad={health != null &&
+        (!health.healthy || (alerts?.length ?? 0) > 0)}
     >
       {#if health == null && alerts == null}
         <span class="pulse-dot pulse-dot--unknown"></span>
@@ -207,7 +210,9 @@
         <span class="pulse-dot pulse-dot--ok"></span>
         <span class="pulse-text">
           All quiet on the cluster
-          <span class="pulse-sub">{health?.scanned ?? 0} workloads scanned · no alerts firing</span>
+          <span class="pulse-sub"
+            >{health?.scanned ?? 0} workloads scanned · no alerts firing</span
+          >
         </span>
       {:else}
         <div class="pulse-head">
@@ -224,7 +229,9 @@
               workloads healthy
             {/if}
             {#if alerts && alerts.length > 0}
-              <span class="pulse-sub">{alerts.length} alert{alerts.length === 1 ? "" : "s"} firing</span>
+              <span class="pulse-sub"
+                >{alerts.length} alert{alerts.length === 1 ? "" : "s"} firing</span
+              >
             {/if}
           </span>
         </div>
@@ -234,7 +241,9 @@
               {#each rows ?? [] as row}
                 <li class="pulse-item">
                   <span class="pulse-kind">{kind}</span>
-                  <span class="mono">{row.namespace ? `${row.namespace}/` : ""}{row.name}</span>
+                  <span class="mono"
+                    >{row.namespace ? `${row.namespace}/` : ""}{row.name}</span
+                  >
                 </li>
               {/each}
             {/each}
@@ -303,7 +312,13 @@
                   onclick={() => toggleTask(task)}
                 >
                   <svg viewBox="0 0 12 12" aria-hidden="true">
-                    <path d="M2.5 6.5 5 9l4.5-6" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    <path
+                      d="M2.5 6.5 5 9l4.5-6"
+                      fill="none"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
                   </svg>
                 </button>
                 <span
@@ -325,7 +340,13 @@
                   onclick={() => toggleTask(task)}
                 >
                   <svg viewBox="0 0 12 12" aria-hidden="true">
-                    <path d="M2.5 6.5 5 9l4.5-6" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    <path
+                      d="M2.5 6.5 5 9l4.5-6"
+                      fill="none"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
                   </svg>
                 </button>
                 <span class="task-title" class:task-title--done={isDone(task)}

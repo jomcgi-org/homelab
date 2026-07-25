@@ -311,7 +311,11 @@
         },
       });
     } catch {
-      turn = { ...turn, status: "error", error: "The connection dropped. Please try again." };
+      turn = {
+        ...turn,
+        status: "error",
+        error: "The connection dropped. Please try again.",
+      };
     }
 
     // Commit any streamed reply, then surface a notice for busy / error so the
@@ -448,7 +452,8 @@
   <header class="app-header">
     <nav class="crumb" aria-label="Breadcrumb">
       <a class="crumb-home" href="https://jomcgi.dev/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
+        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+        ></a
       >
       <span class="crumb-sep">/</span>
       <span class="crumb-name">notes</span>
@@ -507,7 +512,8 @@
     <div class="ticker-track">
       {#each { length: 3 } as _}
         {#each tickerItems as item}
-          <span class="ticker-item"><span class="ticker-dot"></span>{item}</span>
+          <span class="ticker-item"><span class="ticker-dot"></span>{item}</span
+          >
         {/each}
       {/each}
     </div>
@@ -515,255 +521,260 @@
 
   <div class="view-area">
     {#if view === "chat"}
-    <section class="chat-box">
-      <div class="panel-head">
-        <span class="panel-tag">PUBLIC CHAT</span>
-        <span class="session" class:on={admitted}>
-          <span class="led" class:on={admitted}></span>
-          {admitted ? "SESSION OPEN" : "LOCKED"}
-        </span>
-        <span class="panel-spacer"></span>
-        {#if admitted && messages.length > 0}
-          {#if shareFeedback}
-            <span class="share-feedback" role="status">{shareFeedback}</span>
+      <section class="chat-box">
+        <div class="panel-head">
+          <span class="panel-tag">PUBLIC CHAT</span>
+          <span class="session" class:on={admitted}>
+            <span class="led" class:on={admitted}></span>
+            {admitted ? "SESSION OPEN" : "LOCKED"}
+          </span>
+          <span class="panel-spacer"></span>
+          {#if admitted && messages.length > 0}
+            {#if shareFeedback}
+              <span class="share-feedback" role="status">{shareFeedback}</span>
+            {/if}
+            <button
+              type="button"
+              class="bar-btn"
+              onclick={shareChat}
+              disabled={sharing}
+            >
+              {sharing ? "..." : "SHARE"}
+            </button>
           {/if}
-          <button
-            type="button"
-            class="bar-btn"
-            onclick={shareChat}
-            disabled={sharing}
-          >
-            {sharing ? "..." : "SHARE"}
-          </button>
-        {/if}
-        {#if admitted}
-          <button type="button" class="bar-btn" onclick={newChat}>
-            NEW CHAT
-          </button>
-        {/if}
-      </div>
+          {#if admitted}
+            <button type="button" class="bar-btn" onclick={newChat}>
+              NEW CHAT
+            </button>
+          {/if}
+        </div>
 
-      <div class="chat-transcript" bind:this={transcriptEl}>
-        {#if !admitted}
-          <div class="chat-gate">
-            <p class="chat-gate-eyebrow">START CHATTING</p>
-            <p class="chat-gate-copy">
-              Solve the challenge once to open a session. No sign-in, no
-              tracking beyond what keeps the bots out.
-            </p>
-            <TurnstileGate
-              siteKey={data.turnstileSiteKey}
-              onAdmitted={() => {
-                admitted = true;
-                queueMicrotask(() => inputEl?.focus());
-              }}
-            />
-          </div>
-        {:else if messages.length === 0 && !sending}
-          <div class="chat-empty">
-            <!-- Scattered brutalist doodles, decorative only. Hidden under 640px
+        <div class="chat-transcript" bind:this={transcriptEl}>
+          {#if !admitted}
+            <div class="chat-gate">
+              <p class="chat-gate-eyebrow">START CHATTING</p>
+              <p class="chat-gate-copy">
+                Solve the challenge once to open a session. No sign-in, no
+                tracking beyond what keeps the bots out.
+              </p>
+              <TurnstileGate
+                siteKey={data.turnstileSiteKey}
+                onAdmitted={() => {
+                  admitted = true;
+                  queueMicrotask(() => inputEl?.focus());
+                }}
+              />
+            </div>
+          {:else if messages.length === 0 && !sending}
+            <div class="chat-empty">
+              <!-- Scattered brutalist doodles, decorative only. Hidden under 640px
                  and pointer-events:none so they never interfere. -->
+              <svg
+                class="doodle doodle-cloud"
+                viewBox="0 0 64 40"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M14 32 Q4 32 5 24 Q5 16 14 17 Q15 7 26 9 Q33 2 42 10 Q54 9 53 19 Q62 19 60 27 Q59 32 50 32 Z"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <svg
+                class="doodle doodle-star"
+                viewBox="0 0 40 40"
+                aria-hidden="true"
+              >
+                <path
+                  d="M20 2 L24 16 L38 20 L24 24 L20 38 L16 24 L2 20 L16 16 Z"
+                  fill="var(--blue)"
+                  stroke="var(--ink)"
+                  stroke-width="2"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <svg
+                class="doodle doodle-squiggle"
+                viewBox="0 0 84 20"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M2 10 Q12 -1 22 10 T42 10 T62 10 T82 10"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                />
+              </svg>
+              <svg
+                class="doodle doodle-diamond"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect
+                  x="6"
+                  y="6"
+                  width="12"
+                  height="12"
+                  transform="rotate(45 12 12)"
+                  fill="var(--coral)"
+                  stroke="var(--ink)"
+                  stroke-width="2"
+                />
+              </svg>
+
+              <h2 class="empty-headline">
+                ask my notes <span class="empty-hl">anything.</span>
+              </h2>
+              <p class="empty-sub">
+                There are {fmtCount(PUBLIC_NOTE_COUNT)} of them: coffee logs, ADRs,
+                dark-sky readings, half-finished side quests. An open model reads
+                the graph and answers. No tools, no cloud, no telemetry.
+              </p>
+              <div class="chat-examples">
+                {#each EXAMPLES as ex}
+                  <button
+                    type="button"
+                    class="chat-example"
+                    onclick={() => send(ex)}
+                  >
+                    {ex}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {:else}
+            {#each messages as m}
+              {#if m.role === "user"}
+                <article class="turn turn-user">
+                  <div class="user-bubble">{m.content}</div>
+                </article>
+              {:else}
+                <article class="turn turn-bot">
+                  <p class="bot-label">{BOT_LABEL}</p>
+                  <div class="turn-md">{@html renderReply(m.content)}</div>
+                  {#if m.touched && m.touched.length}
+                    <div class="turn-touched">
+                      <span class="turn-touched-label">GROUNDED IN</span>
+                      {#each m.touched as n}
+                        <button
+                          type="button"
+                          class="touched-chip"
+                          onclick={() => showGraph(n.id)}
+                        >
+                          {n.title || "untitled note"}
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                </article>
+              {/if}
+            {/each}
+
+            {#if sending}
+              <article class="turn turn-bot">
+                <p class="bot-label">{BOT_LABEL}</p>
+                {#if turn.assistant}
+                  <div class="turn-md">
+                    {@html renderReply(turn.assistant)}<span class="caret"
+                    ></span>
+                  </div>
+                {:else}
+                  <p class="turn-thinking">
+                    <span class="dot"></span><span class="dot"></span><span
+                      class="dot"
+                    ></span>
+                    {touched.length ? "reading the graph" : "thinking"}
+                  </p>
+                {/if}
+              </article>
+            {/if}
+          {/if}
+        </div>
+
+        {#if notice}
+          <div class="chat-notice" class:busy={noticeIsBusy} role="status">
+            <span class="chat-notice-text">{notice.message}</span>
+            <button
+              type="button"
+              class="chat-notice-retry"
+              onclick={() => send(lastUserMessage)}
+            >
+              TRY AGAIN
+            </button>
+          </div>
+        {/if}
+
+        {#if admitted}
+          <form class="chat-input" onsubmit={onSubmit}>
+            <!-- Small blue squiggle doodle anchored bottom-left of the dock. -->
             <svg
-              class="doodle doodle-cloud"
-              viewBox="0 0 64 40"
+              class="dock-doodle"
+              viewBox="0 0 60 14"
               fill="none"
               aria-hidden="true"
             >
               <path
-                d="M14 32 Q4 32 5 24 Q5 16 14 17 Q15 7 26 9 Q33 2 42 10 Q54 9 53 19 Q62 19 60 27 Q59 32 50 32 Z"
-                stroke="currentColor"
-                stroke-width="2.5"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <svg
-              class="doodle doodle-star"
-              viewBox="0 0 40 40"
-              aria-hidden="true"
-            >
-              <path
-                d="M20 2 L24 16 L38 20 L24 24 L20 38 L16 24 L2 20 L16 16 Z"
-                fill="var(--blue)"
-                stroke="var(--ink)"
-                stroke-width="2"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <svg
-              class="doodle doodle-squiggle"
-              viewBox="0 0 84 20"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M2 10 Q12 -1 22 10 T42 10 T62 10 T82 10"
-                stroke="currentColor"
+                d="M2 7 Q9 0 16 7 T30 7 T44 7 T58 7"
+                stroke="var(--blue)"
                 stroke-width="2.5"
                 stroke-linecap="round"
               />
             </svg>
-            <svg
-              class="doodle doodle-diamond"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <rect
-                x="6"
-                y="6"
-                width="12"
-                height="12"
-                transform="rotate(45 12 12)"
-                fill="var(--coral)"
-                stroke="var(--ink)"
-                stroke-width="2"
-              />
-            </svg>
-
-            <h2 class="empty-headline">
-              ask my notes <span class="empty-hl">anything.</span>
-            </h2>
-            <p class="empty-sub">
-              There are {fmtCount(PUBLIC_NOTE_COUNT)} of them: coffee logs, ADRs,
-              dark-sky readings, half-finished side quests. An open model reads
-              the graph and answers. No tools, no cloud, no telemetry.
-            </p>
-            <div class="chat-examples">
-              {#each EXAMPLES as ex}
-                <button
-                  type="button"
-                  class="chat-example"
-                  onclick={() => send(ex)}
-                >
-                  {ex}
-                </button>
-              {/each}
+            <textarea
+              bind:this={inputEl}
+              bind:value={input}
+              onkeydown={onKeydown}
+              placeholder="Ask the graph..."
+              rows="1"
+              maxlength={CHARACTER_LIMIT}
+              disabled={sending}
+              aria-label="Your message"></textarea>
+            <div class="chat-input-side">
+              <span
+                class="chat-count"
+                class:warn={input.length > CHARACTER_LIMIT * 0.9}
+              >
+                {input.length}/{CHARACTER_LIMIT}
+              </span>
+              <button
+                type="submit"
+                class="chat-send"
+                disabled={sending || !input.trim()}
+              >
+                {sending ? "..." : "SEND"}
+              </button>
             </div>
-          </div>
-        {:else}
-          {#each messages as m}
-            {#if m.role === "user"}
-              <article class="turn turn-user">
-                <div class="user-bubble">{m.content}</div>
-              </article>
-            {:else}
-              <article class="turn turn-bot">
-                <p class="bot-label">{BOT_LABEL}</p>
-                <div class="turn-md">{@html renderReply(m.content)}</div>
-                {#if m.touched && m.touched.length}
-                  <div class="turn-touched">
-                    <span class="turn-touched-label">GROUNDED IN</span>
-                    {#each m.touched as n}
-                      <button
-                        type="button"
-                        class="touched-chip"
-                        onclick={() => showGraph(n.id)}
-                      >
-                        {n.title || "untitled note"}
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-              </article>
-            {/if}
-          {/each}
-
-          {#if sending}
-            <article class="turn turn-bot">
-              <p class="bot-label">{BOT_LABEL}</p>
-              {#if turn.assistant}
-                <div class="turn-md">{@html renderReply(turn.assistant)}<span class="caret"></span></div>
-              {:else}
-                <p class="turn-thinking">
-                  <span class="dot"></span><span class="dot"></span><span
-                    class="dot"
-                  ></span>
-                  {touched.length ? "reading the graph" : "thinking"}
-                </p>
-              {/if}
-            </article>
-          {/if}
+          </form>
         {/if}
-      </div>
-
-      {#if notice}
-        <div class="chat-notice" class:busy={noticeIsBusy} role="status">
-          <span class="chat-notice-text">{notice.message}</span>
-          <button
-            type="button"
-            class="chat-notice-retry"
-            onclick={() => send(lastUserMessage)}
-          >
-            TRY AGAIN
-          </button>
-        </div>
-      {/if}
-
-      {#if admitted}
-        <form class="chat-input" onsubmit={onSubmit}>
-          <!-- Small blue squiggle doodle anchored bottom-left of the dock. -->
-          <svg
-            class="dock-doodle"
-            viewBox="0 0 60 14"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M2 7 Q9 0 16 7 T30 7 T44 7 T58 7"
-              stroke="var(--blue)"
-              stroke-width="2.5"
-              stroke-linecap="round"
-            />
-          </svg>
-          <textarea
-            bind:this={inputEl}
-            bind:value={input}
-            onkeydown={onKeydown}
-            placeholder="Ask the graph..."
-            rows="1"
-            maxlength={CHARACTER_LIMIT}
-            disabled={sending}
-            aria-label="Your message"
-          ></textarea>
-          <div class="chat-input-side">
-            <span class="chat-count" class:warn={input.length > CHARACTER_LIMIT * 0.9}>
-              {input.length}/{CHARACTER_LIMIT}
-            </span>
-            <button
-              type="submit"
-              class="chat-send"
-              disabled={sending || !input.trim()}
-            >
-              {sending ? "..." : "SEND"}
-            </button>
-          </div>
-        </form>
-      {/if}
-    </section>
-  {:else if graphLoadError}
-    <section class="graph-fallback">
-      <p class="graph-fallback-copy">The graph could not be loaded.</p>
-      <button
-        type="button"
-        class="graph-fallback-retry"
-        onclick={() => {
-          graphLoadError = false;
-          ensureGraphView();
-        }}
-      >
-        TRY AGAIN
-      </button>
-    </section>
-  {:else if GraphView}
-    <GraphView {touched} focusId={graphFocusId} />
-  {:else}
-    <section class="graph-fallback">
-      <p class="graph-thinking">
-        <span class="dot"></span><span class="dot"></span><span class="dot"
-        ></span>
-        opening the graph
-      </p>
-    </section>
-  {/if}
+      </section>
+    {:else if graphLoadError}
+      <section class="graph-fallback">
+        <p class="graph-fallback-copy">The graph could not be loaded.</p>
+        <button
+          type="button"
+          class="graph-fallback-retry"
+          onclick={() => {
+            graphLoadError = false;
+            ensureGraphView();
+          }}
+        >
+          TRY AGAIN
+        </button>
+      </section>
+    {:else if GraphView}
+      <GraphView {touched} focusId={graphFocusId} />
+    {:else}
+      <section class="graph-fallback">
+        <p class="graph-thinking">
+          <span class="dot"></span><span class="dot"></span><span class="dot"
+          ></span>
+          opening the graph
+        </p>
+      </section>
+    {/if}
   </div>
 </main>
 
@@ -781,8 +792,10 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    padding: calc(20px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right))
-      calc(20px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left));
+    padding: calc(20px + env(safe-area-inset-top))
+      calc(24px + env(safe-area-inset-right))
+      calc(20px + env(safe-area-inset-bottom))
+      calc(24px + env(safe-area-inset-left));
     overflow: hidden;
     font-family: var(--mono);
     color: var(--ink);
@@ -1655,8 +1668,10 @@
   @media (max-width: 640px) {
     .chat-app {
       gap: 10px;
-      padding: calc(14px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
-        calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
+      padding: calc(14px + env(safe-area-inset-top))
+        calc(14px + env(safe-area-inset-right))
+        calc(14px + env(safe-area-inset-bottom))
+        calc(14px + env(safe-area-inset-left));
     }
     .explainer-hint {
       display: none;

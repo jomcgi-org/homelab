@@ -71,7 +71,9 @@
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+      const err = new Error(
+        data?.error || data?.detail || `HTTP ${res.status}`,
+      );
       err.status = res.status;
       throw err;
     }
@@ -131,7 +133,10 @@
     startError = null;
     busyNotice = false;
     try {
-      const data = await postJson(`/api/demos/firecracker/load-test/${workload}`, {});
+      const data = await postJson(
+        `/api/demos/firecracker/load-test/${workload}`,
+        {},
+      );
       runId = data.run_id;
       // already_running is not an error: adopt the existing run and poll it.
       resetReceipts();
@@ -230,7 +235,9 @@
   let scansPage = $derived(
     scansTotal > 0 ? Math.floor(scansOffset / SCANS_PAGE_SIZE) + 1 : 0,
   );
-  let scansPageCount = $derived(Math.max(1, Math.ceil(scansTotal / SCANS_PAGE_SIZE)));
+  let scansPageCount = $derived(
+    Math.max(1, Math.ceil(scansTotal / SCANS_PAGE_SIZE)),
+  );
 
   function fmt(n, digits = 1) {
     return n == null ? "-" : Number(n).toFixed(digits);
@@ -311,7 +318,8 @@
     {#if view === "live"}
       <div class="lt-live">
         <div class="throughput-hero">
-          <span class="throughput-value">{fmt(rollup.throughput_per_s, 2)}</span>
+          <span class="throughput-value">{fmt(rollup.throughput_per_s, 2)}</span
+          >
           <span class="throughput-unit">{nounPlural}/s</span>
         </div>
 
@@ -337,7 +345,9 @@
           </div>
           <div class="stat">
             <span class="stat-label">errors</span>
-            <span class="stat-value" class:stat-value--bad={(rollup.errors ?? 0) > 0}
+            <span
+              class="stat-value"
+              class:stat-value--bad={(rollup.errors ?? 0) > 0}
               >{rollup.errors ?? 0}</span
             >
           </div>
@@ -355,7 +365,9 @@
           </div>
           <div class="stat">
             <span class="stat-label">mean peak rss</span>
-            <span class="stat-value">{fmt(rollup.peak_rss_mib_mean, 0)} MiB</span>
+            <span class="stat-value"
+              >{fmt(rollup.peak_rss_mib_mean, 0)} MiB</span
+            >
           </div>
         </div>
 
@@ -378,11 +390,15 @@
             <span class="extrap-label">extrapolation</span>
             <div class="extrap-figures">
               <div class="extrap-figure">
-                <span class="extrap-value">{fmt(s.extrapolation?.per_node_throughput_per_s, 2)}</span>
+                <span class="extrap-value"
+                  >{fmt(s.extrapolation?.per_node_throughput_per_s, 2)}</span
+                >
                 <span class="extrap-unit">{nounPlural}/s per node</span>
               </div>
               <div class="extrap-figure">
-                <span class="extrap-value">{fmt(s.extrapolation?.scans_per_core_s, 3)}</span>
+                <span class="extrap-value"
+                  >{fmt(s.extrapolation?.scans_per_core_s, 3)}</span
+                >
                 <span class="extrap-unit">{nounPlural}/core/s</span>
               </div>
             </div>
@@ -395,13 +411,19 @@
               <div class="stat">
                 <span class="stat-label">daemon cpu (mean/max)</span>
                 <span class="stat-value"
-                  >{fmt(s.daemon?.pod_cpu_m?.mean, 0)} / {fmt(s.daemon?.pod_cpu_m?.max, 0)}m</span
+                  >{fmt(s.daemon?.pod_cpu_m?.mean, 0)} / {fmt(
+                    s.daemon?.pod_cpu_m?.max,
+                    0,
+                  )}m</span
                 >
               </div>
               <div class="stat">
                 <span class="stat-label">daemon rss (mean/max)</span>
                 <span class="stat-value"
-                  >{fmt(s.daemon?.pod_rss_mib?.mean, 0)} / {fmt(s.daemon?.pod_rss_mib?.max, 0)} MiB</span
+                  >{fmt(s.daemon?.pod_rss_mib?.mean, 0)} / {fmt(
+                    s.daemon?.pod_rss_mib?.max,
+                    0,
+                  )} MiB</span
                 >
               </div>
               <div class="stat">
@@ -412,13 +434,19 @@
                 <div class="stat">
                   <span class="stat-label">node cpu (mean/max)</span>
                   <span class="stat-value"
-                    >{fmt(s.node?.cpu_m?.mean, 0)} / {fmt(s.node?.cpu_m?.max, 0)}m</span
+                    >{fmt(s.node?.cpu_m?.mean, 0)} / {fmt(
+                      s.node?.cpu_m?.max,
+                      0,
+                    )}m</span
                   >
                 </div>
                 <div class="stat">
                   <span class="stat-label">node rss (mean/max)</span>
                   <span class="stat-value"
-                    >{fmt(s.node?.rss_mib?.mean, 0)} / {fmt(s.node?.rss_mib?.max, 0)} MiB</span
+                    >{fmt(s.node?.rss_mib?.mean, 0)} / {fmt(
+                      s.node?.rss_mib?.max,
+                      0,
+                    )} MiB</span
                   >
                 </div>
               {/if}
@@ -426,31 +454,44 @@
           </div>
 
           <div class="summary-section">
-            <span class="section-title">{noun} time + per-{noun} resources</span>
+            <span class="section-title">{noun} time + per-{noun} resources</span
+            >
             <div class="stat-grid">
               <div class="stat">
                 <span class="stat-label">{noun} time p50/p95/max</span>
                 <span class="stat-value"
-                  >{fmt(s.latency_ms?.p50, 0)} / {fmt(s.latency_ms?.p95, 0)} / {fmt(s.latency_ms?.max, 0)}ms</span
+                  >{fmt(s.latency_ms?.p50, 0)} / {fmt(s.latency_ms?.p95, 0)} / {fmt(
+                    s.latency_ms?.max,
+                    0,
+                  )}ms</span
                 >
               </div>
               <div class="stat">
                 <span class="stat-label">per-{noun} cpu p50/p95</span>
                 <span class="stat-value"
-                  >{fmt(s.per_scan_cpu_ms?.p50, 0)} / {fmt(s.per_scan_cpu_ms?.p95, 0)}ms</span
+                  >{fmt(s.per_scan_cpu_ms?.p50, 0)} / {fmt(
+                    s.per_scan_cpu_ms?.p95,
+                    0,
+                  )}ms</span
                 >
               </div>
               <div class="stat">
                 <span class="stat-label">per-{noun} peak rss p50/p95</span>
                 <span class="stat-value"
-                  >{fmt(s.per_scan_peak_rss_mib?.p50, 0)} / {fmt(s.per_scan_peak_rss_mib?.p95, 0)} MiB</span
+                  >{fmt(s.per_scan_peak_rss_mib?.p50, 0)} / {fmt(
+                    s.per_scan_peak_rss_mib?.p95,
+                    0,
+                  )} MiB</span
                 >
               </div>
               {#if s.result_count}
                 <div class="stat">
                   <span class="stat-label">result count p50/p95/max</span>
                   <span class="stat-value"
-                    >{fmt(s.result_count?.p50, 1)} / {fmt(s.result_count?.p95, 1)} / {fmt(s.result_count?.max, 0)}</span
+                    >{fmt(s.result_count?.p50, 1)} / {fmt(
+                      s.result_count?.p95,
+                      1,
+                    )} / {fmt(s.result_count?.max, 0)}</span
                   >
                 </div>
               {/if}
@@ -458,13 +499,16 @@
                 <div class="stat">
                   <span class="stat-label">exit 0 / nonzero</span>
                   <span class="stat-value"
-                    >{s.sandbox_exit.ok_count ?? 0} / {s.sandbox_exit.nonzero_count ?? 0}</span
+                    >{s.sandbox_exit.ok_count ?? 0} / {s.sandbox_exit
+                      .nonzero_count ?? 0}</span
                   >
                 </div>
               {/if}
               <div class="stat">
                 <span class="stat-label">total {nounPlural} / errors</span>
-                <span class="stat-value">{s.total_scans ?? 0} / {s.errors ?? 0}</span>
+                <span class="stat-value"
+                  >{s.total_scans ?? 0} / {s.errors ?? 0}</span
+                >
               </div>
             </div>
           </div>
@@ -478,7 +522,10 @@
                     <span class="lang-name">{name}</span>
                     <span class="lang-count">{stats.count}</span>
                     <span class="lang-extra"
-                      >p50 {fmt(stats.p50_ms, 0)}ms · cpu p50 {fmt(stats.p50_cpu_ms, 0)}ms</span
+                      >p50 {fmt(stats.p50_ms, 0)}ms · cpu p50 {fmt(
+                        stats.p50_cpu_ms,
+                        0,
+                      )}ms</span
                     >
                   </div>
                 {/each}
@@ -492,35 +539,47 @@
     {:else if view === "receipts"}
       <div class="lt-receipts">
         {#if selectedScan}
-          <button type="button" class="back-link" onclick={() => (selectedScan = null)}>
+          <button
+            type="button"
+            class="back-link"
+            onclick={() => (selectedScan = null)}
+          >
             &larr; back to scans
           </button>
           {#if selectedScanLoading}
             <p class="result-empty">Loading...</p>
           {:else if selectedScanError}
-            <div class="notice notice--error" role="alert">{selectedScanError}</div>
+            <div class="notice notice--error" role="alert">
+              {selectedScanError}
+            </div>
           {:else}
             <div class="scan-detail">
               <div class="result-grid">
                 <span class="result-key">{noun}</span>
-                <span class="result-val">#{selectedScan.seq} · {selectedScan.name}</span>
+                <span class="result-val"
+                  >#{selectedScan.seq} · {selectedScan.name}</span
+                >
               </div>
               <div class="result-grid">
                 <span class="result-key">status</span>
-                <span class="result-val" class:result-val--bad={selectedScan.status === "error"}
+                <span
+                  class="result-val"
+                  class:result-val--bad={selectedScan.status === "error"}
                   >{selectedScan.status}</span
                 >
               </div>
               <div class="result-grid">
                 <span class="result-key">{noun} time / cpu / rss</span>
                 <span class="result-val"
-                  >{selectedScan.scan_ms ?? "-"}ms / {selectedScan.cpu_ms ?? "-"}ms
-                  / {selectedScan.peak_rss_mib ?? "-"} MiB</span
+                  >{selectedScan.scan_ms ?? "-"}ms / {selectedScan.cpu_ms ??
+                    "-"}ms / {selectedScan.peak_rss_mib ?? "-"} MiB</span
                 >
               </div>
 
               {#if selectedScan.error}
-                <div class="notice notice--error" role="alert">{selectedScan.error}</div>
+                <div class="notice notice--error" role="alert">
+                  {selectedScan.error}
+                </div>
               {/if}
 
               {#if workload === "semgrep"}
@@ -545,7 +604,8 @@
                 {#if selectedScan.result?.errors?.length}
                   <div class="result-block">
                     <span class="body-label">scan errors</span>
-                    <pre class="body-text body-text--error">{selectedScan.result.errors.join(
+                    <pre
+                      class="body-text body-text--error">{selectedScan.result.errors.join(
                         "\n",
                       )}</pre>
                   </div>
@@ -564,7 +624,9 @@
                 </div>
                 <div class="result-grid">
                   <span class="result-key">duration</span>
-                  <span class="result-val">{selectedScan.result?.duration_ms ?? "-"}ms</span>
+                  <span class="result-val"
+                    >{selectedScan.result?.duration_ms ?? "-"}ms</span
+                  >
                 </div>
                 {#if selectedScan.result?.stdout}
                   <div class="result-block">
@@ -575,7 +637,8 @@
                 {#if selectedScan.result?.stderr}
                   <div class="result-block">
                     <span class="body-label">stderr</span>
-                    <pre class="body-text body-text--error">{selectedScan.result.stderr}</pre>
+                    <pre class="body-text body-text--error">{selectedScan.result
+                        .stderr}</pre>
                   </div>
                 {/if}
               {/if}
@@ -619,10 +682,16 @@
             </table>
 
             <div class="pager">
-              <button type="button" onclick={prevPage} disabled={scansOffset <= 0}>
+              <button
+                type="button"
+                onclick={prevPage}
+                disabled={scansOffset <= 0}
+              >
                 Prev
               </button>
-              <span class="pager-label">page {scansPage} of {scansPageCount}</span>
+              <span class="pager-label"
+                >page {scansPage} of {scansPageCount}</span
+              >
               <button
                 type="button"
                 onclick={nextPage}
@@ -721,8 +790,13 @@
 
   .notice--warn {
     color: var(--ink);
-    background: color-mix(in srgb, var(--loadtest-highlight) 18%, var(--surface));
-    border: 1px solid color-mix(in srgb, var(--loadtest-highlight) 40%, var(--line));
+    background: color-mix(
+      in srgb,
+      var(--loadtest-highlight) 18%,
+      var(--surface)
+    );
+    border: 1px solid
+      color-mix(in srgb, var(--loadtest-highlight) 40%, var(--line));
   }
 
   .lt-tabs {
@@ -904,8 +978,13 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    border: 1px solid color-mix(in srgb, var(--loadtest-highlight) 40%, var(--line));
-    background: color-mix(in srgb, var(--loadtest-highlight) 10%, var(--surface));
+    border: 1px solid
+      color-mix(in srgb, var(--loadtest-highlight) 40%, var(--line));
+    background: color-mix(
+      in srgb,
+      var(--loadtest-highlight) 10%,
+      var(--surface)
+    );
     border-radius: 8px;
     padding: 16px 18px;
   }

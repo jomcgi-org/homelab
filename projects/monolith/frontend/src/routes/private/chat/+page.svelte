@@ -166,11 +166,11 @@
   //   4. Drain again (absorbs anything that arrived during animation)
   const MOVE_MS = 400;
   const PEN_EASE = "cubic-bezier(0.65, 0, 0.15, 1)";
-  const PENCIL_MS = 600;   // pencil sketch total (4 sides)
-  const INK_MS = 500;      // ink retrace total (4 sides)
-  const TEXT_MS = 300;      // text fade-in
+  const PENCIL_MS = 600; // pencil sketch total (4 sides)
+  const INK_MS = 500; // ink retrace total (4 sides)
+  const TEXT_MS = 300; // text fade-in
   const EDGE_PENCIL_MS = 400; // pencil line between nodes
-  const EDGE_INK_MS = 340;    // ink retrace on edge
+  const EDGE_INK_MS = 340; // ink retrace on edge
   let eventQueue = [];
   let draining = false;
   let pendingRevealIds = new Set();
@@ -182,7 +182,10 @@
   }
 
   function drainQueue() {
-    if (eventQueue.length === 0) { draining = false; return; }
+    if (eventQueue.length === 0) {
+      draining = false;
+      return;
+    }
     draining = true;
 
     // Absorb ALL queued events at once into graph state
@@ -194,10 +197,18 @@
         pendingRevealIds.add(evt.data.note_id);
         graphState.addNode(evt.data);
         for (const edge of evt.data.edges || []) {
-          graphState.addEdge(evt.data.note_id, edge.target_id, edge.edge_type || "link");
+          graphState.addEdge(
+            evt.data.note_id,
+            edge.target_id,
+            edge.edge_type || "link",
+          );
         }
       } else if (evt.type === "edge_traversed") {
-        graphState.addEdge(evt.data.from_id, evt.data.to_id, evt.data.edge_type);
+        graphState.addEdge(
+          evt.data.from_id,
+          evt.data.to_id,
+          evt.data.edge_type,
+        );
       } else if (evt.type === "node_discarded") {
         graphState.discardNode(evt.data.note_id);
       }
@@ -225,23 +236,35 @@
     const id = ids[idx];
     pendingRevealIds.delete(id);
     const entry = drawnNodes.get(id);
-    if (!entry) { revealNodes(ids, idx + 1); return; }
+    if (!entry) {
+      revealNodes(ids, idx + 1);
+      return;
+    }
 
     // Animate the node box: pencil → ink → fill → text
     animateNodeEntry(entry);
 
     // Animate any pending edges connected to this node (after node ink starts)
-    setTimeout(() => {
-      for (const [key, edgeEntry] of drawnEdges) {
-        if (pendingEdgeKeys.has(key) && (edgeEntry.from === id || edgeEntry.to === id)) {
-          pendingEdgeKeys.delete(key);
-          animateEdgeEntry(edgeEntry);
+    setTimeout(
+      () => {
+        for (const [key, edgeEntry] of drawnEdges) {
+          if (
+            pendingEdgeKeys.has(key) &&
+            (edgeEntry.from === id || edgeEntry.to === id)
+          ) {
+            pendingEdgeKeys.delete(key);
+            animateEdgeEntry(edgeEntry);
+          }
         }
-      }
-    }, PENCIL_MS + INK_MS * 0.3); // start edge draw as node ink is partway through
+      },
+      PENCIL_MS + INK_MS * 0.3,
+    ); // start edge draw as node ink is partway through
 
     // Total animation time for one node + its edges, then start next
-    const nodeAnimMs = PENCIL_MS + INK_MS + Math.max(TEXT_MS, EDGE_PENCIL_MS + EDGE_INK_MS) * 0.6;
+    const nodeAnimMs =
+      PENCIL_MS +
+      INK_MS +
+      Math.max(TEXT_MS, EDGE_PENCIL_MS + EDGE_INK_MS) * 0.6;
     setTimeout(() => revealNodes(ids, idx + 1), nodeAnimMs);
   }
 
@@ -320,15 +343,16 @@
   const NODE_H = 44;
 
   // Persistent refs — survive across effect runs so we can diff
-  let drawnNodes = new Map();   // id → { g, origX, origY }
-  let drawnEdges = new Map();   // "from|to" → { el, from, to }
+  let drawnNodes = new Map(); // id → { g, origX, origY }
+  let drawnEdges = new Map(); // "from|to" → { el, from, to }
   let nodeElsForDim = new Map();
   let edgeElsForDim = new Map();
 
   /** Deterministic seed from string. */
   function seed(str) {
     let h = 0;
-    for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+    for (let i = 0; i < str.length; i++)
+      h = ((h << 5) - h + str.charCodeAt(i)) | 0;
     return Math.abs(h);
   }
 
@@ -359,7 +383,9 @@
           const len = p.getTotalLength();
           p.style.strokeDasharray = String(len);
           p.style.strokeDashoffset = String(len);
-        } catch { /* fallback handled in animation */ }
+        } catch {
+          /* fallback handled in animation */
+        }
       });
     } else {
       ink.style.opacity = "0.5";
@@ -430,8 +456,10 @@
     g.appendChild(fillEl);
 
     // Draw 4 sides as individual lines — enables per-side pencil→ink animation
-    const x1 = -w / 2, y1 = -h / 2;
-    const x2 = w / 2, y2 = h / 2;
+    const x1 = -w / 2,
+      y1 = -h / 2;
+    const x2 = w / 2,
+      y2 = h / 2;
     const sides = [
       { from: [x1, y1], to: [x2, y1], key: "top" },
       { from: [x2, y1], to: [x2, y2], key: "right" },
@@ -443,12 +471,18 @@
       const sideSeed = seed(node.id + side.key);
 
       // Pencil: light gray sketch
-      const pencil = rc.line(side.from[0], side.from[1], side.to[0], side.to[1], {
-        stroke: "#c0b8a8",
-        roughness: 1.2,
-        strokeWidth: 1,
-        seed: sideSeed,
-      });
+      const pencil = rc.line(
+        side.from[0],
+        side.from[1],
+        side.to[0],
+        side.to[1],
+        {
+          stroke: "#c0b8a8",
+          roughness: 1.2,
+          strokeWidth: 1,
+          seed: sideSeed,
+        },
+      );
       pencil.style.opacity = isPending ? "0" : "0.5";
       pencil.dataset.layer = "pencil";
       g.appendChild(pencil);
@@ -468,7 +502,9 @@
             const len = p.getTotalLength();
             p.style.strokeDasharray = String(len);
             p.style.strokeDashoffset = String(len);
-          } catch { /* fill paths — handled by nodeIn */ }
+          } catch {
+            /* fill paths — handled by nodeIn */
+          }
         });
       }
       g.appendChild(ink);
@@ -480,7 +516,10 @@
     text.setAttribute("y", 4);
     text.setAttribute("text-anchor", "middle");
     text.setAttribute("font-size", "10");
-    text.setAttribute("class", `node-label${node.discarded ? " node-label--discarded" : ""}`);
+    text.setAttribute(
+      "class",
+      `node-label${node.discarded ? " node-label--discarded" : ""}`,
+    );
     text.textContent = node.label;
     if (isPending) text.style.opacity = "0";
     g.appendChild(text);
@@ -498,7 +537,10 @@
     const discardG = svgEl.querySelector(".graph-discards");
 
     // Compute viewBox
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
     for (const n of layoutResult.nodes) {
       minX = Math.min(minX, n.x - n.hw - 16);
       maxX = Math.max(maxX, n.x + n.hw + 16);
@@ -557,20 +599,55 @@
       const existing = drawnEdges.get(key);
       if (existing) {
         // Only redraw if endpoints actually moved
-        if (existing.fx !== from.x || existing.fy !== from.y || existing.tx !== to.x || existing.ty !== to.y) {
+        if (
+          existing.fx !== from.x ||
+          existing.fy !== from.y ||
+          existing.tx !== to.x ||
+          existing.ty !== to.y
+        ) {
           clearChildren(existing.el);
-          fillEdgeGroup(rc, existing.el, from.x, from.y, to.x, to.y, edgeColor, edgeSeed, false);
+          fillEdgeGroup(
+            rc,
+            existing.el,
+            from.x,
+            from.y,
+            to.x,
+            to.y,
+            edgeColor,
+            edgeSeed,
+            false,
+          );
         }
-        existing.fx = from.x; existing.fy = from.y;
-        existing.tx = to.x; existing.ty = to.y;
+        existing.fx = from.x;
+        existing.fy = from.y;
+        existing.tx = to.x;
+        existing.ty = to.y;
         newEdgeEls.set(key, existing);
       } else {
         // New edge — create group, draw hidden, queue for animation
         const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
         g.style.transition = "opacity 0.15s";
-        fillEdgeGroup(rc, g, from.x, from.y, to.x, to.y, edgeColor, edgeSeed, true);
+        fillEdgeGroup(
+          rc,
+          g,
+          from.x,
+          from.y,
+          to.x,
+          to.y,
+          edgeColor,
+          edgeSeed,
+          true,
+        );
         edgeG.appendChild(g);
-        newEdgeEls.set(key, { el: g, from: edge.from, to: edge.to, fx: from.x, fy: from.y, tx: to.x, ty: to.y });
+        newEdgeEls.set(key, {
+          el: g,
+          from: edge.from,
+          to: edge.to,
+          fx: from.x,
+          fy: from.y,
+          tx: to.x,
+          ty: to.y,
+        });
         newEdgeIds.push(key);
       }
     }
@@ -595,12 +672,20 @@
       const x2 = node.x + w / 2 - 3;
       const y1 = node.y - h / 2 + 3;
       const y2 = node.y + h / 2 - 3;
-      discardG.appendChild(rc.line(x1, y1, x2, y2, {
-        stroke: "#ff3d00", strokeWidth: 2, roughness: 1.5,
-      }));
-      discardG.appendChild(rc.line(x2, y1, x1, y2, {
-        stroke: "#ff3d00", strokeWidth: 2, roughness: 1.5,
-      }));
+      discardG.appendChild(
+        rc.line(x1, y1, x2, y2, {
+          stroke: "#ff3d00",
+          strokeWidth: 2,
+          roughness: 1.5,
+        }),
+      );
+      discardG.appendChild(
+        rc.line(x2, y1, x1, y2, {
+          stroke: "#ff3d00",
+          strokeWidth: 2,
+          roughness: 1.5,
+        }),
+      );
     }
 
     // Update refs for dimming effect
@@ -619,7 +704,8 @@
     }
     for (const [key, edge] of edgeElsForDim) {
       if (pendingEdgeKeys.has(key)) continue; // don't touch edges mid-reveal
-      const dim = connected && !connected.has(edge.from) && !connected.has(edge.to);
+      const dim =
+        connected && !connected.has(edge.from) && !connected.has(edge.to);
       edge.el.style.opacity = dim ? "0.1" : "1";
     }
   });
@@ -640,7 +726,8 @@
       <div class="chat-log" bind:this={chatLog}>
         {#each messages as msg, i}
           <div class="chat-msg chat-msg--{msg.role}">
-            <span class="chat-role">{msg.role === "user" ? "you" : "qwen"}</span>
+            <span class="chat-role">{msg.role === "user" ? "you" : "qwen"}</span
+            >
             {#if msg.role === "assistant"}
               <span class="chat-text">{@html marked(msg.content)}</span>
             {:else}
@@ -652,7 +739,9 @@
           </div>
         {/each}
         {#if messages.length === 0}
-          <p class="chat-empty">Ask a question to explore your knowledge graph</p>
+          <p class="chat-empty">
+            Ask a question to explore your knowledge graph
+          </p>
         {/if}
       </div>
       <div class="chat-input-bar">
@@ -663,7 +752,10 @@
           placeholder="explore your knowledge..."
           disabled={isStreaming}
         />
-        <button onclick={sendMessage} disabled={isStreaming || !inputText.trim()}>
+        <button
+          onclick={sendMessage}
+          disabled={isStreaming || !inputText.trim()}
+        >
           &rarr;
         </button>
       </div>
@@ -673,7 +765,11 @@
       {#if layoutResult.nodes.length === 0}
         <p class="graph-empty">Ask a question to start exploring</p>
       {:else}
-        <svg bind:this={svgEl} class="graph-svg" xmlns="http://www.w3.org/2000/svg">
+        <svg
+          bind:this={svgEl}
+          class="graph-svg"
+          xmlns="http://www.w3.org/2000/svg"
+        >
           <g class="graph-edges"></g>
           <g class="graph-nodes"></g>
           <g class="graph-discards"></g>
@@ -692,7 +788,8 @@
                   aria-label={node.label}
                   onmouseenter={() => (hoveredNode = node.id)}
                   onmouseleave={() => (hoveredNode = null)}
-                  onclick={() => (selectedNode = selectedNode === node.id ? null : node.id)}
+                  onclick={() =>
+                    (selectedNode = selectedNode === node.id ? null : node.id)}
                 />
               {/if}
             {/each}
@@ -703,11 +800,7 @@
   </div>
 
   {#if selectedNode}
-    <div
-      class="note-drawer"
-      role="complementary"
-      aria-label="Note details"
-    >
+    <div class="note-drawer" role="complementary" aria-label="Note details">
       <button class="drawer-close" onclick={() => (selectedNode = null)}>
         &times;
       </button>
@@ -716,7 +809,11 @@
       {:else if drawerNote}
         <h2 class="drawer-title">{drawerNote.title}</h2>
         <div class="drawer-meta">
-          <span class="drawer-type" style="background: {TYPE_COLORS[drawerNote.type]?.border || '#ffd54f'}">{drawerNote.type}</span>
+          <span
+            class="drawer-type"
+            style="background: {TYPE_COLORS[drawerNote.type]?.border ||
+              '#ffd54f'}">{drawerNote.type}</span
+          >
           {#each drawerNote.tags || [] as tag}
             <span class="drawer-tag">{tag}</span>
           {/each}
@@ -729,8 +826,12 @@
             <h3 class="drawer-edges-title">EDGES</h3>
             {#each drawerNote.edges as edge}
               <div class="drawer-edge">
-                <span class="drawer-edge-type">{edge.edge_type || edge.kind || "link"}</span>
-                <span class="drawer-edge-target">{edge.target_title || edge.target_id}</span>
+                <span class="drawer-edge-type"
+                  >{edge.edge_type || edge.kind || "link"}</span
+                >
+                <span class="drawer-edge-target"
+                  >{edge.target_title || edge.target_id}</span
+                >
               </div>
             {/each}
           </div>
@@ -933,16 +1034,30 @@
   }
   /* Pencil→ink draw animation keyframes (global — targets dynamic SVG elements) */
   @keyframes -global-edgeDraw {
-    to { stroke-dashoffset: 0; }
+    to {
+      stroke-dashoffset: 0;
+    }
   }
   @keyframes -global-nodeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
   @keyframes -global-textJot {
-    0% { opacity: 0; transform: translate(-1px, 0.5px); }
-    40% { opacity: 0.85; }
-    100% { opacity: 1; transform: translate(0, 0); }
+    0% {
+      opacity: 0;
+      transform: translate(-1px, 0.5px);
+    }
+    40% {
+      opacity: 0.85;
+    }
+    100% {
+      opacity: 1;
+      transform: translate(0, 0);
+    }
   }
   .note-drawer {
     position: fixed;

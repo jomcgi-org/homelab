@@ -25,8 +25,10 @@
     const out = [];
     for (const node of nodes) {
       const top = topName ?? node.name;
-      if (node.slug) out.push({ slug: node.slug, title: node.title, group: top });
-      if (node.children.length) out.push(...flattenProjects(node.children, top));
+      if (node.slug)
+        out.push({ slug: node.slug, title: node.title, group: top });
+      if (node.children.length)
+        out.push(...flattenProjects(node.children, top));
     }
     return out;
   }
@@ -176,90 +178,89 @@
 </header>
 
 <div class="docs-page">
-<div class="docs-layout" class:has-toc={hasToc}>
-  <aside class="docs-side">
-    <nav class="side-nav mono" aria-label="Documentation">
-      <p class="side-head">Projects</p>
-      {@render projectTree(sidebar.projects, "")}
+  <div class="docs-layout" class:has-toc={hasToc}>
+    <aside class="docs-side">
+      <nav class="side-nav mono" aria-label="Documentation">
+        <p class="side-head">Projects</p>
+        {@render projectTree(sidebar.projects, "")}
 
-      <p class="side-head">Decisions</p>
-      <ul class="side-list">
-        {#if sidebar.decisions.index}
-          <li>
-            <a
-              class="side-link"
-              class:active={activeSlug === sidebar.decisions.index.slug}
-              href={`/docs/${sidebar.decisions.index.slug}`}>Index</a
-            >
-          </li>
-        {/if}
-      </ul>
+        <p class="side-head">Decisions</p>
+        <ul class="side-list">
+          {#if sidebar.decisions.index}
+            <li>
+              <a
+                class="side-link"
+                class:active={activeSlug === sidebar.decisions.index.slug}
+                href={`/docs/${sidebar.decisions.index.slug}`}>Index</a
+              >
+            </li>
+          {/if}
+        </ul>
 
-      {#each sidebar.decisions.categories as cat}
-        <button
-          type="button"
-          class="side-cat"
-          aria-expanded={!!openCats[cat.name]}
-          onclick={() => toggleCat(cat.name)}
-        >
-          <svg
-            class="side-cat-chevron"
-            class:open={openCats[cat.name]}
-            width="9"
-            height="9"
-            viewBox="0 0 10 10"
-            aria-hidden="true"
+        {#each sidebar.decisions.categories as cat}
+          <button
+            type="button"
+            class="side-cat"
+            aria-expanded={!!openCats[cat.name]}
+            onclick={() => toggleCat(cat.name)}
           >
-            <path
-              d="M3 1 L7 5 L3 9"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.6"
-              stroke-linecap="square"
-            />
-          </svg>
-          <span class="side-cat-name">{cat.name}</span>
-          <span class="side-cat-count">{cat.items.length}</span>
-        </button>
-        {#if openCats[cat.name]}
-          <ul class="side-list">
-            {#each cat.items as item}
-              <li>
-                <a
-                  class="side-link"
-                  class:active={activeSlug === item.slug}
-                  href={`/docs/${item.slug}`}
-                  title={item.title}>{item.title}</a
-                >
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      {/each}
-    </nav>
-  </aside>
-
-  <main class="docs-main">
-    <div class="docs-card">
-      {@render children()}
-    </div>
-  </main>
-
-  {#if hasToc}
-    <aside class="docs-toc mono" aria-label="On this page">
-      <p class="side-head">On this page</p>
-      <ul class="toc-list">
-        {#each toc as h}
-          <li class:lvl3={h.depth === 3}>
-            <a href={`#${h.id}`}>{h.text}</a>
-          </li>
+            <svg
+              class="side-cat-chevron"
+              class:open={openCats[cat.name]}
+              width="9"
+              height="9"
+              viewBox="0 0 10 10"
+              aria-hidden="true"
+            >
+              <path
+                d="M3 1 L7 5 L3 9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="square"
+              />
+            </svg>
+            <span class="side-cat-name">{cat.name}</span>
+            <span class="side-cat-count">{cat.items.length}</span>
+          </button>
+          {#if openCats[cat.name]}
+            <ul class="side-list">
+              {#each cat.items as item}
+                <li>
+                  <a
+                    class="side-link"
+                    class:active={activeSlug === item.slug}
+                    href={`/docs/${item.slug}`}
+                    title={item.title}>{item.title}</a
+                  >
+                </li>
+              {/each}
+            </ul>
+          {/if}
         {/each}
-      </ul>
+      </nav>
     </aside>
-  {/if}
-</div>
-</div>
 
+    <main class="docs-main">
+      <div class="docs-card">
+        {@render children()}
+      </div>
+    </main>
+
+    {#if hasToc}
+      <aside class="docs-toc mono" aria-label="On this page">
+        <p class="side-head">On this page</p>
+        <ul class="toc-list">
+          {#each toc as h}
+            <li class:lvl3={h.depth === 3}>
+              <a href={`#${h.id}`}>{h.text}</a>
+            </li>
+          {/each}
+        </ul>
+      </aside>
+    {/if}
+  </div>
+</div>
 
 <style>
   /* ── Top bar: apex back link on the left, docs section nav on the right.

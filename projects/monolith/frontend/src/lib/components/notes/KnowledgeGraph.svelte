@@ -858,11 +858,7 @@
 </script>
 
 <div class="stage" bind:this={stage}>
-  <canvas
-    bind:this={canvas}
-    class:panning
-    class:over-node={overNode}
-  ></canvas>
+  <canvas bind:this={canvas} class:panning class:over-node={overNode}></canvas>
 </div>
 
 <style>

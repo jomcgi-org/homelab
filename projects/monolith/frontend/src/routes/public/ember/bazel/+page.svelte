@@ -59,7 +59,8 @@
       const resp = await fetch(`${API}/savings`);
       if (!resp.ok) return;
       const body = await parseJsonSafe(resp);
-      if (body?.total_analysis_s_saved != null) savedS = body.total_analysis_s_saved;
+      if (body?.total_analysis_s_saved != null)
+        savedS = body.total_analysis_s_saved;
     } catch {
       // best-effort: leave the last known value on screen
     }
@@ -193,7 +194,8 @@
         return;
       }
       if (resp.status === 429) {
-        runError = "the demo is busy right now, give it a few seconds and try again";
+        runError =
+          "the demo is busy right now, give it a few seconds and try again";
         return;
       }
       if (!resp.ok) {
@@ -204,7 +206,8 @@
         // or timeout. Pre-submit rejections (bad expression, missing
         // session, rate limit, busy semaphore) are handled below as in-band
         // 200 + {error, ...flag} bodies instead.
-        runError = body?.detail ?? body?.error ?? `query failed (${resp.status})`;
+        runError =
+          body?.detail ?? body?.error ?? `query failed (${resp.status})`;
         return;
       }
       if (body.session_required) {
@@ -266,12 +269,14 @@
 
   // Turnstile widget lifecycle: mirrors EmberConsole's script-load +
   // render-once + remove-on-unmount pattern.
-  const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+  const TURNSTILE_SCRIPT_SRC =
+    "https://challenges.cloudflare.com/turnstile/v0/api.js";
   let widgetEl;
   let widgetId = null;
 
   function renderTurnstileWidget() {
-    if (!window.turnstile || !widgetEl || !turnstileSiteKey || sessionReady) return;
+    if (!window.turnstile || !widgetEl || !turnstileSiteKey || sessionReady)
+      return;
     if (widgetId !== null) return;
     widgetId = window.turnstile.render(widgetEl, {
       sitekey: turnstileSiteKey,
@@ -299,7 +304,9 @@
       renderTurnstileWidget();
       return removeTurnstileWidget;
     }
-    let script = document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+    let script = document.querySelector(
+      `script[src="${TURNSTILE_SCRIPT_SRC}"]`,
+    );
     if (!script) {
       script = document.createElement("script");
       script.src = TURNSTILE_SCRIPT_SRC;
@@ -370,10 +377,14 @@
   let filteredLabelItems = $derived.by(() => {
     const needle = filterText.trim().toLowerCase();
     if (!needle) return labelItems;
-    return labelItems.filter((item) => item.target.toLowerCase().includes(needle));
+    return labelItems.filter((item) =>
+      item.target.toLowerCase().includes(needle),
+    );
   });
 
-  let labelPageCount = $derived(Math.max(1, Math.ceil(filteredLabelItems.length / PAGE_SIZE)));
+  let labelPageCount = $derived(
+    Math.max(1, Math.ceil(filteredLabelItems.length / PAGE_SIZE)),
+  );
 
   let shownLabelPage = $derived(Math.min(labelPage, labelPageCount - 1));
 
@@ -421,8 +432,8 @@
         <a class="inline-link" href="https://github.com/abseil/abseil-cpp"
           >Abseil</a
         >
-        (514 targets) was analyzed once and the warm server snapshotted with
-        Firecracker. Every query below restores a throwaway copy.
+        (514 targets) was analyzed once and the warm server snapshotted with Firecracker.
+        Every query below restores a throwaway copy.
       </p>
     </header>
 
@@ -601,11 +612,17 @@
                 >
                   &#8249;
                 </button>
-                <span class="pager-count">page {shownLabelPage + 1} of {labelPageCount}</span>
+                <span class="pager-count"
+                  >page {shownLabelPage + 1} of {labelPageCount}</span
+                >
                 <button
                   class="pager-btn"
                   type="button"
-                  onclick={() => (labelPage = Math.min(labelPageCount - 1, shownLabelPage + 1))}
+                  onclick={() =>
+                    (labelPage = Math.min(
+                      labelPageCount - 1,
+                      shownLabelPage + 1,
+                    ))}
                   disabled={shownLabelPage >= labelPageCount - 1}
                   aria-label="next page"
                 >

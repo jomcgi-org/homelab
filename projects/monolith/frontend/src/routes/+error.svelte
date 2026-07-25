@@ -17,7 +17,9 @@
   let path = $derived($page.url.pathname);
 
   let eyebrow = $derived(
-    isNotFound ? `ERROR 404 // OFF THE MAP` : `ERROR ${status} // SOMETHING BROKE`,
+    isNotFound
+      ? `ERROR 404 // OFF THE MAP`
+      : `ERROR ${status} // SOMETHING BROKE`,
   );
   let headline = $derived(
     isNotFound ? "you wandered off the map." : "the server hit a rough patch.",
@@ -26,7 +28,7 @@
     isNotFound
       ? "this page never existed, or it got refactored into the void. either way, there's nothing docked here."
       : ($page.error?.message ??
-        "an unexpected error knocked this page over. it's not you, it's the cluster."),
+          "an unexpected error knocked this page over. it's not you, it's the cluster."),
   );
 </script>
 
@@ -35,7 +37,11 @@
   <meta name="robots" content="noindex" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+  <link
+    rel="preconnect"
+    href="https://fonts.gstatic.com"
+    crossorigin="anonymous"
+  />
   <link
     href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
     rel="stylesheet"
@@ -44,7 +50,12 @@
 
 <main class="nf">
   <!-- decorative brutalist shapes, same flat-ink language as the homepage hero -->
-  <svg class="deco deco-star" width="56" height="56" viewBox="0 0 40 40" aria-hidden="true"
+  <svg
+    class="deco deco-star"
+    width="56"
+    height="56"
+    viewBox="0 0 40 40"
+    aria-hidden="true"
     ><path
       d="M20,2 L22.5,14 L34,10 L26,20 L34,30 L22.5,26 L20,38 L17.5,26 L6,30 L14,20 L6,10 L17.5,14 Z"
       fill="var(--blue)"
@@ -53,13 +64,40 @@
       stroke-linejoin="round"
     /></svg
   >
-  <svg class="deco deco-diamond" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"
-    ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
+  <svg
+    class="deco deco-diamond"
+    width="22"
+    height="22"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+    ><path
+      d="M12,2 L22,12 L12,22 L2,12 Z"
+      fill="none"
+      stroke="var(--ink)"
+      stroke-width="2"
+    /></svg
   >
-  <svg class="deco deco-circle" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"
-    ><circle cx="12" cy="12" r="10" fill="var(--coral)" stroke="var(--ink)" stroke-width="2" /></svg
+  <svg
+    class="deco deco-circle"
+    width="18"
+    height="18"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+    ><circle
+      cx="12"
+      cy="12"
+      r="10"
+      fill="var(--coral)"
+      stroke="var(--ink)"
+      stroke-width="2"
+    /></svg
   >
-  <svg class="deco deco-squiggle" width="80" height="24" viewBox="0 0 80 24" aria-hidden="true"
+  <svg
+    class="deco deco-squiggle"
+    width="80"
+    height="24"
+    viewBox="0 0 80 24"
+    aria-hidden="true"
     ><path
       d="M2,12 Q 10,2 18,12 T 34,12 T 50,12 T 66,12 T 78,12"
       fill="none"
@@ -76,7 +114,12 @@
          and ends at an X, evoking a map track that leads nowhere. -->
     <div class="nf-code-wrap">
       <span class="display nf-code">{status}</span>
-      <svg class="nf-track" viewBox="0 0 400 80" aria-hidden="true" preserveAspectRatio="none">
+      <svg
+        class="nf-track"
+        viewBox="0 0 400 80"
+        aria-hidden="true"
+        preserveAspectRatio="none"
+      >
         <path
           d="M8,64 Q 90,12 170,52 T 330,40"
           fill="none"
@@ -98,7 +141,9 @@
     <p class="nf-blurb">{blurb}</p>
 
     {#if isNotFound}
-      <p class="mono nf-path">you tried: <span class="nf-path-val">{path}</span></p>
+      <p class="mono nf-path">
+        you tried: <span class="nf-path-val">{path}</span>
+      </p>
     {/if}
 
     <div class="nf-cta">

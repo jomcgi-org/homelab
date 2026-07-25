@@ -81,9 +81,10 @@ code_changed() {
 }
 
 # ---------- lint (file-selective format) ----------
-# Extension list is what standalone prettier/ruff/etc. can format without extra
-# plugins. prettier.config.cjs has no svelte plugin, so *.svelte is intentionally
-# omitted (CI format_multirun uses the same prettier binary).
+# Extension list matches what PATH prettier/ruff/etc. can format. *.svelte needs
+# prettier-plugin-svelte (wired in bazel/tools/format/prettier.config.cjs); pass
+# --config so PATH prettier loads the plugin the same way the Bazel binary does.
+PRETTIER_CONFIG="${PRETTIER_CONFIG:-bazel/tools/format/prettier.config.cjs}"
 cmd_lint() {
 	local -a files=()
 	local f
@@ -105,7 +106,7 @@ cmd_lint() {
 		BUILD | BUILD.bazel | *.bzl | WORKSPACE | WORKSPACE.bazel | */BUILD | */BUILD.bazel)
 			star+=("$f")
 			;;
-		*.js | *.jsx | *.ts | *.tsx | *.mjs | *.cjs | *.json | *.yaml | *.yml | *.md | *.css | *.html)
+		*.js | *.jsx | *.ts | *.tsx | *.mjs | *.cjs | *.json | *.yaml | *.yml | *.md | *.css | *.html | *.svelte)
 			pretty+=("$f")
 			;;
 		esac
@@ -135,7 +136,7 @@ cmd_lint() {
 	}
 	[[ ${#pretty[@]} -gt 0 ]] && {
 		dim "  prettier (${#pretty[@]})"
-		prettier --write "${pretty[@]}" >/dev/null
+		prettier --config "$PRETTIER_CONFIG" --write "${pretty[@]}" >/dev/null
 	}
 	if [[ ${#star[@]} -gt 0 ]]; then
 		if command -v buildifier >/dev/null 2>&1; then

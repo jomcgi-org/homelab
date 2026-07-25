@@ -196,7 +196,9 @@
       role="combobox"
       aria-expanded={open}
       aria-controls="world-search-listbox"
-      aria-activedescendant={open && activeIdx >= 0 ? optionId(activeIdx) : null}
+      aria-activedescendant={open && activeIdx >= 0
+        ? optionId(activeIdx)
+        : null}
       aria-autocomplete="list"
       aria-label="Search entities"
       bind:value={q}
@@ -214,7 +216,9 @@
         aria-label="Search results"
       >
         {#each groups as g (g.entity_type)}
-          <li class="group-head" role="presentation">{typeLabel(g.entity_type)}</li>
+          <li class="group-head" role="presentation">
+            {typeLabel(g.entity_type)}
+          </li>
           {#each g.rows as it (it.id)}
             {@const idx = flat.indexOf(it)}
             <li
@@ -252,7 +256,8 @@
         aria-pressed={type === t.value}
         onclick={() => selectChip(t.value)}
       >
-        <span class="sw" style={`background: var(--grim-type-${t.value})`}></span>
+        <span class="sw" style={`background: var(--grim-type-${t.value})`}
+        ></span>
         {t.label}
       </button>
     {/each}

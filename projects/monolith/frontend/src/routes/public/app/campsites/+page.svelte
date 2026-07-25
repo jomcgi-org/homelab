@@ -123,8 +123,18 @@
   // Date formatting.
 
   const MONTHS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
   ];
   const SHORT_DAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
@@ -275,7 +285,11 @@
   />
 </svelte:head>
 
-<div class="campsites-page" class:has-selection={!!selectedPark} class:list-open={listOpen}>
+<div
+  class="campsites-page"
+  class:has-selection={!!selectedPark}
+  class:list-open={listOpen}
+>
   <!-- The visible heading is the breadcrumb chip; keep a real (hidden) h1 for
        SEO + a11y. -->
   <h1 class="sr-only">BC Parks campsites, open sites and clear-sky weather</h1>
@@ -286,7 +300,8 @@
   <div class="crumb-card">
     <nav class="crumb" aria-label="Breadcrumb">
       <a class="crumb-home" href="https://jomcgi.dev/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
+        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+        ></a
       >
       <span class="crumb-sep">/</span>
       <span class="crumb-name">campsites</span>
@@ -297,8 +312,8 @@
       >
     </nav>
     <p class="crumb-note">
-      {#if generatedAt}As of {fmtGeneratedAt(generatedAt)}. {/if}Green = open AND
-      clear skies.
+      {#if generatedAt}As of {fmtGeneratedAt(generatedAt)}.
+      {/if}Green = open AND clear skies.
     </p>
   </div>
 
@@ -447,10 +462,7 @@
 
   <!-- Detail panel: bottom sheet for the selected park's 14-day forecast. -->
   {#if selectedPark}
-    <section
-      class="detail"
-      aria-label="{selectedPark.name} 14-day forecast"
-    >
+    <section class="detail" aria-label="{selectedPark.name} 14-day forecast">
       <button
         type="button"
         class="detail-close"
@@ -500,9 +512,7 @@
                   class="day-rain"
                   class:day-rain-wet={day.precip > 0}
                   style={day.precip > 0 ? `color: ${VIZ_RAIN}` : undefined}
-                  >{day.precip > 0
-                    ? `${day.precip.toFixed(1)}mm`
-                    : "·"}</span
+                  >{day.precip > 0 ? `${day.precip.toFixed(1)}mm` : "·"}</span
                 >
               {/if}
             </li>

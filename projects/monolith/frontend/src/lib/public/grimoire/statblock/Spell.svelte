@@ -1,12 +1,16 @@
 <script>
-  import { normalizeBlocks, scalarToText } from "$lib/public/grimoire/format.js";
+  import {
+    normalizeBlocks,
+    scalarToText,
+  } from "$lib/public/grimoire/format.js";
 
   let { data } = $props();
 
   const strap = $derived(
     data.level === 0 || data.level === "0"
       ? [data.school, "cantrip"].filter(Boolean).join(" ")
-      : ["Level", data.level, data.school].filter((x) => x != null && x !== "")
+      : ["Level", data.level, data.school]
+          .filter((x) => x != null && x !== "")
           .join(" "),
   );
 

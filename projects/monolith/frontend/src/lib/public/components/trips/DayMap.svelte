@@ -237,7 +237,11 @@
             type: "line",
             source: "route",
             layout: { "line-join": "round", "line-cap": "round" },
-            paint: { "line-color": "#1a1a1a", "line-width": 6, "line-opacity": 1 },
+            paint: {
+              "line-color": "#1a1a1a",
+              "line-width": 6,
+              "line-opacity": 1,
+            },
           });
           // Thin real-day-colour core down the centre of the ink casing.
           map.addLayer({
@@ -257,7 +261,11 @@
             type: "line",
             source: "route",
             layout: { "line-join": "round", "line-cap": "round" },
-            paint: { "line-color": "transparent", "line-width": 20, "line-opacity": 0 },
+            paint: {
+              "line-color": "transparent",
+              "line-width": 20,
+              "line-opacity": 0,
+            },
           });
 
           if (onLocationClick) {

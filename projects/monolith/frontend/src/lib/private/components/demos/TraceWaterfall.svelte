@@ -50,7 +50,11 @@
   // teardown / bundle cleanup): real work, but off the caller's critical path,
   // so we dim them and tag them rather than let them read as latency the caller
   // waited on.
-  const OFF_PATH_SPANS = new Set(["guest_teardown", "vm_release", "bundle_cleanup"]);
+  const OFF_PATH_SPANS = new Set([
+    "guest_teardown",
+    "vm_release",
+    "bundle_cleanup",
+  ]);
 
   function isOffPath(name) {
     return OFF_PATH_SPANS.has(name);
@@ -97,7 +101,10 @@
       consecutiveErrors = 0;
     } catch (e) {
       consecutiveErrors += 1;
-      if (spans.length === 0 && consecutiveErrors >= MAX_CONSECUTIVE_ERRORS_WHEN_EMPTY) {
+      if (
+        spans.length === 0 &&
+        consecutiveErrors >= MAX_CONSECUTIVE_ERRORS_WHEN_EMPTY
+      ) {
         fetchError = e?.message ?? String(e);
         status = "error";
         stopPolling();
@@ -179,7 +186,10 @@
   }
 
   function timelineEndFor(set) {
-    return Math.max(1, ...set.map((s) => (s.start_ms ?? 0) + (s.duration_ms ?? 0)));
+    return Math.max(
+      1,
+      ...set.map((s) => (s.start_ms ?? 0) + (s.duration_ms ?? 0)),
+    );
   }
 
   // Bar geometry against a set's OWN timelineEnd, so the correlated goose set
@@ -191,7 +201,9 @@
   }
 
   let depthById = $derived(depthMapFor(spans));
-  let sortedSpans = $derived([...spans].sort((a, b) => a.start_ms - b.start_ms));
+  let sortedSpans = $derived(
+    [...spans].sort((a, b) => a.start_ms - b.start_ms),
+  );
   let timelineEnd = $derived(timelineEndFor(spans));
 
   let correlatedDepthById = $derived(depthMapFor(correlated));
@@ -274,7 +286,8 @@
   {:else}
     <div class="axis" aria-hidden="true">
       {#each axisTicks as tick}
-        <span class="axis-tick" style={`left: ${tick.pct}%;`}>{tick.label}</span>
+        <span class="axis-tick" style={`left: ${tick.pct}%;`}>{tick.label}</span
+        >
       {/each}
     </div>
 
@@ -287,7 +300,9 @@
         >
           <span class="row-label" title={`${span.name} · ${span.service}`}>
             {span.name}
-            {#if isOffPath(span.name)}<span class="row-tag">off critical path</span>{/if}
+            {#if isOffPath(span.name)}<span class="row-tag"
+                >off critical path</span
+              >{/if}
             <span class="row-service">{span.service}</span>
           </span>
           <div class="row-track">
@@ -319,8 +334,8 @@
       </div>
       <p class="correlated-note">
         The agent's own spans, correlated to this run by trace id. Goose runs in
-        its own trace (it does not honor an inbound parent context), so these are
-        shown on their own relative timeline rather than nested above.
+        its own trace (it does not honor an inbound parent context), so these
+        are shown on their own relative timeline rather than nested above.
       </p>
       <div class="rows">
         {#each sortedCorrelated as span (span.span_id)}

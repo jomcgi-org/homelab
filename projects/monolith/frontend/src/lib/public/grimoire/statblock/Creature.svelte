@@ -29,20 +29,28 @@
 
   <dl class="topline">
     {#if data.ac != null}
-      <div><dt>Armor Class</dt>
-        <dd>{data.ac}</dd></div>
+      <div>
+        <dt>Armor Class</dt>
+        <dd>{data.ac}</dd>
+      </div>
     {/if}
     {#if data.hp_avg != null}
-      <div><dt>Hit Points</dt>
-        <dd>{data.hp_avg}</dd></div>
+      <div>
+        <dt>Hit Points</dt>
+        <dd>{data.hp_avg}</dd>
+      </div>
     {/if}
     {#if speed}
-      <div><dt>Speed</dt>
-        <dd>{speed}</dd></div>
+      <div>
+        <dt>Speed</dt>
+        <dd>{speed}</dd>
+      </div>
     {/if}
     {#if data.cr != null}
-      <div><dt>Challenge</dt>
-        <dd>{data.cr}</dd></div>
+      <div>
+        <dt>Challenge</dt>
+        <dd>{data.cr}</dd>
+      </div>
     {/if}
   </dl>
 

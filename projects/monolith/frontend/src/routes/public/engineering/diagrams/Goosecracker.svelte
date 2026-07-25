@@ -24,10 +24,13 @@
   >
     <DBox role="process" sub="CoW rootfs {goosecrackerRootfsMs}ms">Boot</DBox>
     <DBox role="process" sub="FC restore {goosecrackerBootMs}ms">microVM</DBox>
-    <DBox role="process" sub="init ~{goosecrackerGuestInitMs}ms">Guest PID 1</DBox>
+    <DBox role="process" sub="init ~{goosecrackerGuestInitMs}ms"
+      >Guest PID 1</DBox
+    >
   </DGroup>
   <DArrow label="goose init {goosecrackerAgentUpMs}ms" />
-  <DBox role="process" sub="~{agentFirstModelCallMs}ms to first RPC">Agent</DBox>
+  <DBox role="process" sub="~{agentFirstModelCallMs}ms to first RPC">Agent</DBox
+  >
   <DArrow label="builds + publishes" />
   <DGroup label="Artifact" stack>
     <DBox role="output" sub="self-contained HTML">Artifact</DBox>

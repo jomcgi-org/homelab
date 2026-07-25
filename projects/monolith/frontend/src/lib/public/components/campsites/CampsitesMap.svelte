@@ -37,14 +37,21 @@
     if (!legendOpen) return;
     function onDocPointerdown(e) {
       if (
-        legendEl && !legendEl.contains(e.target) &&
-        toggleEl && !toggleEl.contains(e.target)
+        legendEl &&
+        !legendEl.contains(e.target) &&
+        toggleEl &&
+        !toggleEl.contains(e.target)
       ) {
         legendOpen = false;
       }
     }
-    document.addEventListener("pointerdown", onDocPointerdown, { capture: true });
-    return () => document.removeEventListener("pointerdown", onDocPointerdown, { capture: true });
+    document.addEventListener("pointerdown", onDocPointerdown, {
+      capture: true,
+    });
+    return () =>
+      document.removeEventListener("pointerdown", onDocPointerdown, {
+        capture: true,
+      });
   });
 
   // Data-viz ramp colors: outside the design-token system (intentionally, same
@@ -341,12 +348,7 @@
                 ["interpolate", ["linear"], ["get", "good_days"], 0, 28, 7, 38],
               ],
             ],
-            "circle-stroke-width": [
-              "case",
-              ["==", ["get", "sel"], 1],
-              3,
-              1.5,
-            ],
+            "circle-stroke-width": ["case", ["==", ["get", "sel"], 1], 3, 1.5],
             "circle-stroke-color": STROKE,
             "circle-opacity": ["case", ["==", ["get", "sel"], 1], 1, 0.85],
           },
@@ -469,8 +471,8 @@
     aria-expanded={legendOpen}
     aria-controls="campsites-legend"
     onclick={() => (legendOpen = !legendOpen)}
-    bind:this={toggleEl}
-  >{legendOpen ? "Close" : "Legend"}</button>
+    bind:this={toggleEl}>{legendOpen ? "Close" : "Legend"}</button
+  >
 </div>
 
 <style>

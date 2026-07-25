@@ -21,9 +21,7 @@
   // REVIEW only renders on the private tier — the route exists only at
   // routes/private/review/ and showing the link on public.jomcgi.dev
   // would leak the existence of an internal surface.
-  const privateItems = [
-    { slug: "review", label: "REVIEW", href: "/review" },
-  ];
+  const privateItems = [{ slug: "review", label: "REVIEW", href: "/review" }];
 
   const items = $derived(
     isPrivate ? [...publicItems, ...privateItems] : publicItems,
@@ -180,7 +178,13 @@
                             stroke-linecap="round"
                             stroke-dasharray="0.2 3.4"
                           />
-                          <circle cx="5" cy="20" r="1.9" fill="currentColor" stroke="none" />
+                          <circle
+                            cx="5"
+                            cy="20"
+                            r="1.9"
+                            fill="currentColor"
+                            stroke="none"
+                          />
                           <path
                             d="M17 3 C 14.5 3 13 4.8 13 6.8 C 13 9.6 17 12.5 17 12.5 C 17 12.5 21 9.6 21 6.8 C 21 4.8 19.5 3 17 3 Z"
                             fill="none"
@@ -188,7 +192,13 @@
                             stroke-width="1.8"
                             stroke-linejoin="round"
                           />
-                          <circle cx="17" cy="6.8" r="1.4" fill="currentColor" stroke="none" />
+                          <circle
+                            cx="17"
+                            cy="6.8"
+                            r="1.4"
+                            fill="currentColor"
+                            stroke="none"
+                          />
                         </svg>
                       {:else if app.slug === "hikes"}
                         <svg width="22" height="22" viewBox="0 0 24 24">

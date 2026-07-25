@@ -210,9 +210,9 @@
         <a class="anchor" href="#classes">Three kinds of workload</a>
       </h2>
       <p class="body">
-        Everything Ember runs is declared as a Kubernetes custom resource in
-        one of three classes, and a composite workload groups several of them
-        into one unit that wakes together. What separates the classes:
+        Everything Ember runs is declared as a Kubernetes custom resource in one
+        of three classes, and a composite workload groups several of them into
+        one unit that wakes together. What separates the classes:
         <b>how much of the machine the guest is allowed to touch</b>.
       </p>
       <dl class="classes">
@@ -220,18 +220,18 @@
           <dt>task<small>run once</small></dt>
           <dd>
             One-shot execution in a fresh or snapshot-restored VM.
-            <b>No network device at all</b>: the guest speaks only vsock to
-            the daemon, then the VM is destroyed.
+            <b>No network device at all</b>: the guest speaks only vsock to the
+            daemon, then the VM is destroyed.
           </dd>
         </div>
         <div class="class">
           <dt>session<small>sleep &amp; wake</small></dt>
           <dd>
-            A stateful sandbox that survives across invocations. Idle
-            sessions are <b>banked</b> (snapshotted to disk) and
-            <b>relit</b> (restored) on the next call, with memory, processes
-            and open files intact. Banked snapshots are offloaded to S3; a
-            session survives the node it slept on.
+            A stateful sandbox that survives across invocations. Idle sessions
+            are <b>banked</b> (snapshotted to disk) and
+            <b>relit</b> (restored) on the next call, with memory, processes and open
+            files intact. Banked snapshots are offloaded to S3; a session survives
+            the node it slept on.
           </dd>
         </div>
         <div class="class">
@@ -239,8 +239,9 @@
           <dd>
             A warm HTTP endpoint. The guest answers TCP over a tap NIC and a
             per-node Envoy routes to it.
-            <b>The control plane programs that Envoy and stays off the
-              request path</b
+            <b
+              >The control plane programs that Envoy and stays off the request
+              path</b
             >.
           </dd>
         </div>
@@ -252,23 +253,24 @@
         <a class="anchor" href="#uses">What that lets you run</a>
       </h2>
       <p class="body">
-        All four run on this cluster today. The design assumption behind each
-        of them: <b>the guest is hostile</b>.
+        All four run on this cluster today. The design assumption behind each of
+        them: <b>the guest is hostile</b>.
       </p>
       <dl class="classes">
         <div class="class">
           <dt>an agent's sandbox<small>session</small></dt>
           <dd>
             Each AI agent gets its own machine to make a mess in: shell,
-            filesystem, packages. Banked between turns, relit
-            mid-conversation, <b>destroyed without ceremony</b>.
+            filesystem, packages. Banked between turns, relit mid-conversation, <b
+              >destroyed without ceremony</b
+            >.
           </dd>
         </div>
         <div class="class">
           <dt>a database nobody queries at 3am<small>session</small></dt>
           <dd>
-            Postgres banked to disk the moment it goes idle, woken by the
-            next connection. <b>Zero compute while asleep.</b>
+            Postgres banked to disk the moment it goes idle, woken by the next
+            connection. <b>Zero compute while asleep.</b>
             <a class="sig" href="/ember/postgres">see it live →</a>
           </dd>
         </div>
@@ -284,8 +286,8 @@
           <dt>a public function, served warm<small>serving</small></dt>
           <dd>
             An image renderer answering real internet traffic from a warm
-            microVM, <b>rate-limited and quota-capped</b> so untrusted
-            traffic cannot spend more than it is allowed to.
+            microVM, <b>rate-limited and quota-capped</b> so untrusted traffic cannot
+            spend more than it is allowed to.
           </dd>
         </div>
       </dl>
@@ -406,7 +408,8 @@
           >
 
           <rect x="436" y="136" width="130" height="40" rx="8" class="box" />
-          <text x="501" y="154" text-anchor="middle" class="node-label">S3</text>
+          <text x="501" y="154" text-anchor="middle" class="node-label">S3</text
+          >
           <text x="501" y="168" text-anchor="middle" class="node-sub"
             >snapshots + images</text
           >
@@ -425,7 +428,8 @@
           >
 
           <rect x="622" y="196" width="72" height="46" rx="8" class="box" />
-          <text x="658" y="216" text-anchor="middle" class="node-label">VM</text>
+          <text x="658" y="216" text-anchor="middle" class="node-label">VM</text
+          >
           <text x="658" y="231" text-anchor="middle" class="node-sub"
             >tap NIC</text
           >
@@ -465,20 +469,18 @@
         </svg>
         <div class="legend">
           <span
-            ><i class="swatch sw-control"></i> control path (tasks &amp;
-            sessions)</span
+            ><i class="swatch sw-control"></i> control path (tasks &amp; sessions)</span
           >
           <span><i class="swatch sw-data"></i> serving data path</span>
-          <span
-            ><i class="swatch sw-xds"></i> configuration, ahead of time</span
+          <span><i class="swatch sw-xds"></i> configuration, ahead of time</span
           >
         </div>
       </div>
       <p class="arch-punch">
-        <b>Serving requests never touch the control plane.</b> The edge routes
-        to a node-local Envoy the control plane has already programmed, and
-        the kernel DNATs the connection into the VM. The control plane can
-        restart mid-request; serving traffic notices nothing.
+        <b>Serving requests never touch the control plane.</b> The edge routes to
+        a node-local Envoy the control plane has already programmed, and the kernel
+        DNATs the connection into the VM. The control plane can restart mid-request;
+        serving traffic notices nothing.
       </p>
     </section>
 
@@ -491,18 +493,16 @@
           reach exactly one thing: the daemon, over vsock.
         </p>
         <p>
-          <b>Quotas fail closed.</b> A principal with quota 0 is hard-stopped
-          at submit.
+          <b>Quotas fail closed.</b> A principal with quota 0 is hard-stopped at submit.
         </p>
         <p>
-          Metering rides the operation itself; <b
-            >a crash cannot lose usage</b
-          >. Every task counts against its quota on success and on failure.
+          Metering rides the operation itself; <b>a crash cannot lose usage</b>.
+          Every task counts against its quota on success and on failure.
         </p>
         <p>
-          The one public route is scoped at <b>three independent layers</b>:
-          the edge pins host and path, Envoy exact-matches the internal
-          authority, and the guest shim reserves its own control prefix.
+          The one public route is scoped at <b>three independent layers</b>: the
+          edge pins host and path, Envoy exact-matches the internal authority,
+          and the guest shim reserves its own control prefix.
         </p>
       </div>
     </section>
@@ -520,9 +520,8 @@
           <span class="k">live demo</span>
           <h3>A Postgres that sleeps</h3>
           <p>
-            A real database banked to disk. Click connect, watch the
-            stopwatch: snapshot restore, disk to answering queries, best wake
-            78&nbsp;ms.
+            A real database banked to disk. Click connect, watch the stopwatch:
+            snapshot restore, disk to answering queries, best wake 78&nbsp;ms.
           </p>
           <span class="go">ember/postgres</span>
         </a>
@@ -530,8 +529,8 @@
           <span class="k">live demo</span>
           <h3>Query a frozen Bazel brain</h3>
           <p>
-            Each query runs in a disposable clone of a snapshotted warm
-            Bazel server.
+            Each query runs in a disposable clone of a snapshotted warm Bazel
+            server.
           </p>
           <span class="go">ember/bazel</span>
         </a>
@@ -548,8 +547,8 @@
           <span class="k">workload demo</span>
           <h3>Semgrep</h3>
           <p>
-            The CI security scanner, warm in a microVM, scanning your snippet
-            in about a second.
+            The CI security scanner, warm in a microVM, scanning your snippet in
+            about a second.
           </p>
           <span class="go">ember/semgrep</span>
         </a>
@@ -563,8 +562,7 @@
       <div class="roadmap">
         {#each MILESTONES as m (m.name)}
           <div class="milestone">
-            <span class="cb" class:todo={!m.done}
-              >{m.done ? "[x]" : "[ ]"}</span
+            <span class="cb" class:todo={!m.done}>{m.done ? "[x]" : "[ ]"}</span
             >
             <span class="rname">{m.name}</span>
             <p class="rdesc">{m.desc}</p>

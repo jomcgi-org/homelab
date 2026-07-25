@@ -61,7 +61,8 @@
   <header class="app-header">
     <nav class="crumb" aria-label="Breadcrumb">
       <a class="crumb-home" href="https://jomcgi.dev/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
+        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+        ></a
       >
       <span class="crumb-sep">/</span>
       <span class="crumb-name">shared chat</span>
@@ -74,7 +75,11 @@
       <span class="panel-readonly">READ-ONLY</span>
       <span class="panel-spacer"></span>
       {#if canFork && !forking}
-        <button type="button" class="bar-btn bar-btn-primary" onclick={startFork}>
+        <button
+          type="button"
+          class="bar-btn bar-btn-primary"
+          onclick={startFork}
+        >
           CONTINUE THIS CHAT
         </button>
       {/if}
@@ -101,7 +106,9 @@
                 <div class="turn-touched">
                   <span class="turn-touched-label">GROUNDED IN</span>
                   {#each m.touched as n}
-                    <span class="touched-chip">{n.title || "untitled note"}</span>
+                    <span class="touched-chip"
+                      >{n.title || "untitled note"}</span
+                    >
                   {/each}
                 </div>
               {/if}
@@ -129,10 +136,12 @@
 
     <div class="share-foot">
       <p class="share-foot-copy">
-        This is a read-only snapshot of a conversation with an open model running
-        on my homelab cluster.
+        This is a read-only snapshot of a conversation with an open model
+        running on my homelab cluster.
       </p>
-      <a class="share-cta" href="/public/app/notes">Start your own chat &rarr;</a>
+      <a class="share-cta" href="/public/app/notes"
+        >Start your own chat &rarr;</a
+      >
     </div>
   </section>
 </main>
