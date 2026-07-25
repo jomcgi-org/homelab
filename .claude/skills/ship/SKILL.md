@@ -26,8 +26,8 @@ ledger. It dispatches implementation bulk to Codex (Luna preferred) via
 Do **not** open bare `bazel` on the Mac. Do **not** treat PR CI as the first
 test run: run `ci` (or `ci test`) before push so Workflows mostly cache-hit.
 
-Full routing detail: `.claude/CLAUDE.md` Model Routing. Dispatch detail:
-`codex-implement` skill.
+Full routing detail: `docs/reference/model-routing.md`. Dispatch detail:
+`codex-implement` skill. Branch, PR, and merge mechanics: `pr-workflow` skill.
 
 ## Phase 0 — Clarify the direction (always first)
 

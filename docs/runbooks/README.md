@@ -2,12 +2,12 @@
 
 Operational and agent procedures that are **explicit-only**.
 
-Unlike `.claude/skills/` (tiny auto-matched set: `ship`, `adr`, `stpa`,
-`codex-implement`), runbooks are **not** selected by description matching.
-Open only when:
+Unlike `.claude/skills/` (small auto-matched set: `ship`, `adr`, `stpa`,
+`codex-implement`, `pr-workflow`, `ci-triage`), runbooks are **not** selected by
+description matching. Open only when:
 
 1. Joe asks for that procedure by name or intent, or
-2. A Context Loading Rule in `.claude/CLAUDE.md` names the file, or
+2. A "Where to look next" row in `.claude/CLAUDE.md` names the file, or
 3. A routine under `projects/monolith/claude_routines/` points at the path.
 
 ## Index
