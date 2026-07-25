@@ -44,15 +44,44 @@ overrides the per-task review steps in
 `superpowers:subagent-driven-development`, which was calibrated for a more
 autonomous setting.
 
-Implementation bulk goes to **Codex Luna** via the `codex-implement` skill, which
-bills OpenAI rather than the Claude weekly limit. On exit 42 (quota exhausted),
-send one `warn` notify and fall back to Sonnet, with no retry loop and no second
-notify. Keep Opus on the review and on anything only a slow CI round-trip would
-catch. Fable is a last resort for a genuine wall, not an upgrade path.
-
 If you end a turn blocked on a decision only Joe can make and he may be away,
 send one `monolith-monolith-agent-notify` line saying what you need. Main loop
 only: subagents report blockers to their dispatcher, never to Discord.
+
+## Model routing
+
+The weekly subscription is the binding constraint, so routing is not a
+preference, it is how the budget lasts. Three lanes:
+
+- **Opus orchestrates.** Main loop, planning, code review, and the slices only a
+  slow CI round-trip would catch: deep Helm, Bazel/apko, RBAC verbs, migration
+  ordering, cross-service wiring. Opus reviews every PR, and the reviewer never
+  gets downgraded to save quota.
+- **Luna implements, and that should be around 99% of implementation.** Dispatch
+  through the `codex-implement` skill (`bazel/tools/codex/dispatch.sh`), which
+  bills OpenAI instead of the Claude weekly limit. Terra only after Luna has
+  actually failed on that task. Sonnet only when Codex is unavailable or the work
+  genuinely needs Claude-side skills, MCP, or session context. On exit 42 (quota
+  exhausted), send one `warn` notify and fall back to Sonnet: no retry loop, no
+  second notify.
+- **Fable is a last-resort escalation for context window, not for quality.**
+  Open it when Opus has stalled and the blocker is running out of context, not
+  when the problem is merely hard.
+
+**If you are about to write implementation code in the main loop, that is the
+signal to dispatch instead.** Writing it yourself is the default failure mode,
+and it is the expensive one.
+
+Context is the other half of the same budget:
+
+- Search with Explore (Haiku). `general-purpose` inherits Opus, so keep it for
+  judgment, never for lookup.
+- Fan out independent work across workers in one turn rather than serializing it.
+- Write the full task spec up front. A one-shot implementer that has to come back
+  for clarification costs more than the spec would have.
+- Effort stays `high`. Bump to `xhigh` for the hardest long-horizon runs, never
+  drop below `high` to save budget.
+- `/fast` is off by default: cash-for-speed only when blocked at the weekly wall.
 
 ## Commands
 
