@@ -1,13 +1,18 @@
 ---
 name: apko
-description: Use when building container images with apko and rules_apko, configuring apko.yaml for a new service, debugging image build failures, or managing apko lock files. This repo uses apko exclusively (never Dockerfiles), always dual-arch.
+invoke: explicit
+summary: apko.yaml, locks, and apko_image patterns for dual-arch images
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Container Images with apko
 
 All container images in this repo are built with apko + rules_apko via the custom `apko_image` macro. Read `bazel/tools/oci/apko_image.bzl` first to understand the macro before wiring a new image.
 
-Builds and pushes happen in CI only (see the `bazel` skill). Locally you edit `apko.yaml` and BUILD files, run `format` to regenerate locks, and push the branch.
+Builds and pushes happen in CI / via `ci test` remote execution (see [bazel.md](bazel.md)).
+Locally you edit `apko.yaml` and BUILD files, regenerate locks when they change, and push.
 
 ## apko.yaml Structure
 
@@ -54,7 +59,9 @@ environment:
 
 ## Lock Files
 
-After changing any `apko.yaml`, run `format`. It walks every `apko.yaml` in the repo and regenerates its `apko.lock.json`; `git diff` then shows only the locks that actually changed, so commit just those.
+After changing any `apko.yaml`, regenerate locks (pre-commit does this when
+`apko.yaml` is staged, or run `bazel/tools/format/update-apko-locks.sh`). Commit
+only the locks that actually changed.
 
 ## BUILD.bazel Patterns
 
@@ -140,7 +147,7 @@ use_repo(apko, "myservice_lock")
 
 ## Common Mistakes to Avoid
 
-1. **Not updating lock files**: run `format` after changing any apko.yaml
+1. **Not updating lock files**: regenerate locks after changing any apko.yaml
 2. **Missing architectures**: always include both `x86_64` and `aarch64`
 3. **Missing CA certificates**: HTTPS calls fail without `ca-certificates-bundle`
 4. **Forgetting MODULE.bazel**: new locks must be registered with `apko.translate_lock`
@@ -154,3 +161,4 @@ crane manifest ghcr.io/jomcgi/homelab/projects/myservice:main | jq
 crane export ghcr.io/jomcgi/homelab/projects/myservice:main - | tar -tvf - | head -50
 jq '.contents.packages[] | {name, version}' projects/myservice/image/apko.lock.json
 ```
+

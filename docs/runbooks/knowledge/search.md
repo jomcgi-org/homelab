@@ -1,13 +1,11 @@
 ---
-name: knowledge
-description: >
-  Search and read Joe's knowledge graph (fileless, Postgres-backed), or debug ingest failures.
-  Use when ANY context about Joe's thinking, decisions, opinions, knowledge base,
-  prior work, or personal notes might be relevant — even if there's only a 1%
-  chance. Also use for dead-lettered raws, gardener errors, or ingest debugging.
-  Trigger examples: "What does Joe think about X?", "are there any dead letters?",
-  "why didn't my note get processed?", architectural decisions, project history.
+name: knowledge-search
+invoke: explicit
+summary: Search/debug the knowledge graph via homelab CLI
 ---
+
+> **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
+> claude.ai routine prompt names this file. Do not auto-load from skill matching.
 
 # Knowledge Graph
 
@@ -111,3 +109,4 @@ so the public chat can quote them.
 - After replaying dead letters, re-check after the next gardener cycle
 - Edge types: `refines`, `generalizes`, `related`, `contradicts`, `derives_from`, `supersedes`
 - If auth fails, the CLI will prompt for `cloudflared access login` automatically
+

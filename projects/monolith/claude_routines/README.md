@@ -4,7 +4,7 @@ Version-controlled definitions of the user's claude.ai scheduled-agent
 **routines** (a.k.a. Claude Code Routines / remote triggers). Each
 `*.yaml` file in this directory is one routine. claude.ai is the _runtime_
 state; this directory is the _intent_ state. Drift is reconciled by running
-the `/update-claude-routines` skill.
+the update-claude-routines runbook.
 
 ## Files
 
@@ -15,7 +15,7 @@ the `/update-claude-routines` skill.
 | `README.md` (this file) | Pointer to the schema + skill.                                                           |
 
 The reconciliation logic lives in the
-[`update-claude-routines` skill](../../../.claude/skills/update-claude-routines/SKILL.md) —
+[`update-claude-routines` runbook](../../../docs/runbooks/update-claude-routines.md) —
 it explains the schema, the name → ID resolution rules for `environment` and
 `mcp_connectors`, the workflow, and the error modes.
 
@@ -51,5 +51,5 @@ would lose.
 By design — UUIDs (env_ids, connector UUIDs) are account-specific runtime
 identifiers, not configuration. Routine YAMLs reference `environment` and
 `mcp_connectors` by short name; the skill resolves to IDs at sync time using
-the current tables in its SKILL.md. If the user adds a new environment or
-connects a new connector, update the skill's resolution tables in the same PR.
+the current tables in its runbook. If the user adds a new environment or
+connects a new connector, update the runbook's resolution tables in the same PR.

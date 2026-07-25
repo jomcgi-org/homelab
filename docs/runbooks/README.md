@@ -2,30 +2,55 @@
 
 Operational and agent procedures that are **explicit-only**.
 
-Unlike `.claude/skills/`, runbooks are **not** auto-selected by description
-matching. An agent (or a claude.ai routine) opens a runbook only when:
+Unlike `.claude/skills/` (tiny auto-matched set: `ship`, `adr`, `stpa`,
+`codex-implement`), runbooks are **not** selected by description matching.
+Open only when:
 
 1. Joe asks for that procedure by name or intent, or
 2. A Context Loading Rule in `.claude/CLAUDE.md` names the file, or
-3. A routine YAML under `projects/monolith/claude_routines/` points at the path.
+3. A routine under `projects/monolith/claude_routines/` points at the path.
 
 ## Index
 
-| Runbook | When to open |
-|---------|----------------|
+### Ops / cluster
+
+| Runbook | When |
+|---------|------|
 | [argocd-outofsync.md](argocd-outofsync.md) | ArgoCD OutOfSync / "is my change live?" |
-| [public-tier-checklist.md](public-tier-checklist.md) | Public tier / jomcgi.dev / `public_reader` changes |
-| [embervm-node-scratch-setup.md](embervm-node-scratch-setup.md) | EmberVM node scratch provisioning |
+| [public-tier-checklist.md](public-tier-checklist.md) | Public tier / jomcgi.dev / `public_reader` |
+| [embervm-node-scratch-setup.md](embervm-node-scratch-setup.md) | EmberVM node scratch |
 | [embervm-stateful-generation-quarantine.md](embervm-stateful-generation-quarantine.md) | Stateful generation quarantine |
-| [knowledge/gardener.md](knowledge/gardener.md) | Knowledge gardener (also: hourly routine) |
+| [scheduler.md](scheduler.md) | Kick / inspect Postgres scheduled jobs |
+
+### Knowledge graph
+
+| Runbook | When |
+|---------|------|
+| [knowledge/search.md](knowledge/search.md) | Search/debug the graph (`homelab knowledge`) |
+| [knowledge/gardener.md](knowledge/gardener.md) | Decompose raws (hourly routine) |
 | [knowledge/classify.md](knowledge/classify.md) | Gap classify routine |
 | [knowledge/research.md](knowledge/research.md) | Gap research routine |
 | [knowledge/distill.md](knowledge/distill.md) | Distill completed tasks |
-| [knowledge/consolidate.md](knowledge/consolidate.md) | Daily/weekly task rollups |
-| [improve-ambient/runbook.md](improve-ambient/runbook.md) | `/improve-ambient` feedback loop |
+| [knowledge/consolidate.md](knowledge/consolidate.md) | Daily/weekly rollups |
+
+### Improve loops (explicit)
+
+| Runbook | When |
+|---------|------|
+| [improve-ambient/runbook.md](improve-ambient/runbook.md) | `/improve-ambient` |
 | [improve-artifacts/runbook.md](improve-artifacts/runbook.md) | `/improve-artifacts` |
 | [improve-recipes/runbook.md](improve-recipes/runbook.md) | `/improve-recipes` |
 | [improve-safeguards/runbook.md](improve-safeguards/runbook.md) | `/improve-safeguards` |
+
+### Repo / agents
+
+| Runbook | When |
+|---------|------|
+| [daily-digest.md](daily-digest.md) | Outstanding work digest (routine + on demand) |
+| [refresh-structure-docs.md](refresh-structure-docs.md) | Root README structural refresh |
+| [update-claude-routines.md](update-claude-routines.md) | Sync claude.ai routines from YAML |
+| [bazel.md](bazel.md) | BUILD/gazelle patterns; CI is via `ci` / Workflows |
+| [apko.md](apko.md) | apko.yaml + `apko_image` (locks via pre-commit / script) |
 
 ## Format
 
@@ -39,5 +64,4 @@ summary: one line
 > **Runbook (explicit-only).** ...
 
 # Title
-...
 ```

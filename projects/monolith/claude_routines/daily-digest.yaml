@@ -16,8 +16,8 @@ prompt: |
   finished, what should he carry through. Read-only: never edit files,
   commit, push, or mutate any PR.
 
-  Follow the `daily-digest` skill in this repo
-  (.claude/skills/daily-digest/SKILL.md) for the full method. In brief:
+  Follow the daily-digest runbook in this repo
+  (docs/runbooks/daily-digest.md) for the full method. In brief:
 
   1. Issues: `gh issue list --state open` (the source of truth for
      outstanding work), noting parent tracking issues with open sub-issues.
