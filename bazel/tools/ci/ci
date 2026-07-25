@@ -226,11 +226,8 @@ cmd_regen() {
 # Workflows Test runs:
 #   bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 cmd_test() {
-	if ! command -v bb >/dev/null 2>&1; then
-		err "bb (BuildBuddy CLI) not found. Install: https://www.buildbuddy.io/cli/"
-		exit 1
-	fi
-
+	# Parse args before requiring bb so unit tests can validate flag rejection
+	# in hermetic sandboxes that do not install the BuildBuddy CLI.
 	local -a targets=()
 	local -a extra=()
 	local saw_ddash=0
@@ -252,6 +249,11 @@ cmd_test() {
 		fi
 		targets+=("$a")
 	done
+
+	if ! command -v bb >/dev/null 2>&1; then
+		err "bb (BuildBuddy CLI) not found. Install: https://www.buildbuddy.io/cli/"
+		exit 1
+	fi
 
 	local -a bazel_args=(test)
 	if [[ ${#targets[@]} -eq 0 ]]; then
