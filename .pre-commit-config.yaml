@@ -10,15 +10,15 @@ repos:
         always_run: true
         pass_filenames: false
 
-      # Fast format - same formatters as CI, scoped to staged files
-      - id: format-code
-        name: Format code
-        entry: bazel/tools/format/fast-format.sh --staged
+      # Fast path only: format files changed vs origin/main (no full generators,
+      # no remote test). Full gate is `ci` before push / in agent sessions.
+      - id: ci-lint
+        name: ci lint (changed files)
+        entry: bazel/tools/ci/ci lint
         language: script
         always_run: true
         pass_filenames: false
 
-      # Lock file updates - only when source files change
       - id: update-python-requirements
         name: Update Python requirements
         entry: bazel/tools/format/update-python-requirements-if-needed.sh
@@ -47,8 +47,6 @@ repos:
         files: 'migrations/.*\.sql$'
         pass_filenames: false
 
-      # Run format after rebase to catch formatting drift
-      # Install with: pre-commit install --hook-type post-rewrite
       - id: post-rewrite-format
         name: Format after rebase
         entry: bazel/tools/git/post-rewrite-format.sh
@@ -56,20 +54,16 @@ repos:
         always_run: true
         pass_filenames: false
         stages: [post-rewrite]
+
   - repo: local
     hooks:
-      # Reject non-ASCII characters in the commit title (first line).
-      # Wrangler Pages fails with error 8000111 when the commit subject
-      # contains non-ASCII (smart quotes, em-dashes, arrows, etc.).
-      # Only the title is checked; the body is unrestricted.
-      # Install with: pre-commit install --hook-type commit-msg
       - id: ascii-commit-msg
         name: Reject non-ASCII characters in commit title
         entry: bazel/tools/git/check-commit-msg-ascii.sh
         language: script
         stages: [commit-msg]
         always_run: true
-        pass_filenames: true # pre-commit passes the commit-msg file path
+        pass_filenames: true
 
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
@@ -88,21 +82,3 @@ repos:
           - ci
           - chore
           - revert
-  - repo: https://github.com/semgrep/pre-commit
-    rev: v1.153.1
-    hooks:
-      - id: semgrep
-        args: ["--config", "bazel/semgrep/rules/", "--error"]
-        # The docs manifest bakes full markdown bodies (incl. ADR YAML/image-tag
-        # snippets) inline as JSON, so semgrep would flag those examples as real
-        # config. It is a generated artifact; the source docs are linted in place.
-        # pre-commit's exclude filters files before they reach semgrep (a
-        # .semgrepignore entry is not honoured for explicitly-passed files).
-        # Vendored third-party docs (impeccable, Apache-2.0) carry upstream
-        # copyright notices we must keep verbatim; the stale-copyright-year rule
-        # false-positives on them. They are not our source to lint.
-        exclude: "^(bazel/semgrep/rules/|projects/monolith/frontend/src/lib/public/docs/docs-manifest\\.json$|projects/firecracker/goosecracker/guest/vendor/impeccable/)"
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.24.2
-    hooks:
-      - id: gitleaks
