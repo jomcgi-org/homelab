@@ -25,6 +25,12 @@ bare Mac `bazel`.
 
 ## How to Dispatch
 
+Prefer the **`implementer`** agent (`.claude/agents/implementer.md`): it has no
+`Write` or `Edit` tool, so spawning it cannot silently turn into Claude writing
+the code. Hand it the full spec and a worktree path; it runs the wrapper below
+and returns the diff. Drive the wrapper directly only when you need a tier or
+invocation the agent does not cover.
+
 Always through the wrapper:
 
 ```bash

@@ -70,7 +70,14 @@ preference, it is how the budget lasts. Three lanes:
 
 **If you are about to write implementation code in the main loop, that is the
 signal to dispatch instead.** Writing it yourself is the default failure mode,
-and it is the expensive one.
+and it is the expensive one. Spawn the **`implementer`** agent
+(`.claude/agents/implementer.md`), which has no `Write` or `Edit` tool and can
+only hand the spec to a Codex worker, so the routing holds by construction
+rather than by memory. Give it the full spec and a worktree; it returns the
+diff. If it reports `CODEX_QUOTA_EXHAUSTED`, that is the exit 42 path above.
+
+If a session has no `codex` on PATH, dispatch is unavailable: use that session
+for orchestration, review, and triage rather than quietly implementing on Opus.
 
 Context is the other half of the same budget:
 
