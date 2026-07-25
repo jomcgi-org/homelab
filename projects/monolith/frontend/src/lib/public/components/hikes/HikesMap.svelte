@@ -1,7 +1,10 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
-  import { groupWindowsByDay, windowFields } from "$lib/public/hikes/filters.js";
+  import {
+    groupWindowsByDay,
+    windowFields,
+  } from "$lib/public/hikes/filters.js";
 
   // `walks` is the filtered set to plot; clicking a marker opens the card.
   // `selectedDay` is the parent's chosen day chip (YYYY-MM-DD) or null for
@@ -91,7 +94,9 @@
     detailLoading = true;
     const token = ++detailToken;
     try {
-      const res = await fetch(`/app/hikes/walk/${encodeURIComponent(walk.uuid)}`);
+      const res = await fetch(
+        `/app/hikes/walk/${encodeURIComponent(walk.uuid)}`,
+      );
       if (!res.ok) throw new Error(`status ${res.status}`);
       const detail = await res.json();
       if (token !== detailToken) return; // a newer selection superseded this one
@@ -187,7 +192,9 @@
 
   // Window rows for the selected walk's card, grouped by UK-local day. Windows
   // come from the per-walk detail fetch (selectedDetail), not the light list.
-  let cardDays = $derived(selectedDetail ? groupWindowsByDay(selectedDetail) : {});
+  let cardDays = $derived(
+    selectedDetail ? groupWindowsByDay(selectedDetail) : {},
+  );
   let cardDayKeys = $derived(Object.keys(cardDays).sort());
   // The days the server judged DOABLE for this walk's length (duration-aware: a
   // long-enough run of good hours, see router._doable_days). The card honours it
@@ -374,8 +381,10 @@
 
   {#if selected}
     <aside class="card">
-      <button class="card-close" onclick={closeCard} aria-label="Close walk card"
-        >&times;</button
+      <button
+        class="card-close"
+        onclick={closeCard}
+        aria-label="Close walk card">&times;</button
       >
       <h2 class="card-name">
         <a href={selected.url} target="_blank" rel="noopener"
@@ -385,9 +394,18 @@
         >
       </h2>
       <dl class="card-stats">
-        <div><dt>Distance</dt><dd>{selected.distance_km} km</dd></div>
-        <div><dt>Ascent</dt><dd>{selected.ascent_m} m</dd></div>
-        <div><dt>Duration</dt><dd>{fmtDuration(selected.duration_h)}</dd></div>
+        <div>
+          <dt>Distance</dt>
+          <dd>{selected.distance_km} km</dd>
+        </div>
+        <div>
+          <dt>Ascent</dt>
+          <dd>{selected.ascent_m} m</dd>
+        </div>
+        <div>
+          <dt>Duration</dt>
+          <dd>{fmtDuration(selected.duration_h)}</dd>
+        </div>
       </dl>
       {#if selectedDetail?.summary}
         <p class="card-summary">{selectedDetail.summary}</p>

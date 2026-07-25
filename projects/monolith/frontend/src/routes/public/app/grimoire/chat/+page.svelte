@@ -338,124 +338,128 @@
     </div>
 
     <div class="chat-main">
-    <div class="chat-transcript" bind:this={transcriptEl}>
-      {#if !admitted}
-        <div class="chat-gate">
-          <p class="eyebrow chat-gate-eyebrow">START CHATTING</p>
-          <p class="chat-gate-copy">
-            Solve the challenge once to open a session. Every answer is
-            grounded in the loaded sourcebooks, cited, and never invented.
-          </p>
-          <TurnstileGate
-            siteKey={data.turnstileSiteKey}
-            admit={createChatSession}
-            onAdmitted={() => {
-              admitted = true;
-              queueMicrotask(() => inputEl?.focus());
-            }}
-          />
-        </div>
-      {:else if messages.length === 0 && !sending}
-        <div class="chat-empty">
-          <h2 class="grim-title empty-headline">
-            ask the grimoire <span class="empty-hl">anything.</span>
-          </h2>
-          <p class="empty-sub">
-            Rules, spells, monsters, magic items, lore, adventures. A sage
-            reads the loaded sourcebooks and answers, citing what it drew on.
-            No tools, no cloud, no telemetry.
-          </p>
-          <div class="chat-examples">
-            {#each EXAMPLES as ex}
-              <button type="button" class="chat-example" onclick={() => send(ex)}>
-                {ex}
-              </button>
-            {/each}
+      <div class="chat-transcript" bind:this={transcriptEl}>
+        {#if !admitted}
+          <div class="chat-gate">
+            <p class="eyebrow chat-gate-eyebrow">START CHATTING</p>
+            <p class="chat-gate-copy">
+              Solve the challenge once to open a session. Every answer is
+              grounded in the loaded sourcebooks, cited, and never invented.
+            </p>
+            <TurnstileGate
+              siteKey={data.turnstileSiteKey}
+              admit={createChatSession}
+              onAdmitted={() => {
+                admitted = true;
+                queueMicrotask(() => inputEl?.focus());
+              }}
+            />
           </div>
-        </div>
-      {:else}
-        {#each messages as m}
-          {#if m.role === "user"}
-            <article class="turn turn-user">
-              <div class="user-bubble">{m.content}</div>
-            </article>
-          {:else}
+        {:else if messages.length === 0 && !sending}
+          <div class="chat-empty">
+            <h2 class="grim-title empty-headline">
+              ask the grimoire <span class="empty-hl">anything.</span>
+            </h2>
+            <p class="empty-sub">
+              Rules, spells, monsters, magic items, lore, adventures. A sage
+              reads the loaded sourcebooks and answers, citing what it drew on.
+              No tools, no cloud, no telemetry.
+            </p>
+            <div class="chat-examples">
+              {#each EXAMPLES as ex}
+                <button
+                  type="button"
+                  class="chat-example"
+                  onclick={() => send(ex)}
+                >
+                  {ex}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          {#each messages as m}
+            {#if m.role === "user"}
+              <article class="turn turn-user">
+                <div class="user-bubble">{m.content}</div>
+              </article>
+            {:else}
+              <article class="turn turn-bot">
+                <p class="bot-label">{BOT_LABEL}</p>
+                <div class="turn-card">
+                  <div class="turn-md">
+                    {@html renderReply(m.content, m.touched)}
+                  </div>
+                  {#if m.touched && m.touched.length}
+                    <div class="turn-touched">
+                      <span class="turn-touched-label">GROUNDED IN</span>
+                      {#each m.touched as n}
+                        {#if n.kind === "entity"}
+                          <a
+                            href={worldHref(n.id)}
+                            class="touched-chip touched-chip-entity"
+                            style="--chip-color: var(--grim-type-{TYPE_ALLOWLIST.test(
+                              n.entity_type ?? '',
+                            )
+                              ? n.entity_type
+                              : 'class'}, currentColor)"
+                          >
+                            {n.title || "untitled entity"}
+                          </a>
+                        {:else}
+                          <button
+                            type="button"
+                            class="touched-chip"
+                            onclick={() => (activeSource = n)}
+                          >
+                            {n.title || "untitled passage"}
+                          </button>
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </article>
+            {/if}
+          {/each}
+
+          {#if sending}
             <article class="turn turn-bot">
               <p class="bot-label">{BOT_LABEL}</p>
-              <div class="turn-card">
-                <div class="turn-md">
-                  {@html renderReply(m.content, m.touched)}
-                </div>
-                {#if m.touched && m.touched.length}
-                  <div class="turn-touched">
-                    <span class="turn-touched-label">GROUNDED IN</span>
-                    {#each m.touched as n}
-                      {#if n.kind === "entity"}
-                        <a
-                          href={worldHref(n.id)}
-                          class="touched-chip touched-chip-entity"
-                          style="--chip-color: var(--grim-type-{TYPE_ALLOWLIST.test(
-                            n.entity_type ?? '',
-                          )
-                            ? n.entity_type
-                            : 'class'}, currentColor)"
-                        >
-                          {n.title || "untitled entity"}
-                        </a>
-                      {:else}
-                        <button
-                          type="button"
-                          class="touched-chip"
-                          onclick={() => (activeSource = n)}
-                        >
-                          {n.title || "untitled passage"}
-                        </button>
-                      {/if}
-                    {/each}
+              {#if turn.assistant}
+                <div class="turn-card">
+                  <div class="turn-md">
+                    {@html renderReply(turn.assistant, turn.touched)}<span
+                      class="caret"
+                    ></span>
                   </div>
-                {/if}
-              </div>
+                </div>
+              {:else}
+                <p class="turn-thinking">
+                  <span class="dot"></span><span class="dot"></span><span
+                    class="dot"
+                  ></span>
+                  {turn.touched.length ? "reading the sourcebooks" : "thinking"}
+                </p>
+              {/if}
             </article>
           {/if}
-        {/each}
-
-        {#if sending}
-          <article class="turn turn-bot">
-            <p class="bot-label">{BOT_LABEL}</p>
-            {#if turn.assistant}
-              <div class="turn-card">
-                <div class="turn-md">
-                  {@html renderReply(turn.assistant, turn.touched)}<span
-                    class="caret"
-                  ></span>
-                </div>
-              </div>
-            {:else}
-              <p class="turn-thinking">
-                <span class="dot"></span><span class="dot"></span><span
-                  class="dot"
-                ></span>
-                {turn.touched.length ? "reading the sourcebooks" : "thinking"}
-              </p>
-            {/if}
-          </article>
         {/if}
-      {/if}
-    </div>
+      </div>
 
-    {#if constellation.nodes.length > 0}
-      <aside
-        class="constellation"
-        aria-label="Entities this conversation has drawn on"
-      >
-        <span class="constellation-cap">SESSION CONSTELLATION</span>
-        <MiniConstellation
-          nodes={constellation.nodes}
-          edges={constellation.edges}
-          revealedIds={new Set(constellation.ids)}
-        />
-      </aside>
-    {/if}
+      {#if constellation.nodes.length > 0}
+        <aside
+          class="constellation"
+          aria-label="Entities this conversation has drawn on"
+        >
+          <span class="constellation-cap">SESSION CONSTELLATION</span>
+          <MiniConstellation
+            nodes={constellation.nodes}
+            edges={constellation.edges}
+            revealedIds={new Set(constellation.ids)}
+          />
+        </aside>
+      {/if}
     </div>
 
     {#if notice}
@@ -481,8 +485,7 @@
           rows="1"
           maxlength={CHARACTER_LIMIT}
           disabled={sending}
-          aria-label="Your message"
-        ></textarea>
+          aria-label="Your message"></textarea>
         <div class="chat-input-side">
           <span
             class="chat-count"
@@ -1071,7 +1074,11 @@
   .touched-chip-entity:focus-visible {
     color: var(--chip-color, var(--grim-ink));
     border-color: var(--chip-color, var(--grim-accent));
-    background: color-mix(in srgb, var(--chip-color, var(--grim-accent)) 12%, transparent);
+    background: color-mix(
+      in srgb,
+      var(--chip-color, var(--grim-accent)) 12%,
+      transparent
+    );
   }
 
   /* ── notice ─────────────────────────────────────────────────── */

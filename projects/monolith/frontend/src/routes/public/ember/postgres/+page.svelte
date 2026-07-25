@@ -37,15 +37,17 @@
       ><a class="brand" href="/"><strong>jomcgi.dev</strong></a> /
       <a class="brand" href="/ember">ember</a> / postgres</span
     >
-    <a class="topbar-cross" href="/ember/firecracker">how firecracker resumes a VM</a>
+    <a class="topbar-cross" href="/ember/firecracker"
+      >how firecracker resumes a VM</a
+    >
   </header>
 
   <main class="ember-page">
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Postgres</h1>
       <p class="subtitle">
-        Postgres scaling to zero on Firecracker microVMs with sub-second
-        resume from disk to memory.
+        Postgres scaling to zero on Firecracker microVMs with sub-second resume
+        from disk to memory.
       </p>
     </header>
 

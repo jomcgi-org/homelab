@@ -127,25 +127,25 @@
   </header>
 
   <main class="grimoire-shell">
-  {#if isUngated || admitted}
-    <PageTurn section={pageTurnSegment}>
-      {@render children()}
-    </PageTurn>
-  {:else}
-    <div class="wrap-narrow gate">
-      <p class="gate-eyebrow">Grimoire Access</p>
-      <h1 class="grim-title gate-title">
-        solve to <span class="gate-accent">explore.</span>
-      </h1>
-      <p class="gate-copy">
-        Bots? <em>Get outta here!</em>
-      </p>
-      <TurnstileGate
-        siteKey={data.turnstileSiteKey}
-        onAdmitted={() => (admitted = true)}
-      />
-    </div>
-  {/if}
+    {#if isUngated || admitted}
+      <PageTurn section={pageTurnSegment}>
+        {@render children()}
+      </PageTurn>
+    {:else}
+      <div class="wrap-narrow gate">
+        <p class="gate-eyebrow">Grimoire Access</p>
+        <h1 class="grim-title gate-title">
+          solve to <span class="gate-accent">explore.</span>
+        </h1>
+        <p class="gate-copy">
+          Bots? <em>Get outta here!</em>
+        </p>
+        <TurnstileGate
+          siteKey={data.turnstileSiteKey}
+          onAdmitted={() => (admitted = true)}
+        />
+      </div>
+    {/if}
   </main>
 
   {#if showDock}

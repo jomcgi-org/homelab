@@ -19,8 +19,14 @@
   const featuredApps = apps.filter((a) => a.featured);
 </script>
 
-<section class="rack-section" id="homelab" aria-label="Homelab hardware and systems">
-  <p class="rack-eyebrow">4 nodes &middot; 52 CPUs &middot; 112 GB &middot; one RTX 4090</p>
+<section
+  class="rack-section"
+  id="homelab"
+  aria-label="Homelab hardware and systems"
+>
+  <p class="rack-eyebrow">
+    4 nodes &middot; 52 CPUs &middot; 112 GB &middot; one RTX 4090
+  </p>
   <h2>HOMELAB</h2>
 
   <div class="rack-grid">
@@ -39,7 +45,9 @@
       </div>
       <div class="node gpu">
         <span class="nname">NODE-4</span>
-        <div class="nrole">16 cpu &middot; 64 gb &middot; rtx 4090 &middot; microvms</div>
+        <div class="nrole">
+          16 cpu &middot; 64 gb &middot; rtx 4090 &middot; microvms
+        </div>
       </div>
       <div class="maps">
         <span class="lbl">Live maps</span>
@@ -61,9 +69,8 @@
           {#if app.slug === "grimoire"}
             <p>
               A D&amp;D campaign manager built on grants: the same monster
-              renders full stats for the DM, redacted stats for a player who
-              has fought it, and just a name for one who has only heard
-              rumours.
+              renders full stats for the DM, redacted stats for a player who has
+              fought it, and just a name for one who has only heard rumours.
               <a class="more" href="/app/grimoire">play &rarr;</a>
             </p>
           {:else if app.slug === "firecracker"}
@@ -72,9 +79,11 @@
               request. The guest never holds a real secret; an egress proxy
               swaps placeholder tokens for credentials at the network hop.
               <b>EmberVM</b> runs this substrate today: one-shot tasks, stateful
-              sessions, and warm HTTP serving. Watch a microVM restore from
-              disk in <b>{sandboxRestoreMs}ms</b>.
-              <a class="more" href="/ember/firecracker">watch it restore &rarr;</a>
+              sessions, and warm HTTP serving. Watch a microVM restore from disk
+              in <b>{sandboxRestoreMs}ms</b>.
+              <a class="more" href="/ember/firecracker"
+                >watch it restore &rarr;</a
+              >
             </p>
           {/if}
         </div>
@@ -85,10 +94,11 @@
           <span class="where">NODE-4</span>
         </div>
         <p>
-          Tag <b>@Bosun</b> in a Discord thread and a <b>goose</b> agent wakes in its own
-          microVM, runs a recipe, and replies with an artifact or a PR. Ambient chat,
-          scheduled routines, and coding agents all dispatch through fc-invoke
-          (~{agentFirstModelCallMs}ms to first model call). Its successor,
+          Tag <b>@Bosun</b> in a Discord thread and a <b>goose</b> agent wakes
+          in its own microVM, runs a recipe, and replies with an artifact or a
+          PR. Ambient chat, scheduled routines, and coding agents all dispatch
+          through fc-invoke (~{agentFirstModelCallMs}ms to first model call).
+          Its successor,
           <b>EmberVM</b>, already runs the semgrep scans and warm HTTP serving;
           fc-invoke is frozen and the goose agent is its last tenant.
         </p>
@@ -103,9 +113,9 @@
           <span class="where">NODE-4</span>
         </div>
         <p>
-          vLLM serving a <b>35B sparse-MoE</b> (~3B active), int4-mixed weights with an fp8
-          KV-cache, <b>~170 tok/s</b> single-stream decode. Chat, the agents, and the knowledge
-          graph's RAG all share the 4090.
+          vLLM serving a <b>35B sparse-MoE</b> (~3B active), int4-mixed weights
+          with an fp8 KV-cache, <b>~170 tok/s</b> single-stream decode. Chat, the
+          agents, and the knowledge graph's RAG all share the 4090.
         </p>
       </div>
       <div class="callout">
@@ -114,7 +124,8 @@
           <span class="where">NODE-1</span>
         </div>
         <p>
-          One Postgres backs every app; pgvector indexes the embeddings for a fileless knowledge graph.
+          One Postgres backs every app; pgvector indexes the embeddings for a
+          fileless knowledge graph.
           <a class="more" href="/app/notes">notes</a> is a public RAG over it. Declarative
           migrations applied by an operator, volumes replicated across nodes.
         </p>
@@ -125,8 +136,9 @@
           <span class="where">ALL NODES</span>
         </div>
         <p>
-          Five custom Bazel rulesets build every image dual-arch and pin digests into versioned
-          OCI Helm charts; ArgoCD reconciles the cluster from the repo.
+          Five custom Bazel rulesets build every image dual-arch and pin digests
+          into versioned OCI Helm charts; ArgoCD reconciles the cluster from the
+          repo.
         </p>
         <div class="clinks">
           <a class="more" href="/docs/contributing">the pipeline &rarr;</a>

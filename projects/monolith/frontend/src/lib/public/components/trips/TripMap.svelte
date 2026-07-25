@@ -23,7 +23,9 @@
   let ready = false;
 
   function allPoints() {
-    return days.flatMap((d) => d.points).filter((p) => p.lat != null && p.lng != null);
+    return days
+      .flatMap((d) => d.points)
+      .filter((p) => p.lat != null && p.lng != null);
   }
 
   function bounds() {
@@ -65,7 +67,9 @@
       map = new maplibregl.Map({
         container: mapContainer,
         style: BASEMAP_STYLE,
-        ...(b ? { bounds: b, fitBoundsOptions: { padding: 40 } } : { center: [0, 30], zoom: 1.4 }),
+        ...(b
+          ? { bounds: b, fitBoundsOptions: { padding: 40 } }
+          : { center: [0, 30], zoom: 1.4 }),
         attributionControl: { compact: true },
         scrollZoom: false,
         dragPan: false,
@@ -104,7 +108,11 @@
             type: "line",
             source: sourceId,
             layout: { "line-join": "round", "line-cap": "round" },
-            paint: { "line-color": color, "line-width": 3.5, "line-opacity": 1 },
+            paint: {
+              "line-color": color,
+              "line-width": 3.5,
+              "line-opacity": 1,
+            },
           });
 
           map.on("mouseenter", `route-hit-${i}`, () => {

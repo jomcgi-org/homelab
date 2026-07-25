@@ -231,7 +231,8 @@
           edges: [],
         };
         if (requestId !== egoRequestSeq) return;
-        const isNarrowed = currentScope !== "everything" || currentLens !== "world";
+        const isNarrowed =
+          currentScope !== "everything" || currentLens !== "world";
         const isEmpty = (res.nodes ?? []).length <= 1;
         if (isNarrowed && isEmpty && fellBackFor !== comboKey) {
           fellBackFor = comboKey;

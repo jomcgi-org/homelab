@@ -349,8 +349,8 @@
     <span
       ><a class="brand" href="/" bind:this={brandEl}
         ><strong>jomcgi.dev</strong></a
-      > / <a class="brand" href="/ember" bind:this={crumbEl}>ember</a> /
-      firecracker</span
+      >
+      / <a class="brand" href="/ember" bind:this={crumbEl}>ember</a> / firecracker</span
     >
   </header>
 
@@ -365,8 +365,8 @@
             <span class="warm-word">forever</span>.
           </h1>
           <p>
-            This site runs untrusted code in Firecracker microVMs. Building
-            the first one took
+            This site runs untrusted code in Firecracker microVMs. Building the
+            first one took
             <span class="num big frost-text"
               >{(cold.total / 1000).toFixed(1)} seconds</span
             >. Every sandbox since has woken from disk in about
@@ -385,11 +385,9 @@
             >.
           </h2>
           <p>
-            The slow part is waiting
-            for a useful guest: kernel up, agent listening, toolchain warm.
-            Measured cold, that wait is
-            <span class="num big">{coldWait.ms.toLocaleString()}&nbsp;ms</span
-            >.
+            The slow part is waiting for a useful guest: kernel up, agent
+            listening, toolchain warm. Measured cold, that wait is
+            <span class="num big">{coldWait.ms.toLocaleString()}&nbsp;ms</span>.
           </p>
         </div>
         <div class="caption" bind:this={capFreezeEl}>
@@ -400,8 +398,8 @@
           <p>
             Every page of guest RAM and every device register is written to
             disk: a memory file and a vmstate file. Saving the snapshot takes
-            <span class="num big">{coldSave.ms.toLocaleString()}&nbsp;ms</span
-            >, paid one time at startup.
+            <span class="num big">{coldSave.ms.toLocaleString()}&nbsp;ms</span>,
+            paid one time at startup.
           </p>
         </div>
         <div class="caption" bind:this={capRestoreEl}>
@@ -409,13 +407,14 @@
           <p>
             The bytes map from disk straight back into memory and the guest
             resumes mid-thought. The readiness wait that cost
-            <span class="num big">{coldWait.ms.toLocaleString()}&nbsp;ms</span
-            > cold takes
+            <span class="num big">{coldWait.ms.toLocaleString()}&nbsp;ms</span>
+            cold takes
             <span class="num big"
               >{firstRestore.phases
                 .find((p) => p.name === "guest_wait_ready")
                 .ms.toFixed(1)}&nbsp;ms</span
-            > warm. The whole wake-up:
+            >
+            warm. The whole wake-up:
             <span class="num ember-text"
               >~{Math.round(meanSnapshotRestoreMs)}&nbsp;ms</span
             >.
@@ -425,8 +424,8 @@
           <h2>And again. And again.</h2>
           <p>
             Each restore is a fresh, isolated VM from the same frozen image,
-            then discarded. {restores.length} real recorded runs, end to end,
-            including auth and code execution.
+            then discarded. {restores.length} real recorded runs, end to end, including
+            auth and code execution.
           </p>
         </div>
 
@@ -575,9 +574,9 @@
   <section class="replay">
     <h2>Feel it. Restore one now.</h2>
     <p>
-      This button replays one of the {restores.length} recorded runs at its true
-      speed. No cluster is touched: the timings below were captured from the live
-      daemon and baked into this page. Blink and you miss it.
+      This button replays one of the {restores.length} recorded runs at its true speed.
+      No cluster is touched: the timings below were captured from the live daemon
+      and baked into this page. Blink and you miss it.
     </p>
     <ReplayWidget {restores} {PHASE_HUMAN} />
   </section>
@@ -588,8 +587,8 @@
       <h1 class="static-hero-title">Boot once. Restore forever.</h1>
       <p class="static-muted">
         This site runs untrusted code in Firecracker microVMs. Building the
-        first one took {(cold.total / 1000).toFixed(1)} seconds. Every sandbox
-        since has woken from disk in about
+        first one took {(cold.total / 1000).toFixed(1)} seconds. Every sandbox since
+        has woken from disk in about
         {Math.round(meanSnapshotRestoreMs)} milliseconds.
       </p>
     </section>
@@ -600,18 +599,15 @@
         >
       </h2>
       <p class="static-muted num">
-        {#each cold.phases as p, i (p.name)}{i > 0
-            ? " · "
-            : ""}{p.name} {p.ms.toFixed(1)} ms{/each}
+        {#each cold.phases as p, i (p.name)}{i > 0 ? " · " : ""}{p.name}
+          {p.ms.toFixed(1)} ms{/each}
       </p>
     </section>
     <section>
       <h2>
         Warm, every request:
         <span class="num ember-text"
-          >{restoreTotalMin.toFixed(0)}&ndash;{restoreTotalMax.toFixed(
-            0,
-          )} ms</span
+          >{restoreTotalMin.toFixed(0)}&ndash;{restoreTotalMax.toFixed(0)} ms</span
         >
       </h2>
       <p class="static-muted">
@@ -1056,7 +1052,11 @@
     background: var(--fc-seg-boot);
   }
   .seg.wait {
-    background: linear-gradient(90deg, var(--fc-seg-wait-a), var(--fc-seg-wait-b));
+    background: linear-gradient(
+      90deg,
+      var(--fc-seg-wait-a),
+      var(--fc-seg-wait-b)
+    );
   }
   .seg.save {
     background: var(--fc-seg-save);

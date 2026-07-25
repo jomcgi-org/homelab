@@ -89,7 +89,11 @@ ${trkpts}
         tags: p.tags?.length ? p.tags : undefined,
       })),
     };
-    download(`${trip.slug}.json`, JSON.stringify(payload, null, 2), "application/json");
+    download(
+      `${trip.slug}.json`,
+      JSON.stringify(payload, null, 2),
+      "application/json",
+    );
   }
 </script>
 
@@ -104,7 +108,8 @@ ${trkpts}
   <header class="head">
     <nav class="crumb" aria-label="Breadcrumb">
       <a class="crumb-home" href="https://jomcgi.dev/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
+        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+        ></a
       >
       <span class="crumb-sep">/</span>
       <a class="crumb-link" href="/app/trips">trips</a>
@@ -116,13 +121,17 @@ ${trkpts}
       <div>
         {#if stats}
           <p class="dateline">
-            {fmtDate(stats.startIso)} &ndash; {fmtDate(stats.endIso)}, {year(stats.endIso)}
+            {fmtDate(stats.startIso)} &ndash; {fmtDate(stats.endIso)}, {year(
+              stats.endIso,
+            )}
           </p>
         {/if}
         <h1>{trip?.title}</h1>
         {#if trip?.subtitle}<p class="sub">{trip.subtitle}</p>{/if}
       </div>
-      <a class="btn" href={`/app/trips/${trip.slug}/timeline`}>Timeline &rarr;</a>
+      <a class="btn" href={`/app/trips/${trip.slug}/timeline`}
+        >Timeline &rarr;</a
+      >
     </div>
   </header>
 
@@ -186,22 +195,31 @@ ${trkpts}
         <div class="totals">
           <div class="tcell">
             <span class="label">Total distance</span>
-            <span class="big">{stats.totalDistance.toLocaleString()}<span class="unit">km</span></span>
+            <span class="big"
+              >{stats.totalDistance.toLocaleString()}<span class="unit">km</span
+              ></span
+            >
           </div>
           <div class="tcell">
             <span class="label">Duration</span>
-            <span class="big">{stats.totalDays}<span class="unit">days</span></span>
+            <span class="big"
+              >{stats.totalDays}<span class="unit">days</span></span
+            >
           </div>
           {#if stats.maxLat != null}
             <div class="tcell">
               <span class="label">Furthest north</span>
-              <span class="big">{stats.maxLat.toFixed(2)}<span class="unit">&deg;N</span></span>
+              <span class="big"
+                >{stats.maxLat.toFixed(2)}<span class="unit">&deg;N</span></span
+              >
             </div>
           {/if}
           {#if stats.coldestTemp != null}
             <div class="tcell">
               <span class="label">Coldest temp</span>
-              <span class="big cold">{stats.coldestTemp}<span class="unit">&deg;C</span></span>
+              <span class="big cold"
+                >{stats.coldestTemp}<span class="unit">&deg;C</span></span
+              >
             </div>
           {/if}
         </div>
@@ -220,7 +238,9 @@ ${trkpts}
                   onmouseleave={() => (hoveredDay = null)}
                   onclick={() => goToDay(day.dayNumber)}
                 >
-                  <span class="dlabel">{dayLabel(trip.days, day.dayNumber)}</span>
+                  <span class="dlabel"
+                    >{dayLabel(trip.days, day.dayNumber)}</span
+                  >
                   {#if stats.hasElevation}
                     <span class="profile">
                       <ElevationChart
@@ -231,10 +251,14 @@ ${trkpts}
                       />
                     </span>
                   {/if}
-                  <span class="dkm">{day.distance}<span class="unit">km</span></span>
+                  <span class="dkm"
+                    >{day.distance}<span class="unit">km</span></span
+                  >
                   {#if stats.hasElevation}
                     <span class="delev">
-                      <span class="up">+{day.ascent}</span>/<span class="down">-{day.descent}</span>
+                      <span class="up">+{day.ascent}</span>/<span class="down"
+                        >-{day.descent}</span
+                      >
                     </span>
                   {/if}
                   <span class="chev" aria-hidden="true">&rarr;</span>

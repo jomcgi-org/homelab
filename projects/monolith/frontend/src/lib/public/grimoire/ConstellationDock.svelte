@@ -58,7 +58,11 @@
 {#if state.nodes.length > 0}
   <div class="constel-dock" class:reduced={REDUCED_MOTION}>
     {#if expanded}
-      <div class="dock-panel" role="dialog" aria-label="Entities you've explored">
+      <div
+        class="dock-panel"
+        role="dialog"
+        aria-label="Entities you've explored"
+      >
         <div class="dock-panel-head">
           <span class="dock-panel-title">YOUR TRAIL</span>
           <button

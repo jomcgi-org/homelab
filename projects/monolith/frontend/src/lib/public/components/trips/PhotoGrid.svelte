@@ -9,7 +9,11 @@
 {#if photos.length}
   <div class="grid">
     {#each photos as photo, i (photo.id)}
-      <button class="tile" onclick={() => onOpen(i)} aria-label={`Open photo ${i + 1}`}>
+      <button
+        class="tile"
+        onclick={() => onOpen(i)}
+        aria-label={`Open photo ${i + 1}`}
+      >
         <img
           src={photo.imgGallery}
           alt={`Photo ${i + 1}`}

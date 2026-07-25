@@ -65,12 +65,42 @@
   // Vessel-type filter. Each legend box toggles whether that ITU band shows on
   // the map; toggling sets a MapLibre layer filter on the `icon` property.
   const LEGEND = [
-    { key: "passenger", label: "Passenger", icon: "ship-passenger", color: VESSEL_COLORS.passenger },
-    { key: "cargo", label: "Cargo", icon: "ship-cargo", color: VESSEL_COLORS.cargo },
-    { key: "tanker", label: "Tanker", icon: "ship-tanker", color: VESSEL_COLORS.tanker },
-    { key: "hsc", label: "High-speed", icon: "ship-hsc", color: VESSEL_COLORS.hsc },
-    { key: "special", label: "Special", icon: "ship-special", color: VESSEL_COLORS.special },
-    { key: "unknown", label: "Other", icon: "ship-unknown", color: VESSEL_COLORS.unknown },
+    {
+      key: "passenger",
+      label: "Passenger",
+      icon: "ship-passenger",
+      color: VESSEL_COLORS.passenger,
+    },
+    {
+      key: "cargo",
+      label: "Cargo",
+      icon: "ship-cargo",
+      color: VESSEL_COLORS.cargo,
+    },
+    {
+      key: "tanker",
+      label: "Tanker",
+      icon: "ship-tanker",
+      color: VESSEL_COLORS.tanker,
+    },
+    {
+      key: "hsc",
+      label: "High-speed",
+      icon: "ship-hsc",
+      color: VESSEL_COLORS.hsc,
+    },
+    {
+      key: "special",
+      label: "Special",
+      icon: "ship-special",
+      color: VESSEL_COLORS.special,
+    },
+    {
+      key: "unknown",
+      label: "Other",
+      icon: "ship-unknown",
+      color: VESSEL_COLORS.unknown,
+    },
   ];
   // The full legend order, used as the vessel-type allow-list + "all on" default
   // for URL sync, and to write `types` in a stable order.
@@ -732,7 +762,11 @@
   });
 </script>
 
-<div class="map-wrap" class:heat-mode={mode === "heat"} class:panel-open={selected}>
+<div
+  class="map-wrap"
+  class:heat-mode={mode === "heat"}
+  class:panel-open={selected}
+>
   <div class="map" bind:this={mapContainer}></div>
 
   <nav class="map-chip" aria-label="Breadcrumb">
@@ -747,7 +781,10 @@
   </nav>
 
   <div class="mode-toggle" role="group" aria-label="Map mode">
-    <button class:active={mode === "vessels"} onclick={() => setMode("vessels")}>
+    <button
+      class:active={mode === "vessels"}
+      onclick={() => setMode("vessels")}
+    >
       Vessels
     </button>
     <button class:active={mode === "heat"} onclick={() => setMode("heat")}>
@@ -779,7 +816,8 @@
       <ul class="heat-scale">
         {#each heatBreaks.slice(0, HEAT_COLORS.length) as br, i (br)}
           <li>
-            <span class="heat-sw" style="background: {HEAT_COLORS[i]}"></span>{heatLabel(heatBreaks, i)}
+            <span class="heat-sw" style="background: {HEAT_COLORS[i]}"
+            ></span>{heatLabel(heatBreaks, i)}
           </li>
         {/each}
       </ul>
@@ -788,18 +826,35 @@
 
   {#if selected}
     <aside class="panel">
-      <button class="panel-close" onclick={closePanel} aria-label="Close vessel panel"
-        >&times;</button
+      <button
+        class="panel-close"
+        onclick={closePanel}
+        aria-label="Close vessel panel">&times;</button
       >
       <h2 class="panel-name">
         {selected.name || selected.ship_name || `MMSI ${selected.mmsi}`}
       </h2>
       <dl class="panel-rows">
-        <div><dt>MMSI</dt><dd>{selected.mmsi}</dd></div>
-        <div><dt>Type</dt><dd>{shipTypeLabel(selected.ship_type)}</dd></div>
-        <div><dt>Speed</dt><dd>{fmtSpeed(selected.speed)}</dd></div>
-        <div><dt>Course</dt><dd>{fmtDeg(selected.course)}</dd></div>
-        <div><dt>Heading</dt><dd>{fmtDeg(selected.heading)}</dd></div>
+        <div>
+          <dt>MMSI</dt>
+          <dd>{selected.mmsi}</dd>
+        </div>
+        <div>
+          <dt>Type</dt>
+          <dd>{shipTypeLabel(selected.ship_type)}</dd>
+        </div>
+        <div>
+          <dt>Speed</dt>
+          <dd>{fmtSpeed(selected.speed)}</dd>
+        </div>
+        <div>
+          <dt>Course</dt>
+          <dd>{fmtDeg(selected.course)}</dd>
+        </div>
+        <div>
+          <dt>Heading</dt>
+          <dd>{fmtDeg(selected.heading)}</dd>
+        </div>
         <div>
           <dt>Destination</dt>
           <dd>{selected.destination || "Unknown"}</dd>

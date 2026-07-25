@@ -58,7 +58,11 @@
   // savings-only seed (status missing) is merged onto the status shape so
   // total_saved_mib_s still renders while state waits for the first poll.
   status = initialStatus?.configured
-    ? { ...initialStatus, total_saved_mib_s: initialSavings?.total_saved_mib_s ?? initialStatus.total_saved_mib_s }
+    ? {
+        ...initialStatus,
+        total_saved_mib_s:
+          initialSavings?.total_saved_mib_s ?? initialStatus.total_saved_mib_s,
+      }
     : initialSavings
       ? { total_saved_mib_s: initialSavings.total_saved_mib_s }
       : null;
@@ -88,7 +92,9 @@
     const lo = Math.max(1, Math.min(...vals) * 0.8);
     const hi = Math.max(...vals) * 1.1;
     if (hi / lo < 1.05) return 60;
-    const frac = (Math.log10(connectMs) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo));
+    const frac =
+      (Math.log10(connectMs) - Math.log10(lo)) /
+      (Math.log10(hi) - Math.log10(lo));
     return Math.max(12, Math.min(100, Math.round(frac * 100)));
   }
 
@@ -136,10 +142,15 @@
   let queued = $state([]);
 
   let queuedInserts = $derived(queued.filter((m) => m === "insert").length);
-  let queuedAggregates = $derived(queued.filter((m) => m === "aggregate").length);
+  let queuedAggregates = $derived(
+    queued.filter((m) => m === "aggregate").length,
+  );
 
   function requestRun(mode) {
-    if (mode === "insert" && ((!!turnstileSiteKey && !sessionReady) || insertUnavailable)) {
+    if (
+      mode === "insert" &&
+      ((!!turnstileSiteKey && !sessionReady) || insertUnavailable)
+    ) {
       return;
     }
     if (running || cooldown) {
@@ -224,10 +235,16 @@
     const next = new Date(now);
     next.setMinutes(0, 0, 0);
     next.setHours(next.getHours() + 1);
-    const remainingS = Math.max(0, Math.round((next.getTime() - now.getTime()) / 1000));
+    const remainingS = Math.max(
+      0,
+      Math.round((next.getTime() - now.getTime()) / 1000),
+    );
     const mm = String(Math.floor(remainingS / 60)).padStart(2, "0");
     const ss = String(remainingS % 60).padStart(2, "0");
-    const clockLabel = next.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const clockLabel = next.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
     return { mmss: `${mm}:${ss}`, clockLabel };
   });
 
@@ -350,21 +367,28 @@
       return {
         ok: false,
         permanent: true,
-        error: "the demo is busy right now, give it a few seconds and try again",
+        error:
+          "the demo is busy right now, give it a few seconds and try again",
       };
     }
     const body = await parseJsonSafe(resp);
     if (body == null) {
       // Non-JSON on any other status (a gateway error page, a proxy hiccup):
       // surface it calmly instead of leaking a raw JSON SyntaxError.
-      return { ok: false, error: `unexpected response from the demo (${resp.status})` };
+      return {
+        ok: false,
+        error: `unexpected response from the demo (${resp.status})`,
+      };
     }
     if (resp.status === 503 && /not configured/i.test(body?.detail ?? "")) {
       // Permanent: no DSN configured on this deployment, retrying won't help.
       return { ok: false, permanent: true, error: body.detail };
     }
     if (!resp.ok) {
-      return { ok: false, error: body?.detail || `query failed (${resp.status})` };
+      return {
+        ok: false,
+        error: body?.detail || `query failed (${resp.status})`,
+      };
     }
     if (body.session_required) {
       if (!turnstileSiteKey) insertUnavailable = true;
@@ -534,7 +558,9 @@
     return items;
   });
 
-  let orderPageCount = $derived(Math.max(1, Math.ceil(orderItems.length / PAGE_ITEMS)));
+  let orderPageCount = $derived(
+    Math.max(1, Math.ceil(orderItems.length / PAGE_ITEMS)),
+  );
 
   let pagedOrderItems = $derived.by(() => {
     const page = Math.min(resultPage, orderPageCount - 1);
@@ -544,13 +570,15 @@
   let shownPage = $derived(Math.min(resultPage, orderPageCount - 1));
 
   let maxRevenue = $derived(
-    Math.max(1, ...((lastRun?.breakdown ?? []).map((b) => b.revenue))),
+    Math.max(1, ...(lastRun?.breakdown ?? []).map((b) => b.revenue)),
   );
 
   // The wake promise: best measured relight this session, else the honest
   // ceiling. Published as a bindable so the stage's asleep overlay shows it
   // (the separate state card duplicated the stage and is gone).
-  let wakeHeadline = $derived(tiers.relight != null ? `~${ms(tiers.relight)}` : "<1 s");
+  let wakeHeadline = $derived(
+    tiers.relight != null ? `~${ms(tiers.relight)}` : "<1 s",
+  );
 
   $effect(() => {
     wakePromise = wakeHeadline;
@@ -562,12 +590,14 @@
   // remove-on-unmount pattern rather than importing that component directly,
   // since this gate's admit callback needs to feed mintSession (an
   // ember-specific proxy path) rather than the chat admission module.
-  const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+  const TURNSTILE_SCRIPT_SRC =
+    "https://challenges.cloudflare.com/turnstile/v0/api.js";
   let widgetEl;
   let widgetId = null;
 
   function renderTurnstileWidget() {
-    if (!window.turnstile || !widgetEl || !turnstileSiteKey || sessionReady) return;
+    if (!window.turnstile || !widgetEl || !turnstileSiteKey || sessionReady)
+      return;
     if (widgetId !== null) return;
     widgetId = window.turnstile.render(widgetEl, {
       sitekey: turnstileSiteKey,
@@ -595,7 +625,9 @@
       renderTurnstileWidget();
       return removeTurnstileWidget;
     }
-    let script = document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+    let script = document.querySelector(
+      `script[src="${TURNSTILE_SCRIPT_SRC}"]`,
+    );
     if (!script) {
       script = document.createElement("script");
       script.src = TURNSTILE_SCRIPT_SRC;
@@ -631,11 +663,19 @@
         disabled={(!!turnstileSiteKey && !sessionReady) || insertUnavailable}
       >
         {insertUnavailable ? "INSERTs unavailable" : "INSERT an order"}
-        {#if queuedInserts > 0}<span class="queue-chip">+{queuedInserts} queued</span>{/if}
+        {#if queuedInserts > 0}<span class="queue-chip"
+            >+{queuedInserts} queued</span
+          >{/if}
       </button>
-      <button class="aggregate-btn" type="button" onclick={() => requestRun("aggregate")}>
+      <button
+        class="aggregate-btn"
+        type="button"
+        onclick={() => requestRun("aggregate")}
+      >
         Run aggregate
-        {#if queuedAggregates > 0}<span class="queue-chip">+{queuedAggregates} queued</span>{/if}
+        {#if queuedAggregates > 0}<span class="queue-chip"
+            >+{queuedAggregates} queued</span
+          >{/if}
       </button>
     </div>
 
@@ -674,7 +714,9 @@
           <span class="stat-value">
             {#key running || !lastRun ? "none" : lastRun.connect_ms}
               <span class="fade-swap" in:fade={{ duration: 220 }}>
-                {running || !lastRun ? "–" : ms((lastRun.connect_ms ?? 0) + (lastRun.query_ms ?? 0))}
+                {running || !lastRun
+                  ? "–"
+                  : ms((lastRun.connect_ms ?? 0) + (lastRun.query_ms ?? 0))}
               </span>
             {/key}
           </span>
@@ -689,7 +731,9 @@
               ></span>
             {/each}
           </div>
-          <span class="spark-caption">wake + connect, every run this session</span>
+          <span class="spark-caption"
+            >wake + connect, every run this session</span
+          >
         </div>
       </div>
 
@@ -698,25 +742,30 @@
         <div class="stat-row">
           <span class="stat-name">cold start</span>
           <span class="stat-value">
-            {#key tiers.cold}<span class="fade-swap" in:fade={{ duration: 220 }}>{ms(tiers.cold)}</span>{/key}
+            {#key tiers.cold}<span class="fade-swap" in:fade={{ duration: 220 }}
+                >{ms(tiers.cold)}</span
+              >{/key}
           </span>
         </div>
         <div class="stat-row">
           <span class="stat-name">from snapshot</span>
           <span class="stat-value">
-            {#key tiers.relight}<span class="fade-swap" in:fade={{ duration: 220 }}>{ms(tiers.relight)}</span>{/key}
+            {#key tiers.relight}<span
+                class="fade-swap"
+                in:fade={{ duration: 220 }}>{ms(tiers.relight)}</span
+              >{/key}
           </span>
         </div>
         <div class="stat-row">
           <span class="stat-name">already awake</span>
           <span class="stat-value">
-            {#key tiers.warm}<span class="fade-swap" in:fade={{ duration: 220 }}>{ms(tiers.warm)}</span>{/key}
+            {#key tiers.warm}<span class="fade-swap" in:fade={{ duration: 220 }}
+                >{ms(tiers.warm)}</span
+              >{/key}
           </span>
         </div>
       </div>
     </div>
-
-
   </div>
 
   <div class="right-col">
@@ -767,13 +816,25 @@
             <tfoot>
               <tr class="summary-total">
                 <td>Σ total</td>
-                <td class="col-numeric">{lastRun?.total_orders != null ? countHeadline((lastRun.breakdown ?? []).reduce((n, b) => n + b.units, 0)) : "–"} units</td>
-                <td class="col-numeric">{moneyHeadline(lastRun?.total_revenue)}</td>
+                <td class="col-numeric"
+                  >{lastRun?.total_orders != null
+                    ? countHeadline(
+                        (lastRun.breakdown ?? []).reduce(
+                          (n, b) => n + b.units,
+                          0,
+                        ),
+                      )
+                    : "–"} units</td
+                >
+                <td class="col-numeric"
+                  >{moneyHeadline(lastRun?.total_revenue)}</td
+                >
               </tr>
             </tfoot>
           </table>
           <p class="result-footer">
-            ({(lastRun?.breakdown ?? []).length} groups from {lastRun?.total_orders ?? 0} orders)
+            ({(lastRun?.breakdown ?? []).length} groups from {lastRun?.total_orders ??
+              0} orders)
           </p>
         </div>
       {:else}
@@ -782,7 +843,11 @@
             <thead>
               <tr>
                 {#each ORDER_COLUMNS as col (col.key)}
-                  <th class={col.key === "qty" || col.key === "unit_price" ? "col-numeric" : ""}>
+                  <th
+                    class={col.key === "qty" || col.key === "unit_price"
+                      ? "col-numeric"
+                      : ""}
+                  >
                     <span class="col-name">{col.label}</span>
                     <span class="col-type">{col.type}</span>
                   </th>
@@ -830,11 +895,13 @@
                 >
                   &#8249;
                 </button>
-                <span class="pager-count">{shownPage + 1}/{orderPageCount}</span>
+                <span class="pager-count">{shownPage + 1}/{orderPageCount}</span
+                >
                 <button
                   class="pager-btn"
                   type="button"
-                  onclick={() => (resultPage = Math.min(orderPageCount - 1, shownPage + 1))}
+                  onclick={() =>
+                    (resultPage = Math.min(orderPageCount - 1, shownPage + 1))}
                   disabled={shownPage >= orderPageCount - 1}
                   aria-label="older rows"
                 >
@@ -991,7 +1058,6 @@
     color: var(--em-ember-deep);
     font-size: 13px;
   }
-
 
   .stats-card {
     background: var(--em-panel);
@@ -1282,7 +1348,11 @@
   }
 
   .epoch-band.epoch-current td {
-    background: color-mix(in srgb, var(--em-ember-dim) 40%, var(--em-line-soft));
+    background: color-mix(
+      in srgb,
+      var(--em-ember-dim) 40%,
+      var(--em-line-soft)
+    );
   }
 
   .summary-row td:first-child {

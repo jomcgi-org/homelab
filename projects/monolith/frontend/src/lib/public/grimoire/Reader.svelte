@@ -141,10 +141,15 @@
   function bodyBlocks(item) {
     const blocks = renderChunk(item.content);
     const first = blocks[0];
-    if (!first || (first.type !== "heading" && first.type !== "para")) return blocks;
+    if (!first || (first.type !== "heading" && first.type !== "para"))
+      return blocks;
     const norm = (s) => (s ?? "").trim().toUpperCase();
     const head = norm(first.text);
-    if (head && (head === norm(item.section_path) || head === norm(sectionTitle(item.section_path)))) {
+    if (
+      head &&
+      (head === norm(item.section_path) ||
+        head === norm(sectionTitle(item.section_path)))
+    ) {
       return blocks.slice(1);
     }
     return blocks;
@@ -170,7 +175,12 @@
     for (const e of entities) {
       if (seen.has(e.name)) continue;
       seen.add(e.name);
-      touched.push({ id: e.id, title: e.name, kind: "entity", entity_type: e.entity_type });
+      touched.push({
+        id: e.id,
+        title: e.name,
+        kind: "entity",
+        entity_type: e.entity_type,
+      });
     }
     return touched;
   }
@@ -229,7 +239,8 @@
         const hit = entries
           .filter((e) => e.isIntersecting)
           .sort(
-            (a, b) => Number(b.target.dataset.seq) - Number(a.target.dataset.seq),
+            (a, b) =>
+              Number(b.target.dataset.seq) - Number(a.target.dataset.seq),
           )[0];
         if (hit) {
           activeSeq = Number(hit.target.dataset.seq);
@@ -256,7 +267,10 @@
     const reduceMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
     ).matches;
-    el.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    el.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "start",
+    });
   });
 
   // Section-heading deep links. The host route (+page.svelte) only parses
@@ -283,7 +297,10 @@
     const reduceMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
     ).matches;
-    el.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    el.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "start",
+    });
   });
 
   // Reading-progress bar. The app root scrolls the window (see the
@@ -399,7 +416,9 @@
                 {sectionParent(row.item.section_path)}
               </p>
             {/if}
-            <h2 class="pub-section-title">{sectionTitle(row.item.section_path)}</h2>
+            <h2 class="pub-section-title">
+              {sectionTitle(row.item.section_path)}
+            </h2>
           </div>
         {/if}
 
@@ -430,7 +449,9 @@
             {#each bodyBlocks(row.item) as block, bi (bi)}
               {#if block.type === "heading"}
                 {#if touched.length}
-                  <h3 class="pub-inline-heading">{@html markText(block.text, touched)}</h3>
+                  <h3 class="pub-inline-heading">
+                    {@html markText(block.text, touched)}
+                  </h3>
                 {:else}
                   <h3 class="pub-inline-heading">{block.text}</h3>
                 {/if}

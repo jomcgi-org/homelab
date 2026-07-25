@@ -23,14 +23,20 @@
     subTab = "single";
   });
 
-  let showsLoadTestTab = $derived(project.key === "python" || project.key === "semgrep");
-  let loadTestWorkload = $derived(project.key === "python" ? "sandbox" : "semgrep");
+  let showsLoadTestTab = $derived(
+    project.key === "python" || project.key === "semgrep",
+  );
+  let loadTestWorkload = $derived(
+    project.key === "python" ? "sandbox" : "semgrep",
+  );
 
   // Backend-measured timing label. Only the semgrep demo now bypasses the
   // idempotency dedupe (dedupe=false), so its timing is a genuine fresh scan;
   // the python sandbox tab still reports a plain invocation time, so the label
   // stays honest per project rather than saying "fresh scan" for everything.
-  let latencyLabel = $derived(project.key === "semgrep" ? "fresh scan" : "invocation");
+  let latencyLabel = $derived(
+    project.key === "semgrep" ? "fresh scan" : "invocation",
+  );
 
   // Inputs, seeded from the project's sample so Run works with zero edits,
   // but everything stays editable.
@@ -115,7 +121,9 @@
           const res = await fetch(`/api/demos/firecracker/goose/${threadId}`);
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+            throw new Error(
+              data?.error || data?.detail || `HTTP ${res.status}`,
+            );
           }
           const data = await res.json();
           gooseStatus = data.status;
@@ -220,176 +228,179 @@
   {#if showsLoadTestTab && subTab === "load"}
     <LoadTestPanel workload={loadTestWorkload} />
   {:else}
-  <div class="input-area">
-    {#if project.key === "python"}
-      <label class="field-label" for="python-code">code.py</label>
-      <textarea
-        id="python-code"
-        class="code-input"
-        bind:value={pythonCode}
-        spellcheck="false"
-        rows="12"
-      ></textarea>
-    {:else if project.key === "semgrep"}
-      <label class="field-label" for="semgrep-path">file path</label>
-      <input
-        id="semgrep-path"
-        class="text-input"
-        bind:value={semgrepPath}
-        spellcheck="false"
-      />
-      <label class="field-label" for="semgrep-code">file contents</label>
-      <textarea
-        id="semgrep-code"
-        class="code-input"
-        bind:value={semgrepCode}
-        spellcheck="false"
-        rows="12"
-      ></textarea>
-    {:else if project.key === "goose"}
-      <label class="field-label" for="goose-task">task</label>
-      <textarea
-        id="goose-task"
-        class="code-input code-input--prose"
-        bind:value={gooseTask}
-        spellcheck="true"
-        rows="5"
-      ></textarea>
-      <div class="goose-extra">
-        <div>
-          <label class="field-label" for="goose-recipe">recipe (optional)</label>
-          <input
-            id="goose-recipe"
-            class="text-input"
-            bind:value={gooseRecipe}
-            placeholder="default"
-          />
+    <div class="input-area">
+      {#if project.key === "python"}
+        <label class="field-label" for="python-code">code.py</label>
+        <textarea
+          id="python-code"
+          class="code-input"
+          bind:value={pythonCode}
+          spellcheck="false"
+          rows="12"></textarea>
+      {:else if project.key === "semgrep"}
+        <label class="field-label" for="semgrep-path">file path</label>
+        <input
+          id="semgrep-path"
+          class="text-input"
+          bind:value={semgrepPath}
+          spellcheck="false"
+        />
+        <label class="field-label" for="semgrep-code">file contents</label>
+        <textarea
+          id="semgrep-code"
+          class="code-input"
+          bind:value={semgrepCode}
+          spellcheck="false"
+          rows="12"></textarea>
+      {:else if project.key === "goose"}
+        <label class="field-label" for="goose-task">task</label>
+        <textarea
+          id="goose-task"
+          class="code-input code-input--prose"
+          bind:value={gooseTask}
+          spellcheck="true"
+          rows="5"></textarea>
+        <div class="goose-extra">
+          <div>
+            <label class="field-label" for="goose-recipe"
+              >recipe (optional)</label
+            >
+            <input
+              id="goose-recipe"
+              class="text-input"
+              bind:value={gooseRecipe}
+              placeholder="default"
+            />
+          </div>
+          <div>
+            <label class="field-label" for="goose-tier">tier (optional)</label>
+            <input
+              id="goose-tier"
+              class="text-input"
+              bind:value={gooseTier}
+              placeholder="default"
+            />
+          </div>
         </div>
-        <div>
-          <label class="field-label" for="goose-tier">tier (optional)</label>
-          <input
-            id="goose-tier"
-            class="text-input"
-            bind:value={gooseTier}
-            placeholder="default"
-          />
-        </div>
+      {/if}
+    </div>
+
+    <div class="run-bar">
+      <button
+        class="run-button"
+        class:run-button--running={running}
+        onclick={run}
+        disabled={running || !canRun}
+      >
+        {#if running}
+          <span class="spinner" aria-hidden="true"></span> Running
+        {:else}
+          Run
+        {/if}
+      </button>
+
+      <div class="latency" aria-live="polite">
+        <span class="latency-item">
+          <span class="latency-label">wall</span>
+          <span class="latency-value">{displayMs.toFixed(0)}ms</span>
+        </span>
+        {#if result?.duration_ms != null}
+          <span class="latency-item">
+            <span class="latency-label">{latencyLabel}</span>
+            <span class="latency-value">{result.duration_ms}ms</span>
+          </span>
+        {/if}
+      </div>
+    </div>
+
+    {#if errorMsg}
+      <div class="error-banner" role="alert">{errorMsg}</div>
+    {/if}
+
+    {#if project.key === "goose" && running}
+      <div class="goose-status">
+        <span class="pulse-dot" aria-hidden="true"></span>
+        status: {gooseStatus ?? "queued"}
       </div>
     {/if}
-  </div>
 
-  <div class="run-bar">
-    <button
-      class="run-button"
-      class:run-button--running={running}
-      onclick={run}
-      disabled={running || !canRun}
-    >
-      {#if running}
-        <span class="spinner" aria-hidden="true"></span> Running
-      {:else}
-        Run
-      {/if}
-    </button>
-
-    <div class="latency" aria-live="polite">
-      <span class="latency-item">
-        <span class="latency-label">wall</span>
-        <span class="latency-value">{displayMs.toFixed(0)}ms</span>
-      </span>
-      {#if result?.duration_ms != null}
-        <span class="latency-item">
-          <span class="latency-label">{latencyLabel}</span>
-          <span class="latency-value">{result.duration_ms}ms</span>
-        </span>
-      {/if}
-    </div>
-  </div>
-
-  {#if errorMsg}
-    <div class="error-banner" role="alert">{errorMsg}</div>
-  {/if}
-
-  {#if project.key === "goose" && running}
-    <div class="goose-status">
-      <span class="pulse-dot" aria-hidden="true"></span>
-      status: {gooseStatus ?? "queued"}
-    </div>
-  {/if}
-
-  {#if result}
-    <div class="result-pane">
-      {#if project.key === "python"}
-        <div class="result-grid">
-          <span class="result-key">exit code</span>
-          <span
-            class="result-val"
-            class:result-val--bad={result.exit_code !== 0}
-            >{result.exit_code}</span
-          >
-        </div>
-        {#if result.stdout}
-          <div class="result-block">
-            <span class="body-label">stdout</span>
-            <pre class="body-text">{result.stdout}</pre>
+    {#if result}
+      <div class="result-pane">
+        {#if project.key === "python"}
+          <div class="result-grid">
+            <span class="result-key">exit code</span>
+            <span
+              class="result-val"
+              class:result-val--bad={result.exit_code !== 0}
+              >{result.exit_code}</span
+            >
           </div>
-        {/if}
-        {#if result.stderr}
-          <div class="result-block">
-            <span class="body-label">stderr</span>
-            <pre class="body-text body-text--error">{result.stderr}</pre>
+          {#if result.stdout}
+            <div class="result-block">
+              <span class="body-label">stdout</span>
+              <pre class="body-text">{result.stdout}</pre>
+            </div>
+          {/if}
+          {#if result.stderr}
+            <div class="result-block">
+              <span class="body-label">stderr</span>
+              <pre class="body-text body-text--error">{result.stderr}</pre>
+            </div>
+          {/if}
+          {#if result.error}
+            <div class="error-banner" role="alert">{result.error}</div>
+          {/if}
+        {:else if project.key === "semgrep"}
+          {#if result.findings?.length}
+            <ul class="findings">
+              {#each result.findings as f}
+                <li class="finding">
+                  <span class="finding-sev {severityClass(f.severity)}"
+                    >{f.severity}</span
+                  >
+                  <span class="finding-loc"
+                    >{f.path}:{f.line}{f.col ? `:${f.col}` : ""}</span
+                  >
+                  <span class="finding-rule">{f.rule_id}</span>
+                  <span class="finding-msg">{f.message}</span>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="result-empty">No findings.</p>
+          {/if}
+          {#if result.errors?.length}
+            <div class="result-block">
+              <span class="body-label">scan errors</span>
+              <pre class="body-text body-text--error">{result.errors.join(
+                  "\n",
+                )}</pre>
+            </div>
+          {/if}
+          {#if result.error}
+            <div class="error-banner" role="alert">{result.error}</div>
+          {/if}
+        {:else if project.key === "goose"}
+          <div class="result-grid">
+            <span class="result-key">status</span>
+            <span class="result-val">{result.status}</span>
           </div>
+          {#if result.result}
+            <div class="result-block">
+              <span class="body-label">result</span>
+              <pre class="body-text">{typeof result.result === "string"
+                  ? result.result
+                  : JSON.stringify(result.result, null, 2)}</pre>
+            </div>
+          {/if}
+          {#if result.result_error}
+            <div class="error-banner" role="alert">{result.result_error}</div>
+          {/if}
         {/if}
-        {#if result.error}
-          <div class="error-banner" role="alert">{result.error}</div>
-        {/if}
-      {:else if project.key === "semgrep"}
-        {#if result.findings?.length}
-          <ul class="findings">
-            {#each result.findings as f}
-              <li class="finding">
-                <span class="finding-sev {severityClass(f.severity)}"
-                  >{f.severity}</span
-                >
-                <span class="finding-loc">{f.path}:{f.line}{f.col ? `:${f.col}` : ""}</span>
-                <span class="finding-rule">{f.rule_id}</span>
-                <span class="finding-msg">{f.message}</span>
-              </li>
-            {/each}
-          </ul>
-        {:else}
-          <p class="result-empty">No findings.</p>
-        {/if}
-        {#if result.errors?.length}
-          <div class="result-block">
-            <span class="body-label">scan errors</span>
-            <pre class="body-text body-text--error">{result.errors.join("\n")}</pre>
-          </div>
-        {/if}
-        {#if result.error}
-          <div class="error-banner" role="alert">{result.error}</div>
-        {/if}
-      {:else if project.key === "goose"}
-        <div class="result-grid">
-          <span class="result-key">status</span>
-          <span class="result-val">{result.status}</span>
-        </div>
-        {#if result.result}
-          <div class="result-block">
-            <span class="body-label">result</span>
-            <pre class="body-text">{typeof result.result === "string"
-                ? result.result
-                : JSON.stringify(result.result, null, 2)}</pre>
-          </div>
-        {/if}
-        {#if result.result_error}
-          <div class="error-banner" role="alert">{result.result_error}</div>
-        {/if}
-      {/if}
-    </div>
-  {/if}
+      </div>
+    {/if}
 
-  <TraceWaterfall {traceId} />
+    <TraceWaterfall {traceId} />
   {/if}
 </div>
 

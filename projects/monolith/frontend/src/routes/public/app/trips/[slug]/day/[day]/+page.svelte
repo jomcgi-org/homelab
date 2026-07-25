@@ -60,7 +60,8 @@
     showFullscreen = false;
   });
   $effect(() => {
-    if (current > photos.length - 1) current = clampIndex(current, photos.length);
+    if (current > photos.length - 1)
+      current = clampIndex(current, photos.length);
   });
 
   const photo = $derived(photos[current] ?? null);
@@ -111,7 +112,8 @@
   // for the map's terrain hillshade relighting (mirrors the original's
   // SunCalc.getPosition()).
   const sunPosition = $derived.by(() => {
-    if (!telemetry || telemetry.lat == null || telemetry.lng == null) return null;
+    if (!telemetry || telemetry.lat == null || telemetry.lng == null)
+      return null;
     if (!photo?.taken_at) return null;
     const d = new Date(photo.taken_at);
     if (Number.isNaN(d.getTime())) return null;
@@ -203,14 +205,19 @@
 </script>
 
 <svelte:head>
-  <title>{trip ? `${trip.short_title ?? trip.title} - Day ${dayNumber}` : "Day"}</title>
+  <title
+    >{trip
+      ? `${trip.short_title ?? trip.title} - Day ${dayNumber}`
+      : "Day"}</title
+  >
 </svelte:head>
 
 <div class="root">
   <div class="inner">
     {#if !day}
       <p class="missing">
-        Day {dayNumber} not found. <a href={`/app/trips/${trip?.slug}`}>Back to summary</a>.
+        Day {dayNumber} not found.
+        <a href={`/app/trips/${trip?.slug}`}>Back to summary</a>.
       </p>
     {:else}
       <DayNav
@@ -265,7 +272,11 @@
               </div>
               <div class="cell r1 div-thin">
                 <div class="label">SOLAR</div>
-                <div class="val">{t.solarAltDeg != null ? `${t.solarAltDeg.toFixed(0)}°` : "--"}</div>
+                <div class="val">
+                  {t.solarAltDeg != null
+                    ? `${t.solarAltDeg.toFixed(0)}°`
+                    : "--"}
+                </div>
                 <div class="sub">{t.solarLabel}</div>
               </div>
               <div class="cell r1 div-thin">
@@ -279,7 +290,11 @@
               </div>
               <div class="cell r1">
                 <div class="label">ELEV</div>
-                <div class="val">{t.elevation != null ? Math.round(t.elevation) : "--"}<span class="unit">m</span></div>
+                <div class="val">
+                  {t.elevation != null ? Math.round(t.elevation) : "--"}<span
+                    class="unit">m</span
+                  >
+                </div>
               </div>
 
               <!-- ROW 2: OPTICS+NAV+BEARING | ELEVATION PROFILE -->
@@ -287,9 +302,13 @@
                 <div class="optics">
                   <div class="label">OPTICS</div>
                   <div class="optics-line">
-                    {t.focalLength35mm != null ? `${t.focalLength35mm}mm` : "--"} &fnof;/{t.aperture ?? "--"}
+                    {t.focalLength35mm != null
+                      ? `${t.focalLength35mm}mm`
+                      : "--"} &fnof;/{t.aperture ?? "--"}
                   </div>
-                  <div class="optics-sub">ISO {t.iso ?? "--"} · {t.shutterSpeed ?? "--"}</div>
+                  <div class="optics-sub">
+                    ISO {t.iso ?? "--"} · {t.shutterSpeed ?? "--"}
+                  </div>
                 </div>
 
                 <div class="nav">
@@ -300,7 +319,15 @@
                       disabled={!hasPrev}
                       aria-label="Previous photo"
                     >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        ><polyline points="15 18 9 12 15 6" /></svg
+                      >
                     </button>
                     <button
                       class="navstep"
@@ -308,23 +335,39 @@
                       disabled={!hasNext}
                       aria-label="Next photo"
                     >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        ><polyline points="9 18 15 12 9 6" /></svg
+                      >
                     </button>
                   </div>
-                  <div class="counter" style={`background:${color}`}>{photos.length ? current + 1 : 0} / {photos.length}</div>
+                  <div class="counter" style={`background:${color}`}>
+                    {photos.length ? current + 1 : 0} / {photos.length}
+                  </div>
                 </div>
 
                 <div class="bearing">
                   <div class="label">BEARING</div>
                   <div class="arrow">{t.bearingArrow}</div>
-                  <div class="bearing-deg">{t.bearing != null ? `${Math.round(t.bearing)}°` : "--"}</div>
+                  <div class="bearing-deg">
+                    {t.bearing != null ? `${Math.round(t.bearing)}°` : "--"}
+                  </div>
                 </div>
               </div>
 
               <div class="elev-profile">
                 <div class="label">ELEVATION PROFILE</div>
                 <div class="elev-inner">
-                  <DayElevationProfile data={profile} progress={profileProgress} accentColor={color} />
+                  <DayElevationProfile
+                    data={profile}
+                    progress={profileProgress}
+                    accentColor={color}
+                  />
                 </div>
               </div>
 
@@ -338,22 +381,31 @@
               </div>
               <div class="cell-stat div-thin">
                 <div class="label">KM</div>
-                <div class="km-val">{t.km ?? 0}<span class="small">/{t.totalKm ?? 0}</span></div>
+                <div class="km-val">
+                  {t.km ?? 0}<span class="small">/{t.totalKm ?? 0}</span>
+                </div>
               </div>
               <div class="cell-stat div-thin">
                 <div class="label">ASCENT</div>
-                <div class="stat-val up">+{(dayStats?.ascent ?? 0).toLocaleString()}m</div>
+                <div class="stat-val up">
+                  +{(dayStats?.ascent ?? 0).toLocaleString()}m
+                </div>
               </div>
               <div class="cell-stat div-thin">
                 <div class="label">DESCENT</div>
-                <div class="stat-val down">-{(dayStats?.descent ?? 0).toLocaleString()}m</div>
+                <div class="stat-val down">
+                  -{(dayStats?.descent ?? 0).toLocaleString()}m
+                </div>
               </div>
               <div class="cell-stat">
                 <div class="label">PHOTOS</div>
                 <div class="stat-val">{dayStats?.photoCount ?? 0}</div>
               </div>
             {:else}
-              <div class="cell r1"><div class="label">TELEMETRY</div><div class="val sm">--</div></div>
+              <div class="cell r1">
+                <div class="label">TELEMETRY</div>
+                <div class="val sm">--</div>
+              </div>
             {/if}
           </div>
         </div>
@@ -372,7 +424,10 @@
     aria-label="Close fullscreen photo"
     onclick={() => (showFullscreen = false)}
   >
-    <img src={photo.imgGallery ?? displayedSrc} alt={`Photo ${current + 1} of ${photos.length}`} />
+    <img
+      src={photo.imgGallery ?? displayedSrc}
+      alt={`Photo ${current + 1} of ${photos.length}`}
+    />
   </button>
 {/if}
 
@@ -380,7 +435,10 @@
   .root {
     min-height: 100vh;
     background: white;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family:
+      system-ui,
+      -apple-system,
+      sans-serif;
     color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
   .inner {

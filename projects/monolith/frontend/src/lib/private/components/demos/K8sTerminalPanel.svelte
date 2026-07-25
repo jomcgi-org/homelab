@@ -127,8 +127,14 @@
   function estimateGeometry() {
     if (!cardEl) return { cols: FALLBACK_COLS, rows: FALLBACK_ROWS };
     const rect = cardEl.getBoundingClientRect();
-    const cols = Math.max(20, Math.floor(rect.width / CHAR_W_PX) || FALLBACK_COLS);
-    const rows = Math.max(8, Math.floor(rect.height / CHAR_H_PX) || FALLBACK_ROWS);
+    const cols = Math.max(
+      20,
+      Math.floor(rect.width / CHAR_W_PX) || FALLBACK_COLS,
+    );
+    const rows = Math.max(
+      8,
+      Math.floor(rect.height / CHAR_H_PX) || FALLBACK_ROWS,
+    );
     return { cols, rows };
   }
 
@@ -254,7 +260,9 @@
 
   function sendResize() {
     if (!term || !ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    ws.send(
+      JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }),
+    );
   }
 
   function teardownSession() {
@@ -272,7 +280,10 @@
     if (ws) {
       const socket = ws;
       ws = null;
-      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      if (
+        socket.readyState === WebSocket.OPEN ||
+        socket.readyState === WebSocket.CONNECTING
+      ) {
         socket.close();
       }
     }
@@ -307,7 +318,10 @@
       <span class="chip-label">{chip.label}</span>
     </div>
     {#if status?.warm}
-      <span class="warm-badge" title="A banked snapshot exists; the next wake attempts a relight">
+      <span
+        class="warm-badge"
+        title="A banked snapshot exists; the next wake attempts a relight"
+      >
         warm snapshot ready
       </span>
     {/if}
@@ -383,9 +397,8 @@
   {/if}
 
   <p class="footnote">
-    This is a real 3-node k3s cluster in Firecracker microVMs. It wakes when
-    you connect and banks to memory snapshots about 10 minutes after you
-    disconnect.
+    This is a real 3-node k3s cluster in Firecracker microVMs. It wakes when you
+    connect and banks to memory snapshots about 10 minutes after you disconnect.
   </p>
 </section>
 

@@ -584,7 +584,14 @@
       } else if (pointers.size === 2) {
         panStart = null;
         const { dist, midX, midY } = pinchGeometry();
-        pinchStart = { dist, k: view.k, viewX: view.x, viewY: view.y, midX, midY };
+        pinchStart = {
+          dist,
+          k: view.k,
+          viewX: view.x,
+          viewY: view.y,
+          midX,
+          midY,
+        };
         moved = true; // a pinch is never a tap, even if it started as one
       }
     }
@@ -650,7 +657,14 @@
         // Still pinching with whichever two pointers remain: rebase so the
         // gesture continues smoothly instead of jumping.
         const { dist, midX, midY } = pinchGeometry();
-        pinchStart = { dist, k: view.k, viewX: view.x, viewY: view.y, midX, midY };
+        pinchStart = {
+          dist,
+          k: view.k,
+          viewX: view.x,
+          viewY: view.y,
+          midX,
+          midY,
+        };
         panStart = null;
       } else if (pointers.size === 1) {
         // Dropped from a pinch to a single finger: rebase to a pan from
@@ -685,7 +699,10 @@
       const my = e.clientY - rect.top;
       const wx = (mx - view.x) / view.k;
       const wy = (my - view.y) / view.k;
-      const k2 = Math.max(0.4, Math.min(3, view.k * (e.deltaY < 0 ? 1.12 : 0.89)));
+      const k2 = Math.max(
+        0.4,
+        Math.min(3, view.k * (e.deltaY < 0 ? 1.12 : 0.89)),
+      );
       view.k = k2;
       view.x = mx - wx * k2;
       view.y = my - wy * k2;

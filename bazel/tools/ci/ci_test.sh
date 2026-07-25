@@ -53,10 +53,10 @@ else
 	fail "flags_before_bb" "flag parse (line $flag_ln) must precede bb check (line $bb_ln)"
 fi
 
-if grep -qE '\*\.py\)' "$CI" && grep -qE '\*\.js' "$CI"; then
+if grep -qE '\*\.py\)' "$CI" && grep -qE '\*\.js' "$CI" && grep -qE '\*\.svelte' "$CI"; then
 	pass "lint_extensions"
 else
-	fail "lint_extensions" "missing py/js cases"
+	fail "lint_extensions" "missing py/js/svelte cases"
 fi
 
 if grep -q 'need_generators' "$CI" && grep -q 'need_gazelle' "$CI"; then

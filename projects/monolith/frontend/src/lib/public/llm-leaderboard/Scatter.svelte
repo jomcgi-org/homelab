@@ -12,22 +12,62 @@
   let metric = $state("cost"); // cost | wall | tokens | turns
   let taskSel = $state("all"); // 'all' | task id
 
-  const shortName = (id) => (id.includes("/") ? id.split("/").slice(1).join("/") : id);
+  const shortName = (id) =>
+    id.includes("/") ? id.split("/").slice(1).join("/") : id;
   const provider = (id) => (id.includes("/") ? id.split("/")[0] : id);
   const cellOf = (m, tid) => (m.tasks ?? []).find((t) => t.id === tid);
 
   const money = (v) => `$${v < 0.01 ? v.toFixed(4) : v.toFixed(3)}`;
   const secs = (v) => `${v.toFixed(v < 10 ? 1 : 0)}s`;
-  const kfmt = (v) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k` : `${Math.round(v)}`);
+  const kfmt = (v) =>
+    v >= 1000
+      ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`
+      : `${Math.round(v)}`;
   const round = (v) => `${v.toFixed(v < 10 ? 1 : 0)}`;
 
   // Each tab: the X metric. `get` reads the model-level mean; `cell` reads one task's
   // raw value; `log` picks a log axis for the wide-range metrics.
   const METRICS = {
-    cost: { label: "Cost", axis: "avg cost per task", lens: "cloud", beat: "cheaper than Claude", log: true, get: (m) => m.cost_usd, cell: (c) => c.cost_usd, fmt: money },
-    wall: { label: "Wall-time", axis: "avg wall-time per task", lens: "cloud", beat: "faster than Claude", log: false, get: (m) => (m.mean_latency_ms ?? 0) / 1000, cell: (c) => c.latency_ms / 1000, fmt: secs },
-    tokens: { label: "Output tokens", axis: "avg tokens per task", lens: "self-host", beat: "leaner than Claude", log: true, get: (m) => m.mean_tokens, cell: (c) => c.tokens, fmt: kfmt },
-    turns: { label: "Agent steps", axis: "avg steps per task", lens: "self-host", beat: "fewer steps than Claude", log: false, get: (m) => m.mean_turns, cell: (c) => c.turns, fmt: round },
+    cost: {
+      label: "Cost",
+      axis: "avg cost per task",
+      lens: "cloud",
+      beat: "cheaper than Claude",
+      log: true,
+      get: (m) => m.cost_usd,
+      cell: (c) => c.cost_usd,
+      fmt: money,
+    },
+    wall: {
+      label: "Wall-time",
+      axis: "avg wall-time per task",
+      lens: "cloud",
+      beat: "faster than Claude",
+      log: false,
+      get: (m) => (m.mean_latency_ms ?? 0) / 1000,
+      cell: (c) => c.latency_ms / 1000,
+      fmt: secs,
+    },
+    tokens: {
+      label: "Output tokens",
+      axis: "avg tokens per task",
+      lens: "self-host",
+      beat: "leaner than Claude",
+      log: true,
+      get: (m) => m.mean_tokens,
+      cell: (c) => c.tokens,
+      fmt: kfmt,
+    },
+    turns: {
+      label: "Agent steps",
+      axis: "avg steps per task",
+      lens: "self-host",
+      beat: "fewer steps than Claude",
+      log: false,
+      get: (m) => m.mean_turns,
+      cell: (c) => c.turns,
+      fmt: round,
+    },
   };
   const MK = ["cost", "wall", "tokens", "turns"];
   const cfg = $derived(METRICS[metric]);
@@ -62,7 +102,13 @@
         x = cfg.cell(c);
       }
       if (!(x > 0)) continue; // metric must be positive (log axis + a real run)
-      pts.push({ id: m.id, name: m.name ?? shortName(m.id), anchor: m.role === "anchor", x, y });
+      pts.push({
+        id: m.id,
+        name: m.name ?? shortName(m.id),
+        anchor: m.role === "anchor",
+        x,
+        y,
+      });
     }
     return pts;
   });
@@ -74,7 +120,9 @@
     const a = points.filter((p) => p.anchor).map((p) => p.x);
     return a.length ? Math.min(...a) : null;
   });
-  const providersShown = $derived([...new Set(points.map((p) => provider(p.id)))]);
+  const providersShown = $derived([
+    ...new Set(points.map((p) => provider(p.id))),
+  ]);
 
   // ---- geometry ----
   const W = 760;
@@ -100,7 +148,10 @@
     const [lo, hi] = xdomain;
     if (cfg.log) {
       const vv = Math.max(v, lo);
-      return M.l + (iw * (Math.log(hi) - Math.log(vv))) / (Math.log(hi) - Math.log(lo));
+      return (
+        M.l +
+        (iw * (Math.log(hi) - Math.log(vv))) / (Math.log(hi) - Math.log(lo))
+      );
     }
     return M.l + (iw * (hi - v)) / (hi - lo);
   };
@@ -111,7 +162,11 @@
   // envelope (screen-left = expensive, screen-right = cheap).
   const frontier = $derived.by(() => {
     const nd = points.filter(
-      (p) => !points.some((q) => q !== p && q.y >= p.y && q.x <= p.x && (q.y > p.y || q.x < p.x)),
+      (p) =>
+        !points.some(
+          (q) =>
+            q !== p && q.y >= p.y && q.x <= p.x && (q.y > p.y || q.x < p.x),
+        ),
     );
     return nd.sort((a, b) => b.x - a.x); // expensive -> cheap == screen left -> right
   });
@@ -133,7 +188,9 @@
       return { ...p, cx, cy, leftSide, ly: cy, show };
     });
     for (const side of [true, false]) {
-      const grp = rows.filter((r) => r.show && r.leftSide === side).sort((a, b) => a.ly - b.ly);
+      const grp = rows
+        .filter((r) => r.show && r.leftSide === side)
+        .sort((a, b) => a.ly - b.ly);
       for (let i = 1; i < grp.length; i++) {
         if (grp[i].ly - grp[i - 1].ly < 13) grp[i].ly = grp[i - 1].ly + 13;
       }
@@ -146,7 +203,11 @@
     const [lo, hi] = xdomain;
     const out = [];
     for (let i = 0; i < 5; i++) {
-      out.push(cfg.log ? Math.exp(Math.log(lo) + ((Math.log(hi) - Math.log(lo)) * i) / 4) : lo + ((hi - lo) * i) / 4);
+      out.push(
+        cfg.log
+          ? Math.exp(Math.log(lo) + ((Math.log(hi) - Math.log(lo)) * i) / 4)
+          : lo + ((hi - lo) * i) / 4,
+      );
     }
     return out;
   });
@@ -156,7 +217,9 @@
   <div class="controls">
     <div class="tabs" role="group" aria-label="Metric">
       {#each MK as k}
-        <button class:on={metric === k} onclick={() => (metric = k)}>{METRICS[k].label}</button>
+        <button class:on={metric === k} onclick={() => (metric = k)}
+          >{METRICS[k].label}</button
+        >
       {/each}
     </div>
     <label class="task">
@@ -174,44 +237,97 @@
   {#if !points.length}
     <p class="empty">No data to plot for this view.</p>
   {:else}
-    <svg viewBox="0 0 {W} {H}" role="img" aria-label="Hard-task pass versus {cfg.axis}">
-      <text class="ylab" x={M.l} y={M.t - 8}>{isAll ? "hard-task pass" : "pass"}</text>
-      <text class="eff" x={M.l + iw} y={M.t - 8} text-anchor="end">most efficient ↗</text>
+    <svg
+      viewBox="0 0 {W} {H}"
+      role="img"
+      aria-label="Hard-task pass versus {cfg.axis}"
+    >
+      <text class="ylab" x={M.l} y={M.t - 8}
+        >{isAll ? "hard-task pass" : "pass"}</text
+      >
+      <text class="eff" x={M.l + iw} y={M.t - 8} text-anchor="end"
+        >most efficient ↗</text
+      >
 
       {#each yticks as tv}
-        <line class="grid" x1={M.l} y1={yScale(tv)} x2={M.l + iw} y2={yScale(tv)} />
-        <text class="tick" x={M.l - 8} y={yScale(tv) + 3} text-anchor="end">{Math.round(tv * 100)}%</text>
+        <line
+          class="grid"
+          x1={M.l}
+          y1={yScale(tv)}
+          x2={M.l + iw}
+          y2={yScale(tv)}
+        />
+        <text class="tick" x={M.l - 8} y={yScale(tv) + 3} text-anchor="end"
+          >{Math.round(tv * 100)}%</text
+        >
       {/each}
       {#each xticks as tv}
-        <text class="tick" x={xScale(tv)} y={M.t + ih + 16} text-anchor="middle">{cfg.fmt(tv)}</text>
+        <text class="tick" x={xScale(tv)} y={M.t + ih + 16} text-anchor="middle"
+          >{cfg.fmt(tv)}</text
+        >
       {/each}
-      <text class="axis-title" x={M.l + iw / 2} y={H - 8} text-anchor="middle">{cfg.axis}{cfg.log ? " (log)" : ""}</text>
+      <text class="axis-title" x={M.l + iw / 2} y={H - 8} text-anchor="middle"
+        >{cfg.axis}{cfg.log ? " (log)" : ""}</text
+      >
 
       <!-- budget zone: right of the most efficient Claude anchor -->
       {#if anchorBound != null && xScale(anchorBound) < M.l + iw - 4}
-        <rect class="zone" x={xScale(anchorBound)} y={M.t} width={M.l + iw - xScale(anchorBound)} height={ih} />
-        <line class="zone-edge" x1={xScale(anchorBound)} y1={M.t} x2={xScale(anchorBound)} y2={M.t + ih} />
-        <text class="zone-lab" x={xScale(anchorBound) + 6} y={M.t + ih - 8}>{cfg.beat}</text>
+        <rect
+          class="zone"
+          x={xScale(anchorBound)}
+          y={M.t}
+          width={M.l + iw - xScale(anchorBound)}
+          height={ih}
+        />
+        <line
+          class="zone-edge"
+          x1={xScale(anchorBound)}
+          y1={M.t}
+          x2={xScale(anchorBound)}
+          y2={M.t + ih}
+        />
+        <text class="zone-lab" x={xScale(anchorBound) + 6} y={M.t + ih - 8}
+          >{cfg.beat}</text
+        >
       {/if}
 
       {#if frontier.length > 1}
-        <polyline class="frontier" points={frontier.map((p) => `${xScale(p.x)},${yScale(p.y)}`).join(" ")} />
+        <polyline
+          class="frontier"
+          points={frontier
+            .map((p) => `${xScale(p.x)},${yScale(p.y)}`)
+            .join(" ")}
+        />
       {/if}
 
       {#each laidOut as p (p.id)}
         <g class="pt" class:on-frontier={frontierIds.has(p.id)}>
           <title>{p.name}: {cfg.fmt(p.x)}, {Math.round(p.y * 100)}% pass</title>
           {#if p.show}
-            <line class="lead" x1={p.cx} y1={p.cy} x2={p.leftSide ? p.cx - 10 : p.cx + 10} y2={p.ly} />
+            <line
+              class="lead"
+              x1={p.cx}
+              y1={p.cy}
+              x2={p.leftSide ? p.cx - 10 : p.cx + 10}
+              y2={p.ly}
+            />
           {/if}
-          <circle class="mark" cx={p.cx} cy={p.cy} r={p.anchor ? 6.5 : 5.5} style="fill:{provColor(p.id)}" class:anchor={p.anchor} />
+          <circle
+            class="mark"
+            cx={p.cx}
+            cy={p.cy}
+            r={p.anchor ? 6.5 : 5.5}
+            style="fill:{provColor(p.id)}"
+            class:anchor={p.anchor}
+          />
           {#if p.show}
             <text
               class="lbl"
               x={p.leftSide ? p.cx - 13 : p.cx + 13}
               y={p.ly + 3}
               text-anchor={p.leftSide ? "end" : "start"}
-              style="fill:{provColor(p.id)}">{p.name}{p.anchor ? " (anchor)" : ""}</text
+              style="fill:{provColor(p.id)}"
+              >{p.name}{p.anchor ? " (anchor)" : ""}</text
             >
           {/if}
         </g>
@@ -219,12 +335,15 @@
     </svg>
 
     <div class="cap">
-      {cfg.label} · {isAll ? "hard-task pass, mean over all tasks" : taskSel} · match the
-      frontier (top), beat its {cfg.label.toLowerCase()} ceiling (right)
+      {cfg.label} · {isAll ? "hard-task pass, mean over all tasks" : taskSel} · match
+      the frontier (top), beat its {cfg.label.toLowerCase()} ceiling (right)
     </div>
     <div class="key">
       {#each providersShown as pv}
-        <span class="k"><i class="sw" style="background:{PROV[pv] ?? '#6b6658'}"></i>{pv}</span>
+        <span class="k"
+          ><i class="sw" style="background:{PROV[pv] ?? '#6b6658'}"
+          ></i>{pv}</span
+        >
       {/each}
       <span class="k frontier-k"><i class="sw-line"></i>frontier</span>
     </div>

@@ -27,15 +27,19 @@
       stroke-width="2"
       stroke-linecap="round"
       stroke-linejoin="round"
-      aria-hidden="true"><polyline points="15 18 9 12 15 6" /></svg>
+      aria-hidden="true"><polyline points="15 18 9 12 15 6" /></svg
+    >
     <span>Summary</span>
   </a>
 
   <div class="title">
     <div class="eyebrow">
-      Day {dayNumber} of {totalDays}{#if date}<span class="date">{date}</span>{/if}
+      Day {dayNumber} of {totalDays}{#if date}<span class="date">{date}</span
+        >{/if}
     </div>
-    <div class="label" style={`border-bottom:3px solid ${dayColor}`}>{label}</div>
+    <div class="label" style={`border-bottom:3px solid ${dayColor}`}>
+      {label}
+    </div>
   </div>
 
   <div class="arrows">
@@ -49,7 +53,8 @@
           stroke-width="2"
           stroke-linecap="round"
           stroke-linejoin="round"
-          aria-hidden="true"><polyline points="15 18 9 12 15 6" /></svg>
+          aria-hidden="true"><polyline points="15 18 9 12 15 6" /></svg
+        >
         <span>Prev</span>
       </a>
     {:else}
@@ -61,7 +66,8 @@
           stroke="currentColor"
           stroke-width="2"
           stroke-linecap="round"
-          stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+          stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg
+        >
         <span>Prev</span>
       </span>
     {/if}
@@ -77,7 +83,8 @@
           stroke-width="2"
           stroke-linecap="round"
           stroke-linejoin="round"
-          aria-hidden="true"><polyline points="9 18 15 12 9 6" /></svg>
+          aria-hidden="true"><polyline points="9 18 15 12 9 6" /></svg
+        >
       </a>
     {:else}
       <span class="navbtn disabled" aria-hidden="true">
@@ -89,7 +96,8 @@
           stroke="currentColor"
           stroke-width="2"
           stroke-linecap="round"
-          stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+          stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg
+        >
       </span>
     {/if}
   </div>
@@ -112,7 +120,10 @@
     align-items: center;
     gap: 4px;
     padding: 8px 14px;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family:
+      system-ui,
+      -apple-system,
+      sans-serif;
     font-size: 13px;
     font-weight: 600;
     color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
@@ -169,7 +180,10 @@
     margin-left: 8px;
   }
   .label {
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family:
+      system-ui,
+      -apple-system,
+      sans-serif;
     font-size: 18px;
     font-weight: 700;
     color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */

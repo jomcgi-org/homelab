@@ -119,7 +119,12 @@
       /></svg
     >
     <svg class="deco deco-diamond" width="20" height="20" viewBox="0 0 24 24"
-      ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
+      ><path
+        d="M12,2 L22,12 L12,22 L2,12 Z"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2"
+      /></svg
     >
     <svg class="deco deco-squiggle" width="76" height="22" viewBox="0 0 80 24"
       ><path
@@ -136,12 +141,20 @@
       <h1 class="cv-name display">{name}</h1>
       <p class="cv-tagline mono">{tagline}</p>
       <div class="cv-contacts">
-        <a class="btn btn-primary" href={`mailto:${contact.email}`}>{contact.email}</a>
-        <a class="btn btn-secondary" href={contact.linkedin.href} target="_blank" rel="noreferrer"
-          >{contact.linkedin.label}</a
+        <a class="btn btn-primary" href={`mailto:${contact.email}`}
+          >{contact.email}</a
         >
-        <a class="btn btn-secondary" href={contact.github.href} target="_blank" rel="noreferrer"
-          >{contact.github.label}</a
+        <a
+          class="btn btn-secondary"
+          href={contact.linkedin.href}
+          target="_blank"
+          rel="noreferrer">{contact.linkedin.label}</a
+        >
+        <a
+          class="btn btn-secondary"
+          href={contact.github.href}
+          target="_blank"
+          rel="noreferrer">{contact.github.label}</a
         >
         <span class="loc-chip mono">◍ {contact.location}</span>
       </div>
@@ -190,7 +203,9 @@
                     <p class="highlight-kicker">{highlight.kicker}</p>
                   {/if}
                   {#if highlight.intro}
-                    <p class="highlight-intro">{@render inline(highlight.intro)}</p>
+                    <p class="highlight-intro">
+                      {@render inline(highlight.intro)}
+                    </p>
                   {/if}
                   <ul class="bullets">
                     {#each highlight.bullets as bullet}

@@ -71,7 +71,7 @@ if $STAGED; then
 			STARLARK_FILES+=("$f")
 			BUILD_FILES+=("$f")
 			;;
-		*.js | *.jsx | *.ts | *.tsx | *.json | *.yaml | *.yml | *.md | *.css | *.html)
+		*.js | *.jsx | *.ts | *.tsx | *.json | *.yaml | *.yml | *.md | *.css | *.html | *.svelte)
 			PRETTIER_FILES+=("$f")
 			;;
 		esac
@@ -79,6 +79,7 @@ if $STAGED; then
 
 	log "Formatting ${#STAGED_FILES[@]} staged files..."
 	PIDS=()
+	PRETTIER_CONFIG="${PRETTIER_CONFIG:-bazel/tools/format/prettier.config.cjs}"
 
 	if [ ${#PY_FILES[@]} -gt 0 ]; then
 		ruff format "${PY_FILES[@]}" 2>/dev/null &
@@ -97,7 +98,7 @@ if $STAGED; then
 		PIDS+=($!)
 	fi
 	if [ ${#PRETTIER_FILES[@]} -gt 0 ]; then
-		(prettier --write "${PRETTIER_FILES[@]}" 2>/dev/null || true) &
+		(prettier --config "$PRETTIER_CONFIG" --write "${PRETTIER_FILES[@]}" 2>/dev/null || true) &
 		PIDS+=($!)
 	fi
 
@@ -168,8 +169,9 @@ fi
 	xargs -0 gofumpt -w 2>/dev/null || true) &
 PIDS+=($!)
 
-# Prettier (JS/TS/JSON/YAML/MD)
-prettier --write . 2>/dev/null &
+# Prettier (JS/TS/JSON/YAML/MD/Svelte); --config loads prettier-plugin-svelte
+PRETTIER_CONFIG="${PRETTIER_CONFIG:-bazel/tools/format/prettier.config.cjs}"
+prettier --config "$PRETTIER_CONFIG" --write . 2>/dev/null &
 PIDS+=($!)
 
 # Doc/config generators — ONE shared list (also run by the CI format multirun via
