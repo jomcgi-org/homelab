@@ -9,13 +9,13 @@ Hosted at **https://github.com/jomcgi/homelab**. The `gh` CLI is authenticated.
 ```
 homelab/
 ├── projects/            # All services, operators, websites — colocated with deploy configs
-│   ├── platform/          # Cluster-critical infra (ArgoCD, Linkerd, SigNoz, etc.)
+│   ├── platform/          # Cluster-critical infra (ArgoCD, Cilium, SigNoz, etc.)
 │   ├── {service}/         # Each service has chart/, deploy/, backend/ as needed
 │   │   ├── chart/         # Helm chart (if custom)
 │   │   └── deploy/        # ArgoCD Application, values, kustomization
 │   └── home-cluster/      # Auto-generated ArgoCD root kustomization
 ├── bazel/               # All Bazel build infrastructure (rules, tools, images, semgrep, patches)
-├── docs/               # Design docs, ADRs, and plans — ls to discover available docs
+├── docs/               # Design docs and ADRs (ls to discover; docs/plans/ is retired)
 │   └── decisions/       # Architecture Decision Records — ls decisions/<category>/
 ├── MODULE.bazel         # Bazel dependency management (bzlmod, not WORKSPACE)
 └── buildbuddy.yaml      # CI pipeline definition

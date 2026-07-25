@@ -1,10 +1,11 @@
 # CLAUDE.md - monolith
 
 Scoped guidance for `projects/monolith`. The repo-root `CLAUDE.md` still applies.
+See `README.md` in this directory for the domain map and public/private tier boundary.
 
 ## Scheduled job handlers must not block the event loop
 
-Handlers registered with `shared.scheduler.register_job` have the signature
+Handlers registered with `scheduler.api.register_job` have the signature
 `async def handler(session: Session) -> datetime | None` and are **awaited on the
 scheduler's event loop**. The monolith uses synchronous SQLModel sessions, so
 calling a sync Session method (`session.add` / `exec` / `execute` / `commit` /
@@ -35,6 +36,9 @@ The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
 5. Do not `session.add` in a loop (semgrep `session-add-in-loop`): build the
    rows and `session.add_all(...)` once, or mutate `session.get`-tracked rows
    and let them flush on `commit`.
+6. Pass `heavy=True` to `register_job` for memory-intensive jobs (e.g. graph
+   layout). The dispatcher serializes heavy jobs so two of them never co-run
+   and OOMKill the shared pod; light jobs stay fully parallel.
 
 ## Test fixtures use SQLite; datetimes come back naive
 
@@ -63,10 +67,10 @@ How it renders deterministically:
 
 - **Mock seam is `API_BASE`.** Every public `+page.server.js` `load()` calls
   `fetch(\`${API_BASE}/api/...\`)`. The action boots the real adapter-node app
-(`:build_public`) with `API_BASE`pointed at`mock-server.mjs`, which serves
-committed JSON fixtures from `fixtures/api/`. The app's own `+server.js`proxy
-routes run inside the app and call the mock themselves, so the mock only needs
-the raw`/api/...` paths.
+  (`:build_public`) with `API_BASE` pointed at `mock-server.mjs`, which serves
+  committed JSON fixtures from `fixtures/api/`. The app's own `+server.js` proxy
+  routes run inside the app and call the mock themselves, so the mock only needs
+  the raw `/api/...` paths.
 - **Maps are intercepted, not masked.** Playwright fulfils
   `tiles.openfreemap.org` with a committed flat `fixtures/basemap/blank-style.json`
   and `/img/**` with a placeholder PNG, so the basemap and trip thumbnails render
