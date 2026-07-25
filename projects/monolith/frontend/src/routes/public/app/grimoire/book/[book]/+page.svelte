@@ -9,7 +9,7 @@
   //
   // Adventures strip: fetched client-side (best-effort, like Reader's own
   // book-meta fetch) above the Reader for books that have been classified
-  // into adventures (grimoire.adventure seed). Renders nothing
+  // into adventures (grimoire-classify-adventures skill). Renders nothing
   // for the vast majority of books, which have no adventure rows.
   import { page } from "$app/stores";
   import Reader from "$lib/public/grimoire/Reader.svelte";

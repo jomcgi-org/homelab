@@ -1,5 +1,6 @@
 -- Adventure seed: boundaries classified from each book's section outline
--- (Claude Code in-session, 2026-07-05; method: outline + published titles).
+-- (Claude Code in-session, 2026-07-05; see docs/plans/2026-07-05-grimoire-adventures.md
+-- Task 4 and the grimoire-classify-adventures skill for the method).
 -- start_seq/end_seq are knowledge_chunk seq ranges; end_seq NULL = to end of
 -- book. Single-adventure books span the whole book (front matter and
 -- appendices belong to their one adventure). Anthology boundaries were
