@@ -43,13 +43,13 @@ if [[ "$COMMAND" == bazel\ * ]] || [[ "$COMMAND" == bazelisk\ * ]] || [[ "$COMMA
 		BLOCKED: Direct bazel/bazelisk on the workstation is not the feedback loop.
 
 		Use the unified gate (BuildBuddy Remote Bazel under the hood):
-		  ci              # lint changed files + selective regen + bb remote test
+		  ci              # lint + selective regen + bb remote test
 		  ci lint         # format only files changed vs origin/main
 		  ci regen        # generators/gazelle only when inputs changed
-		  ci test         # bb remote --os=linux --arch=amd64 test //... --config=ci
+		  ci test         # exact buildbuddy.yaml Test argv via bb remote
 
-		PR Workflows use the same remote cache; a green `ci test` should make
-		the PR "Test" action mostly cache-hit.
+		ci test runs the same flags as Workflows Test so the remote action
+		cache is shared; a green run should make PR Test mostly cache-hit.
 
 		Inspect CI: mcp__buildbuddy__get_invocation (commitSha or invocationId)
 	EOF
