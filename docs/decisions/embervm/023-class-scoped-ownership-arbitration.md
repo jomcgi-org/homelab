@@ -51,9 +51,9 @@ The generation stays exactly what `volume.go` implements: a coherence check pair
 
   **The record must be durable in two places, and the second is not optional.** A control-plane op-log entry binds a former owner only while session relight is CP-driven. ADR 018's declared direction is brick-authoritative lifecycle, and a node-local wake does not consult the op-log, so the record must *also* be a node-local tombstone beside the bank artifact the moment session wake goes brick-local. ADR 020's own risk table identified the local tombstone as the fix precisely because a token cannot be recalled; dropping it would let the commit point erode on the roadmap ADR 018 already committed to.
 
-- **Failover (owner absent) is best-effort, and sessions have no grant machinery today.** This must be said plainly rather than borrowed: `wake_grant`, the forward-only watermark, and quarantine-on-uncovered-advancement are **stateful-volume** mechanisms. Sessions carry a control-plane generation but no grants at all, and `session_manager.ex` records that sessions "carry no volume/generation, so no pairing guard applies here." So the honest statement is: a claimant relights from the last banked artifact, the control plane's session generation advances, and **detection of a stale second incarnation rests on the generation in the token, not on quarantine.** Extending grants to sessions is possible new work, not existing behaviour, and this ADR does not assume it. Decision 3b therefore does **not** give sessions a grant: it gives the brick a local self-limit, and leaves adjudication to the reports the control plane already receives.
+- **Failover (owner absent) is best-effort, and sessions have no grant machinery today.** This must be said plainly rather than borrowed: `wake_grant`, the forward-only watermark, and quarantine-on-uncovered-advancement are **stateful-volume** mechanisms. Sessions carry a control-plane generation but no grants at all, and `session_manager.ex` records that sessions "carry no volume/generation, so no pairing guard applies here." So the honest statement is: a claimant relights from the last banked artifact, the control plane's session generation advances, and **detection of a stale second incarnation rests on the control plane comparing reported generations once the bricks reconnect, not on quarantine and not on the token.** Extending grants to sessions is possible new work, not existing behaviour, and this ADR does not assume it. Decision 3b therefore does **not** give sessions a grant: it gives the brick a local self-limit, and leaves adjudication to the reports the control plane already receives.
 
-- **Divergence is bounded by the brick's silence timeout** (decision 3b), not by in-flight work and not by token expiry. A node partitioned from the control plane is not partitioned from clients, and a pre-partition token matches the old copy's generation, so nothing in the token detects staleness. What ends the window is the brick stopping itself.
+- **Divergence is bounded by the brick's silence timeout** (decision 3b), not by in-flight work and not by token expiry. A token routes to the brick named in it; it is not a staleness detector. A node partitioned from the control plane is not partitioned from clients, and a pre-partition token matches the old copy's generation, so presenting it reveals nothing. What ends the window is the brick stopping itself.
 
 - **Composite is governed as one unit.** The relinquish record covers the whole bundle set, and a partial handoff is a failed handoff: no member may be claimed elsewhere unless the record covers the group. Composite is the least-fenced class and is already on the node-local relight path, so it inherits the session rules rather than being left undecided.
 
@@ -138,7 +138,7 @@ Baseline: `docs/security.md`.
 
 - **The weakening is scoped and named.** Session divergence is a real reduction against stateful's guarantee. It is confined to a class whose state is a sandbox, and it is bounded by a parameter (the brick silence timeout) rather than being open-ended.
 - **The brick silence timeout is the correctness parameter**, not token TTL. Shortening it tightens the divergence bound and makes a control-plane blip more disruptive; that trade belongs to whoever sets it, not to a default.
-- **Fail-closed is unchanged.** ADR 018's rule stands: any advancement no live grant covers is quarantined. This ADR adds a relinquish record; it does not add an exception to quarantine.
+- **Enforcement is still fail-closed, but for sessions it is not quarantine.** Session and composite enforcement is a post-hoc comparison of reported generations on the dial-home report, bounded live by the brick silence timeout (decision 3b). Quarantine-on-uncovered-advancement stays exactly what ADR 018 made it: a grant mechanism, covering grant-bearing stateful generations only. This ADR adds a relinquish record and a brick self-limit; it does not extend quarantine to a class that has no grants.
 - **The relinquish record must be durable before the transfer starts.** If it is written after, a crash mid-transfer leaves the old owner able to relight, which is the hole this closes.
 
 ---
@@ -149,7 +149,7 @@ Baseline: `docs/security.md`.
 | ---- | ---------- | ------ | ---------- |
 | Session divergence during a client-visible partition | Medium | Medium | Bounded by the brick silence timeout; accepted for the class; do not extend the pattern to stateful |
 | Relinquish record written after transfer begins | Medium | High | Ordering is the decision: durable record first, exactly ADR 018's op-log-before-dispatch discipline |
-| Redistribution's grant claim becomes a bottleneck | Low | Medium | Redistribution is rare relative to dispatch; if it is not, that is a signal to fix placement rather than to remove adjudication |
+| The handoff / relinquish record becomes a control-plane bottleneck | Low | Medium | Redistribution is rare relative to dispatch; if it is not, that is a signal to fix placement rather than to drop the record |
 | Someone applies the session model to stateful for symmetry | Medium | High | The asymmetry is the decision; the table above is the guard |
 | Copy sets reintroduce an unfenced local relight | Medium | Medium | Copy sets are deferred (ADR 020 review); if revived, each copy needs the same relinquish discipline |
 
@@ -168,7 +168,7 @@ Baseline: `docs/security.md`.
 
 | Resource | Relevance |
 | -------- | --------- |
-| [ADR 018](018-node-local-activator-brick-authoritative-lifecycle.md) | Grant-as-provenance, the four-layer physical fence argument, the rejection of lease-as-safety-primitive, forward-only watermark and quarantine |
+| [ADR 018](018-node-local-activator-brick-authoritative-lifecycle.md) | Grant-as-provenance, the physical-fence argument, the rejection of lease-as-safety-primitive, forward-only watermark and quarantine; amendment note added there |
 | [ADR 011](011-distribution-longhorn-fencing-cp-rollouts.md) | Attach exclusivity; "the CP arbitrates, the fence enforces" |
 | [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) | Decision 3 this withdraws; decisions 4 and 5 this corrects |
 | [ADR 016](016-kubernetes-scheduling-integration-contract.md) | The tiered session contract that keeps sessions off volumes |
