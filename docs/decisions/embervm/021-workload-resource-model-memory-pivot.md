@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-25
-**Builds on:** [013 - Substrate Lanes, Brick Sizing, and the Capacity Tier Ladder](013-substrate-lanes-brick-sizing-capacity-tiers.md) (the brick sizing rule this feeds), [020 - Admission-Only Control Plane](020-admission-control-plane-token-routing-peer-redistribution.md) (the capacity view this makes a scalar), [001 - EmberVM](001-embervm-beam-firecracker-workload-orchestrator.md) (the metering contract), [018 - Node-Local Activator](018-node-local-activator-brick-authoritative-lifecycle.md) (the reconcile-time metering this does not yet resolve)
+**Builds on:** [013 - Substrate Lanes, Brick Sizing, and the Capacity Tier Ladder](013-substrate-lanes-brick-sizing-capacity-tiers.md) (the brick sizing rule this feeds), [020 - Admission-Only Control Plane](020-admission-control-plane-token-routing-peer-redistribution.md) (the capacity view this makes a scalar), [001 - EmberVM](001-embervm-beam-firecracker-workload-orchestrator.md) (the metering contract), [018 - Node-Local Activator](018-node-local-activator-brick-authoritative-lifecycle.md) (the reconcile-time metering stream this ADR's billing unit is measured over, whose posture ADR 020 decision 6 settles as fail-open)
 
 ---
 

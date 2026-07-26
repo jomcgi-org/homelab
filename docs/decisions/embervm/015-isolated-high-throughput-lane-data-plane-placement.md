@@ -180,3 +180,10 @@ drain pools.
 | [ADR 013](013-substrate-lanes-brick-sizing-capacity-tiers.md) | Brick size classes and slot ceilings that bound pool depth per brick |
 | [ADR 007](007-sharded-control-plane-pg-oplog-cells.md) | Op-log seam for the asynchronous lifecycle rows this lane relies on |
 | `projects/embervm/xds/snapshot/desired.go` | Current serving xDS build (ROUND_ROBIN, no retry/outlier) this lane extends |
+
+---
+
+## Amendment (2026-07-26)
+
+- **[ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) decision 6 inverts what the quota lease is for.** This ADR's decision 5 requires metering to "stay fail-closed without a CP hop," and has a brick stop admitting when its lease runs out. ADR 020 generalises the per-brick lease to every lane but makes it **fail-open**: metering allocates running costs inside an organisation rather than charging customers, so a brick that cannot renew keeps admitting and the unreconciled spend is written off. The mechanism this ADR chose is kept; the guarantee it was chosen to provide is withdrawn.
+- **Cutting off a non-paying principal is no longer this lane's job.** ADR 020 makes it an admission action: the control plane suspends the principal and stops minting tokens, and the edge returns `402`. The lease is a reporting boundary, not an enforcement one, so "fail-closed on exhaustion" in the comparison table and in decision 5 should be read as superseded rather than as current intent.

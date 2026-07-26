@@ -45,11 +45,13 @@ Three threads. Within each, later ADRs depend on earlier ones.
 
 ## What this set changes elsewhere
 
-Five previously-Accepted ADRs carry amendment notes rather than being edited in place:
+Seven earlier ADRs carry amendment notes rather than being edited in place:
 
 | ADR | Amended by | What changed |
 | --- | ---------- | ------------ |
 | 001 | 025 | R7's "a placement move is a copy, never a rebuild" no longer holds for stateful |
+| 014 | 020 | metering leaves decision 3's synchronous hot-path write set; node-confirmed destruction is untouched |
+| 015 | 020 | the per-brick quota lease is kept, but decision 5's fail-closed guarantee is withdrawn |
 | 007 | 020 | the creation-critical-path rejection is reversed for the metering write only |
 | 011 | 025 | stateful volumes stay on local disk; the Longhorn move is withdrawn |
 | 016 | 020, 025 | the CP-owned placement loop, and decision 5's Longhorn-plus-S3 durability clause |

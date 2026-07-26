@@ -238,3 +238,10 @@ workload class may touch.
 | [ADR 007](007-sharded-control-plane-pg-oplog-cells.md) | Oplog seam a candidate carrier for async writes |
 | [ADR 011](011-distribution-longhorn-fencing-cp-rollouts.md), [ADR 012](012-fleet-colocation-cp-dynamic-sizing.md), [ADR 013](013-substrate-lanes-brick-sizing-capacity-tiers.md) | The fleet/brick topology that makes reject/retry cheap |
 | Incidents: #3732 (NodeChannel keying fleet-down), #3745 (tap-leak wedge), node-name alias misroute | The drift bug class this decision removes |
+
+---
+
+## Amendment (2026-07-26)
+
+- **[ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) decision 6 removes metering from decision 3's synchronous set.** This ADR keeps "metering and quota checks (fail-closed, bounded)" as one of the write classes that must stay synchronous on the hot path. ADR 015 already moved that to per-brick quota leases for the isolated lane, and ADR 020 generalises the leases to every lane and makes them fail-open, on the grounds that metering is internal cost allocation rather than customer billing. Metering is therefore no longer a synchronous hot-path write anywhere, and the O(sandboxes) durable write it implied is gone.
+- **Node-confirmed destruction and its fail-closed reconciliation are unaffected.** That is a correctness property about orphaned VMs, not a billing one, and nothing in ADR 020 relaxes it. Only the metering clause of decision 3 is amended.
