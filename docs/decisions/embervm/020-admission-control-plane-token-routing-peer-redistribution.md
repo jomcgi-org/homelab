@@ -183,7 +183,7 @@ Baseline: `docs/security.md`.
 
 ## Open Questions
 
-1. ~~All of decision 3.~~ Answered by [ADR 023](023-class-scoped-ownership-arbitration.md), which withdraws rather than replaces it: arbitration is class-scoped, stateful needs no mechanism under [ADR 025](025-local-disk-authoritative-s3-archive-interval.md), and sessions accept a bound rather than a fence. Remaining there: the numeric silence timeout, which is question 2 below.
+1. ~~All of decision 3.~~ Answered by [ADR 023](023-class-scoped-ownership-arbitration.md), which withdraws rather than replaces it: arbitration is class-scoped, stateful needs no mechanism under [ADR 025](025-local-disk-authoritative-s3-archive-interval.md), and sessions accept a bound rather than a fence. Remaining there are ADR 023's own open questions: the numeric silence timeout (question 2 below is the same number), whether the relinquish record needs its own op kind, and serving-class redistribution.
 2. ~~Token TTL versus admission as the availability floor.~~ **Dissolved by [ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b**: the divergence bound is the brick silence timeout, not token expiry, so TTL may match session life and there is no availability floor to trade against. Remaining: the numeric silence timeout.
 3. ~~The redistribution objective.~~ **Decided: high active brick utilization** (provisionally >90%, see decision 1b) via forecast-driven colocation (decision 1b), with pack-to-empty as the mechanism that makes it reclaimable.
 4. **Signing-key distribution, rotation, and verification point** for a bearer credential with no revocation list.
