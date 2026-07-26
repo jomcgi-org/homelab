@@ -14,7 +14,24 @@ auto_version=$(
 )
 
 # Generate timestamp-based image tag: YYYY.MM.DD.HH.MM.SS-shortsha
-base_image_tag=$(date -u +"%Y.%m.%d.%H.%M.%S")-${git_short_sha}
+#
+# The timestamp is the COMMIT date, not the wall clock, so the tag is a function
+# of the commit alone. Rebuilding the same commit republishes the same ghcr tag
+# instead of minting a new one per push run, which matches how the rest of the
+# image pipeline already works (SOURCE_DATE_EPOCH=0 in .bazelrc makes apko
+# digests reproducible; a wall-clock tag undid that property one layer up).
+#
+# Same sortable YYYY.MM.DD.HH.MM.SS-shortsha format, and it still changes on
+# every new commit, so each merge to main still publishes a distinct tag.
+#
+# Note the semantic: the tag now encodes when the commit was authored, not when
+# the image was built. Those differ for a rebuild or a rebase.
+#
+# This is a reproducibility change, not a performance one. Stamp-related remote
+# cache churn was a separate problem, fixed by dropping `common:ci --stamp`
+# (PR #4038); making this value deterministic moved cache misses only 524 -> 496,
+# because volatile-status.txt is the binding constraint there, not this key.
+base_image_tag=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y.%m.%d.%H.%M.%S HEAD)-${git_short_sha}
 
 # Get branch name (sanitized for Docker tags)
 # Check multiple CI environment variables for branch name
