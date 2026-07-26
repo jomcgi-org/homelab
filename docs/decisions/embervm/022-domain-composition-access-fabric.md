@@ -20,11 +20,13 @@ At the same time the only live customer is one operator, but **domain-shaped bou
 
 A third pressure: horizontal scale is not one knob. Serving and task fleets already grow by adding VMs. Stateful is a singleton by construction (one volume, generation pairing). Postgres read replicas are a real later recipe (duplicate state, stream from primary, separate ro endpoint) but are special-case machinery for small value today and must not drive the simplification agenda.
 
+A fourth pressure: real apps are not pure Ember graphs. Monolith pods already dial scratch-postgres; agents already egress to cluster and public HTTP via ADR 023. Inter-VM ACLs alone leave **VM-to-Service** and **Service-to-VM** as ad hoc chart wiring with weaker (or no) policy. The fabric has to cover the full triangle or the interesting edges stay outside it.
+
 ---
 
 ## Decision
 
-Seven decisions. Together they are the default way multi-component apps sit on EmberVM, and they deliberately **simplify** rather than add a sixth workload class.
+Eight decisions. Together they are the default way multi-component apps sit on EmberVM, and they deliberately **simplify** rather than add a sixth workload class.
 
 ### 1. Compose services, not groups
 
@@ -53,32 +55,55 @@ Every Workload and every binding carries a **domain** (namespace-shaped ownershi
 
 Hard multi-tenancy, virtual control planes, and per-tenant op-log cells remain ADR 009 Recorded. Domains do not implement them; they keep the product from assuming a flat global name space.
 
-### 3. Access is a mediated fabric, not a flat VM mesh
+### 3. Access is one fabric over three legs, not a flat VM mesh
 
-Inter-workload traffic **opts in** and always re-enters the platform data plane:
+The access fabric is a **single binding + ACL model** for every dial that crosses an Ember boundary. It is not "inter-VM only." Three legs share the same vocabulary (`domain`, binding name, inject, allow/deny, auth):
+
+| Leg | Direction | Path today (partial) | Fabric adds |
+| --- | --------- | -------------------- | ----------- |
+| **VM → VM** | Guest to Ember Workload | Not productized; would be ad hoc | Opt-in binding, mediated dial, wake, peer auth |
+| **VM → Service** | Guest to K8s Service (or named in-cluster / allowlisted host) | ADR 023 egress proxy + split-horizon `internal.allowlist` | Same binding object as VM→VM (`serviceRef` or `hostRef`), inject URL, domain-scoped allowlist, secret swap on that hop |
+| **Service → VM** | K8s Pod/Service Account to Ember Workload | ClusterIP / Gateway to serving and stateful ports (monolith → scratch-postgres) | Declared `access.in`, inject DSN into the **caller** chart or SA-bound secret, tighten who may dial beyond "whole cluster can hit the port" |
 
 ```text
-guest A (opt-in access)
-  → local hop (vsock egress or host route to node proxy/Envoy)
-  → policy (domain, binding, rate limit)
-  → auth (token / secret swap / password as appropriate)
-  → resolve logical name → wake if cold → guest B
+                    ┌── VM → VM ──────────────────────────────┐
+  guest / pod       │  mediated hop → policy → wake → guest   │
+  caller ───────────┼── VM → Service ─────────────────────────┤
+                    │  egress hop → allowlist → K8s Service   │
+                    └── Service → VM ─────────────────────────┘
+                       ClusterIP/Gateway → policy → wake → guest
 ```
 
-Defaults stay **zero-egress** and **deny-by-default** for destinations not named in bindings. Task-class VMs remain vsock-only: they are not mesh clients; callers outside the guest (monolith, session, serving) hold DSNs when a task needs a datastore.
+**Common rules for all three legs:**
 
-A flat tap mesh is rejected: it bypasses wake, auth, metering, and cross-node placement, and fights the node-local serving bridge design.
+- **Opt-in, deny by default** for destinations and callers not named in bindings / `access.in`.
+- **Mediated path only** where Ember owns the hop: guest dials go through vsock egress or node proxy/Envoy; inbound to Ember always hits the existing serving/stateful data plane (wake-on-miss stays intact).
+- **Logical names, never tap IPs.** Callers receive injected URLs/DSNs.
+- **Domain scopes the ACL.** Same-domain default; cross-domain only with an explicit grant.
+- **Auth is per-leg capability**, not an afterthought: HTTP peers prefer short-lived tokens or secret-proxy swap (023); L4 DB may still use passwords in v1 with network ACL as the coarse gate.
 
-This is compatible with ADR 020's admission-only control plane: the **hit** path stays Envoy-to-endpoint; the fabric is the **policy and name resolution** on peer dials, not a return of the CP to every byte.
+**VM → Service** reuses ADR 023's interception point rather than inventing a second egress stack. The upgrade is making destinations **first-class binding targets** (Service DNS, port, optional path) under domain policy, instead of only a flat host allowlist and chart-pasted URLs. Open internet stays a separate, explicitly broader posture (023's external side of split-horizon), not silently included in domain bindings.
+
+**Service → VM** is how composition already starts in production (monolith DSN to scratch-postgres). The fabric productizes that edge: the Workload declares who may call it (`access.in` by domain, ServiceAccount, or namespace), the platform publishes a stable endpoint, and the caller gets inject the same way a guest would. Tightening from "ClusterIP open to the cluster" toward NetworkPolicy / Envoy auth / SA-bound credentials is incremental; the binding object is the contract that makes the tighten possible without rewriting callers.
+
+Task-class VMs remain **vsock-only**: they are not general mesh clients. VM→Service for tasks continues through the existing egress funnel when a task is granted egress; Service→VM callers stay outside the task guest (monolith, session, serving hold the DSN).
+
+A flat tap mesh is rejected: it bypasses wake, auth, metering, and cross-node placement, and fights the node-local serving bridge design. Putting K8s Services on that mesh is likewise rejected; Services stay on the cluster network and are reached only through the mediated egress hop from guests.
+
+This is compatible with ADR 020's admission-only control plane: the **hit** path stays Envoy-to-endpoint; the fabric is **policy and name resolution** on dials, not a return of the CP to every byte.
 
 ### 4. Inject logical endpoints; never guest tap IPs
 
-Bindings project stable names into the caller:
+Bindings project stable names into the **caller** (guest via MMDS/env, or K8s workload via chart/Secret):
 
-- HTTP serving: internal vhost / service path (already the serving model)
-- Stateful L4: cluster listen port / logical DSN host (already the scratch-postgres consumer shape)
+| Target kind | Inject shape | Example |
+| ----------- | ------------ | ------- |
+| Ember serving Workload | HTTP base URL / internal vhost | `EMBEDDINGS_URL` |
+| Ember stateful Workload | DSN or host:port | `DATABASE_URL` |
+| K8s Service | `http(s)://svc.ns.svc:port` or TCP DSN | `MONOLITH_URL`, `NATS_URL` |
+| Allowlisted external host | URL only if binding names it | model API base (023) |
 
-Injection rides MMDS / env (and later secret-proxy placeholders where the credential must not enter the guest). Chart-level hand wiring (today's monolith scratch-postgres DSN) is the transitional form of the same idea; productize bindings when a second in-guest consumer needs them.
+Chart-level hand wiring (today's monolith scratch-postgres DSN) is the transitional form of **Service → VM**. Guest env placeholders with egress allowlists (023) are the transitional form of **VM → Service**. Productize both as the same binding schema when a second consumer needs it; do not grow a third inject mechanism.
 
 ### 5. Independent wake is the density model; floor is min availability
 
@@ -108,13 +133,30 @@ Until singleton reliability is boring, investment order is:
 
 1. Stateful singleton correctness and operability (Postgres scratch, then DuckDB-shaped file engines)
 2. Model-in-guest embeddings (or similar) as bankable **serving**, not a new class
-3. Domain field + same-domain bindings + DSN/URL inject (composition without groups)
+3. Domain field + same-domain bindings + DSN/URL inject (composition without groups), including **Service → VM** for the monolith-style caller that already exists
 4. Floor/cap used deliberately for min avail vs density
-5. Access-fabric allowlist for opted-in guest dials (mediated path only)
+5. Access-fabric allowlist for opted-in **VM → VM** and **VM → Service** dials (mediated path only; fold 023 internal allowlists into binding targets over time)
 
-Explicitly out of the critical path: composite app envs, flat guest mesh, SPIFFE mesh, hard tenancy, and Postgres RO HPA.
+Explicitly out of the critical path: composite app envs, flat guest mesh, SPIFFE mesh, hard tenancy, Postgres RO HPA, and full cluster-wide NetworkPolicy automation on day one (Service→VM can start as documented inject + stable endpoint, then tighten).
 
 Lambda MicroVMs remain convergent prior art for the **session** class (suspend/resume, idle policy, per-sandbox URL), not a replacement for R4 volume durability. Durable data stays "volume owns truth, snapshot owns warmth."
+
+### 8. K8s resources are first-class fabric peers, not a side channel
+
+Bindings target a small sum type. Implementation detail may vary; the decision is that **all three are the same product**:
+
+```text
+BindingTarget =
+  | WorkloadRef   { domain, name }           # Ember Workload
+  | ServiceRef    { namespace, name, port }   # corev1.Service
+  | HostRef       { host, port? }            # explicit external / special (023)
+```
+
+- **Outbound (`access.out` / bindings on an Ember Workload):** may name WorkloadRef, ServiceRef, or HostRef. Guest may only dial what is bound. ServiceRef resolves to cluster DNS and is enforced on the egress hop.
+- **Inbound (`access.in` on an Ember Workload):** may name Ember principals/workloads **or** K8s subjects (ServiceAccount, namespace, or a labeled Service). Unnamed callers are deny-by-default once enforcement exists; until then, chart inject for known callers is the soft form of the same ACL.
+- **Outbound from a pure K8s Deployment** (monolith, operators): not an Ember CR field; the fabric still applies as **platform-owned inject + endpoint catalog + optional NetworkPolicy/Envoy auth** derived from the target Workload's `access.in`. The monolith chart's scratch-postgres DSN is the prototype.
+
+Ember does **not** become a general service mesh for all cluster traffic. Cilium (or equivalent) remains the cluster network policy layer. The fabric owns edges that **touch an Ember Workload or an Ember guest's egress**, so ACLs stay meaningful where Firecracker isolation and wake semantics matter.
 
 ---
 
@@ -122,19 +164,30 @@ Lambda MicroVMs remain convergent prior art for the **session** class (suspend/r
 
 ```mermaid
 graph TB
-  subgraph domain["domain: homelab"]
-    API["api<br/>serving<br/>min/max instances"]
-    EMB["embeddings<br/>serving<br/>idle bank"]
-    DB["scratch-duckdb<br/>stateful singleton"]
-    SES["agent-session<br/>session bank"]
+  subgraph k8s["Kubernetes"]
+    Mono[monolith pods]
+    NATS[NATS Service]
   end
 
-  Client([caller]) -->|HTTP| API
-  API -->|binding DATABASE_URL| Fabric[access fabric<br/>Envoy / policy hop]
-  API -->|binding EMBEDDINGS_URL| Fabric
-  SES -->|binding DATABASE_URL| Fabric
-  Fabric -->|wake if cold| DB
-  Fabric -->|wake if cold| EMB
+  subgraph domain["domain: homelab"]
+    API["api<br/>serving"]
+    EMB["embeddings<br/>serving"]
+    DB["scratch-duckdb<br/>stateful"]
+    SES["agent-session"]
+  end
+
+  Fabric[access fabric<br/>bindings + ACL + mediate]
+
+  Mono -->|Service to VM<br/>DATABASE_URL| Fabric
+  Fabric -->|wake| DB
+
+  API -->|VM to VM| Fabric
+  Fabric --> EMB
+  Fabric --> DB
+
+  SES -->|VM to Service| Fabric
+  Fabric --> NATS
+  SES -->|VM to VM| Fabric
 ```
 
 **Binding (conceptual):**
@@ -146,15 +199,19 @@ spec:
   class: serving
   bindings:
     - name: DB
-      workloadRef: scratch-duckdb
-      inject:
-        DATABASE_URL: fromEndpoint
+      workloadRef: { name: scratch-duckdb }
+      inject: { DATABASE_URL: fromEndpoint }
     - name: EMBED
-      workloadRef: embeddings
-      inject:
-        EMBEDDINGS_URL: fromEndpoint
+      workloadRef: { name: embeddings }
+      inject: { EMBEDDINGS_URL: fromEndpoint }
+    - name: BUS
+      serviceRef: { namespace: nats, name: nats, port: 4222 }
+      inject: { NATS_URL: fromEndpoint }
   access:
-    out: [DB, EMBED]   # opt-in destinations; default deny
+    out: [DB, EMBED, BUS]   # opt-in destinations; default deny
+    in:
+      - serviceAccount: { namespace: monolith, name: monolith }
+      - workloadRef: { name: agent-session }
 ```
 
 **Scale interactions (honest):**
@@ -162,13 +219,16 @@ spec:
 - API `maxInstances` grows under load; DB stays one writer.
 - Embeddings scales on its own floor/cap.
 - A future RO pool would add a second logical name (`DATABASE_RO_URL`) and N replica endpoints; primary remains singleton for writes.
+- K8s Services do not "wake"; only Ember targets do. A bound Service that is down fails like any cluster dependency.
 
 ---
 
 ## Alternatives Considered
 
 - **Composite groups as the app composition model.** Rejected for app graphs: joint lifecycle and private nets are the wrong coupling; keep composite for multi-kernel demos only.
-- **Flat guest L3 mesh.** Rejected: bypasses wake/auth/metering; node-local taps; fights zero-egress and task no-NIC.
+- **Flat guest L3 mesh (including "put Services on the bridge").** Rejected: bypasses wake/auth/metering; node-local taps; fights zero-egress and task no-NIC. K8s Services stay on the cluster network; guests reach them only via mediated egress.
+- **Inter-VM fabric only, leave K8s edges ad hoc.** Rejected: Service→VM and VM→Service are the edges already in production; excluding them splits policy into two products.
+- **Ember as cluster-wide service mesh replacing Cilium.** Rejected: fabric scope is edges that touch Ember guests or Ember Workload endpoints; cluster-wide east-west stays Cilium/NetworkPolicy.
 - **Hard multi-tenancy now.** Rejected per ADR 009; domains are the cheap seam without building the facade.
 - **Stateful `maxInstances` for horizontal data.** Rejected: volume + generation pairing assumes one writer; RO scale is a replica recipe, not N clones of one volume.
 - **Build Postgres RO autoscaling now.** Recorded and deferred: real design, small value while simplifying the singleton and composition stack.
@@ -181,7 +241,9 @@ spec:
 
 Baseline per `docs/security.md` and ADR 001's isolation rule: no VM or snapshot lineage crosses a principal. Domains refine ownership of names and bindings; they do not weaken lineage isolation.
 
-- Default zero-egress and deny-by-default peer dial remain the posture; opt-in access is an explicit allowlist of platform endpoints, not open internet.
+- Default zero-egress and deny-by-default dial remain the posture; opt-in access is an explicit allowlist of **bound** targets (Ember endpoints, named Services, named hosts), not open internet and not "any ClusterIP."
+- **Service → VM** must not permanently mean "any pod in the cluster may dial the stateful port." Soft start (chart inject for known callers) is fine; the durable contract is `access.in` so NetworkPolicy / Envoy auth / SA tokens can lock down without changing the DSN shape.
+- **VM → Service** inherits 023's secret-swap and destination allowlist strengths; binding targets should feed that allowlist so a guest cannot use an injected URL as cover for a different host.
 - Credentials: prefer not putting long-lived secrets in guest memory when the egress-proxy pattern can swap them (HTTP first; opaque DB protocols may still need password-in-guest until a stronger proxy exists). Endpoint tokens and short-lived service credentials are preferred for HTTP peers.
 - Cross-domain access is deny-by-default; grants are explicit and auditable (op-log).
 - Task-class no-NIC is preserved; untrusted one-shot code does not gain mesh membership by accident.
@@ -198,15 +260,20 @@ Baseline per `docs/security.md` and ADR 001's isolation rule: no VM or snapshot 
 | RO-replica demand arrives before singleton reliability | Low | Medium | This ADR records the recipe; Issues track it separately; do not block simplification |
 | Password-in-guest for DB DSNs weakens 023's secret model | Medium | Medium | Accept for v1 scratch; extend secret-swap / rotated secrets when a hostile guest is in scope |
 | Health checks or readiness probe the DB and thrash wake | Medium | Low | Document that probes should not dial every binding; optional "don't wake" probe paths later |
+| Service→VM stays wide-open ClusterIP while `access.in` is only documentation | High | Medium | Sequence: inject + catalog first, then NetworkPolicy or Envoy auth derived from `access.in`; do not claim enforcement before it exists |
+| VM→Service binding and 023 allowlists diverge | Medium | Medium | Generate egress allowlist entries from bindings; single source of truth |
+| Scope creep into full cluster mesh | Medium | High | Explicit non-goal: only edges that touch Ember guests or Ember Workload endpoints |
 
 ---
 
 ## Open Questions
 
-1. Exact CRD / API shape for `domain`, `bindings`, and `access.out` (Workload fields vs a thin Stack object that only wires names).
-2. Whether guest dial uses vsock egress (023-shaped) for all classes with a NIC, or a host route into node Envoy for platform destinations only.
-3. Auth primitive for HTTP peers in v1 (internal JWT, mTLS, or shared secret) before SPIFFE.
+1. Exact CRD / API shape for `domain`, `bindings`, `access.out`, and `access.in` (Workload fields vs a thin Stack object that only wires names).
+2. Whether guest dial uses vsock egress (023-shaped) for all classes with a NIC, or a host route into node Envoy for Ember destinations only (Services still via egress).
+3. Auth primitive for HTTP peers in v1 (internal JWT, mTLS, or shared secret) before SPIFFE; how ServiceAccount identity is presented on Service→VM.
 4. When to require `domain` on existing chart workloads vs grandfather empty as `homelab`.
+5. How `ServiceRef` namespaces relate to domains (domain maps 1:1 to a K8s namespace, or domains are orthogonal labels).
+6. Enforcement mechanism for `access.in` on L4 stateful ports (NetworkPolicy to serving Service, per-port auth, or both).
 
 ---
 
@@ -217,6 +284,7 @@ Baseline per `docs/security.md` and ADR 001's isolation rule: no VM or snapshot 
 | [ADR 001](001-embervm-beam-firecracker-workload-orchestrator.md) | Classes, isolation, R4 singleton, R5 composite, serving multi-instance |
 | [ADR 009](009-roadmap-extension-continuity-before-tenancy.md) | Continuity before tenancy; facade deferred |
 | [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) | Keep CP off the steady-state request path |
-| [agents/023](../agents/023-egress-secret-proxy.md) | Brokered egress, allowlists, placeholder secrets |
+| [agents/023](../agents/023-egress-secret-proxy.md) | Brokered egress, allowlists, placeholder secrets; basis for VM→Service |
+| [platform/012 - Cilium](../platform/012-cilium-replaces-linkerd.md) | Cluster network policy layer; fabric does not replace it |
 | [AWS Lambda MicroVMs](https://aws.amazon.com/lambda/lambda-microvms/) | Session-shaped suspend/resume prior art |
-| Scratch-postgres consumer (monolith chart) | Existing DSN composition without groups |
+| Scratch-postgres consumer (monolith chart) | Existing Service→VM DSN composition without groups |
