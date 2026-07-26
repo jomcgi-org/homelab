@@ -80,8 +80,26 @@ test --sandbox_default_allow_network=false
 # =============================================================================
 # Run with --config=ci in GitHub Actions
 
-# Stamping: applies to all commands (build, test, run)
-common:ci --stamp
+# Stamping is deliberately NOT enabled here. It belongs only on the one command
+# that needs it: the push job passes --stamp explicitly (buildbuddy.yaml). Do not
+# add `common:ci --stamp` back.
+#
+# Stamping any command makes stable-status.txt and volatile-status.txt inputs of
+# every stamp-aware action. rules_oci gives each image three .digest targets
+# (index plus each platform) and each is a bazel-lib jq rule whose stamp attr
+# follows the flag, with no per-target opt-out. That was 92 ConvertStatusToJson
+# plus 92 Jq actions in `bazel test //...`, whose jq filter (.manifests[0].digest)
+# never even reads $STAMP.
+#
+# They can never hit the remote cache: Bazel rewrites BUILD_TIMESTAMP into
+# volatile-status.txt every invocation, and while Bazel fakes that file's
+# metadata for the LOCAL action cache, the remote action key is the Merkle root
+# over real input contents, so the key changes every build. Making the STABLE_
+# values deterministic does not help (measured: 524 -> 496 misses).
+#
+# Measured on the CI Test action: 262 remote executions per run, 64.6s aggregate
+# queue-to-done for 7.0s of real work. Without stamping the same graph executes
+# 0 actions and fully caches, with all 747 tests still passing.
 common:ci --workspace_status_command=./bazel/tools/workspace_status.sh
 common:ci --define=CI=true
 common:ci --repo_env=GHCR_TOKEN
