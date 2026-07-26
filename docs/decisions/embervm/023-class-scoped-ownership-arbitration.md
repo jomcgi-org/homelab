@@ -91,8 +91,8 @@ This replaces an earlier proposal in which bricks countersigned token extensions
 | Stateful | storage-arbitrated CAS + attach | physical fence, unchanged (withdraw) |
 | Session | same mechanism as stateful | bounded divergence, relinquish record |
 | Object-store CAS | the arbitration primitive | dropped |
-| Divergence bound | "work in flight at partition" | token TTL |
-| Redistribution | no CP round trip | CP-light: bytes p2p, grant claim central |
+| Divergence bound | "work in flight at partition" | brick silence timeout |
+| Redistribution | no CP round trip | CP-light: bytes p2p, the CP records the handoff |
 
 ---
 
@@ -103,7 +103,6 @@ graph TB
     subgraph stateful["Stateful: exclusion is physical"]
         V[("volume, one node")]
         A["single writable attach<br/>volume.Manager"]
-        L["volume.Manager single attach"]
         G["grant: which generation<br/>the CP trusts"]
         V --> A
         G -.provenance only.-> A
@@ -112,7 +111,7 @@ graph TB
     subgraph session["Session: no fence, bounded divergence"]
         S[("memory snapshot")]
         R["relinquish record<br/>(handoff commit point)"]
-        W["forward-only watermark<br/>quarantine uncovered"]
+        W["CP compares reported<br/>generation on reconnect"]
         T["brick silence timeout<br/>= divergence bound"]
         S --> R --> W
         T -.bounds.-> W
@@ -129,7 +128,7 @@ The asymmetry is the decision. Stateful buys prevention with a fence it already 
 - **Object-store put-if-absent CAS as the session fence.** Rejected: no liveness story (a holder that dies with the key wedges the session forever), nothing revalidates after boot, it does not cover local-disk relight from a copy set, and SeaweedFS conditional-put support was never verified. It is also the lease-as-safety-primitive frame ADR 018 rejected.
 - **Give sessions a volume so they inherit the physical fence.** Rejected on cost: it would make every session a Longhorn volume, defeating the bank-and-relight model that makes the class cheap, and ADR 016's session contract is explicitly snapshot-and-workspace tiered rather than volume-anchored.
 - **Prevent session divergence with consensus among nodes.** Rejected: strictly worse than one control-plane call, and the control plane is already the adjudicator.
-- **Accept ADR 020's "no CP round trip" for redistribution.** Rejected: a handoff advances a generation, and an advancement no grant covers is quarantined by ADR 018's standing rule, so a report-after-the-fact handoff fails closed every time.
+- **Accept ADR 020's "no CP round trip" for redistribution.** Rejected: a handoff must be recorded before the receiver may claim, or the relinquish record has no commit point. That record is one small control-plane call. It is not a grant claim, and quarantine is not the reason, since sessions carry no grants (decision 3).
 
 ---
 
