@@ -11,7 +11,7 @@
 
 ## Problem
 
-ADR 022's composition model assumes a Workload definition per component per tenant. At the target of **100k+ workload definitions** that fails in three places at once, and they are usually conflated as one "scale" problem when they are not:
+ADR 022's composition model assumes a Workload definition per component per tenant. At the platform's stated target of **100k+ workload definitions** (an owner-set goal for the EKS-era fleet, not a measured demand) that fails in three places at once, and they are usually conflated as one "scale" problem when they are not:
 
 1. **etcd.** `WorkloadWatcher` is a Kubernetes informer, and its own documentation says an error triggers "a fresh LIST." etcd compaction routinely invalidates a stale `resourceVersion`, so at 100k CRs a full relist stops being a boot cost and becomes a recurring hazard. This is a storage-backend choice.
 2. **The authoring surface.** Every workload today is a hand-written ~100-line template inside the platform's own Helm chart, so every application change is a platform release. That model dies around 10^2 workloads, two orders of magnitude before etcd does. This is a UX failure.

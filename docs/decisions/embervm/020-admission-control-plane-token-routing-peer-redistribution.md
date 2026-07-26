@@ -26,7 +26,9 @@ Six decisions. **Decision 3 is withdrawn** to [ADR 023](023-class-scoped-ownersh
 
 **1. The control plane is an admission controller, not a per-dispatch scheduler, and assignment is precomputed rather than resolved per miss.** The CP forecasts demand, assigns workloads to bricks ahead of time, and scales the brick pool; bricks then handle arrivals locally (ADR 018's node-local activator already does this half). So **CP work scales with the rate of assignment change**, which is forecast cadence, not with miss rate. Its request-path job on a tokenless arrival is a cheap lookup of a precomputed assignment plus a signature, never a placement computation. Its standing responsibilities reduce to forecasting and scaling, publishing xDS, and fleet-level backpressure. Note the precise claim: the CP still owns assignment, so it remains a placement engine. What changes is *when* it computes: at forecast cadence rather than per arrival, with the decision advisory (ADR 014) rather than authoritative because the brick's `admitOrReject` arbitrates. A tokenless arrival costs a lookup and a signature, not a placement.
 
-**1b. The redistribution and placement objective is >90% active brick utilization.** Forecasting exists to achieve it: colocating workloads with complementary traffic patterns onto the same brick, informed by predicted demand. This is compatible with ADR 016's pack-to-empty rather than in tension with it, because packing for utilization is exactly what empties other bricks and lets the pool shrink. Utilization is the objective, pack-to-empty is the mechanism.
+**1b. The redistribution and placement objective is high active brick utilization, provisionally >90%.** Forecasting exists to achieve it: colocating workloads with complementary traffic patterns onto the same brick, informed by predicted demand. This is compatible with ADR 016's pack-to-empty rather than in tension with it, because packing for utilization is exactly what empties other bricks and lets the pool shrink. Utilization is the objective, pack-to-empty is the mechanism.
+
+**The 90% figure is a target chosen by analogy, not derived, and this states it rather than hiding it** (the same treatment ADR 021 gives its pivot). It drives forecast cadence and pool sizing, so it should be validated against measured wake-burst headroom before it is relied on. What would move it: memory is the fail-closed incompressible dimension (ADR 021), so utilization above ~90% leaves under a tenth of a brick free for the wake bursts a scale-to-zero fleet generates, which raises shed-ladder frequency. If shed events become common at 90%, the number is too high.
 
 **2. Tokens route sessions; xDS advertises capacity.** ADR 001 already specifies "short-lived per-session endpoint tokens" gating who may reach a session. The token carries the routing decision over `(cell, brick, session, generation, expiry)`, and it is **encrypted, not merely signed** (JWE rather than JWS). AWS Lambda MicroVMs uses "a dedicated URL and JWE-based authentication" for the same job, and the reason is sound: a signed-only token exposes internal topology to the client, handing an attacker the brick namespace for free. Encryption costs nothing extra at the edge, which already holds the key. The client holds its own routing information, so the hit path needs no directory lookup. xDS continues to advertise **bricks** (thousands) and now also **capacity**, never sessions (millions), keeping config at fleet cardinality rather than sandbox cardinality. Per ADR 021 that capacity is a scalar, so the comparison in decision 4 is unambiguous.
 
@@ -90,9 +92,9 @@ On a scale-to-zero fleet that is mostly self-enforcing, and it is deliberately g
 | Aspect | Today | Decided |
 | ------ | ----- | ------- |
 | CP on request path | admission + placement + metering round trip | admission only, at miss rate |
-| Session routing | CP resolves placement | signed token carries `(cell, brick, session, generation)` |
+| Session routing | CP resolves placement | encrypted (JWE) token carries `(cell, brick, session, generation)` |
 | xDS cardinality | endpoints | bricks + scalar capacity, never sessions |
-| Ownership arbiter | ADR 018 grant + CP adjudication | **unresolved, see decision 3** |
+| Ownership arbiter | ADR 018 grant + CP adjudication | class-scoped, [ADR 023](023-class-scoped-ownership-arbitration.md) |
 | Redistribution | not implemented | peer-to-peer, sampled, cell- and vendor-scoped |
 | Memory pressure | refuse new boots | refuse **and** shed, node-local, ordered ladder |
 | Scratch pressure | no predicate | `pressure:scratch` + scheduled drain |
@@ -170,7 +172,7 @@ Baseline: `docs/security.md`.
 
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
-| **Divergence is bounded by the brick silence timeout** ([ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b): a partitioned brick stops serving everything it holds after that window, which is what ends the divergence rather than token expiry | Medium | Medium | Set the timeout in ADR 018's grant-expiry range so a CP roll never trips it |
+| A brick partitioned from the control plane keeps serving stale state to clients that still hold valid tokens | Medium | Medium | Bounded by the brick silence timeout ([ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b), sized in ADR 018's grant-expiry range so a CP roll never trips it |
 | Redistribution scoring is spread, defeating ADR 016's pack-to-empty and therefore consolidation and EmberPool shrink | Medium | High | Unresolved: the redistribution objective must be stated against 016's reclaim chain, not left as "best answer wins" |
 | Shed storm followed by relight stampede on the same IO | Medium | Medium | Rate-limit relight admission; `embervm-group-fresh-boot` is the detection signal |
 | Sustained bank inflow outruns drain bandwidth and fills scratch | Medium | High | Ladder rungs 1-2 free space without writing; `pressure:scratch` refuses before the wedge |
@@ -183,7 +185,7 @@ Baseline: `docs/security.md`.
 
 1. ~~All of decision 3.~~ Answered by [ADR 023](023-class-scoped-ownership-arbitration.md), which withdraws rather than replaces it. Remaining there: whether grants are extended to the session class, and the file-tier stateful fence.
 2. ~~Token TTL versus admission as the availability floor.~~ **Dissolved by [ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b**: the divergence bound is the brick silence timeout, not token expiry, so TTL may match session life and there is no availability floor to trade against. Remaining: the numeric silence timeout.
-3. ~~The redistribution objective.~~ **Decided: >90% active brick utilization** via forecast-driven colocation (decision 1b), with pack-to-empty as the mechanism that makes it reclaimable.
+3. ~~The redistribution objective.~~ **Decided: high active brick utilization** (provisionally >90%, see decision 1b) via forecast-driven colocation (decision 1b), with pack-to-empty as the mechanism that makes it reclaimable.
 4. **Signing-key distribution, rotation, and verification point** for a bearer credential with no revocation list.
 5. **Miss-path directory staleness.** Between handoff and dial-home, admission can re-mint a token for the stale brick in a loop; needs a forward hint from the old brick or activator-style parking.
 6. ~~Copy-set sizing.~~ Copy sets are deferred entirely (see [ADR 023](023-class-scoped-ownership-arbitration.md)).
