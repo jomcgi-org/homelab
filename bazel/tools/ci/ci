@@ -273,8 +273,20 @@ cmd_test() {
 	dim "  bb remote --os=linux --arch=amd64 ${bazel_args[*]}"
 	dim "  (include-secrets=true: runner may receive org secrets; treat as CI)"
 
+	# Match the Test action's `resource_requests.disk` in buildbuddy.yaml (120GB).
+	# Parity with CI was previously argv-only: targets, --config, --deleted_packages
+	# and --test_tag_filters all matched, but resource requests live in the YAML
+	# rather than the bazel command line, so they were never mirrored and this path
+	# silently took the much smaller default runner disk. //... pulls an external
+	# tree over 11G (apko layers, the semgrep_pro OCI archive, pip wheels, npm), so
+	# the default fills and the build dies mid-fetch with "No space left on device"
+	# on whichever repository happened to be unpacking. It presents as flakiness:
+	# the failing target moves between runs, and it is never the target you changed.
+	# Confirmed not to be runner-recycling debris; a fresh runner
+	# (recycle-runner=false) ran out of disk the same way.
 	bb remote --os=linux --arch=amd64 \
 		--runner_exec_properties=include-secrets=true \
+		--runner_exec_properties=EstimatedFreeDiskBytes=120GB \
 		"${bazel_args[@]}"
 }
 
