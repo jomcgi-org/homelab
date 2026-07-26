@@ -31,7 +31,7 @@ Five decisions.
 
 **3. The accounting unit is GB-seconds of allocated memory. Billing itself is deferred.** Allocation is known at admission; duration comes from lifecycle transitions. That makes the unit cheap to compute and means no node instrumentation is needed for it.
 
-It does **not** yet make it a clean query, and this ADR does not claim otherwise. ADR 018 makes gap-time wakes unmetered with late adoption backfill and best-effort reconciliation, and `chart/values.yaml` already ships `nodeLocalWake: true` with `meteringFailOpen: true` for `scratch-postgres` and `scratch-k8s`. So lifecycle transitions today are a reconciled at-least-once stream, not a synchronously witnessed one, and a node crash can leave an interval with no closing transition. Since nothing is billed today, this ADR fixes the **unit** and defers the **guarantee**; ADR 020's open question 7 owns the reconciliation, and storage dimensions (banked snapshot bytes, `volumeSizeGiB`, unattributed warmth-pool VMs) are explicitly out of scope until billing exists.
+It does **not** yet make it a clean query, and this ADR does not claim otherwise. ADR 018 makes gap-time wakes unmetered with late adoption backfill and best-effort reconciliation, and `chart/values.yaml` already ships `nodeLocalWake: true` with `meteringFailOpen: true` for `scratch-postgres` and `scratch-k8s`. So lifecycle transitions today are a reconciled at-least-once stream, not a synchronously witnessed one, and a node crash can leave an interval with no closing transition. Since nothing is billed today, this ADR fixes the **unit** and defers the **guarantee**. [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) decision 6 settles the posture the guarantee has to satisfy: metering allocates running costs inside an organisation rather than charging customers, so it fails open and unreconciled spend is written off, which is why an at-least-once reconciled stream is an acceptable substrate rather than a defect to fix first. Storage dimensions (banked snapshot bytes, `volumeSizeGiB`, unattributed warmth-pool VMs) are explicitly out of scope until billing exists.
 
 **4. CPU is delivered as a proportional weight, not a quota.** Firecracker's `vcpu_count` is an integer, so a guest is booted with `ceil(entitlement)` vCPUs and its share is set by `cpu.weight` on the Firecracker process under the jailer, proportional to entitlement.
 
@@ -181,7 +181,7 @@ Baseline: `docs/security.md`.
 3. **The ceiling, jointly with brick sizing**, since ADR 013's multiplier makes it an instance-selection decision.
 4. **Whether `vcpus` survives as a permanent override** past migration step 4, or whether custom configuration is a separate mechanism.
 5. **Rounding rule for `vcpu_count`.** `ceil()` is proposed; whether some workloads want more presented cores than entitlement for parallelism is unresolved, and it interacts with the `cpu.max` discussion if that ever lands.
-6. **When billing arrives**, the reconciliation owed by ADR 020 open question 7, plus whether storage dimensions are billed or exempt.
+6. **When billing arrives**, what reconciliation an externally-billed meter would need on top of ADR 020 decision 6's fail-open internal posture, plus whether storage dimensions are billed or exempt.
 
 ---
 
@@ -192,7 +192,7 @@ Baseline: `docs/security.md`.
 | [ADR 001](001-embervm-beam-firecracker-workload-orchestrator.md) | The metering contract, resource-abuse-is-security, and the real-userland commitment that sets the floor |
 | [ADR 013](013-substrate-lanes-brick-sizing-capacity-tiers.md) | Brick sizing at 4-8x the largest VM of its class, which the ceiling multiplies into |
 | [ADR 018](018-node-local-activator-brick-authoritative-lifecycle.md) | `nodeLocalWake` / `meteringFailOpen` and reconcile-time accounting, why decision 3 defers the guarantee |
-| [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) | The capacity view this makes a scalar; open question 7 owns metering reconciliation |
+| [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) | The capacity view this makes a scalar; decision 6 settles the metering posture (fail-open internal showback) this ADR's billing unit is measured under |
 | [ADR 010](010-bazel-skyframe-snapshot-query-demo.md) | The multi-GB Bazel tier that sets the ceiling above Lambda's |
 | [agents/032](../agents/032-warm-bazel-worker-mcp.md) | The 3-8 GiB warm heap estimate |
 | `projects/embervm/chart/values.yaml`, `chart/templates/workload-scratch-k8s.yaml` | The declarations tabulated above, including the composite member overrides |

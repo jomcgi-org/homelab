@@ -88,7 +88,7 @@ This replaces an earlier proposal in which bricks countersigned token extensions
 | Aspect | ADR 020 decision 3 as written | Decided here |
 | ------ | ----------------------------- | ------------ |
 | Mechanism | one, spanning all classes | class-scoped |
-| Stateful | storage-arbitrated CAS + attach | physical fence, unchanged (withdraw) |
+| Stateful | storage-arbitrated CAS + attach | no new mechanism (withdraw). The fence is narrower than ADR 020 assumed, since ADR 025 withdraws the Longhorn attach-exclusivity tier: what remains is the node-local volume plus the single writable attach in `volume.Manager`, bounded under partition by decision 3b |
 | Session | same mechanism as stateful | bounded divergence, relinquish record |
 | Object-store CAS | the arbitration primitive | dropped |
 | Divergence bound | "work in flight at partition" | brick silence timeout |
