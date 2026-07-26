@@ -3,9 +3,9 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-26
-**Split from:** [024 - Identity Hierarchy](024-identity-hierarchy-templates-and-registration.md), which carried both identity and authoring; this takes the authoring half
+**Split from:** [024 - Identity Hierarchy and Guest Identity Assertion](024-identity-hierarchy-templates-and-registration.md), which carried both identity and authoring; this takes the authoring half
 **Supersedes in part:** [022 - Domain-Scoped Service Composition](022-domain-composition-access-fabric.md) (its per-workload CR assumption)
-**Builds on:** [024](024-identity-hierarchy-templates-and-registration.md) (the identity hierarchy these definitions are named within), [021](021-workload-resource-model-memory-pivot.md) (the single resource dial that makes class inference sufficient), [020](020-admission-control-plane-token-routing-peer-redistribution.md) (the miss-path lookup template resolution rides)
+**Builds on:** [024 - Identity Hierarchy and Guest Identity Assertion](024-identity-hierarchy-templates-and-registration.md) (the identity hierarchy these definitions are named within), [021](021-workload-resource-model-memory-pivot.md) (the single resource dial that makes class inference sufficient), [020](020-admission-control-plane-token-routing-peer-redistribution.md) (the miss-path lookup template resolution rides)
 
 ---
 
