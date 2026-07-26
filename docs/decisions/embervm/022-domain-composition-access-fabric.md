@@ -2,6 +2,7 @@
 
 **Author:** jomcgi
 **Status:** Draft
+**Superseded in part by:** [024 - Identity Hierarchy, Template Composition, and Registration](024-identity-hierarchy-templates-and-registration.md) (the `domain` boundary in decision 2, the chargeback-at-domain row, and the per-workload CR assumption behind open question 1; `domain` is now contained in exactly one principal, and definitions move to a product manifest plus CP-datastore templates)
 **Created:** 2026-07-25
 **Builds on:** [001 - EmberVM](001-embervm-beam-firecracker-workload-orchestrator.md) (workload classes, no-cross-principal isolation, hit/miss data plane), [009 - Continuity Before Tenancy](009-roadmap-extension-continuity-before-tenancy.md) (R6 Facade deferred; hard multi-tenancy not near-term), [023 - Egress Secret Proxy](../agents/023-egress-secret-proxy.md) (brokered egress and destination allowlists), [004 - agent-sandbox compatibility](004-agent-sandbox-interface-compatibility.md) (session as external sandbox surface)
 **Related:** [020 - Admission-Only Control Plane](020-admission-control-plane-token-routing-peer-redistribution.md) (hit path stays off the control plane), AWS Lambda MicroVMs (convergent prior art for session suspend/resume, not for durable multi-VM apps)

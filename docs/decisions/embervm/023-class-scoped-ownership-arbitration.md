@@ -20,11 +20,20 @@ and rejects precisely the direction ADR 020 took:
 
 > **A distributed fencing LEASE as the safety primitive.** Rejected as a mis-frame: the physical attach fence already excludes a second writer, so a lease protocol would re-solve a solved problem.
 
-For a **stateful** workload, exclusion is already four-layered and physical: a volume exists on exactly one node and the CP returns `:volume_node_gone` rather than re-placing; `noded`'s `volume.Manager` permits exactly one writable attach per volume (`noded/volume/volume.go:137-154`) and refuses a second live VM with `FAILED_PRECONDITION`; Longhorn attach exclusivity invalidates a zombie's access; and the grant bounds which generation the CP will trust. Two writers cannot coexist regardless of grant width.
+For a **stateful** workload, exclusion is layered, but the layers are **tier-dependent** and only one of them is genuinely physical:
 
-So ADR 020's decision 3 was inventing arbitration for a class that already has it. But the argument in ADR 018 is explicitly about *a stateful volume*, and that is the gap: **the session class has no volume, therefore no attach, therefore no physical fence at all.** A session's state is a memory snapshot on scratch or in the object store, and nothing prevents two nodes relighting the same artifact.
+| Layer | Longhorn-native tier | File tier (`vol.img` on node NVMe) |
+| ----- | -------------------- | ---------------------------------- |
+| Spatial (one node) | CP refuses to re-place (`:volume_node_gone`) | same, and this is a **policy** fence bought with unavailability, not physics |
+| Node-local single attach | `volume.Manager` in-process mutex (`noded/volume/volume.go:137-154`) | same; note it does **not** survive a daemon restart and is rebuilt by live-VM adoption |
+| Attach exclusivity | **yes**, Longhorn invalidates a zombie's access | **absent** |
+| Grant | provenance only, never exclusion | same |
 
-One question, two classes, two different answers. Asking it once produced a mechanism that was redundant for one and unsound for the other.
+So the true physical fence exists on the Longhorn tier. On the file tier, exclusion rests on the control plane declining to place a second writer, which is a strong policy but not a law of physics, and `volume.Manager`'s guarantee is an in-process lock rather than a device-level one.
+
+ADR 020's decision 3 was therefore inventing arbitration for a case that has it (Longhorn) while missing that the file tier's protection is different in kind. And the argument in ADR 018 is explicitly about *a stateful volume*, which leaves two classes uncovered entirely: **session** state is a memory snapshot with no volume, no attach and no fence, and **composite** banks and relights as one lineage whose shipped shape is warmth-only with no member volumes at all, while ADR 018 Fork A already ships node-local composite relight with no volume, no attach and no grant gate. Composite is the *least*-fenced class in the system and it is on the node-local wake path today.
+
+One question, four classes, three different answers. Asking it once produced a mechanism that was redundant for one, unsound for another, and silent about the two least protected.
 
 ---
 
@@ -36,24 +45,34 @@ Four decisions.
 
 | Class | State | Exclusion | Two incarnations cost |
 | ----- | ----- | --------- | --------------------- |
-| Stateful | volume | **physical fence** (ADR 011/018), already built | prevented, not mitigated |
-| Session | memory snapshot | **none exists** | divergence from a common ancestor |
+| Stateful, Longhorn tier | volume | **physical fence** (attach exclusivity), already built | prevented |
+| Stateful, file tier | `vol.img` on node NVMe | **policy fence**: CP declines to re-place; node-local mutex | prevented while the CP holds the line; see decision 2 |
+| Composite | group lineage, warmth-only, no member volumes | **none** | divergence of a whole bundle set |
+| Session | memory snapshot | **none** | divergence from a common ancestor |
 | Serving / task | none durable | n/a | nothing |
 
-**2. Stateful ownership is unchanged. ADR 020 decision 3 is withdrawn, not replaced.** The physical fence plus ADR 018's grant-as-provenance is the mechanism. No CAS, no lease protocol, no new arbitration primitive. The object-store compare-and-swap ADR 020 proposed is dropped entirely: it would re-solve exclusion that the attach already provides, and it carried a liveness hole (a holder dying with the key wedges the workload) that the physical fence does not have.
+**2. Stateful ownership is unchanged, and file-tier moves are forbidden until it has a real fence. ADR 020 decision 3 is withdrawn, not replaced.** The existing fence plus ADR 018's grant-as-provenance is the mechanism. No CAS, no lease protocol, no new arbitration primitive. The object-store compare-and-swap ADR 020 proposed is dropped entirely: it would re-solve exclusion the attach already provides on the Longhorn tier, and it carried a liveness hole (a holder dying with the key wedges the workload) the physical fence does not have.
 
-**3. Session ownership accepts bounded, detectable divergence rather than preventing it.** This is a real weakening relative to stateful, and it is stated rather than hidden:
+The tier distinction is load-bearing, because ADR 011 says "a placement move is a copy, never a rebuild." A copy-move of a **file-tier** volume leaves the source `vol.img` live on the origin node, and each node's `volume.Manager` permits one attach *independently of the other*, so nothing prevents two writers on two files each believing it is the workload's volume. Therefore: **placement moves, failover, and restore-elsewhere are permitted on the Longhorn tier only.** A file-tier volume stays on its node, and its unavailability when that node is gone is the accepted cost until it is either migrated to Longhorn or given a device-level fence. This is a constraint on future work, not a change to what runs today.
 
-- **Handoff (owner-initiated)** writes a durable relinquish record before transferring, so the former owner cannot relight its own local copy. This is the commit point ADR 020's version lacked, and it is a record in the existing op-log stream, not a new protocol.
-- **Failover (owner absent)** is best-effort. A claimant relights from the last banked artifact and advances the generation; ADR 018's forward-only watermark adjudicates, and any advancement no live grant covers is quarantined on sight, which is today's behaviour unchanged.
+**3. Session and composite ownership accept bounded, detectable divergence rather than preventing it.** This is a real weakening relative to stateful, and it is stated rather than hidden:
+
+- **Handoff (owner-initiated)** writes a durable relinquish record before transferring, so the former owner cannot relight its own copy. This is the commit point ADR 020's version lacked.
+
+  **The record must be durable in two places, and the second is not optional.** A control-plane op-log entry binds a former owner only while session relight is CP-driven. ADR 018's declared direction is brick-authoritative lifecycle, and a node-local wake does not consult the op-log, so the record must *also* be a node-local tombstone beside the bank artifact the moment session wake goes brick-local. ADR 020's own risk table identified the local tombstone as the fix precisely because a token cannot be recalled; dropping it would let the commit point erode on the roadmap ADR 018 already committed to.
+
+- **Failover (owner absent) is best-effort, and sessions have no grant machinery today.** This must be said plainly rather than borrowed: `wake_grant`, the forward-only watermark, and quarantine-on-uncovered-advancement are **stateful-volume** mechanisms. Sessions carry a control-plane generation but no grants at all, and `session_manager.ex` records that sessions "carry no volume/generation, so no pairing guard applies here." So the honest statement is: a claimant relights from the last banked artifact, the control plane's session generation advances, and **detection of a stale second incarnation rests on the generation in the token, not on quarantine.** Extending grants to sessions is possible new work, not existing behaviour, and this ADR does not assume it.
+
 - **Divergence is bounded by token TTL**, not by in-flight work: a node partitioned from the control plane is not partitioned from clients, and a pre-partition token matches the old copy's generation, so the brick cannot self-detect staleness. Every client holding an unexpired token keeps reaching the old copy until it expires.
 
-This is acceptable for the session class specifically, because a session is a sandbox rather than a book of record. Losing seconds of in-flight sandbox work to a partition is a different failure from corrupting a database volume, and the classes should not pay the same price for the same guarantee.
+- **Composite is governed as one unit.** The relinquish record covers the whole bundle set, and a partial handoff is a failed handoff: no member may be claimed elsewhere unless the record covers the group. Composite is the least-fenced class and is already on the node-local relight path, so it inherits the session rules rather than being left undecided.
+
+This is acceptable for these classes specifically, because a session is a sandbox rather than a book of record and a composite group is a warmth construct with no member volumes. Losing seconds of in-flight sandbox work to a partition is a different failure from corrupting a database volume, and the classes should not pay the same price for the same guarantee.
 
 **4. Redistribution (ADR 020 decision 4) is unblocked but scoped, and it is not control-plane-free.**
 
 - **Session redistribution** is the handoff path in decision 3: relinquish record, transfer, claim. Bytes move peer-to-peer; the grant claim is one small control-plane call. ADR 020's decision 5 claim that none of the three pressure loops needs a control-plane round trip is **wrong for redistribution** and is corrected here: shed and drain are node-autonomous, redistribution is control-plane-light.
-- **Stateful redistribution** is a volume move, which ADR 011 already governs (CP arbitrates placement, attach re-fences). It is not a peer-to-peer operation and must not be modelled as one.
+- **Stateful redistribution** is a volume move, which ADR 011 already governs (CP arbitrates placement, attach re-fences) and which decision 2 restricts to the **Longhorn tier**. It is not a peer-to-peer operation and must not be modelled as one. File-tier volumes do not redistribute.
 
 | Aspect | ADR 020 decision 3 as written | Decided here |
 | ------ | ----------------------------- | ------------ |

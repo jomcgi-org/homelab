@@ -24,7 +24,7 @@ The three are usually treated as one "scale" problem. They are not: the first is
 
 ## Decision
 
-Six decisions.
+Seven decisions.
 
 ### 1. The identity hierarchy, with domain contained in exactly one principal
 
@@ -90,6 +90,17 @@ Registration authority is scoped to the identity the caller presents, or any wor
 
 Do not import Lambda's *constraints* along with its UX. Its simplicity is downstream of no persistent local state, a hard duration cap, and no addressable instances; ember's session and stateful classes exist to break all three, and ADR 010's warm Bazel heap is structurally impossible on Lambda.
 
+### 7. A guest asserts a ServiceAccount identity; it never holds a cluster credential
+
+A live Kubernetes ServiceAccount token is **not** projected into a guest. The guest is the adversary the microVM boundary exists for, a token in guest memory banks with the snapshot (agents/023's founding argument), and a cluster credential routes around the brokered egress path that is ember's default posture. ADR 001's justification for looser handling on session and serving ("tenant-trusted code") is already weakened by model-authored code landing on the session class, so it cannot carry this.
+
+Instead, two halves:
+
+- **Identity:** an **audience-scoped** projected token (audience `embervm`), valid only against ember's own API. A guest can prove "I am SA X" while holding nothing usable against the Kubernetes API. This reuses Kubernetes RBAC as the source of who-is-who without granting any cluster access.
+- **Capability:** the platform holds the real credential and acts on the guest's behalf for named operations, treating the Kubernetes API as another `ServiceRef` target under ADR 022's fabric and agents/023's broker pattern.
+
+This keeps ADR 022's three legs symmetric in *policy* while deliberately asymmetric in *credential holding*: a Service→VM caller is a trusted pod presenting a real ServiceAccount, and a VM→Service guest presents an assertion while the platform presents the credential. One side is trusted and the other is not, and the design should say so rather than treat them alike.
+
 ---
 
 ## Architecture
@@ -128,7 +139,7 @@ etcd holds product shape. The control-plane datastore holds tenant population. N
 - **Per-workload CRs with a bigger etcd.** Rejected: the authoring surface fails two orders of magnitude before etcd does, so raising the etcd ceiling buys nothing.
 - **Per-workload ClusterIP Services to escape the 10-port stateful ceiling.** Rejected: it reintroduces `O(definitions)` etcd objects plus Cilium programming, the exact wall decision 5 evicts. Name-based L4 (SNI or PROXY-protocol on a few entry ports) is the only remedy consistent with this ADR.
 - **Per-item SDK self-registration.** Rejected: no deletion story.
-- **Projecting a live Kubernetes ServiceAccount token into a guest.** Rejected: the guest is the adversary, the token banks with the snapshot, and it routes around the brokered egress path. Accepted instead is an **audience-scoped** projected token (audience `embervm`, valid only against ember's own API), so a guest can assert "I am SA X" while holding nothing usable against the Kubernetes API. The platform holds the real credential and acts on the guest's behalf, which is ADR 022's fabric and agents/023's broker pattern applied to the Kubernetes API as another target.
+- **Projecting a live Kubernetes ServiceAccount token into a guest.** Rejected; see decision 7 for what replaces it.
 
 ---
 
