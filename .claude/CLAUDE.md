@@ -176,6 +176,7 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 | Observability work | `docs/observability.md` |
 | Alerting work | `docs/reference/observability-alerting.md` |
 | Operator changes | `projects/operators/best-practices.md` |
+| EmberVM: how it works today, invariants, ADR map | `projects/embervm/ARCHITECTURE.md` (source of truth for current state; the ADRs are rationale) |
 | Design proposals | `docs/decisions/`, numbered per category |
 
 **Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,

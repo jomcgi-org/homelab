@@ -538,3 +538,7 @@ Two parts of this ADR are superseded in part:
 
 - **The CP-owned VM-to-brick filter/score/bind loop** is superseded by [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md), which moves assignment to forecast cadence rather than per-arrival computation and states the objective as >90% active brick utilization, with this ADR's pack-to-empty retained as the mechanism.
 - **Decision 5's durable posture**, which rests banked-state durability on "Longhorn plus S3, ADR 011", is amended by [ADR 025](025-local-disk-authoritative-s3-archive-interval.md): Longhorn is withdrawn for stateful volumes, local disk is authoritative, and node rotation is handled by planned drain with an 8h continuity floor. Note that this ADR's 8h is a *ceiling* on continuous session life while ADR 025's is a *floor* on stateful uptime; they share a number and mean opposite things.
+
+## Amendment (2026-07-26, second)
+
+**Decision 6's session durability ladder is amended by [ADR 027](027-snapshot-modes-workload-property.md) on four points**: capture decouples from bank and may happen at close (which makes a filesystem-persistence mode with no memory snapshot reachable); retention becomes a declared `latest + N` rather than latest-only per lineage; a principal-scoped shared keyspace (`shared/<principal>/<sha256>`) is admitted as a named exception to workload-namespacing; and the workspace size ceiling relaxes from a hard platform cap to a declared soft budget, answering this ADR's open question 3.

@@ -172,3 +172,9 @@ Baseline: `docs/security.md`.
 | `projects/embervm/noded/volume/volume.go` | The volume model this keeps, and the generation ledger as a coherence check |
 | `projects/embervm/control/lib/embervm/stateful_manager.ex` | `:volume_node_gone`, deliberate failover as it already behaves |
 | `docs/security.md` | Security baseline |
+
+---
+
+## Amendment (2026-07-26)
+
+**Decision 3's table is amended by [ADR 027](027-snapshot-modes-workload-property.md)**: for the `memory: false, filesystem: true` persistence quadrant, the session workspace's archive trigger moves from bank to close (explicit close, destroy, or planned drain), since a workload that declares no memory snapshot never banks. The stateful volume row and the shared zstd content-addressed mechanism are unchanged, and ADR 027 inherits this ADR's cross-principal dedup prohibition for its shared keyspace.
