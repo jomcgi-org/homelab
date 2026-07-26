@@ -92,8 +92,8 @@ Everything above Principal is grouping. Principal is where ADR 001's no-crossing
 - **Domain as a tenancy boundary (ADR 022 as written).** Rejected: consuming customers inside one principal get no lineage isolation from each other, which is the guarantee they would be paying for.
 - **Namespacing every definition by principal.** Rejected: 1,000 principals needing the same ~20 platform workloads is 20,000 near-identical definitions, and it destroys the shared-definition property that makes the session class multi-tenant.
 - **Exempting platform workloads from the hierarchy.** Rejected: a required field with an exception is not a required field. A reserved platform principal costs one row and keeps the model uniform.
-- **Per-workload ClusterIP Services to escape the 10-port stateful ceiling.** Rejected: it reintroduces `O(definitions)` etcd objects plus Cilium programming, the exact wall decision 5 evicts. Name-based L4 (SNI or PROXY-protocol on a few entry ports) is the only remedy consistent with this ADR.
-- **Projecting a live Kubernetes ServiceAccount token into a guest.** Rejected; see decision 7 for what replaces it.
+- **Per-workload ClusterIP Services to escape the 10-port stateful ceiling.** Rejected: it reintroduces `O(definitions)` etcd objects plus Cilium programming, the exact wall ADR 026 evicts. Name-based L4 (SNI or PROXY-protocol on a few entry ports) is the only remedy consistent with this ADR.
+- **Projecting a live Kubernetes ServiceAccount token into a guest.** Rejected; see decision 3 for what replaces it.
 
 ---
 
@@ -113,7 +113,7 @@ Baseline: `docs/security.md`.
 
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
-| Hierarchy surfaces in v1 UX and developers answer five identity questions before hello-world | **High** | High | Only `principal` and `domain` ship; both default in a single-tenant deployment; class inference (decision 6) lands before the hierarchy is user-visible |
+| Hierarchy surfaces in v1 UX and developers answer five identity questions before hello-world | **High** | High | Only `principal` and `domain` ship; both default in a single-tenant deployment; class inference ([ADR 026](026-template-composition-gitops-registration.md) decision 4) lands before the hierarchy is user-visible |
 | Platform principal becomes a dumping ground | Medium | Medium | Membership is reviewed in Git; a workload in the platform principal is a platform commitment |
 
 ---
@@ -121,7 +121,7 @@ Baseline: `docs/security.md`.
 ## Open Questions
 
 1. ~~What `tenant` currently means.~~ **Checked: it is a deployment-level constant, not a per-customer identity.** It defaults to `"homelab"` (`drain_coordinator.ex:56`) and is stamped onto every op from that config. So it already occupies the **Account** slot in decision 1's hierarchy and should be renamed or documented as such rather than repurposed.
-4. **When `domain` becomes required on existing chart workloads**, versus grandfathering empty as a default.
+2. **When `domain` becomes required on existing chart workloads**, versus grandfathering empty as a default.
 
 ---
 
@@ -135,6 +135,6 @@ Baseline: `docs/security.md`.
 | [ADR 021](021-workload-resource-model-memory-pivot.md) | The single resource dial that makes class inference sufficient |
 | [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) | The miss-path lookup that template resolution rides |
 | [agents/023](../agents/023-egress-secret-proxy.md) | The broker pattern the audience-scoped token decision follows |
-| `projects/embervm/control/lib/embervm/workload_watcher.ex` | The informer whose relist behaviour motivates decision 5 |
+| `projects/embervm/control/lib/embervm/workload_watcher.ex` | The informer whose relist behaviour motivates ADR 026 decision 3 |
 | `projects/embervm/chart/values.yaml` | `statefulTcpPortRange` (10 ports) and the per-workload template surface |
 | `docs/security.md` | Security baseline |

@@ -118,7 +118,7 @@ Baseline: `docs/security.md`.
 
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
-| Templates make per-tenant debugging harder, since there is no concrete object to inspect | **High** | Medium | Expose a read API that renders the effective definition for a tenant; resolution is deterministic, so this is a view rather than a reconstruction. Fable's review suggested promoting this to a decision, and it may deserve to be |
+| Templates make per-tenant debugging harder, since there is no concrete object to inspect | **High** | Medium | Expose a read API that renders the effective definition for a tenant; resolution is deterministic, so this is a view rather than a reconstruction. |
 | Product CR manifest outgrows the annotation ceiling | Medium | Medium | The 256 KiB `last-applied-configuration` cap already broke the migrations ConfigMap; reference a build artifact if a manifest approaches it |
 | Two front doors diverge, with the UI writing state the manifest reconciler then reverts | Medium | High | One write path is the decision: build the API first, Git and UI are both clients |
 | Stateful per-tenant definitions are needed anyway for volume and generation state | Medium | Low | Then deriving *that* definition buys less; the stateless components still benefit |

@@ -212,3 +212,9 @@ exclusivity). The grant is provenance, not exclusion; widening its generation
 ceiling or switching to a time-bounded cadence class only widens
 anomaly-detection, and can never admit a second writer. See ADR 018's two-writer
 safety argument.
+
+---
+
+## Amendment (2026-07-26)
+
+**Superseded in part by [ADR 025](025-local-disk-authoritative-s3-archive-interval.md).** The decision to move stateful volumes onto Longhorn RWO node-attach is withdrawn: local `vol.img` on node NVMe stays authoritative, S3 becomes a content-addressed archive written at bank commit, and `archiveInterval` becomes the user-facing durability control. ADR 025 names the three properties this gives up (bounded-seconds automatic failover, "a placement move is a copy, never a rebuild", and ADR 009's R7 cold-node premise) and argues the trade on cost rather than claiming this ADR was wrong. The Longhorn tiers for non-stateful cluster use are unaffected.

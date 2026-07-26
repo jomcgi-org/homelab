@@ -529,3 +529,12 @@ untrusted code whose state persists.
 | [kube-scheduler NodeResourcesFit scoring](https://kubernetes.io/docs/reference/scheduling/config/#scheduling-plugins) | `LeastAllocated` default vs `MostAllocated` packing; why EKS spreads at placement |
 | [GKE autoscaling profiles](https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler#autoscaling_profiles) | `optimize-utilization` as the GKE packing lever |
 | [Cluster overprovisioning pattern](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md#how-can-i-configure-overprovisioning-with-cluster-autoscaler) | The balloon-brick headroom mechanism |
+
+---
+
+## Amendment (2026-07-26)
+
+Two parts of this ADR are superseded in part:
+
+- **The CP-owned VM-to-brick filter/score/bind loop** is superseded by [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md), which moves assignment to forecast cadence rather than per-arrival computation and states the objective as >90% active brick utilization, with this ADR's pack-to-empty retained as the mechanism.
+- **Decision 5's durable posture**, which rests banked-state durability on "Longhorn plus S3, ADR 011", is amended by [ADR 025](025-local-disk-authoritative-s3-archive-interval.md): Longhorn is withdrawn for stateful volumes, local disk is authoritative, and node rotation is handled by planned drain with an 8h continuity floor. Note that this ADR's 8h is a *ceiling* on continuous session life while ADR 025's is a *floor* on stateful uptime; they share a number and mean opposite things.
