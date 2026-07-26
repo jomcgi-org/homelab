@@ -152,7 +152,7 @@ Step 3 still traverses the **edge Envoy**, not a raw client-to-brick socket: ADR
 - **Broadcast-based capacity discovery.** Rejected: O(N) per pressure event, and pressure is correlated, so the storm peaks when the fleet is least able to absorb it.
 - **Pressure-triggered object-store drain.** Rejected: fires when scratch is already full. Scheduled low-watermark drain instead, behind the shed ladder.
 - **Node asks the CP before shedding.** Rejected: puts the CP on the OOM path.
-- **Active-active session replication (two live VMs).** Rejected: requires lockstep or deterministic replay, which Firecracker does not provide. HA here is primary plus passive copies.
+- **Active-active session replication (two live VMs).** Rejected: requires lockstep or deterministic replay, which Firecracker does not provide. HA here is a single live owner plus durable banked artifacts ([ADR 025](025-local-disk-authoritative-s3-archive-interval.md)), not a live copy set: copy sets are deferred (open question 6).
 
 ---
 
@@ -200,8 +200,8 @@ Baseline: `docs/security.md`.
 | [ADR 001](001-embervm-beam-firecracker-workload-orchestrator.md) | Hit/miss invariant, per-session endpoint tokens, the Envoy data plane, per-tenant fair queues, the isolation rule |
 | [ADR 011](011-distribution-longhorn-fencing-cp-rollouts.md) | Attach exclusivity as fence, "deciding is not enforcing", vendor pinning, and the 2026-07-23 amendment on grants |
 | [ADR 017](017-checkpoint-abort-quarantine-auto-heal.md) / [ADR 018](018-node-local-activator-brick-authoritative-lifecycle.md) | The grant/adjudicator model and the quarantine rule that withdrawn decision 3 would have rewritten; [ADR 023](023-class-scoped-ownership-arbitration.md) leaves both scoped to grant-bearing stateful generations |
-| [ADR 014](014-worker-authoritative-state-hot-path-consistency.md) | Worker-authoritative state, advisory reject/retry, the metering carve-out |
-| [ADR 015](015-isolated-high-throughput-lane-data-plane-placement.md) | Data-plane placement precedent; the quota leases generalised here |
+| [ADR 014](014-worker-authoritative-state-hot-path-consistency.md) | Worker-authoritative state, advisory reject/retry, and the metering carve-out decision 6 removes; amendment note added there |
+| [ADR 015](015-isolated-high-throughput-lane-data-plane-placement.md) | Data-plane placement precedent; the quota leases generalised here, with its fail-closed guarantee withdrawn; amendment note added there |
 | [ADR 016](016-kubernetes-scheduling-integration-contract.md) | The placement loop partially superseded; pack-to-empty; the preemptible/durable postures |
 | [ADR 007](007-sharded-control-plane-pg-oplog-cells.md) | Cells as the scoping unit; group commit; the creation-critical-path rejection decision 6 reverses |
 | [ADR 009](009-roadmap-extension-continuity-before-tenancy.md) | The object-store seam and the R6 force-bank drain |
