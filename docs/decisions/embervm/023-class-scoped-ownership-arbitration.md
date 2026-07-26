@@ -4,7 +4,7 @@
 **Status:** Draft
 **Created:** 2026-07-26
 **Resolves:** [020 - Admission-Only Control Plane](020-admission-control-plane-token-routing-peer-redistribution.md) decision 3, recorded there as UNDER REVISION
-**Builds on:** [025 - Local Disk Is Authoritative](025-local-disk-authoritative-s3-archive-interval.md) (the storage model that removes the stateful arbitration question), [018 - Node-Local Activator](018-node-local-activator-brick-authoritative-lifecycle.md) (the grant-as-provenance model), [011 - Distribution, Longhorn Fencing, CP-Sequenced Rollouts](011-distribution-longhorn-fencing-cp-rollouts.md) (the physical fence)
+**Builds on:** [025 - Local Disk Is Authoritative](025-local-disk-authoritative-s3-archive-interval.md) (the storage model that removes the stateful arbitration question), [018 - Node-Local Activator](018-node-local-activator-brick-authoritative-lifecycle.md) (the grant-as-provenance model), [011 - Distribution, Longhorn Fencing, CP-Sequenced Rollouts](011-distribution-longhorn-fencing-cp-rollouts.md) ("the CP arbitrates, the fence enforces", whose storage half ADR 025 supersedes)
 
 ---
 
@@ -20,7 +20,7 @@ and rejects precisely the direction ADR 020 took:
 
 > **A distributed fencing LEASE as the safety primitive.** Rejected as a mis-frame: the physical attach fence already excludes a second writer, so a lease protocol would re-solve a solved problem.
 
-For a **stateful** workload, exclusion is not a distributed-systems problem at all, and [ADR 025](025-local-disk-authoritative-s3-archive-interval.md) is why. Local disk is authoritative, relight is local, and there is one node, one copy and one writer ~99% of the time. Failover is deliberate (`stateful_manager.ex` returns `:volume_node_gone` rather than re-placing), so the two-writer window never opens implicitly. And the generation is not a fencing token: `volume.go` describes it as "the ENTIRE pairing mechanism between a volume and a banked stateful bundle", a coherence check whose mismatch means cold boot, "slower, never incorrect."
+For a **stateful** workload, exclusion is not a distributed-systems problem at all, and [ADR 025](025-local-disk-authoritative-s3-archive-interval.md) is why. Local disk is authoritative, relight is local, and there is one node, one copy and one writer on the overwhelming majority of wakes. Failover is deliberate (`stateful_manager.ex` returns `:volume_node_gone` rather than re-placing), so the two-writer window never opens implicitly. And the generation is not a fencing token: `volume.go` describes it as "the ENTIRE pairing mechanism between a volume and a banked stateful bundle", a coherence check whose mismatch means cold boot, "slower, never incorrect."
 
 ADR 020's decision 3 was therefore inventing arbitration for a case that does not need it. And the argument in ADR 018 is explicitly about *a stateful volume*, which leaves two classes uncovered entirely: **session** state is a memory snapshot with no volume and no fence, and **composite** banks and relights as one lineage whose shipped shape is warmth-only with no member volumes at all, while ADR 018 Fork A already ships node-local composite relight with no volume, no attach and no grant gate. Composite is the least-fenced class in the system and it is on the node-local wake path today.
 
@@ -30,7 +30,7 @@ One question, several classes, different answers. Asking it once produced a mech
 
 ## Decision
 
-Four decisions.
+Five decisions.
 
 **1. Ownership arbitration is class-scoped. There is no single mechanism.** The correct question is not "who owns this workload" but "what does this class lose if two incarnations run," and the answer differs enough that a shared mechanism is a mis-fit for both.
 
@@ -58,6 +58,14 @@ The generation stays exactly what `volume.go` implements: a coherence check pair
 - **Composite is governed as one unit.** The relinquish record covers the whole bundle set, and a partial handoff is a failed handoff: no member may be claimed elsewhere unless the record covers the group. Composite is the least-fenced class and is already on the node-local relight path, so it inherits the session rules rather than being left undecided.
 
 This is acceptable for these classes specifically, because a session is a sandbox rather than a book of record and a composite group is a warmth construct with no member volumes. Losing seconds of in-flight sandbox work to a partition is a different failure from corrupting a database volume, and the classes should not pay the same price for the same guarantee.
+
+**3b. A brick may countersign token extensions for a session it demonstrably holds, bounded by a maximum beyond last control-plane contact.** This is ADR 018's grant extended to the session class, and it does two things at once.
+
+It buys **fail-open on service**: a control-plane outage no longer stops traffic to sessions that are already running, which is ADR 011's "fail closed on enforcement, fail open on warmth" applied to routing. Without it, admission becomes the platform's availability floor at TTL cadence.
+
+It is also what makes the design scale. Token refresh dominates tokenless-arrival rate, so without countersign 1M sessions on a 5-minute TTL is ~3,300 CP round trips per second; with it, refreshes stay local and the CP sees only creations, roughly 35/sec at an 8h session life. That is a hundredfold difference from one mechanism.
+
+The bound is the correctness half: fail-open on *service* is right, fail-open on *divergence detection* is not, because the token TTL is the only thing bounding decision 3's divergence. A brick that extends its own tokens indefinitely during a partition makes that bound unbounded. So extensions are capped relative to last CP contact, exactly as ADR 018 bounds a grant by expiry whose "sole job is to eventually invalidate a grant the CP could not explicitly revoke."
 
 **4. Redistribution (ADR 020 decision 4) is unblocked but scoped, and it is not control-plane-free.**
 
