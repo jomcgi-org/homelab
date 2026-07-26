@@ -4,13 +4,36 @@
 # upstream oci://quay.io/cilium/charts cilium chart), so these values are nested
 # under the `cilium:` subchart key to reach the upstream chart's values.
 cilium:
-  kubeProxyReplacement: false # keep k3s kube-proxy (deferred item)
+  kubeProxyReplacement: true # ADR networking/003 capability #3
 
-  # k8sServiceHost/Port intentionally NOT set. With kubeProxyReplacement=false,
-  # kube-proxy already routes the in-cluster kubernetes Service, so cilium-agent
-  # (hostNetwork) reaches the apiserver through it on every node. A literal
-  # 127.0.0.1 would be correct on servers but WRONG on the node-4 agent, which
-  # has no local apiserver.
+  # cilium-agent can no longer reach the apiserver through the kube-proxy-routed
+  # in-cluster kubernetes Service once kube-proxy is gone, so it must be given
+  # the address directly. 127.0.0.1:6444 is correct on EVERY node, because the
+  # address resolves to a different (but equally valid) thing per role:
+  #
+  #   node-1/2/3 (servers): the apiserver's own secure port. It binds
+  #     --bind-address=127.0.0.1 --secure-port=6444 (see the kube-apiserver argv
+  #     in `journalctl -u k3s`); :6443 is the public listener in front of it.
+  #   node-4 (agent): the k3s-agent client-side load balancer, which listens on
+  #     127.0.0.1:6444 and proxies to ALL three servers with failover. Its server
+  #     list lives in <data-dir>/agent/etc/k3s-agent-load-balancer.json and holds
+  #     all of 192.168.1.119/.161/.123, not just the node's join address.
+  #
+  # This supersedes an earlier comment here which said 127.0.0.1 "would be WRONG
+  # on the node-4 agent, which has no local apiserver". node-4 indeed runs no
+  # apiserver process, but it does expose a local loopback API endpoint, which is
+  # what k8sServiceHost actually needs. Verified on all four nodes: a listener on
+  # 127.0.0.1:6444 answering /healthz with 401 (TLS up, anonymous auth refused,
+  # which is the expected response given --anonymous-auth=false).
+  #
+  # Using the loopback endpoint rather than a server IP also avoids making one
+  # node a single point of failure for service routing, and needs no VIP (this
+  # cluster runs no kube-vip/keepalived/metallb).
+  #
+  # cilium-agent runs hostNetwork, so 127.0.0.1 in its namespace is the host's
+  # loopback and reaches the local endpoint directly.
+  k8sServiceHost: "127.0.0.1"
+  k8sServicePort: 6444
 
   # Coexist with k3s's own CNI config management rather than taking the CNI conf
   # directory exclusively (k3s writes and owns it). Recommended for k3s+Cilium.

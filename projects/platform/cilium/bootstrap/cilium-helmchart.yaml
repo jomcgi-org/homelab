@@ -30,10 +30,13 @@ spec:
   bootstrap: true
   failurePolicy: abort
   valuesContent: |-
-    kubeProxyReplacement: false
-
-    # k8sServiceHost/Port omitted on purpose (see ../values.yaml): kube-proxy
-    # routes the kubernetes Service, and 127.0.0.1 would be wrong on the agent.
+    kubeProxyReplacement: true
+    # 127.0.0.1:6444 is valid on every node (see ../values.yaml for the full
+    # reasoning and the evidence): on servers it is the apiserver's own
+    # --secure-port, and on the node-4 agent it is the k3s-agent client-side
+    # load balancer that proxies to all three servers with failover.
+    k8sServiceHost: "127.0.0.1"
+    k8sServicePort: 6444
     # cni.exclusive: false lets Cilium coexist with k3s CNI config management.
     # confPath/binPath point at k3s's real CNI dirs (from `k3s crictl info`):
     # Cilium's defaults (/etc/cni/net.d, /opt/cni/bin) are dirs k3s never reads,
