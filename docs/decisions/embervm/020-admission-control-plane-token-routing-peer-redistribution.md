@@ -44,13 +44,13 @@ Sampling, capacity, and copy sets are **cell-scoped** (ADR 007) and **vendor-sco
 - *The CAS has no liveness or fencing story.* A holder that dies holding the key wedges the session; a TTL reopens the race; and nothing revalidates the lease after boot, so a slow winner that lost it keeps executing.
 - *It is written against a superseded invariant.* ADR 011's 2026-07-23 amendment and ADR 018 already delegate generation advancement to the anchor brick under a renewable grant, with the CP as sole **adjudicator** (forward-only watermark, quarantine on any advancement no grant covers). Under that standing rule, a handoff that "reports after the fact" would be quarantined on sight, so the common-case pressure path fails closed.
 
-Ownership is settled in [ADR 023](023-class-scoped-ownership-arbitration.md), which makes arbitration class-scoped: stateful keeps its existing fence (with file-tier moves forbidden until it has a real one), and the session and composite classes accept bounded divergence with a durable relinquish record as the handoff commit point. Decisions 2, 4 and 5 take their staleness semantics from there, and decision 5's claim below is corrected by it.
+Ownership is settled in [ADR 023](023-class-scoped-ownership-arbitration.md), which makes arbitration class-scoped: stateful needs no arbitration mechanism at all once its volume is local and authoritative ([ADR 025](025-local-disk-authoritative-s3-archive-interval.md)), and the session and composite classes accept bounded divergence with a durable relinquish record as the handoff commit point. Decisions 2, 4 and 5 take their staleness semantics from there, and decision 5's claim below is corrected by it.
 
 **4. Redistribution is peer-to-peer, sampled rather than broadcast.** A node under pressure picks two or three candidates from the xDS capacity view and asks them directly. Power-of-two-choices, not broadcast: pressure is correlated, so a broadcast protocol produces its worst message storm exactly when the fleet is most degraded. Candidates decrement capacity at **accept** under a short reservation TTL, and an inbound acceptance runs the same `admitOrReject` predicate, so two pressured nodes cannot swap sheds in a livelock. Bytes move peer-to-peer; the CP learns from the existing dial-home report.
 
 Candidates must be filtered by cell and by CPU vendor. On the current fleet (one AMD warm node) a pressured node-4 has no valid session peer, so this decision is a scale-out mechanism, not a homelab one.
 
-**5. Pressure response is three loops at three timescales.** Shed and drain are node-autonomous and need no control-plane round trip; the CP learns of them from the existing dial-home report, after the fact. **Redistribution is the exception**, corrected by [ADR 023](023-class-scoped-ownership-arbitration.md): a handoff advances a generation, and ADR 018 quarantines any advancement no live grant covers, so the grant claim is one small control-plane call. Bytes still move peer-to-peer; only the claim is central.
+**5. Pressure response is three loops at three timescales.** Shed and drain are node-autonomous and need no control-plane round trip; the CP learns of them from the existing dial-home report, after the fact. **Redistribution is the exception**, corrected by [ADR 023](023-class-scoped-ownership-arbitration.md): the relinquish/handoff record has to be durable before the receiver claims, which is one small control-plane call, so redistribution is control-plane-*light* rather than control-plane-free. It is not a grant claim and quarantine is not why the control plane is involved: sessions have no grants. Bytes still move peer-to-peer; only the record is central.
 
 | Loop | Trigger | Actor | Budget | Nature |
 | ---- | ------- | ----- | ------ | ------ |
@@ -173,7 +173,7 @@ Baseline: `docs/security.md`.
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
 | A brick partitioned from the control plane keeps serving stale state to clients that still hold valid tokens | Medium | Medium | Bounded by the brick silence timeout ([ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b), sized in ADR 018's grant-expiry range so a CP roll never trips it |
-| Redistribution scoring is spread, defeating ADR 016's pack-to-empty and therefore consolidation and EmberPool shrink | Medium | High | Unresolved: the redistribution objective must be stated against 016's reclaim chain, not left as "best answer wins" |
+| Redistribution scoring is spread, defeating ADR 016's pack-to-empty and therefore consolidation and EmberPool shrink | Medium | High | The objective is decided (decision 1b: high active brick utilization, provisionally >90%, with pack-to-empty as the mechanism). Residual risk is implementation: whether sampled peer accept scoring actually respects it, or drifts back to spread |
 | Shed storm followed by relight stampede on the same IO | Medium | Medium | Rate-limit relight admission; `embervm-group-fresh-boot` is the detection signal |
 | Sustained bank inflow outruns drain bandwidth and fills scratch | Medium | High | Ladder rungs 1-2 free space without writing; `pressure:scratch` refuses before the wedge |
 | Vendor pinning leaves a pressured node with no valid peer | High (today) | Medium | Documented: decision 4 is a scale-out mechanism; on a single-vendor-warm fleet the shed ladder is the only relief |
@@ -189,7 +189,7 @@ Baseline: `docs/security.md`.
 4. **Signing-key distribution, rotation, and verification point** for a bearer credential with no revocation list.
 5. **Miss-path directory staleness.** Between handoff and dial-home, admission can re-mint a token for the stale brick in a loop; needs a forward hint from the old brick or activator-style parking.
 6. ~~Copy-set sizing.~~ Copy sets are deferred entirely (see [ADR 023](023-class-scoped-ownership-arbitration.md)).
-7. ~~Metering reconciliation between fail-closed leases and ADR 018 Fork B.~~ **Resolved in Fork B's favour** (decision 6): metering is internal cost allocation, so it fails open and unreconciled spend is written off. Remaining: whether ADR 007's rejection of "no store in the creation critical path" needs an explicit amendment note, since this reverses it for the metering write specifically.
+7. ~~Metering reconciliation between fail-closed leases and ADR 018 Fork B.~~ **Resolved in Fork B's favour** (decision 6): metering is internal cost allocation, so it fails open and unreconciled spend is written off. [ADR 007](007-sharded-control-plane-pg-oplog-cells.md) carries an amendment note recording that its "no store in the creation critical path" rejection is reversed for the metering write specifically. Nothing remains open here.
 
 ---
 
@@ -199,7 +199,7 @@ Baseline: `docs/security.md`.
 | -------- | --------- |
 | [ADR 001](001-embervm-beam-firecracker-workload-orchestrator.md) | Hit/miss invariant, per-session endpoint tokens, the Envoy data plane, per-tenant fair queues, the isolation rule |
 | [ADR 011](011-distribution-longhorn-fencing-cp-rollouts.md) | Attach exclusivity as fence, "deciding is not enforcing", vendor pinning, and the 2026-07-23 amendment on grants |
-| [ADR 017](017-checkpoint-abort-quarantine-auto-heal.md) / [ADR 018](018-node-local-activator-brick-authoritative-lifecycle.md) | The grant/adjudicator model and the quarantine rule decision 3 must extend rather than rewrite |
+| [ADR 017](017-checkpoint-abort-quarantine-auto-heal.md) / [ADR 018](018-node-local-activator-brick-authoritative-lifecycle.md) | The grant/adjudicator model and the quarantine rule that withdrawn decision 3 would have rewritten; [ADR 023](023-class-scoped-ownership-arbitration.md) leaves both scoped to grant-bearing stateful generations |
 | [ADR 014](014-worker-authoritative-state-hot-path-consistency.md) | Worker-authoritative state, advisory reject/retry, the metering carve-out |
 | [ADR 015](015-isolated-high-throughput-lane-data-plane-placement.md) | Data-plane placement precedent; the quota leases generalised here |
 | [ADR 016](016-kubernetes-scheduling-integration-contract.md) | The placement loop partially superseded; pack-to-empty; the preemptible/durable postures |

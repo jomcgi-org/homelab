@@ -39,6 +39,8 @@ A three-component product at 33k tenants is ~33k workloads, not ~100k. Only the 
 
 Do not materialise `products x tenants` definitions. Store **one product template** plus **N tenant records** (principal, domain, sparse overrides), and resolve `principal/domain/workload` to `(template, tenant)` **at admission**, which already performs a miss-path lookup. One join, no new path.
 
+**Vocabulary, against [ADR 024](024-identity-hierarchy-templates-and-registration.md)'s hierarchy.** A "tenant record" here is an **enrollment**: one principal's occupancy of one product. It is not the Account level (billing), and it is not the live `tenant` field in the op-log, which 024 identifies as Account-shaped. Read "tenant" in this ADR as "enrolled principal" throughout.
+
 The definition store becomes `O(products + tenants)` rather than `O(products x tenants)`, and onboarding a tenant is one row rather than a fan-out. Per-tenant variation is sparse override rows: a tenant taking defaults stores nothing.
 
 ### 3. GitOps without per-workload CRs
