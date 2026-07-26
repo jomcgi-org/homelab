@@ -69,9 +69,13 @@ Scratch needs its own admission predicate. `pressure.go` has `pressure:mem` and 
 
 The drain runs on a low watermark rather than on a pressure signal, because `/var/lib/embervm/scratch` is capped (35 GiB on the masters' loop file; node-4 has a dedicated NVMe) so a reactive drain fires exactly when there is no room to write what it is draining. This makes the wedge rarer, **not impossible**: sustained bank inflow can still outrun drain bandwidth, which is why rungs 1 and 2 above must precede banking.
 
-**6. Metering comes off the hot path via generalised quota leases.** ADR 015's per-brick quota leases, renewed on the dial-home cadence, become the mechanism for every lane: the hot path debits a local lease, the durable write is amortised. Per ADR 021 the unit is GB-seconds of allocated memory, derivable from lifecycle transitions, so this is accounting rather than instrumentation.
+**6. Metering comes off the hot path, and it is fail-open by design.** ADR 015's per-brick leases, renewed on the dial-home cadence, become the mechanism for every lane: the hot path debits a local lease and the durable write is amortised into the report. Per ADR 021 the unit is GB-seconds of allocated memory, derivable from lifecycle transitions.
 
-Two things this must reconcile and does not yet. ADR 007 explicitly **rejected** "no store in the creation critical path" as Modal-inappropriate for EmberVM; this decision partially reverses that and owes an argument. And ADR 018 Fork B already makes metering fail-**open** and reconcile-time for `nodeLocalWake` workloads, whereas this says fail-closed for every lane. One story must win, recorded as an amendment to whichever loses.
+**The lease is a counter, not a gate.** This ADR previously said enforcement stays fail-closed for every lane, which contradicted ADR 018 Fork B (fail-open, reconcile-time) and the `meteringFailOpen: true` that ships today on two workloads. That contradiction is resolved in Fork B's favour, and the reason is what metering is *for*: **allocating running costs within an organisation, not charging customers.** There is no adversary trying to steal compute from itself, so an unverifiable quota is an accounting inconvenience rather than a loss, and refusing to run a workload to protect an internal showback number is the wrong trade. A control-plane outage must never stop work, which is the whole thesis of ADR 018's node-local activator.
+
+So: a brick out of contact keeps running and keeps counting, without bound. Unreconciled spend is reconciled on reconnect or written off, and the exposure shrinks on its own as the control plane becomes highly available. This also promotes `meteringFailOpen` from an allowlisted exception to the default, retiring the flag rather than extending it.
+
+**Containment is a separate mechanism and is unchanged.** ADR 001's "resource abuse is a security concern" is served by per-workload concurrency caps, per-tenant fair queues, admission control, and the node-side pressure predicate. None of those depend on metering posture, so making metering fail-open costs no containment. That distinction is the thing to keep: enforcement stops a runaway, metering counts what happened, and only the first needs to fail closed.
 
 | Aspect | Today | Decided |
 | ------ | ----- | ------- |
@@ -82,7 +86,7 @@ Two things this must reconcile and does not yet. ADR 007 explicitly **rejected**
 | Redistribution | not implemented | peer-to-peer, sampled, cell- and vendor-scoped |
 | Memory pressure | refuse new boots | refuse **and** shed, node-local, ordered ladder |
 | Scratch pressure | no predicate | `pressure:scratch` + scheduled drain |
-| Metering | per-dispatch durable round trip | local lease debit, amortised report |
+| Metering | per-dispatch durable round trip, fail-closed | local lease debit, amortised report, **fail-open** |
 
 ---
 
@@ -174,7 +178,7 @@ Baseline: `docs/security.md`.
 4. **Signing-key distribution, rotation, and verification point** for a bearer credential with no revocation list.
 5. **Miss-path directory staleness.** Between handoff and dial-home, admission can re-mint a token for the stale brick in a loop; needs a forward hint from the old brick or activator-style parking.
 6. **Copy-set sizing for the durable posture**, since replication multiplies snapshot storage and pre-warm bandwidth.
-7. **Metering reconciliation** between this ADR's fail-closed leases and ADR 018 Fork B's fail-open reconcile-time model, plus the ADR 007 rejection this partially reverses.
+7. ~~Metering reconciliation between fail-closed leases and ADR 018 Fork B.~~ **Resolved in Fork B's favour** (decision 6): metering is internal cost allocation, so it fails open and unreconciled spend is written off. Remaining: whether ADR 007's rejection of "no store in the creation critical path" needs an explicit amendment note, since this reverses it for the metering write specifically.
 
 ---
 
