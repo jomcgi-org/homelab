@@ -266,3 +266,9 @@ The control plane's management API is authenticated and authorized (the TokenRev
 | Fly.io Machines                                                              | Closest commercial prior art: Firecracker workloads, volumes, wake-on-demand; keeps BEAM out of node agents and proxies |
 | Knative KPA / activator                                                      | The on-path-only-during-lifecycle-action pattern the hit/miss invariant adopts       |
 | AWS Lambda (Firecracker)                                                     | Prior art: warm reuse, snapshot-restore semantics, and the contract-surface checklist |
+
+---
+
+## Amendment (2026-07-26)
+
+**The R7 rule "a placement move is a copy, never a rebuild" no longer holds for the stateful class.** [ADR 025](025-local-disk-authoritative-s3-archive-interval.md) withdraws Longhorn for stateful volumes and makes local disk authoritative, so moving a stateful workload is a restore from the S3 archive rather than a block-level copy. ADR 025 names this as one of three properties it gives up. The rule is unaffected for warmth artifacts and other classes.

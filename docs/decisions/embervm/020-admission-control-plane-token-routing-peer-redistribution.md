@@ -107,7 +107,7 @@ graph TB
     CLIENT[client]
 
     subgraph cp["Control plane (admission only)"]
-        AUTH["authenticate + assign<br/>mint signed token"]
+        AUTH["authenticate + assign<br/>mint JWE token"]
         FCAST["forecasting + scaling"]
         XDS["xDS publisher<br/>bricks + scalar capacity"]
         BP["fleet-full backpressure"]
@@ -136,7 +136,7 @@ graph TB
 
 The hot path is step 3 alone. Steps 1 and 2 happen on a token miss (first request, expiry, redistribution, brick loss), which is ADR 001's hit/miss invariant applied to routing rather than to invocation.
 
-Step 3 still traverses the **edge Envoy**, not a raw client-to-brick socket: ADR 001's data plane provides health-based ejection, the two-tier layout, and per-request observability, and none of that is given up here. Envoy is where the token signature is verified, so a client cannot name an arbitrary brick and probe it.
+Step 3 still traverses the **edge Envoy**, not a raw client-to-brick socket: ADR 001's data plane provides health-based ejection, the two-tier layout, and per-request observability, and none of that is given up here. Envoy is where the token is decrypted and verified, so a client cannot name an arbitrary brick and probe it.
 
 For the durable posture (ADR 016's preemptible versus durable split), a session resolves to a **copy set** rather than a single brick. Choosing among copies is a locality-versus-load decision only once decision 3 establishes which copies are current; until then, treating the choice as correctness-free is unsafe.
 
@@ -158,8 +158,8 @@ For the durable posture (ADR 016's preemptible versus durable split), a session 
 
 Baseline: `docs/security.md`.
 
-- **The token is a bearer credential for a session's compute**, signed by the CP, short-lived, scoped to one session, verified at the edge. Revocation is by expiry, so the expiry window is a security parameter. Signing-key distribution and rotation are unresolved (Open Questions).
-- **Token TTL is a correctness parameter, not a performance one.** See the divergence risk below.
+- **The token is a bearer credential for a session's compute**, encrypted and signed by the CP, short-lived, scoped to one session, verified at the edge. Revocation is by expiry, and because the divergence bound moved to the brick (ADR 023 3b) the expiry window is a convenience parameter rather than a correctness one. Signing-key distribution and rotation are unresolved (Open Questions).
+- **The brick silence timeout is the correctness parameter**, not token TTL (ADR 023 decision 3b).
 - **Peer handoff means nodes accept snapshots from other nodes**, so the transfer channel needs mutual authentication; an unauthenticated snapshot accept would be a guest-escape-equivalent primitive.
 - **Eviction is a cross-tenant surface.** ADR 001 has per-tenant fair queues for admission; the shed ladder needs the same property or a greedy principal evicts another's sessions.
 - ADR 001's isolation rule (no VM or snapshot lineage crosses a principal) is unchanged and constrains copy-set membership, as does ADR 011's vendor pinning.
@@ -170,8 +170,7 @@ Baseline: `docs/security.md`.
 
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
-| **Divergence is bounded by token TTL, not by in-flight work.** A node partitioned from the CP is not partitioned from clients, and a pre-partition token matches the old copy's generation, so the brick cannot detect staleness. Both copies execute until every such token expires | Medium | High | Resolved in [ADR 023](023-class-scoped-ownership-arbitration.md): a durable relinquish record (CP op-log now, node-local tombstone once session wake goes brick-local) is the commit point, and TTL is named a correctness bound |
-| Token minting makes admission an availability floor: short TTLs return every session to the CP every few minutes, so a CP outage exceeding the TTL stops all traffic, hits included | Medium | High | Open question: brick-side renewal (bricks countersign extensions for sessions they demonstrably hold) versus accepting the floor. This is a regression against ADR 001 and 018 until resolved |
+| **Divergence is bounded by the brick silence timeout** ([ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b): a partitioned brick stops serving everything it holds after that window, which is what ends the divergence rather than token expiry | Medium | Medium | Set the timeout in ADR 018's grant-expiry range so a CP roll never trips it |
 | Redistribution scoring is spread, defeating ADR 016's pack-to-empty and therefore consolidation and EmberPool shrink | Medium | High | Unresolved: the redistribution objective must be stated against 016's reclaim chain, not left as "best answer wins" |
 | Shed storm followed by relight stampede on the same IO | Medium | Medium | Rate-limit relight admission; `embervm-group-fresh-boot` is the detection signal |
 | Sustained bank inflow outruns drain bandwidth and fills scratch | Medium | High | Ladder rungs 1-2 free space without writing; `pressure:scratch` refuses before the wedge |
@@ -183,11 +182,11 @@ Baseline: `docs/security.md`.
 ## Open Questions
 
 1. ~~All of decision 3.~~ Answered by [ADR 023](023-class-scoped-ownership-arbitration.md), which withdraws rather than replaces it. Remaining there: whether grants are extended to the session class, and the file-tier stateful fence.
-2. ~~Token TTL versus admission as the availability floor.~~ **Decided: brick-side countersign**, bounded, per [ADR 023](023-class-scoped-ownership-arbitration.md). Remaining: the numeric TTL and the maximum extension without CP contact.
+2. ~~Token TTL versus admission as the availability floor.~~ **Dissolved by [ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b**: the divergence bound is the brick silence timeout, not token expiry, so TTL may match session life and there is no availability floor to trade against. Remaining: the numeric silence timeout.
 3. ~~The redistribution objective.~~ **Decided: >90% active brick utilization** via forecast-driven colocation (decision 1b), with pack-to-empty as the mechanism that makes it reclaimable.
 4. **Signing-key distribution, rotation, and verification point** for a bearer credential with no revocation list.
 5. **Miss-path directory staleness.** Between handoff and dial-home, admission can re-mint a token for the stale brick in a loop; needs a forward hint from the old brick or activator-style parking.
-6. **Copy-set sizing for the durable posture**, since replication multiplies snapshot storage and pre-warm bandwidth.
+6. ~~Copy-set sizing.~~ Copy sets are deferred entirely (see [ADR 023](023-class-scoped-ownership-arbitration.md)).
 7. ~~Metering reconciliation between fail-closed leases and ADR 018 Fork B.~~ **Resolved in Fork B's favour** (decision 6): metering is internal cost allocation, so it fails open and unreconciled spend is written off. Remaining: whether ADR 007's rejection of "no store in the creation critical path" needs an explicit amendment note, since this reverses it for the metering write specifically.
 
 ---

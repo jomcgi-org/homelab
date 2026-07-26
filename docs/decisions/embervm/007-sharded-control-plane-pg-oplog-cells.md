@@ -164,3 +164,9 @@ Baseline in [docs/security.md](../../security.md). Postgres becomes the audit an
 | [Fleet-scale Kubernetes](https://lucy.sh/fleet-scale-kubernetes) | Homogeneous disposable domains + thin coordinator; the cell model and roll-up protocol adopted here |
 | [CloudNativePG](https://cloudnative-pg.io) | The homelab Postgres HA operator already deployed (`projects/platform/cloudnative-pg/`) |
 | [RabbitMQ quorum queues](https://www.rabbitmq.com/docs/quorum-queues) | Evidence that Raft throughput comes from entry batching; why `ra` alone does not retire finding 1 |
+
+---
+
+## Amendment (2026-07-26)
+
+**[ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) decision 6 reverses this ADR's rejection of "no store in the creation critical path", for the metering write specifically.** Metering moves onto per-brick leases that debit locally and report on the dial-home cadence, so it leaves the creation path entirely. The reversal is narrow: task dispatch, results, and the ordered journal are unchanged, and the group-commit appender this ADR decided remains the durable tier. The justification is that metering allocates running costs within an organisation rather than charging customers, so an unverifiable count is an accounting inconvenience rather than a loss.

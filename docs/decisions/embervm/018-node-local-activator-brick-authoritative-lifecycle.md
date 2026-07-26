@@ -143,3 +143,10 @@ What stays true:
 | [ADR 007](007-sharded-control-plane-pg-oplog-cells.md) | CP HA, the deliberately-not-this-work alternative to surviving a CP gap |
 | Issue #3993 | The tracking issue and the reviewed spec this ADR records the decision for |
 | Incidents: #3745 (tap-leak wedge), demo-postgres-after-CP-roll quarantine | The del-before-add discipline the stable DNAT reuses; the quarantine behaviour the grant clause extends |
+
+---
+
+## Amendment (2026-07-26)
+
+- **[ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b states a deliberate departure.** This ADR checks grant expiry "only at wake-start (never kills a running VM, whose safety is the attach)." ADR 023 has a brick stop a *running* workload once its control-plane silence timeout elapses, because a session has no attach providing that safety. The timeout is sized in this ADR's grant-expiry range so a control-plane roll never trips it. ADR 023 also declines to invoke quarantine for the session class, since sessions carry no grants and the rule would otherwise quarantine every legitimate relight.
+- **[ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) decision 6 promotes Fork B's posture to the default.** `meteringFailOpen` stops being an allowlisted exception for blessed demos and becomes how metering behaves everywhere, on the grounds that metering allocates running costs within an organisation rather than charging customers. The flag retires rather than spreading.

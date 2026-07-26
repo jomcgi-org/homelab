@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-26
-**Resolves:** [020 - Admission-Only Control Plane](020-admission-control-plane-token-routing-peer-redistribution.md) decision 3, recorded there as UNDER REVISION
+**Resolves:** [020 - Admission-Only Control Plane](020-admission-control-plane-token-routing-peer-redistribution.md) decision 3, withdrawn there
 **Builds on:** [025 - Local Disk Is Authoritative](025-local-disk-authoritative-s3-archive-interval.md) (the storage model that removes the stateful arbitration question), [018 - Node-Local Activator](018-node-local-activator-brick-authoritative-lifecycle.md) (the grant-as-provenance model), [011 - Distribution, Longhorn Fencing, CP-Sequenced Rollouts](011-distribution-longhorn-fencing-cp-rollouts.md) ("the CP arbitrates, the fence enforces", whose storage half ADR 025 supersedes)
 
 ---
@@ -59,7 +59,7 @@ The generation stays exactly what `volume.go` implements: a coherence check pair
 
 This is acceptable for these classes specifically, because a session is a sandbox rather than a book of record and a composite group is a warmth construct with no member volumes. Losing seconds of in-flight sandbox work to a partition is a different failure from corrupting a database volume, and the classes should not pay the same price for the same guarantee.
 
-**3b. The divergence bound is enforced by the brick, not by token expiry.** A brick that has not heard from the control plane for longer than its **silence timeout** stops serving the sessions it holds. That single parameter is the bound.
+**3b. The divergence bound is enforced by the brick, not by token expiry.** A brick that has not heard from the control plane for longer than its **silence timeout** stops serving **everything it holds**, sessions, composites and stateful workloads alike. It is one brick and one partition, so it is one rule. That single parameter is the bound.
 
 This replaces an earlier proposal in which bricks countersigned token extensions. That proposal existed only because token *expiry* had been made the divergence bound, which forced short TTLs for correctness, which forced high re-mint rates, which then needed countersigning to keep the control plane off that path. Moving enforcement to the brick collapses the whole chain: token TTL can match session life, there is no re-mint rate to speak of, no per-brick signing keys exist, and the edge keeps trusting exactly one control-plane key.
 
@@ -70,7 +70,11 @@ This replaces an earlier proposal in which bricks countersigned token extensions
 | Re-mint rate | live sessions / TTL | negligible |
 | Signing keys | CP plus every brick | CP only |
 
-**Enforcement remains fail-closed after the fact.** The brick reports what it did; ADR 018's forward-only watermark and quarantine adjudicate any advancement no grant covers. So service fails *open* for a bounded window and enforcement fails *closed* on reconciliation, which is ADR 011's "fail closed on enforcement, fail open on warmth" landing correctly.
+**Enforcement remains fail-closed after the fact, without borrowing quarantine.** The brick reports what it did, and the control plane compares the reported generation against its own. Quarantine-on-uncovered-advancement is deliberately **not** invoked here: it is a grant mechanism, sessions have no grants, and read literally it would quarantine every legitimate session relight. Detection rests on the generation in the report, exactly as decision 3 says. Service fails *open* for a bounded window and enforcement fails *closed* on reconciliation, which is ADR 011's "fail closed on enforcement, fail open on warmth" landing correctly.
+
+**The timeout is set in the same range as ADR 018's grant expiry (~6h)**, long enough that a control-plane roll never trips it, so 018's survive-a-roll thesis holds, and short enough to bound a genuine partition. One number, reused rather than invented.
+
+**Extending it to stateful closes a gap this ADR would otherwise leave.** After a deliberate restore-elsewhere, nothing stopped a partitioned brick continuing to serve the original volume, so the two-writer window was unbounded. Now it is bounded by the same timeout.
 
 **One deliberate departure from ADR 018, stated as one.** ADR 018 checks grant expiry "only at wake-start (never kills a running VM, whose safety is the attach)." Here the brick *does* stop a running session under prolonged silence, because a session has no attach providing that safety. The rules differ because the substrate does.
 
@@ -78,7 +82,7 @@ This replaces an earlier proposal in which bricks countersigned token extensions
 
 **4. Redistribution (ADR 020 decision 4) is unblocked but scoped, and it is not control-plane-free.**
 
-- **Session redistribution** is the handoff path in decision 3: relinquish record, transfer, claim. Bytes move peer-to-peer; the grant claim is one small control-plane call. ADR 020's decision 5 claim that none of the three pressure loops needs a control-plane round trip is **wrong for redistribution** and is corrected here: shed and drain are node-autonomous, redistribution is control-plane-light.
+- **Session redistribution** is the handoff path in decision 3: relinquish record, transfer, claim. Bytes move peer-to-peer; the control plane **records the handoff**, which is one small call. It is not a grant claim, since sessions have no grants. ADR 020's decision 5 claim that none of the three pressure loops needs a control-plane round trip is **wrong for redistribution** and is corrected here: shed and drain are node-autonomous, redistribution is control-plane-light.
 - **Stateful does not redistribute.** Its volume is local and authoritative (ADR 025), placement follows the volume rather than competing for capacity, and moving it is a deliberate restore. It must not be modelled as a peer-to-peer operation, nor appear in ADR 020's sampling or capacity comparison at all.
 
 | Aspect | ADR 020 decision 3 as written | Decided here |
@@ -99,9 +103,9 @@ graph TB
     subgraph stateful["Stateful: exclusion is physical"]
         V[("volume, one node")]
         A["single writable attach<br/>volume.Manager"]
-        L["Longhorn attach exclusivity"]
+        L["volume.Manager single attach"]
         G["grant: which generation<br/>the CP trusts"]
-        V --> A --> L
+        V --> A
         G -.provenance only.-> A
     end
 
@@ -109,7 +113,7 @@ graph TB
         S[("memory snapshot")]
         R["relinquish record<br/>(handoff commit point)"]
         W["forward-only watermark<br/>quarantine uncovered"]
-        T["token TTL<br/>= divergence bound"]
+        T["brick silence timeout<br/>= divergence bound"]
         S --> R --> W
         T -.bounds.-> W
     end
@@ -133,7 +137,7 @@ The asymmetry is the decision. Stateful buys prevention with a fence it already 
 
 Baseline: `docs/security.md`.
 
-- **The weakening is scoped and named.** Session divergence is a real reduction against stateful's guarantee. It is confined to a class whose state is a sandbox, and it is bounded by a parameter (token TTL) rather than being open-ended.
+- **The weakening is scoped and named.** Session divergence is a real reduction against stateful's guarantee. It is confined to a class whose state is a sandbox, and it is bounded by a parameter (the brick silence timeout) rather than being open-ended.
 - **The brick silence timeout is the correctness parameter**, not token TTL. Shortening it tightens the divergence bound and makes a control-plane blip more disruptive; that trade belongs to whoever sets it, not to a default.
 - **Fail-closed is unchanged.** ADR 018's rule stands: any advancement no live grant covers is quarantined. This ADR adds a relinquish record; it does not add an exception to quarantine.
 - **The relinquish record must be durable before the transfer starts.** If it is written after, a crash mid-transfer leaves the old owner able to relight, which is the hole this closes.
