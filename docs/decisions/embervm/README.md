@@ -1,4 +1,4 @@
-# Reading ADRs 019-026
+# Reading ADRs 019-027
 
 Eight ADRs written as one design pass, answering one question: **what has to change for EmberVM to manage 100k+ workload definitions instead of tens.**
 
@@ -36,6 +36,7 @@ Three threads. Within each, later ADRs depend on earlier ones.
 - **020** Admission-only control plane, token routing, peer redistribution. The hub of the set, and the most amended: its decision 3 is withdrawn to 023.
 - **025** Local disk authoritative, S3 an archive, durability an interval. Withdraws ADR 011's Longhorn decision for stateful volumes.
 - **023** Class-scoped ownership arbitration. Resolves 020's withdrawn decision 3, and depends on 025 for the stateful half.
+- **027** Snapshot modes as a workload property. Amends 016's durability ladder on four points and makes filesystem-without-memory persistence reachable. Read after 025: it reuses the same content-addressed archive mechanism and inherits its cross-principal prohibition.
 
 **Product.**
 
@@ -54,11 +55,12 @@ Seven earlier ADRs carry amendment notes rather than being edited in place:
 | 015 | 020 | the per-brick quota lease is kept, but decision 5's fail-closed guarantee is withdrawn |
 | 007 | 020 | the creation-critical-path rejection is reversed for the metering write only |
 | 011 | 025 | stateful volumes stay on local disk; the Longhorn move is withdrawn |
-| 016 | 020, 025 | the CP-owned placement loop, and decision 5's Longhorn-plus-S3 durability clause |
+| 016 | 020, 025, 027 | the CP-owned placement loop; decision 5's Longhorn-plus-S3 durability clause; and decision 6's durability ladder on four points (capture cadence, retention, keyspace, size ceiling) |
 | 018 | 020, 023 | `meteringFailOpen` becomes the default; a brick may stop a *running* session under silence |
+| 025 | 027 | decision 3's table gains a close-triggered capture row for the no-memory-snapshot mode |
 
 ## Confidence
 
-All eight are **Draft**. Where a number is a guess rather than a derivation, the ADR says so: ADR 021's 1,024 MiB pivot, ADR 025's 8h continuity floor, and ADR 020's >90% utilization target are each labelled provisional with what would move them.
+All nine are **Draft**. Where a number is a guess rather than a derivation, the ADR says so: ADR 021's 1,024 MiB pivot, ADR 025's 8h continuity floor, and ADR 020's >90% utilization target are each labelled provisional with what would move them.
 
 The known-unfixed wall: the stateful class is hard-capped at ten workloads by `statefulTcpPortRange` (5400-5409), CRD-validated. No ADR here fixes it; ADR 026 constrains the remedy (it cannot be per-workload ClusterIP Services) without choosing one.
