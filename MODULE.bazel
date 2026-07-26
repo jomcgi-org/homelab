@@ -448,6 +448,18 @@ use_repo(
 semgrep_experimental = use_extension("//bazel/semgrep/third_party/semgrep_experimental:extensions.bzl", "semgrep_experimental")
 use_repo(semgrep_experimental, "semgrep_experimental_engine_amd64")
 
+# Semgrep Pro rule packs for the Firecracker/EmberVM guest image.
+# Manual digests in semgrep_guest/digests.bzl, not the update-semgrep-pro workflow.
+semgrep_guest = use_extension("//bazel/semgrep/third_party/semgrep_guest:extensions.bzl", "semgrep_guest")
+use_repo(
+    semgrep_guest,
+    "semgrep_guest_rules_golang",
+    "semgrep_guest_rules_javascript",
+    "semgrep_guest_rules_kubernetes",
+    "semgrep_guest_rules_python",
+    "semgrep_guest_rules_rust",
+)
+
 # Semgrep OSS — semgrep-core binary from GHCR (extracted from PyPI wheels)
 # Digests auto-updated by .github/workflows/update-semgrep-pro.yaml
 semgrep = use_extension("//bazel/semgrep/third_party/semgrep:extensions.bzl", "semgrep")

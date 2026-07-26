@@ -129,6 +129,11 @@ The Pro engine also ships per-language rule packs (`@semgrep_pro_rules_golang`,
 archive with its own digest pin in
 `third_party/semgrep_pro/digests.bzl`.
 
+CI tests use the auto-updated `semgrep_pro` rule-pack digests. The Firecracker
+and EmberVM guest image uses the same rule-pack artifacts through
+`semgrep_guest`, which has manual pins in `third_party/semgrep_guest/digests.bzl`
+so CI digest updates do not rebuild the deployable guest.
+
 The test runner stages both binaries in the same temp directory (Pro requires
 `semgrep-core` as a co-located runtime dependency) and passes
 `-pro_inter_file` for cross-file taint analysis. `SEMGREP_APP_TOKEN` is

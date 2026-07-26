@@ -78,11 +78,13 @@ pkg_files(
 )
 
 # Each Pro pack is one or more large YAML/JSON files at its external repo root.
-# Namespace each under its own pro-<lang>/ subdir so the packs cannot collide with
-# each other or with the local rules.
+# These guest rule packs use the frozen, manually managed semgrep_guest pins,
+# rather than the auto-updated CI semgrep_pro digests. Namespace each under its
+# own pro-<lang>/ subdir so the packs cannot collide with each other or with the
+# local rules.
 pkg_files(
     name = "pro_golang_files",
-    srcs = ["@semgrep_pro_rules_golang//:rules"],
+    srcs = ["@semgrep_guest_rules_golang//:rules"],
     attributes = pkg_attributes(mode = "0644"),
     prefix = "etc/semgrep/rules/pro-golang",
     strip_prefix = strip_prefix.from_pkg(""),
@@ -90,7 +92,7 @@ pkg_files(
 
 pkg_files(
     name = "pro_python_files",
-    srcs = ["@semgrep_pro_rules_python//:rules"],
+    srcs = ["@semgrep_guest_rules_python//:rules"],
     attributes = pkg_attributes(mode = "0644"),
     prefix = "etc/semgrep/rules/pro-python",
     strip_prefix = strip_prefix.from_pkg(""),
@@ -98,7 +100,7 @@ pkg_files(
 
 pkg_files(
     name = "pro_javascript_files",
-    srcs = ["@semgrep_pro_rules_javascript//:rules"],
+    srcs = ["@semgrep_guest_rules_javascript//:rules"],
     attributes = pkg_attributes(mode = "0644"),
     prefix = "etc/semgrep/rules/pro-javascript",
     strip_prefix = strip_prefix.from_pkg(""),
@@ -106,7 +108,7 @@ pkg_files(
 
 pkg_files(
     name = "pro_kubernetes_files",
-    srcs = ["@semgrep_pro_rules_kubernetes//:rules"],
+    srcs = ["@semgrep_guest_rules_kubernetes//:rules"],
     attributes = pkg_attributes(mode = "0644"),
     prefix = "etc/semgrep/rules/pro-kubernetes",
     strip_prefix = strip_prefix.from_pkg(""),
@@ -114,7 +116,7 @@ pkg_files(
 
 pkg_files(
     name = "pro_rust_files",
-    srcs = ["@semgrep_pro_rules_rust//:rules"],
+    srcs = ["@semgrep_guest_rules_rust//:rules"],
     attributes = pkg_attributes(mode = "0644"),
     prefix = "etc/semgrep/rules/pro-rust",
     strip_prefix = strip_prefix.from_pkg(""),
