@@ -88,6 +88,10 @@ Registration authority is scoped to the identity the caller presents, or any wor
 
 **Class is inferred from the source shape**, not asked: a handler with no listener is a task, something binding a port is serving, something declaring a volume is stateful. Combined with ADR 021's single resource dial, a developer deploying a function answers no infrastructure questions. Classes become progressive disclosure rather than a required first decision.
 
+**Ember's resume window is tiered, and that is a differentiator worth stating rather than an implementation detail.** AWS Lambda MicroVMs "preserves full memory and disk state for up to 8 hours," and that is the whole offer. ADR 016's session contract is three tiers: 8h live with instant relight, a 7-day S3 memory-snapshot resume, and a 30-day content-addressed workspace. Only the first is warm and node-local; S3 is what makes the longer windows possible at all. So the honest framing is "instant for 8h, restorable for 30 days," which is strictly more than the model being copied.
+
+Note also that AWS unifies memory and disk state under one primitive and one number, while ember splits session and stateful into classes with different durability models. Theirs is simpler UX for the Lambda-shaped case, which is exactly the case class inference serves; the divergence should be deliberate rather than accidental.
+
 Do not import Lambda's *constraints* along with its UX. Its simplicity is downstream of no persistent local state, a hard duration cap, and no addressable instances; ember's session and stateful classes exist to break all three, and ADR 010's warm Bazel heap is structurally impossible on Lambda.
 
 ### 7. A guest asserts a ServiceAccount identity; it never holds a cluster credential

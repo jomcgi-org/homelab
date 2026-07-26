@@ -51,21 +51,30 @@ The generation stays exactly what `volume.go` implements: a coherence check pair
 
   **The record must be durable in two places, and the second is not optional.** A control-plane op-log entry binds a former owner only while session relight is CP-driven. ADR 018's declared direction is brick-authoritative lifecycle, and a node-local wake does not consult the op-log, so the record must *also* be a node-local tombstone beside the bank artifact the moment session wake goes brick-local. ADR 020's own risk table identified the local tombstone as the fix precisely because a token cannot be recalled; dropping it would let the commit point erode on the roadmap ADR 018 already committed to.
 
-- **Failover (owner absent) is best-effort, and sessions have no grant machinery today.** This must be said plainly rather than borrowed: `wake_grant`, the forward-only watermark, and quarantine-on-uncovered-advancement are **stateful-volume** mechanisms. Sessions carry a control-plane generation but no grants at all, and `session_manager.ex` records that sessions "carry no volume/generation, so no pairing guard applies here." So the honest statement is: a claimant relights from the last banked artifact, the control plane's session generation advances, and **detection of a stale second incarnation rests on the generation in the token, not on quarantine.** Extending grants to sessions is possible new work, not existing behaviour, and this ADR does not assume it.
+- **Failover (owner absent) is best-effort, and sessions have no grant machinery today.** This must be said plainly rather than borrowed: `wake_grant`, the forward-only watermark, and quarantine-on-uncovered-advancement are **stateful-volume** mechanisms. Sessions carry a control-plane generation but no grants at all, and `session_manager.ex` records that sessions "carry no volume/generation, so no pairing guard applies here." So the honest statement is: a claimant relights from the last banked artifact, the control plane's session generation advances, and **detection of a stale second incarnation rests on the generation in the token, not on quarantine.** Extending grants to sessions is possible new work, not existing behaviour, and this ADR does not assume it. Decision 3b therefore does **not** give sessions a grant: it gives the brick a local self-limit, and leaves adjudication to the reports the control plane already receives.
 
-- **Divergence is bounded by token TTL**, not by in-flight work: a node partitioned from the control plane is not partitioned from clients, and a pre-partition token matches the old copy's generation, so the brick cannot self-detect staleness. Every client holding an unexpired token keeps reaching the old copy until it expires.
+- **Divergence is bounded by the brick's silence timeout** (decision 3b), not by in-flight work and not by token expiry. A node partitioned from the control plane is not partitioned from clients, and a pre-partition token matches the old copy's generation, so nothing in the token detects staleness. What ends the window is the brick stopping itself.
 
 - **Composite is governed as one unit.** The relinquish record covers the whole bundle set, and a partial handoff is a failed handoff: no member may be claimed elsewhere unless the record covers the group. Composite is the least-fenced class and is already on the node-local relight path, so it inherits the session rules rather than being left undecided.
 
 This is acceptable for these classes specifically, because a session is a sandbox rather than a book of record and a composite group is a warmth construct with no member volumes. Losing seconds of in-flight sandbox work to a partition is a different failure from corrupting a database volume, and the classes should not pay the same price for the same guarantee.
 
-**3b. A brick may countersign token extensions for a session it demonstrably holds, bounded by a maximum beyond last control-plane contact.** This is ADR 018's grant extended to the session class, and it does two things at once.
+**3b. The divergence bound is enforced by the brick, not by token expiry.** A brick that has not heard from the control plane for longer than its **silence timeout** stops serving the sessions it holds. That single parameter is the bound.
 
-It buys **fail-open on service**: a control-plane outage no longer stops traffic to sessions that are already running, which is ADR 011's "fail closed on enforcement, fail open on warmth" applied to routing. Without it, admission becomes the platform's availability floor at TTL cadence.
+This replaces an earlier proposal in which bricks countersigned token extensions. That proposal existed only because token *expiry* had been made the divergence bound, which forced short TTLs for correctness, which forced high re-mint rates, which then needed countersigning to keep the control plane off that path. Moving enforcement to the brick collapses the whole chain: token TTL can match session life, there is no re-mint rate to speak of, no per-brick signing keys exist, and the edge keeps trusting exactly one control-plane key.
 
-It is also what makes the design scale. Token refresh dominates tokenless-arrival rate, so without countersign 1M sessions on a 5-minute TTL is ~3,300 CP round trips per second; with it, refreshes stay local and the CP sees only creations, roughly 35/sec at an 8h session life. That is a hundredfold difference from one mechanism.
+| | Bound is token expiry | Bound is brick silence timeout |
+| --- | --- | --- |
+| Enforcement point | edge, on presentation | brick, on its own clock |
+| Token TTL | short, for correctness | may match session life |
+| Re-mint rate | live sessions / TTL | negligible |
+| Signing keys | CP plus every brick | CP only |
 
-The bound is the correctness half: fail-open on *service* is right, fail-open on *divergence detection* is not, because the token TTL is the only thing bounding decision 3's divergence. A brick that extends its own tokens indefinitely during a partition makes that bound unbounded. So extensions are capped relative to last CP contact, exactly as ADR 018 bounds a grant by expiry whose "sole job is to eventually invalidate a grant the CP could not explicitly revoke."
+**Enforcement remains fail-closed after the fact.** The brick reports what it did; ADR 018's forward-only watermark and quarantine adjudicate any advancement no grant covers. So service fails *open* for a bounded window and enforcement fails *closed* on reconciliation, which is ADR 011's "fail closed on enforcement, fail open on warmth" landing correctly.
+
+**One deliberate departure from ADR 018, stated as one.** ADR 018 checks grant expiry "only at wake-start (never kills a running VM, whose safety is the attach)." Here the brick *does* stop a running session under prolonged silence, because a session has no attach providing that safety. The rules differ because the substrate does.
+
+**Residual risk:** a long-lived token is valid longer if stolen. It is usable only against the brick named in it, that brick self-limits under partition, and the control plane can push revocation on reconnect. For a sandbox that is an acceptable trade, recorded here rather than left implicit.
 
 **4. Redistribution (ADR 020 decision 4) is unblocked but scoped, and it is not control-plane-free.**
 
@@ -125,7 +134,7 @@ The asymmetry is the decision. Stateful buys prevention with a fence it already 
 Baseline: `docs/security.md`.
 
 - **The weakening is scoped and named.** Session divergence is a real reduction against stateful's guarantee. It is confined to a class whose state is a sandbox, and it is bounded by a parameter (token TTL) rather than being open-ended.
-- **Token TTL is a correctness parameter.** Shortening it tightens the divergence bound and raises admission load; the trade is real and belongs to whoever sets it, not to a default.
+- **The brick silence timeout is the correctness parameter**, not token TTL. Shortening it tightens the divergence bound and makes a control-plane blip more disruptive; that trade belongs to whoever sets it, not to a default.
 - **Fail-closed is unchanged.** ADR 018's rule stands: any advancement no live grant covers is quarantined. This ADR adds a relinquish record; it does not add an exception to quarantine.
 - **The relinquish record must be durable before the transfer starts.** If it is written after, a crash mid-transfer leaves the old owner able to relight, which is the hole this closes.
 
@@ -135,7 +144,7 @@ Baseline: `docs/security.md`.
 
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
-| Session divergence during a client-visible partition | Medium | Medium | Bounded by token TTL; accepted for the class; do not extend the pattern to stateful |
+| Session divergence during a client-visible partition | Medium | Medium | Bounded by the brick silence timeout; accepted for the class; do not extend the pattern to stateful |
 | Relinquish record written after transfer begins | Medium | High | Ordering is the decision: durable record first, exactly ADR 018's op-log-before-dispatch discipline |
 | Redistribution's grant claim becomes a bottleneck | Low | Medium | Redistribution is rare relative to dispatch; if it is not, that is a signal to fix placement rather than to remove adjudication |
 | Someone applies the session model to stateful for symmetry | Medium | High | The asymmetry is the decision; the table above is the guard |
@@ -145,8 +154,8 @@ Baseline: `docs/security.md`.
 
 ## Open Questions
 
-1. **Token TTL as a number**, given it is simultaneously the divergence bound and the driver of admission load (roughly live sessions divided by TTL).
-2. **Whether brick-side token renewal** (a brick countersigning an extension for a session it demonstrably holds) is safe under bounded divergence, or whether it widens the window.
+1. **The brick silence timeout as a number**, which is now the divergence bound and the availability trade in one.
+2. ~~Whether brick-side token renewal is safe.~~ Moot: decision 3b removes renewal entirely.
 3. **Whether the relinquish record needs its own op kind** or extends ADR 018's `wake_grant` consume, and how ADR 002 compaction treats it (an unconsumed relinquish must survive like an unconsumed grant).
 4. **Serving-class redistribution**, which this ADR treats as costless because nothing durable is lost, but which still moves a live endpoint.
 
