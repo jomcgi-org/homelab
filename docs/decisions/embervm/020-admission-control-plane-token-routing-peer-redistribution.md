@@ -75,6 +75,16 @@ The drain runs on a low watermark rather than on a pressure signal, because `/va
 
 So: a brick out of contact keeps running and keeps counting, without bound. Unreconciled spend is reconciled on reconnect or written off, and the exposure shrinks on its own as the control plane becomes highly available. This also promotes `meteringFailOpen` from an allowlisted exception to the default, retiring the flag rather than extending it.
 
+**Cutting off a non-paying principal is an admission action, not a metering one.** If credits run out, the control plane suspends the principal and simply stops minting tokens for it. Nothing new is required, because suspension is the *absence* of a grant:
+
+- new arrivals get no token and receive `402 Payment Required` at the edge
+- live sessions run until their token lapses or their brick's silence timeout fires, then stop
+- banked workloads never relight, because waking needs a token the control plane declines to issue
+
+On a scale-to-zero fleet that is mostly self-enforcing, and it is deliberately graceful: a credit cutoff is a business event, not an emergency, so paced by token expiry is the right speed. It also inherits the fail-open property, since a suspended principal keeps running through a control-plane outage until their tokens lapse, which is acceptable for the same reason unbounded metering is.
+
+**Abuse is the other speed.** A principal actively harming the fleet must not wait for token expiry, and does not: concurrency caps, fair queues and the node-side pressure predicate act immediately and independently. Two cutoff speeds for two different problems, mirroring the metering-versus-enforcement split above.
+
 **Containment is a separate mechanism and is unchanged.** ADR 001's "resource abuse is a security concern" is served by per-workload concurrency caps, per-tenant fair queues, admission control, and the node-side pressure predicate. None of those depend on metering posture, so making metering fail-open costs no containment. That distinction is the thing to keep: enforcement stops a runaway, metering counts what happened, and only the first needs to fail closed.
 
 | Aspect | Today | Decided |
