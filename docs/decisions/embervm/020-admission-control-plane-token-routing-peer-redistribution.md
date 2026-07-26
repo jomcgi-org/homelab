@@ -34,7 +34,7 @@ Six decisions. **Decision 3 is withdrawn** to [ADR 023](023-class-scoped-ownersh
 
 Because the token names the brick, **xDS never carries the workload-to-brick mapping** and stays at O(bricks) regardless of workload count. Cardinality only becomes a question on the *tokenless* path, and only if it must be answered without the CP; note that forecast-driven placement rules out deriving the target by hashing, since assignment is deliberate. The mapping therefore lives in three small places rather than one large one: the CP holds the authoritative table it computed, each brick knows only its own assignments, and an arrival a brick does not recognise falls back to the CP. No global map exists anywhere.
 
-Sampling, capacity, and copy sets are **cell-scoped** (ADR 007) and **vendor-scoped** (ADR 011 pins sessions to a CPU vendor). The generation field's meaning is settled by [ADR 023](023-class-scoped-ownership-arbitration.md): for sessions it is a staleness signal carried in the token, not a grant-backed exclusion primitive.
+Sampling and capacity are **cell-scoped** (ADR 007) and **vendor-scoped** (ADR 011 pins sessions to a CPU vendor). The generation field's meaning is settled by [ADR 023](023-class-scoped-ownership-arbitration.md): for sessions it is neither a grant-backed exclusion primitive nor something the token can be checked against, since a pre-partition token matches the stale copy's generation. It is what the control plane compares across brick reports after the fact.
 
 **3. (WITHDRAWN, superseded by [ADR 023](023-class-scoped-ownership-arbitration.md)) Ownership arbitration.** This ADR originally decided that ownership moves from CP-issued generation blessing to the storage layer: owner-initiated handoff self-serialising on relinquish, Longhorn failover fenced by attach exclusivity, and object-store failover closed by a put-if-absent CAS. **Two independent reviews found that unsound.** ADR 023 withdraws rather than replaces it: the question was asked at the wrong granularity. Under ADR 025 stateful needs no arbitration at all, while the session and composite classes each lack a fence in different ways. The five failure modes are retained below as the record of why:
 
@@ -77,7 +77,7 @@ The drain runs on a low watermark rather than on a pressure signal, because `/va
 
 So: a brick out of contact keeps running and keeps counting, without bound. Unreconciled spend is reconciled on reconnect or written off, and the exposure shrinks on its own as the control plane becomes highly available. This also promotes `meteringFailOpen` from an allowlisted exception to the default, retiring the flag rather than extending it.
 
-**Cutting off a non-paying principal is an admission action, not a metering one.** If credits run out, the control plane suspends the principal and simply stops minting tokens for it. Nothing new is required, because suspension is the *absence* of a grant:
+**Cutting off a non-paying principal is an admission action, not a metering one.** If credits run out, the control plane suspends the principal and simply stops minting tokens for it. Nothing new is required, because suspension is the *absence of a mint*, not a revocation and not a grant check:
 
 - new arrivals get no token and receive `402 Payment Required` at the edge
 - live sessions run until their token lapses or their brick's silence timeout fires, then stop
@@ -140,7 +140,7 @@ The hot path is step 3 alone. Steps 1 and 2 happen on a token miss (first reques
 
 Step 3 still traverses the **edge Envoy**, not a raw client-to-brick socket: ADR 001's data plane provides health-based ejection, the two-tier layout, and per-request observability, and none of that is given up here. Envoy is where the token is decrypted and verified, so a client cannot name an arbitrary brick and probe it.
 
-For the durable posture (ADR 016's preemptible versus durable split), a session resolves to a **copy set** rather than a single brick. Choosing among copies is a locality-versus-load decision only once decision 3 establishes which copies are current; until then, treating the choice as correctness-free is unsafe.
+**A session resolves to exactly one brick.** An earlier draft had the durable posture (ADR 016's preemptible versus durable split) resolve to a **copy set** instead, with the choice among copies treated as locality-versus-load. That is withdrawn along with decision 3, and for the same reason: choosing among copies is only correctness-free once something establishes which copies are current, and nothing does. Copy sets are deferred entirely (open question 6). Durability for the durable posture comes from the banked artifact and its archive ([ADR 025](025-local-disk-authoritative-s3-archive-interval.md)), not from a second live copy.
 
 ---
 
@@ -164,7 +164,7 @@ Baseline: `docs/security.md`.
 - **The brick silence timeout is the correctness parameter**, not token TTL (ADR 023 decision 3b).
 - **Peer handoff means nodes accept snapshots from other nodes**, so the transfer channel needs mutual authentication; an unauthenticated snapshot accept would be a guest-escape-equivalent primitive.
 - **Eviction is a cross-tenant surface.** ADR 001 has per-tenant fair queues for admission; the shed ladder needs the same property or a greedy principal evicts another's sessions.
-- ADR 001's isolation rule (no VM or snapshot lineage crosses a principal) is unchanged and constrains copy-set membership, as does ADR 011's vendor pinning.
+- ADR 001's isolation rule (no VM or snapshot lineage crosses a principal) is unchanged, and constrains which bricks may be sampled as redistribution candidates, as does ADR 011's vendor pinning. It would equally constrain copy-set membership if copy sets are ever revived (open question 6).
 
 ---
 
@@ -183,7 +183,7 @@ Baseline: `docs/security.md`.
 
 ## Open Questions
 
-1. ~~All of decision 3.~~ Answered by [ADR 023](023-class-scoped-ownership-arbitration.md), which withdraws rather than replaces it. Remaining there: whether grants are extended to the session class, and the file-tier stateful fence.
+1. ~~All of decision 3.~~ Answered by [ADR 023](023-class-scoped-ownership-arbitration.md), which withdraws rather than replaces it: arbitration is class-scoped, stateful needs no mechanism under [ADR 025](025-local-disk-authoritative-s3-archive-interval.md), and sessions accept a bound rather than a fence. Remaining there: the numeric silence timeout, which is question 2 below.
 2. ~~Token TTL versus admission as the availability floor.~~ **Dissolved by [ADR 023](023-class-scoped-ownership-arbitration.md) decision 3b**: the divergence bound is the brick silence timeout, not token expiry, so TTL may match session life and there is no availability floor to trade against. Remaining: the numeric silence timeout.
 3. ~~The redistribution objective.~~ **Decided: high active brick utilization** (provisionally >90%, see decision 1b) via forecast-driven colocation (decision 1b), with pack-to-empty as the mechanism that makes it reclaimable.
 4. **Signing-key distribution, rotation, and verification point** for a bearer credential with no revocation list.
