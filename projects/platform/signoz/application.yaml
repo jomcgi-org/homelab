@@ -15,6 +15,19 @@ spec:
         - values.yaml
         - values-prod.yaml
       ignoreMissingValueFiles: true
+  # The otel-agent DaemonSet runs with hostNetwork, and dnsPolicy is set to
+  # ClusterFirstWithHostNet at admission by the otel-agent-hostnet-dns Kyverno
+  # policy because the k8s-infra chart has no dnsPolicy field to render. The
+  # rendered manifest therefore always differs from the live object on that one
+  # path. Ignore it, or SigNoz sits permanently OutOfSync and hides real drift
+  # (the same failure the monolith app hit; see projects/monolith/deploy/application.yaml).
+  # Scoped to the single jsonPointer so any other DaemonSet drift still surfaces.
+  ignoreDifferences:
+    - group: apps
+      kind: DaemonSet
+      name: signoz-k8s-infra-otel-agent
+      jsonPointers:
+        - /spec/template/spec/dnsPolicy
   destination:
     server: https://kubernetes.default.svc
     namespace: signoz

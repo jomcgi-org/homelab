@@ -1,0 +1,21 @@
+# projects/platform/signoz/bootstrap/tracing.yaml
+#
+# Reference-only fragment. Installed BY HAND to /etc/rancher/k3s/tracing.yaml on
+# node-1/2/3, NOT via ArgoCD. See bootstrap/README.md.
+#
+# Consumed by kube-apiserver through the tracing-config-file flag set in
+# k3s-config.yaml. The kubelet does NOT read this file: it has no
+# tracing-config-file flag, and takes its tracing settings from the
+# KubeletConfiguration drop-in 10-tracing.conf instead.
+apiVersion: apiserver.config.k8s.io/v1beta1
+kind: TracingConfiguration
+# The otel-agent DaemonSet runs with hostNetwork, so its OTLP gRPC receiver
+# binds 4317 directly in the host network namespace on every node. Do not point
+# this at a Service DNS name: the apiserver starts before CoreDNS is resolvable,
+# and routing control-plane traces through cluster networking makes the
+# observability path depend on the thing it is meant to observe.
+endpoint: localhost:4317
+# 0.1%. Deliberately conservative: the apiserver emits a span per request, and
+# this cluster's agent is sized at 500m CPU / 500Mi. Raise only alongside a look
+# at otel-agent resource use.
+samplingRatePerMillion: 1000

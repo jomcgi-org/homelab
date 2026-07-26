@@ -24,6 +24,20 @@ k8s-infra:
       annotationsPrefix: prometheus.io
       scrapeInterval: 30s
   otelAgent:
+    # Run the agent in the host network namespace so kube-apiserver and kubelet
+    # can export OTLP traces to localhost:4317 (see bootstrap/README.md).
+    #
+    # The chart's hostPort declarations were decorative: the active CNI config
+    # is Cilium's own conflist, which chains no portmap plugin, and Cilium only
+    # implements hostPort via eBPF when kubeProxyReplacement is enabled (it is
+    # not). So nothing ever bound 4317 on the host. The chart drops the hostPort
+    # fields automatically when hostNetwork is true, which is the correct
+    # outcome: one mechanism, and one that actually works.
+    #
+    # dnsPolicy must be ClusterFirstWithHostNet or the agent cannot resolve its
+    # own exporter target. The chart has no dnsPolicy field, so it is applied by
+    # the otel-agent-hostnet-dns Kyverno policy; the two must move together.
+    hostNetwork: true
     resources:
       requests:
         cpu: 100m

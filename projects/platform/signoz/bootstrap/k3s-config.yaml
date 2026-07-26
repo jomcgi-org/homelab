@@ -1,0 +1,13 @@
+# projects/platform/signoz/bootstrap/k3s-config.yaml
+#
+# Reference-only fragment. APPENDED BY HAND to /etc/rancher/k3s/config.yaml on
+# node-1/2/3, NOT via ArgoCD. See bootstrap/README.md.
+#
+# Note this adds only kube-apiserver-arg. The existing config.yaml on these
+# nodes already defines a kubelet-arg list (system-reserved, eviction-hard,
+# image-gc thresholds); appending a second kubelet-arg key would produce a
+# duplicate YAML mapping key and silently drop one of the two lists. Kubelet
+# tracing is configured through the KubeletConfiguration drop-in instead, which
+# is both the correct API and free of that hazard.
+kube-apiserver-arg:
+  - "tracing-config-file=/etc/rancher/k3s/tracing.yaml"
