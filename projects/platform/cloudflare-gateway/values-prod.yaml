@@ -25,6 +25,18 @@ tunnel:
     onepassword:
       itemPath: "vaults/k8s-homelab/items/cluster-cloudflare-tunnel"
 
+  # Pinned to http2 (TCP) instead of the cloudflared default of quic (UDP).
+  # The shared WAN egress path drops UDP flows periodically, which stranded the
+  # tunnel and made Cloudflare serve 530 on the public tier while the cluster
+  # itself was healthy. Over one 96h sample: 241 QUIC teardowns across 69
+  # episodes, 70% of them simultaneous (within 5s) on both replicas despite
+  # running on different nodes and different edge PoPs, so the fault is on the
+  # shared path rather than in the cluster. TCP egress over the same window and
+  # the same path had zero failures.
+  #
+  # Revert to "" (quic) only once the egress path is confirmed to hold UDP.
+  protocol: http2
+
   ingress:
     routes:
       # argocd, longhorn, and signoz retired: they now serve under
