@@ -1,0 +1,66 @@
+{{- if .Values.otelAgentHostNetwork.enabled }}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: otel-agent-hostnet-dns
+  annotations:
+    policies.kyverno.io/title: OTel Agent hostNetwork DNS Policy
+    policies.kyverno.io/category: Observability
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: DaemonSet
+    policies.kyverno.io/description: |
+      Sets dnsPolicy: ClusterFirstWithHostNet on the SigNoz otel-agent
+      DaemonSet, which runs with hostNetwork: true so the k3s control plane
+      (kube-apiserver and kubelet) can export OTLP traces to localhost:4317.
+
+      Why a policy rather than a chart value: the k8s-infra chart templates
+      hostNetwork but has no dnsPolicy field and no generic pod-spec
+      passthrough, and the SigNoz ArgoCD Application uses a plain Helm source,
+      so there is no kustomize patch hook to reach the rendered DaemonSet.
+
+      Why it matters: Kubernetes silently downgrades dnsPolicy ClusterFirst to
+      Default for hostNetwork pods. The agent would then inherit the node's
+      resolv.conf, which cannot resolve .svc.cluster.local, so its exporter
+      target signoz-otel-collector.signoz.svc.cluster.local:4317 would fail and
+      every trace, metric, and log the agent collects would be dropped. The
+      failure is silent at admission time, which is why this is pinned by policy
+      rather than left to chart defaults.
+
+      dnsPolicy is a scalar field, so patchStrategicMerge is safe here. The
+      sibling inject-otel-env-vars policy uses json6902 instead, but only
+      because it appends to a list and strategic merge would reorder env entries
+      and manufacture permanent ArgoCD drift.
+
+      The matching ignoreDifferences lives in
+      projects/platform/signoz/application.yaml. Keep the two in sync: dropping
+      either one leaves SigNoz permanently OutOfSync.
+spec:
+  background: {{ .Values.otelAgentHostNetwork.background }}
+  # Mutation only. No admission is ever refused by this policy.
+  validationFailureAction: Audit
+  rules:
+    - name: set-hostnet-dns-policy
+      # Kyverno 1.13 defaults this server-side; declare it so ArgoCD desired
+      # state matches live and the app does not sit permanently OutOfSync.
+      skipBackgroundRequests: true
+      match:
+        any:
+          - resources:
+              kinds:
+                - DaemonSet
+              namespaces:
+                - {{ .Values.otelAgentHostNetwork.namespace }}
+              names:
+                - {{ .Values.otelAgentHostNetwork.daemonSetName }}
+      # This policy is deliberately coupled to
+      # k8s-infra.otelAgent.hostNetwork in projects/platform/signoz/values-prod.yaml.
+      # ClusterFirstWithHostNet is meaningless without hostNetwork, so if that
+      # value is ever turned back off, set otelAgentHostNetwork.enabled: false
+      # here in the same change rather than leaving a stale mutation behind.
+      mutate:
+        patchStrategicMerge:
+          spec:
+            template:
+              spec:
+                dnsPolicy: ClusterFirstWithHostNet
+{{- end }}

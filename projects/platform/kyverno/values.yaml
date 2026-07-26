@@ -16,6 +16,26 @@ otelInjection:
     - kube-public
     - kube-node-lease
 
+# Force dnsPolicy: ClusterFirstWithHostNet onto the SigNoz otel-agent DaemonSet,
+# which runs with hostNetwork so the k3s control plane can export OTLP traces to
+# localhost:4317. The k8s-infra chart templates hostNetwork but has no dnsPolicy
+# field and no pod-spec passthrough, and the SigNoz Application is a plain Helm
+# source, so there is no kustomize patch hook either. Without this the pod keeps
+# dnsPolicy: ClusterFirst, which Kubernetes silently downgrades to Default for
+# hostNetwork pods: the agent would inherit the node resolv.conf, fail to resolve
+# its own exporter target (signoz-otel-collector.signoz.svc.cluster.local) and
+# drop all cluster telemetry. See projects/platform/signoz/bootstrap/README.md.
+#
+# This mutates at admission only. It is not a mutate-existing rule, so the live
+# DaemonSet is patched when ArgoCD re-applies it (which the hostNetwork change
+# itself does). Sync the kyverno app before the signoz app, or the DaemonSet can
+# be admitted in the gap before the policy exists and come up without dnsPolicy.
+otelAgentHostNetwork:
+  enabled: true
+  background: true # match the sibling otel policy; rules opt out individually
+  namespace: signoz
+  daemonSetName: signoz-k8s-infra-otel-agent
+
 # Require resource requests + a memory limit (AUDIT-only) in first-party app
 # namespaces, so regressions in our own charts surface as PolicyReports. A CPU
 # limit is intentionally NOT required: CPU limits cause CFS throttling even on an
