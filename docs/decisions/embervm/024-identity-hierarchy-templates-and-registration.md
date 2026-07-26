@@ -170,7 +170,7 @@ Baseline: `docs/security.md`.
 
 ## Open Questions
 
-1. **What `tenant` currently means.** The op-log carries both `tenant` and `principal` `NOT NULL` on instance tables; the existing semantics were not established, and it may be the natural slot for Account.
+1. ~~What `tenant` currently means.~~ **Checked: it is a deployment-level constant, not a per-customer identity.** It defaults to `"homelab"` (`drain_coordinator.ex:56`) and is stamped onto every op from that config. So it already occupies the **Account** slot in decision 1's hierarchy and should be renamed or documented as such rather than repurposed.
 2. **Manifest inline in the product CR versus a referenced build artifact.**
 3. **Whether the stateful component genuinely needs a stored per-tenant definition**, given its volume and generation are per-tenant durable state regardless.
 4. **When `domain` becomes required on existing chart workloads**, versus grandfathering empty as a default.

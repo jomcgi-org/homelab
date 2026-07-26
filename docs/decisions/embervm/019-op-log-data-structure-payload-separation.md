@@ -125,7 +125,7 @@ Baseline: `docs/security.md`. Security-relevant properties of this decision:
 
 ## Open Questions
 
-1. **Does the append emission carry payloads into SigNoz?** ADR 002 delegates long-horizon audit to the observability pipeline because "every append is already emitted as a structured log line and span." If that emission includes `payload_blob`, then spans are a fourth copy with independent retention and no shred path, and the erasure guarantee in this ADR does not hold end to end. This needs verifying against the Task 13 emission before the ADR moves to Accepted, and redaction at emission is the likely fix.
+1. ~~Does the append emission carry payloads into SigNoz?~~ **Checked, and the answer is favourable.** `OpLog.append/2` is a plain `GenServer.call` with no telemetry or log emission of the op payload, and no payload-carrying emission appears on the append path in the Postgres backend. So spans are not a fourth copy and the erasure guarantee holds end to end. Worth a regression test pinning it, since the property is easy to break by adding a debug log.
 2. **Partition granularity and whether `cell_id` belongs in the partition key.** Daily is the proposed start. Composite partitioning by `(cell_id, time)` may be right once more than one cell exists (ADR 007), but may also be premature.
 3. **DLQ retention window.** How long a dead-letter entry keeps its input before replay is abandoned, and whether that window is per-workload or global.
 4. **Small-payload threshold.** Where the boundary sits between the Postgres side table and the object store, and whether it should track the existing 1 MiB result cap.
