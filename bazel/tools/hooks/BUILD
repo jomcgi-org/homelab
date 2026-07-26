@@ -35,6 +35,12 @@ sh_test(
 )
 
 sh_test(
+    name = "check_adr_architecture_sync_test",
+    srcs = ["check-adr-architecture-sync_test.sh"],
+    data = [":check-adr-architecture-sync.sh"],
+)
+
+sh_test(
     name = "validate_hooks_executable_test",
     srcs = ["validate-hooks-executable_test.sh"],
     data = [":validate-hooks-executable.sh"],

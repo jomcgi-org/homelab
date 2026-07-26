@@ -2,10 +2,15 @@
 
 A single rolled-up description of how EmberVM operates, written for an
 operator or approver (human or agent) who needs to reason about the system
-without re-reading 27 ADRs. It states facts and invariants; the ADRs in
-`docs/decisions/embervm/` remain the record of *why*. When this document and
-an ADR amendment disagree, the ADR chain wins and this document has a bug:
-fix it in the same PR that changes the decision.
+without re-reading 27 ADRs. **This document is the source of truth for
+EmberVM's current state.** The ADRs in `docs/decisions/embervm/` record the
+rationale behind decisions that are evident in this architecture; they are
+history and argument, not the place to learn what is true now. Any PR that
+changes a decision (new ADR, amendment, supersession, withdrawal) updates
+this document in the same PR; the `adr` skill and the
+`check-adr-architecture-sync` hook enforce the habit. If the two ever
+disagree, treat it as a bug in whichever failed to keep the contract and
+fix both.
 
 Two kinds of statement appear here, and the distinction is the point:
 
@@ -13,11 +18,13 @@ Two kinds of statement appear here, and the distinction is the point:
 - **Decided direction**: agreed in Draft ADRs (019 through 027) but not yet
   implemented, or partially landed. These sections are marked.
 
-Sources: ADRs embervm/001-026, ADR 027 (PR
-[#4041](https://github.com/jomcgi/homelab/pull/4041), in review), the
-goals/non-goals README refresh (PR
-[#4016](https://github.com/jomcgi/homelab/pull/4016), in review), and the
-brick-program decision log.
+Sources: ADRs embervm/001-027, the project README (goals and non-goals),
+and the brick-program decision log. EmberVM generalized the fc-invoke /
+FaaS line (agents/030, agents/044, agents/045); fc-invoke itself is being
+deprecated, and the decisions carried over at the fork (the sandbox
+isolation posture, the microVM surface, the registration contract) live on
+as the invariants below, so the agents ADRs matter here only as inherited
+rationale.
 
 ---
 
@@ -208,7 +215,7 @@ are fetched and unpacked inside the disposable guest).
   the brick pops a fresh primed VM per request, destroys it after the
   response; empty pool answers 503 and Envoy retries elsewhere. The CP is a
   pure control loop for this lane.
-- **Persistence as a declared property** (ADR 027, PR #4041): classes stop
+- **Persistence as a declared property** (ADR 027): classes stop
   bundling the persistence decision. A workload declares
   `persistence: {memory: bool, filesystem: {enabled, scope: solo|shared,
   retention: latest+N}}`. This unlocks filesystem-persistence with no
@@ -297,7 +304,7 @@ it as the fallback), mints instance ids node-side with `origin: ACTIVATOR`,
 and the CP adopts and backfills on reconcile. Status: partial land, soak
 ongoing.
 
-### Sessions: the durability ladder (ADR 016, amended by ADR 027 in review)
+### Sessions: the durability ladder (ADR 016, amended by ADR 027)
 
 | Tier | Window | Artifact | Pinning |
 | ---- | ------ | -------- | ------- |
@@ -309,8 +316,8 @@ Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
 unexpired artifact. A relight starts a fresh 8h window, so a lineage spans
 weeks of shorter runs. "Instant for 8h, restorable for 30 days" is strictly
-more than the AWS Lambda MicroVMs offer being copied. ADR 027 (in review)
-amends this ladder: capture may decouple from bank (close-triggered for
+more than the AWS Lambda MicroVMs offer being copied. ADR 027 amends this
+ladder: capture may decouple from bank (close-triggered for
 no-memory-snapshot workloads), retention becomes `latest + N`, and the
 workspace size cap becomes a declared soft budget.
 
@@ -423,9 +430,8 @@ the kubelet pod UID.
 `ExportArtifact` / `RestoreArtifact` / `EvictArtifact`, over
 `ArtifactRef {kind: BASE | SESSION | SERVING | STATEFUL | GROUP_SET |
 VOLUME}`. Control-plane-driven, idempotent per key; evict refuses while
-referenced. Keys are namespaced by workload (and vendor, below); ADR 027 (in
-review) adds the principal-scoped `shared/<principal>/<sha256>` keyspace as
-a deliberate, named exception.
+referenced. Keys are namespaced by workload (and vendor, below); ADR 027 adds the principal-scoped
+`shared/<principal>/<sha256>` keyspace as a deliberate, named exception.
 
 **Vendor pinning**: Firecracker memory snapshots restore only within a CPU
 vendor (and a narrow intra-vendor matrix), so all warmth artifacts are keyed
@@ -624,10 +630,7 @@ order); they are decided direction, not yet built.
 | [024](../../docs/decisions/embervm/024-identity-hierarchy-templates-and-registration.md) | Identity hierarchy; platform principal; guest identity assertion | Draft |
 | [025](../../docs/decisions/embervm/025-local-disk-authoritative-s3-archive-interval.md) | Local disk authoritative; S3 archive; `archiveInterval`; planned drain | Draft |
 | [026](../../docs/decisions/embervm/026-template-composition-gitops-registration.md) | Templates not stamps; GitOps without per-workload CRs; desired-set registration | Draft |
-| 027 | Snapshot modes as a declared workload property (persistence flags, shared keyspace) | Draft, **in review**: PR [#4041](https://github.com/jomcgi/homelab/pull/4041) |
-
-Also in review: PR [#4016](https://github.com/jomcgi/homelab/pull/4016)
-(goals/non-goals and README currency refresh for `projects/embervm/`).
+| [027](../../docs/decisions/embervm/027-snapshot-modes-workload-property.md) | Snapshot modes as a declared workload property (persistence flags, shared keyspace) | Draft |
 
 Operational entry points: ArgoCD and SigNoz at `private.jomcgi.dev/app/*`,
 `kubectl get workloads` for definition status, `/v1/usage` for metering,

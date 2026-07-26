@@ -9,6 +9,8 @@ ADRs record architectural decisions and the reasoning behind them. Unlike epheme
 
 **ADRs are rationale, not implementation plans.** No phase checklists, no task lists, no Go/No-Go gates. Outstanding implementation work is tracked in **GitHub Issues** (the repo's source of truth for what is left to build), with PRs as supporting detail, never in the ADR. An ADR is done when it explains what was decided and why; it does not track whether the work shipped.
 
+**Where a rolled-up architecture document exists, it is the source of truth for current state; ADRs record the rationale behind decisions evident in that architecture.** Currently covered: `docs/decisions/embervm/` is rolled up into `projects/embervm/ARCHITECTURE.md`. Any PR that creates, amends, supersedes, or withdraws an ADR in a covered category must update the architecture document in the same PR (a `PreToolUse` hook, `check-adr-architecture-sync.sh`, reminds on edits). If the ADR is a Draft recording direction rather than built behaviour, reflect it in the document's decided-direction sections and ADR map rather than its as-built narrative.
+
 ## Tracking outstanding work (GitHub Issues)
 
 An ADR records a decision; the work it implies is tracked as **GitHub Issues**, the source of truth for outstanding work in this repo. When an ADR (or a validation pass over one) surfaces unimplemented or partial work:
