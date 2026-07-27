@@ -61,4 +61,12 @@ spec:
     autoWake: {{ .Values.demoPostgres.autoWake }}
     # Reuse the scratch-postgres Secret: same superuser password on first boot.
     secretRef: {{ include "embervm.fullname" . }}-scratch-postgres
+    # Node-local activator (ADR embervm/018 Phase 2). REQUIRED for a visitor to be
+    # able to wake this exhibit at all: noded's statefulByListenPort gate is
+    # `NodeLocalWake && StatefulListenPort == port`, so with this false the L4
+    # activator logs "no eligible workload for listener" and closes the connection
+    # (issue #4077). autoWake above only covers the base-READY case, which is the
+    # control plane waking itself, never a connection arriving on 5401.
+    nodeLocalWake: {{ .Values.demoPostgres.nodeLocalWake }}
+    meteringFailOpen: {{ .Values.demoPostgres.meteringFailOpen }}
 {{- end }}
