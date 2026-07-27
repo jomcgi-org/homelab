@@ -104,8 +104,15 @@ def _get_pending_message_sync(session_id: int, turn_seq: int):
     return store.get_pending_message_sync(session_id, turn_seq)
 
 
-def _claim_pending_message_sync(session_id: int, turn_seq: int) -> bool:
-    return store.claim_pending_message_sync(session_id, turn_seq, _REPLICA_ID)
+def _claim_pending_message_sync(session_id: int) -> int | None:
+    """Claim this session's next queued message, returning its seq.
+
+    The database picks the message, not the caller: it claims the lowest
+    unclaimed seq for the session in one atomic statement. That is what makes
+    ordering hold across replicas, so nothing outside this call may choose
+    which message runs next.
+    """
+    return store.claim_pending_message_for_session_sync(session_id, _REPLICA_ID)
 
 
 def _release_pending_message_claim_sync(session_id: int, turn_seq: int) -> None:
@@ -148,60 +155,59 @@ def _refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool
     return store.refresh_claim_sync(session_id, turn_seq, replica_id)
 
 
-async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
-    """Process one queued message durably with heartbeat-based claim refresh.
+async def _execute_pending_message(session_id: int) -> None:
+    """Process this session's next queued message durably.
 
-    Claim is acquired while holding the session lock to preserve ordering:
-    messages are executed in sequence order. The executor then starts a
-    background task that refreshes the claim every 10 seconds. If the refresh
-    task detects the claim was stolen (reclaimed by another replica), the
-    executor aborts to prevent double-execution of the same turn.
+    Ordering comes from the claim itself: the database atomically claims the
+    lowest unclaimed seq for the session, so turns run in sequence and that
+    holds across replicas. There is deliberately no in-process lock; one could
+    not provide the guarantee anyway, since it says nothing about what another
+    replica is doing.
 
-    This heartbeat model prevents double-execution of long-running turns (which
-    may take many minutes) while still recovering from replica crashes within
-    one lease interval (30s = 3x the 10s refresh interval).
+    Once claimed, a background task refreshes the claim every 10 seconds. If a
+    refresh reports the claim is no longer ours, another replica has reclaimed
+    it and this turn aborts rather than writing a duplicate. That keeps a
+    long-running turn (which may take many minutes) safe from reclaim while
+    still recovering from a crashed replica within one lease interval
+    (30s, three missed refreshes).
     """
 
-    # Track if claim was stolen during execution
+    claimed_seq = await asyncio.to_thread(_claim_pending_message_sync, session_id)
+    if claimed_seq is None:
+        return
+
+    # Set once the claim is lost to another replica; checked before starting and
+    # again after deliver, so a stolen claim never persists a duplicate turn.
     claim_stolen = False
     refresh_task = None
 
     async def _refresh_heartbeat() -> None:
-        """Periodically refresh the claim to keep it from expiring."""
+        """Keep the claim alive while the turn runs."""
         nonlocal claim_stolen
-        replica_id = _REPLICA_ID  # Use the actual replica id from claiming
         while not claim_stolen:
             try:
-                await asyncio.sleep(10)  # Refresh every 10s (1/3 of 30s lease)
-                # Check if claim is still ours; if stolen, abort the turn
+                await asyncio.sleep(10)  # one third of the 30s lease
                 still_held = await asyncio.to_thread(
-                    _refresh_claim_sync, session_id, turn_seq, replica_id
+                    _refresh_claim_sync, session_id, claimed_seq, _REPLICA_ID
                 )
                 if not still_held:
                     claim_stolen = True
                     logger.warning(
                         "Claim for turn %s in session %s was reclaimed, aborting execution",
-                        turn_seq,
+                        claimed_seq,
                         session_id,
                     )
                     break
             except Exception:
-                # Transient refresh failure does not kill the turn; log and retry
+                # A transient refresh failure must not kill an otherwise healthy
+                # turn; the lease tolerates two missed beats.
                 logger.exception(
                     "Failed to refresh claim for turn %s in session %s",
-                    turn_seq,
+                    claimed_seq,
                     session_id,
                 )
 
     async def _do_execute() -> None:
-        nonlocal claim_stolen
-        # Claim while holding the session lock to preserve ordering
-        claimed = await asyncio.to_thread(
-            _claim_pending_message_sync, session_id, turn_seq
-        )
-        if not claimed:
-            return
-
         if claim_stolen:
             return
 
@@ -228,7 +234,7 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
             if claim_stolen:
                 logger.warning(
                     "Claim was stolen during deliver for turn %s in session %s, not persisting result",
-                    turn_seq,
+                    claimed_seq,
                     session_id,
                 )
                 return
@@ -257,17 +263,17 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
             # Delete the pending row to prevent infinite retry.
             logger.warning(
                 "Turn %s for session %s already exists (duplicate seq), discarding retry",
-                turn_seq,
+                claimed_seq,
                 session_id,
             )
             await asyncio.to_thread(
-                store.delete_pending_message_sync, session_id, turn_seq
+                store.delete_pending_message_sync, session_id, claimed_seq
             )
             return
         except Exception:
             logger.exception(
                 "Failed to persist queued turn %s for session %s",
-                turn_seq,
+                claimed_seq,
                 session_id,
             )
             return
@@ -287,7 +293,7 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
             except asyncio.CancelledError:
                 pass
         await asyncio.to_thread(
-            _release_pending_message_claim_sync, session_id, turn_seq
+            _release_pending_message_claim_sync, session_id, claimed_seq
         )
 
 
