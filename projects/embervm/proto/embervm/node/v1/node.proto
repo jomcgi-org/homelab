@@ -461,6 +461,27 @@ service NodeService {
   // generation a banked bundle needs (standing decision 8). Idempotent on an
   // already-absent artifact (the desired end-state already holds).
   rpc EvictArtifact(EvictArtifactRequest) returns (EvictArtifactResponse);
+
+  // ListArtifacts enumerates the STORE (S3) objects under one kind+vendor+workload
+  // prefix, so the control plane can compute remote retention by count. This is the
+  // remote counterpart to the LOCAL BaseInventoryEntry repeated field on
+  // NodeStatus: that one is the daemon's on-disk truth, this one is the bucket's.
+  //
+  // Answering it requires no local copy, which is the point: a superseded base is
+  // reclaimed locally long before its store object is, so by the time remote
+  // retention runs, NO node necessarily holds the ref any more. The listing is
+  // therefore the only way to see what is still out there.
+  //
+  // Bounded by design: the caller passes a kind+vendor+workload prefix and a limit,
+  // and the response reports whether the listing was truncated rather than paging
+  // forever. A truncated listing is safe for retention because the sweep only ever
+  // DELETES beyond a keep-set it computes from the newest entries; seeing fewer
+  // objects can only make it evict less, never more.
+  //
+  // UNIMPLEMENTED on a daemon that predates this RPC, which the control plane
+  // treats as "no remote inventory known" and skips remote retention for that node
+  // (fail toward keeping bytes).
+  rpc ListArtifacts(ListArtifactsRequest) returns (ListArtifactsResponse);
 }
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
@@ -1743,12 +1764,71 @@ message EvictArtifactRequest {
   ArtifactRef artifact = 1;
   bool remote = 2;
   Trace trace = 3;
+  // vendor selects which vendor-segmented store prefix a remote evict targets
+  // (base/<vendor>/<workload>/<ref>). Additive and remote-only; ignored for
+  // remote=false, and ignored for VOLUME (vendor-portable, no vendor segment).
+  //
+  // Without this a node could only ever compose keys under its OWN detected
+  // vendor, so on a mixed fleet nobody could reclaim another vendor's superseded
+  // bases and the bucket never converged. Note this deliberately breaks the
+  // node-locality that LOCAL eviction keeps: export is per (vendor, ref) and local
+  // eviction is per node, but REMOTE eviction is per (vendor, ref) too, because
+  // the object is shared by every node of that vendor.
+  //
+  // EMPTY means "use the daemon's own vendor", preserving the pre-existing
+  // behaviour for a caller that predates the field.
+  string vendor = 4;
 }
 
 // EvictArtifactResponse reports the outcome. bytes_freed is best-effort (0 when
 // the artifact was already absent).
 message EvictArtifactResponse {
   uint64 bytes_freed = 1;
+}
+
+// ListArtifactsRequest asks for the STORE objects under one kind+vendor+workload
+// prefix. kind and workload are required; vendor is required for a vendor-bound
+// kind and ignored for VOLUME.
+message ListArtifactsRequest {
+  ArtifactKind kind = 1;
+  string workload = 2;
+  // vendor segments the prefix for a vendor-bound kind. Empty means "the daemon's
+  // own vendor", matching EvictArtifactRequest.vendor.
+  string vendor = 3;
+  // limit bounds the number of entries returned. 0 means the daemon's default
+  // cap. The daemon always applies its own hard ceiling regardless.
+  uint32 limit = 4;
+  Trace trace = 5;
+}
+
+// ListArtifactsEntry is one stored artifact under the requested prefix.
+message ListArtifactsEntry {
+  // ref is the artifact ref (the last prefix segment), e.g. the base's
+  // "<workload>__<sig>" key. Empty for a kind whose prefix has no ref segment.
+  string ref = 1;
+  // created_at_unix_ms is the artifact's meta.json CreatedAtUnixMs, which is what
+  // retention-by-count orders on. Always populated: an artifact whose marker is
+  // missing or unreadable is OMITTED from the listing entirely rather than
+  // reported with a zero date, since meta.json is the store's own definition of
+  // "present" and retention must never order on something it cannot describe.
+  int64 created_at_unix_ms = 2;
+  // size_bytes is the summed size of the artifact's files from meta.json,
+  // best-effort (0 when unknown).
+  uint64 size_bytes = 3;
+  // cpu_vendor and cpu_template are the stamp recorded at export time, so the
+  // caller can verify an object really belongs to the vendor it listed under.
+  string cpu_vendor = 4;
+  string cpu_template = 5;
+}
+
+// ListArtifactsResponse returns the entries plus whether the listing hit a cap.
+message ListArtifactsResponse {
+  repeated ListArtifactsEntry entries = 1;
+  // truncated is true when the store held more objects than were returned. The
+  // retention sweep may still act on a truncated listing: it only deletes beyond
+  // a keep-set computed from the NEWEST entries, so a short listing evicts less,
+  // never more.
+  bool truncated = 2;
 }
 
 // CpuSku is a node's full CPU-restore identity (PR-E, ADR embervm/012): the

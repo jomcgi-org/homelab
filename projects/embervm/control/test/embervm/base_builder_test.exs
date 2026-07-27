@@ -1936,6 +1936,85 @@ defmodule Embervm.BaseBuilderTest do
     assert status["snapshotRef"] == "w__amd"
   end
 
+  test "remote retention lists per vendor and spares the vendor's current ref" do
+    agent = start_recorder()
+    table = new_cap_table()
+    test_pid = self()
+
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd_cur", "amd")
+    put_vendor_fact(table, "node-1", "ds", "w", "w__intel_cur", "intel")
+
+    # The store still holds each vendor's current ref plus one superseded ref.
+    list_fun = fn _channel, workload, vendor ->
+      send(test_pid, {:listed, workload, vendor})
+
+      entries =
+        case vendor do
+          "amd" ->
+            [%{ref: "w__amd_cur", size_bytes: 10}, %{ref: "w__amd_old", size_bytes: 20}]
+
+          "intel" ->
+            [%{ref: "w__intel_cur", size_bytes: 30}, %{ref: "w__intel_old", size_bytes: 40}]
+        end
+
+      {:ok, entries, false}
+    end
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd_cur")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        list_fun: list_fun,
+        # Both vendors' instances need a dialable address: the sweep asks a node
+        # OF THAT VENDOR for the store listing, and the intel node is not the
+        # build's placement node.
+        nodes: [@node, %{id: "node-1/ds", address: "node-1:9090"}]
+      )
+
+    build_current(builder, agent, "w__amd_cur")
+
+    # Drive one sweep. It must consult EACH vendor exactly once (the store object
+    # is shared across a vendor's nodes, so per-node iteration would duplicate).
+    _ = BaseBuilder.retention_sweep_now(builder)
+
+    assert_receive {:listed, "w", "amd"}, 1_000
+    assert_receive {:listed, "w", "intel"}, 1_000
+
+    # Dry run: nothing is evicted in this build, so a second sweep still sees the
+    # same store and simply logs again.
+    _ = BaseBuilder.retention_sweep_now(builder)
+    assert_receive {:listed, "w", "amd"}, 1_000
+  end
+
+  test "remote retention skips a vendor whose daemon does not implement ListArtifacts" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd_cur", "amd")
+
+    # An older daemon answers UNIMPLEMENTED. The sweep must fail toward KEEPING
+    # bytes rather than crashing the builder.
+    list_fun = fn _channel, _workload, _vendor -> {:error, :unimplemented} end
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd_cur")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        list_fun: list_fun
+      )
+
+    build_current(builder, agent, "w__amd_cur")
+    _ = BaseBuilder.retention_sweep_now(builder)
+
+    # The builder is still alive and still serving status.
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__amd_cur"
+  end
+
   test "the periodic reconcile picks up a vendor that advertised after the build" do
     agent = start_recorder()
     table = new_cap_table()

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,9 @@ type fakeArtifact struct {
 	gen         uint64
 	cpuVendor   string
 	cpuTemplate string
+	// createdAtMs mirrors the real store's meta.json CreatedAtUnixMs, which is
+	// what remote retention orders on.
+	createdAtMs int64
 }
 
 func newFakeStore() *fakeStore {
@@ -55,7 +59,7 @@ func newFakeStore() *fakeStore {
 	}
 }
 
-func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []string, generation uint64, _ int64, cpuVendor, cpuTemplate string) (int64, bool, error) {
+func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.exportCalls[prefix]++
@@ -74,7 +78,7 @@ func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []s
 	if existing, ok := f.arts[prefix]; ok && sameStringMap(existing.files, got) {
 		return 0, true, nil
 	}
-	f.arts[prefix] = fakeArtifact{files: got, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate}
+	f.arts[prefix] = fakeArtifact{files: got, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: nowMs}
 	f.order = append(f.order, prefix)
 	return total, false, nil
 }
@@ -120,6 +124,49 @@ func (f *fakeStore) Present(_ context.Context, prefix string) (bool, uint64, str
 	return true, art.gen, art.cpuVendor, art.cpuTemplate, nil
 }
 
+// ListRefs mirrors the real store's DELIMITED list: it returns the immediate
+// child segment under prefix for every seeded artifact beneath it, deduped, so a
+// caller sees refs rather than files. Sorted for deterministic assertions.
+func (f *fakeStore) ListRefs(_ context.Context, prefix string, limit int) ([]string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p := strings.TrimSuffix(prefix, "/") + "/"
+	seen := make(map[string]bool)
+	for key := range f.arts {
+		if !strings.HasPrefix(key, p) {
+			continue
+		}
+		rest := strings.Trim(strings.TrimPrefix(key, p), "/")
+		if rest == "" || strings.Contains(rest, "/") {
+			continue
+		}
+		seen[rest] = true
+	}
+	refs := make([]string, 0, len(seen))
+	for r := range seen {
+		refs = append(refs, r)
+	}
+	sort.Strings(refs)
+	if limit > 0 && len(refs) > limit {
+		return refs[:limit], true, nil
+	}
+	return refs, false, nil
+}
+
+func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64, uint64, string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	art, ok := f.arts[prefix]
+	if !ok {
+		return false, 0, 0, "", "", nil
+	}
+	var total uint64
+	for _, c := range art.files {
+		total += uint64(len(c))
+	}
+	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, nil
+}
+
 func (f *fakeStore) Reachable(_ context.Context) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -144,9 +191,15 @@ func (f *fakeStore) has(prefix string) bool {
 // can construct an UNSTAMPED (both "") or a specific-sku artifact precisely,
 // including one this node never wrote itself.
 func (f *fakeStore) seedArtifact(prefix string, files map[string]string, generation uint64, cpuVendor, cpuTemplate string) {
+	f.seedArtifactAt(prefix, files, generation, cpuVendor, cpuTemplate, 0)
+}
+
+// seedArtifactAt is seedArtifact with an explicit meta.json created-at, for the
+// remote-retention tests that assert ordering by age.
+func (f *fakeStore) seedArtifactAt(prefix string, files map[string]string, generation uint64, cpuVendor, cpuTemplate string, createdAtMs int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.arts[prefix] = fakeArtifact{files: files, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate}
+	f.arts[prefix] = fakeArtifact{files: files, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: createdAtMs}
 }
 
 // errFakeNotPresent stands in for store.ErrNotPresent in these in-package tests
@@ -625,6 +678,128 @@ func TestExportQueueVolumeStillReExportsAtStaleGeneration(t *testing.T) {
 	}
 	if got := fs.calls(prefix); got == 0 {
 		t.Fatal("a VOLUME present at a STALE generation must still be re-exported, got 0 export calls")
+	}
+}
+
+// TestListArtifactsReturnsStoredRefsWithMeta proves the remote inventory read
+// (PR-4, #3947): ListArtifacts enumerates the refs stored under one
+// kind+vendor+workload prefix with the created-at retention orders on, and does
+// NOT leak refs from a sibling vendor's prefix.
+func TestListArtifactsReturnsStoredRefsWithMeta(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	files := map[string]string{"imageref": "img", "memfile": "m", "snapfile": "s"}
+	fs.seedArtifactAt("base/amd/bazel-query/bazel-query__old", files, 0, "amd", "", 1000)
+	fs.seedArtifactAt("base/amd/bazel-query/bazel-query__new", files, 0, "amd", "", 2000)
+	// A different vendor's copy of the same workload must not appear.
+	fs.seedArtifactAt("base/intel/bazel-query/bazel-query__intel", files, 0, "intel", "", 3000)
+	// A different workload under the same vendor must not appear either.
+	fs.seedArtifactAt("base/amd/semgrep/semgrep__x", files, 0, "amd", "", 4000)
+
+	resp, err := s.ListArtifacts(ctx, &nodev1.ListArtifactsRequest{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_BASE,
+		Workload: "bazel-query",
+		Vendor:   "amd",
+	})
+	if err != nil {
+		t.Fatalf("ListArtifacts: %v", err)
+	}
+
+	got := map[string]int64{}
+	for _, e := range resp.GetEntries() {
+		got[e.GetRef()] = e.GetCreatedAtUnixMs()
+	}
+	if len(got) != 2 {
+		t.Fatalf("entries = %v, want exactly the two amd bazel-query refs", got)
+	}
+	if got["bazel-query__old"] != 1000 || got["bazel-query__new"] != 2000 {
+		t.Fatalf("created-at not reported per ref: %v", got)
+	}
+	if resp.GetTruncated() {
+		t.Fatal("listing of 2 refs should not report truncated")
+	}
+}
+
+// TestListArtifactsOmitsAnArtifactWithNoMarker proves an artifact whose
+// completeness marker is unreadable is left OUT rather than reported with a zero
+// date. meta.json is the store's definition of "present", and retention must
+// never order on (or evict) something it cannot describe.
+func TestListArtifactsOmitsAnArtifactWithNoMarker(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+
+	files := map[string]string{"imageref": "img", "memfile": "m", "snapfile": "s"}
+	fs.seedArtifactAt("base/amd/bazel-query/bazel-query__good", files, 0, "amd", "", 1000)
+	// A ref directory that exists in the listing but has no readable marker: the
+	// fake's ListRefs derives refs from seeded keys, so seed a CHILD key to make
+	// the ref appear without the ref prefix itself being a described artifact.
+	fs.seedArtifactAt("base/amd/bazel-query/bazel-query__partial/inner", files, 0, "amd", "", 2000)
+
+	resp, err := s.ListArtifacts(context.Background(), &nodev1.ListArtifactsRequest{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_BASE,
+		Workload: "bazel-query",
+		Vendor:   "amd",
+	})
+	if err != nil {
+		t.Fatalf("ListArtifacts: %v", err)
+	}
+	for _, e := range resp.GetEntries() {
+		if e.GetRef() == "bazel-query__partial" {
+			t.Fatal("an artifact with no readable meta.json must be omitted, not reported")
+		}
+	}
+}
+
+// TestEvictArtifactRemoteHonoursRequestedVendor proves a node can reclaim ANOTHER
+// vendor's store object (#3947). The store key has no node segment, so one object
+// is shared by every node of that vendor; without an explicit vendor a node could
+// only ever compose its own, and a mixed fleet's bucket never converged.
+func TestEvictArtifactRemoteHonoursRequestedVendor(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs) // this node is amd (newStoreTestServer's vendor)
+	ctx := context.Background()
+
+	files := map[string]string{"imageref": "img", "memfile": "m", "snapfile": "s"}
+	fs.seedArtifact("base/amd/bazel-query/bazel-query__amd", files, 0, "amd", "")
+	fs.seedArtifact("base/intel/bazel-query/bazel-query__intel", files, 0, "intel", "")
+
+	// Evict the INTEL object from this AMD node.
+	if _, err := s.EvictArtifact(ctx, &nodev1.EvictArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "bazel-query", Ref: "bazel-query__intel"},
+		Remote:   true,
+		Vendor:   "intel",
+	}); err != nil {
+		t.Fatalf("EvictArtifact(vendor=intel): %v", err)
+	}
+
+	if fs.has("base/intel/bazel-query/bazel-query__intel") {
+		t.Fatal("the intel object should have been evicted")
+	}
+	if !fs.has("base/amd/bazel-query/bazel-query__amd") {
+		t.Fatal("this node's own amd object must be untouched")
+	}
+}
+
+// TestEvictArtifactRemoteEmptyVendorUsesOwn proves the additive field is
+// backward compatible: an empty vendor still targets the daemon's own prefix, so
+// a control plane that predates the field behaves exactly as before.
+func TestEvictArtifactRemoteEmptyVendorUsesOwn(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+
+	files := map[string]string{"imageref": "img", "memfile": "m", "snapfile": "s"}
+	fs.seedArtifact("base/amd/bazel-query/bazel-query__amd", files, 0, "amd", "")
+
+	if _, err := s.EvictArtifact(context.Background(), &nodev1.EvictArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "bazel-query", Ref: "bazel-query__amd"},
+		Remote:   true,
+	}); err != nil {
+		t.Fatalf("EvictArtifact(no vendor): %v", err)
+	}
+	if fs.has("base/amd/bazel-query/bazel-query__amd") {
+		t.Fatal("an empty vendor should target this node's own prefix")
 	}
 }
 

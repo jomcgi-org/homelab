@@ -40,8 +40,11 @@
         ~w(StartStateful StopStateful ResolveStateful DeleteVolume)a ++
         # R5 groups: composite multi-member workloads, out of scope.
         ~w(CreateGroupNetwork DeleteGroupNetwork StartGroupMember StopGroupMember)a ++
-        # R6 continuity: off-node artifact durability, out of scope.
-        ~w(ExportArtifact RestoreArtifact EvictArtifact)a ++
+        # R6 continuity: off-node artifact durability, out of scope. ListArtifacts
+        # is the remote (store) inventory read that remote base retention computes
+        # its keep-set from; like its siblings it is durability plumbing, not VM
+        # lifecycle or adoption.
+        ~w(ExportArtifact RestoreArtifact EvictArtifact ListArtifacts)a ++
         # Artifact-decoupling Phase 2: control-plane -> daemon workload-registry
         # push verbs (SyncRegistry converges the pushed set; Register/Deregister
         # are the incremental forms). They deliver node-side image identity, not
