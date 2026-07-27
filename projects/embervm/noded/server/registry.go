@@ -182,6 +182,12 @@ type sessionEntry struct {
 	workload    string
 	snapshotRef string // the base ref it was relit/primed from (for correlation)
 	handle      substrate.Handle
+	// egressCancel stops this VM's egress forwarder (ADR 023 phase 6a). Never
+	// nil: a VM with egress disabled carries a no-op, so every teardown path can
+	// call it unconditionally. A session adopted from a primed task VM INHERITS
+	// the forwarder Prime started rather than opening a second one, so the cancel
+	// travels with the VM across that registry move.
+	egressCancel func()
 
 	mu       sync.Mutex // guards inFlight
 	inFlight bool

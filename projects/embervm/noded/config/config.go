@@ -183,11 +183,26 @@ type Config struct {
 	// notification latency (ADR embervm/009 resolved-question 5).
 	DrainTimeout time.Duration
 
-	// EgressSidecarAddr is the pod-local egress-proxy sidecar TCP address. The
-	// task class gets no NIC and egress is disabled, so this is unused today but
-	// carried so a future egress-enabled workload needs no config reshape.
+	// EgressSidecarAddr is the pod-local egress-proxy sidecar TCP address that
+	// EgressEnabled forwards guest vsock egress to.
 	// Default "127.0.0.1:8888".
 	EgressSidecarAddr string
+
+	// EgressEnabled turns on the guest egress lane (ADR 023 phase 6a): the daemon
+	// serves vsockproto.EgressPort for each live guest and tunnels every
+	// connection to the egress-proxy sidecar at EgressSidecarAddr, which is the
+	// only process that reaches the network on a guest's behalf.
+	//
+	// Daemon-level rather than per-workload on purpose. A guest reaches the lane
+	// only by dialling the egress port, which nothing but a guest configured to
+	// proxy (today: runtime-claude) ever does, so serving it for every guest costs
+	// one idle listener and changes no existing guest's behaviour. Egress POLICY
+	// belongs to the sidecar, which classifies the resolved IP and denies internal
+	// destinations by default; putting an allow/deny bit here as well would split
+	// that decision across two processes.
+	//
+	// Defaults false, so a node without the sidecar deployed never opens the lane.
+	EgressEnabled bool
 
 	// ArchiveFetchTimeout bounds a single zip-lane archive HTTP GET (the R1 zip
 	// lane fetches the archive from the in-cluster SeaweedFS read path on the pod
@@ -379,6 +394,7 @@ func Load() (Config, error) {
 		RestoreReadyTimeout: 2 * time.Second,
 		DrainTimeout:        110 * time.Second,
 		EgressSidecarAddr:   getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
+		EgressEnabled:       boolDefault("EMBERVM_NODED_EGRESS_ENABLED", false),
 		ArchiveFetchTimeout: 60 * time.Second,
 		ArchiveMaxBytes:     512 << 20,
 
