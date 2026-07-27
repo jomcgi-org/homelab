@@ -636,6 +636,17 @@ demoPostgres:
   # would otherwise leave the demo wedged until a manual forced wake, so the CP
   # wakes it as soon as the rebuilt base advertises READY.
   autoWake: true
+  # Node-local activator (ADR embervm/018 Phase 2), same rationale as
+  # scratch-postgres above, and NOT optional for this workload: the daemon's
+  # statefulByListenPort gate requires nodeLocalWake, so without it the L4
+  # activator answers a connect on 5401 with "no eligible workload for listener"
+  # and closes the socket. That left the public exhibit unwakeable while
+  # /api/health still read "banked, pair valid" (issue #4077): the control plane
+  # can wake this workload (autoWake does), but nothing converts a VISITOR's
+  # connection into a wake. meteringFailOpen names the wake-unmetered-during-gap
+  # policy, as for the other blessed demo.
+  nodeLocalWake: true
+  meteringFailOpen: true
   # Toy dataset: a handful of demo rows, not a real datastore.
   volumeSizeGiB: 2
 
