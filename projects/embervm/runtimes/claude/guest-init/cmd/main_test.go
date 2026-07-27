@@ -16,11 +16,11 @@ func TestValueFromCmdline(t *testing.T) {
 	for _, tc := range []struct {
 		name, cmdline, key, want string
 	}{
-		{"present", "console=ttyS0 ember.workspace_dev=/dev/vdb", workspaceDevCmdlineKey, "/dev/vdb"},
-		{"absent", "console=ttyS0 init=/init", workspaceDevCmdlineKey, ""},
-		{"empty value", "ember.workspace_dev=", workspaceDevCmdlineKey, ""},
-		{"duplicate last wins", "ember.workspace_dev=/dev/vdb ember.workspace_dev=/dev/vdc", workspaceDevCmdlineKey, "/dev/vdc"},
-		{"not a prefix match", "other.ember.workspace_dev=/dev/vdb", workspaceDevCmdlineKey, ""},
+		{"present", "console=ttyS0 ember.volume_dev=/dev/vdb", volumeDevCmdlineKey, "/dev/vdb"},
+		{"absent", "console=ttyS0 init=/init", volumeDevCmdlineKey, ""},
+		{"empty value", "ember.volume_dev=", volumeDevCmdlineKey, ""},
+		{"duplicate last wins", "ember.volume_dev=/dev/vdb ember.volume_dev=/dev/vdc", volumeDevCmdlineKey, "/dev/vdc"},
+		{"not a prefix match", "other.ember.volume_dev=/dev/vdb", volumeDevCmdlineKey, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := valueFromCmdline(tc.cmdline, tc.key); got != tc.want {
@@ -140,15 +140,27 @@ func TestMountWorkspaceVolumePathsAreIsolated(t *testing.T) {
 		chownFn = originalChown
 		chmodFn = originalChmod
 	})
+	originalStat := statFn
+	originalRead := readFileFn
+	originalWrite := writeFileFn
+	t.Cleanup(func() {
+		statFn = originalStat
+		readFileFn = originalRead
+		writeFileFn = originalWrite
+	})
 	mountFn = func(string, string, string, uintptr, string) error { return nil }
 	mkdirAllFn = func(string, os.FileMode) error { return nil }
 	chownFn = func(string, int, int) error { return nil }
 	chmodFn = func(string, os.FileMode) error { return nil }
+	// No trust record on the writable HOME yet, so the seed path runs.
+	statFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	readFileFn = func(string) ([]byte, error) { return []byte("{}"), nil }
+	writeFileFn = func(string, []byte, os.FileMode) error { return nil }
 	for _, tc := range []struct {
 		name, cmdline string
 		wantErr       bool
 	}{
-		{"device path fails closed", "init=/init ember.workspace_dev=/dev/does-not-exist\n", true},
+		{"device path fails closed", "init=/init ember.volume_dev=/dev/does-not-exist\n", true},
 		{"tmpfs path", "init=/init console=ttyS0\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,4 +185,40 @@ func withCmdlinePath(t *testing.T, path string) {
 	previous := procCmdlinePath
 	procCmdlinePath = path
 	t.Cleanup(func() { procCmdlinePath = previous })
+}
+
+// TestSeedTrustRecordDoesNotClobber covers the branch that matters once a session
+// has a real disk: the CLI's own writes to ~/.claude.json (onboarding state) must
+// survive a cold boot, so the image's baked master seeds ONLY into an empty HOME.
+func TestSeedTrustRecordDoesNotClobber(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	originalStat, originalRead, originalWrite, originalChown := statFn, readFileFn, writeFileFn, chownFn
+	t.Cleanup(func() {
+		statFn, readFileFn, writeFileFn, chownFn = originalStat, originalRead, originalWrite, originalChown
+	})
+	chownFn = func(string, int, int) error { return nil }
+	readFileFn = func(string) ([]byte, error) { return []byte(`{"projects":{}}`), nil }
+
+	t.Run("absent seeds", func(t *testing.T) {
+		wrote := ""
+		statFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+		writeFileFn = func(path string, _ []byte, _ os.FileMode) error { wrote = path; return nil }
+		if err := seedTrustRecord(logger); err != nil {
+			t.Fatalf("seedTrustRecord() = %v", err)
+		}
+		if wrote != runtimeHomePath+"/.claude.json" {
+			t.Errorf("seeded %q, want the record in HOME", wrote)
+		}
+	})
+
+	t.Run("present is left alone", func(t *testing.T) {
+		statFn = func(string) (os.FileInfo, error) { return nil, nil }
+		writeFileFn = func(string, []byte, os.FileMode) error {
+			t.Fatal("overwrote an existing trust record; the CLI's own state would be rolled back")
+			return nil
+		}
+		if err := seedTrustRecord(logger); err != nil {
+			t.Fatalf("seedTrustRecord() = %v", err)
+		}
+	})
 }

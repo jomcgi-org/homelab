@@ -15,8 +15,18 @@ var shimCmd = []string{"/usr/local/bin/ember-claude-shim"}
 var procCmdlinePath = "/proc/cmdline"
 
 const (
-	workspaceDevCmdlineKey = "ember.workspace_dev"
-	mmdsEnvCmdlinePrefix   = "ember.env."
+	// The keys noded ACTUALLY emits (fcvm/driver bootArgsFor). This guest used to
+	// read ember.workspace_dev, which noded has never emitted, so a drive attached
+	// through the existing volume path would have been silently ignored: both
+	// halves looked wired in isolation and neither could reach the other. Reuse
+	// noded's convention rather than teach the daemon a second one.
+	//
+	// volume_dev is the actual device, NOT a fixed /dev/vdc: drives land on
+	// /dev/vd{a,b,c...} in attach order, so a boot with no handler disk (which is
+	// every session boot) puts the writable volume on vdb.
+	volumeDevCmdlineKey   = "ember.volume_dev"
+	volumeMountCmdlineKey = "ember.volume_mount"
+	mmdsEnvCmdlinePrefix  = "ember.env."
 )
 
 func main() {
