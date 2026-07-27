@@ -430,17 +430,16 @@ bazelQueryWorkload:
   readyPath: /shim/ready
   invokePath: /query
   vcpus: 2
-  # Node-4 RAM arithmetic (bounded, not discovered; ADR 002 rule 4): -Xmx1g JVM
-  # heap + the guest's 1536m /tmp tmpfs (install base + extracted external/ under
-  # output_base) + OS overhead. 3072 leaves headroom above heap + tmpfs; at cap 2
-  # that is ~6 GiB worst case on the ~62Gi node-4, comfortably within budget.
+  # Measured warm usage at the base snapshot cutoff (#4062): 548 MiB of guest
+  # unreclaimable memory, including the 203 MiB /tmp tmpfs use. 1024 MiB gives
+  # about 1.9x headroom while leaving the -Xmx1g JVM heap unchanged.
   #
   # ENOSPC COUPLING: memMib is sized to hold the guest's tmpfs in RAM. If a live
   # base build ENOSPCs on /tmp during the warming cquery, the tmpfs `size=` in the
-  # guest-init (runtimes/bazel/guest-init/cmd/main.go) and this memMib MUST be
+  # guest-init (runtimes/bazel/guest-init/cmd/mount_linux.go) and this memMib MUST be
   # raised TOGETHER: a larger tmpfs with the same memMib would exhaust guest RAM
   # instead of running out of /tmp, trading one failure for another.
-  memMib: 3072
+  memMib: 1024
   # floor: one primed clone kept warm; restore is demand-paged so a miss is cheap.
   floor: 1
   # cap: the governor is RAM (ADR); raise only after measuring per-clone dirtied
