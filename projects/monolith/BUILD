@@ -1,4 +1,5 @@
 # gazelle:exclude agent
+# gazelle:exclude agent_sessions
 # gazelle:exclude artifact
 # gazelle:exclude chat
 # gazelle:exclude chat_public
@@ -67,6 +68,7 @@ exec_filegroup(
 _BACKEND_SRCS = glob(
     [
         "agent/**/*.py",
+        "agent_sessions/**/*.py",
         "app/**/*.py",
         "framework/**/*.py",
         "artifact/**/*.py",
@@ -257,6 +259,7 @@ py_library(
     srcs = glob(
         [
             "agent/**/*.py",
+            "agent_sessions/**/*.py",
             "app/**/*.py",
             "framework/**/*.py",
             "artifact/**/*.py",
@@ -718,6 +721,7 @@ py_test(
             "home/**/*.py",
             "scheduler/**/*.py",
             "agent/**/*.py",
+            "agent_sessions/**/*.py",
             "goosecracker/**/*.py",
             "worldcup/**/*.py",
             "campsites/**/*.py",
@@ -5491,6 +5495,39 @@ py_test(
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_store_voice_test",
+    srcs = ["agent_sessions/store_voice_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_mcp_test",
+    srcs = ["agent_sessions/mcp_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastmcp",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_transport_test",
+    srcs = ["agent_sessions/transport_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
     ],
 )
 

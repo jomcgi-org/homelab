@@ -13,6 +13,7 @@ binary's file set. The public registry lives in app/modules_public.py.
 from __future__ import annotations
 
 import agent.module
+import agent_sessions.module
 import artifact.module
 import campsites.module
 import chat.module
@@ -57,6 +58,7 @@ ALL_MODULES: tuple[Module, ...] = (
     # app/main.py import order (knowledge, agent, cluster, semgrep_scan,
     # sandbox); route order is unaffected because these mount no routes.
     agent.module.MODULE,
+    agent_sessions.module.MODULE,
     cluster.module.MODULE,
     # GitHub PR webhook -> fc-invoke scan -> Semgrep App relay. Registers
     # POST /webhooks/github/semgrep; HMAC-verified, no cf-access on that path.
