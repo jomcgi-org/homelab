@@ -110,6 +110,7 @@ defmodule Embervm.BaseBuilder do
     BuildBaseResponse,
     EvictArtifactRequest,
     ExportArtifactRequest,
+    ListArtifactsRequest,
     NodeService,
     ResourceSpec,
     RestoreArtifactRequest,
@@ -310,6 +311,11 @@ defmodule Embervm.BaseBuilder do
     # takes (channel, workload, ref) so it can compose the vendor-keyed store prefix
     # (the BASE key is base/<vendor>/<workload>/<ref>).
     evict_fun = Keyword.get(opts, :evict_fun, &default_evict/3)
+    # Remote base retention (#3947 PR-4): the ListArtifacts seam that reads the
+    # STORE inventory for one (workload, vendor). Takes (channel, workload,
+    # vendor) and returns {:ok, entries, truncated} or {:error, reason}. Tests
+    # inject a fake so no test opens a channel.
+    list_fun = Keyword.get(opts, :list_fun, &default_list_artifacts/3)
     # Base-durability PR-1: the ExportArtifact seam that writes a freshly-built
     # (or present-but-unexported) base back to the object store. Defaults to the
     # real NodeService.Stub.export_artifact/2 over a per-call channel; tests
@@ -414,6 +420,7 @@ defmodule Embervm.BaseBuilder do
       connect_fun: connect_fun,
       disconnect_fun: disconnect_fun,
       evict_fun: evict_fun,
+      list_fun: list_fun,
       export_fun: export_fun,
       restore_fun: restore_fun,
       op_log: op_log,
@@ -471,6 +478,10 @@ defmodule Embervm.BaseBuilder do
 
   def handle_call(:retention_sweep_now, _from, state) do
     {plan, state} = retention_sweep_plan(state)
+    # Mirror the timer path (retention_sweep/1) exactly, so a test driving this
+    # hook exercises the same work the :retention_sweep tick does. Letting the two
+    # diverge is how a sweep passes its tests while doing something else in prod.
+    remote_retention_sweep(state)
     {:reply, plan, state}
   end
 
@@ -1601,7 +1612,101 @@ defmodule Embervm.BaseBuilder do
   # WorkloadWatcher has completed its initial LIST.
   defp retention_sweep(state) do
     {_plan, state} = retention_sweep_plan(state)
+    remote_retention_sweep(state)
     state
+  end
+
+  # REMOTE base retention (#3947 PR-4), dry-run only in this change.
+  #
+  # The local sweep above reclaims node disk. It cannot reclaim the STORE, because
+  # a superseded base leaves node disk long before its S3 object does: by the time
+  # remote retention runs, no node necessarily still holds the ref, so the bucket
+  # is the only record of it. ListArtifacts is that record.
+  #
+  # Keyed per (workload, VENDOR), not per node. The store key
+  # base/<vendor>/<workload>/<ref> has no node segment, so one object is shared by
+  # every node of that vendor: iterating nodes would compute the same candidate set
+  # once per node and (once armed) issue duplicate deletes. Contrast the local
+  # sweep, which IS per node because local bytes are node-local. That asymmetry is
+  # the same one #4079 established for export.
+  #
+  # This logs what it WOULD evict and deletes nothing. Arming it is a separate
+  # change, deliberately, because the blast radius is the bucket.
+  defp remote_retention_sweep(state) do
+    for {_name, w} <- state.workloads,
+        {vendor, vendor_refs} <- snapshot_refs_by_vendor(state, w),
+        {:ok, instance_id} <- [node_of_vendor(state, w, vendor)] do
+      keep =
+        MapSet.new(vendor_refs ++ desired_refs_for_node(nil, w))
+        |> MapSet.delete(nil)
+
+      case list_remote_refs(state, instance_id, w.name, vendor) do
+        {:ok, entries, truncated} ->
+          candidates = Enum.reject(entries, fn e -> MapSet.member?(keep, e.ref) end)
+          log_remote_retention(w.name, vendor, candidates, truncated, keep)
+
+        {:error, reason} ->
+          # Fail toward KEEPING bytes: a daemon that predates ListArtifacts
+          # answers UNIMPLEMENTED, and a store hiccup is Unavailable. Either way
+          # the correct move is to skip this (workload, vendor) this tick.
+          Logger.debug(
+            "embervm base builder: remote retention skipped for #{w.name}/#{vendor}: #{inspect(reason)}"
+          )
+      end
+    end
+
+    :ok
+  end
+
+  # Any instance on a node whose reported cpu_vendor matches. The store copy is
+  # shared across the vendor, so ANY of its nodes can answer for it; a node need
+  # not hold the base locally to list or (later) evict it.
+  defp node_of_vendor(state, w, vendor) do
+    state
+    |> representative_facts_by_node(w.name)
+    |> Enum.find(fn fact ->
+      fact |> Map.get(:cpu_vendor, "") |> to_string() |> String.trim() == vendor
+    end)
+    |> case do
+      nil -> :error
+      fact -> {:ok, fact[:instance_id]}
+    end
+  end
+
+  defp list_remote_refs(state, instance_id, workload, vendor) do
+    case Map.get(state.node_addr, instance_id) do
+      nil ->
+        {:error, {:connect, :no_address}}
+
+      address ->
+        case state.connect_fun.(address) do
+          {:ok, channel} ->
+            try do
+              state.list_fun.(channel, workload, vendor)
+            catch
+              kind, reason -> {:error, {kind, reason}}
+            after
+              state.disconnect_fun.(channel)
+            end
+
+          {:error, reason} ->
+            {:error, {:connect, reason}}
+        end
+    end
+  end
+
+  defp log_remote_retention(workload, vendor, candidates, truncated, keep) do
+    if candidates != [] do
+      bytes = Enum.reduce(candidates, 0, fn e, acc -> acc + (e.size_bytes || 0) end)
+      refs = Enum.map(candidates, & &1.ref)
+
+      Logger.info(
+        "embervm base builder: remote base retention (DRY RUN, never evicts in this build) " <>
+          "WOULD evict #{length(candidates)} superseded store base(s) for #{workload}/#{vendor} " <>
+          "(~#{bytes} bytes), keeping #{MapSet.size(keep)} ref(s)#{if truncated, do: ", listing TRUNCATED", else: ""}: " <>
+          inspect(refs)
+      )
+    end
   end
 
   # Compute the sweep plan (a per-node list of what to evict) AND apply the
@@ -2304,6 +2409,24 @@ defmodule Embervm.BaseBuilder do
   # ArtifactRef carries the workload so the node composes the vendor-keyed base
   # store prefix; the node stamps its own cpu vendor. Idempotent on an
   # already-gone base.
+  # ListArtifacts the STORE inventory for one (workload, vendor). The vendor is
+  # explicit rather than the node's own, because the object is shared across the
+  # vendor and any of its nodes can answer for it. Returns the entries plus
+  # whether the daemon truncated the listing.
+  defp default_list_artifacts(channel, workload, vendor) do
+    request = %ListArtifactsRequest{
+      kind: :ARTIFACT_KIND_BASE,
+      workload: workload,
+      vendor: vendor,
+      trace: %Trace{workload: workload}
+    }
+
+    case NodeService.Stub.list_artifacts(channel, request, timeout: 30_000) do
+      {:ok, resp} -> {:ok, resp.entries || [], resp.truncated}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp default_evict(channel, workload, ref) do
     NodeService.Stub.evict_artifact(channel, %EvictArtifactRequest{
       artifact: %ArtifactRef{

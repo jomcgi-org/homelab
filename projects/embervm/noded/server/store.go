@@ -38,6 +38,17 @@ type artifactStore interface {
 	DeleteArtifact(ctx context.Context, prefix string) error
 	Present(ctx context.Context, prefix string) (present bool, generation uint64, cpuVendor, cpuTemplate string, err error)
 	Reachable(ctx context.Context) bool
+	// ListRefs enumerates the artifact refs stored under a prefix (PR-4 remote
+	// retention). Delimited, so the response tracks the ref count rather than the
+	// file count; truncated reports that the store held more than limit.
+	ListRefs(ctx context.Context, prefix string, limit int) (refs []string, truncated bool, err error)
+	// ArtifactInfo reads an artifact's completeness marker and returns the fields
+	// ListArtifacts reports that Present does not surface (created-at, total
+	// size), plus the vendor stamp so a caller can verify an object really
+	// belongs to the vendor prefix it was listed under. Returned flat rather than
+	// as a store.Meta so this seam keeps NOT importing the store package, per the
+	// note above.
+	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, err error)
 }
 
 // artifactKindStr maps an ArtifactKind to its lowercase store-key segment (Fork
@@ -613,16 +624,104 @@ func (s *Server) EvictArtifact(ctx context.Context, req *nodev1.EvictArtifactReq
 			// (gone) already holds. Idempotent success.
 			return &nodev1.EvictArtifactResponse{}, nil
 		}
-		if err := s.store.DeleteArtifact(ctx, prefix); err != nil {
-			return nil, status.Errorf(codes.Unavailable, "noded: evict remote artifact %q: %v", prefix, err)
+		// Remote eviction targets a (vendor, ref) OBJECT, not this node's copy: the
+		// store key carries no node segment, so one object is shared by every node
+		// of that vendor. An explicit vendor therefore lets the control plane
+		// reclaim a vendor's superseded bases through ANY node, which is the only
+		// way a mixed fleet converges. Without it a node could compose only its own
+		// vendor's key, so nobody could ever clean up the other vendor's bases.
+		//
+		// This deliberately breaks the node-locality that LOCAL eviction keeps.
+		// Export is per (vendor, ref), local eviction is per node, and remote
+		// eviction is per (vendor, ref). Empty vendor preserves the pre-existing
+		// behaviour (this node's own), so an older caller is unaffected.
+		remotePrefix := prefix
+		if v := req.GetVendor(); v != "" && artifactVendorSegment(ref.GetKind()) {
+			remotePrefix = artifactPrefix(ref, v)
+			if remotePrefix == "" {
+				return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
+			}
 		}
-		s.exported.clear(prefix)
+		if err := s.store.DeleteArtifact(ctx, remotePrefix); err != nil {
+			return nil, status.Errorf(codes.Unavailable, "noded: evict remote artifact %q: %v", remotePrefix, err)
+		}
+		s.exported.clear(remotePrefix)
 		s.signalChange()
 		return &nodev1.EvictArtifactResponse{}, nil
 	}
 	// Local eviction over the typed ref: reuse the existing EvictSnapshot path for
 	// bundle kinds, DeleteVolume for a VOLUME.
 	return s.evictArtifactLocal(ctx, ref)
+}
+
+// listArtifactsDefaultLimit is the cap applied when a caller passes limit 0, and
+// listArtifactsMaxLimit is the ceiling the daemon enforces regardless of what the
+// caller asked for. Both are generous against the real shape (a handful of refs
+// per (workload, vendor), even mid-backlog) while keeping one response well
+// inside gRPC message limits.
+const (
+	listArtifactsDefaultLimit = 256
+	listArtifactsMaxLimit     = 1024
+)
+
+// ListArtifacts enumerates the STORE objects under one kind+vendor+workload
+// prefix, so the control plane can compute remote retention by count.
+//
+// This answers a question no LOCAL inventory can: a superseded base is reclaimed
+// from node disk long before its store object is, so by the time remote retention
+// runs, no node necessarily still holds the ref. The bucket is the only remaining
+// record of it.
+//
+// An entry whose completeness marker is missing or unreadable is OMITTED rather
+// than reported with zeroed fields. meta.json is the store's own definition of
+// "present", so an artifact without one is not present, and retention must never
+// order on (or evict) something it cannot describe.
+func (s *Server) ListArtifacts(ctx context.Context, req *nodev1.ListArtifactsRequest) (*nodev1.ListArtifactsResponse, error) {
+	if s.store == nil {
+		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; list unavailable")
+	}
+	if artifactKindStr(req.GetKind()) == "" || req.GetWorkload() == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
+	}
+	vendor := req.GetVendor()
+	if vendor == "" {
+		vendor = s.cfg.CpuVendor
+	}
+	// The WORKLOAD-level prefix (no ref segment): the refs under it are what the
+	// delimited list enumerates.
+	prefix := artifactPrefix(&nodev1.ArtifactRef{Kind: req.GetKind(), Workload: req.GetWorkload()}, vendor)
+	if prefix == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: vendor required for a vendor-bound artifact kind")
+	}
+
+	limit := int(req.GetLimit())
+	if limit <= 0 {
+		limit = listArtifactsDefaultLimit
+	}
+	if limit > listArtifactsMaxLimit {
+		limit = listArtifactsMaxLimit
+	}
+
+	refs, truncated, err := s.store.ListRefs(ctx, prefix, limit)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: list artifacts %q: %v", prefix, err)
+	}
+
+	entries := make([]*nodev1.ListArtifactsEntry, 0, len(refs))
+	for _, r := range refs {
+		present, createdAt, size, v, tmpl, ierr := s.store.ArtifactInfo(ctx, prefix+"/"+r)
+		if ierr != nil || !present {
+			continue
+		}
+		entries = append(entries, &nodev1.ListArtifactsEntry{
+			Ref:             r,
+			CreatedAtUnixMs: createdAt,
+			SizeBytes:       size,
+			CpuVendor:       v,
+			CpuTemplate:     tmpl,
+		})
+	}
+	return &nodev1.ListArtifactsResponse{Entries: entries, Truncated: truncated}, nil
 }
 
 // evictArtifactLocal deletes the on-disk copy of an artifact over the typed ref,

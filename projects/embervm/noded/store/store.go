@@ -26,12 +26,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -432,6 +435,106 @@ func (s *Store) Reachable(ctx context.Context) bool {
 	// Any answered status means the endpoint is up; the reachability probe does
 	// not judge the bucket's contents, only that the store responds.
 	return true
+}
+
+// listBucketResult is the subset of the S3 ListObjectsV2 XML response this
+// client reads. Only CommonPrefixes matters: every artifact is a set of files
+// under a prefix, so a DELIMITED list one level below <kind>/<vendor>/<workload>
+// enumerates the artifact refs without paging through their individual files.
+type listBucketResult struct {
+	IsTruncated    bool `xml:"IsTruncated"`
+	CommonPrefixes []struct {
+		Prefix string `xml:"Prefix"`
+	} `xml:"CommonPrefixes"`
+}
+
+// ListRefs enumerates the immediate child "directories" under prefix and returns
+// the last path segment of each, i.e. the artifact refs stored under it.
+//
+// This is the REMOTE inventory read behind PR-4 remote base retention. It exists
+// because a superseded base is reclaimed from node disk long before its store
+// object is, so by the time remote retention runs, no node necessarily holds the
+// ref any more and the bucket is the only place that still knows.
+//
+// The S3 delimiter does the work: with delimiter=/ the store returns one
+// CommonPrefix per ref instead of one key per file, so the response size tracks
+// the ref count rather than the file count. limit caps max-keys; truncated
+// reports whether the store had more. A truncated listing is safe for retention
+// because the sweep only deletes BEYOND a keep-set computed from the newest
+// entries, so seeing fewer refs can only evict less, never more.
+func (s *Store) ListRefs(ctx context.Context, prefix string, limit int) (refs []string, truncated bool, err error) {
+	if s == nil {
+		return nil, false, ErrNotPresent
+	}
+	p := strings.TrimLeft(prefix, "/")
+	if !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	q := url.Values{}
+	q.Set("list-type", "2")
+	q.Set("prefix", p)
+	q.Set("delimiter", "/")
+	if limit > 0 {
+		q.Set("max-keys", strconv.Itoa(limit))
+	}
+	endpoint := s.endpoint + "/" + s.bucket + "?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: build LIST %q: %w", p, err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: LIST %q: %w", p, err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		// An empty bucket or absent prefix is "nothing stored", not an error.
+		return nil, false, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, false, fmt.Errorf("store: LIST %q: unexpected status %d", p, resp.StatusCode)
+	}
+
+	var out listBucketResult
+	if derr := xml.NewDecoder(resp.Body).Decode(&out); derr != nil {
+		return nil, false, fmt.Errorf("store: decode LIST %q: %w", p, derr)
+	}
+	for _, cp := range out.CommonPrefixes {
+		ref := strings.Trim(strings.TrimPrefix(cp.Prefix, p), "/")
+		if ref == "" || strings.Contains(ref, "/") {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs, out.IsTruncated, nil
+}
+
+// ArtifactInfo reports the completeness-marker fields ListArtifacts needs that
+// Present does not surface: the created-at it orders retention on and the summed
+// file size, plus the vendor stamp so a caller can verify an object really
+// belongs to the prefix it was listed under.
+//
+// Returned flat rather than as a Meta so the server package's artifactStore seam
+// can declare it without importing this package (see the seam's own note). Same
+// contract as getMeta: absent marker is (false, ...) with a nil error, so an
+// incomplete artifact reads as not present.
+func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, err error) {
+	if s == nil {
+		return false, 0, 0, "", "", nil
+	}
+	ok, meta, merr := s.getMeta(ctx, prefix)
+	if merr != nil {
+		return false, 0, 0, "", "", merr
+	}
+	if !ok {
+		return false, 0, 0, "", "", nil
+	}
+	var total int64
+	for _, fm := range meta.Files {
+		total += fm.Size
+	}
+	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, nil
 }
 
 // getMeta fetches and decodes meta.json for a prefix. It returns (false, _, nil)
