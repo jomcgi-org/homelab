@@ -52,7 +52,14 @@ def _pg_status_payload(**overrides):
 
 
 def test_module_registers_demo_postgres_health_hook():
-    assert MODULE.register_health == {"demo_postgres": demo_postgres_health}
+    assert MODULE.register_health["demo_postgres"] is demo_postgres_health
+    assert set(MODULE.register_health) == {
+        "demo_postgres",
+        "ember_bazel",
+        "ember_semgrep",
+        "ember_pages",
+        "ember_postgres_synthetic",
+    }
 
 
 @pytest.mark.asyncio
