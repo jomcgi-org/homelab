@@ -61,6 +61,14 @@ defmodule Embervm.ApplicationTest do
   # set, non-empty DSN selects Embervm.OpLog.Postgres. This PR does not wire
   # the DSN into any deploy values, so the selection stays SQLite in prod
   # until a later cutover PR sets it.
+  #
+  # The op-log option regression below is intentionally source-level. The
+  # option parsing lives inside GenServer init callbacks, and starting every
+  # child just to inspect its state would require unrelated ETS tables and
+  # runtime services. The production failure was specifically caused by a
+  # hardcoded SQLite default, so checking each source file for that literal
+  # directly guards the failure mode even when tests inject an explicit fake
+  # server.
   test "op_log_mod/0 selects Embervm.OpLog.SQLite when EMBERVM_OPLOG_DSN is unset" do
     System.delete_env("EMBERVM_OPLOG_DSN")
     assert App.op_log_mod() == Embervm.OpLog.SQLite
@@ -74,5 +82,33 @@ defmodule Embervm.ApplicationTest do
   test "op_log_mod/0 selects Embervm.OpLog.Postgres when EMBERVM_OPLOG_DSN is set" do
     System.put_env("EMBERVM_OPLOG_DSN", "postgres://embervm:pw@embervm-pg:5432/embervm")
     assert App.op_log_mod() == Embervm.OpLog.Postgres
+  end
+
+  test "op-log server defaults follow op_log_mod in every control child" do
+    modules = ~w(
+      drain_coordinator
+      base_builder
+      group_wake_manager
+      group_sweeper
+      group_store
+      metering
+      serving_manager
+      session_manager
+      serving_store
+      serving_sweeper
+      stateful_store
+      session_store
+      task_store
+      stateful_sweeper
+      stateful_manager
+      op_log/compactor
+    )
+
+    for module <- modules do
+      source = Path.join([__DIR__, "../../lib/embervm", "#{module}.ex"]) |> File.read!()
+
+      refute source =~ "Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)"
+      assert source =~ "Keyword.get(opts, :op_log, op_log_mod)"
+    end
   end
 end

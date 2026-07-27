@@ -262,11 +262,11 @@ defmodule Embervm.TaskStore do
 
   @impl true
   def init(opts) do
-    op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
     # The backend module dispatched at every call site below, threaded alongside
     # :op_log (the server address) so a non-default backend never requires editing
-    # this module. Defaults to the same SQLite module :op_log defaults to.
+    # this module. Defaults to the selected backend module.
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
     id_fun = Keyword.get(opts, :id_fun, &default_id/0)
     clock = Keyword.get(opts, :clock, &default_clock/0)
     # Fired on every transition INTO :queued (submit-created, retry, redrive) with

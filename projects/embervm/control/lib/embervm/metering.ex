@@ -186,12 +186,15 @@ defmodule Embervm.Metering do
 
   @impl true
   def init(opts) do
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
+
     state = %{
-      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      op_log: op_log,
       # The backend module dispatched at every call site below, threaded alongside
       # :op_log (the server address) so a non-default backend never requires
-      # editing this module. Defaults to the same SQLite module :op_log defaults to.
-      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      # editing this module. Defaults to the selected backend module.
+      op_log_mod: op_log_mod,
       tenant: Keyword.get(opts, :tenant, "homelab"),
       table: Keyword.get(opts, :table, @table),
       clock: Keyword.get(opts, :clock, &default_clock/0),
