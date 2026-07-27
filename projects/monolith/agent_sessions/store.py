@@ -172,11 +172,17 @@ def claim_pending_message_for_session_sync(
     Returns the seq of the claimed message, or None if no unclaimed messages.
     """
     with Session(get_engine()) as session:
-        # Get the lowest unclaimed seq for this session
+        # The lowest OUTSTANDING seq, claimed or not. Pending rows are deleted
+        # once their turn completes, so anything still here is unfinished.
+        #
+        # Taking the minimum over unclaimed rows only would order assignment but
+        # not execution: with seq 1 claimed and running, seq 2 would be the
+        # lowest unclaimed and a second executor would claim it and run
+        # concurrently. Serialising within a session means refusing to start a
+        # later message while an earlier one is still outstanding.
         lowest_seq_result = session.execute(
             select(func.min(PendingMessage.seq)).where(
                 PendingMessage.session_id == session_id,
-                PendingMessage.claimed_by_replica.is_(None),
             )
         ).scalar()
 
