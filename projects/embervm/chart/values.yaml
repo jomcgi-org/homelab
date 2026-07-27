@@ -85,21 +85,29 @@ opLog:
   # same case a CP roll already produces.
   postgres:
     enabled: false
-    # Secret in THIS namespace holding the full DSN, synced from 1Password by
-    # the OnePasswordItem below. A single `dsn` field is used rather than
-    # assembling user/password/host in the template because the env var is
-    # consumed verbatim.
+    # Connection target. The DSN is assembled in deployment.yaml from these
+    # plus the password, so the only thing 1Password holds is the password
+    # itself. Defaults point at the monolith-pg primary; the role and database
+    # must match projects/monolith/chart/values.yaml postgres.embervmOpLog.
+    user: embervm
+    host: monolith-pg-rw.monolith.svc.cluster.local
+    port: 5432
+    database: embervm_oplog
+    # Secret in THIS namespace holding ONLY the role password, synced from
+    # 1Password by the OnePasswordItem below.
     #
     # WARNING: Embervm.OpLog.Postgres.connect/1 parses the DSN with URI.parse
     # and does NOT percent-decode userinfo, so the password MUST be URL-safe.
     # A password containing @ / : ? or # mis-parses into the wrong host or
-    # database and the CP fails to boot with {:connect_failed, ...}.
+    # database and the CP fails to boot with {:connect_failed, ...}, which does
+    # not name the real cause.
     secretName: ""
-    secretKey: dsn
+    secretKey: password
     onepassword:
-      # 1Password item exposing a `dsn` field. Same item the out-of-band
-      # basic-auth secret for CNPG is seeded from, so the role password and the
-      # DSN can never drift. See projects/monolith/deploy/embervm-oplog-secret.md.
+      # 1Password item exposing a field that lands as a Secret key named
+      # exactly `password`. The SAME item seeds the out-of-band basic-auth
+      # secret CNPG needs, so the role password cannot drift between the two.
+      # See projects/monolith/deploy/embervm-oplog-secret.md.
       itemPath: ""
   # SQLite op-log PVC. Ignored when postgres.enabled is true: Postgres makes the
   # durable store network-reachable, so the control plane stops needing a

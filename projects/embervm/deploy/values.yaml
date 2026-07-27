@@ -18,7 +18,7 @@ opLog:
   # single-writer-per-cell op-log appender, which this does not deliver.
   postgres:
     enabled: true
-    secretName: embervm-oplog-dsn
+    secretName: embervm-oplog-password
     onepassword:
       itemPath: vaults/k8s-homelab/items/embervm-oplog-db
   storageClass: longhorn

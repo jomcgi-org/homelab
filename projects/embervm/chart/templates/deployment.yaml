@@ -83,11 +83,19 @@ spec:
             # rendered here: leaving both set would make the selected backend
             # look ambiguous to anyone reading the pod spec, even though the DSN
             # wins in code.
-            - name: EMBERVM_OPLOG_DSN
+# Only the PASSWORD comes from the secret; the DSN is assembled here with
+            # the same $(VAR) interpolation RELEASE_NODE above uses, so the
+            # connection target stays reviewable in git and 1Password holds one
+            # credential rather than a credential plus an assembled copy of it
+            # that could drift. Kubernetes substitutes $(VAR) only from vars
+            # declared EARLIER in this list, so the password must stay above.
+            - name: EMBERVM_OPLOG_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ required "opLog.postgres.secretName is required when opLog.postgres.enabled" .Values.opLog.postgres.secretName | quote }}
                   key: {{ .Values.opLog.postgres.secretKey | quote }}
+            - name: EMBERVM_OPLOG_DSN
+              value: postgres://{{ .Values.opLog.postgres.user }}:$(EMBERVM_OPLOG_PASSWORD)@{{ .Values.opLog.postgres.host }}:{{ .Values.opLog.postgres.port }}/{{ .Values.opLog.postgres.database }}
             {{- else }}
             - name: EMBERVM_OPLOG_PATH
               value: /var/lib/embervm/oplog.db

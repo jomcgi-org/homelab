@@ -31,17 +31,17 @@ LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40
 
 ## The 1Password item
 
-Item `k8s-homelab/embervm-oplog-db` needs two fields:
+Item `k8s-homelab/embervm-oplog-db` needs exactly **one** field, named
+`password`, holding the URL-safe password generated above. It must land as a
+Secret key named exactly `password`, which is what `opLog.postgres.secretKey`
+expects.
 
-| Field      | Value                                                                          |
-| ---------- | ------------------------------------------------------------------------------ |
-| `password` | the URL-safe password generated above                                           |
-| `dsn`      | `postgres://embervm:<password>@monolith-pg-rw.monolith.svc.cluster.local:5432/embervm_oplog` |
-
-The `dsn` field must land as a Secret key named exactly `dsn`, which is what
-`opLog.postgres.secretKey` expects. Keeping the assembled DSN in the item (rather
-than composing it in the Helm template) means the env var is consumed verbatim
-and there is no shell interpolation of a credential.
+The connection string is not stored anywhere. `chart/templates/deployment.yaml`
+assembles it from `opLog.postgres.{user,host,port,database}` plus the password,
+using the same `$(VAR)` env interpolation `RELEASE_NODE` uses. So the credential
+exists in exactly two places (this item and the CNPG basic-auth secret derived
+from it), the connection target stays reviewable in git, and there is no
+assembled copy that can drift.
 
 ## (Re)create the CNPG secret
 
