@@ -62,7 +62,15 @@ defmodule Embervm.WakeInstance do
   key degrades gracefully.
   """
 
+  require Logger
+
   alias Embervm.{BrickLedger, NodeCapacity}
+
+  # How often one {workload, node} pair may log a cold-rejection diagnostic. An
+  # autoWake workload whose placement fails retries every ~10s indefinitely
+  # (issue #4077 ran ~900 rejections over 2.5h), so an unthrottled per-brick dump
+  # would bury the event it is meant to expose.
+  @rejection_log_interval_ms 60_000
 
   @typedoc "A warmth-inventory field on a per-instance capacity fact + the id key its rows carry."
   @type warmth_key :: :serving_snapshots | :stateful_bundles | :group_bundle_sets | :session_snapshots
@@ -361,7 +369,11 @@ defmodule Embervm.WakeInstance do
         # eligible at all is this a CAPACITY denial worth a demand signal. The
         # note is an async cast: a missing controller (tests, DS-only fleet)
         # makes it a silent no-op, and the wake outcome is unchanged either way.
-        unless Enum.any?(node_bricks, &Embervm.Placement.eligible?(&1, need_mib)) do
+        capacity_denial? = not Enum.any?(node_bricks, &Embervm.Placement.eligible?(&1, need_mib))
+
+        log_cold_rejection(node_id, workload, need_mib, node_bricks, capacity_denial?)
+
+        if capacity_denial? do
           Embervm.BrickController.note_denial(need_mib)
         end
 
@@ -369,6 +381,84 @@ defmodule Embervm.WakeInstance do
 
       brick ->
         {:ok, dial_id_from_brick(brick)}
+    end
+  end
+
+  # Record WHY a cold pick found nothing, at the moment it happens (issue #4077).
+  #
+  # `:no_eligible_instance` is returned for two unrelated reasons -- no brick had a
+  # free slot / the memory, or every eligible brick was not base-READY -- and from
+  # outside the process they are indistinguishable. #4077 burned hours on exactly
+  # that ambiguity: `/v1/nodes` (NodeRegistry) showed a brick with 6 free slots,
+  # 15698 MiB against a 512 MiB ask, AND the workload's base READY, while placement
+  # (which reads NodeCapacity, a SEPARATE store fed by the same node reports) kept
+  # rejecting it. Nothing in the logs said which half of `pick_ready/3` was false.
+  #
+  # `workload_facts` is the field that discriminates the leading hypothesis:
+  # `BrickLedger.to_brick/1` defaults a missing `:workloads` submap to `%{}`, which
+  # `Placement.base_ready?/2` reads as not-ready (fail-closed, deliberately). So a
+  # fact that LOST its workloads map is indistinguishable from a brick that has
+  # simply not advertised yet -- unless we record whether the map was there at all.
+  # A brick reporting `workload_facts: 0` while NodeRegistry shows bases READY is
+  # the capacity-write-path bug; `base_state` present but not READY is a genuine
+  # provisioning wait and not a bug at all.
+  defp log_cold_rejection(node_id, workload, need_mib, bricks, capacity_denial?) do
+    if throttle_rejection_log?(workload, node_id) do
+      Logger.warning("embervm wake: no cold-placement candidate on node",
+        workload: workload,
+        node_id: node_id,
+        need_mib: need_mib,
+        # true  -> a real capacity wall (this is what feeds the autoscaler)
+        # false -> bricks were eligible but none base-READY (provisioning wait)
+        capacity_denial: capacity_denial?,
+        brick_count: length(bricks),
+        bricks: Enum.map(bricks, &brick_rejection_view(&1, workload, need_mib))
+      )
+    end
+  end
+
+  @doc false
+  # Public only so the tests can assert the discriminator as DATA. Asserting it
+  # through the log would mean ExUnit.CaptureLog inside an async module, which
+  # captures concurrently-running tests' output too and would make these counts
+  # flaky, the exact failure class #4078 just cleaned up.
+  def brick_rejection_view(brick, workload, need_mib) do
+    workloads = Map.get(brick, :workloads) || %{}
+
+    %{
+      instance_id: Map.get(brick, :instance_id, ""),
+      size_class: Map.get(brick, :size_class, ""),
+      free_slots: Map.get(brick, :free_slots, 0),
+      mem_headroom_mib: Map.get(brick, :mem_headroom_mib, 0),
+      mem_budget_mib: Map.get(brick, :mem_budget_mib, 0),
+      eligible: Embervm.Placement.eligible?(brick, need_mib),
+      base_ready: Embervm.Placement.base_ready?(brick, workload),
+      # How many workloads this fact advertises at all. 0 means the submap is
+      # absent or empty, i.e. base_ready is false by the fail-closed default
+      # rather than by anything the daemon actually said about this workload.
+      workload_facts: map_size(workloads),
+      base_state: workloads |> Map.get(workload, %{}) |> Map.get(:base_state)
+    }
+  end
+
+  # At most one diagnostic per {workload, node} per @rejection_log_interval_ms.
+  # Kept in the process dictionary rather than ETS or :persistent_term because the
+  # retry loop for a given workload runs in one long-lived process (StatefulManager),
+  # so a process-local timestamp throttles it without adding a table, an owner, or a
+  # global write. A caller in another process simply gets its own budget, which is
+  # the desired behaviour: each caller reports its own first rejection.
+  @doc false
+  def throttle_rejection_log?(workload, node_id) do
+    key = {__MODULE__, :cold_rejection_logged_at, workload, node_id}
+    now = System.monotonic_time(:millisecond)
+
+    case Process.get(key) do
+      last when is_integer(last) and now - last < @rejection_log_interval_ms ->
+        false
+
+      _ ->
+        Process.put(key, now)
+        true
     end
   end
 
