@@ -58,9 +58,20 @@ stopped. So the drain path is: SIGINT, await exit 0, bank.
 
 The shim gives SIGINT up to 30 seconds to unwind a Bash tool and write the
 synthetic interrupt turn. SIGKILL is only a logged last-resort backstop after
-that timeout, because it can leave a truncated final JSONL line. Normal turn
-output has a 60-second deadline and initialization has a 15-second deadline;
-an output timeout follows the same SIGINT-first path.
+that timeout, because it can leave a truncated final JSONL line. Initialization
+has a 15-second deadline; an output timeout follows the same SIGINT-first path.
+
+Turn output has a 600-second deadline, and it is worth being precise about what
+that measures. It is a per-event inactivity timer, not a cap on total turn
+duration: it resets on every stream event, so a turn producing steady output can
+run far longer. It is sized to span a single silent tool call, because the CLI
+emits nothing to stdout while a Bash tool executes, so the bound has to exceed
+the slowest realistic in-guest command (a build or a test run) rather than the
+slowest turn. Its job is spotting a genuinely wedged CLI. Total turn duration is
+bounded separately by the caller (`read_timeout` in
+`projects/monolith/agent_sessions/transport.py`), and this value must stay
+comfortably below that one so the inner watchdog fires first and reports a
+specific error instead of the caller timing out generically.
 
 The shim owns one Claude session. A supplied `session_id` must match the active
 session or the turn receives HTTP 409. If no id is supplied after an interrupt,
@@ -89,13 +100,25 @@ silently.
   absolute workspace path. Without it a fresh guest wedges, because the trust
   dialog is interactive and nobody is at a keyboard.
 - **`bash`**, not just busybox `sh`: the Bash tool assumes bash.
-- **`git` plus a committer identity**, or the per-turn commits fail. The identity
-  reaches the guest through `ember.env.*` boot arguments, decoded by guest-init
-  before the shim starts. The shim configures Git when it spawns or resumes the
-  CLI, so it can carry the session principal without baking an identity.
+- **`git` plus a committer identity.** The identity reaches the guest through
+  `ember.env.*` boot arguments, decoded by guest-init before the shim starts, and
+  the shim configures Git when it spawns or resumes the CLI, so a session can
+  carry its principal without an identity baked into the image. Note that the
+  identity is plumbed but nothing commits with it yet: per-session branches,
+  per-turn commits, and a diff endpoint are tracked in
+  [#4070](https://github.com/jomcgi/homelab/issues/4070). Until that lands there
+  is no record of what a session changed, which is the main gap in this runtime.
 - **`HOME` must be writable** by uid 65532: the CLI writes `~/.claude.json` and
   session transcripts under `~/.claude/projects/`.
 
 ## Open items
 
-- `apko.lock.json` must be generated before the image builds.
+- **No record of what a session changed.** Per-session branches, per-turn
+  commits, and a diff endpoint are tracked in
+  [#4070](https://github.com/jomcgi/homelab/issues/4070). The git identity is
+  already plumbed; nothing uses it yet.
+- **Regenerating `apko.lock.json` needs Linux.** apko will not run on darwin
+  (`cannot execute binary file`), so relocking is a podman job. There is also a
+  bootstrap order to respect: the `apko.translate_lock` entry in `MODULE.bazel`
+  reads the lock, so a from-scratch regeneration means removing that entry,
+  generating, then restoring it.
