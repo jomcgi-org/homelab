@@ -1109,16 +1109,19 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 	if inst == nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot-base of unknown handle %q", h.ID)
 	}
-	if err := os.MkdirAll(d.baseDir(baseKey), 0o750); err != nil {
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir base bundle: %w", err)
+	finalDir := d.baseDir(baseKey)
+	buildingDir := finalDir + ".building"
+	if err := os.MkdirAll(filepath.Dir(buildingDir), 0o750); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir base root: %w", err)
 	}
-	snapPath := d.baseSnapfile(baseKey)
-	memPath := d.baseMemfile(baseKey)
-	// Write to temp paths and rename into place. A rebuild must NOT overwrite the
-	// live snapfile/memfile in place: another thread may be restoring from them
-	// (the File mem-backend mmaps the memfile), and overwriting a mapped file is a
-	// SIGBUS foot-gun. rename(2) swaps the directory entry to a new inode while any
-	// in-flight restore keeps the old (now-unlinked) one.
+	if err := os.Mkdir(buildingDir, 0o750); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir base staging bundle: %w", err)
+	}
+	snapPath := filepath.Join(buildingDir, "snapfile")
+	memPath := filepath.Join(buildingDir, "memfile")
+	// Write to temp paths and rename into place within staging. The final
+	// directory is swapped into place only after both files are complete, so a
+	// failed build never presents a partially published base.
 	snapTmp := snapPath + ".tmp"
 	memTmp := memPath + ".tmp"
 
@@ -1141,6 +1144,9 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 	if err := os.Rename(snapTmp, snapPath); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish base snapfile: %w", err)
 	}
+	if err := os.Rename(buildingDir, finalDir); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish base bundle: %w", err)
+	}
 	return substrate.SnapshotRef{
 		ID:        baseKey,
 		Node:      d.cfg.Node,
@@ -1148,7 +1154,7 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		Vendor:    d.cfg.Vendor,
 		Template:  d.cfg.Template,
 		Base:      true,
-		SizeBytes: bundleSize(snapPath, memPath),
+		SizeBytes: bundleSize(filepath.Join(finalDir, "snapfile"), filepath.Join(finalDir, "memfile")),
 	}, nil
 }
 

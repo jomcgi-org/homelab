@@ -708,6 +708,99 @@ func TestLocalBasesStatusReportsOrphans(t *testing.T) {
 	}
 }
 
+func TestLocalBasesStatusSkipsStagingDirectories(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	stagingDir := filepath.Join(s.cfg.SnapshotRoot, "bases", "scratch-k8s__stale.building")
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	inv := s.localBasesStatus()
+	if len(inv) != 0 {
+		t.Fatalf("localBasesStatus() returned %d entries, want no staging directory", len(inv))
+	}
+}
+
+func TestLocalBasesStatusBuildingReportsOnceNotTwice(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	ref := "scratch-k8s__building0"
+	s.bases.beginBuild(ref, "scratch-k8s", "/shim/ready")
+	stagingDir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref+".building")
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	inv := s.localBasesStatus()
+	if len(inv) != 1 {
+		t.Fatalf("localBasesStatus() returned %d entries, want exactly one", len(inv))
+	}
+	if inv[0].GetRef() != ref || inv[0].GetBaseState() != nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING {
+		t.Fatalf("inventory = %+v, want registry BUILDING entry for %q", inv[0], ref)
+	}
+}
+
+func TestCleanupStagingDirsRemovesStaleDirectories(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	root := filepath.Join(s.cfg.SnapshotRoot, "bases")
+	stale := filepath.Join(root, "scratch-k8s__stale.building")
+	regular := filepath.Join(root, "scratch-k8s__ready")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(regular, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	s.CleanupStagingDirs()
+	if dirExists(stale) {
+		t.Fatal("stale staging directory survived cleanup")
+	}
+	if !dirExists(regular) {
+		t.Fatal("non-staging directory was removed by cleanup")
+	}
+}
+
+func TestIsCompleteBase(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		state nodev1.BaseBuildState
+		want  bool
+	}{
+		{name: "complete", files: map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"}, want: true},
+		{name: "missing imageref", files: map[string]string{"memfile": "mem", "snapfile": "snap"}},
+		{name: "missing memfile", files: map[string]string{"imageref": "img", "snapfile": "snap"}},
+		{name: "missing snapfile", files: map[string]string{"imageref": "img", "memfile": "mem"}},
+		{name: "temporary file", files: map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap", "snapfile.tmp": "partial"}},
+		{name: "building", state: nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING, files: map[string]string{"memfile.tmp": "partial"}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeBundleFiles(t, dir, tt.files)
+			if got := isCompleteBase(dir, tt.state); got != tt.want {
+				t.Fatalf("isCompleteBase() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLocalBasesStatusReportsIncompleteRegisteredBaseAsAbsent(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	ref := "scratch-k8s__incomplete0"
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+	writeBundleFiles(t, dir, map[string]string{"memfile.tmp": "partial"})
+	s.bases.register(baseEntry{snapshotRef: ref, workload: "scratch-k8s", sizeBytes: 123, state: nodev1.BaseBuildState_BASE_BUILD_STATE_READY})
+
+	inv := s.localBasesStatus()
+	if len(inv) != 1 {
+		t.Fatalf("localBasesStatus() returned %d entries, want 1", len(inv))
+	}
+	if inv[0].GetSizeBytes() != 0 || inv[0].GetBaseState() != nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED {
+		t.Fatalf("incomplete base inventory = %+v, want zero-sized unspecified", inv[0])
+	}
+}
+
 // baseExportedInStatus finds the workload's capacity entry in NodeStatus whose
 // snapshot_ref matches and returns its exported flag; false if not reported.
 func baseExportedInStatus(s *Server, workload, ref string) bool {
@@ -830,6 +923,38 @@ func TestRestoreArtifactBaseAlreadyLocalSkips(t *testing.T) {
 	}
 	if resp.GetAccepted() {
 		t.Fatal("an already-local base restore must NOT enqueue an async download")
+	}
+}
+
+func TestCleanupStagingDirsNotReachedDuringRestore(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+
+	workload := "bazel-query"
+	ref := "bazel-query__abcdef012345"
+	digest := "sha256:runtime-bazel"
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel"}})
+	prefix := "base/amd/" + workload + "/" + ref
+	fs.seedArtifact(prefix, map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"}, 0, "amd", "")
+
+	stale := filepath.Join(s.cfg.SnapshotRoot, "bases", "scratch-k8s__stale.building")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "bases", ref), map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"})
+
+	resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+		Vendor:   "amd",
+	})
+	if err != nil {
+		t.Fatalf("RestoreArtifact(already-local base): %v", err)
+	}
+	if !resp.GetSkipped() {
+		t.Fatal("an already-local base restore must be skipped")
+	}
+	if !dirExists(stale) {
+		t.Fatal("staging directory was removed during restore")
 	}
 }
 
