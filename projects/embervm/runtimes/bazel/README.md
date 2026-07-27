@@ -81,10 +81,16 @@ into the snapshot. Convenience symlinks are suppressed
 
 ## Sizing
 
-The tmpfs at `/tmp` is `size=1536m`: the extracted `external/` tree (Abseil + six
-deps) plus the install base plus the JVM's scratch have to fit in RAM. Too small
-an fs makes warming fail with `ENOSPC` (which fails the base build loudly, the
-correct behaviour, but is avoidable with headroom). The workload's `memMib`
-budgets this tmpfs plus the `-Xmx1g` JVM heap plus the OS; see the
-`bazelQueryWorkload` block in the embervm chart values for the RAM arithmetic and
-the `cap` governor rationale.
+Phase 1 instrumentation (#4062) measured 203 MiB of `/tmp` use and a 548 MiB
+guest unreclaimable floor at the warm base snapshot cutoff. The `/tmp` tmpfs is
+therefore `size=512m`, providing 2.5x headroom over measured use, and the
+`bazelQueryWorkload` allocation is `memMib: 1024`, providing about 1.9x headroom
+over the measured floor.
+
+The 1024 MiB allocation is the minimum practical value: the measured floor is
+548 MiB, so 512 MiB would risk an OOM. This keeps the `-Xmx1g` JVM heap unchanged
+while maintaining the 1.9x safety margin. If the tmpfs fills, warming fails
+with `ENOSPC`; that failure mode is intentional and documented because it
+prevents guest RAM exhaustion. The workload's `memMib` budgets the tmpfs plus
+the JVM heap and OS overhead; see the `bazelQueryWorkload` block in the embervm
+chart values for the coupling and `cap` governor rationale.
