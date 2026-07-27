@@ -159,19 +159,16 @@ async def _with_session_lock(session_id: int, coro):
 async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
     """Process one queued message durably with heartbeat-based claim refresh.
 
-    The executor claims the pending message atomically, then starts a background
-    task that refreshes the claim every 10 seconds. If the refresh task detects
-    the claim was stolen (reclaimed by another replica), the executor aborts to
-    prevent double-execution of the same turn.
+    Claim is acquired while holding the session lock to preserve ordering:
+    messages are executed in sequence order. The executor then starts a
+    background task that refreshes the claim every 10 seconds. If the refresh
+    task detects the claim was stolen (reclaimed by another replica), the
+    executor aborts to prevent double-execution of the same turn.
 
     This heartbeat model prevents double-execution of long-running turns (which
     may take many minutes) while still recovering from replica crashes within
     one lease interval (30s = 3x the 10s refresh interval).
     """
-
-    claimed = await asyncio.to_thread(_claim_pending_message_sync, session_id, turn_seq)
-    if not claimed:
-        return
 
     # Track if claim was stolen during execution
     claim_stolen = False
@@ -205,6 +202,14 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
                 )
 
     async def _do_execute() -> None:
+        nonlocal claim_stolen
+        # Claim while holding the session lock to preserve ordering
+        claimed = await asyncio.to_thread(
+            _claim_pending_message_sync, session_id, turn_seq
+        )
+        if not claimed:
+            return
+
         if claim_stolen:
             return
 

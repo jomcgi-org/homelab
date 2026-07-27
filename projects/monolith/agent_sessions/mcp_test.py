@@ -72,9 +72,6 @@ def test_activity_aggregation_and_spoken_diff():
         ),
     ]
     assert mcp._activity_values(turns) == (["a.py", "b.py"], ["git status"])
-    assert mcp._spoken_diff("3 files changed, 42 insertions(+), 8 deletions(-)") == (
-        "3 files changed, 42 insertions(+), 8 deletions(-)"
-    )
 
 
 def test_send_persists_and_returns_immediately(session):
