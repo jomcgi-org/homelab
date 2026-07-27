@@ -354,4 +354,107 @@ defmodule Embervm.WakeInstanceTest do
                )
     end
   end
+
+  describe "cold-rejection diagnostics (#4077)" do
+    # :no_eligible_instance is returned for two unrelated reasons -- no slot/memory,
+    # or eligible bricks that are not base-READY -- and from outside the process they
+    # look identical. #4077 was hours spent guessing exactly that. These assert the
+    # diagnostic says WHICH.
+    #
+    # Asserted as DATA rather than through the emitted log on purpose: CaptureLog in
+    # an async module also captures concurrently-running tests, so counting log lines
+    # here would reintroduce the flake class #4078 just removed.
+
+    defp brick(opts) do
+      %{
+        instance_id: "node-4/pod-a",
+        size_class: Keyword.get(opts, :size_class, "8gi"),
+        free_slots: Keyword.get(opts, :free_slots, 4),
+        mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 8_000),
+        mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 8_192),
+        workloads: Keyword.get(opts, :workloads, %{})
+      }
+    end
+
+    test "a brick that advertised ANOTHER workload is a genuine provisioning wait" do
+      view =
+        WakeInstance.brick_rejection_view(
+          brick(workloads: %{"wl-other" => %{base_state: :BASE_BUILD_STATE_READY}}),
+          "wl-a",
+          512
+        )
+
+      # Room to spare, so a scale-up would not help and the autoscaler must not be
+      # told this was a capacity problem.
+      assert view.eligible
+      refute view.base_ready
+      # The submap EXISTS, so base_ready is false because the daemon really has not
+      # advertised wl-a -- not because the fact lost its map.
+      assert view.workload_facts == 1
+      assert view.base_state == nil
+    end
+
+    test "a fact with NO workloads submap is distinguishable from one that advertised" do
+      # The #4077 hypothesis shape: slots and memory fine, workloads absent, so
+      # BrickLedger.to_brick/1's `|| %{}` default makes base_ready false even though
+      # nothing ever said this workload was unready.
+      view = WakeInstance.brick_rejection_view(brick(workloads: %{}), "wl-a", 512)
+
+      assert view.eligible
+      refute view.base_ready
+      assert view.workload_facts == 0
+      assert view.base_state == nil
+    end
+
+    test "an advertised-but-not-READY base reports its actual state" do
+      view =
+        WakeInstance.brick_rejection_view(
+          brick(workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_BUILDING}}),
+          "wl-a",
+          512
+        )
+
+      refute view.base_ready
+      assert view.workload_facts == 1
+      # Present and named, so this is a build in flight, not a lost submap.
+      assert view.base_state == :BASE_BUILD_STATE_BUILDING
+    end
+
+    test "a real capacity wall reports ineligible with the numbers that caused it" do
+      view =
+        WakeInstance.brick_rejection_view(
+          brick(free_slots: 0, workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY}}),
+          "wl-a",
+          512
+        )
+
+      refute view.eligible
+      assert view.free_slots == 0
+      # Base was fine; the slot was not. Without both fields this is the ambiguity.
+      assert view.base_ready
+    end
+
+    test "a too-small classed brick reports the headroom that failed the ask" do
+      view = WakeInstance.brick_rejection_view(brick(mem_headroom_mib: 128), "wl-a", 512)
+
+      refute view.eligible
+      assert view.mem_headroom_mib == 128
+      assert view.mem_budget_mib == 8_192
+    end
+
+    test "the throttle allows one diagnostic per {workload, node} per window" do
+      # #4077 retried every ~10s for 2.5h (~900 rejections); unthrottled, the
+      # diagnostic would bury the event it exists to surface.
+      assert WakeInstance.throttle_rejection_log?("wl-a", "node-4")
+      refute WakeInstance.throttle_rejection_log?("wl-a", "node-4")
+      refute WakeInstance.throttle_rejection_log?("wl-a", "node-4")
+    end
+
+    test "the throttle is per workload and per node, so a second wedge is not silenced" do
+      assert WakeInstance.throttle_rejection_log?("wl-a", "node-4")
+      assert WakeInstance.throttle_rejection_log?("wl-b", "node-4")
+      assert WakeInstance.throttle_rejection_log?("wl-a", "node-3")
+      refute WakeInstance.throttle_rejection_log?("wl-a", "node-4")
+    end
+  end
 end
