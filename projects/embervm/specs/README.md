@@ -2,12 +2,13 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of [ADR embervm/006](../../../docs/decisions/embervm/006-tla-formal-specification-pilot.md):
-two specs now, checked exhaustively over small bounds, plus the layer-1
+three specs now, checked exhaustively over small bounds, plus the layer-1
 vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
 lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight
 generation pairing) is `bank_relight.tla`, added by the ADR embervm/014 PR 5
 follow-through. Both are modeled under the ADR embervm/014 worker-authoritative
 consistency rules (node state is the source of truth, node-confirmed destruction).
+Protocol 3 (the fail-closed per-principal daily quota gate) is `quota.tla`.
 
 ## What is here
 
@@ -23,7 +24,11 @@ consistency rules (node state is the source of truth, node-confirmed destruction
   single-use lane, and node-confirmed destruction.
 - `bank_relight.cfg`, `bank_relight_isolated.cfg`, `bank_relight_regress.cfg` :
   the three bank/relight TLC run configurations (below).
-- `BUILD` : seven genrules run TLC over the two specs, one per cfg, via the
+- `quota.tla` : the PlusCal model of the opt-in, fail-closed daily quota gate at
+  submit and dispatch, with durable usage as truth and ETS as a rebuildable cache.
+- `quota.cfg`, `quota_zero.cfg`, `quota_submit_only.cfg` : the three quota TLC
+  run configurations (below).
+- `BUILD` : ten genrules run TLC over the three specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -200,9 +205,89 @@ below the high-water mark. `GenerationNeverRegresses` fails. The driver runs thi
 in expectation `fail`, so a passing run would mean the model went blind to the
 regression the floor fixes.
 
+## Protocol 3: the fail-closed quota gate (`quota.tla`)
+
+The quota model covers a per-principal daily vCPU-second budget enforced at both
+the router submit gate and the dispatcher fair-queue gate. A configured principal
+is denied when the cache is unreadable, while a principal with no configured
+budget is allowed. Completion writes durable usage first and then updates the
+advisory ETS cache only when it is available. Over-budget tasks stay queued and
+unpark at the daily reset; dispatch skips are counters, not `quota_enforced`
+audit entries.
+
+| cfg | bounds | switches | checks | expect | proves |
+| --- | --- | --- | --- | --- | --- |
+| `quota.cfg` | 2 principals; queue 3; share 1; submits 3; crashes 1; days 1 | p1 budget 1, p2 unconfigured; dispatch gate ON | all seven invariants | pass | the shipped quota protocol is fail-closed, opt-in, audited, and bounded |
+| `quota_zero.cfg` | same | p1 budget 0, p2 unconfigured; dispatch gate ON | all seven invariants | pass | zero budget is a hard stop and the zero-budget invariant is non-vacuous |
+| `quota_submit_only.cfg` | same but crashes 0 | p1 budget 1, p2 unconfigured; dispatch gate OFF | all seven invariants | fail | the rejected submit-only D12.3 protocol exceeds the in-flight overshoot bound |
+
+The invariants are:
+
+- `TypeOK` : variables, budget domains, queue/share bounds, and counters stay in
+  their declared domains.
+- `FailClosedDeny` : a configured principal is never dispatched while the cache
+  is unreadable. Non-vacuous in `quota.cfg`: the guarded state (cache down with a
+  budgeted principal's work queued) is reachable, verified by checking the
+  negation of that state as a throwaway invariant, which TLC violates at 67
+  distinct states. Without a crash in the bounds this invariant would hold
+  trivially, so `MaxCrashes` must stay at 1 in both positive cfgs.
+- `OptInNeverDenies` : an unconfigured principal is never denied or skipped,
+  including during a cache outage. This is the asymmetry-to-auth guard: auth is
+  deny-all when unconfigured, quota is allow when unconfigured, and collapsing
+  the two would make a Metering crash a global dispatch outage on any cluster
+  that never opted into quotas.
+- `ZeroBudgetNeverDispatches` : a zero-budget principal has no in-flight task and
+  no durable usage. `quota_zero.cfg` makes this check non-vacuous.
+- `CacheNeverExceedsDurable` : the advisory cache never exceeds durable usage;
+  a dropped charge can only under-count until rebuild.
+- `OvershootBounded` : configured-principal durable usage is at most budget plus
+  one in-flight fair share, `Budget(p) + InflightShare * TaskCost`. This is the
+  invariant the negative config trips.
+- `DenialAudited` : every submit-time denial appends exactly one
+  `quota_enforced` record. Dispatch-side skips are deliberately not audited.
+  Unlike the six above, this one is maintained BY CONSTRUCTION (the two counters
+  are only ever incremented together, and no action can separate them), so it
+  documents the audit asymmetry rather than checking a property the model could
+  violate. It is listed for completeness, not as a load-bearing check.
+
+The model uses uniform `TaskCost = 1` budget units. The implementation compares
+`used_cpu_ms / 1000 < budget` using FLOAT arithmetic, while the model uses integer
+budget units. It models one current-day cache row per principal and resets both
+usage maps at `DayFlip`, rather than keying the table by `{principal, day}` and
+having hourly pruning as a separate action. `dispatchedWhileBlind`,
+`blockedWithoutBudget`, and `submitDenials` are ghost variables used to turn
+history properties into state predicates; they are not implementation state.
+
+### Why the negative mode catches the D12.3 submit-only hole
+
+With p1 budget 1 and zero usage, three `Submit(p1)` actions pass because totals
+move only on completion, so all three tasks queue. With `DispatchGate = FALSE`,
+three `DispatchTick(p1)` actions dispatch them and three `Complete(p1)` actions
+produce `durable[p1] = 3`. The bound is `1 + 1 * 1 = 2`, so `OvershootBounded`
+fails. With the gate ON, the first task completes and reaches `charged[p1] = 1`,
+then the remaining two tasks park and `durable[p1] = 1 <= 2`.
+
+This cfg sets `MaxCrashes = 0`, the one bound where it differs from the positive
+cfgs, and the reason is a finding worth recording. Removing the dispatch gate
+removes the dispatch-side fail-closed check along with it, because both gates
+call the same `WithinQuota` operator (mirroring the implementation, where the
+router and `fq_take` both call `Metering.within_quota?/4`). So with a reachable
+cache outage this cfg violates `FailClosedDeny` STRICTLY BEFORE it reaches the
+overshoot trace, and TLC reports that instead. Verified: with `MaxCrashes = 1`
+TLC names `FailClosedDeny` at 130 distinct states, well short of the overshoot
+behavior. Pinning crashes to zero makes `cacheUp` permanently true, so
+`FailClosedDeny` holds trivially and stays in the checked set while the cfg
+isolates exactly one guard and trips exactly one invariant, the same shape as
+`adoption_wedge.cfg` and `bank_relight_regress.cfg`.
+
+The substantive point behind that mechanic: the dispatch-side gate D12.3 added
+for the overshoot bound is ALSO what carries fail-closed enforcement past the
+submit path. Submit-only enforcement loses both properties, not just the bound,
+which is a stronger argument for D12.3 than the decision entry itself makes.
+
 ## Running TLC
 
-CI runs all seven genrules via `bazel test //projects/embervm/specs/...`. There is
+CI runs all ten genrules via `bazel test //projects/embervm/specs/...`. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
 copy of this directory (swap `adoption` for `bank_relight` for protocol 2):
@@ -220,10 +305,10 @@ Never hand-edit the translation region.
 
 ## Scope
 
-The pilot now models two protocols: protocol 1 (VM lifecycle + adoption,
+The pilot now models three protocols: protocol 1 (VM lifecycle + adoption,
 `adoption.tla`) and protocol 2 (session bank/relight generation pairing,
 `bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
-pilot earned its keep). Protocol 3 (the quota gate) is named in the ADR but not
-yet built. Layer-2 trace validation (op-log events mapped to TLA+ actions and
+pilot earned its keep) and protocol 3 (the fail-closed quota gate, `quota.tla`).
+Layer-2 trace validation (op-log events mapped to TLA+ actions and
 checked against a drill trace) is a separate follow-up and is deliberately not
 built here.

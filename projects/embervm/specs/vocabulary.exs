@@ -78,7 +78,10 @@
         # destroy carve-out (session_destroying intent -> node confirm ->
         # session_destroyed record).
         ~w(session_banked session_relit session_evicted session_destroying
-           session_destroyed)a,
+           session_destroyed)a ++
+        # R0 quota gate protocol 3: quota.tla models the submit-time quota
+        # denial audit append, while dispatch-side skips are counters only.
+        ~w(quota_enforced)a,
     excluded:
       # R0 task/VM lifecycle kinds the spec does NOT model as distinct actions.
       # vm_destroyed is the durable audit kind for a VM teardown; the spec models
@@ -86,9 +89,11 @@
       # not the log-emission verb as a named action, so the atom vm_destroyed is
       # excluded (its string is absent from the spec by design). started collapses
       # into assigned (the spec's taskState has no separate running state);
-      # base_built pairs with the excluded BuildBase verb; drain / quota_enforced /
-      # denied are metering + drain concerns out of the adoption model's scope.
-      ~w(started vm_destroyed base_built denied drain quota_enforced retried
+      # base_built pairs with the excluded BuildBase verb. denied remains excluded
+      # because it covers auth-forbidden and per-principal queue-depth audit kinds;
+      # quota.tla treats queue depth as a model bound rather than modeling its
+      # denial op. drain is a node-drain concern outside the adoption model's scope.
+      ~w(started vm_destroyed base_built denied drain retried
          redrive dead_lettered failed)a ++
         # Remaining R2 session lifecycle kinds still out of scope. The bank/relight,
         # evict, and node-confirmed-destroy kinds moved to `modeled` above (bank_relight.tla,
