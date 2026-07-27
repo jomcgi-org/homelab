@@ -288,10 +288,15 @@ def reclaim_stale_claims_sync(lease_interval_seconds: int = 30) -> int:
     an actively executing turn that refreshes its claim will never be
     double-executed (even if the turn takes many minutes).
 
+    The comparison uses the database's NOW() function, so it is correct
+    regardless of tz handling (SQLite naive vs Postgres tz-aware) and
+    independent of clock skew between replicas.
+
     Returns the count of reclaimed messages.
     """
     with Session(get_engine()) as session:
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=lease_interval_seconds)
+        # Use SQL NOW() for database-native timezone handling
+        cutoff = func.now() - timedelta(seconds=lease_interval_seconds)
         result = session.execute(
             update(PendingMessage)
             .where(
