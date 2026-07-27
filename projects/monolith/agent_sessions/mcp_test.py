@@ -272,3 +272,65 @@ def test_stale_claim_is_reclaimed(session):
     assert pending_row is not None
     assert pending_row.claimed_by_replica is None
     assert pending_row.claimed_at is None
+
+
+def test_heartbeat_refresh_with_real_replica_id(session, monkeypatch):
+    """Test that heartbeat refresh works with the actual replica id used for claiming.
+
+    This test exercises the real code path: claiming with _REPLICA_ID, then
+    refreshing with the same id. This would catch the bug where the refresher
+    used "monolith" instead of _REPLICA_ID.
+    """
+    import platform
+
+    row = store.create_session(session, "sid-hb-real", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "test")
+
+    # Get the actual replica id that would be used
+    real_replica_id = platform.node()
+
+    # Claim with the real replica id (simulating what _execute_pending_message does)
+    claimed = store.claim_pending_message_sync(row.id, pending.seq, real_replica_id)
+    assert claimed
+
+    # Refresh multiple times with the SAME replica id
+    for i in range(5):
+        still_held = store.refresh_claim_sync(row.id, pending.seq, real_replica_id)
+        assert still_held, (
+            f"Claim lost on refresh {i + 1} when using correct replica id {real_replica_id}"
+        )
+
+    # After multiple refreshes, run the sweep
+    # The claim should NOT be reclaimed
+    reclaimed_count = store.reclaim_stale_claims_sync(lease_interval_seconds=30)
+    assert reclaimed_count == 0, "Actively refreshed claim should not be reclaimed"
+
+    # Verify the claim is still active
+    pending_row = store.get_pending_message(session, row.id, pending.seq)
+    assert pending_row is not None
+    assert pending_row.claimed_by_replica == real_replica_id
+
+
+def test_heartbeat_refresh_fails_with_wrong_replica_id(session):
+    """Test that refresh fails if called with a different replica id than claimed.
+
+    This ensures that the heartbeat code must use the correct replica id or
+    the claim will be detected as stolen.
+    """
+    row = store.create_session(session, "sid-wrong-id", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "test")
+
+    # Claim with one replica id
+    claimed = store.claim_pending_message_sync(row.id, pending.seq, "replica-a")
+    assert claimed
+
+    # Try to refresh with a DIFFERENT replica id (like the hardcoded "monolith" bug)
+    still_held = store.refresh_claim_sync(row.id, pending.seq, "replica-b")
+    assert not still_held, (
+        "Refresh should fail when called with wrong replica id (claim would be considered stolen)"
+    )
+
+    # The claim is still owned by the original replica
+    pending_row = store.get_pending_message(session, row.id, pending.seq)
+    assert pending_row is not None
+    assert pending_row.claimed_by_replica == "replica-a"
