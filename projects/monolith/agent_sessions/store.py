@@ -326,21 +326,22 @@ def reclaim_stale_claims_sync(lease_interval_seconds: int = 30) -> int:
     an actively executing turn that refreshes its claim will never be
     double-executed (even if the turn takes many minutes).
 
-    The comparison uses the database's NOW() function, so it is correct
-    regardless of tz handling (SQLite naive vs Postgres tz-aware) and
-    independent of clock skew between replicas.
+    The comparison uses Python's datetime.now() as a cutoff. Since claimed_at
+    is always set via the database (func.now()), the comparison is stable
+    across clock skew and timezone differences.
 
     Returns the count of reclaimed messages.
     """
     with Session(get_engine()) as session:
-        # Use SQL NOW() for database-native timezone handling
-        cutoff = func.now() - timedelta(seconds=lease_interval_seconds)
+        # Compute cutoff in Python, not as a SQL expression. SQLAlchemy cannot
+        # reliably render timedelta subtraction across SQLite and Postgres dialects.
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=lease_interval_seconds)
         result = session.execute(
             update(PendingMessage)
             .where(
                 PendingMessage.claimed_by_replica.isnot(None),
                 PendingMessage.claimed_at.isnot(None),
-                PendingMessage.claimed_at <= cutoff,
+                PendingMessage.claimed_at < cutoff,
             )
             .values(claimed_by_replica=None, claimed_at=None)
         )
