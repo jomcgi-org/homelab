@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
+import queue
+import signal
 import subprocess
+import threading
+import time
 from typing import NamedTuple, Protocol
+
+
+logger = logging.getLogger(__name__)
 
 
 class Turn(NamedTuple):
@@ -24,6 +32,9 @@ class ShimTransport(Protocol):
 
 
 class LocalSubprocessTransport:
+    overall_timeout_seconds = 30
+    shutdown_grace_seconds = 5
+
     def __init__(
         self,
         expected_api_key_source: str = "none",
@@ -68,17 +79,53 @@ class LocalSubprocessTransport:
             + "\n"
         )
         process.stdin.close()
+        # Deliberate: close stdin to signal end-of-input and let the process exit
+        # after this turn. This is the local dev transport; it prioritizes simplicity.
+        # The in-guest shim (projects/embervm/runtimes/claude/shim.py) reuses the
+        # process across turns to amortize the ~250ms spawn cost over many turns.
         assert process.stdout is not None
         activities: list[dict] = []
         local_session_id = None
         result_event: dict = {}
         saw_init = False
-        for line in process.stdout:
+        output_queue: queue.Queue[str | None] = queue.Queue()
+
+        def read_output() -> None:
+            try:
+                for line in process.stdout:
+                    output_queue.put(line)
+            except Exception:
+                pass
+            finally:
+                output_queue.put(None)
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        deadline = time.monotonic() + self.overall_timeout_seconds
+        timed_out = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                line = output_queue.get(timeout=remaining)
+            except queue.Empty:
+                timed_out = True
+                break
+            if line is None:
+                break
             if not line.strip():
                 continue
-            event = json.loads(line)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                # A CLI interrupted mid-write can leave a truncated JSONL line.
+                continue
+            if not isinstance(event, dict):
+                continue
             event_type = event.get("type")
-            if event_type == "system" and not saw_init:
+            if event_type == "system" and event.get("subtype") == "init":
                 saw_init = True
                 local_session_id = event.get("session_id")
                 api_key_source = event.get("apiKeySource")
@@ -103,8 +150,24 @@ class LocalSubprocessTransport:
                     activities.append(activity)
             elif event_type == "result":
                 result_event = event
-                break
-        process.wait()
+
+        if timed_out:
+            logger.warning("Claude turn timed out; sending SIGINT")
+            process.send_signal(signal.SIGINT)
+            try:
+                process.wait(timeout=self.shutdown_grace_seconds)
+            except subprocess.TimeoutExpired:
+                logger.warning("Claude did not exit after SIGINT; sending SIGKILL")
+                process.kill()
+                process.wait()
+            raise RuntimeError("Turn timed out; sent SIGINT, then SIGKILL")
+
+        # The reader consumed all remaining output, including output after result.
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         if not saw_init:
             raise ValueError("Claude stream did not emit a system init event")
         return Turn(
