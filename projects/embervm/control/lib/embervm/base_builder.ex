@@ -2108,7 +2108,7 @@ defmodule Embervm.BaseBuilder do
 
     status_map =
       %{"conditions" => [ready, base_built]}
-      |> maybe_put_snapshot(w, phase)
+      |> maybe_put_snapshot(state, w, phase)
 
     case state.status_writer.(w.namespace, w.name, status_map) do
       :ok ->
@@ -2125,13 +2125,59 @@ defmodule Embervm.BaseBuilder do
     state
   end
 
-  defp maybe_put_snapshot(status_map, w, :built) do
+  defp maybe_put_snapshot(status_map, state, w, :built) do
     status_map
     |> Map.put("snapshotRef", w.snapshot_ref || "")
     |> Map.put("snapshotDigest", w.snapshot_digest || "")
+    |> put_snapshot_refs(state, w)
   end
 
-  defp maybe_put_snapshot(status_map, _w, _phase), do: status_map
+  defp maybe_put_snapshot(status_map, state, w, _phase), do: put_snapshot_refs(status_map, state, w)
+
+  # Additive per-vendor fleet view (#4061). Written on EVERY phase, not just
+  # :built, because it is derived from live capacity facts rather than from build
+  # state: gating it on a build would leave it stale after an unrelated node
+  # rebuilt its own base or after retention evicted one. An EMPTY map is never
+  # written, so a CP that has not yet heard from any node cannot clobber a good
+  # value with {} (the same fail-open posture as find_capacity_fact/2).
+  defp put_snapshot_refs(status_map, state, w) do
+    case snapshot_refs_by_vendor(state, w) do
+      empty when map_size(empty) == 0 -> status_map
+      refs -> Map.put(status_map, "snapshotRefs", refs)
+    end
+  end
+
+  # The base refs the FLEET reports for this workload, grouped by CPU vendor:
+  #
+  #     %{"amd" => ["bazel-query__426e..."], "intel" => ["bazel-query__00ad..."]}
+  #
+  # A LIST per vendor, not a single ref. A vendor legitimately holds two refs
+  # mid-rollout (observed 2026-07-27: node-1/2 on one Intel ref, node-3 still on
+  # the previous runtime image with another), and the per-node capacity fact
+  # carries no base digest, so the CP cannot tell "current" from "superseded"
+  # here. Collapsing to one ref would make the written value depend on fact
+  # iteration order and could report a superseded ref as current during exactly
+  # the window a reader consults status to decide whether a rollout has landed.
+  #
+  # status.snapshotRef stays the single builder-advanced ref and is unchanged;
+  # this field is observability, not a resolution input. Placement and the pool
+  # already resolve each node's ref from that node's own reported facts, so no
+  # consumer reads this to decide what to restore.
+  defp snapshot_refs_by_vendor(state, w) do
+    state
+    |> representative_facts_by_node(w.name)
+    |> Enum.reduce(%{}, fn fact, acc ->
+      vendor = fact |> Map.get(:cpu_vendor, "") |> to_string() |> String.trim()
+      ref = get_in(fact, [:workloads, w.name, :snapshot_ref])
+
+      if vendor != "" and is_binary(ref) and ref != "" do
+        Map.update(acc, vendor, [ref], &[ref | &1])
+      else
+        acc
+      end
+    end)
+    |> Map.new(fn {vendor, refs} -> {vendor, refs |> Enum.uniq() |> Enum.sort()} end)
+  end
 
   defp ready_condition(state, w) do
     if w.snapshot_ref do

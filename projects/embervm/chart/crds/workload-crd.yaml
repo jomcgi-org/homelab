@@ -872,6 +872,22 @@ spec:
                 snapshotDigest:
                   type: string
                   description: Resolved OCI image digest the base was built from.
+                snapshotRefs:
+                  type: object
+                  description: >-
+                    Base refs the fleet currently reports for this workload,
+                    grouped by CPU vendor. Observability only: additive to
+                    snapshotRef, which stays the single builder-advanced handle.
+                    A base ref is vendor-specific by construction (Firecracker
+                    snapshots cannot cross CPU vendors), so a mixed fleet holds
+                    one ref per vendor. Each value is a LIST because a vendor
+                    legitimately holds two refs mid-rollout, while some nodes
+                    still run the previous runtime image. Absent until at least
+                    one node reports a base.
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
                 primedFloorSatisfied:
                   type: boolean
                 sessions:
