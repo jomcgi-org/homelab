@@ -170,9 +170,7 @@ def claim_pending_message_sync(session_id: int, turn_seq: int, replica_id: str) 
                 PendingMessage.seq == turn_seq,
                 PendingMessage.claimed_by_replica.is_(None),
             )
-            .values(
-                claimed_by_replica=replica_id, claimed_at=datetime.now(timezone.utc)
-            )
+            .values(claimed_by_replica=replica_id, claimed_at=func.now())
         )
         session.commit()
     return result.rowcount == 1
@@ -325,9 +323,16 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
             return False
         if row.claimed_by_replica != replica_id:
             return False
-        # Claim is still ours; refresh the timestamp
-        row.claimed_at = datetime.now(timezone.utc)
-        session.add(row)
+        # Claim is still ours; refresh the timestamp using SQL so no Python
+        # datetime crosses the boundary, avoiding SQLite/Postgres tz handling issues
+        session.execute(
+            update(PendingMessage)
+            .where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.seq == turn_seq,
+            )
+            .values(claimed_at=func.now())
+        )
         session.commit()
         return True
 
