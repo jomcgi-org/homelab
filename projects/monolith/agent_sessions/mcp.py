@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import platform
+import threading
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
@@ -18,7 +19,7 @@ from app.mcp_app import mcp
 from framework import log_task_exception
 
 _transport = EmberVmShimTransport()
-_session_locks: dict[int, asyncio.Lock] = {}
+_session_locks: dict[int, threading.Lock] = {}
 _sweep_task: asyncio.Task | None = None
 _REPLICA_ID = platform.node()
 logger = logging.getLogger(__name__)
@@ -150,9 +151,9 @@ def _refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool
 
 
 async def _with_session_lock(session_id: int, coro):
-    """Run one session turn at a time."""
-    lock = _session_locks.setdefault(session_id, asyncio.Lock())
-    async with lock:
+    """Run one session turn at a time via threading lock."""
+    lock = _session_locks.setdefault(session_id, threading.Lock())
+    with lock:
         return await coro
 
 
