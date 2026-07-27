@@ -39,6 +39,7 @@
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude kloak_placeholder_drift_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
+# gazelle:exclude ember_synthetic_probe_grants_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -5250,6 +5251,17 @@ bdd_test(
 bdd_test(
     name = "ember_public_savings_grants_test",
     srcs = ["ember_public_savings_grants_test.py"],
+)
+
+# Real-Postgres test for ember_synthetic_probe public grants (PR #4065):
+# public_reader can SELECT from ember_synthetic_probe (the read path the public
+# tier's /api/health uses to detect probe timeouts and report service health),
+# but cannot INSERT or UPDATE it (Task 1, narrowing writes to the app role).
+# Unlike demo_pg_savings, there is no public_writer grant here: the writer is
+# the app role (the ember-synthetic CronWorkflows jobs pod), not the public tier.
+bdd_test(
+    name = "ember_synthetic_probe_grants_test",
+    srcs = ["ember_synthetic_probe_grants_test.py"],
 )
 
 bdd_test(
