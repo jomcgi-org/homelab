@@ -37,41 +37,27 @@ app = typer.Typer(
 )
 
 
-def _run_ember_synthetic() -> None:
-    from ember_public.synthetic_probe import (
-        probe_bazel,
-        probe_pages,
-        probe_postgres,
-        probe_semgrep,
-        record,
-    )
+@app.command("ember-synthetic-trigger")
+def ember_synthetic_trigger() -> None:
+    """Trigger the synthetic probes in the monolith API pod.
+
+    Deliberately lightweight: it POSTs the running API pod's internal endpoint,
+    which fires all four probes IN THAT process (where the embervm token,
+    FC_INVOKE_URL, DEMO_POSTGRES_DSN, and a DB session already live). The
+    probes run in the API pod, not this ephemeral job pod, so the job needs
+    only HTTP access, not tokens or DB.
+    """
+    import httpx
 
     configure_logging()
-    logger.info("ember-synthetic: starting")
-
-    async def run() -> None:
-        probes = {
-            "bazel": probe_bazel(),
-            "semgrep": probe_semgrep(),
-            "pages": probe_pages(),
-            "postgres": probe_postgres(),
-        }
-        results = await asyncio.gather(*probes.values())
-        for demo, result in zip(probes, results):
-            if not result["ok"]:
-                logger.warning("ember synthetic %s failed: %s", demo, result["detail"])
-            await record(demo, result)
-
-    asyncio.run(run())
-    logger.info("ember-synthetic: done")
-
-
-@app.command("ember-synthetic")
-def ember_synthetic() -> None:
-    """Probe Bazel, Semgrep, pages, and Postgres, recording detector state."""
-    # Probe failures intentionally exit 0: health is the failure signal, while
-    # Argo retries and failed-job alerts are reserved for DB recording errors.
-    _run_ember_synthetic()
+    url = os.environ.get("MONOLITH_INTERNAL_URL", "")
+    if not url:
+        raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
+    logger.info("ember-synthetic-trigger: POST %s/internal/ember/synthetic-probe", url)
+    resp = httpx.post(f"{url}/internal/ember/synthetic-probe", timeout=180)
+    resp.raise_for_status()
+    body = resp.json()
+    logger.info("ember-synthetic-trigger: %s", body)
 
 
 @app.callback()

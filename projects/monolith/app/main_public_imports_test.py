@@ -82,12 +82,13 @@ FORBIDDEN_MODULES = [
     "worldcup.jobs",
     "worldcup.client",
     "worldcup.sim",
-    # Ember synthetic prober: the public tier reads the probe latch
-    # (ember_public.synthetic) to answer /api/health, but the prober that
-    # drives the demos runs only in the jobs image. Pruned from the public
+    # Ember synthetic prober and private trigger: the public tier reads the probe
+    # latch (ember_public.synthetic) to answer /api/health, but the prober and
+    # internal endpoint that drive the demos run only in private images. Pruned from the public
     # file set in BUILD; this locks the split so a future health.py edit
     # cannot quietly pull the prober into the public closure.
     "ember_public.synthetic_probe",
+    "ember_public.synthetic_router",
 ]
 
 # Snippet run in the child: import the public app, then dump every loaded module

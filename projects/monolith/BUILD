@@ -482,12 +482,13 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "app/main_domain.py",
     # Batch-jobs entrypoint: runs as :jobs_image, never in the public binary.
     "app/jobs_main.py",
-    # Ember synthetic prober: runs only as the ember-synthetic CronWorkflows in
-    # the jobs image. The public tier ships the READ side (synthetic.py +
+    # Ember synthetic prober and private trigger: run only in the private API
+    # and jobs images. The public tier ships the READ side (synthetic.py +
     # synthetic_models.py, which health.py needs to answer /api/health) but must
-    # not carry the prober that drives the workloads, same split as
+    # not carry the prober or internal endpoint that drives the workloads, same split as
     # worldcup/jobs.py and campsites/jobs.py.
     "ember_public/synthetic_probe.py",
+    "ember_public/synthetic_router.py",
     # Private knowledge routers / write paths / heavy maintenance internals.
     "knowledge/router.py",
     "knowledge/tasks_router.py",
@@ -5112,6 +5113,18 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "ember_public_synthetic_router_test",
+    srcs = ["ember_public/synthetic_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
     ],
 )
 
