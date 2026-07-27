@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 
 from sqlalchemy import func
 from sqlmodel import Session, select
 
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+from agent_sessions.transport import Turn
+from app.db import get_engine
+
+
+def _commit_sha(workspace: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", workspace, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
 
 
 def create_session(
@@ -134,3 +151,78 @@ def get_pending_message(
             PendingMessage.seq == turn_seq,
         )
     ).first()
+
+
+def get_pending_message_sync(session_id: int, turn_seq: int) -> PendingMessage | None:
+    """Fetch one pending message using a fresh synchronous database session."""
+    with Session(get_engine()) as session:
+        return get_pending_message(session, session_id, turn_seq)
+
+
+def persist_turn_from_pending_sync(
+    session_id: int,
+    turn_seq: int,
+    prompt: str,
+    turn: Turn,
+    voice_summary: str,
+    status: str,
+) -> AgentTurn:
+    """Persist the result of a queued message using a fresh database session."""
+    with Session(get_engine()) as session:
+        sess_row = get_session(session, session_id)
+        if not sess_row:
+            raise ValueError(f"Session {session_id} not found")
+        usage = {**turn.usage, "activities": turn.activities}
+        row = create_turn(
+            session,
+            session_id,
+            turn_seq,
+            prompt,
+            voice_summary,
+            turn.result,
+            turn.terminal_reason,
+            turn.stop_reason,
+            turn.permission_denials,
+            _commit_sha(sess_row.workspace),
+            usage,
+            turn.total_cost_usd,
+        )
+        update_session_status(session, session_id, status, voice_summary)
+        return row
+
+
+def delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
+    """Delete a pending message after its turn has been persisted."""
+    with Session(get_engine()) as session:
+        row = get_pending_message(session, session_id, turn_seq)
+        if row:
+            session.delete(row)
+            session.commit()
+
+
+def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None:
+    """Persist an error turn while retaining the pending row for recovery."""
+    with Session(get_engine()) as session:
+        row = get_pending_message(session, session_id, turn_seq)
+        if row is None or get_turn(session, session_id, turn_seq) is not None:
+            return
+        create_turn(
+            session,
+            session_id,
+            turn_seq,
+            row.message_text,
+            "Error: " + error_msg[:100],
+            f"Error executing turn: {error_msg}",
+            terminal_reason="error",
+            stop_reason=None,
+            permission_denials=[],
+            commit_sha=None,
+            usage={},
+            cost_usd=0.0,
+        )
+
+
+def get_all_pending_messages_sync() -> list[PendingMessage]:
+    """Fetch all pending messages using a fresh synchronous database session."""
+    with Session(get_engine()) as session:
+        return list(session.exec(select(PendingMessage)).all())
