@@ -274,16 +274,19 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
         session.commit()
 
 
-def reclaim_stale_claims_sync(lease_interval_seconds: int = 90) -> int:
-    """Reclaim pending messages whose claims have expired (replica crashed).
+def reclaim_stale_claims_sync(lease_interval_seconds: int = 30) -> int:
+    """Reclaim pending messages whose claims have expired due to replica crash.
 
-    A claim is considered stale if:
-    1. It is currently claimed (claimed_by_replica is not null)
-    2. The claim was made more than lease_interval_seconds ago
+    A claim is considered stale if claimed_by_replica is not null and the
+    claimed_at timestamp is older than lease_interval_seconds. A healthy
+    replica refreshes claimed_at every 10 seconds during turn execution, so
+    a claim that is not refreshed will be reclaimed within one lease interval.
 
-    The lease interval must be longer than any plausible turn execution time
-    to avoid double-executing messages. Default 90s exceeds even multi-second
-    API calls with headroom.
+    The lease interval is set as a multiple of the refresh interval
+    (default 30s = 3x10s refresh), trading slow recovery for correctness:
+    a crashed replica's claims are reclaimed within one lease interval, but
+    an actively executing turn that refreshes its claim will never be
+    double-executed (even if the turn takes many minutes).
 
     Returns the count of reclaimed messages.
     """
@@ -300,6 +303,28 @@ def reclaim_stale_claims_sync(lease_interval_seconds: int = 90) -> int:
         )
         session.commit()
     return result.rowcount
+
+
+def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
+    """Refresh the claim on a pending message to prevent expiry during execution.
+
+    Called periodically during turn execution to keep the claim fresh. If the
+    claim has already been reclaimed by another replica (claimed_by_replica no
+    longer matches replica_id), returns False so the executor knows to abort.
+
+    Returns True if claim is still held, False if claim was stolen.
+    """
+    with Session(get_engine()) as session:
+        row = get_pending_message(session, session_id, turn_seq)
+        if not row:
+            return False
+        if row.claimed_by_replica != replica_id:
+            return False
+        # Claim is still ours; refresh the timestamp
+        row.claimed_at = datetime.now(timezone.utc)
+        session.add(row)
+        session.commit()
+        return True
 
 
 def get_all_pending_messages_sync() -> list[PendingMessage]:
