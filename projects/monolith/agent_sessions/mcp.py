@@ -157,13 +157,57 @@ async def _with_session_lock(session_id: int, coro):
 
 
 async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
-    """Process one queued message durably."""
+    """Process one queued message durably with heartbeat-based claim refresh.
+
+    The executor claims the pending message atomically, then starts a background
+    task that refreshes the claim every 10 seconds. If the refresh task detects
+    the claim was stolen (reclaimed by another replica), the executor aborts to
+    prevent double-execution of the same turn.
+
+    This heartbeat model prevents double-execution of long-running turns (which
+    may take many minutes) while still recovering from replica crashes within
+    one lease interval (30s = 3x the 10s refresh interval).
+    """
 
     claimed = await asyncio.to_thread(_claim_pending_message_sync, session_id, turn_seq)
     if not claimed:
         return
 
+    # Track if claim was stolen during execution
+    claim_stolen = False
+    refresh_task = None
+
+    async def _refresh_heartbeat() -> None:
+        """Periodically refresh the claim to keep it from expiring."""
+        nonlocal claim_stolen
+        replica_id = "monolith"  # Identifier for this replica
+        while not claim_stolen:
+            try:
+                await asyncio.sleep(10)  # Refresh every 10s (1/3 of 30s lease)
+                # Check if claim is still ours; if stolen, abort the turn
+                still_held = await asyncio.to_thread(
+                    _refresh_claim_sync, session_id, turn_seq, replica_id
+                )
+                if not still_held:
+                    claim_stolen = True
+                    logger.warning(
+                        "Claim for turn %s in session %s was reclaimed, aborting execution",
+                        turn_seq,
+                        session_id,
+                    )
+                    break
+            except Exception:
+                # Transient refresh failure does not kill the turn; log and retry
+                logger.exception(
+                    "Failed to refresh claim for turn %s in session %s",
+                    turn_seq,
+                    session_id,
+                )
+
     async def _do_execute() -> None:
+        if claim_stolen:
+            return
+
         row = await asyncio.to_thread(_get_pending_message_sync, session_id, turn_seq)
         if not row:
             return
@@ -181,6 +225,14 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
                 cli_session_id,
                 row.message_text,
             )
+            # Check if claim was stolen while deliver was running
+            if claim_stolen:
+                logger.warning(
+                    "Claim was stolen during deliver for turn %s in session %s, not persisting result",
+                    turn_seq,
+                    session_id,
+                )
+                return
         except Exception as exc:  # noqa: BLE001 - retain the row for recovery
             await asyncio.to_thread(
                 _mark_turn_error_sync, session_id, turn_seq, str(exc)
@@ -224,8 +276,17 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
         await _notify_terminal(turn, summary, status)
 
     try:
+        # Start the heartbeat refresh task
+        refresh_task = asyncio.create_task(_refresh_heartbeat())
         await _with_session_lock(session_id, _do_execute())
     finally:
+        # Cancel the refresh task
+        if refresh_task:
+            refresh_task.cancel()
+            try:
+                await refresh_task
+            except asyncio.CancelledError:
+                pass
         await asyncio.to_thread(
             _release_pending_message_claim_sync, session_id, turn_seq
         )
