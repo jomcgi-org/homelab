@@ -189,10 +189,6 @@ def claim_pending_message_for_session_sync(
             )
         ).scalar()
 
-        logger.info(
-            f"[DEBUG] claim for session {session_id}: lowest_seq={lowest_seq_result}"
-        )
-
         if lowest_seq_result is None:
             return None
 
@@ -207,10 +203,6 @@ def claim_pending_message_for_session_sync(
             .values(claimed_by_replica=replica_id, claimed_at=func.now())
         )
         session.commit()
-
-        logger.info(
-            f"[DEBUG] claim update rowcount={result.rowcount} for seq {lowest_seq_result}"
-        )
 
         # Return the seq if we successfully claimed it, None otherwise
         return lowest_seq_result if result.rowcount == 1 else None
