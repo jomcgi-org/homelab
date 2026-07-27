@@ -220,8 +220,11 @@ class TestSweepTaskRegistration:
         ):
             await _start_singletons(app)
 
-        # 2 tasks should be created (ships + agent_sessions sweeps; scheduler loop removed) (ships ingest only; scheduler loop removed)
-        assert len(tasks_created) == 2  # ships + agent_sessions sweeps
+        # 2 tasks: ships ingest and the agent_sessions pending-message sweep.
+        # The scheduler dispatch loop was removed (batch jobs run as Argo
+        # CronWorkflows) and the Discord bot is patched out here, so those two
+        # leader-elected singletons are the whole set.
+        assert len(tasks_created) == 2
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert not any("Message lock sweep started" in m for m in messages)
 
