@@ -175,10 +175,22 @@ type prefixConn struct {
 
 func (c prefixConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
+// swapPlaintext serves a guest that speaks http:// to the sidecar over its
+// host-local vsock. There is no guest TLS to terminate, so the sidecar reads the
+// requests directly and originates the real TLS upstream itself. dialAddr must
+// already be the guardrail-pinned 443 address for host.
+func (p *proxy) swapPlaintext(br *bufio.Reader, client net.Conn, dialAddr, host string, sec *secretEntry) {
+	up, err := tls.DialWithDialer(&net.Dialer{Timeout: dialTimeout}, "tcp", dialAddr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		p.logger.Error("egress swap: upstream TLS dial failed", "host", host, "dial", dialAddr, "err", err)
+		return
+	}
+	defer up.Close()
+	p.swapPump(br, client, up, host, sec)
+}
+
 // terminateAndSwap MITMs a TLS connection to a secret-bearing destination: it
-// terminates the guest's TLS with a minted leaf, then for each request swaps the
-// placeholder for the real value (header values + URL query only, never the body,
-// so there is no Content-Length to recompute) and re-originates over a freshly
+// terminates the guest's TLS with a minted leaf and re-originates over a freshly
 // validated TLS connection to the pinned dialAddr. The cert is validated against
 // host (ServerName), so dialing the guardrail-pinned IP does not weaken TLS
 // verification. It returns when either side closes.
@@ -198,7 +210,16 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, ho
 	}
 	defer up.Close()
 
-	guestR := bufio.NewReader(guest)
+	p.swapPump(bufio.NewReader(guest), guest, up, host, sec)
+}
+
+// swapPump relays HTTP requests from an already-plaintext guest stream to up,
+// swapping the placeholder for the real value on each one (header values + URL
+// query/path only, never the body, so there is no Content-Length to recompute).
+// guestR carries the guest's request bytes and guestW takes the responses; they
+// are the same connection, split so the TLS and plaintext lanes can share this.
+// It returns when either side closes, or when a request asks to close.
+func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, host string, sec *secretEntry) {
 	upR := bufio.NewReader(up)
 	for {
 		req, err := http.ReadRequest(guestR)
@@ -209,8 +230,12 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, ho
 			return
 		}
 		swapRequest(req, sec)
-		// Re-emit as a client request: clear the server-side RequestURI and the
-		// absolute URL parts so req.Write sends origin-form with the Host header.
+		// A guest on the plaintext lane addresses us as a proxy, so its request line
+		// is absolute-form ("POST http://host/path"). Clearing RequestURI and the
+		// URL's scheme/host makes req.Write emit origin-form with a Host header,
+		// which is what an origin server expects. req.Host was already populated
+		// from whichever form arrived, so the header survives either way.
+		closeAfter := req.Close
 		req.RequestURI = ""
 		req.URL.Scheme, req.URL.Host = "", ""
 		if err := req.Write(up); err != nil {
@@ -222,13 +247,18 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, ho
 			p.logger.Warn("egress swap: read response", "dest", host, "err", err)
 			return
 		}
-		err = resp.Write(guest)
+		err = resp.Write(guestW)
 		_ = resp.Body.Close()
 		if err != nil {
 			p.logger.Warn("egress swap: return response", "dest", host, "err", err)
 			return
 		}
 		p.logger.Info("egress swapped", "dest", host, "env", sec.Env, "path", req.URL.Path)
+		// Honour the guest's Connection: close rather than blocking on a request it
+		// has already told us will not come; the caller's defer closes both sides.
+		if closeAfter {
+			return
+		}
 	}
 }
 

@@ -253,6 +253,34 @@ warmthS3Gc:
 # in-cluster services.
 egress:
   enabled: true
+  # The claude runtime's subscription OAuth token. The guest image bakes an inert
+  # placeholder as CLAUDE_CODE_OAUTH_TOKEN and points the CLI's API client at
+  # http://api.anthropic.com, so every request leaves the guest in cleartext over
+  # its host-local vsock; the sidecar swaps this exact string for the real token
+  # and originates the verified TLS to :443 itself. The credential therefore never
+  # exists inside a guest that runs model-driven code.
+  #
+  # placeholder MUST stay byte-identical to CLAUDE_CODE_OAUTH_TOKEN in
+  # projects/embervm/runtimes/claude/apko.yaml. The swap is an exact substring
+  # match, and a mismatch fails as a 401 from Anthropic inside a guest, which is
+  # a long way from where the typo is.
+  #
+  # egressTo bounds where the real value can go: api.anthropic.com only. Exact
+  # host match, no wildcards, so the token is unreachable at every other
+  # destination the agent can dial.
+  secrets:
+    - placeholder: ember-egress-anthropic-oauth-placeholder-0f3a9c1d7b5e2846-not-a-credential
+      env: EMBER_ANTHROPIC_OAUTH_TOKEN
+      egressTo:
+        - api.anthropic.com
+      secretRef:
+        name: embervm-embervm-egress
+        key: CLAUDE_AUTH_TOKEN
+  # Shared with the monolith gardener, which reads the same item. Read-only sync,
+  # so two consumers is fine; the field label CLAUDE_AUTH_TOKEN becomes the key.
+  onepassword:
+    name: embervm-embervm-egress
+    itemPath: "vaults/k8s-homelab/items/litellm-claude-auth"
 
 # Voice-drivable Claude Code agent sessions (issue #4055). The monolith addresses
 # this workload by name, so it must exist before agent_sessions can create a

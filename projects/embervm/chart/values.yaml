@@ -1032,18 +1032,41 @@ egress:
   # Bazel-pinned at chart-build from the egress-proxy image .info provider
   # (chart/BUILD `images`), so the digest cannot drift from the built image.
   image: {}
-  # Phase 6b CA: cert-manager mints the self-signed CA the sidecar uses to forge
-  # leaf certs when it TLS-terminates a secret-bearing destination. Only created
-  # when `secrets` below is non-empty.
+  # Phase 6b OPTIONAL TLS-MITM lane. Only needed for a guest that speaks https://
+  # to the sidecar: the sidecar then forges a leaf for the destination, which the
+  # guest must already trust. Off, because the one guest doing a swap today (the
+  # claude runtime) speaks CLEARTEXT to the sidecar instead. Its only route out is
+  # the shim's forwarder over a host-local vsock, and there is no network segment
+  # on that hop for anyone to sit on, so guest-side TLS would be encrypting
+  # against an attacker who cannot be there. The sidecar still originates real,
+  # verified TLS to the destination, so nothing crosses a network in the clear.
+  #
+  # Turning this on means owning the CA's route into the guest trust store, and
+  # the guest rootfs is built from an image long before the cluster exists. See
+  # the amendment in docs/decisions/agents/023-egress-secret-proxy.md.
   ca:
-    duration: 87600h # 10y; rotation churns guest trust, keep it rare
-    renewBefore: 2160h # 90d
+    enabled: false
+    # Secret holding tls.crt/tls.key; defaults to <fullname>-egress-ca. Nothing in
+    # this chart creates it, precisely because where the matching public cert
+    # enters the guest is the hard half of the decision.
+    secretName: ""
   # Phase 6b secret catalog. Each entry gives the guest an inert `placeholder` as
   # env `env`; the sidecar swaps it for the real value only on a connection to a
   # host in `egressTo`, so the real credential is unreachable everywhere else and
-  # never enters the guest. Empty here: phase 6a (plain allowlist-forward) is what
-  # this chart turns on, and populating this list is what enables 6b.
+  # never enters the guest. The placeholder must match what the guest image bakes
+  # (for claude, CLAUDE_CODE_OAUTH_TOKEN in runtimes/claude/apko.yaml), because
+  # the swap is an exact substring match on request headers.
+  #
+  #   - placeholder: <the inert string baked into the guest>
+  #     env: <sidecar env name carrying the real value>
+  #     egressTo: [<hosts where the swap may fire>]
+  #     secretRef: {name: <secret>, key: <key>}   # or `value:` for a literal
   secrets: []
+  # 1Password item backing the secretRefs above, synced by the operator into a
+  # Secret of the same name as the CR. Empty creates no item.
+  onepassword:
+    name: ""
+    itemPath: ""
   # Repo convention: memory requests == limits (no bursting); CPU is a request
   # only (no limit, to avoid throttling).
   resources:

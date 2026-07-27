@@ -182,3 +182,67 @@ left open. Decision 3 (per-secret egressTo as the exfiltration control) is
 unchanged and now orthogonal to the zone policy. Shipped in PR #3010, deployed at
 fc-invoke chart 0.4.2, verified live (a default-tier agent reached inference:8080
 under internal-deny).
+
+## Update (2026-07-27): the vsock hop carries no TLS, so most swaps need no CA
+
+Decision 4 said the proxy must terminate TLS "using a CA baked into the guest
+image trust store". Implementing that for the EmberVM claude runtime (issue
+#4055) showed the CA is not load-bearing for the property we actually want, and
+that the guest-image half of it has no good home.
+
+The reasoning that produced decision 4 is still right as far as it goes: to swap
+a placeholder the proxy must see plaintext, and the alternative is the guest
+holding the real value in order to encrypt it, which is exactly what this ADR
+rules out. What it skipped is that the guest does not have to speak TLS to the
+proxy in the first place. A guest reaches the sidecar over a host-local vsock.
+There is no network segment on that hop, so guest-side TLS defends against an
+attacker who would already need code execution on the host to be positioned
+there, at which point they can read the sidecar's memory anyway. The sidecar
+still originates real, verified TLS to the destination, so nothing crosses a
+network unencrypted, and the credential still never enters the guest.
+
+So a guest that is configured to speak cleartext to the sidecar (for claude,
+`ANTHROPIC_BASE_URL=http://api.anthropic.com`) gets the swap with no CA, no
+forged leaves, and no trust store to manage. The sidecar tells the two apart by
+peeking one byte: 0x16 is a TLS ClientHello, anything else is a plaintext
+request.
+
+The forcing consideration was where a CA could enter the guest. The rootfs is
+built by the `rootfs-builder` initContainer from an image CI built earlier, which
+leaves two options, both with a real cost:
+
+- **Image build.** Commit the public cert as an apko input. Rotation then means a
+  CI image rebuild, and the cert in git plus the key in the cluster are two
+  copies that can drift.
+- **Base build.** Mount a cert-manager CA secret and write the PEM into the
+  rootfs before snapshotting. Single source of truth, but the base stops being a
+  pure function of the image digest, so a rotation silently leaves every node
+  serving a base that trusts the old CA unless the CA fingerprint is folded into
+  the base cache key.
+
+Neither is worth paying for a hop that needs no encryption. The TLS-MITM lane
+stays implemented and is still the answer for a guest that must speak https:// to
+the sidecar (an off-the-shelf client with no base-URL override), but it is now
+opt-in behind `egress.ca.enabled` rather than implied by having secrets, because
+turning it on means owning one of those two costs.
+
+This narrows open question 2 (guest CA rotation) rather than answering it. If the
+CA lane is ever turned on, the least-bad delivery is the kernel cmdline
+`ember.env.<KEY>` channel `guest-init` already parses: rotation then costs a base
+rebuild instead of a CI image rebuild. Two constraints come with it. It is
+per-base, not per-session, since Prime restores every session from one shared
+pristine snapshot, so the value is consumed once at base-build time. And
+`CONFIG_COMMAND_LINE_SIZE` is 2048 or 4096 bytes shared with every other boot
+arg, which fits a P-256 CA (~600 bytes of PEM) but not the 4096-bit RSA one.
+Rotation would still invalidate banked sessions holding the old trust.
+
+Verified end to end before merge, off-cluster: the real CLI, holding only the
+inert placeholder, reached the live API through the real sidecar binary and
+returned a correct answer. Two facts that the design depends on and that were
+confirmed rather than assumed: the CLI does send `Authorization: Bearer` to an
+`http://` base URL (no downgrade guard), and it does no local format validation
+of the token, so the placeholder need not resemble a credential. `ANTHROPIC_BASE_URL`
+redirects the CLI's API client only; it still reaches api.anthropic.com over
+https:// for telemetry and profile calls, which blind-tunnel past the swap
+carrying the inert placeholder and are refused at the destination without
+affecting a turn.
