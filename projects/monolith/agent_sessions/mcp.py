@@ -166,14 +166,11 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
         try:
             # Reuse the session_id from the database (from first turn), or None for new sessions
             cli_session_id = session_row.cli_session_id
-            turn = await asyncio.to_thread(
-                _transport.deliver,
+            turn = await _transport.deliver(
                 cli_session_id,
                 row.message_text,
                 session_row.workspace,
             )
-            if inspect.isawaitable(turn):
-                turn = await turn
         except Exception as exc:  # noqa: BLE001 - retain the row for recovery
             await asyncio.to_thread(
                 _mark_turn_error_sync, session_id, turn_seq, str(exc)
