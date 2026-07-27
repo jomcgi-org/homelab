@@ -254,8 +254,13 @@ def test_stale_claim_is_reclaimed(session):
     assert claimed
 
     # Simulate a crash by manually setting claimed_at to an old time
-    # This makes the claim appear stale without needing to actually sleep
+    # This makes the claim appear stale without needing to actually sleep.
+    # Coerce the datetime to handle SQLite's naive round-trip: per CLAUDE.md,
+    # "dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)"
     stale_time = datetime.now(timezone.utc) - timedelta(seconds=40)
+    stale_time = (
+        stale_time if stale_time.tzinfo else stale_time.replace(tzinfo=timezone.utc)
+    )
     with store.Session(store.get_engine()) as db_session:
         pm = store.get_pending_message(db_session, row.id, pending.seq)
         if pm:
