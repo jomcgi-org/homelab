@@ -29,6 +29,13 @@ helm_chart(
         # R1 zip lane (ADR embervm/002): the runtime-python base image the zip
         # lane layers an adopter's archive onto. Distinct top-level key (D14a.6).
         "runtimePython.guestImage": "//projects/embervm/runtimes/python:image.info",
+        # Issue #4055: the runtime-claude base image, a session-class guest that
+        # runs the Claude Code CLI headlessly under a vsock shim so monolith can
+        # expose agent sessions as MCP tools. Distinct FLAT top-level key (D14a.6),
+        # digest-pinned from its .info so the rootfs-builder GUEST_IMAGE, the
+        # EMBERVM_NODED_IMAGES entry, and the Workload's source.image.ref all
+        # resolve to the same digest.
+        "runtimeClaude.guestImage": "//projects/embervm/runtimes/claude:image.info",
         # R4 stateful consumer (D-R4.PR-11.1): the scratch-postgres base image.
         # Distinct FLAT top-level key (D14a.6), digest-pinned from its .info.
         "scratchPostgres.guestImage": "//projects/embervm/runtimes/postgres:image.info",
