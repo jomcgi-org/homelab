@@ -1935,4 +1935,66 @@ defmodule Embervm.BaseBuilderTest do
     refute Map.has_key?(status, "snapshotRefs")
     assert status["snapshotRef"] == "w__amd"
   end
+
+  test "the periodic reconcile picks up a vendor that advertised after the build" do
+    agent = start_recorder()
+    table = new_cap_table()
+    # Only the AMD builder node has advertised its base at build time, which is
+    # what a CP restart inside the base-advert dial-home window looks like.
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        # Timer off: drive the reconcile explicitly so this is deterministic.
+        export_reconcile_interval_ms: 0
+      )
+
+    build_current(builder, agent, "w__amd")
+    assert latest(agent, "w")["snapshotRefs"] == %{"amd" => ["w__amd"]}
+
+    # An intel node finishes dial-home and advertises its own base AFTER the
+    # build. Before #4084 the map stayed frozen at amd-only until the next build.
+    put_vendor_fact(table, "node-1", "ds", "w", "w__intel", "intel")
+    send(builder, :export_reconcile)
+
+    assert_eventually(fn ->
+      latest(agent, "w")["snapshotRefs"] == %{"amd" => ["w__amd"], "intel" => ["w__intel"]}
+    end)
+  end
+
+  test "the periodic reconcile does not re-patch status when the fleet view is unchanged" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_reconcile_interval_ms: 0
+      )
+
+    build_current(builder, agent, "w__amd")
+
+    # One refresh settles last_snapshot_refs against what the build already wrote.
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    settled = length(recorded(agent))
+
+    # Further ticks against an unchanged fleet must be silent, or a converged
+    # cluster writes status per workload per tick forever.
+    send(builder, :export_reconcile)
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+
+    assert length(recorded(agent)) == settled
+  end
 end

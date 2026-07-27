@@ -533,6 +533,7 @@ defmodule Embervm.BaseBuilder do
   # any current base present-but-unexported, then re-arm the timer.
   def handle_info(:export_reconcile, state) do
     state = export_reconcile(state)
+    state = refresh_snapshot_refs(state)
     schedule_export_reconcile(state)
     {:noreply, state}
   end
@@ -1216,6 +1217,10 @@ defmodule Embervm.BaseBuilder do
       # (standing decision 5). Multiple superseded bases coexist here, each
       # TTL-bounded by its referencing sessions' maxLifetimeSeconds.
       base_refs: %{},
+      # The per-vendor fleet map (#4061) as last WRITTEN to status, so the periodic
+      # refresh can patch only on a change rather than every tick. nil means "never
+      # written", which forces one write as soon as any node reports a base.
+      last_snapshot_refs: nil,
       backoff_ms: nil,
       retry_timer: nil
     }
@@ -2145,6 +2150,48 @@ defmodule Embervm.BaseBuilder do
       empty when map_size(empty) == 0 -> status_map
       refs -> Map.put(status_map, "snapshotRefs", refs)
     end
+  end
+
+  # Re-patch status.snapshotRefs for any workload whose fleet view CHANGED since
+  # the last write (#4084).
+  #
+  # write_base_status/3 only fires on EVENTS (a build, a reconcile), so without
+  # this the map freezes whatever the fleet looked like at the last such event and
+  # stays frozen while the event stream is quiet. That is not hypothetical: a CP
+  # restart writes status during the base-advert dial-home window, so the map
+  # captured only the nodes that had already advertised. Observed 2026-07-27, every
+  # workload reporting {"intel" => [...]} while node-4 held a current amd base.
+  # The same staleness applies with the opposite sign: a base evicted by retention
+  # would stay listed until the next event.
+  #
+  # Patching only on a CHANGE keeps a converged fleet from generating a status
+  # write per workload per tick. An empty map never patches, for the same
+  # anti-clobber reason put_snapshot_refs/3 skips it.
+  defp refresh_snapshot_refs(state) do
+    Enum.reduce(state.workloads, state, fn {name, w}, acc ->
+      refs = snapshot_refs_by_vendor(acc, w)
+
+      cond do
+        map_size(refs) == 0 ->
+          acc
+
+        refs == w.last_snapshot_refs ->
+          acc
+
+        true ->
+          case acc.status_writer.(w.namespace, w.name, %{"snapshotRefs" => refs}) do
+            :ok ->
+              put_in(acc.workloads[name].last_snapshot_refs, refs)
+
+            {:error, reason} ->
+              Logger.warning(
+                "embervm base builder: snapshotRefs refresh failed for #{w.namespace}/#{w.name}: #{inspect(reason)}"
+              )
+
+              acc
+          end
+      end
+    end)
   end
 
   # The base refs the FLEET reports for this workload, grouped by CPU vendor:
