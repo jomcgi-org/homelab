@@ -115,7 +115,7 @@
     {
       done: true,
       name: "R4 stateful",
-      desc: "Postgres as a session: a database that sleeps as a snapshot and wakes on connect. The live demo above.",
+      desc: "A database that sleeps as a snapshot and wakes on connect, with its disk as the authoritative copy. The live demo above.",
     },
     {
       done: true,
@@ -130,17 +130,17 @@
     {
       done: false,
       name: "R7 distribution",
-      desc: "Workloads stop belonging to one machine: a wake restores the snapshot onto whichever node has room, and capacity is pre-provisioned across the fleet ahead of demand. In progress.",
+      desc: "Workloads stop belonging to one machine: a wake restores the snapshot onto whichever node has room, and capacity is pre-provisioned across the fleet ahead of demand. Needs a second warm-capable node to matter.",
     },
     {
       done: false,
-      name: "R8 elasticity",
-      desc: "Capacity becomes fixed-size bricks: each a plain pod owning a slice of VMs, so the Kubernetes scheduler bin-packs them and a Pending brick is the autoscaler's signal to buy a spot node. Every workload is a durable snapshot that wakes wherever there is room; preemption costs a wake, not an outage.",
+      name: "R8 consumers",
+      desc: "The agent platform moves onto sessions as a first-class consumer, retiring the older per-agent daemon it grew out of. Dogfooding is the acceptance test: the thing that runs this site's agents runs on the sandbox primitive.",
     },
     {
       done: false,
-      name: "R9 isolation",
-      desc: "A lane for high-throughput isolated requests: Envoy routes straight to the nodes, each request gets a fresh microVM from a node-local pool and the VM is destroyed after the response, confirmed by the node that held it. No control-plane hop per request; it only keeps pools filled and quota leases granted. Planned.",
+      name: "R9 packaging",
+      desc: "Ember becomes a standalone artifact somebody else could run: no dependency on the rest of this cluster, an open-sourceable boundary rather than a folder in a homelab monorepo.",
     },
   ];
 </script>
@@ -199,7 +199,7 @@
         <span class="sep">·</span>
         <a
           class="src"
-          href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/README.md"
+          href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
           >source</a
         >
       </p>
@@ -210,10 +210,12 @@
         <a class="anchor" href="#classes">Three kinds of workload</a>
       </h2>
       <p class="body">
-        Everything Ember runs is declared as a Kubernetes custom resource in one
-        of three classes, and a composite workload groups several of them into
-        one unit that wakes together. What separates the classes:
-        <b>how much of the machine the guest is allowed to touch</b>.
+        Everything Ember runs is declared as a Kubernetes custom resource. Three
+        classes are the core, and what separates them is
+        <b>how much of the machine the guest is allowed to touch</b>. Two more
+        are advanced options rather than pillars: <b>stateful</b> adds a disk
+        that outlives the VM (the database below), and <b>composite</b> groups several
+        VMs into one unit that wakes together.
       </p>
       <dl class="classes">
         <div class="class">
@@ -267,7 +269,7 @@
           </dd>
         </div>
         <div class="class">
-          <dt>a database nobody queries at 3am<small>session</small></dt>
+          <dt>a database nobody queries at 3am<small>stateful</small></dt>
           <dd>
             Postgres banked to disk the moment it goes idle, woken by the next
             connection. <b>Zero compute while asleep.</b>
@@ -496,8 +498,10 @@
           <b>Quotas fail closed.</b> A principal with quota 0 is hard-stopped at submit.
         </p>
         <p>
-          Metering rides the operation itself; <b>a crash cannot lose usage</b>.
-          Every task counts against its quota on success and on failure.
+          <b>Enforcement fails closed; counting fails open.</b> A node cut off from
+          the control plane keeps running and keeps counting, and unreconciled spend
+          is written off. Refusing to run a workload to protect an internal cost number
+          is the wrong trade.
         </p>
         <p>
           The one public route is scoped at <b>three independent layers</b>: the
