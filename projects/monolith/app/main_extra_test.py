@@ -104,7 +104,7 @@ class TestSingletonBotClose:
 
     @pytest.mark.asyncio
     async def test_start_singletons_creates_four_tasks(self):
-        """The leader starts bot + outbox drain + ships ingest + sweep = 4 tasks
+        """The leader starts bot + outbox drain + ships ingest + agent_sessions sweep + lock sweep = 5 tasks
         (the scheduler dispatch loop was removed - jobs run as Argo
         CronWorkflows)."""
         tasks, capture = _make_task_capturer()
@@ -128,7 +128,7 @@ class TestSingletonBotClose:
         ):
             await _start_singletons(app)
 
-        assert len(tasks) == 4
+        assert len(tasks) == 5  # bot + outbox + ships + agent_sessions + lock sweeps
 
 
 # ---------------------------------------------------------------------------

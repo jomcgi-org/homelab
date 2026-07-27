@@ -220,8 +220,8 @@ class TestSweepTaskRegistration:
         ):
             await _start_singletons(app)
 
-        # 1 task should be created (ships ingest only; scheduler loop removed)
-        assert len(tasks_created) == 1
+        # 2 tasks should be created (ships + agent_sessions sweeps; scheduler loop removed) (ships ingest only; scheduler loop removed)
+        assert len(tasks_created) == 2  # ships + agent_sessions sweeps
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert not any("Message lock sweep started" in m for m in messages)
 
