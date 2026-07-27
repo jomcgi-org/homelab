@@ -29,6 +29,9 @@ contents:
     # Per-turn commits onto the session branch are how agent-diff produces an
     # exact diffstat (git show <sha> --stat) with no model involvement.
     - git
+    # Persistent workspaces are probed and formatted by guest-init on first boot.
+    - e2fsprogs
+    - blkid
     # The shim is stdlib python, matching the runtimes/python pattern.
     - python-3.12
 
