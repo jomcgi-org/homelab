@@ -6,6 +6,41 @@ import (
 	"testing"
 )
 
+func TestParseMeminfoFields(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		input   string
+		want    map[string]uint64
+		wantErr bool
+	}{
+		{
+			"success",
+			"MemTotal:       3072000 kB\nMemFree:         245760 kB\nMemAvailable:     319488 kB\nCached:            68608 kB\n",
+			map[string]uint64{"MemTotal": 3000, "MemFree": 240, "MemAvailable": 312, "Cached": 67},
+			false,
+		},
+		{"missing field", "MemTotal: 1024 kB\nMemFree: 512 kB\nCached: 256 kB\n", nil, true},
+		{"malformed value", "MemTotal: nope kB\nMemFree: 512 kB\nMemAvailable: 512 kB\nCached: 256 kB\n", nil, true},
+		{"malformed unit", "MemTotal: 1024 MB\nMemFree: 512 kB\nMemAvailable: 512 kB\nCached: 256 kB\n", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseMeminfoFields(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseMeminfoFields() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseMeminfoFields() error = %v, want nil", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseMeminfoFields() = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidateExpr is the defense-in-depth gate on the visitor-supplied cquery
 // expression (ADR embervm/010 Security; the ember_public edge validates first,
 // this is the guest's independent second gate). It must accept the ordinary

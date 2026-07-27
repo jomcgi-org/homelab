@@ -35,6 +35,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -49,6 +50,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
+	"golang.org/x/sys/unix"
 )
 
 // validateExpr rejection reasons, kept as sentinel errors so the tests assert on
@@ -158,6 +160,7 @@ func run(logger *slog.Logger) error {
 			return waitForShutdown(ctx, serveErr, logger)
 		}
 	}
+	logWarmMemoryMetrics(logger)
 	// Log the flip on BOTH sides of ready.Store, so a snapshot pause landing
 	// between the store and a single log line cannot hide the transition.
 	logger.Info("ember-bazel-init: ready flipping")
@@ -167,6 +170,90 @@ func run(logger *slog.Logger) error {
 	// Hold PID 1. Exiting PID 1 panics the guest kernel before noded can snapshot
 	// the base or before a restored clone can answer its one query.
 	return waitForShutdown(ctx, serveErr, logger)
+}
+
+// logWarmMemoryMetrics is temporary instrumentation for GitHub issue #4054.
+// This runs after warming and settling, immediately before ready is flipped:
+// Firecracker captures the guest RAM at that instant when it cuts the warm
+// base snapshot. In particular, tmpfs pages are unevictable, so /tmp usage is
+// a hard floor for memMib. Measurements are best-effort and must never fail
+// the base build.
+func logWarmMemoryMetrics(logger *slog.Logger) {
+	attrs := []any{"phase", "measurement for #4054"}
+
+	var st unix.Statfs_t
+	if err := unix.Statfs("/tmp", &st); err != nil {
+		logger.Warn("ember-bazel-init: tmpfs memory measurement failed", "err", err)
+		errValue := fmt.Sprintf("error: %v", err)
+		attrs = append(attrs,
+			"tmpfs_mib_total", errValue,
+			"tmpfs_mib_used", errValue,
+			"tmpfs_mib_free", errValue,
+		)
+	} else {
+		blockSize := uint64(st.Bsize)
+		total := st.Blocks * blockSize / (1024 * 1024)
+		free := st.Bfree * blockSize / (1024 * 1024)
+		used := total - free
+		attrs = append(attrs,
+			"tmpfs_mib_total", total,
+			"tmpfs_mib_used", used,
+			"tmpfs_mib_free", free,
+		)
+	}
+
+	data, err := os.ReadFile("/proc/meminfo")
+	if err == nil {
+		var fields map[string]uint64
+		fields, err = parseMeminfoFields(string(data))
+		if err == nil {
+			attrs = append(attrs,
+				"mem_total_mib", fields["MemTotal"],
+				"mem_free_mib", fields["MemFree"],
+				"mem_available_mib", fields["MemAvailable"],
+				"mem_cached_mib", fields["Cached"],
+			)
+		}
+	}
+	if err != nil {
+		logger.Warn("ember-bazel-init: /proc/meminfo measurement failed", "err", err)
+		errValue := fmt.Sprintf("error: %v", err)
+		attrs = append(attrs,
+			"mem_total_mib", errValue,
+			"mem_free_mib", errValue,
+			"mem_available_mib", errValue,
+			"mem_cached_mib", errValue,
+		)
+	}
+	logger.Log(context.Background(), slog.LevelInfo, "ember-bazel-init: warm memory metrics", attrs...)
+}
+
+// parseMeminfoFields extracts the requested /proc/meminfo values and converts
+// its kB values to MiB. Requiring all fields keeps a partial measurement from
+// looking complete in the structured snapshot instrumentation.
+func parseMeminfoFields(input string) (map[string]uint64, error) {
+	want := map[string]bool{
+		"MemTotal": true, "MemFree": true, "MemAvailable": true, "Cached": true,
+	}
+	fields := make(map[string]uint64, len(want))
+	for _, line := range strings.Split(input, "\n") {
+		parts := strings.Fields(line)
+		if len(parts) < 2 || !want[strings.TrimSuffix(parts[0], ":")] {
+			continue
+		}
+		name := strings.TrimSuffix(parts[0], ":")
+		value, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil || len(parts) != 3 || parts[2] != "kB" {
+			return nil, fmt.Errorf("invalid %s line %q", name, line)
+		}
+		fields[name] = value / 1024
+	}
+	for name := range want {
+		if _, ok := fields[name]; !ok {
+			return nil, fmt.Errorf("missing %s", name)
+		}
+	}
+	return fields, nil
 }
 
 // buildArgv is the SINGLE source of truth for every bazel invocation, warming and
