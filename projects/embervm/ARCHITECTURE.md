@@ -1,30 +1,14 @@
 # EmberVM Architecture
 
-A single rolled-up description of how EmberVM operates, written for an
-operator or approver (human or agent) who needs to reason about the system
-without re-reading 27 ADRs. **This document is the source of truth for
-EmberVM's current state.** The ADRs in `docs/decisions/embervm/` record the
-rationale behind decisions that are evident in this architecture; they are
-history and argument, not the place to learn what is true now. Any PR that
-changes a decision (new ADR, amendment, supersession, withdrawal) updates
-this document in the same PR; the `adr` skill and the
-`check-adr-architecture-sync` hook enforce the habit. If the two ever
-disagree, treat it as a bug in whichever failed to keep the contract and
-fix both.
+A single rolled-up description of how EmberVM operates, written for a reader
+who needs to reason about the system without re-reading 27 ADRs.
 
-Two kinds of statement appear here, and the distinction is the point:
+Two kinds of statement appear here:
 
 - **Built**: how the system behaves today (Accepted ADRs, shipped code).
-- **Decided direction**: agreed in Draft ADRs (019 through 027) but not yet
-  implemented, or partially landed. These sections are marked.
-
-Sources: ADRs embervm/001-027, the project README (goals and non-goals),
-and the brick-program decision log. EmberVM generalized the fc-invoke /
-FaaS line (agents/030, agents/044, agents/045); fc-invoke itself is being
-deprecated, and the decisions carried over at the fork (the sandbox
-isolation posture, the microVM surface, the registration contract) live on
-as the invariants below, so the agents ADRs matter here only as inherited
-rationale.
+- **Decided direction**: agreed in Draft ADRs 014, 015, and 019 through 027,
+  but not yet implemented or only partially landed. These sections are
+  marked.
 
 ---
 
@@ -37,11 +21,15 @@ lifecycle so internal workloads get Lambda-shaped submit / scale-to-zero /
 warm-serve behaviour without a hosted FaaS product, without a Kubernetes
 object per invocation, and without etcd in the execution path.
 
-**Goals**: private Lambda ergonomics (HTTP invoke, zip or image source, caps,
-quotas, internal chargeback); honest scheduling on finite capacity; isolation
-by default; the control plane off the hit path; one operable component
-(Elixir control plane + Go node daemon + `Workload` CRD, managed by
-kubectl/Helm/ArgoCD).
+This runs on a four-node homelab cluster: three Intel nodes are the cold,
+CPU-rich tier and one AMD node holds the warm tier. The concrete fleet shape
+is in [the fleet section](#10-the-fleet-today).
+
+**Goals**: private Lambda ergonomics (HTTP invoke, zip or image source,
+caps, quotas, internal chargeback); honest scheduling on finite capacity;
+isolation by default; the control plane off the hit path; one operable
+component (Elixir control plane + Go node daemon + `Workload` CRD, managed
+by kubectl/Helm/ArgoCD).
 
 **Non-goals**: a hosted multi-tenant cloud; "agent platform as the product"
 (agents are dogfood consumers); every workload class as an equal pillar
@@ -57,6 +45,31 @@ op-log and memory (high churn).
 ---
 
 ## 2. System overview
+
+### Vocabulary
+
+- **brick**: a fixed-size noded Deployment pod and the unit of VM capacity.
+- **noded**: the Go daemon on each brick that owns Firecracker and
+  node-local I/O.
+- **op-log**: the durable ordered journal of lifecycle and enforcement
+  actions.
+- **bank / relight**: suspend a VM into a warm snapshot, then restore that
+  snapshot.
+- **primed / banked / cold / running**: ready pristine, snapshotted,
+  fresh-boot, or actively executing instance states. Cold and warm describe
+  boot mechanics only; task isolation remains no reuse, including after
+  snapshot restore.
+- **generation**: the volume incarnation number used to prove state
+  provenance and pair a stateful volume with a memory snapshot.
+- **principal**: the identity boundary a workload runs as.
+- **dial-home**: noded registration and status sent to the control plane.
+- **warmth**: a reusable boot artifact, such as a base or banked snapshot,
+  that can make the next start faster but is never correctness-critical.
+
+The diagrams use vsock (Firecracker's host-guest socket), DNAT (destination
+network address translation), xDS (the Envoy configuration protocol), BEAM
+(the Erlang virtual machine), ETS (Erlang Term Storage), and CNPG
+(CloudNativePG).
 
 ```mermaid
 graph TB
@@ -105,93 +118,41 @@ make correct):
 | Object store (SeaweedFS S3) | Artifact export/archive, off-node durability | Anything on a hot path (read only on deliberate restore or local miss) |
 
 Bricks **dial home**: on start and on a jittered interval each noded POSTs
-its identity `{node, pod_uid, address, boot_id}` to `/v1/nodes/register`; the
-control plane adopts it keyed by `(node, pod_uid)` and streams `WatchNode`.
-The control plane never lists-and-watches daemon pods. Growing the fleet is
-labelling a node (`homelab.io/firecracker=true`), not a values edit.
+its identity `{node, pod_uid, address, boot_id}` to `/v1/nodes/register`;
+the control plane adopts it keyed by `(node, pod_uid)` and streams
+`WatchNode`. The control plane never lists-and-watches daemon pods. Growing
+the fleet is labelling a node (`homelab.io/firecracker=true`), not a values
+edit.
+
+### How one invocation works
+
+**A task (the all-miss case):**
+
+1. A caller submits `POST /v1/workloads`.
+2. The dispatcher assigns a primed VM from the matching pool.
+3. It sends gRPC to noded on the chosen brick; the payload enters the VM
+   over vsock, the result comes back, the VM is destroyed after one task,
+   and the op-log records the action.
+
+**A serving hit (the steady state):**
+
+1. An edge HTTPRoute reaches node-local Envoy, which the control plane
+   already programmed over xDS.
+2. Kernel DNAT carries the request into the serving VM's tap NIC. The
+   control plane is not involved.
+
+**A wake (a serving or stateful miss):**
+
+1. The request reaches the fallback activator endpoint and parks.
+2. A single-flighted wake fires, the real endpoint is published, and bytes
+   splice through to it.
+
+The task and wake paths are the only ones on which the control plane sits.
+That is the hit/miss invariant stated in section 5.
 
 ---
 
-## 3. The invariants
-
-These are the load-bearing rules. Every design change is judged against
-them; each is stated with its current, post-amendment meaning.
-
-1. **The hit/miss invariant.** The control plane is on the invocation path
-   if and only if the invocation requires a lifecycle action (create,
-   restore, wake). Steady-state serving requests go Envoy to VM and never
-   traverse the control plane. Task execution is the degenerate all-miss
-   case (fresh VM per task by policy), so the dispatcher is on that path by
-   definition, bounded by fleet restore capacity rather than by BEAM.
-
-2. **Facts through the control plane, payloads never.** Snapshot bytes move
-   node-to-store via noded; serving traffic moves through Envoy; the control
-   plane carries facts. The two deliberate exceptions are lifecycle-rate:
-   the parked first request after a serving miss, and task dispatch/results.
-
-3. **No VM or snapshot lineage ever crosses a principal.** A principal is
-   the identity a workload runs as. Task-class VMs are single-use with no
-   NIC at all (vsock only); session VMs are also vsock-only, reused only
-   within one principal's own lineage; serving VMs are shared only across
-   one tenant's own requests; a stateful volume is owned by one workload;
-   a composite group is one principal's environment. Content-addressed dedup
-   across principals is forbidden (erasure would become a cross-tenant
-   reference-counting problem).
-
-4. **Fail closed on enforcement, fail open on warmth, and metering is not
-   enforcement.** Containment (concurrency caps, fair queues, admission,
-   the node-side pressure predicate, node-confirmed destruction) fails
-   closed. Warmth (a missing snapshot, an unreachable store) fails open to
-   a cold boot: slower, never incorrect. Metering is counting, not
-   enforcement, and **fails open by design** (ADR 020 decision 6): a brick
-   out of contact keeps running and keeps counting, and unreconciled spend
-   is written off. Cutting off a principal is an admission action (stop
-   minting tokens, 402 at the edge), not a metering one.
-
-5. **The node agent is authoritative for instance runtime state** (ADR
-   014). What a brick reports over dial-home about its VMs, taps, and
-   volumes is the truth; control-plane tables are a reconciled cache. The
-   one carve-out is destruction: an instance is recorded destroyed only
-   after the owning node confirms teardown, and reconciliation is
-   fail-closed toward destruction (an unrecognised node VM is an orphan to
-   destroy, unless it carries the `origin: ACTIVATOR` marker, in which case
-   it is adopted and backfilled).
-
-6. **Single-writer for stateful is a physical fact, not a protocol.** A
-   volume is a raw sparse file on exactly one node's NVMe; noded's
-   `volume.Manager` permits exactly one writable attach; failover is a
-   deliberate operator action (`:volume_node_gone`, never automatic
-   re-placement). The generation number is provenance and coherence
-   ("which incarnation does the control plane trust", "does this bundle
-   pair with this volume"), never the exclusion mechanism. Under partition
-   the two-writer window is bounded by the brick silence timeout (ADR 023).
-
-7. **Durable-before-observed for the journal.** Every lifecycle and
-   enforcement action is an ordered op-log append; callers await their
-   (group-committed) batch. The op-log doubles as the audit record.
-
-8. **Kubernetes arbitrates pods; EmberVM arbitrates VMs; the pod is the
-   ABI.** No scheduler or autoscaler code is imported and no node
-   provisioning is rebuilt. EmberVM's only capacity lever toward Kubernetes
-   is pod shape (honest Guaranteed requests, labels, PriorityClass), and a
-   Pending brick is the scale-up signal (Karpenter on EKS) or the
-   fleet-full page (homelab).
-
-9. **Classes are reuse semantics; substrates are lanes.** New execution
-   technologies (Hyperlight, wasm) enter as lanes under existing classes,
-   never as new classes. Persistence is becoming an orthogonal declared
-   property too (ADR 027, in review).
-
-10. **Users express posture, never mechanics.** The user-facing surface is
-    a small set of declared scalars in units the user cares about
-    (`memMib`, `archiveInterval` as acceptable data loss, session duration,
-    retention count), each under a platform ceiling with a non-escalation
-    rule. Priority rungs, disruption budgets, grace periods, and CPU are
-    platform-derived.
-
----
-
-## 4. Workload classes
+## 3. Workload classes
 
 Definitions are Kubernetes `Workload` CRs (schema-validated, GitOps-synced);
 `kubectl get workloads` reads back `snapshotRef`, `observedGeneration`, and
@@ -210,34 +171,17 @@ are fetched and unpacked inside the disposable guest).
 
 **Decided direction, not yet built:**
 
-- **Isolated high-throughput lane** (ADR 015): serving transport with task
-  semantics. Envoy `LEAST_REQUEST` routes directly to per-brick listeners;
-  the brick pops a fresh primed VM per request, destroys it after the
-  response; empty pool answers 503 and Envoy retries elsewhere. The CP is a
-  pure control loop for this lane.
-- **Persistence as a declared property** (ADR 027): classes stop
-  bundling the persistence decision. A workload declares
-  `persistence: {memory: bool, filesystem: {enabled, scope: solo|shared,
-  retention: latest+N}}`. This unlocks filesystem-persistence with no
-  memory snapshot (application-level resume: goose `--resume`, build
-  caches, WAL replay) and principal-scoped shared artifacts keyed
-  `shared/<principal>/<sha256>`. Whether task and session remain distinct
-  classes afterward is an open question there.
+- **Isolated high-throughput lane** (ADR 015): Envoy routes straight to
+  per-brick listeners, and each brick pops a fresh VM per request.
+- **Persistence as a declared property** (ADR 027): workloads declare
+  persistence flags; memory and filesystem persistence decouple from class.
 - **Composition** (ADR 022 as corrected by 024/026): multi-component apps
-  are independent Workloads in one domain wired by bindings (injected
-  logical names such as `DATABASE_URL`), not composite groups. One access
-  fabric covers VM to VM, VM to Service, and Service to VM with deny-by
-  default bindings. Composite stays for multi-kernel demos.
+  become independent Workloads wired by bindings rather than composite
+  groups.
 
 ---
 
-## 5. Lifecycle
-
-Vocabulary used everywhere: a workload instance is **running**, **primed**
-(live and pristine, awaiting first assignment), **banked** (suspended with a
-warm snapshot, relit on demand), or **cold**. "Cold" and "warm" describe
-boot mechanics only; the task-class isolation property is *no reuse*, and a
-snapshot restore preserves it.
+## 4. Lifecycle
 
 ### Stateful bank/relight (with the interruptible bank, ADR 008)
 
@@ -323,6 +267,77 @@ workspace size cap becomes a declared soft budget.
 
 ---
 
+## 5. The invariants
+
+These are the load-bearing rules. Every design change is judged against
+them.
+
+1. **The hit/miss invariant.** The control plane is on the invocation path
+   if and only if the invocation requires a lifecycle action (create,
+   restore, wake). Steady-state serving requests go Envoy to VM and never
+   traverse the control plane. Task execution is the degenerate all-miss
+   case (fresh VM per task by policy), so the dispatcher is on that path by
+   definition, bounded by fleet restore capacity rather than by BEAM.
+
+2. **Facts through the control plane, payloads never.** Snapshot bytes move
+   node-to-store via noded; serving traffic moves through Envoy; the control
+   plane carries facts. The two deliberate exceptions are lifecycle-rate:
+   the parked first request after a serving miss, and task dispatch/results.
+
+3. **No VM or snapshot lineage ever crosses a principal.** Content-addressed
+   dedup across principals is forbidden (erasure would become a cross-tenant
+   reference-counting problem). The workload-class table in section 3
+   carries the per-class network and state boundaries.
+
+4. **Fail closed on enforcement, fail open on warmth, and metering is not
+   enforcement.** Containment (concurrency caps, fair queues, admission, the
+   node-side pressure predicate, node-confirmed destruction) fails closed.
+   Warmth (a missing snapshot, an unreachable store) fails open to a cold
+   boot: slower, never incorrect. Metering is counting, not enforcement, and
+   **fails open by design** (ADR 020 decision 6): a brick out of contact
+   keeps running and keeps counting, and unreconciled spend is written off.
+   Cutting off a principal is an admission action (stop minting tokens, 402
+   at the edge), not a metering one.
+
+5. **The node agent is authoritative for instance runtime state** (ADR 014,
+   still Draft although the behaviour ships). What a brick reports over
+   dial-home about its VMs, taps, and volumes is the truth; control-plane
+   tables are a reconciled cache. The one carve-out is destruction: an
+   instance is recorded destroyed only after the owning node confirms
+   teardown, and reconciliation is fail-closed toward destruction (an
+   unrecognised node VM is an orphan to destroy, unless it carries the
+   `origin: ACTIVATOR` marker, in which case it is adopted and backfilled).
+
+6. **Single-writer for stateful is a physical fact, not a protocol.** The
+   storage section explains the raw sparse file, one-writable-attach rule,
+   and generation-as-provenance detail; failover remains a deliberate
+   operator action and the partition window is bounded by the brick silence
+   timeout (ADR 023).
+
+7. **Durable-before-observed for the journal.** Every lifecycle and
+   enforcement action is an ordered op-log append; callers await their
+   (group-committed) batch. The op-log doubles as the audit record.
+
+8. **Kubernetes arbitrates pods; EmberVM arbitrates VMs; the pod is the
+   ABI.** No scheduler or autoscaler code is imported and no node
+   provisioning is rebuilt. The capacity section's three-layer table shows
+   the levers, and a Pending brick is the scale-up signal or the fleet-full
+   page.
+
+9. **Classes are reuse semantics; substrates are lanes.** New execution
+   technologies (Hyperlight, wasm) enter as lanes under existing classes,
+   never as new classes. Persistence is becoming an orthogonal declared
+   property too (ADR 027, in review).
+
+10. **Users express posture, never mechanics.** The surface is a small set
+    of declared scalars in user-facing units, each under a platform ceiling
+    with a non-escalation rule. Priority rungs, disruption budgets, grace
+    periods, and CPU are platform-derived; users do not select those
+    mechanics. The scalar details are carried by the storage and
+    control-plane sections.
+
+---
+
 ## 6. Control plane internals
 
 - **State model**: hot working set in ETS (rebuilt on start, healed by
@@ -331,15 +346,15 @@ workspace size cap becomes a declared soft budget.
   single-node default; batched (group-commit) Postgres via CNPG is the
   deployment default for HA. The dispatch path never reads the durable
   store.
-- **Retention** (ADR 002): result TTLs enforced at read time; terminal
-  tasks pruned past 7 days; the ops journal prefix-compacted past a 30-day
-  horizon behind a durable `compacted_through_seq` marker; PVC usage
-  alerted at 80%. Long-horizon audit is SigNoz.
-- **Adoption**: noded reports `primed_vm_ids`, session VMs, checkpoint
-  -pending VMs, and banked artifacts on every `NodeStatus`; the dispatcher
-  and managers reconcile on boot and every sweep. This is the standing fix
-  for the restart-wedge bug class, and the protocols are the subject of the
-  TLA+ pilot (ADR 006: per-protocol PlusCal specs in
+- **Retention** (ADR 002): result TTLs enforced at read time; terminal tasks
+  pruned past 7 days; the ops journal prefix-compacted past a 30-day horizon
+  behind a durable `compacted_through_seq` marker; PVC usage alerted at 80%.
+  Long-horizon audit is SigNoz.
+- **Adoption**: noded reports `primed_vm_ids`, session VMs,
+  checkpoint-pending VMs, and banked artifacts on every `NodeStatus`; the
+  dispatcher and managers reconcile on boot and every sweep. This is the
+  standing fix for the restart-wedge bug class, and the protocols are the
+  subject of the TLA+ pilot (ADR 006: per-protocol PlusCal specs in
   `projects/embervm/specs/`, three conformance layers, deferred until the
   protocol surface is stable).
 - **Cells** (ADR 007): the unit of horizontal scale is a cell, a complete
@@ -349,45 +364,30 @@ workspace size cap becomes a declared soft budget.
   per-cell dial-home address), with exactly one cell (`cell-0`) today. A
   thin stateless fleet layer (route + capacity roll-up) arrives only with a
   second cell.
-- **Registry survives restarts**: noded persists its last-synced registry
-  to NVMe marked stale; a restarting noded with an absent CP serves warm
+- **Registry survives restarts**: noded persists its last-synced registry to
+  NVMe marked stale; a restarting noded with an absent CP serves warm
   workloads from cache. No dependency's brief absence may turn a warm node
   into a dead one.
 
 **Decided direction (Draft ADRs 019-021):**
 
-- **Op-log restructuring** (ADR 019): payloads separate from facts
-  (`payload_ref` to a side table or object store; request payloads dropped
-  at terminal-success, results deleted on fetch + grace), `ops`
-  range-partitioned by time (compaction becomes partition drop), and
-  `principal` NOT NULL + indexed everywhere so **erasure on demand** is an
-  indexed delete plus keyed payload reclaim.
-- **Admission-only control plane** (ADR 020): the CP forecasts demand,
-  precomputes workload-to-brick assignment at forecast cadence, mints
-  encrypted (JWE) session-routing tokens carrying
-  `(cell, brick, session, generation, expiry)`, publishes xDS at O(bricks)
-  with scalar capacity, and applies fleet backpressure. A tokenless arrival
-  costs a lookup plus a signature, never a placement computation.
-  Redistribution under pressure is peer-to-peer with power-of-two-choices
-  sampling (cell- and vendor-scoped); the shed ladder is destroy
-  preemptible VMs, evict exported artifacts, bank durable sessions, refuse.
-  Target: >90% active brick utilization (provisional).
-- **Resource model** (ADR 021): a workload declares `memMib` only. CPU is
-  derived (`memMib / pivot`, pivot provisionally 1,024 MiB per vCPU) and
-  delivered as `ceil()` presented vCPUs plus proportional `cpu.weight`;
-  capacity becomes a scalar (memory), oversubscription is derived per node
-  and published as a sort key. The accounting unit is GB-seconds of
-  allocated memory; billing itself is deferred.
+- **Op-log restructuring** (ADR 019): payloads separate from facts and `ops`
+  are time-partitioned, making principal-scoped erasure an indexed delete.
+- **Admission-only control plane** (ADR 020): the CP admits and mints
+  encrypted session-routing tokens; peers redistribute under pressure and
+  metering fails open.
+- **Resource model** (ADR 021): `memMib` is the only declared dial, CPU is
+  derived from it, and GB-seconds is the accounting unit.
 
 ---
 
 ## 7. Capacity, bricks, and Kubernetes
 
-**A brick is the capacity unit everywhere** (ADR 013 section 7, as
-amended): a fixed-size noded Deployment pod in a T-shirt size class (v1:
-`small` for dense task packing, `large` for 1-2 serving/session VMs), with
-honest Guaranteed requests, sized roughly 4-8x the largest VM of its class,
-a handful per node. The daemon is budget-agnostic: it reads its ceiling from
+**A brick is the capacity unit everywhere** (ADR 013 section 7, as amended):
+a fixed-size noded Deployment pod in a T-shirt size class (v1: `small` for
+dense task packing, `large` for 1-2 serving/session VMs), with honest
+Guaranteed requests, sized roughly 4-8x the largest VM of its class, a
+handful per node. The daemon is budget-agnostic: it reads its ceiling from
 its own cgroup, so a size class is a resources block, not a code fork.
 In-place pod resize is retired on every tier.
 
@@ -398,8 +398,8 @@ In-place pod resize is retired on every tier.
 | Node provisioning | Karpenter (EKS) / nobody (homelab) | brick count vector from the single-writer controller; a Pending brick is the signal |
 
 On the homelab's fixed four-node fleet a Pending brick **is** the fleet-full
-signal: the controller flags `:fleet_full`, the dispatcher refuses
-placement (503), and a human is paged, rather than overcommitting.
+signal: the controller flags `:fleet_full`, the dispatcher refuses placement
+(503), and a human is paged, rather than overcommitting.
 
 Priority projects onto three axes: PriorityClass ranks brick pools by lane
 (occupied-capable bricks always run at default non-preempting priority;
@@ -409,29 +409,40 @@ Disruption splits workloads into preemptible posture (task, isolated lane)
 and durable posture (session, stateful: continuity via banked-state
 durability, not node pinning). Remaining node lifetime is a placement input;
 a terminating node is a placement target for work that fits its horizon.
-Karpenter behaviour is drilled against kwok in CI, path-scoped to the
-Karpenter-facing modules.
+Karpenter behaviour is drilled against kwok (a Kubernetes workload
+simulator) in CI, path-scoped to the Karpenter-facing modules.
 
-**Homelab cutover status** (brick-program log): noded currently runs as a
-DaemonSet bridge over the FC-labelled nodes; the staged cutover to brick
-Deployments (PR-1 inert plumbing, PR-2 dispatcher `BrickLedger` selection,
-PR-3a controller + `:fleet_full`, PR-3b `bricks.enabled=true` canary, PR-3c
-DaemonSet prune, gated on explicit go-ahead) is in flight. Desired counts
-come from a per-class `desiredReplicas` values knob reconciled by
-`Embervm.BrickController` through `/scale` (ArgoCD ignores `/spec/replicas`
-fleet-wide, so git-declared replicas would not sync). Instance identity is
-the kubelet pod UID.
+**Homelab brick status** (brick-program log): the wildcard per-node noded
+DaemonSet is retired (`noded.enabled: false`). That flag gates the wildcard
+DaemonSet, not noded itself, so `noded.enabled: false` with `bricks.enabled:
+true` means noded everywhere and a DaemonSet nowhere. Every brick still runs
+noded; discovery is dial-home, not the noded Service. `bricks.enabled:
+true`, and bricks are now the only source of node capacity, so the control
+plane picks the brick mix from placement demand rather than getting one
+fixed daemon per node. Brick autoscale is at rung `up` on the `observe -> up
+-> full` ladder: denial-driven scale-up acts, clamped to the chart's
+maxReplicas, while scale-down stays observe-only. Promoting to `full`
+(drain-aware scale-down) is the remaining rung.
+
+Live shape is `desiredReplicas` 2gi 1 and 16gi 1, with per-node floor bricks
+of class 2gi pinned on node-1, node-2, and node-3. The 4gi and 8gi classes
+are present at zero replicas. Chart clamps are min 16gi 1, and max 2gi 4 /
+4gi 3 / 8gi 2. Desired counts come from the per-class `desiredReplicas`
+values knob reconciled by `Embervm.BrickController` through `/scale` because
+ArgoCD ignores `/spec/replicas` fleet-wide, so git-declared replicas would
+not sync. Instance identity is the kubelet pod UID.
 
 ---
 
 ## 8. Storage, artifacts, durability
 
 **Artifact model** (ADR 003 generalized by ADR 009): one typed verb family,
-`ExportArtifact` / `RestoreArtifact` / `EvictArtifact`, over
-`ArtifactRef {kind: BASE | SESSION | SERVING | STATEFUL | GROUP_SET |
-VOLUME}`. Control-plane-driven, idempotent per key; evict refuses while
-referenced. Keys are namespaced by workload (and vendor, below); ADR 027 adds the principal-scoped
-`shared/<principal>/<sha256>` keyspace as a deliberate, named exception.
+`ExportArtifact` / `RestoreArtifact` / `EvictArtifact`, over `ArtifactRef
+{kind: BASE | SESSION | SERVING | STATEFUL | GROUP_SET | VOLUME}`.
+Control-plane-driven, idempotent per key; evict refuses while referenced.
+Keys are namespaced by workload (and vendor, below); ADR 027 adds the
+principal-scoped `shared/<principal>/<sha256>` keyspace as a deliberate,
+named exception.
 
 **Vendor pinning**: Firecracker memory snapshots restore only within a CPU
 vendor (and a narrow intra-vendor matrix), so all warmth artifacts are keyed
@@ -440,28 +451,16 @@ vendor-mismatched restore loudly. Volume data is fully portable. Legacy
 artifacts cut before stamping existed are grandfathered: restorable on their
 home node forever, never distributed.
 
-**Stateful durability** (ADR 025, Draft; withdraws ADR 011's Longhorn
-move):
+**Decided direction (Draft ADR 025):** This withdraws ADR 011's Longhorn
+move; Longhorn stays deployed for other cluster uses.
 
-- **Local disk is authoritative.** The volume is a raw sparse `vol.img` on
-  node NVMe; relight is local, no network, no arbitration.
-- **S3 is an archive, not a hot tier**: written as zstd content-addressed
-  chunk diffs at bank commit (the bank pauses the VM, so every bank is a
-  free consistency point), read only on deliberate restore.
-- **`archiveInterval` is the user-facing durability control**, in units of
-  acceptable loss: the scalar is a ceiling ("archive at least every N,
-  forcing a bank if needed"), the floor is platform-derived rate limiting,
-  and `disabled` means node loss is total loss (correct for demos, stated
-  in schema docs).
-- **Failover is deliberate** (operator action; loss is exactly the
-  configured interval). **Node rotation is planned drain**: idle drain (RPO
-  0, zero disruption) when a bank window can be found before the horizon,
-  live drain otherwise; stateful workloads are excluded from spot capacity;
-  the continuity contract is an 8h uptime floor (asserted, not derived).
-- Three ADR 011 properties are consciously given up: bounded-seconds
-  automatic failover, "a placement move is a copy, never a rebuild" (for
-  stateful; it still holds for warmth), and R7's cold-node stateful-wake
-  premise. Longhorn stays deployed for other cluster uses.
+- **Local disk is authoritative**: local node NVMe relight needs no network.
+- **S3 is a zstd content-addressed archive**, written at bank commit, not a
+  hot tier.
+- **`archiveInterval`** is the user-facing durability control in
+  acceptable-loss units.
+- **Failover and node rotation** are deliberate planned-drain operator
+  actions.
 
 **Ownership arbitration is class-scoped** (ADR 023, Draft):
 
@@ -482,7 +481,16 @@ parameter.
 
 ## 9. Identity, tenancy, security
 
-**Hierarchy** (ADR 024, Draft):
+Only `principal` and `domain` ship now. A domain is contained in exactly one
+principal, so a same-domain-by-default binding can never cross the isolation
+boundary. Shared platform definitions (sandbox-session, semgrep) are owned
+by a reserved `platform` principal with an explicit broad instantiation
+grant, the widest and most-reviewed grant in the system. The op-log's
+existing `tenant` field is a deployment constant occupying the Account slot.
+
+**Decided direction (Draft ADRs 024, 026):**
+
+**Hierarchy**:
 
 ```text
 Account      billing / grouping, NO isolation semantics
@@ -492,46 +500,34 @@ Account      billing / grouping, NO isolation semantics
           └ Workload
 ```
 
-Only `principal` and `domain` ship now. A domain is contained in exactly one
-principal, so a same-domain-by-default binding can never cross the
-isolation boundary. Shared platform definitions (sandbox-session, semgrep)
-are owned by a reserved `platform` principal with an explicit broad
-instantiation grant, the widest and most-reviewed grant in the system. The
-op-log's existing `tenant` field is a deployment constant occupying the
-Account slot.
-
-**Definitions at scale** (ADR 026, Draft): one product template plus N
-enrollment records rather than `products x tenants` stamped definitions;
-one CR per product in Git (ArgoCD keeps sync/drift/rollback) expanded into
-CP-datastore definitions; registration is an idempotent desired-set
-reconcile (`apply(scope, generation, desired_set)`) with class inferred
-from source shape. Git owns product shape; the API owns tenant population.
-Only state-owning components stamp per tenant.
-
-**Guest identity** (ADR 024): a guest never holds a cluster credential. It
-asserts identity via an audience-scoped projected token (audience
-`embervm`, useless against the Kubernetes API); the platform holds real
-credentials and acts on the guest's behalf through the brokered egress
-path.
+**Definitions at scale** (ADR 026): one product template plus N enrollment
+records, one Git CR per product expanded into CP definitions, and idempotent
+registration as a desired-set reconcile.
 
 **Credential handling** (ADR 016 security contract): material may sit where
 it can be stolen only if the platform can kill its validity on demand;
 otherwise the request moves to the credential. Secrets are classed:
 derivable short-lived (class 1, may enter trusted guests, revoked at bank),
 fixed-but-rotatable (class 2, brick-lease only, placeholder-swapped),
-fixed-manual (class 3, never leaves a central key-sharded swap tier).
-Guests hold per-light placeholder nonces; a brick-local proxy on every
-guest egress injects real credentials from memory-only leases sealed to the
-brick's dial-home identity. RAM scrubbing before snapshot is rejected as a
+fixed-manual (class 3, never leaves a central key-sharded swap tier). Guests
+hold per-light placeholder nonces; a brick-local proxy on every guest egress
+injects real credentials from memory-only leases sealed to the brick's
+dial-home identity. RAM scrubbing before snapshot is rejected as a
 load-bearing mechanism; revocation at the validator is the control.
 
 **Public surface hardening** (as shipped): the one public route
-(`jomcgi.dev/functions/hot-image-demo`) is scoped at the HTTPRoute, the
-node Envoy authority match, and the guest shim's reserved `/shim/` prefix,
+(`jomcgi.dev/functions/hot-image-demo`) is scoped at the HTTPRoute, the node
+Envoy authority match, and the guest shim's reserved `/shim/` prefix,
 rate-limited at Envoy and by a daily vCPU-second quota. The `/ember` Bazel
 demo (ADR 010) serves each visitor query from a disposable CoW clone of a
 warm-Skyframe snapshot: server-controlled argv, zero egress, reaped per
 request.
+
+**Guest identity** (as shipped): a guest never holds a cluster
+credential. It asserts identity via an audience-scoped projected token
+(audience `embervm`, useless against the Kubernetes API); the platform holds
+real credentials and
+acts on the guest's behalf through the brokered egress path.
 
 ---
 
@@ -545,21 +541,20 @@ request.
 - Co-locating untrusted-code microVMs on the etcd masters is an eyes-open
   risk acceptance (ADR 012): the cluster is GitOps-reconstructible and
   durable state lives in S3, so quorum loss is bounded downtime, not data
-  loss. Guests are the first OOM victims. **Do not import this clause into
-  a cluster whose etcd is precious.**
+  loss. Guests are the first OOM victims. **Do not import this clause into a
+  cluster whose etcd is precious.**
 - Warmth is effectively single-vendor (AMD) until the CPU-template work
-  lands; the Intel pool runs cold-boot work. The vendor gate fails closed
-  at the daemon.
+  lands; the Intel pool runs cold-boot work. The vendor gate fails closed at
+  the daemon.
 - Scratch is a node-provisioning contract: every FC-labelled node
   bind-mounts its real device at `/var/lib/embervm/scratch` (hostPath type
   Directory fails closed if unsatisfied). Karpenter `instanceStorePolicy`
   RAID0 satisfies it on EKS.
 - The FC node taint is a recorded option, not applied; co-tenancy runs on
   honest requests plus the disposable priority class.
-- The control plane runs one replica with `strategy: Recreate` on the
-  RWO SQLite PVC today; CP HA is the ADR 007 Postgres-cells path, and CP
-  rolls are the availability events the node-local activator exists to
-  survive.
+- The control plane runs one replica with `strategy: Recreate` on the RWO
+  SQLite PVC today; CP HA is the ADR 007 Postgres-cells path, and CP rolls
+  are the availability events the node-local activator exists to survive.
 
 **Known walls and provisional numbers** (each states what would move it):
 
@@ -583,9 +578,9 @@ planes, hard tenancy) is demoted to Recorded pending real demand. R7
 Distribution is decided (vendor-aware placement over the export/restore
 verbs; needs a second warm-capable node to matter). R8 Consumers (agent
 threads on sessions, retiring fc-agentd) and R9 Packaging (standalone
-open-sourceable artifact) are decided. In-flight engineering: the
-DaemonSet-to-brick cutover, node-local activator soak, and the conciseness
-program (issue #4009).
+open-sourceable artifact) are decided. In-flight engineering: promoting
+brick autoscale from `up` to `full`, node-local activator soak, and the
+conciseness program (issue #4009).
 
 The availability contract is spot semantics: a routine roll gives every
 workload up to two minutes of drain notice; state durability is the hard
@@ -597,10 +592,12 @@ planned-drain contract).
 ## 12. ADR map
 
 How to read a decision: start here, then open the ADR for rationale. Status
-is the ADR's own header plus its amendment trail. "Draft" ADRs 019-027 are
-one design pass answering "what changes to manage 100k+ workload
-definitions" (see `docs/decisions/embervm/README.md` for their reading
-order); they are decided direction, not yet built.
+is the ADR's own header plus its amendment trail. Draft ADRs are 014, 015,
+and 019-027. ADRs 019-027 are one design pass answering "what changes to
+manage 100k+ workload definitions" (see `docs/decisions/embervm/README.md`
+for their reading order); they are decided direction, not yet built. ADRs
+014 and 015 predate that pass and are a separate case. ADRs 014 and 015 have
+since been amended for fail-open metering.
 
 | ADR | Decides | Status / superseded by |
 | --- | ------- | ---------------------- |
@@ -635,3 +632,17 @@ order); they are decided direction, not yet built.
 Operational entry points: ArgoCD and SigNoz at `private.jomcgi.dev/app/*`,
 `kubectl get workloads` for definition status, `/v1/usage` for metering,
 `docs/runbooks/embervm-*.md` for break-glass procedures.
+
+### Keeping this document true
+
+This document is the source of truth for EmberVM's current state. The ADRs
+in `docs/decisions/embervm/` record rationale, not the current state. Any PR
+that changes a decision updates this document in the same PR; the `adr`
+skill and `check-adr-architecture-sync` hook enforce it. If the two
+disagree, fix both.
+
+Sources: ADRs embervm/001-027, the project README (goals and non-goals), and
+the brick-program decision log. EmberVM generalized the fc-invoke / FaaS
+line (agents/030, agents/044, agents/045); fc-invoke itself is being
+deprecated, and the carried-over sandbox isolation posture, microVM surface,
+and registration contract remain as inherited rationale for the invariants.
