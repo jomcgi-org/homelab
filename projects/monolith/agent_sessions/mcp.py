@@ -18,7 +18,6 @@ from app.mcp_app import mcp
 from framework import log_task_exception
 
 _transport = EmberVmShimTransport()
-_session_locks: dict[int, asyncio.Lock] = {}
 _sweep_task: asyncio.Task | None = None
 _REPLICA_ID = platform.node()
 logger = logging.getLogger(__name__)
@@ -149,13 +148,6 @@ def _refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool
     return store.refresh_claim_sync(session_id, turn_seq, replica_id)
 
 
-async def _with_session_lock(session_id: int, coro):
-    """Run one session turn at a time."""
-    lock = _session_locks.setdefault(session_id, asyncio.Lock())
-    async with lock:
-        return await coro
-
-
 async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
     """Process one queued message durably with heartbeat-based claim refresh.
 
@@ -283,7 +275,7 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
     try:
         # Start the heartbeat refresh task
         refresh_task = asyncio.create_task(_refresh_heartbeat())
-        await _with_session_lock(session_id, _do_execute())
+        await _do_execute()
     finally:
         # Cancel the refresh task
         if refresh_task:
