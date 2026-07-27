@@ -8,7 +8,7 @@ go_library(
     deps = [
         "//projects/advent_of_code/pkg/aoc",
         "//projects/advent_of_code/pkg/cookies",
-        "@com_github_spf13_cobra//:go_default_library",
+        "@com_github_spf13_cobra//:cobra",
     ],
 )
 

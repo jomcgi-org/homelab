@@ -13,7 +13,7 @@ go_library(
         "//projects/sextant/pkg/codegen",
         "//projects/sextant/pkg/schema",
         "//projects/sextant/pkg/xstate",
-        "@com_github_spf13_cobra//:go_default_library",
+        "@com_github_spf13_cobra//:cobra",
     ],
 )
 
@@ -29,6 +29,6 @@ go_test(
     ],
     embed = [":cmd"],
     deps = [
-        "@com_github_spf13_cobra//:go_default_library",
+        "@com_github_spf13_cobra//:cobra",
     ],
 )

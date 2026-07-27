@@ -7,15 +7,15 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/platform/signoz-addons/dashboard-sidecar/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "@com_github_prometheus_client_golang//prometheus:go_default_library",
-        "@com_github_prometheus_client_golang//prometheus/promauto:go_default_library",
-        "@com_github_prometheus_client_golang//prometheus/promhttp:go_default_library",
-        "@io_k8s_api//core/v1:go_default_library",
-        "@io_k8s_apimachinery//pkg/api/errors:go_default_library",
-        "@io_k8s_apimachinery//pkg/apis/meta/v1:go_default_library",
-        "@io_k8s_apimachinery//pkg/watch:go_default_library",
-        "@io_k8s_client_go//kubernetes:go_default_library",
-        "@io_k8s_client_go//rest:go_default_library",
+        "@com_github_prometheus_client_golang//prometheus",
+        "@com_github_prometheus_client_golang//prometheus/promauto",
+        "@com_github_prometheus_client_golang//prometheus/promhttp",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/watch",
+        "@io_k8s_client_go//kubernetes",
+        "@io_k8s_client_go//rest",
     ],
 )
 
@@ -30,10 +30,10 @@ go_test(
     srcs = ["main_test.go"],
     embed = [":signoz-dashboard-sidecar_lib"],  # keep
     deps = [
-        "@io_k8s_api//core/v1:go_default_library",
-        "@io_k8s_apimachinery//pkg/apis/meta/v1:go_default_library",
-        "@io_k8s_apimachinery//pkg/types:go_default_library",
-        "@io_k8s_client_go//kubernetes/fake:go_default_library",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_client_go//kubernetes/fake",
     ],
 )
 
