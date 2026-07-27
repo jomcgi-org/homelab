@@ -218,6 +218,15 @@ containers:
       {{- end }}
       - name: EMBERVM_NODED_DRAIN_TIMEOUT
         value: "{{ $ctx.Values.noded.drain.timeoutSeconds }}s"
+      {{- if $ctx.Values.egress.enabled }}
+      # Guest egress lane (ADR 023 phase 6a). Serve the vsock egress port per
+      # guest and tunnel to the sidecar above; the addr must match its
+      # EGRESS_LISTEN. Absent when disabled, so the daemon's default stays off.
+      - name: EMBERVM_NODED_EGRESS_ENABLED
+        value: "true"
+      - name: EMBERVM_NODED_EGRESS_SIDECAR_ADDR
+        value: "127.0.0.1:8888"
+      {{- end }}
       # R1 zip lane: bounds a single archive HTTP GET and caps the fetched
       # bytes. The archive_url is minted by the control plane (fully-qualified
       # SeaweedFS S3 read URL); noded fetches it on the pod network. See
@@ -285,7 +294,85 @@ containers:
         mountPath: /dev/kvm
       - name: nvme
         mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+{{- if $ctx.Values.egress.enabled }}
+  # Egress-proxy sidecar (ADR 023). noded tunnels each guest's vsock egress to
+  # this process over localhost; it is the only thing in the pod that reaches the
+  # network on a guest's behalf. Keeping it a separate container is the point: the
+  # daemon parses guest control frames but never egress bytes and holds no
+  # credential, so a daemon compromise does not hand over the secrets.
+  # nosemgrep: require-readiness-probe
+  - name: egress-proxy
+    image: "{{ $ctx.Values.egress.image.repository }}@{{ $ctx.Values.egress.image.digest }}"
+    imagePullPolicy: {{ $ctx.Values.noded.image.pullPolicy | default "IfNotPresent" }}
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+    env:
+      # Must match EMBERVM_NODED_EGRESS_SIDECAR_ADDR on the noded container: the
+      # daemon dials what this binds.
+      - name: EGRESS_LISTEN
+        value: ":8888"
+      # Split-horizon guardrail. Secret egressTo hosts are external and are
+      # reached by external:allow, so they never belong in the internal allowlist.
+      - name: EGRESS_EXTERNAL
+        value: {{ $ctx.Values.egress.external | default "allow" | quote }}
+      - name: EGRESS_INTERNAL_DEFAULT
+        value: {{ $ctx.Values.egress.internal.default | default "deny" | quote }}
+      {{- with $ctx.Values.egress.internal.allowlist }}
+      - name: EGRESS_INTERNAL_ALLOWLIST
+        value: {{ join "," . | quote }}
+      {{- end }}
+      {{- with $ctx.Values.egress.internal.cidrs }}
+      - name: EGRESS_INTERNAL_CIDRS
+        value: {{ join "," . | quote }}
+      {{- end }}
+      {{- if $ctx.Values.egress.secrets }}
+      # Phase 6b. EGRESS_SECRETS is the NON-secret catalog (placeholder -> env ->
+      # egressTo); each real value arrives separately from its own Secret below,
+      # so the catalog itself is safe to render into the pod spec.
+      {{- $catalog := list }}
+      {{- range $s := $ctx.Values.egress.secrets }}
+      {{- $catalog = append $catalog (dict "placeholder" $s.placeholder "env" $s.env "egressTo" $s.egressTo) }}
+      {{- end }}
+      - name: EGRESS_SECRETS
+        value: {{ $catalog | toJson | quote }}
+      - name: EGRESS_CA_CERT_FILE
+        value: /etc/egress-ca/tls.crt
+      - name: EGRESS_CA_KEY_FILE
+        value: /etc/egress-ca/tls.key
+      {{- range $s := $ctx.Values.egress.secrets }}
+      - name: {{ $s.env }}
+        {{- if $s.secretRef }}
+        valueFrom:
+          secretKeyRef:
+            name: {{ $s.secretRef.name }}
+            key: {{ $s.secretRef.key }}
+        {{- else }}
+        value: {{ $s.value | quote }}
+        {{- end }}
+      {{- end }}
+      {{- end }}
+    {{- if $ctx.Values.egress.secrets }}
+    volumeMounts:
+      - name: egress-ca
+        mountPath: /etc/egress-ca
+        readOnly: true
+    {{- end }}
+    resources:
+      {{- toYaml $ctx.Values.egress.resources | nindent 6 }}
+{{- end }}
 volumes:
+{{- if and $ctx.Values.egress.enabled $ctx.Values.egress.secrets }}
+  - name: egress-ca
+    secret:
+      secretName: {{ include "embervm.fullname" $ctx }}-egress-ca
+{{- end }}
   - name: dev-kvm
     hostPath:
       path: /dev/kvm

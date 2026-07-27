@@ -989,3 +989,100 @@ bricks:
   # onto whichever node the scheduler fills first. Empty by default (no
   # floors); deploy/values.yaml sets the fleet's actual floor entries.
   nodeFloors: []
+
+# Guest egress lane (ADR 023). When enabled, noded serves each guest's vsock
+# egress port and tunnels every connection to a pod-local egress-proxy sidecar,
+# the only process that reaches the network on a guest's behalf. The daemon never
+# parses the bytes, so the secret-holding proxy stays a separate blast radius.
+#
+# Off by default: a node without the sidecar must not open the lane. The claude
+# runtime is the first and only consumer, because it is the only guest that
+# points a client at the egress port (via HTTPS_PROXY); every other guest ignores
+# the listener entirely, which is why this is one daemon-level switch rather than
+# a per-workload field threaded through the CRD and control plane.
+egress:
+  enabled: false
+  # Split-horizon posture (ADR 023). external "allow" lets the agent read the open
+  # internet; internal is deny-by-default and confined to internal.allowlist.
+  # Classification is on the IP the sidecar actually resolves and dials, not the
+  # host the guest claims, so a public name pointed at an internal address is
+  # still denied and a hostile guest cannot race DNS.
+  external: allow
+  internal:
+    default: deny
+    # Internal (cluster/private) destinations permitted under deny-by-default, as
+    # host[:port]. Empty: the claude runtime needs the public internet, not this
+    # cluster, and an agent that could reach in-cluster services is exactly the
+    # pivot this setting exists to prevent.
+    allowlist: []
+    # Extra CIDRs treated as internal beyond the baked private/loopback/link-local
+    # ranges. This cluster's pod/service/node nets are already RFC1918.
+    cidrs: []
+  # Bazel-pinned at chart-build from the egress-proxy image .info provider
+  # (chart/BUILD `images`), so the digest cannot drift from the built image.
+  image: {}
+  # Phase 6b CA: cert-manager mints the self-signed CA the sidecar uses to forge
+  # leaf certs when it TLS-terminates a secret-bearing destination. Only created
+  # when `secrets` below is non-empty.
+  ca:
+    duration: 87600h # 10y; rotation churns guest trust, keep it rare
+    renewBefore: 2160h # 90d
+  # Phase 6b secret catalog. Each entry gives the guest an inert `placeholder` as
+  # env `env`; the sidecar swaps it for the real value only on a connection to a
+  # host in `egressTo`, so the real credential is unreachable everywhere else and
+  # never enters the guest. Empty here: phase 6a (plain allowlist-forward) is what
+  # this chart turns on, and populating this list is what enables 6b.
+  secrets: []
+  # Repo convention: memory requests == limits (no bursting); CPU is a request
+  # only (no limit, to avoid throttling).
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 64Mi
+
+# The claude-runtime session workload (issue #4055): voice-drivable Claude Code
+# agent sessions. Same frozen guest contract as every other guest (vsock 1027,
+# /shim/ready), but the invoke path is /shim/turn, and the monolith addresses it
+# by the name below (agent_sessions/transport.py defaults to `claude-runtime`), so
+# renaming this without renaming there breaks session creation with a 404.
+#
+# Node disk arithmetic, documented so it is bounded rather than discovered (ADR
+# embervm/002 rule 4). memMib is 4096, so a banked session's memory snapshot is
+# worst-case ~4 GiB. maxSessions 2 (live + banked combined) caps the snapshot dir
+# at 2 x 4 GiB = 8 GiB, and cap 1 caps live RAM at 4 GiB. Deliberately small: this
+# is a single-operator feature sharing node-4 scratch with the task pools and the
+# 8-session sandbox tier, and it is the values knob to raise once the lane has
+# earned its keep.
+#
+# floor is 0, unlike the sandbox tier: a pristine 4 GiB VM held warm is expensive,
+# and the runtime does not need warmth. A cold spawn to first request is ~250ms
+# against an API leg of 1-5s, so warmth would buy roughly 5% of a turn for a
+# permanently resident 4 GiB.
+claudeRuntimeWorkload:
+  enabled: false
+  name: claude-runtime
+  port: 1027
+  readyPath: /shim/ready
+  invokePath: /shim/turn
+  vcpus: 2
+  # 4 GiB: the CLI is a 262 MB Node ELF with a V8 heap on top, and guest-init
+  # mounts tmpfs on both /tmp and /workspace. Those are caps, not reservations, so
+  # they cost only what a turn actually writes, but a session that checks out a
+  # repository and builds it is spending this budget on RAM with no disk to fall
+  # back to (a session-class guest has no writable volume).
+  memMib: 4096
+  floor: 0
+  cap: 1
+  session:
+    # Bank an idle session after 5 minutes. Longer than the sandbox tier's 2: a
+    # voice-driven conversation has human-length gaps between turns, and a bank
+    # plus relight inside one conversation is wasted work.
+    idleBankSeconds: 300
+    # A session rides its birth base until this expires, then the next invoke
+    # 410s onto the current base.
+    maxLifetimeSeconds: 21600
+    bankedTtlSeconds: 21600
+    maxSessions: 2
+    invokeQueueCap: 4

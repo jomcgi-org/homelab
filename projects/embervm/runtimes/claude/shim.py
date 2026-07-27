@@ -29,6 +29,10 @@ CLOCK_PATH = "/shim/clock"
 DEFAULT_WORKSPACE = "/workspace"
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096
+# Cap on the proxy request head the egress forwarder reads before it knows the
+# destination. Generous for real headers, bounded so a client that never sends
+# the terminating blank line cannot grow this buffer without limit.
+MAX_PROXY_HEAD_BYTES = 64 << 10
 INIT_READ_TIMEOUT = 15.0
 # Per-event inactivity timeout for the read loop in turn(). Resets on every
 # stream event, so a turn emitting steady output can run far longer than this.
@@ -225,11 +229,74 @@ class VsockEgressForwarder:
             except OSError:
                 pass
 
+    @staticmethod
+    def _read_proxy_request(client):
+        """Read the proxy request head and return (host_port, leftover, is_connect).
+
+        The CLI treats this listener as an ordinary HTTP proxy because that is
+        what HTTPS_PROXY means, so it opens with either a CONNECT for a TLS
+        origin or an absolute-URI request for a plain one. The host-side lane
+        speaks neither: it wants a single "host:port\\n" preamble and raw bytes
+        after it. This reads just far enough to learn the destination.
+
+        Returns (None, b"", False) when the head is malformed or oversized, which
+        the caller answers with an error rather than guessing a destination.
+        """
+        head = b""
+        while b"\r\n\r\n" not in head:
+            if len(head) > MAX_PROXY_HEAD_BYTES:
+                return None, b"", False
+            chunk = client.recv(4096)
+            if not chunk:
+                return None, b"", False
+            head += chunk
+        raw_head, _, leftover = head.partition(b"\r\n\r\n")
+        lines = raw_head.split(b"\r\n")
+        parts = lines[0].split()
+        if len(parts) < 2:
+            return None, b"", False
+        method, target = parts[0].upper(), parts[1].decode("latin-1")
+        if method == b"CONNECT":
+            # "CONNECT host:443 HTTP/1.1": the target IS the destination, and the
+            # head is consumed here because the client expects a proxy response
+            # before it starts its TLS handshake.
+            return target, leftover, True
+        # An absolute-URI request ("GET http://host/path HTTP/1.1"). Take the
+        # destination from the Host header, then replay the WHOLE head upstream:
+        # an origin server must accept an absolute-URI request line, so no
+        # rewriting is needed and none is attempted.
+        host_port = None
+        for line in lines[1:]:
+            name, sep, value = line.partition(b":")
+            if sep and name.strip().lower() == b"host":
+                host_port = value.strip().decode("latin-1")
+                break
+        if not host_port:
+            return None, b"", False
+        if ":" not in host_port:
+            host_port += ":80"
+        return host_port, raw_head + b"\r\n\r\n" + leftover, False
+
     def _forward(self, client):
         upstream = None
         try:
+            host_port, pending, is_connect = self._read_proxy_request(client)
+            if host_port is None:
+                client.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+                return
             upstream = socket.socket(VSOCK_ADDRESS_FAMILY, socket.SOCK_STREAM)
             upstream.connect((VSOCK_EGRESS_CID, VSOCK_EGRESS_PORT))
+            # The one-line preamble the host lane parses before it dials, and the
+            # only thing this forwarder ever writes on the guest's behalf.
+            upstream.sendall(("%s\n" % host_port).encode("latin-1"))
+            if is_connect:
+                # The tunnel is established as far as the client is concerned; the
+                # sidecar reports a dial failure by closing, which surfaces to the
+                # CLI as a dropped connection rather than a proxy error, matching
+                # how any CONNECT proxy behaves once it has answered.
+                client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            if pending:
+                upstream.sendall(pending)
             copies = [
                 threading.Thread(target=self._copy, args=(client, upstream)),
                 threading.Thread(target=self._copy, args=(upstream, client)),

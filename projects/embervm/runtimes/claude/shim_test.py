@@ -330,6 +330,14 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
     forwarder.listen()
     client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
     try:
+        # The CLI opens an HTTPS_PROXY connection with CONNECT; the host lane is
+        # told the destination as a bare "host:port" line, and only then do raw
+        # bytes flow.
+        client.sendall(b"CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n")
+        preamble = b"api.anthropic.com:443\n"
+        assert vsock_peer.recv(len(preamble)) == preamble
+        established = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+        assert client.recv(len(established)) == established
         client.sendall(b"request")
         assert vsock_peer.recv(7) == b"request"
         vsock_peer.sendall(b"response")
@@ -339,6 +347,79 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
         client.close()
         vsock_peer.close()
         forwarder.close()
+
+
+def _forwarder_exchange(monkeypatch, request_bytes):
+    """Drive one connection through the forwarder, returning what the lane saw."""
+    forwarder = shim.VsockEgressForwarder(port=0)
+    original_socket = socket.socket
+    vsock_peer, vsock_forwarder = socket.socketpair()
+
+    class FakeVsock:
+        def connect(self, address):
+            pass
+
+        def recv(self, size):
+            return vsock_forwarder.recv(size)
+
+        def sendall(self, data):
+            return vsock_forwarder.sendall(data)
+
+        def shutdown(self, how):
+            return vsock_forwarder.shutdown(how)
+
+        def close(self):
+            return vsock_forwarder.close()
+
+    def socket_factory(family, *args, **kwargs):
+        if family == shim.VSOCK_ADDRESS_FAMILY:
+            return FakeVsock()
+        return original_socket(family, *args, **kwargs)
+
+    monkeypatch.setattr(shim.socket, "socket", socket_factory)
+    forwarder.listen()
+    client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
+    try:
+        client.sendall(request_bytes)
+        vsock_peer.settimeout(2)
+        client.settimeout(2)
+        try:
+            upstream_saw = vsock_peer.recv(4096)
+        except (TimeoutError, OSError):
+            upstream_saw = b""
+        try:
+            client_saw = client.recv(4096)
+        except (TimeoutError, OSError):
+            client_saw = b""
+        return upstream_saw, client_saw
+    finally:
+        client.close()
+        vsock_peer.close()
+        forwarder.close()
+
+
+def test_egress_forwarder_takes_absolute_uri_host_and_replays_the_request(monkeypatch):
+    # HTTP_PROXY is set alongside HTTPS_PROXY, so a plain-HTTP request arrives as
+    # an absolute-URI line rather than a CONNECT. The destination comes from Host,
+    # and the whole head is replayed: an origin server must accept an absolute-URI
+    # request line, so the forwarder never rewrites it.
+    upstream_saw, _ = _forwarder_exchange(
+        monkeypatch,
+        b"GET http://example.com/x HTTP/1.1\r\nHost: example.com\r\n\r\n",
+    )
+    assert upstream_saw.startswith(b"example.com:80\n")
+    assert b"GET http://example.com/x HTTP/1.1" in upstream_saw
+
+
+def test_egress_forwarder_rejects_a_head_it_cannot_route(monkeypatch):
+    # No Host header and no CONNECT target: there is no destination to put in the
+    # preamble, so the forwarder answers the client rather than opening a tunnel
+    # to a guessed host.
+    upstream_saw, client_saw = _forwarder_exchange(
+        monkeypatch, b"GET /relative HTTP/1.1\r\n\r\n"
+    )
+    assert upstream_saw == b""
+    assert client_saw.startswith(b"HTTP/1.1 400")
 
 
 def test_session_id_mismatch_is_rejected_and_missing_id_resumes(tmp_path, monkeypatch):
