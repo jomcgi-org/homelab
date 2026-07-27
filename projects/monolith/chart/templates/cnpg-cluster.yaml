@@ -43,6 +43,23 @@ spec:
         passwordSecret:
           name: monolith-pg-public-reader
         comment: "Read-only public surface (ADR 004); GRANTs in Atlas migration"
+      {{- if .Values.postgres.embervmOpLog.enabled }}
+      # The EmberVM control-plane op-log owner (ADR embervm/007). Owns its own
+      # database (templates/cnpg-database-embervm.yaml) and nothing in the
+      # monolith's schema, so it needs no GRANTs here: Embervm.OpLog.Postgres
+      # creates its own tables as the database owner on first boot.
+      #
+      # Same out-of-band password mechanism as public_reader above, for the same
+      # reason (CNPG wants kubernetes.io/basic-auth + cnpg.io/reload, which the
+      # 1Password operator cannot emit). Procedure and the URL-safe-password
+      # requirement: deploy/embervm-oplog-secret.md.
+      - name: {{ .Values.postgres.embervmOpLog.role }}
+        ensure: present
+        login: true
+        passwordSecret:
+          name: {{ .Values.postgres.embervmOpLog.passwordSecret }}
+        comment: "EmberVM op-log owner (ADR embervm/007); owns only its own database"
+      {{- end }}
       # public_writer: the first public-tier WRITE identity (ADR 005). Generic so
       # future public-tier write paths can reuse it; today it owns DML on the
       # chat_public schema only (sessions + transcripts on the primary), distinct

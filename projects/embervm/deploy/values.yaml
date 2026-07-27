@@ -3,10 +3,28 @@
 # here. Defaults in the chart are sized small to start (SigNoz 7-day-peak
 # resizing later).
 opLog:
+  # Postgres op-log tier (ADR embervm/007), hosted as its own database on the
+  # existing monolith-pg CNPG cluster. This retires the node-pinned RWO SQLite
+  # PVC: the durable store becomes network-reachable, so the control plane is no
+  # longer tied to whichever node holds the Longhorn volume.
+  #
+  # The op-log starts EMPTY. Embervm.OpLog.Postgres runs its own DDL on first
+  # boot and nothing migrates the SQLite file, which is the accepted trade
+  # (execution history is not worth a migration; the durable book-of-record
+  # rebuilds from node adoption on the next dial-home, and long-horizon audit
+  # lives in SigNoz per ADR embervm/002).
+  #
+  # Still one replica with strategy: Recreate. Multi-replica needs ADR 007's
+  # single-writer-per-cell op-log appender, which this does not deliver.
+  postgres:
+    enabled: true
+    secretName: embervm-oplog-password
+    onepassword:
+      itemPath: vaults/k8s-homelab/items/embervm-oplog-db
   storageClass: longhorn
-  # A PVC provides DURABILITY for the SQLite op-log, not availability: the
-  # Deployment is Recreate + 1 replica because SQLite is single-writer and the
-  # volume is RWO.
+  # Ignored while postgres.enabled is true (no PVC is rendered). Kept so a
+  # rollback is a single values flip, at the cost of coming back up with an
+  # empty SQLite op-log.
   size: 2Gi
   # Op-log retention (ADR embervm/002): hourly bounded-batch sweep; ops-journal
   # prefix compaction past a 30-day horizon (older audit is in SigNoz).
