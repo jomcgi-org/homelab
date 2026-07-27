@@ -291,7 +291,7 @@ def reclaim_stale_claims_sync(lease_interval_seconds: int = 30) -> int:
     Returns the count of reclaimed messages.
     """
     with Session(get_engine()) as session:
-        cutoff = datetime.utcnow() - timedelta(seconds=lease_interval_seconds)
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=lease_interval_seconds)
         result = session.execute(
             update(PendingMessage)
             .where(
