@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import logging
 import subprocess
 from uuid import uuid4
 
@@ -15,6 +17,9 @@ from app.db import get_engine
 from app.mcp_app import mcp
 
 _transport = LocalSubprocessTransport()
+_session_locks: dict[int, asyncio.Lock] = {}
+_sweep_task: asyncio.Task | None = None
+logger = logging.getLogger(__name__)
 
 
 def _load_session(session_id: int) -> tuple[AgentSession | None, list[AgentTurn]]:
@@ -103,6 +108,100 @@ async def _notify_terminal(turn: Turn, summary: str, status: str) -> None:
     await agent_api.notify(summary, level=level)
 
 
+def _get_pending_message_sync(session_id: int, turn_seq: int):
+    return store.get_pending_message_sync(session_id, turn_seq)
+
+
+def _persist_turn_from_pending_sync(
+    session_id: int,
+    turn_seq: int,
+    prompt: str,
+    turn: Turn,
+    voice_summary: str,
+    status: str,
+) -> AgentTurn:
+    return store.persist_turn_from_pending_sync(
+        session_id, turn_seq, prompt, turn, voice_summary, status
+    )
+
+
+def _delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
+    store.delete_pending_message_sync(session_id, turn_seq)
+
+
+def _mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None:
+    store.mark_turn_error_sync(session_id, turn_seq, error_msg)
+
+
+def _get_all_pending_messages_sync():
+    return store.get_all_pending_messages_sync()
+
+
+async def _with_session_lock(session_id: int, coro):
+    """Run one session turn at a time."""
+    lock = _session_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        return await coro
+
+
+async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
+    """Process one queued message durably."""
+
+    async def _do_execute() -> None:
+        row = await asyncio.to_thread(_get_pending_message_sync, session_id, turn_seq)
+        if not row:
+            return
+        try:
+            turn = await asyncio.to_thread(_transport.deliver, None, row.message_text)
+            if inspect.isawaitable(turn):
+                turn = await turn
+        except Exception as exc:  # noqa: BLE001 - retain the row for recovery
+            await asyncio.to_thread(
+                _mark_turn_error_sync, session_id, turn_seq, str(exc)
+            )
+            return
+
+        summary = voice.extract_voice_summary(turn.result)
+        status = _turn_status(turn)
+        try:
+            await asyncio.to_thread(
+                _persist_turn_from_pending_sync,
+                session_id,
+                turn_seq,
+                row.message_text,
+                turn,
+                summary,
+                status,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist queued turn %s for session %s",
+                turn_seq,
+                session_id,
+            )
+            return
+        await asyncio.to_thread(_delete_pending_message_sync, session_id, turn_seq)
+        await _notify_terminal(turn, summary, status)
+
+    await _with_session_lock(session_id, _do_execute())
+
+
+async def _sweep_orphaned_pending_messages() -> None:
+    """Pick up pending messages left behind by a crash or restart."""
+    while True:
+        await asyncio.sleep(5)
+        rows = await asyncio.to_thread(_get_all_pending_messages_sync)
+        for row in rows:
+            asyncio.create_task(_execute_pending_message(row.session_id, row.seq))
+
+
+def start_pending_message_sweep() -> None:
+    """Start the orphan sweep when an event loop is available."""
+    global _sweep_task
+    if _sweep_task is None or _sweep_task.done():
+        _sweep_task = asyncio.create_task(_sweep_orphaned_pending_messages())
+
+
 def _decode_json(value: str | None, default):
     if not value:
         return default
@@ -146,6 +245,7 @@ async def monolith_agent_session_start(workspace: str, prompt: str) -> dict:
 async def monolith_agent_session_send(session_id: int, message: str) -> dict:
     """Enqueue a message for a session; this returns accepted before the turn completes."""
     turn = await asyncio.to_thread(_persist_pending_message, session_id, message)
+    asyncio.create_task(_execute_pending_message(session_id, turn))
     return {"accepted": True, "session_id": session_id, "turn": turn}
 
 
