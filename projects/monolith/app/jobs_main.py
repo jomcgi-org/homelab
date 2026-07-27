@@ -41,6 +41,7 @@ def _run_ember_synthetic() -> None:
     from ember_public.synthetic_probe import (
         probe_bazel,
         probe_pages,
+        probe_postgres,
         probe_semgrep,
         record,
     )
@@ -53,6 +54,7 @@ def _run_ember_synthetic() -> None:
             "bazel": probe_bazel(),
             "semgrep": probe_semgrep(),
             "pages": probe_pages(),
+            "postgres": probe_postgres(),
         }
         results = await asyncio.gather(*probes.values())
         for demo, result in zip(probes, results):
@@ -66,28 +68,10 @@ def _run_ember_synthetic() -> None:
 
 @app.command("ember-synthetic")
 def ember_synthetic() -> None:
-    """Probe Bazel, Semgrep, and pages, recording detector state."""
+    """Probe Bazel, Semgrep, pages, and Postgres, recording detector state."""
     # Probe failures intentionally exit 0: health is the failure signal, while
     # Argo retries and failed-job alerts are reserved for DB recording errors.
     _run_ember_synthetic()
-
-
-@app.command("ember-synthetic-postgres")
-def ember_synthetic_postgres() -> None:
-    """Probe public aggregate Postgres and record detector state."""
-    from ember_public.synthetic_probe import probe_postgres, record
-
-    configure_logging()
-    logger.info("ember-synthetic-postgres: starting")
-
-    async def run() -> None:
-        result = await probe_postgres()
-        if not result["ok"]:
-            logger.warning("ember synthetic postgres failed: %s", result["detail"])
-        await record("postgres", result)
-
-    asyncio.run(run())
-    logger.info("ember-synthetic-postgres: done")
 
 
 @app.callback()

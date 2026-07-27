@@ -40,10 +40,10 @@ _STUCK_TRANSITION_S = 90.0
 _SLOW_WAKE_CONNECT_MS = 60000.0
 _RECENT_OUTCOME_WINDOW_S = 600.0
 
-# bazel, semgrep, and pages run every 5 minutes in their CronWorkflows.
+# All four synthetic probes run in the one ember-synthetic CronWorkflow every
+# 5 minutes (see the jobs.cronWorkflows entry). 2.5x that cadence, so a single
+# missed or slow run never flaps the check but a dead prober still surfaces.
 EMBER_SYNTHETIC_STALENESS_S = 750.0
-# postgres runs every 30 minutes in its CronWorkflow.
-EMBER_POSTGRES_SYNTHETIC_STALENESS_S = 4500.0
 
 
 async def demo_postgres_health() -> dict:
