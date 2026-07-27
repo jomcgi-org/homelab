@@ -4,6 +4,7 @@ import json
 import ast
 import os
 import signal
+import socket
 import threading
 import time
 import subprocess
@@ -25,6 +26,13 @@ args_path = os.environ.get("FAKE_ARGS")
 if args_path:
     with open(args_path, "w") as stream:
         json.dump(sys.argv[1:], stream)
+egress_env_path = os.environ.get("FAKE_EGRESS_ENV")
+if egress_env_path:
+    with open(egress_env_path, "w") as stream:
+        json.dump(
+            {key: os.environ.get(key) for key in ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")},
+            stream,
+        )
 api_key = os.environ.get("FAKE_API_KEY", "none")
 print(json.dumps({"type": "system", "subtype": "init", "session_id": "init-sid",
                   "model": "fake", "apiKeySource": api_key, "mcp_servers": []}), flush=True)
@@ -275,6 +283,62 @@ def test_permission_mode_can_be_overridden(tmp_path, monkeypatch):
     args = json.loads(args_path.read_text())
     assert args[args.index("--permission-mode") + 1] == "default"
     manager._close_process(kill=True)
+
+
+def test_spawn_sets_egress_proxy_environment(tmp_path, monkeypatch):
+    env_path = tmp_path / "egress-env.json"
+    monkeypatch.setenv("FAKE_EGRESS_ENV", str(env_path))
+    monkeypatch.setenv(shim.EGRESS_PORT_ENV, "1042")
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("first")
+    assert json.loads(env_path.read_text()) == {
+        "HTTPS_PROXY": "http://127.0.0.1:1042",
+        "HTTP_PROXY": "http://127.0.0.1:1042",
+        "NO_PROXY": "127.0.0.1,localhost",
+    }
+    manager._close_process(kill=True)
+
+
+def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
+    forwarder = shim.VsockEgressForwarder(port=0)
+    original_socket = socket.socket
+    vsock_peer, vsock_forwarder = socket.socketpair()
+    connected = []
+
+    class FakeVsock:
+        def connect(self, address):
+            connected.append(address)
+
+        def recv(self, size):
+            return vsock_forwarder.recv(size)
+
+        def sendall(self, data):
+            return vsock_forwarder.sendall(data)
+
+        def shutdown(self, how):
+            return vsock_forwarder.shutdown(how)
+
+        def close(self):
+            return vsock_forwarder.close()
+
+    def socket_factory(family, *args, **kwargs):
+        if family == shim.VSOCK_ADDRESS_FAMILY:
+            return FakeVsock()
+        return original_socket(family, *args, **kwargs)
+
+    monkeypatch.setattr(shim.socket, "socket", socket_factory)
+    forwarder.listen()
+    client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
+    try:
+        client.sendall(b"request")
+        assert vsock_peer.recv(7) == b"request"
+        vsock_peer.sendall(b"response")
+        assert client.recv(8) == b"response"
+        assert connected == [(shim.VSOCK_EGRESS_CID, shim.VSOCK_EGRESS_PORT)]
+    finally:
+        client.close()
+        vsock_peer.close()
+        forwarder.close()
 
 
 def test_session_id_mismatch_is_rejected_and_missing_id_resumes(tmp_path, monkeypatch):

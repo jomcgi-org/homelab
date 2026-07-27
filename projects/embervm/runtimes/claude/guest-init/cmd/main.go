@@ -31,6 +31,7 @@ func main() {
 func run(logger *slog.Logger) error {
 	mountTmpfsTmp(logger)
 	mountProc(logger)
+	bringUpLoopback(logger)
 	setDefaultEnv(logger)
 	setMmdsEnv(logger)
 	if err := mountWorkspaceVolume(logger); err != nil {

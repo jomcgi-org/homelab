@@ -15,6 +15,12 @@ import time
 
 
 GUEST_HTTP_PORT = 1027
+EGRESS_LOCALHOST = "127.0.0.1"
+EGRESS_PORT_ENV = "EMBER_EGRESS_PORT"
+DEFAULT_EGRESS_PORT = 1024
+VSOCK_EGRESS_CID = 2
+VSOCK_EGRESS_PORT = 1025
+VSOCK_ADDRESS_FAMILY = getattr(socket, "AF_VSOCK", -1)
 HEALTHZ_PATH = "/shim/healthz"
 READY_PATH = "/shim/ready"
 TURN_PATH = "/shim/turn"
@@ -148,6 +154,98 @@ def activity_from_events(events):
     return activity
 
 
+class VsockEgressForwarder:
+    """Forward each accepted local TCP connection to one host vsock tunnel."""
+
+    def __init__(self, port=DEFAULT_EGRESS_PORT):
+        self.port = port
+        self._listener = None
+        self._accept_thread = None
+        self._closed = threading.Event()
+
+    def listen(self):
+        if self._listener is not None:
+            raise RuntimeError("egress forwarder is already listening")
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((EGRESS_LOCALHOST, self.port))
+        listener.listen()
+        self._listener = listener
+        self.port = listener.getsockname()[1]
+        self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._accept_thread.start()
+
+    def close(self):
+        self._closed.set()
+        if self._listener is not None:
+            try:
+                self._listener.close()
+            except OSError:
+                pass
+            self._listener = None
+        if self._accept_thread is not None:
+            self._accept_thread.join(timeout=1)
+            self._accept_thread = None
+
+    def _accept_loop(self):
+        while not self._closed.is_set():
+            try:
+                client, _ = self._listener.accept()
+            except OSError as exc:
+                if not self._closed.is_set():
+                    sys.stderr.write(
+                        "ember-claude-shim: egress accept failed: %s\n" % exc
+                    )
+                    sys.stderr.flush()
+                return
+            threading.Thread(target=self._forward, args=(client,), daemon=True).start()
+
+    @staticmethod
+    def _copy(source, destination):
+        try:
+            while True:
+                data = source.recv(64 * 1024)
+                if not data:
+                    return
+                destination.sendall(data)
+        except OSError:
+            return
+        finally:
+            try:
+                destination.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    def _forward(self, client):
+        upstream = None
+        try:
+            upstream = socket.socket(VSOCK_ADDRESS_FAMILY, socket.SOCK_STREAM)
+            upstream.connect((VSOCK_EGRESS_CID, VSOCK_EGRESS_PORT))
+            copies = [
+                threading.Thread(target=self._copy, args=(client, upstream)),
+                threading.Thread(target=self._copy, args=(upstream, client)),
+            ]
+            for copy_thread in copies:
+                copy_thread.start()
+            for copy_thread in copies:
+                copy_thread.join()
+        except OSError as exc:
+            sys.stderr.write(
+                "ember-claude-shim: egress vsock connect failed: %s\n" % exc
+            )
+            sys.stderr.flush()
+        finally:
+            try:
+                client.close()
+            except OSError:
+                pass
+            if upstream is not None:
+                try:
+                    upstream.close()
+                except OSError:
+                    pass
+
+
 class ClaudeProcess:
     """Own the CLI and serialize turns sent through its JSONL stream."""
 
@@ -217,12 +315,23 @@ class ClaudeProcess:
         if session_id:
             command.extend(["--resume", session_id])
         command.extend(["--append-system-prompt", VOICE_PROMPT])
+        egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
+        proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "HTTPS_PROXY": proxy_url,
+                "HTTP_PROXY": proxy_url,
+                "NO_PROXY": "127.0.0.1,localhost",
+            }
+        )
         process = subprocess.Popen(
             command,
             cwd=self.workspace,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=None,
+            env=child_env,
         )
         with self.process_lock:
             self.process = process
@@ -520,15 +629,26 @@ def build_server(manager):
 def main():
     install_child_reaper()
     manager = ClaudeProcess()
-    server = build_server(manager)
-    sys.stderr.write(
-        "ember-claude-shim: listening on vsock port %s\n" % server.server_port
-    )
-    sys.stderr.flush()
+    egress_port = int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT)))
+    egress = VsockEgressForwarder(egress_port)
+    server = None
     try:
+        egress.listen()
+        sys.stderr.write(
+            "ember-claude-shim: egress listening on %s:%s\n"
+            % (EGRESS_LOCALHOST, egress.port)
+        )
+        sys.stderr.flush()
+        server = build_server(manager)
+        sys.stderr.write(
+            "ember-claude-shim: listening on vsock port %s\n" % server.server_port
+        )
+        sys.stderr.flush()
         server.serve_forever()
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
+        egress.close()
         manager._close_process(kill=True)
     return 0
 
