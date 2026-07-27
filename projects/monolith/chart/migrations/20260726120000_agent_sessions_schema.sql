@@ -1,6 +1,6 @@
 -- Agent session store for voice-drivable Claude Code sessions via monolith MCP.
 
-CREATE SCHEMA agent_sessions;
+CREATE SCHEMA IF NOT EXISTS agent_sessions;
 
 CREATE TABLE agent_sessions.agent_sessions (
     id SERIAL PRIMARY KEY,
