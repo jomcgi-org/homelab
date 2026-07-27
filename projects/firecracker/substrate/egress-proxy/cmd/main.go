@@ -16,10 +16,23 @@
 // its way to an internal host nor race DNS.
 //
 // Secret placeholder-swap (ADR 023 6b, see swap.go) is orthogonal to the zone
-// policy: for a TLS destination whose host is in a secret's egressTo, the sidecar
-// terminates TLS with a leaf minted from the egress CA, swaps the placeholder for
-// the real value, and re-originates. The swap fires only at that host, so the real
-// value is unreachable for any other destination.
+// policy: for a destination whose host is in a secret's egressTo, the sidecar
+// reads the plaintext request, swaps the placeholder for the real value, and
+// re-originates TLS upstream. The swap fires only at that host, so the real value
+// is unreachable for any other destination.
+//
+// A guest reaches a swap destination one of two ways, distinguished by peeking a
+// single byte:
+//
+//   - Plaintext (an ASCII method). The guest was configured to speak http:// to
+//     us, so there is nothing to terminate: we swap and originate TLS on 443. The
+//     guest hop is a host-local vsock with no network segment on it, so guest-side
+//     TLS would be encrypting against an attacker who cannot be there. This is the
+//     lane the embervm claude runtime uses.
+//   - TLS (0x16). The guest speaks https:// and the sidecar MITMs it with a leaf
+//     minted from the egress CA, which the guest must already trust. Needs
+//     EGRESS_CA_CERT_FILE/KEY; without them this falls through to a blind tunnel
+//     and the inert placeholder simply reaches the destination unswapped.
 //
 // Configuration (env):
 //   - EGRESS_LISTEN: where the fc-invoke daemon forwards guest egress (":8888").
@@ -27,7 +40,8 @@
 //   - EGRESS_INTERNAL_DEFAULT: "deny" (default) or "allow" for internal ones.
 //   - EGRESS_INTERNAL_ALLOWLIST: comma-separated host[:port] permitted internally.
 //   - EGRESS_INTERNAL_CIDRS: comma-separated extra CIDRs classified as internal.
-//   - EGRESS_SECRETS / EGRESS_CA_CERT_FILE / EGRESS_CA_KEY_FILE: secret swap.
+//   - EGRESS_SECRETS: the placeholder catalog; enables the plaintext swap lane.
+//   - EGRESS_CA_CERT_FILE / EGRESS_CA_KEY_FILE: optional, adds the TLS-MITM lane.
 package main
 
 import (
@@ -68,19 +82,21 @@ func main() {
 		logger.Warn("internal egress deny-by-default with an empty allowlist; all internal destinations will be denied")
 	}
 
-	// Secret placeholder-swap (ADR 023 6b): load the catalog and the CA the sidecar
-	// uses to TLS-terminate secret-bearing destinations. Absent CA paths or an empty
-	// catalog leave the proxy a plain transparent router.
+	// Secret placeholder-swap (ADR 023 6b): the catalog alone enables the plaintext
+	// lane. The CA is optional and only adds the TLS-MITM lane for guests that speak
+	// https:// to us; an empty catalog leaves the proxy a plain transparent router.
 	secrets := loadSecrets(logger)
 	var minter *caMinter
 	if caCert, caKey := os.Getenv("EGRESS_CA_CERT_FILE"), os.Getenv("EGRESS_CA_KEY_FILE"); caCert != "" && caKey != "" && len(secrets) > 0 {
 		m, err := newCAMinter(caCert, caKey)
 		if err != nil {
-			logger.Error("egress CA load failed; secret swap disabled", "err", err)
+			logger.Error("egress CA load failed; TLS-MITM swap lane disabled", "err", err)
 		} else {
 			minter = m
-			logger.Info("secret swap enabled", "secrets", len(secrets))
 		}
+	}
+	if len(secrets) > 0 {
+		logger.Info("secret swap enabled", "secrets", len(secrets), "tlsMitmLane", minter != nil)
 	}
 
 	p := &proxy{
@@ -160,17 +176,38 @@ func (p *proxy) handle(client net.Conn) {
 		return
 	}
 
-	// Secret-bearing TLS destination: terminate, swap the placeholder, re-originate
-	// (ADR 023 6b). We only need the first byte to tell TLS from plaintext; the host
-	// already came from the preamble, so no SNI/Host sniffing is required.
-	if p.minter != nil {
-		if first, err := br.Peek(1); err == nil && first[0] == 0x16 {
-			if sec := p.secretFor(host); sec != nil {
-				p.logger.Info("egress allowed (swap)", "dest", dest, "dial", dialAddr)
-				p.terminateAndSwap(br, client, dialAddr, host, sec)
+	// Secret-bearing destination: swap the placeholder for the real value (ADR 023
+	// 6b). We only need the first byte to tell TLS from plaintext; the host already
+	// came from the preamble, so no SNI/Host sniffing is required.
+	if sec := p.secretFor(host); sec != nil {
+		first, err := br.Peek(1)
+		switch {
+		case err != nil:
+			// Nothing to classify; fall through to the blind tunnel below.
+		case first[0] != 0x16:
+			// The guest speaks http:// to us over its host-local vsock, so there is no
+			// TLS to terminate. Re-run the guardrail on 443 rather than rewriting the
+			// port after the fact, so the zone decision and the dial cannot diverge.
+			tlsAddr, ok := p.route(host, "443")
+			if !ok {
+				p.logger.Warn("egress denied", "dest", net.JoinHostPort(host, "443"))
 				return
 			}
+			p.logger.Info("egress allowed (swap, plaintext)", "dest", dest, "dial", tlsAddr)
+			p.swapPlaintext(br, client, tlsAddr, host, sec)
+			return
+		case p.minter != nil:
+			p.logger.Info("egress allowed (swap, tls)", "dest", dest, "dial", dialAddr)
+			p.terminateAndSwap(br, client, dialAddr, host, sec)
+			return
 		}
+		// TLS to a secret host with no CA loaded. Expected on the plaintext lane: the
+		// claude CLI redirects only its API client to http://, and still reaches
+		// api.anthropic.com over https:// for telemetry and profile calls. Those
+		// carry the inert placeholder, are refused at the destination, and do not
+		// affect the turn. Debug, not Warn: the startup line already reports
+		// tlsMitmLane=false, and warning per connection would drown the log.
+		p.logger.Debug("secret-bearing TLS destination with no egress CA; placeholder not swapped", "dest", dest)
 	}
 	p.logger.Info("egress allowed", "dest", dest, "dial", dialAddr)
 

@@ -342,10 +342,17 @@ containers:
       {{- end }}
       - name: EGRESS_SECRETS
         value: {{ $catalog | toJson | quote }}
+      {{- if $ctx.Values.egress.ca.enabled }}
+      # Optional TLS-MITM lane, for a guest that speaks https:// to the sidecar and
+      # already trusts this CA. The claude runtime does NOT: it speaks cleartext
+      # over its host-local vsock, so the swap needs no CA at all. Turning this on
+      # means owning the CA's path into the guest trust store, which is why it is
+      # off rather than implied by having secrets.
       - name: EGRESS_CA_CERT_FILE
         value: /etc/egress-ca/tls.crt
       - name: EGRESS_CA_KEY_FILE
         value: /etc/egress-ca/tls.key
+      {{- end }}
       {{- range $s := $ctx.Values.egress.secrets }}
       - name: {{ $s.env }}
         {{- if $s.secretRef }}
@@ -358,7 +365,7 @@ containers:
         {{- end }}
       {{- end }}
       {{- end }}
-    {{- if $ctx.Values.egress.secrets }}
+    {{- if $ctx.Values.egress.ca.enabled }}
     volumeMounts:
       - name: egress-ca
         mountPath: /etc/egress-ca
@@ -368,10 +375,10 @@ containers:
       {{- toYaml $ctx.Values.egress.resources | nindent 6 }}
 {{- end }}
 volumes:
-{{- if and $ctx.Values.egress.enabled $ctx.Values.egress.secrets }}
+{{- if and $ctx.Values.egress.enabled $ctx.Values.egress.ca.enabled }}
   - name: egress-ca
     secret:
-      secretName: {{ include "embervm.fullname" $ctx }}-egress-ca
+      secretName: {{ $ctx.Values.egress.ca.secretName | default (printf "%s-egress-ca" (include "embervm.fullname" $ctx)) }}
 {{- end }}
   - name: dev-kvm
     hostPath:

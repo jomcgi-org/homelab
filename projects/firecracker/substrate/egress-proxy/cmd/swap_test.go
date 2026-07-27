@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -8,7 +10,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"io"
+	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -113,4 +117,59 @@ func writeTestCA(t *testing.T) (certFile, keyFile string) {
 		t.Fatal(err)
 	}
 	return certFile, keyFile
+}
+
+// TestSwapPumpPlaintextLane covers the lane the embervm claude runtime uses: the
+// guest addresses the sidecar as a proxy in cleartext, so the request arrives in
+// absolute-form carrying the inert placeholder. The sidecar must swap it, re-emit
+// origin-form, and hand the response back.
+func TestSwapPumpPlaintextLane(t *testing.T) {
+	sec := &secretEntry{
+		Placeholder: "ember-egress-placeholder-not-a-credential",
+		value:       "swapped-real-value",
+		EgressTo:    []string{"api.example.com"},
+	}
+
+	upClient, upOrigin := net.Pipe()
+	defer upClient.Close()
+
+	seen := make(chan *http.Request, 1)
+	go func() {
+		defer upOrigin.Close()
+		req, err := http.ReadRequest(bufio.NewReader(upOrigin))
+		if err != nil {
+			seen <- nil
+			return
+		}
+		seen <- req
+		_, _ = io.WriteString(upOrigin, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi")
+	}()
+
+	guest := "POST http://api.example.com/v1/messages HTTP/1.1\r\n" +
+		"Host: api.example.com\r\n" +
+		"Authorization: Bearer ember-egress-placeholder-not-a-credential\r\n" +
+		"Content-Length: 0\r\n" +
+		"Connection: close\r\n\r\n"
+
+	var back bytes.Buffer
+	p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, upClient, "api.example.com", sec)
+
+	got := <-seen
+	if got == nil {
+		t.Fatal("origin never read a request")
+	}
+	if auth := got.Header.Get("Authorization"); auth != "Bearer swapped-real-value" {
+		t.Errorf("Authorization = %q, want the real value swapped in", auth)
+	}
+	// The origin must see origin-form, not the proxy's absolute-form request line.
+	if got.RequestURI != "/v1/messages" {
+		t.Errorf("RequestURI = %q, want origin-form /v1/messages", got.RequestURI)
+	}
+	if got.Host != "api.example.com" {
+		t.Errorf("Host = %q, want api.example.com", got.Host)
+	}
+	if !strings.Contains(back.String(), "200 OK") || !strings.HasSuffix(back.String(), "hi") {
+		t.Errorf("response not relayed to the guest: %q", back.String())
+	}
 }
