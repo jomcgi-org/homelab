@@ -519,6 +519,115 @@ func TestExportArtifactBaseMissingLocalFailsEvenAsync(t *testing.T) {
 	}
 }
 
+// TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists proves the (vendor, ref)
+// presence gate (#4079): when another node of the SAME vendor already exported
+// this base, the control-plane-driven export must not re-upload, EVEN THOUGH the
+// local bytes differ from the stored ones.
+//
+// Two nodes that independently build the same base ref hold different bytes (a
+// Firecracker memory snapshot is not byte-reproducible; verified live on
+// 2026-07-27, bazel-query__00ada79f752f differed between node-1 and node-2). So
+// Store.Export's content-addressed compare never matches across nodes, and before
+// this gate the CP-driven path re-uploaded the whole base OVER the sibling's
+// object under the same key. Files are PUT before meta.json, so that overwrite
+// also left a window where a concurrent restore saw files inconsistent with the
+// meta it had already fetched.
+func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+	// Production shape: the async BASE queue is the path the CP drives.
+	s.startExportQueue(ctx)
+
+	ref := "bazel-query__00ada79f752f"
+	workload := "bazel-query"
+	digest := "img@sha256:cafef00d"
+	prefix := "base/amd/bazel-query/bazel-query__00ada79f752f"
+
+	// A sibling node of the same vendor already exported this ref, with ITS OWN
+	// snapshot bytes.
+	sibling := map[string]string{"imageref": "img", "memfile": "SIBLING-mem", "snapfile": "SIBLING-snap"}
+	fs.seedArtifact(prefix, sibling, 0, "amd", "")
+
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel-query"}})
+	s.bases.readyBuild(ref, workload, digest, "/shim/ready", 2048)
+
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+	// Deliberately DIFFERENT bytes from the seeded sibling copy, which is the
+	// real cross-node situation.
+	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "LOCAL-mem", "snapfile": "LOCAL-snap"})
+
+	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+	}); err != nil {
+		t.Fatalf("ExportArtifact: %v", err)
+	}
+
+	// The queue worker settles into "already durable" and flips the exported flag.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !baseExportedInStatus(s, workload, ref) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !baseExportedInStatus(s, workload, ref) {
+		t.Fatal("base should report exported=true once a same-vendor sibling copy is durable")
+	}
+
+	// No upload was even attempted.
+	if got := fs.calls(prefix); got != 0 {
+		t.Fatalf("store.Export called %d times for an already-durable ref, want 0", got)
+	}
+
+	// And the sibling's bytes were NOT clobbered.
+	fs.mu.Lock()
+	stored := fs.arts[prefix].files
+	fs.mu.Unlock()
+	if !sameStringMap(stored, sibling) {
+		t.Fatalf("sibling copy was overwritten: got %v, want %v", stored, sibling)
+	}
+}
+
+// TestExportQueueVolumeStillReExportsAtStaleGeneration proves the presence gate
+// does NOT weaken VOLUME durability. A volume is data rather than a memory
+// snapshot, so presence alone is not enough: a stored copy at a STALE generation
+// must still be re-exported, and only the generation-matched case skips.
+//
+// Driven through the queue (enqueueExport -> runExportJob) because that is the
+// path the gate is on; a VOLUME ExportArtifact RPC is synchronous and does not
+// reach it.
+func TestExportQueueVolumeStillReExportsAtStaleGeneration(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+	s.startExportQueue(ctx)
+
+	workload := "scratch-postgres"
+	prefix := "volume/scratch-postgres"
+
+	if err := s.volumes.Create(workload, 1<<20); err != nil {
+		t.Fatalf("create volume: %v", err)
+	}
+	if _, err := s.volumes.BumpGeneration(workload); err != nil {
+		t.Fatalf("bump: %v", err)
+	}
+	cur, err := s.volumes.Generation(workload)
+	if err != nil {
+		t.Fatalf("generation: %v", err)
+	}
+
+	// A stored copy at a STALE generation (one behind the node's current volume).
+	fs.seedArtifact(prefix, map[string]string{"disk.img": "OLD"}, cur-1, "", "")
+
+	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: workload})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && fs.calls(prefix) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := fs.calls(prefix); got == 0 {
+		t.Fatal("a VOLUME present at a STALE generation must still be re-exported, got 0 export calls")
+	}
+}
+
 // evictBase is a small helper: EvictArtifact{remote:false} of a BASE ref.
 func evictBase(s *Server, workload, ref string) error {
 	_, err := s.EvictArtifact(context.Background(), &nodev1.EvictArtifactRequest{
