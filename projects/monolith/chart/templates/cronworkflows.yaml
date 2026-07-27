@@ -117,6 +117,26 @@ spec:
                   name: monolith-chat-secrets
                   key: GITHUB_TOKEN
             {{- end }}
+            {{- if .emberSynthetic }}
+            # The ember synthetic probes back the ember_* components of the
+            # public tier's /api/health (jomcgi.dev/health), so a broken demo
+            # 503s the uptime check before a visitor finds it.
+            #
+            # EMBERVM_URL is read from semgrep.embervmUrl, the SAME value the
+            # backend Deployment uses, rather than repeated as a literal in the
+            # entry's env map: a control-plane move must not leave the prober
+            # probing the old address while the backend follows the new one.
+            #
+            # EMBER_SYNTHETIC_BASE_URL is the PUBLIC site, not an in-cluster
+            # Service. The page and demo-postgres probes deliberately egress
+            # through Cloudflare so they exercise the visitor's real path
+            # (CDN + HTTPRoute + SSR); an in-cluster shortcut would also be
+            # dropped by the monolith-public frontend's Cilium ingress policy.
+            - name: EMBERVM_URL
+              value: {{ $.Values.semgrep.embervmUrl | quote }}
+            - name: EMBER_SYNTHETIC_BASE_URL
+              value: {{ $.Values.emberSynthetic.baseUrl | quote }}
+            {{- end }}
             {{- if .whatsapp }}
             # The morning-digest job reads WHATSAPP_TZ for the household-local send
             # time and quiet hours. Derive it from the same single source the

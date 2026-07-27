@@ -23,9 +23,11 @@ alerting"), checked in order and short-circuited at the first hit:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from time import monotonic
 
 from ember_public import core
+from ember_public.synthetic import read_probe
 
 _TRANSITIONAL_STATES = frozenset({"relighting", "cold_booting", "starting", "banking"})
 
@@ -37,6 +39,11 @@ _FAULT_EVICTION_REASONS = frozenset({"pair_broken"})
 _STUCK_TRANSITION_S = 90.0
 _SLOW_WAKE_CONNECT_MS = 60000.0
 _RECENT_OUTCOME_WINDOW_S = 600.0
+
+# bazel, semgrep, and pages run every 5 minutes in their CronWorkflows.
+EMBER_SYNTHETIC_STALENESS_S = 750.0
+# postgres runs every 30 minutes in its CronWorkflow.
+EMBER_POSTGRES_SYNTHETIC_STALENESS_S = 4500.0
 
 
 async def demo_postgres_health() -> dict:
@@ -104,3 +111,45 @@ async def demo_postgres_health() -> dict:
     if state == "banked":
         return {"ok": True, "detail": "banked, pair valid"}
     return {"ok": True, "detail": f"{state}"}
+
+
+def synthetic_probe_health(demo: str, staleness_s: float):
+    """Build a health component backed by one synthetic probe latch row."""
+
+    async def check() -> dict:
+        row = await read_probe(demo)
+        # Fail open on bootstrap: monolith-public rolls out before the migration
+        # creates the table, and a missing row means the prober has not run yet.
+        if row is None:
+            return {"ok": True, "detail": "no probe recorded yet"}
+        if not row.ok:
+            detail = row.detail
+            if row.last_ok_at is not None:
+                now = datetime.now(timezone.utc)
+                last_ok_at = (
+                    row.last_ok_at.replace(tzinfo=timezone.utc)
+                    if row.last_ok_at.tzinfo is None
+                    else row.last_ok_at
+                )
+                downtime_s = max(0.0, (now - last_ok_at).total_seconds())
+                detail = f"{detail}, down for {downtime_s / 60:.1f}m"
+            return {"ok": False, "detail": detail}
+        checked_at = (
+            row.checked_at.replace(tzinfo=timezone.utc)
+            if row.checked_at.tzinfo is None
+            else row.checked_at
+        )
+        age_s = (datetime.now(timezone.utc) - checked_at).total_seconds()
+        if age_s > staleness_s:
+            return {
+                "ok": False,
+                "detail": f"last probe was {age_s / 60:.0f}m ago, prober may be dead",
+            }
+        detail = (
+            f"probe ok, {row.latency_ms:.0f}ms"
+            if row.latency_ms is not None
+            else "probe ok"
+        )
+        return {"ok": True, "detail": detail}
+
+    return check
