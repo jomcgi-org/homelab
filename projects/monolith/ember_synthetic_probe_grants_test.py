@@ -28,7 +28,9 @@ def test_public_reader_can_select_ember_synthetic_probe(pg):
             session.execute(text("SET ROLE public_reader"))
 
             # SELECT is granted: must not raise.
-            session.execute(text("SELECT count(*) FROM ember_synthetic_probe")).scalar_one()
+            session.execute(
+                text("SELECT count(*) FROM ember_synthetic_probe")
+            ).scalar_one()
 
             # Never commit: the test session is rolled back so other tests stay clean.
             session.rollback()
