@@ -31,8 +31,9 @@ func writeBudgetFile(t *testing.T, name, content string) {
 
 func TestBudgetReadsCgroupV2(t *testing.T) {
 	withBudgetFsRoot(t, map[string]string{
-		"memory.max":     "4294967296\n",    // 4 GiB
-		"memory.current": "1073741824\n",    // 1 GiB
+		"memory.max":     "4294967296\n", // 4 GiB
+		"memory.current": "1073741824\n", // 1 GiB
+		"memory.stat":    "inactive_file 0\n",
 		"cpu.max":        "200000 100000\n", // 2 cores
 		"cpu.stat":       "usage_usec 1000000\nnr_periods 5\n",
 	})
@@ -66,6 +67,72 @@ func TestUnlimitedCgroupReportsZero(t *testing.T) {
 	}
 	if got := b.CpuBudgetMillicores(); got != 0 {
 		t.Errorf("CpuBudgetMillicores() on unlimited cgroup = %d, want 0 (unknown)", got)
+	}
+}
+
+func TestMemHeadroomFallsBackWhenMemoryStatUnreadable(t *testing.T) {
+	withBudgetFsRoot(t, map[string]string{
+		"memory.max":     "4294967296\n",
+		"memory.current": "1073741824\n",
+	})
+
+	if got, want := newBudget(0).MemHeadroomMib(), uint64(3072); got != want {
+		t.Errorf("MemHeadroomMib() without memory.stat = %d, want %d", got, want)
+	}
+}
+
+func TestParseMemHeadroomMibWithPageCache(t *testing.T) {
+	cases := []struct {
+		name                    string
+		maxRaw, curRaw, statRaw string
+		want                    uint64
+	}{
+		{
+			name:    "issue 4058 reclaimable cache",
+			maxRaw:  "2147483648",
+			curRaw:  "1482084352",
+			statRaw: "inactive_file 1263054848\n",
+			want:    1839,
+		},
+		{
+			name:    "current equals max with reclaimable",
+			maxRaw:  "2147483648",
+			curRaw:  "2147483648",
+			statRaw: "inactive_file 1073741824\n",
+			want:    1024,
+		},
+		{
+			name:    "stat missing falls back to max minus current",
+			maxRaw:  "2147483648",
+			curRaw:  "1482084352",
+			statRaw: "",
+			want:    634,
+		},
+		{name: "missing stat", maxRaw: "4294967296", curRaw: "1073741824", want: 3072},
+		{
+			name:    "stat without inactive file",
+			maxRaw:  "4294967296",
+			curRaw:  "1073741824",
+			statRaw: "anon 123456\nfile 987654\n",
+			want:    3072,
+		},
+		{
+			name:    "racy inactive file",
+			maxRaw:  "2147483648",
+			curRaw:  "536870912",
+			statRaw: "inactive_file 1073741824\n",
+			want:    1536,
+		},
+		{name: "unlimited", maxRaw: "max", curRaw: "1073741824", statRaw: "inactive_file 1\n", want: 0},
+		{name: "invalid inputs", maxRaw: "garbage", curRaw: "1", statRaw: "inactive_file 1\n", want: 0},
+		{name: "invalid current", maxRaw: "2147483648", curRaw: "garbage", statRaw: "inactive_file 1\n", want: 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseMemHeadroomMib(c.maxRaw, c.curRaw, c.statRaw); got != c.want {
+				t.Errorf("parseMemHeadroomMib(%q, %q, %q) = %d, want %d", c.maxRaw, c.curRaw, c.statRaw, got, c.want)
+			}
+		})
 	}
 }
 
@@ -222,6 +289,9 @@ func TestCgroupDirResolvesHostNsPath(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(leaf, "memory.current"), []byte("536870912\n"), 0o644); err != nil {
 		t.Fatalf("write leaf memory.current: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "memory.stat"), []byte("inactive_file 0\n"), 0o644); err != nil {
+		t.Fatalf("write leaf memory.stat: %v", err)
 	}
 	withSelfCgroup(t, "0::/kubepods.slice/cri-containerd-abc.scope\n")
 
