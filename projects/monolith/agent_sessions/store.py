@@ -340,7 +340,7 @@ def reclaim_stale_claims_sync(lease_interval_seconds: int = 30) -> int:
             .where(
                 PendingMessage.claimed_by_replica.isnot(None),
                 PendingMessage.claimed_at.isnot(None),
-                PendingMessage.claimed_at < cutoff,
+                PendingMessage.claimed_at <= cutoff,
             )
             .values(claimed_by_replica=None, claimed_at=None)
         )
