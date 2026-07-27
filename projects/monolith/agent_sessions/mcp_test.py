@@ -169,17 +169,14 @@ def test_two_sends_are_serialized(monkeypatch, session):
 
 
 def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
+    """Test that concurrent replicas execute a message exactly once via atomic claim.
+
+    This test exercises the real atomic UPDATE WHERE claimed_by_replica IS NULL
+    to verify cross-replica serialization, not a monkeypatched in-memory set.
+    """
     row = store.create_session(session, "sid-123", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "hello")
-    claimed: set[tuple[int, int]] = set()
     executions: list[str] = []
-
-    def claim(session_id: int, turn_seq: int) -> bool:
-        key = (session_id, turn_seq)
-        if key in claimed:
-            return False
-        claimed.add(key)
-        return True
 
     async def fake_deliver(_session_id, message, workspace="/tmp"):
         executions.append(message)
@@ -189,7 +186,6 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     async def notify(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(mcp, "_claim_pending_message_sync", claim)
     monkeypatch.setattr(mcp._transport, "deliver", fake_deliver)
     monkeypatch.setattr(mcp.agent_api, "notify", notify)
 
@@ -201,5 +197,8 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
 
     asyncio.run(run())
 
+    # Only one concurrent execution should succeed in claiming the row
     assert executions == ["hello"]
+    # Turn should be persisted and pending row should be deleted
     assert store.get_turn(session, row.id, pending.seq) is not None
+    assert store.get_pending_message(session, row.id, pending.seq) is None

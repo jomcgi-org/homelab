@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, update
 from sqlmodel import Session, select
@@ -244,7 +244,13 @@ def delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
 
 
 def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None:
-    """Persist an error turn while retaining the pending row for recovery."""
+    """Persist an error turn and delete the pending row to stop infinite retries.
+
+    Semantics: A failed turn is terminal - the error is recorded durably in
+    agent_turns as a failed attempt, and the pending row is deleted to prevent
+    the sweep from re-dispatching it every 5 seconds. The caller can query
+    session status to see the failure.
+    """
     with Session(get_engine()) as session:
         row = get_pending_message(session, session_id, turn_seq)
         if row is None or get_turn(session, session_id, turn_seq) is not None:
@@ -263,6 +269,37 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
             usage={},
             cost_usd=0.0,
         )
+        # Delete the pending row to stop infinite retries
+        session.delete(row)
+        session.commit()
+
+
+def reclaim_stale_claims_sync(lease_interval_seconds: int = 90) -> int:
+    """Reclaim pending messages whose claims have expired (replica crashed).
+
+    A claim is considered stale if:
+    1. It is currently claimed (claimed_by_replica is not null)
+    2. The claim was made more than lease_interval_seconds ago
+
+    The lease interval must be longer than any plausible turn execution time
+    to avoid double-executing messages. Default 90s exceeds even multi-second
+    API calls with headroom.
+
+    Returns the count of reclaimed messages.
+    """
+    with Session(get_engine()) as session:
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=lease_interval_seconds)
+        result = session.execute(
+            update(PendingMessage)
+            .where(
+                PendingMessage.claimed_by_replica.isnot(None),
+                PendingMessage.claimed_at.isnot(None),
+                PendingMessage.claimed_at < cutoff,
+            )
+            .values(claimed_by_replica=None, claimed_at=None)
+        )
+        session.commit()
+    return result.rowcount
 
 
 def get_all_pending_messages_sync() -> list[PendingMessage]:
