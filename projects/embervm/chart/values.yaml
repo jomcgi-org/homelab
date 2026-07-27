@@ -471,6 +471,18 @@ workloads:
   runtimePython:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/runtime-python/rootfs.ext4
     harnessInit: /usr/local/bin/ember-runtime-guest-init
+  # Voice-drivable Claude Code agent sessions (issue #4055). Its PID-1 guest-init
+  # mounts a tmpfs over /tmp, mounts the workspace device at /workspace when one
+  # is attached (falling back to tmpfs when it is not), then execs the shim, which
+  # owns a long-lived Claude Code CLI process and answers the frozen
+  # HTTP-over-vsock guest contract on port 1027. The key must match the top-level
+  # `runtimeClaude` block below (the deployment ranges over `workloads` and looks
+  # the guest image up by the same key), and it is kebabcased into the
+  # build-runtime-claude-rootfs initContainer name, which has to be a valid
+  # RFC 1123 label.
+  runtimeClaude:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/runtime-claude/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-runtime-guest-init
   # R4 scratch-postgres stateful base (ADR embervm/001, D-R4.PR-11.1). Its PID-1
   # ember-postgres-init mounts the writable volume, decodes POSTGRES_PASSWORD from
   # the mmds_env boot-args, and runs initdb-if-empty then postgres. The key must
@@ -523,6 +535,27 @@ runtimePython:
   runtime: python312
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/python
+    tag: latest
+
+# The runtime-claude base image (issue #4055): a session-class guest running the
+# Claude Code CLI headlessly under a shim, driven over the vsock guest contract so
+# monolith can expose agent sessions as MCP tools. Bazel-pinned
+# (helm_chart images="runtimeClaude.guestImage") from its .info provider. Distinct
+# FLAT top-level key (never noded.*) so the image pin does not collide, per
+# D14a.6, and the key matches the `workloads.runtimeClaude` entry above because
+# the deployment ranges over `workloads` and looks the image up by the same key.
+#
+# amd64 only: the Claude Code CLI is a single 262 MB arch-specific glibc ELF, and
+# the image sets arm64 = False to match (an x86_64-only apko config otherwise
+# fails the arm64 variant on "generating index SBOM: no architecture images
+# found"). Every node is amd64, so this is honest rather than limiting.
+#
+# Not a zip-lane runtime, so unlike runtimePython there is no `runtime:` key and
+# no EMBERVM_RUNTIME_IMAGES entry: sessions reference this image directly through
+# a Workload's source.image.ref rather than through source.zip.runtime.
+runtimeClaude:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/claude
     tag: latest
 
 # R4 scratch-postgres stateful consumer (ADR embervm/001, D-R4.PR-11.1), the
