@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"log/slog"
 	"os"
 	"strings"
@@ -13,7 +14,10 @@ var shimCmd = []string{"/usr/local/bin/ember-claude-shim"}
 
 var procCmdlinePath = "/proc/cmdline"
 
-const workspaceDevCmdlineKey = "ember.workspace_dev"
+const (
+	workspaceDevCmdlineKey = "ember.workspace_dev"
+	mmdsEnvCmdlinePrefix   = "ember.env."
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -28,7 +32,10 @@ func run(logger *slog.Logger) error {
 	mountTmpfsTmp(logger)
 	mountProc(logger)
 	setDefaultEnv(logger)
-	mountWorkspaceVolume(logger)
+	setMmdsEnv(logger)
+	if err := mountWorkspaceVolume(logger); err != nil {
+		return err
+	}
 	return execShim(logger)
 }
 
@@ -56,6 +63,42 @@ func isValidEnvKeyName(key string) bool {
 		return false
 	}
 	return true
+}
+
+// setMmdsEnv applies environment values supplied by noded as
+// ember.env.<KEY>=<base64url> kernel arguments. Individual malformed tokens are
+// skipped so one bad secret does not prevent other valid values from reaching
+// the shim. Values are never logged.
+func setMmdsEnv(logger *slog.Logger) {
+	raw, err := os.ReadFile(procCmdlinePath)
+	if err != nil {
+		return
+	}
+	keys := make([]string, 0)
+	for _, tok := range strings.Fields(string(raw)) {
+		name, encoded, ok := strings.Cut(tok, "=")
+		if !ok || encoded == "" || !strings.HasPrefix(name, mmdsEnvCmdlinePrefix) {
+			continue
+		}
+		key := strings.TrimPrefix(name, mmdsEnvCmdlinePrefix)
+		if !isValidEnvKeyName(key) {
+			logger.Warn("skipping invalid mmds env key", "key", key)
+			continue
+		}
+		value, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			logger.Warn("skipping malformed mmds env value", "key", key)
+			continue
+		}
+		if err := os.Setenv(key, string(value)); err != nil {
+			logger.Warn("could not set mmds env var", "key", key, "err", err)
+			continue
+		}
+		keys = append(keys, key)
+	}
+	if len(keys) > 0 {
+		logger.Info("set mmds env vars from boot args", "keys", keys)
+	}
 }
 
 func setDefaultEnv(logger *slog.Logger) {

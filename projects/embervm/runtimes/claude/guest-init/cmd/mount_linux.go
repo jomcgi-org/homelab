@@ -4,12 +4,12 @@ package main
 
 import (
 	"log/slog"
-
-	"golang.org/x/sys/unix"
 )
 
 func mountTmpfsTmp(logger *slog.Logger) {
-	if err := unix.Mount("tmpfs", "/tmp", "tmpfs", 0, "size=256m,mode=1777"); err != nil {
+	// Two GiB leaves room for Bash tool scratch files, package caches, and a
+	// checkout-sized buffer during a normal agent turn.
+	if err := mountFn("tmpfs", "/tmp", "tmpfs", 0, "size=2g,mode=1777"); err != nil {
 		logger.Warn("tmpfs mount on /tmp failed", "err", err)
 		return
 	}
@@ -17,7 +17,7 @@ func mountTmpfsTmp(logger *slog.Logger) {
 }
 
 func mountProc(logger *slog.Logger) {
-	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
+	if err := mountFn("proc", "/proc", "proc", 0, ""); err != nil {
 		logger.Warn("proc mount on /proc failed", "err", err)
 		return
 	}

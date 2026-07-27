@@ -56,9 +56,16 @@ valid conversation (no dangling `tool_use` without its `tool_result`). A resumed
 session then has full context, and a bare `continue` picks up exactly where it
 stopped. So the drain path is: SIGINT, await exit 0, bank.
 
-Never SIGKILL: that can leave a truncated final JSONL line. The two-minute drain
-notice in the availability contract is ample, but the shim should still time out
-and tolerate a malformed last line when reading a transcript cold.
+The shim gives SIGINT up to 30 seconds to unwind a Bash tool and write the
+synthetic interrupt turn. SIGKILL is only a logged last-resort backstop after
+that timeout, because it can leave a truncated final JSONL line. Normal turn
+output has a 60-second deadline and initialization has a 15-second deadline;
+an output timeout follows the same SIGINT-first path.
+
+The shim owns one Claude session. A supplied `session_id` must match the active
+session or the turn receives HTTP 409. If no id is supplied after an interrupt,
+the shim resumes the last known session id instead of silently starting a new
+conversation.
 
 ## Image contents and the arch decision
 
@@ -83,14 +90,12 @@ silently.
   dialog is interactive and nobody is at a keyboard.
 - **`bash`**, not just busybox `sh`: the Bash tool assumes bash.
 - **`git` plus a committer identity**, or the per-turn commits fail. The identity
-  is set by the shim at hydration time, not baked, so it can carry the session's
-  principal.
+  reaches the guest through `ember.env.*` boot arguments, decoded by guest-init
+  before the shim starts. The shim configures Git when it spawns or resumes the
+  CLI, so it can carry the session principal without baking an identity.
 - **`HOME` must be writable** by uid 65532: the CLI writes `~/.claude.json` and
   session transcripts under `~/.claude/projects/`.
 
 ## Open items
 
-- `guest-init`: a raw Firecracker boot ignores the OCI entrypoint and boots
-  `init=<HarnessInit>`, so this image still needs a PID-1 that mounts a tmpfs over
-  `/tmp` and execs the shim, mirroring `../python/guest-init/`. Not yet wired here.
 - `apko.lock.json` must be generated before the image builds.

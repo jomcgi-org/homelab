@@ -3,8 +3,10 @@
 import json
 import ast
 import os
+import signal
 import threading
 import time
+import subprocess
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 
@@ -42,6 +44,15 @@ for line in sys.stdin:
         result = "First sentence. Second sentence."
     else:
         result = "Done <voice>Changed the files and need review.</voice>"
+    permission_denials = []
+    terminal_reason = "end_turn"
+    if text == "permission denied":
+        permission_denials = [{
+            "tool_name": "Write",
+            "tool_use_id": "toolu_test",
+            "reason": "requires_approval"
+        }]
+        terminal_reason = "completed"
     print(json.dumps({"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "Read", "input": {"file_path": "a.txt"}},
         {"type": "tool_use", "name": "Edit", "input": {"file_path": "b.txt"}},
@@ -49,8 +60,8 @@ for line in sys.stdin:
         {"type": "tool_use", "name": "Bash", "input": {"command": "git status"}}
     ]}}), flush=True)
     print(json.dumps({"type": "result", "result": result,
-                      "terminal_reason": "end_turn", "stop_reason": "end_turn",
-                      "is_error": False, "permission_denials": [], "num_turns": 1,
+                      "terminal_reason": terminal_reason, "stop_reason": "end_turn",
+                      "is_error": False, "permission_denials": permission_denials, "num_turns": 1,
                       "session_id": "sid-1", "usage": {}, "total_cost_usd": 0,
                       "modelUsage": {}, "duration_ms": 1}), flush=True)
     if text == "truncated":
@@ -101,6 +112,20 @@ def test_voice_falls_back_to_first_sentence(tmp_path, monkeypatch):
     manager._close_process(kill=True)
 
 
+def test_turn_reports_permission_denials(tmp_path, monkeypatch):
+    """Verify permission denials are reported, not swallowed."""
+    manager = _manager(tmp_path, monkeypatch)
+    record = manager.turn("permission denied")
+    assert record["permission_denials"] == [
+        {
+            "tool_name": "Write",
+            "tool_use_id": "toolu_test",
+            "reason": "requires_approval",
+        }
+    ]
+    manager._close_process(kill=True)
+
+
 def test_truncated_jsonl_after_result_is_ignored(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch)
     assert manager.turn("truncated")["terminal_reason"] == "end_turn"
@@ -112,6 +137,87 @@ def test_api_key_source_assertion(tmp_path, monkeypatch):
     with pytest.raises(shim.StartupError, match="apiKeySource must be none"):
         manager.turn("hello")
     assert not manager.ready()
+
+
+def test_configure_git_uses_decoded_boot_environment(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    # These are the values guest-init receives from decoded ember.env boot args.
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Boot User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "boot@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), "unused")
+    manager._configure_git()
+    assert (
+        subprocess.check_output(
+            ["git", "config", "--global", "user.name"], text=True
+        ).strip()
+        == "Boot User"
+    )
+    assert (
+        subprocess.check_output(
+            ["git", "config", "--global", "user.email"], text=True
+        ).strip()
+        == "boot@example.invalid"
+    )
+
+
+def test_activity_ignores_malformed_messages_and_bounds_tool_input():
+    activity = shim.activity_from_events(
+        [
+            {"type": "assistant", "message": None},
+            {"type": "assistant", "message": "not an object"},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Read",
+                            "input": {"large": "x" * (shim.MAX_TOOL_INPUT_BYTES + 1)},
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+    assert activity == [
+        {
+            "type": "tool_use",
+            "name": "Read",
+            "input": "[omitted: tool input exceeds %d bytes]"
+            % shim.MAX_TOOL_INPUT_BYTES,
+        }
+    ]
+
+
+def test_child_reaper_preserves_managed_exit_status_and_reaps_unmanaged_child():
+    previous_handler = signal.getsignal(signal.SIGCHLD)
+    shim.install_child_reaper()
+    try:
+        managed = subprocess.Popen(["bash", "-c", "sleep 0.05; exit 7"])
+        shim._managed_child_pids.add(managed.pid)
+        assert managed.wait() == 7
+        shim._managed_child_pids.discard(managed.pid)
+
+        orphan = subprocess.Popen(["bash", "-c", "exit 0"])
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            shim._reap_orphans()
+            try:
+                info = os.waitid(
+                    os.P_PID, orphan.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                )
+            except ChildProcessError:
+                break
+            assert info is None
+            time.sleep(0.01)
+        else:
+            pytest.fail("unmanaged child was not reaped")
+    finally:
+        signal.signal(signal.SIGCHLD, previous_handler)
 
 
 def test_interrupt_waits_for_clean_exit(tmp_path, monkeypatch):
@@ -147,10 +253,42 @@ def test_resume_argument_is_used_on_new_process(tmp_path, monkeypatch):
     manager.turn("first")
     first_args = json.loads(args_path.read_text())
     assert "--resume" not in first_args
+    verbose_index = first_args.index("--verbose")
+    assert first_args[verbose_index : verbose_index + 3] == [
+        "--verbose",
+        "--permission-mode",
+        "bypassPermissions",
+    ]
     manager._close_process(kill=True)
-    manager.turn("second", session_id="resume-sid")
+    manager.turn("second", session_id="init-sid")
     second_args = json.loads(args_path.read_text())
-    assert second_args[second_args.index("--resume") + 1] == "resume-sid"
+    assert second_args[second_args.index("--resume") + 1] == "init-sid"
+    manager._close_process(kill=True)
+
+
+def test_permission_mode_can_be_overridden(tmp_path, monkeypatch):
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    monkeypatch.setenv(shim.PERMISSION_MODE_ENV, "default")
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("first")
+    args = json.loads(args_path.read_text())
+    assert args[args.index("--permission-mode") + 1] == "default"
+    manager._close_process(kill=True)
+
+
+def test_session_id_mismatch_is_rejected_and_missing_id_resumes(tmp_path, monkeypatch):
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("first")
+    manager.turn("matching", session_id="init-sid")
+    with pytest.raises(shim.SessionConflictError, match="does not match"):
+        manager.turn("wrong", session_id="other-sid")
+    manager._close_process(kill=True)
+    manager.turn("resume without id")
+    args = json.loads(args_path.read_text())
+    assert args[args.index("--resume") + 1] == "init-sid"
     manager._close_process(kill=True)
 
 
@@ -173,7 +311,7 @@ def test_http_health_ready_and_turn_gating(tmp_path, monkeypatch):
     server = _run_server(manager)
     try:
         assert _request(server, "GET", shim.HEALTHZ_PATH)[0] == 200
-        assert _request(server, "GET", shim.READY_PATH)[0] == 503
+        assert _request(server, "GET", shim.READY_PATH)[0] == 200
         status, body = _request(server, "POST", shim.TURN_PATH, b"{}")
         assert status == 400 and "empty" in body["error"]
         status, body = _request(
@@ -185,6 +323,51 @@ def test_http_health_ready_and_turn_gating(tmp_path, monkeypatch):
         server.shutdown()
         server.server_close()
         manager._close_process(kill=True)
+
+
+def test_http_rejects_session_conflict_and_bad_content_length(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    server = _run_server(manager)
+    try:
+        status, _ = _request(
+            server, "POST", shim.TURN_PATH, json.dumps({"message": "first"}).encode()
+        )
+        assert status == 200
+        status, body = _request(
+            server,
+            "POST",
+            shim.TURN_PATH,
+            json.dumps({"message": "wrong", "session_id": "other-sid"}).encode(),
+        )
+        assert status == 409 and "does not match" in body["error"]
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request(
+            "POST", shim.TURN_PATH, body=b"{}", headers={"Content-Length": "bad"}
+        )
+        response = connection.getresponse()
+        assert response.status == 400
+        response.read()
+    finally:
+        server.shutdown()
+        server.server_close()
+        manager._close_process(kill=True)
+
+
+def test_http_clock_uses_noded_epoch_milliseconds(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    server = _run_server(manager)
+    values = []
+    monkeypatch.setattr(
+        shim.time, "clock_settime", lambda clock, value: values.append((clock, value))
+    )
+    try:
+        status, body = _request(server, "POST", shim.CLOCK_PATH, b"1760000000123")
+        assert status == 200 and body["epoch_ms"] == 1760000000123
+        assert values == [(shim.time.CLOCK_REALTIME, 1760000000.123)]
+        assert _request(server, "POST", shim.CLOCK_PATH, b"invalid")[0] == 400
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_cli_crash_is_422(tmp_path, monkeypatch):
