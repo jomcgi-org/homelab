@@ -249,7 +249,8 @@ defmodule Embervm.WorkloadWatcher do
       # watch end must resync via LIST rather than blindly re-watching a
       # resourceVersion the apiserver no longer knows.
       needs_relist: false,
-      resync_interval_ms: resync_interval_ms
+      resync_interval_ms: resync_interval_ms,
+      initial_sync_done: false
     }
 
     # watch_startup drives the informer from init; tests set it false and drive
@@ -366,7 +367,12 @@ defmodule Embervm.WorkloadWatcher do
   # backoff. This is the single entry point for both boot and every resync.
   defp relist_then_watch(state) do
     case do_list_reconcile(state) do
-      {:ok, state} -> start_streamer(%{state | backoff_ms: state.base_backoff})
+      {:ok, state} ->
+        unless state.initial_sync_done do
+          Embervm.BaseBuilder.mark_watcher_synced()
+        end
+
+        start_streamer(%{state | backoff_ms: state.base_backoff, initial_sync_done: true})
       {:error, state} -> schedule(:resync, state)
     end
   end

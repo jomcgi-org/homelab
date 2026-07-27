@@ -270,6 +270,18 @@ defmodule Embervm.BaseBuilder do
     GenServer.call(server, :retention_sweep_now)
   end
 
+  @doc """
+  Mark the WorkloadWatcher initial LIST as complete, unlocking the unknown-workload
+  retention pass. Until the watcher has finished its first LIST, the builder holds
+  `workload_sync_done: false` so the retention sweep cannot evict bases: an unsynced CP
+  sees every base as an orphan and would delete the entire fleet. This gate fires only
+  once per boot after the watcher's successful LIST completes.
+  """
+  @spec mark_watcher_synced(GenServer.server()) :: :ok
+  def mark_watcher_synced(server \\ __MODULE__) do
+    cast_if_alive(server, {:mark_watcher_synced})
+  end
+
   defp cast_if_alive(server, msg) do
     case GenServer.whereis(server) do
       nil -> :ok
@@ -384,6 +396,7 @@ defmodule Embervm.BaseBuilder do
       node_addr: node_addr,
       nodes: node_runtime,
       workloads: %{},
+      workload_sync_done: false,
       # pid -> %{node_id, name, signature} for the CURRENT build worker, so a
       # result from a superseded worker (or for a since-changed spec) is dropped.
       workers: %{},
@@ -437,6 +450,10 @@ defmodule Embervm.BaseBuilder do
 
   def handle_cast({:forget, name}, state) do
     {:noreply, forget_workload(state, name)}
+  end
+
+  def handle_cast({:mark_watcher_synced}, state) do
+    {:noreply, %{state | workload_sync_done: true}}
   end
 
   def handle_cast({:add_node, node_id, address}, state) do
@@ -1574,9 +1591,9 @@ defmodule Embervm.BaseBuilder do
   # EvictArtifact{remote: false} for each superseded local base outside the desired
   # set. Returns the (possibly updated) state. This is the reconciled backstop the
   # event-driven refcount path lacks: it enumerates from the node's REPORTED local
-  # inventory (NodeStatus.local_bases), so it prunes even the pre-R2 orphans the CP
-  # never tracked in base_refs and the superseded refs whose refcount event fired
-  # and no-op'd before this fix, which the event path alone can never re-fire.
+  # inventory (NodeStatus.local_bases). It prunes orphan REFS of known workloads
+  # in the first pass, and orphan WORKLOADS entirely in a second pass once the
+  # WorkloadWatcher has completed its initial LIST.
   defp retention_sweep(state) do
     {_plan, state} = retention_sweep_plan(state)
     state
@@ -1594,7 +1611,7 @@ defmodule Embervm.BaseBuilder do
   # eviction on that same node. noded's in-use/current/BUILDING guard is the final
   # backstop beneath this.
   defp retention_sweep_plan(state) do
-    Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
+    {plan, state} = Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
       per_node_outcomes = workload_retention(acc, w)
 
       Enum.reduce(per_node_outcomes, {plan, acc}, fn outcome, {p, a} ->
@@ -1612,7 +1629,18 @@ defmodule Embervm.BaseBuilder do
         end
       end)
     end)
-    |> then(fn {plan, acc} -> {Enum.reverse(plan), acc} end)
+
+    {plan, state} =
+      if state.workload_sync_done do
+        Enum.reduce(unknown_workload_retention(state), {plan, state}, fn {workload, node_id, refs, bytes}, {p, a} ->
+          entry = %{workload: workload, evict_refs: refs, evict_bytes: bytes, skipped_unexported: false, node_id: node_id}
+          {[entry | p], apply_retention(a, workload, node_id, refs, bytes)}
+        end)
+      else
+        {plan, state}
+      end
+
+    {Enum.reverse(plan), state}
   end
 
   # Decide one retention outcome per node from the representative reported facts:
@@ -1886,6 +1914,34 @@ defmodule Embervm.BaseBuilder do
       if not Map.get(w.base_refs[ref] || %{}, :evicted, true) and Map.has_key?(w.base_refs, ref),
         do: name,
         else: nil
+    end)
+  end
+
+  defp unknown_workload_retention(state) do
+    protected_refs =
+      for {_name, w} <- state.workloads,
+          {ref, entry} <- w.base_refs,
+          not Map.get(entry, :evicted, false),
+          into: MapSet.new(),
+          do: ref
+
+    state
+    |> representative_facts_by_node(nil)
+    |> Enum.flat_map(fn fact ->
+      fact
+      |> Map.get(:local_bases, [])
+      |> Enum.filter(fn b ->
+        is_binary(b.workload) and
+          not Map.has_key?(state.workloads, b.workload) and
+          b.base_state != :BASE_BUILD_STATE_BUILDING and
+          not MapSet.member?(protected_refs, b.ref)
+      end)
+      |> Enum.group_by(& &1.workload)
+      |> Enum.map(fn {workload, bases} ->
+        refs = Enum.map(bases, & &1.ref)
+        bytes = Enum.map(bases, &(&1.size_bytes || 0)) |> Enum.sum()
+        {workload, fact[:instance_id], refs, bytes}
+      end)
     end)
   end
 
