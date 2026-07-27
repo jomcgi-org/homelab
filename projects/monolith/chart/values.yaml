@@ -727,39 +727,22 @@ jobs:
     # failed every cold boot for hours on 2026-07-19 while /api/health stayed
     # green.
     #
-    # The cadence is split deliberately. bazel-query and semgrep are task-class
-    # workloads served from a warm floor and reaped after each response, so a
-    # probe costs essentially nothing and 5m is free.
+    # All four probes run in this one job, concurrently, so wall time is the
+    # slowest probe rather than their sum. 5m suits all four, including the
+    # demo-postgres wake: the probe's connection is short-lived by design
+    # (ember_public/core.py, an open connection pins the VM awake) and
+    # demoPostgres.idleBankSeconds is 1 against a ~1s statefulSweeper tick, so
+    # the exhibit re-banks a couple of seconds later. The probe therefore cannot
+    # leave the demo warm for a visitor, and costs ~1% of the sleep-savings
+    # accrual. Slowing this down would only trade detection latency for nothing.
     - name: ember-synthetic
       args: ["ember-synthetic"]
       schedule: "*/5 * * * *"
       concurrencyPolicy: Forbid
-      # Worst case is 5 sequential page fetches (30s client timeout each) beside
-      # the two workload probes, which run concurrently. 300s clears that while
-      # still finishing inside the 5m window, so Forbid never stacks a backlog.
-      activeDeadlineSeconds: 300
-      suspend: false
-      emberSynthetic: true
-      resources:
-        requests:
-          cpu: 100m
-          memory: 256Mi
-        limits:
-          memory: 256Mi
-    # demo-postgres is the scale-to-zero exhibit and banks after 120s idle
-    # (embervm chart demoPostgres.idleBankSeconds), so a 5m probe would hold it
-    # awake roughly half the time: it would halve the all-time sleep-savings
-    # counter and leave visitors arriving to an already-warm demo, which is the
-    # one thing the exhibit exists to show. 30m keeps the duty cycle near 8%
-    # while still catching a broken wake path within half an hour rather than
-    # the hours it took in the 2026-07-19 incident. Raising this cadence means
-    # re-checking that arithmetic, not just the timeout below.
-    - name: ember-synthetic-postgres
-      args: ["ember-synthetic-postgres"]
-      schedule: "*/30 * * * *"
-      concurrencyPolicy: Forbid
-      # A cold boot is the slow path this probe exists to measure; the client
-      # allows 90s for it.
+      # Worst case is 5 sequential page fetches (30s client timeout each), which
+      # dominates the three concurrent workload probes (the postgres one allows
+      # 90s for a cold boot). 300s clears that inside the 5m window, so Forbid
+      # never stacks a backlog.
       activeDeadlineSeconds: 300
       suspend: false
       emberSynthetic: true
@@ -770,7 +753,7 @@ jobs:
         limits:
           memory: 256Mi
 
-# Ember synthetic probes (the ember-synthetic CronWorkflows above). Only the
+# Ember synthetic probes (the ember-synthetic CronWorkflow above). Only the
 # base URL lives here; the probes' control-plane address is read from
 # semgrep.embervmUrl so it cannot drift from the backend's.
 #
