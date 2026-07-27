@@ -153,6 +153,9 @@ defmodule Embervm.GroupWakeManager do
 
   @impl true
   def init(opts) do
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
+
     state = %{
       store: Keyword.get(opts, :store, GroupStore),
       publisher: Keyword.get(opts, :publisher, EndpointPublisher),
@@ -182,11 +185,11 @@ defmodule Embervm.GroupWakeManager do
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
       stop_group_member_fun:
         Keyword.get(opts, :stop_group_member_fun, &default_stop_group_member/2),
-      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      op_log: op_log,
       # The backend module dispatched below, threaded alongside :op_log (the
       # server address) so a non-default backend never requires editing this
-      # module. Defaults to the same SQLite module :op_log defaults to.
-      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      # module. Defaults to the selected backend module.
+      op_log_mod: op_log_mod,
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
       node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),

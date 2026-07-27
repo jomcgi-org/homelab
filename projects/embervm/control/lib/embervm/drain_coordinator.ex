@@ -49,12 +49,13 @@ defmodule Embervm.DrainCoordinator do
     # The backend module the default append_fun below dispatches through,
     # threaded alongside :op_log (the server address) so a non-default backend
     # never requires editing this module. Defaults to the same SQLite module
-    # :op_log defaults to.
+    # :op_log defaults to the selected backend module.
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
 
     state = %{
       tenant: Keyword.get(opts, :tenant, "homelab"),
-      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      op_log: op_log,
       op_log_mod: op_log_mod,
       safety_margin_ms: Keyword.get(opts, :safety_margin_ms, @default_safety_margin_ms),
       clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end),

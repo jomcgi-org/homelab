@@ -274,6 +274,9 @@ defmodule Embervm.StatefulManager do
 
   @impl true
   def init(opts) do
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
+
     state = %{
       store: Keyword.get(opts, :store, StatefulStore),
       publisher: Keyword.get(opts, :publisher, EndpointPublisher),
@@ -303,12 +306,12 @@ defmodule Embervm.StatefulManager do
       # the volume generation being evicted (standing decision 8). Injected for tests.
       evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
       # The op-log the restore audit record (:artifact_restored) is appended to.
-      # Injected for tests; production uses the SQLite backend.
-      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # Injected for tests; production uses the configured backend.
+      op_log: op_log,
       # The backend module dispatched below, threaded alongside :op_log (the
       # server address) so a non-default backend never requires editing this
-      # module. Defaults to the same SQLite module :op_log defaults to.
-      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      # module. Defaults to the selected backend module.
+      op_log_mod: op_log_mod,
       # R4, D-R4.PR-7.1 (MMDS-lite over boot-args): reads a K8s Secret into a
       # decoded key/value map for cold_request/2 to populate mmds_env from.
       # Injected so tests can fake the K8s round-trip; production defaults to

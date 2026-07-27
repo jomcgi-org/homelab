@@ -34,13 +34,15 @@ defmodule Embervm.OpLog.Compactor do
 
   @impl true
   def init(opts) do
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
+
     state = %{
-      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      op_log: op_log,
       # The backend module dispatched for compact/2 + db_size/1, threaded
       # alongside :op_log (the server address) so a non-default backend never
-      # requires editing this module. Defaults to the same SQLite module the
-      # :op_log server address defaults to.
-      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      # requires editing this module. Defaults to the selected backend module.
+      op_log_mod: op_log_mod,
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms)
     }
 

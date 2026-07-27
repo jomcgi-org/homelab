@@ -150,6 +150,9 @@ defmodule Embervm.ServingManager do
 
   @impl true
   def init(opts) do
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
+
     state = %{
       store: Keyword.get(opts, :store, ServingStore),
       publisher: Keyword.get(opts, :publisher, EndpointPublisher),
@@ -171,12 +174,12 @@ defmodule Embervm.ServingManager do
       # Injected for tests; production dials the real NodeService stub.
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
       # The op-log the restore audit record (:artifact_restored) is appended to.
-      # Injected for tests; production uses the SQLite backend.
-      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # Injected for tests; production uses the configured backend.
+      op_log: op_log,
       # The backend module dispatched below, threaded alongside :op_log (the
       # server address) so a non-default backend never requires editing this
-      # module. Defaults to the same SQLite module :op_log defaults to.
-      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      # module. Defaults to the selected backend module.
+      op_log_mod: op_log_mod,
       # workload -> [{from, req, principal}] parked behind an in-flight wake, so
       # concurrent misses share ONE StartServing (single-flight). The first miss
       # kicks the worker; the rest append here.

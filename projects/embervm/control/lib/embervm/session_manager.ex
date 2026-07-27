@@ -173,6 +173,9 @@ defmodule Embervm.SessionManager do
 
   @impl true
   def init(opts) do
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
+
     state = %{
       session_store: Keyword.get(opts, :session_store, SessionStore),
       dispatcher: Keyword.get(opts, :dispatcher, Embervm.Dispatcher),
@@ -206,12 +209,12 @@ defmodule Embervm.SessionManager do
       # tests; production dials the real NodeService stub.
       evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
       # The op-log the restore audit record (:artifact_restored) is appended to.
-      # Injected for tests; production uses the SQLite backend.
-      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      # Injected for tests; production uses the configured backend.
+      op_log: op_log,
       # The backend module dispatched below, threaded alongside :op_log (the
       # server address) so a non-default backend never requires editing this
-      # module. Defaults to the same SQLite module :op_log defaults to.
-      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      # module. Defaults to the selected backend module.
+      op_log_mod: op_log_mod,
       # Extra opts threaded into every started Embervm.Session (the daemon seams),
       # so a test can inject a fake session_assign into the spawned process.
       session_opts: Keyword.get(opts, :session_opts, []),

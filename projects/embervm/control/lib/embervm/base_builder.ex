@@ -313,8 +313,8 @@ defmodule Embervm.BaseBuilder do
     restore_fun = Keyword.get(opts, :restore_fun, &default_restore/2)
     # Op-log seam for the audit-only :artifact_exported record (no projection
     # table; the log itself is the record). Mirrors the sweeper managers.
-    op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
     tenant = Keyword.get(opts, :tenant, "homelab")
     # Sweep cadence for the export reconcile. 0 disables the timer entirely (the
     # unit-test default, so a test drives :export_reconcile explicitly and asserts

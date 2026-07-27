@@ -136,16 +136,19 @@ defmodule Embervm.ServingSweeper do
 
   @impl true
   def init(opts) do
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
+
     state = %{
       store: Keyword.get(opts, :store, ServingStore),
       publisher: Keyword.get(opts, :publisher, Embervm.EndpointPublisher),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
-      op_log: Keyword.get(opts, :op_log, Embervm.OpLog.SQLite),
+      op_log: op_log,
       # The backend module dispatched below, threaded alongside :op_log (the
       # server address) so a non-default backend never requires editing this
       # module. Defaults to the same SQLite module :op_log defaults to.
-      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      op_log_mod: op_log_mod,
       clock: Keyword.get(opts, :clock, &default_clock/0),
       tenant: Keyword.get(opts, :tenant, "homelab"),
       # The node Envoy stats scrape seam: (stats_url) -> {:ok, %{cluster_name => rq_total}}

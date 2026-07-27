@@ -565,11 +565,11 @@ defmodule Embervm.StatefulStore do
 
   @impl true
   def init(opts) do
-    op_log = Keyword.get(opts, :op_log, Embervm.OpLog.SQLite)
     # The backend module dispatched at every call site below, threaded alongside
     # :op_log (the server address) so a non-default backend never requires editing
-    # this module. Defaults to the same SQLite module :op_log defaults to.
+    # this module. Defaults to the selected backend module.
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
     clock = Keyword.get(opts, :clock, &default_clock/0)
 
     instances = :ets.new(@instances_table, [:set, :private])
