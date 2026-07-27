@@ -1461,14 +1461,39 @@ defmodule Embervm.BaseBuilder do
 
     state = put_in(state.workloads[w.name], w)
 
-    # Base-durability PR-1: drive the durability floor. Export the freshly-built
-    # current base to the object store on the node that built it. Fire-and-forget
-    # in a spawned worker (the RPC returns a fast ack and the node uploads
-    # asynchronously); the periodic export reconcile is the backstop if this
-    # result is lost or the store was down. Idempotent per checksum, so a redundant
-    # export (e.g. an already_built no-op build that reports the same ref) is a
-    # cheap skipped no-op on the node.
-    state = spawn_export(state, w.node_id, w.name, w.snapshot_ref)
+    # Base-durability PR-1: drive the durability floor using each node's own
+    # vendor-specific current ref. The periodic export reconcile remains the
+    # backstop if a result is lost or the store was down.
+    facts = Embervm.NodeCapacity.all(state.capacity_table)
+
+    export_targets =
+      Enum.flat_map(facts, fn fact ->
+        case get_in(fact, [:workloads, w.name]) do
+          nil -> []
+          workload_fact -> [{fact[:instance_id], workload_fact}]
+        end
+      end)
+
+    state =
+      case export_targets do
+        [] ->
+          # A base can finish before its node advertises the workload. Keep the
+          # anchor-node export during that dial-home window; later facts replace it
+          # with the per-node fan-out.
+          spawn_export(state, w.node_id, w.name, w.snapshot_ref)
+
+        _ ->
+          Enum.reduce(export_targets, state, fn {instance_id, workload_fact}, acc ->
+            case workload_fact do
+              %{snapshot_ref: node_ref, exported: exported?}
+              when is_binary(node_ref) and node_ref != "" and exported? != true ->
+                spawn_export(acc, instance_id, w.name, node_ref)
+
+              _ ->
+                acc
+            end
+          end)
+      end
 
     write_base_status(state, w, :built)
   end
@@ -1544,70 +1569,64 @@ defmodule Embervm.BaseBuilder do
     state
   end
 
-  # Compute the sweep plan (a per-workload list of what to evict) AND apply the
+  # Compute the sweep plan (a per-node list of what to evict) AND apply the
   # gated action. The plan is returned for tests/visibility; the action is the
   # spawned evictions (gate on) or the dry-run log (gate off).
   #
-  # For each workload with a placed, exported current base:
-  #   candidates = local READY bases the node reports (local_bases, READY only)
-  #                MINUS the desired set (current ref + still-refcounted superseded
-  #                refs). BUILDING/FAILED local bases are never candidates (a
-  #                BUILDING base is being written; noded also refuses it).
-  # Durability-before-eviction: a workload whose CURRENT base is not yet exported
-  # is SKIPPED WHOLE (never empty the local cache before the S3 floor lands). noded's
-  # in-use/current/BUILDING guard is the final backstop beneath this.
+  # For each capacity fact with a current, exported local base, candidates are
+  # local bases minus the node's current ref and still-refcounted superseded refs.
+  # BUILDING local bases are never candidates, and an unexported current base only
+  # blocks eviction on that same node. noded's in-use/current/BUILDING guard is the
+  # final backstop beneath this.
   defp retention_sweep_plan(state) do
     Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
-      case workload_retention(acc, w) do
-        :skip ->
-          {plan, acc}
+      per_node_outcomes = workload_retention(acc, w)
 
-        {:skip_unexported, node_id} ->
-          entry = %{workload: name, evict_refs: [], evict_bytes: 0, skipped_unexported: true, node_id: node_id}
-          {[entry | plan], acc}
+      Enum.reduce(per_node_outcomes, {plan, acc}, fn outcome, {p, a} ->
+        case outcome do
+          :skip ->
+            {p, a}
 
-        {:evict, node_id, refs, bytes} ->
-          entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, skipped_unexported: false, node_id: node_id}
-          acc = apply_retention(acc, name, node_id, refs, bytes)
-          {[entry | plan], acc}
-      end
+          {:skip_unexported, node_id} ->
+            entry = %{workload: name, evict_refs: [], evict_bytes: 0, skipped_unexported: true, node_id: node_id}
+            {[entry | p], a}
+
+          {:evict, node_id, refs, bytes} ->
+            entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, skipped_unexported: false, node_id: node_id}
+            {[entry | p], apply_retention(a, name, node_id, refs, bytes)}
+        end
+      end)
     end)
     |> then(fn {plan, acc} -> {Enum.reverse(plan), acc} end)
   end
 
-  # Decide one workload's retention outcome from the node's reported facts:
-  #   :skip                          - not placed, no node fact, or nothing to evict
-  #   {:skip_unexported, node_id}    - current base present but not yet exported
-  #   {:evict, node_id, refs, bytes} - superseded local bases to evict + their bytes
+  # Decide one retention outcome per capacity fact from the node's reported facts:
+  #   :skip                          - no local base or nothing to evict
+  #   {:skip_unexported, node_id}    - this node's current base is not exported
+  #   {:evict, node_id, refs, bytes} - this node's local bases to evict + bytes
   defp workload_retention(state, w) do
-    cur = current_instance_on_node(state, w.node_id, w.name)
-
-    with true <- is_binary(w.node_id) and is_binary(w.snapshot_ref),
-         {:ok, fact} <- find_capacity_fact(state.capacity_table, cur),
-         locals when is_list(locals) <- Map.get(fact, :local_bases, []) do
-      current_exported? =
-        case get_in(fact, [:workloads, w.name]) do
-          %{snapshot_ref: ref, exported: exported} -> ref == w.snapshot_ref and exported == true
-          _ -> false
-        end
+    for fact <- Embervm.NodeCapacity.all(state.capacity_table),
+        is_list(Map.get(fact, :local_bases, [])),
+        # Deliberate: skip nodes that have local bases but do not report this
+        # workload in :workloads (unknown current ref). Without the node's own
+        # current ref we cannot safely pick eviction candidates; such bases stay
+        # resident. This is the conservative choice, though it may leave orphans
+        # from pre-noded implementations that never tracked bases per-workload.
+        Map.has_key?(Map.get(fact, :workloads, %{}), w.name) do
+      node_ref = get_in(fact, [:workloads, w.name, :snapshot_ref])
 
       cond do
-        not current_exported? ->
-          # Durability floor not yet confirmed for this workload: skip it whole.
-          {:skip_unexported, cur}
+        not is_binary(node_ref) or node_ref == "" ->
+          :skip
+
+        get_in(fact, [:workloads, w.name, :exported]) != true ->
+          {:skip_unexported, fact[:instance_id]}
 
         true ->
-          desired = desired_refs(w)
+          desired = desired_refs_for_node(node_ref, w)
 
-          # A candidate is any local base for this workload that is NOT desired and
-          # NOT currently BUILDING. READY superseded versions AND unregistered/.tmp
-          # orphan dirs (base_state UNSPECIFIED) are both candidates, so the reclaim
-          # drains the orphans too; a BUILDING ref is never a candidate (it is being
-          # written, and noded refuses it as the final backstop). The current ref is
-          # excluded via `desired`, and durability-before-eviction gated this whole
-          # workload above.
           candidates =
-            for b <- locals,
+            for b <- Map.get(fact, :local_bases, []),
                 b.workload == w.name,
                 b.base_state != :BASE_BUILD_STATE_BUILDING,
                 b.ref not in desired,
@@ -1618,26 +1637,35 @@ defmodule Embervm.BaseBuilder do
           else
             refs = Enum.map(candidates, & &1.ref)
             bytes = candidates |> Enum.map(&(&1.size_bytes || 0)) |> Enum.sum()
-            {:evict, cur, refs, bytes}
+            {:evict, fact[:instance_id], refs, bytes}
           end
       end
-    else
-      _ -> :skip
     end
   end
 
-  # The desired base refs for a workload: its CURRENT ref, PLUS every superseded
-  # ref the CP still refcounts (a base_refs entry that is not yet evicted, so a
-  # primed VM or pinned session may still ride it). A ref whose refcounts drained
-  # and fired an eviction (evicted: true) is NOT desired: it is a candidate. This
-  # keeps the sweep from ever removing a base a live VM or banked session still
-  # needs, independent of noded's own in-use guard.
-  defp desired_refs(w) do
+  # The desired base refs for a workload: its CURRENT ref on the node being
+  # swept, PLUS the CP's recorded snapshot_ref (in case the node's ref has moved
+  # ahead and the CP's ref is still on disk but not yet in S3), PLUS every
+  # superseded ref the CP still refcounts (a base_refs entry that is not yet
+  # evicted, so a primed VM or pinned session may still ride it). A ref whose
+  # refcounts drained and fired an eviction (evicted: true) is NOT desired: it is
+  # a candidate. This keeps the sweep from ever removing a base a live VM or
+  # banked session still needs, independent of noded's own in-use guard.
+  #
+  # Protecting the CP's ref: if a node has moved ahead to a newer current ref
+  # (vendor-specific turnover), the sweep MUST NOT evict the old CP ref that is
+  # still on disk but has not yet reached S3 (export has not completed). Including
+  # both refs at most retains one extra base until export finishes and the CP
+  # advances its snapshot_ref; the alternative is a window where eviction deletes
+  # the exact ref the CP considers current.
+  defp desired_refs_for_node(node_ref, w) do
     superseded_desired =
       for {ref, entry} <- w.base_refs, not Map.get(entry, :evicted, false), do: ref
 
-    [w.snapshot_ref | superseded_desired]
+    [node_ref, w.snapshot_ref | superseded_desired]
+    |> Enum.uniq()
   end
+
 
   # Apply the gated retention action for one workload. Gate OFF: log the dry-run
   # (count + total bytes) and change nothing. Gate ON: spawn an idempotent
@@ -1706,58 +1734,68 @@ defmodule Embervm.BaseBuilder do
       # An export RPC for this exact ref is already in flight; skip a redundant one.
       state
     else
-      owner = self()
       address = state.node_addr[node_id]
-      connect_fun = state.connect_fun
-      disconnect_fun = state.disconnect_fun
-      export_fun = state.export_fun
-      op_log = state.op_log
-      op_log_mod = state.op_log_mod
-      tenant = state.tenant
-      clock = state.clock
 
-      spawn(fn ->
-        try do
-          result =
-            case connect_fun.(address) do
-              {:ok, channel} ->
-                try do
-                  export_fun.(channel, %ExportArtifactRequest{
-                    artifact: %ArtifactRef{
-                      kind: :ARTIFACT_KIND_BASE,
-                      workload: workload,
-                      ref: ref
-                    },
-                    trace: %Trace{workload: workload}
-                  })
-                catch
-                  kind, reason -> {:error, {kind, reason}}
-                after
-                  disconnect_fun.(channel)
-                end
+      if is_nil(address) do
+        Logger.warning(
+          "embervm base builder: ExportArtifact skipped because node address is unavailable",
+          instance_id: node_id
+        )
 
-              {:error, reason} ->
-                {:error, {:connect, reason}}
+        state
+      else
+        owner = self()
+        connect_fun = state.connect_fun
+        disconnect_fun = state.disconnect_fun
+        export_fun = state.export_fun
+        op_log = state.op_log
+        op_log_mod = state.op_log_mod
+        tenant = state.tenant
+        clock = state.clock
+
+        spawn(fn ->
+          try do
+            result =
+              case connect_fun.(address) do
+                {:ok, channel} ->
+                  try do
+                    export_fun.(channel, %ExportArtifactRequest{
+                      artifact: %ArtifactRef{
+                        kind: :ARTIFACT_KIND_BASE,
+                        workload: workload,
+                        ref: ref
+                      },
+                      trace: %Trace{workload: workload}
+                    })
+                  catch
+                    kind, reason -> {:error, {kind, reason}}
+                  after
+                    disconnect_fun.(channel)
+                  end
+
+                {:error, reason} ->
+                  {:error, {:connect, reason}}
+              end
+
+            case result do
+              {:ok, resp} ->
+                record_base_exported(op_log_mod, op_log, tenant, clock, workload, ref, resp)
+
+              other ->
+                Logger.warning(
+                  "embervm base builder: ExportArtifact #{workload}/#{ref} failed: #{inspect(other)}"
+                )
             end
-
-          case result do
-            {:ok, resp} ->
-              record_base_exported(op_log_mod, op_log, tenant, clock, workload, ref, resp)
-
-            other ->
-              Logger.warning(
-                "embervm base builder: ExportArtifact #{workload}/#{ref} failed: #{inspect(other)}"
-              )
+          after
+            # Always clear the in-flight key: on success, on a logged failure, and on any
+            # raise from connect_fun/disconnect_fun that skips the case above. A stuck key
+            # would permanently skip this ref's re-export.
+            send(owner, {:export_done, key})
           end
-        after
-          # Always clear the in-flight key: on success, on a logged failure, and on any
-          # raise from connect_fun/disconnect_fun that skips the case above. A stuck key
-          # would permanently skip this ref's re-export.
-          send(owner, {:export_done, key})
-        end
-      end)
+        end)
 
-      %{state | exports_in_flight: MapSet.put(state.exports_in_flight, key)}
+        %{state | exports_in_flight: MapSet.put(state.exports_in_flight, key)}
+      end
     end
   end
 

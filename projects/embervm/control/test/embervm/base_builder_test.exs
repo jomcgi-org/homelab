@@ -90,7 +90,7 @@ defmodule Embervm.BaseBuilderTest do
         [
           name: nil,
           nodes: Keyword.get(opts, :nodes, [@node]),
-          connect_fun: fn _addr -> {:ok, :fake_channel} end,
+          connect_fun: Keyword.get(opts, :connect_fun, fn _addr -> {:ok, :fake_channel} end),
           disconnect_fun: fn :fake_channel -> :ok end,
           # Base-durability PR-1 defaults for tests that do not exercise export:
           # a no-op export seam (so a build's immediate export never dials the real
@@ -110,6 +110,7 @@ defmodule Embervm.BaseBuilderTest do
         ] ++
           Keyword.drop(opts, [
             :export_fun,
+            :connect_fun,
             :export_reconcile_interval_ms,
             :retention_sweep_interval_ms,
             :op_log,
@@ -700,6 +701,27 @@ defmodule Embervm.BaseBuilderTest do
     })
   end
 
+  defp put_node_local_bases_fact(table, node_id, pod_uid, workload, current_ref, exported?, local_bases) do
+    existing =
+      case :ets.lookup(table, {node_id, pod_uid}) do
+        [{_key, facts}] -> facts
+        [] -> %{node_id: node_id, configured_id: node_id, instance_id: "#{node_id}/#{pod_uid}"}
+      end
+
+    workloads =
+      Map.put(Map.get(existing, :workloads, %{}), workload, %{
+        snapshot_ref: current_ref,
+        base_state: :BASE_BUILD_STATE_READY,
+        exported: exported?
+      })
+
+    NodeCapacity.put(
+      table,
+      {node_id, pod_uid},
+      Map.merge(existing, %{workloads: workloads, local_bases: local_bases, updated_at: 0})
+    )
+  end
+
   defp ready_base(ref, workload, bytes) do
     %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_READY}
   end
@@ -838,6 +860,112 @@ defmodule Embervm.BaseBuilderTest do
     assert entry.evict_refs == []
     refute_receive {:evicted, "w", "w__orphan1"}, 200
   end
+
+  test "retention sweep and export per node when fleet has mixed vendors" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    put_brick(table, "node-1", "intel", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "amd", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    put_node_local_bases_fact(table, "node-1", "intel", "w", "w__intel", true, [
+      ready_base("w__intel", "w", 512),
+      ready_base("w__old_intel", "w", 2_048)
+    ])
+
+    put_node_local_bases_fact(table, "node-4", "amd", "w", "w__amd", false, [
+      ready_base("w__amd", "w", 512),
+      ready_base("w__old_amd", "w", 4_096)
+    ])
+
+    export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+      send(test_pid, {:exported, ref.ref})
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+    end
+
+    connect_fun = fn address ->
+      send(test_pid, {:connected, address})
+      {:ok, :fake_channel}
+    end
+
+    builder =
+      start_builder(
+        nodes: [
+          %{id: "node-1/intel", address: "node-1/intel"},
+          %{id: "node-4/amd", address: "node-4/amd"}
+        ],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__intel")} end,
+        connect_fun: connect_fun,
+        export_fun: export_fun,
+        retention_sweep_enabled: true
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__intel" end)
+
+    assert_receive {:connected, "node-4/amd"}, 1_000
+    assert_receive {:exported, "w__amd"}, 1_000
+    refute_receive {:exported, "w__intel"}, 100
+    refute_receive {:connected, "node-4/amd"}, 100
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+    assert Enum.count(plan, &(&1.workload == "w")) == 2
+
+    intel = Enum.find(plan, &(&1.node_id == "node-1/intel"))
+    assert intel.skipped_unexported == false
+    assert intel.evict_refs == ["w__old_intel"]
+    assert intel.evict_bytes == 2_048
+
+    amd = Enum.find(plan, &(&1.node_id == "node-4/amd"))
+    assert amd.skipped_unexported == true
+    assert amd.evict_refs == []
+    refute_receive {:evicted, "w", "w__old_amd"}, 200
+  end
+
+
+  test "export skips targets without node_addr entries and logs warning" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    # Set up a capacity fact for a node that has NO entry in state.node_addr
+    put_node_local_bases_fact(table, "node-99", "unknown", "w", "w__unknown", false, [
+      ready_base("w__unknown", "w", 512)
+    ])
+
+    export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+      send(test_pid, {:exported, ref.ref})
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+    end
+
+    connect_fun = fn address ->
+      send(test_pid, {:connected, address})
+      {:ok, :fake_channel}
+    end
+
+    # Builder has no entry for "node-99/unknown" in nodes list, so it has no address
+    builder =
+      start_builder(
+        nodes: [%{id: "node-1/intel", address: "node-1/intel"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__intel")} end,
+        connect_fun: connect_fun,
+        export_fun: export_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__intel" end)
+
+    # Export should target node-99/unknown, but the nil-address guard skips it
+    # (it logs a warning instead of trying to dial nil)
+    refute_receive {:connected, "node-99/unknown"}, 500
+    refute_receive {:exported, "w__unknown"}, 500
+  end
+
 
   test "retention sweep never evicts a still-refcounted superseded ref" do
     agent = start_recorder()
