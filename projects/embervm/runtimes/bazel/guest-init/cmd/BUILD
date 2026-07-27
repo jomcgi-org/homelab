@@ -22,15 +22,8 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//projects/firecracker/substrate/vsockproto",
-    ] + select({
-        "@rules_go//go/platform:android": [
-            "@org_golang_x_sys//unix",
-        ],
-        "@rules_go//go/platform:linux": [
-            "@org_golang_x_sys//unix",
-        ],
-        "//conditions:default": [],
-    }),
+        "@org_golang_x_sys//unix",
+    ],
 )
 
 go_binary(
