@@ -17,7 +17,16 @@ opLog:
   # Still one replica with strategy: Recreate. Multi-replica needs ADR 007's
   # single-writer-per-cell op-log appender, which this does not deliver.
   postgres:
-    enabled: true
+    # ROLLED BACK 2026-07-27. The Postgres adapter connected fine ("op-log opened
+    # against Postgres"), then the CP crash-looped: Embervm.TaskStore called
+    # GenServer.call(Embervm.OpLog.SQLite, :load_tasks) against a process that was
+    # never started. 15 modules take BOTH :op_log (the server to call) and
+    # :op_log_mod (the module), and application.ex threads op_log_mod() to nearly
+    # all of them while passing :op_log at only two sites, so :op_log falls back to
+    # its hardcoded Embervm.OpLog.SQLite default. Re-enable only once that is
+    # fixed and verified by booting the supervision tree against a real Postgres,
+    # which the adapter-level conformance suite does not cover.
+    enabled: false
     secretName: embervm-oplog-password
     onepassword:
       itemPath: vaults/k8s-homelab/items/embervm-oplog-db
