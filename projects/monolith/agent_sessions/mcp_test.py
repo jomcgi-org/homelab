@@ -108,9 +108,11 @@ def _completed_turn(message: str) -> Turn:
 
 def test_pending_message_executed_in_background(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
-    monkeypatch.setattr(
-        mcp._transport, "deliver", lambda _session_id, message: _completed_turn(message)
-    )
+
+    async def mock_deliver(_session_id, message):
+        return _completed_turn(message)
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
 
     async def notify(*args, **kwargs):
         return None
