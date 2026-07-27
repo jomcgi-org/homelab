@@ -45,6 +45,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	"github.com/jomcgi/homelab/projects/embervm/noded/egress"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
@@ -991,7 +992,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		workload:     base.workload,
 		snapshotRef:  ref,
 		handle:       h,
-		egressCancel: func() {},
+		egressCancel: s.startEgress(uds, h.ID),
 		state:        vmPrimed,
 	})
 	s.signalChange()
@@ -1104,7 +1105,7 @@ func (s *Server) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1
 	// A session VM destroyed out of band (e.g. the control plane tearing down a
 	// suspect or terminal session) lives in the distinct session registry.
 	if e := s.sessionVMs.remove(req.GetVmId()); e != nil {
-		if err := s.reap(e.handle, func() {}); err != nil {
+		if err := s.reap(e.handle, e.egressCancel); err != nil {
 			return nil, status.Errorf(codes.Internal, "noded: reap session vm %q: %v", req.GetVmId(), err)
 		}
 		s.signalChange()
@@ -1157,7 +1158,12 @@ func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionE
 		workload:    workload,
 		snapshotRef: ve.snapshotRef,
 		handle:      ve.handle,
-		inFlight:    true, // held for the SessionAssign that triggered this adoption
+		// Inherit the forwarder Prime opened for this physical VM. Only the
+		// registry bookkeeping changes here, so opening a second forwarder would
+		// collide on the same unix socket, and dropping the cancel would leak the
+		// goroutine past the session's teardown.
+		egressCancel: ve.egressCancel,
+		inFlight:     true, // held for the SessionAssign that triggered this adoption
 	}
 	s.sessionVMs.add(se)
 	s.signalChange() // the VM moved primed -> session-live; refresh NodeStatus
@@ -1282,12 +1288,17 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	snapshotRef := newID("sess")
 	ref, err := s.sessionDriver.SnapshotSession(ctx, e.handle, snapshotRef)
 	if err != nil {
-		s.sessionVMs.remove(vmID)
+		// SnapshotSession already tore the VM down, so there is nothing to reap,
+		// but the forwarder is still bound to a socket for a VM that no longer
+		// exists. Stop it here or it outlives every failed bank.
+		if removed := s.sessionVMs.remove(vmID); removed != nil && removed.egressCancel != nil {
+			removed.egressCancel()
+		}
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank session vm %q: %v", vmID, err)
 	}
 	// Destroy the VM: the session releases its live capacity and holds only disk.
 	if removed := s.sessionVMs.remove(vmID); removed != nil {
-		s.reap(removed.handle, func() {})
+		s.reap(removed.handle, removed.egressCancel)
 	}
 	s.sessionSnap.add(sessionSnapshotEntry{
 		snapshotRef:     ref.ID,
@@ -1343,13 +1354,18 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	}
 	cancelPrime()
 
+	// Open this guest's egress lane before the health gate, so a guest whose
+	// readiness depends on reaching the network is not deadlocked by a forwarder
+	// that only starts once it is already ready.
+	relitEgressCancel := s.startEgress(uds, h.ID)
+
 	readyCtx, cancelReady := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
 	readyErr := s.transport.WaitReady(readyCtx, uds, defaultReadyPath)
 	cancelReady()
 	if readyErr != nil {
 		// A restore that never health-gates is discarded; the snapshot stays on disk
 		// for the control plane to decide (never a silent blank VM).
-		s.reap(h, func() {})
+		s.reap(h, relitEgressCancel)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relit guest not ready: %v", readyErr)
 	}
 
@@ -1359,11 +1375,12 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	s.resyncGuestClock(ctx, uds, h.ID)
 
 	s.sessionVMs.add(&sessionEntry{
-		vmID:        h.ID,
-		sessionID:   req.GetSessionId(),
-		workload:    req.GetTrace().GetWorkload(),
-		snapshotRef: ref,
-		handle:      h,
+		vmID:         h.ID,
+		sessionID:    req.GetSessionId(),
+		workload:     req.GetTrace().GetWorkload(),
+		snapshotRef:  ref,
+		handle:       h,
+		egressCancel: relitEgressCancel,
 	})
 	s.signalChange()
 	return &nodev1.RelightResponse{VmId: h.ID}, nil
@@ -2297,6 +2314,29 @@ func (s *Server) WaitForBuildsOrAbort(deadline time.Time) int {
 	s.buildsMu.Unlock()
 	<-done
 	return aborted
+}
+
+// startEgress serves this guest's vsock egress port and tunnels every connection
+// to the pod-local egress-proxy sidecar (ADR 023 phase 6a), returning the cancel
+// that stops it. The returned func is ALWAYS safe to call and always non-nil, so
+// teardown paths never branch: when egress is disabled it is a no-op and no
+// listener is opened at all.
+//
+// The forwarder is bound to context.Background(), not to the request context that
+// created the VM: it must outlive the Prime/Relight RPC and live exactly as long
+// as the guest. Every path that reaps a VM calls the cancel, so the goroutine and
+// its unix socket never outlive the guest they belong to.
+func (s *Server) startEgress(uds, vmID string) func() {
+	if !s.cfg.EgressEnabled {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		if err := egress.ServeEgress(ctx, s.logger, uds, s.cfg.EgressSidecarAddr); err != nil {
+			s.logger.Warn("noded: egress forwarder stopped", "vm", vmID, "err", err)
+		}
+	}()
+	return cancel
 }
 
 func (s *Server) subscribe() chan struct{} {

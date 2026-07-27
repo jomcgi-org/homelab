@@ -25,6 +25,7 @@ go_library(
     visibility = ["//projects/embervm/noded:__subpackages__"],
     deps = [
         "//projects/embervm/noded/config",
+        "//projects/embervm/noded/egress",
         "//projects/embervm/noded/groupclock",
         "//projects/embervm/noded/serving",
         "//projects/embervm/noded/substrate",
