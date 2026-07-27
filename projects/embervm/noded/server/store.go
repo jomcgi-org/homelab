@@ -928,6 +928,19 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 		// The artifact vanished (evicted before the export ran); nothing to do.
 		return
 	}
+	// Already off node under this (vendor, ref)? Then a sibling node of the same
+	// vendor exported it and there is nothing to upload. Without this the CP-driven
+	// path fell through to Store.Export's CONTENT-addressed compare, which never
+	// matches across nodes for a base (snapshots are not byte-reproducible), so
+	// every node re-uploaded ~1 GiB over the sibling's object under the same key.
+	// The startup reconcile sweep already gated on presence; this is the same
+	// policy on the path the control plane actually drives.
+	if s.alreadyDurable(ctx, job.ref, job.key) {
+		s.logger.Info("noded: export skipped, artifact already durable in store",
+			"artifact", job.key, "kind", job.ref.GetKind().String())
+		s.signalChange()
+		return
+	}
 	_, skipped, err := s.store.Export(ctx, job.key, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
 	if err != nil {
 		s.logger.Warn("noded: async export failed (will retry on reconcile)", "artifact", job.key, "err", err)
@@ -999,25 +1012,62 @@ func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) 
 	// only ever hold node-4 (amd) artifacts, so a node of any other vendor must
 	// never claim a legacy copy as its own durable export (it would silently
 	// skip exporting its own artifact).
+	if s.alreadyDurable(ctx, ref, prefix) {
+		return
+	}
+	s.enqueueExport(ref)
+}
+
+// alreadyDurable reports whether the store already holds this artifact, and marks
+// it exported when so. It is the single place the "is it already off node?"
+// policy lives, shared by the startup reconcile sweep (enqueueIfMissing) and the
+// CP-driven export worker (runExportJob), so the two cannot drift.
+//
+// Presence, NOT content equality, is the test for every kind except VOLUME. The
+// store key is REF-addressed (`base/<vendor>/<workload>/<ref>`) while
+// Store.Export's own short-circuit is CONTENT-addressed (`sameFiles`), and for a
+// base those disagree by construction: a Firecracker memory snapshot is not
+// byte-reproducible, so two nodes that independently build the SAME ref hold
+// different bytes (verified 2026-07-27: bazel-query__00ada79f752f differs between
+// node-1 and node-2). Content equality therefore never holds across nodes, the
+// short-circuit never fires, and each node re-uploads ~1 GiB over the sibling's
+// object. It is also not NEEDED: same vendor and template means either node's
+// copy restores, which is the premise vendor keying already rests on.
+//
+// A VOLUME is data rather than a snapshot, so it keeps the stricter generation
+// test: presence at a STALE generation must still re-export.
+//
+// A store error means "not durable" (fail toward durability): the caller exports,
+// and Store.Export's own Head-compare makes the final call.
+func (s *Server) alreadyDurable(ctx context.Context, ref *nodev1.ArtifactRef, prefix string) bool {
+	if s.store == nil || prefix == "" {
+		return false
+	}
+	// A vendor-bound kind already durable under the legacy un-vendored prefix
+	// (this node's own artifact, exported before vendor keying shipped) is
+	// already exported; treat it as present so the reconcile sweep never
+	// re-exports it under the new layout for content it already has off node.
+	// Gated on the node itself being the alias vendor: the legacy layout can
+	// only ever hold node-4 (amd) artifacts, so a node of any other vendor must
+	// never claim a legacy copy as its own durable export (it would silently
+	// skip exporting its own artifact).
 	if legacy := legacyArtifactPrefix(ref); legacy != "" && s.cfg.CpuVendor == legacyVendorAlias {
 		if legacyPresent, legacyGen, _, _, lerr := s.store.Present(ctx, legacy); lerr == nil && legacyPresent {
 			s.exported.mark(prefix, legacyGen)
-			return
+			return true
 		}
 	}
 	present, gen, _, _, err := s.store.Present(ctx, prefix)
-	if err == nil && present {
-		if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME {
-			if cur := s.artifactGeneration(ref); cur == gen {
-				s.exported.mark(prefix, gen) // already durable at the current gen
-				return
-			}
-		} else {
-			s.exported.mark(prefix, gen)
-			return
+	if err != nil || !present {
+		return false
+	}
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME {
+		if cur := s.artifactGeneration(ref); cur != gen {
+			return false
 		}
 	}
-	s.enqueueExport(ref)
+	s.exported.mark(prefix, gen) // already durable
+	return true
 }
 
 // ---- async BASE-restore queue ----------------------------------------------
