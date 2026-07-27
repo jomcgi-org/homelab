@@ -36,11 +36,17 @@ tar(
 # interactive, so a fresh guest with nobody at a keyboard would wedge on first
 # boot. The record is keyed by ABSOLUTE workspace path and must match
 # EMBER_CLAUDE_WORKSPACE in apko.yaml exactly.
+#
+# Baked under /usr/share, NOT at its final ~/.claude.json: the rootfs is read-only
+# on every boot, so guest-init bind-mounts a writable HOME over /home/runtime, and
+# a file baked underneath that mount point would be hidden the moment it lands.
+# guest-init copies this master into the writable HOME when none is already there
+# (trustRecordSeedPath in guest-init/cmd/volume_linux.go).
 tar(
     name = "guest_config_tar",
     srcs = ["guest-config/claude.json"],
     mtree = [
-        "./home/runtime/.claude.json type=file content=$(execpath guest-config/claude.json) mode=0644 uid=65532 gid=65532",
+        "./usr/share/ember-claude/claude.json type=file content=$(execpath guest-config/claude.json) mode=0644 uid=0 gid=0",
     ],
 )
 
