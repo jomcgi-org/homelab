@@ -180,7 +180,7 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
     async def _refresh_heartbeat() -> None:
         """Periodically refresh the claim to keep it from expiring."""
         nonlocal claim_stolen
-        replica_id = "monolith"  # Identifier for this replica
+        replica_id = _REPLICA_ID  # Use the actual replica id from claiming
         while not claim_stolen:
             try:
                 await asyncio.sleep(10)  # Refresh every 10s (1/3 of 30s lease)
