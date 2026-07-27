@@ -310,40 +310,11 @@ servingEnvoy:
   # nothing about it is baked into the serving substrate. Add, remove, or repoint
   # routes freely without touching embervm code.
   #
-  # Here: the hot (warm-serving) image demo is served both on the private host
-  # (trusted, Cloudflare-Access gated) and publicly on the apex
-  # (jomcgi.dev/functions/hot-image-demo, no Access, rate-limited). Its cold sibling
-  # (jomcgi.dev/functions/cold-image-demo) is the task-class FaaS path served by
-  # monolith-public: same renderer, cold-start vs warm serving. A path on an
-  # already-routed host needs no DNS/cert/tunnel change. Both entries rewrite to the
-  # same internal vhost authority, so both reach the same warm workload.
   # rateLimit (optional per entry): an Envoy Gateway BackendTrafficPolicy (type Local,
   # per-gateway-pod token bucket, no Redis) targeting the rendered HTTPRoute, capping
   # request rate to protect the warm serving tier (each request can wake a microVM).
-  # Mirrors monolith-public's limit on the cold /functions/ path. Omit to leave a route
-  # unlimited (the private, Access-gated route needs none).
-  routes:
-    - name: hot-image-demo-private
-      enabled: true
-      tier: trusted
-      hostname: private.jomcgi.dev
-      pathPrefix: /functions/hot-image-demo
-      rewriteHost: hot-image-demo.serving.internal
-      gateway:
-        name: cloudflare-ingress
-        namespace: envoy-gateway-system
-    - name: hot-image-demo-public
-      enabled: true
-      tier: public
-      hostname: jomcgi.dev
-      pathPrefix: /functions/hot-image-demo
-      rewriteHost: hot-image-demo.serving.internal
-      rateLimit:
-        requests: 120
-        unit: Minute
-      gateway:
-        name: cloudflare-ingress
-        namespace: envoy-gateway-system
+  # Omit to leave a route unlimited (the private, Access-gated route needs none).
+  routes: []
 
 # uid 65532 non-root convention. The control plane needs no privilege (only the
 # node daemon is privileged for KVM).
@@ -476,76 +447,6 @@ bazelQueryWorkload:
   # RSS. One query per clone means throughput scales with restore rate, not cap.
   cap: 2
   timeoutSeconds: 20
-
-# The hot-image-demo workload (EmberVM R3, D-R3.11.5): the shared image renderer run
-# WARM as a SERVING-class workload over its tap NIC, publicly at
-# jomcgi.dev/functions/hot-image-demo. Its cold sibling is the task-class FaaS demo
-# `cold-image-demo` (jomcgi.dev/functions/cold-image-demo, boots a microVM per
-# request), which stays the instant rollback. Same renderer, two serving models:
-# cold-start vs warm.
-#
-# Source = the SAME zip identity the cold-image-demo FaaS registration produces
-# (deterministic archive of projects/monolith/faas/functions/og_image/app.py):
-# runtime python312, handler app.handle, sha256 below. The zip is layered onto the
-# runtime-python base (runtimePython above) at BuildBase; the handler-imported
-# state is baked into the base snapshot (ADR embervm/002), so a serving cold boot
-# needs no runtime hydrate. codeUri is the in-cluster SeaweedFS read URL the FaaS
-# storage.code_uri mints: <s3ReadBase>/<bucket>/cold-image-demo/<sha256>.zip.
-hotImageDemo:
-  enabled: true
-  name: hot-image-demo
-  # Zip source identity: the SAME renderer (projects/monolith/faas/functions/og_image/
-  # app.py) the cold FaaS demo registers as `cold-image-demo`. This warm workload shares
-  # that function's uploaded zip (same sha), so codeUri points at the cold-image-demo
-  # storage path. If app.py changes, the sha256 + codeUri change and this must be
-  # re-derived (register.archive_sha256) AND cold-image-demo re-registered.
-  runtime: python312
-  handler: app.handle
-  sha256: 2c5f9342895e286d251b801343eee5859460ce80f6a0e4384b8ba5a692ef2c16
-  codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/faas/cold-image-demo/2c5f9342895e286d251b801343eee5859460ce80f6a0e4384b8ba5a692ef2c16.zip
-  # Guest paths: the shim's readyPath (base build), invokePath (proxied requests
-  # carry the caller's path+query, og-image reads queryStringParameters).
-  readyPath: /shim/ready
-  invokePath: /invoke
-  # Serving elasticity policy (spec.serving). port is the guest TCP port the shim
-  # binds on the tap NIC (EMBER_SERVING_PORT); healthPath is /shim/healthz, the
-  # always-200 liveness the daemon probes over TCP (GET http://ip:port/shim/healthz).
-  serving:
-    port: 8080
-    healthPath: /shim/healthz
-    # INTERNAL vhost authority the node Envoy matches on (pushed via xDS), NOT a real
-    # DNS name: it is never resolved, only compared against the :authority header. The
-    # operator's HTTPRoutes (servingEnvoy.routes) rewrite the external Host to this
-    # value, so the workload spec carries none of the cluster's ingress DNS. Keep in
-    # sync with each route's rewriteHost.
-    host: hot-image-demo.serving.internal
-    # Scale-to-zero (ADR embervm/018): the demo idle-banks to zero and cold-boots on
-    # the first request, which is the whole point of the node-local activator (the
-    # first request during a control-plane gap cold-boots on the brick instead of
-    # black-holing on the dead CP-pod activator). This is what makes hot-image-demo
-    # the activator showcase; the warm-vs-cold contrast now lives entirely in
-    # cold-image-demo (task-class, vsock) vs this serving-class tap boot.
-    minInstances: 0
-    maxInstances: 2
-    idleBankSeconds: 600
-    drainSeconds: 5
-    maxLifetimeSeconds: 86400
-    # Node-local activator (ADR embervm/018 Fork A): eligible for a brick cold boot
-    # so a scaled-to-zero first request survives a control-plane Recreate (the
-    # demo's whole point). meteringFailOpen is the companion, named policy that this
-    # blessed demo wakes unmetered during a CP gap and reconciles on adoption. When
-    # this demo is scaled to zero for the kill-the-CP drill, the first request
-    # cold-boots on the brick instead of black-holing on the dead CP-pod activator.
-    nodeLocalWake: true
-    meteringFailOpen: true
-  # Sized for the WARM serving footprint, not the fresh-per-request task footprint
-  # (task-class og-image is 512Mi). Pillow stays resident and the TCP server runs
-  # continuously across many renders, so memMib is 768 for headroom (256Mi x max 2
-  # instances) against sustained-serving accumulation. vcpus 1 (Pillow render of a
-  # 1200x630 PNG is light). The fc-base sizing coupling sizes memMib to the warm
-  # peak (D-R3.11.1).
-  vcpus: 1
-  memMib: 768
 
 # Guest-image rootfs provisioning (Task 14), laid out FLAT at top level (NOT
 # under `noded`) because helm_images_values (Bazel image pinning) emits one YAML

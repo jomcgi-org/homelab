@@ -86,11 +86,8 @@ spec:
 ---
 # /functions/ -> the public FaaS invocation backend (Task 13, ADR agents/045).
 # A backend-served API surface (like /img -> imgproxy), NOT a SvelteKit page:
-# clients fetch jomcgi.dev/functions/<name> directly (e.g. the cold-image-demo
-# renderer), so it routes straight to the -web backend on its OWN HTTPRoute rather
-# than through the frontend SSR. NOTE: /functions/hot-image-demo is claimed by a
-# MORE-SPECIFIC embervm HTTPRoute (the warm-serving sibling of cold-image-demo) and
-# is served by the embervm serving tier, not this backend. The backend mounts ONLY
+# clients fetch jomcgi.dev/functions/<name> directly, so it routes straight to the
+# -web backend on its OWN HTTPRoute rather than through the frontend SSR. The backend mounts ONLY
 # the public invocation router here (no
 # /api/functions ingestion), and it resolves only visibility=public functions
 # (get_public_function), so a private function 404s. Its own route (separate from

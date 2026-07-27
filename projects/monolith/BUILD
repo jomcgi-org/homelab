@@ -506,7 +506,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # FaaS: only the public invocation path ships. The ingestion API (router.py)
     # is the authenticated private-tier author surface (no /api on public); the
     # write path (storage.py = S3, workload.py = K8s CR CRUD) is private-only; the
-    # guest function code (functions/**, e.g. og_image/app.py) runs inside the
+    # guest function code (functions/**) runs inside the
     # microVM, never in the monolith. register_public imports only
     # invoke_router_public -> invoke_router -> repository/embervm_client/models,
     # none of which pull the pruned files (main_public_imports_test enforces it).
@@ -3696,20 +3696,6 @@ py_test(
     ],
 )
 
-# The og-image function (Task 12): a real Pillow render is exercised in CI (PIL
-# is a monolith pip dep), plus the deterministic-zip bundler that "idempotent by
-# zip sha" depends on. faas/functions/og_image/app.py is guest code globbed into
-# :monolith_backend only so this test can import it.
-py_test(
-    name = "faas_og_image_test",
-    srcs = ["faas/functions/og_image/og_image_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pillow",
-        "@pip//pytest",
-    ],
-)
 
 py_test(
     name = "stars_models_test",
