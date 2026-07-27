@@ -30,7 +30,16 @@ DEFAULT_WORKSPACE = "/workspace"
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096
 INIT_READ_TIMEOUT = 15.0
-TURN_READ_TIMEOUT = 60.0
+# Per-event inactivity timeout for the read loop in turn(). Resets on every
+# stream event, so a turn emitting steady output can run far longer than this.
+# Sized to span a single silent tool call: the CLI emits nothing while a Bash
+# tool executes, so this must exceed the slowest realistic in-guest command
+# (a build or test run), not the slowest turn. Its job is detecting a genuinely
+# wedged CLI. The total-duration bound is enforced separately by the caller
+# (read_timeout in projects/monolith/agent_sessions/transport.py), and this
+# value must stay comfortably BELOW that one so the inner watchdog fires first
+# and reports a specific error, rather than the caller timing out generically.
+TURN_READ_TIMEOUT = 600.0
 INTERRUPT_TIMEOUT = 30.0
 PERMISSION_MODE_ENV = "EMBER_PERMISSION_MODE"
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
