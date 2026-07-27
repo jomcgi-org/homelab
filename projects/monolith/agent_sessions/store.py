@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -15,18 +14,6 @@ from app.db import get_engine
 logger = logging.getLogger(__name__)
 
 
-def _commit_sha(workspace: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", workspace, "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout.strip() or None
 
 
 def create_session(
@@ -250,7 +237,7 @@ def persist_turn_from_pending_sync(
             turn.terminal_reason,
             turn.stop_reason,
             turn.permission_denials,
-            _commit_sha(sess_row.workspace),
+            None,
             usage,
             turn.total_cost_usd,
             cli_session_id,
