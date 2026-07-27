@@ -554,7 +554,11 @@ apko.translate_lock(
     name = "embervm_scratch_prep_lock",
     lock = "//projects/embervm/scratch-prep:apko.lock.json",
 )
-use_repo(apko, "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_xds_lock", "fc_invoke_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock", "whatsapp_lock")
+apko.translate_lock(
+    name = "embervm_runtime_claude_lock",
+    lock = "//projects/embervm/runtimes/claude:apko.lock.json",
+)
+use_repo(apko, "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_xds_lock", "fc_invoke_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock", "whatsapp_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
@@ -655,6 +659,28 @@ multiarch_http_file(
     arm64_sha256 = "0d81fe62e060d6b8a862f1ea553afc571bba2aa2cbbff97c59ada3ea20b7d2bb",
     arm64_url = "https://github.com/buildbuddy-io/bazel/releases/download/5.0.321/bazel-5.0.321-linux-arm64",
     binary_name = "bb",
+    package_dir = "/usr/local/bin",
+)
+
+# Claude Code CLI for the EmberVM claude runtime guest (issue #4055). The npm
+# registry tarball holds exactly four entries; the payload is a single 262 MB
+# arch-specific ELF at package/claude, dynamically linked against glibc
+# (/lib64/ld-linux-x86-64.so.2, GLIBC_2.2.5 baseline), which Wolfi provides.
+#
+# amd64 only, deliberately: every cluster node and the RBE build executor are
+# amd64, so fetching a second 262 MB arm64 payload would build a manifest half of
+# which no node can run. Add arm64_url/arm64_sha256 here and aarch64 to
+# projects/embervm/runtimes/claude/apko.yaml together if that ever changes.
+#
+# The version is pinned rather than floating: the guest contract depends on
+# observed CLI behaviour (stream-json event shapes, the synthetic interrupt turn,
+# result field names), so a silent upgrade could change the shim's inputs.
+multiarch_http_file(
+    name = "claude_code_cli",
+    amd64_sha256 = "25d2e2cae6d3d1d5ceeaf0da02e83c45c16455e45efa1ab305395dc05227ad0d",
+    amd64_url = "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.220.tgz",
+    binary_name = "claude",
+    extract_path = "package/claude",
     package_dir = "/usr/local/bin",
 )
 
