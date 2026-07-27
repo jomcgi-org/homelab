@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import NamedTuple, Protocol
 
 import httpx
@@ -24,8 +25,12 @@ from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 
-# Read from environment; must be set in monolith pod
-EMBERVM_URL = ""
+# The control plane base URL, set on the monolith deployment (chart
+# templates/deployment.yaml). Read at import exactly like
+# faas/embervm_client.py does, so both clients resolve it the same way. The
+# empty default is what the guards below check: unset means the guest lane is
+# not reachable, not that it is reachable at the empty URL.
+EMBERVM_URL = os.environ.get("EMBERVM_URL", "")
 
 
 class Turn(NamedTuple):
