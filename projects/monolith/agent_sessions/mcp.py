@@ -120,9 +120,10 @@ def _persist_turn_from_pending_sync(
     turn: Turn,
     voice_summary: str,
     status: str,
+    cli_session_id: str | None = None,
 ) -> AgentTurn:
     return store.persist_turn_from_pending_sync(
-        session_id, turn_seq, prompt, turn, voice_summary, status
+        session_id, turn_seq, prompt, turn, voice_summary, status, cli_session_id
     )
 
 
