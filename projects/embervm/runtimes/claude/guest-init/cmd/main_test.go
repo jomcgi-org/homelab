@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestValueFromCmdline(t *testing.T) {
@@ -38,6 +40,24 @@ func TestIsValidEnvKeyName(t *testing.T) {
 		if got := isValidEnvKeyName(tc.key); got != tc.want {
 			t.Errorf("isValidEnvKeyName(%q) = %v, want %v", tc.key, got, tc.want)
 		}
+	}
+}
+
+func TestLoopbackUpFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cur  uint16
+		want uint16
+	}{
+		{"from down", 0, unix.IFF_UP},
+		{"already up", unix.IFF_UP, unix.IFF_UP},
+		{"preserves loopback", unix.IFF_LOOPBACK, unix.IFF_LOOPBACK | unix.IFF_UP},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := loopbackUpFlags(tc.cur); got != tc.want {
+				t.Fatalf("loopbackUpFlags(%#x) = %#x, want %#x", tc.cur, got, tc.want)
+			}
+		})
 	}
 }
 

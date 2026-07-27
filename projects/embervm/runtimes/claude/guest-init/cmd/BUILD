@@ -4,7 +4,8 @@ go_library(
     name = "cmd_lib",
     srcs = [
         "exec_linux.go", "exec_other.go", "main.go", "mount_linux.go",
-        "mount_other.go", "volume_linux.go", "volume_other.go",
+        "mount_other.go", "net_linux.go", "net_other.go", "volume_linux.go",
+        "volume_other.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/claude/guest-init/cmd",
     visibility = ["//visibility:private"],
