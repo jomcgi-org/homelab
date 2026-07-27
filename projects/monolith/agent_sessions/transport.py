@@ -46,6 +46,16 @@ class ShimTransport(Protocol):
     async def deliver(self, session_id: str | None, message: str) -> Turn: ...
 
 
+# Read timeout for invoke calls: the OUTER (wall-clock) bound on turn duration.
+# The guest shim (projects/embervm/runtimes/claude/shim.py) enforces an INNER
+# inactivity timeout (TURN_READ_TIMEOUT, per-event), which fires fast if the
+# CLI wedges. This outer cap must be comfortably larger so the inner watchdog
+# can fire first and catch transient hangs; this value catches runaway turns
+# that produce output continuously but never terminate. The heartbeat on the
+# monolith side (claim refresh every 10s against 30s lease) ensures a turn
+# running for the full duration keeps its claim and is never double-executed.
+
+
 class EmberVmShimTransport:
     """HTTP client transport for the Claude runtime guest over EmberVM control plane.
 
@@ -57,15 +67,20 @@ class EmberVmShimTransport:
     def __init__(
         self,
         workload: str = "claude-runtime",
-        read_timeout: float = 120.0,
+        read_timeout: float = 1800.0,
     ) -> None:
         """Initialize transport for a named EmberVM workload.
 
         Args:
             workload: Name of the EmberVM workload (e.g., 'claude-runtime').
-            read_timeout: HTTP read timeout for invoke calls (seconds).
-                Should be generous to allow for slow API calls; the guest
-                times out independently at 60s for turns, 15s for init.
+            read_timeout: Total wall-clock duration cap for a single turn
+                (seconds). This is the OUTER bound: the maximum time allowed
+                for the entire turn regardless of output activity. The guest
+                shim enforces an inner inactivity timeout (per-event), which
+                catches wedged CLIs quickly; this outer bound stops runaway
+                turns that produce output continuously. Must be comfortably
+                larger than the guest's inactivity timeout so the inner
+                watchdog can fire first (default 1800s = 30 minutes).
         """
         self.workload = workload
         self.read_timeout = read_timeout

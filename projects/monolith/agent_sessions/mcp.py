@@ -72,25 +72,16 @@ def _persist_start(
 
 
 def _turn_status(turn: Turn) -> str:
-    if turn.permission_denials or _needs_answer(turn.stop_reason):
+    # permission_denials is the signal for "agent blocked waiting on user";
+    # stop_reason enum (end_turn, max_tokens, etc.) never indicates user input needed
+    if turn.permission_denials:
         return "needs_input"
     if turn.is_error or turn.terminal_reason != "completed":
         return "warn"
     return "completed"
 
 
-def _needs_answer(stop_reason: str | None) -> bool:
-    return bool(
-        stop_reason
-        and any(
-            word in stop_reason.lower() for word in ("question", "pending", "input")
-        )
-    )
-
-
 async def _notify_terminal(turn: Turn, summary: str, status: str) -> None:
-    if turn.terminal_reason is None:
-        return
     if turn.permission_denials or status == "needs_input":
         level = "warn"  # Needs user action
     elif status == "completed":

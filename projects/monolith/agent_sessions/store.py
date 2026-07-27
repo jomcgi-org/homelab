@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
@@ -12,8 +13,6 @@ from agent_sessions.transport import Turn
 from app.db import get_engine
 
 logger = logging.getLogger(__name__)
-
-
 
 
 def create_session(
@@ -109,28 +108,48 @@ def get_turn(session: Session, session_id: int, turn_seq: int) -> AgentTurn | No
 def create_pending_message(
     session: Session, session_id: int, message_text: str
 ) -> PendingMessage:
-    """Enqueue a message durably and return its per-session turn sequence."""
+    """Enqueue a message durably and return its per-session turn sequence.
+
+    The seq is allocated optimistically and retried on collision. Multiple
+    concurrent writers may compute the same seq and INSERT it. The UNIQUE
+    constraint on (session_id, seq) is the arbiter: one succeeds, the rest
+    receive IntegrityError. On collision, rollback, recompute the seq from
+    scratch, and retry (up to 5 attempts). After all attempts are exhausted,
+    raise RuntimeError.
+    """
     if session.get(AgentSession, session_id) is None:
         raise ValueError(f"Unknown agent session {session_id}")
 
-    last_turn = session.exec(
-        select(func.max(AgentTurn.seq)).where(AgentTurn.session_id == session_id)
-    ).one()
-    last_pending = session.exec(
-        select(func.max(PendingMessage.seq)).where(
-            PendingMessage.session_id == session_id
-        )
-    ).one()
-    seq = max(last_turn or 0, last_pending or 0) + 1
-    row = PendingMessage(
-        session_id=session_id,
-        seq=seq,
-        message_text=message_text,
-    )
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return row
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        try:
+            last_turn = session.exec(
+                select(func.max(AgentTurn.seq)).where(
+                    AgentTurn.session_id == session_id
+                )
+            ).one()
+            last_pending = session.exec(
+                select(func.max(PendingMessage.seq)).where(
+                    PendingMessage.session_id == session_id
+                )
+            ).one()
+            seq = max(last_turn or 0, last_pending or 0) + 1
+            row = PendingMessage(
+                session_id=session_id,
+                seq=seq,
+                message_text=message_text,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+        except IntegrityError:
+            session.rollback()
+            if attempt == max_attempts - 1:
+                raise RuntimeError(
+                    f"Failed to allocate seq for session {session_id} after {max_attempts} attempts"
+                )
+            # Continue to next attempt
 
 
 def get_pending_message(
@@ -305,9 +324,18 @@ def reclaim_stale_claims_sync(lease_interval_seconds: int = 30) -> int:
     an actively executing turn that refreshes its claim will never be
     double-executed (even if the turn takes many minutes).
 
-    The comparison uses Python's datetime.now() as a cutoff. Since claimed_at
-    is always set via the database (func.now()), the comparison is stable
-    across clock skew and timezone differences.
+    ASSUMPTION, and the one thing to check if turns are ever double-executed:
+    claimed_at is written by the DATABASE (func.now()) but the cutoff below is
+    computed from THIS POD's clock, because SQLAlchemy will not render timedelta
+    arithmetic portably across SQLite and Postgres. So the lease is only sound
+    while pod and database clocks agree to well within the interval.
+
+    The two directions of skew are not equally bad. A pod running behind the
+    database sees claims as fresher than they are, which only delays recovery.
+    A pod running ahead sees them as staler and can reclaim a turn that is still
+    executing, which is the double-execution the lease exists to prevent. NTP
+    keeps this far inside 30s in practice, but the dangerous direction fails
+    silently, so widen the lease rather than narrow it if this is ever in doubt.
 
     Returns the count of reclaimed messages.
     """
