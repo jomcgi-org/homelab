@@ -141,18 +141,16 @@ class TestChatStartupHook:
         ):
             await _start_singletons(app)
 
-        assert len(task_mocks) == 4
-        # Tasks: 0=bot, 1=outbox drain, 2=ships ingest, 3=sweep, all have done
-        # callbacks. (The scheduler dispatch loop was removed - all batch jobs
-        # run as Argo CronWorkflows now.)
-        bot_task = task_mocks[0]
-        drain_task = task_mocks[1]
-        ships_task = task_mocks[2]
-        sweep_task = task_mocks[3]
-        bot_task.add_done_callback.assert_called_once_with(_log_task_exception)
-        drain_task.add_done_callback.assert_called_once_with(_log_task_exception)
-        ships_task.add_done_callback.assert_called_once_with(_log_task_exception)
-        sweep_task.add_done_callback.assert_called_once_with(_log_task_exception)
+        # Tasks: bot, outbox drain, ships ingest, message lock sweep, and the
+        # agent_sessions pending-message sweep. The scheduler dispatch loop was
+        # removed (batch jobs run as Argo CronWorkflows).
+        assert len(task_mocks) == 5
+        # Assert the invariant rather than indexing a hand-numbered list: what
+        # matters is that EVERY singleton gets the done callback, so a task that
+        # crashes is logged. Indexing meant this broke whenever a singleton was
+        # added, without testing anything extra.
+        for task in task_mocks:
+            task.add_done_callback.assert_called_once_with(_log_task_exception)
 
 
 # ---------------------------------------------------------------------------

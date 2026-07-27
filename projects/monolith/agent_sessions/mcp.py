@@ -265,7 +265,7 @@ async def monolith_agent_session_start(workspace: str, prompt: str) -> dict:
 
 @mcp.tool
 async def monolith_agent_session_send(session_id: int, message: str) -> dict:
-    """Enqueue a message for a session; this returns accepted before the turn completes."""
+    """Enqueue a message for a session, returning once accepted rather than once complete."""
     turn = await asyncio.to_thread(_persist_pending_message, session_id, message)
     asyncio.create_task(_execute_pending_message(session_id, turn))
     return {"accepted": True, "session_id": session_id, "turn": turn}
