@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """HTTP over vsock shim for a long-lived Claude Code CLI session."""
 
 import http.server
