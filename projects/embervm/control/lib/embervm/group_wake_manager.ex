@@ -107,7 +107,7 @@ defmodule Embervm.GroupWakeManager do
   # untouched: a caller waits as long as it chooses, the bound is on the wake it waits
   # behind. The margin covers the legitimate relight/fresh sequence beyond the guest's
   # own readiness budget (network setup, the create fallback). Default group
-  # wakeTimeoutSeconds is 120 (scratch-k8s 180), so the bound defaults to ~135s.
+  # wakeTimeoutSeconds is typically 120 to 180s, so the bound defaults to ~135s.
   @default_wake_timeout_margin_ms 15_000
   # Fallback wakeTimeoutSeconds when the catalog entry carries none (matches
   # WorkloadWatcher's @group_defaults.wake_timeout_seconds).

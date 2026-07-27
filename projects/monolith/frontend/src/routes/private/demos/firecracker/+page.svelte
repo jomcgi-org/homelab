@@ -8,7 +8,6 @@
   // request, so we dropped the modal entirely in favor of a plain tabbed
   // page (mirrors the Grimoire app topbar in
   // src/routes/public/app/grimoire/+layout.svelte).
-  import K8sTerminalPanel from "$lib/private/components/demos/K8sTerminalPanel.svelte";
   import PostgresPanel from "$lib/private/components/demos/PostgresPanel.svelte";
   import RunPanel from "$lib/private/components/demos/RunPanel.svelte";
   import "$lib/private/demos/theme.css";
@@ -82,14 +81,6 @@ def handle():
       // queries), not the shared RunPanel run/trace flow.
       sample: null,
     },
-    {
-      key: "k8s",
-      label: "Kubernetes",
-      tagline: "A scale-to-zero 3-node k3s cluster; k9s straight into it.",
-      // No sample: this tab renders its own panel (status poll + xterm
-      // terminal over a WebSocket), not the shared RunPanel run/trace flow.
-      sample: null,
-    },
   ];
 
   let activeKey = $state("python");
@@ -126,8 +117,6 @@ def handle():
     {#key activeProject.key}
       {#if activeProject.key === "postgres"}
         <PostgresPanel />
-      {:else if activeProject.key === "k8s"}
-        <K8sTerminalPanel />
       {:else}
         <RunPanel project={activeProject} />
       {/if}

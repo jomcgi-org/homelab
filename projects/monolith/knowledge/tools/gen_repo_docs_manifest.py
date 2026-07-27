@@ -86,6 +86,8 @@ def iter_doc_paths(root: Path) -> list[str]:
 def build_manifest_lines(root: Path, paths: list[str]) -> list[str]:
     lines: list[str] = []
     for rel in sorted(paths):
+        if not (root / rel).is_file():
+            continue
         # Strip NUL bytes: a doc may contain 0x00, which Postgres TEXT columns
         # reject on insert (the reconcile would fail). Drop them so chunk_text is
         # always storable; the hash is taken over the cleaned content.

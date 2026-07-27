@@ -17,7 +17,5 @@ from fastapi import FastAPI
 
 def register(app: FastAPI) -> None:
     from demos.firecracker_api import router
-    from demos.k8s_terminal_api import router as k8s_router
 
     app.include_router(router)
-    app.include_router(k8s_router)

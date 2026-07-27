@@ -31,20 +31,6 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}
-    # k8s-terminal demo WebSocket: an interactive k9s session lives as one
-    # long request, so the demos-wide 600s timeout would cut it at 10 minutes.
-    # Wins over the /api/demos rule by longest-prefix match (Gateway API
-    # matches by specificity, not rule order).
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /api/demos/k8s/terminal
-      timeouts:
-        request: 14400s
-        backendRequest: 14400s
-      backendRefs:
-        - name: {{ include "monolith.fullname" . }}
-          port: {{ .Values.service.apiPort | int }}
     # Demos API: pass through to backend without rewriting
     - matches:
         - path:

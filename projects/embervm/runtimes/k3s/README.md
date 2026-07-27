@@ -105,10 +105,6 @@ asserted** (see `drill/README.md`):
 | airgap tarball size (baked)     | ~133 MiB amd64 / ~120 MiB arm64 (above) |
 | boot-to-Ready (cold, zero egress) | TODO (spike)           |
 
-The scratch-k8s consumer CR (plan Task 10) sizes members from these numbers; the
-provisional spec is server 2 vCPU / 2048 MiB and agents 1 vCPU / 1024 MiB, to be
-confirmed against the spike's floor.
-
 ## Kernel requirements (verified in-guest by the spike, not asserted here)
 
 k3s needs `overlayfs`, `br_netfilter`, `veth`, `nf_conntrack`, and iptables/nft
@@ -149,42 +145,10 @@ over `/run`, `/var/log`, `/tmp`; `/proc`, `/sys`, cgroup2). k3s runs via
 `fork+exec` (not `exec`-replace) because the clock-agent goroutine must live
 alongside it; this init is the supervisor.
 
-## The scratch-k8s composite consumer (plan Task 10)
+## Composite consumer status
 
-The named R5 consumer, `scratch-k8s`, is a `class: composite` Workload CR in the
-embervm chart (`chart/templates/workload-scratch-k8s.yaml`): a group of one
-`server` member (startOrder 0, the entry, healthPort 6443, 2 vCPU / 2048 MiB) and
-two `agent` members (startOrder 1, healthPort 10250, 1 vCPU / 1024 MiB each). The
-group's entry is exposed cluster-internally on the node Envoy at composite
-listenPort **5410** (the first port of the 5410-5419 range, unique across composite
-workloads), so a consumer reaches the k3s API at
-`embervm-serving.<ns>.svc:5410`.
-
-### Stable kubectl token (standing decision 13)
-
-`spec.group.secretRef` points at a STABLE K8s Secret (synced from 1Password by
-`onepassworditem-scratch-k8s.yaml`) holding `EMBER_GROUP_SECRET`. Because the
-secret is read from the Secret on every boot (never minted fresh), the server's
-static token-auth entry (`serverTokenAuthCSV`: the secret as a `system:masters`
-bearer token for user `ember`) is IDENTICAL across the group's rolls, banked-TTL
-expiries, and fresh boots. The monolith consumer reads the SAME 1Password item
-into its own namespace and builds a kubeconfig whose bearer token IS that raw
-`EMBER_GROUP_SECRET`, so the two always match. The kubeconfig sets
-`insecure-skip-tls-verify: true` because the guest's self-signed serving cert rolls
-with the group; the isolation statement is the microVM boundary and cluster-
-internal-only reachability, not TLS pinning (scratch-tier posture).
-
-### WARMTH-ONLY contract (state evaporates by design)
-
-The scratch-k8s cluster is **warmth-only**: its Kubernetes state (nodes, deployed
-pods, sqlite/etcd contents) lives in the group snapshot only, never on a durable
-volume, and is DISCARDED on a roll (`maxLifetimeSeconds` convergence), a banked-
-bundle TTL expiry (`bankedTtlSeconds`), and any fresh boot (a partial or unreadable
-warm set fresh-boots). A consumer (the monolith's `run_python` wiring,
-`projects/monolith/sandbox/client.py`) must treat every wake as possibly-fresh:
-deployed pods are ephemeral and must be re-applied if the cluster fresh-boots. This
-contract is stated where the consumer reads it (the CR header comment, this README,
-and the sandbox client docstring) so no consumer assumes durability.
+The former `scratch-k8s` composite consumer and its demo have been retired. The
+k3s runtime remains available for the single-VM spike and future composite work.
 
 ## Lane: stateful, not serving (verified against origin/main)
 

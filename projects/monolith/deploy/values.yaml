@@ -451,15 +451,3 @@ scratchPostgres:
   demoListenPort: 5401
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
-
-# EmberVM R5 scale-to-zero scratch-k8s (ADR embervm/001, plan Task 10): enabled
-# with the k8s-homelab 1Password item whose EMBER_GROUP_SECRET field syncs into
-# this namespace's Secret. listenPort (5410) + embervmNamespace + servingService
-# default from the chart. Enabling renders the OnePasswordItem and the
-# SCRATCH_K8S_KUBECONFIG env for run_python sessions (a kubeconfig against the
-# scale-to-zero scratch Kubernetes cluster; warmth-only, so state evaporates on the
-# group's roll/TTL/fresh-boot).
-scratchK8s:
-  enabled: true
-  onepassword:
-    itemPath: "vaults/k8s-homelab/items/scratch-k8s"

@@ -42,24 +42,6 @@ SANDBOX_SESSION_WORKLOAD = os.environ.get("SANDBOX_SESSION_WORKLOAD", "sandbox-s
 # guest image. Empty leaves the guest env untouched (feature off).
 SCRATCH_POSTGRES_DSN = os.environ.get("SCRATCH_POSTGRES_DSN", "")
 
-# EmberVM R5 scratch-k8s kubeconfig (plan Task 10). When set (the chart wires it
-# from the monolith-namespace 1Password secret + the embervm serving Service),
-# agent run_python snippets can kubectl/client-go against the scale-to-zero
-# scratch Kubernetes cluster. The kubeconfig points at the GUEST cluster
-# (embervm-serving:<listenPort>, the k3s API), not ours: the token is the stable
-# EMBER_GROUP_SECRET (the k3s server maps it to a system:masters bearer via its
-# static token-auth entry), and TLS verification is skipped (insecure-skip-tls-
-# verify) because the guest's serving cert is self-signed and rolls with the group
-# (scratch-tier in-cluster posture, documented). The guest can reach the in-cluster
-# serving Service, so the kubeconfig is injected into the executed code's process
-# env (as os.environ["KUBECONFIG"] pointing at a written file) rather than baked
-# into the guest image. Empty leaves the guest env untouched (feature off).
-#
-# WARMTH-ONLY: the scratch cluster's state (nodes, deployed pods) evaporates on the
-# group's roll, banked-TTL expiry, and any fresh boot. A run_python snippet must
-# treat every wake as possibly-fresh; deployed pods are ephemeral.
-SCRATCH_K8S_KUBECONFIG = os.environ.get("SCRATCH_K8S_KUBECONFIG", "")
-
 SANDBOX_CONNECT_TIMEOUT = 5.0
 # Guest wall-clock cap is 25s inside a 30s workload requestTimeout; read a
 # little past that so the daemon's timeout error reaches us intact.
@@ -79,32 +61,14 @@ def _with_scratch_env(code: str) -> str:
 
     - SCRATCH_POSTGRES_DSN (R4): a snippet can ``os.environ["SCRATCH_POSTGRES_DSN"]``
       and psycopg-connect to the scale-to-zero scratch Postgres.
-    - SCRATCH_K8S_KUBECONFIG (R5, plan Task 10): the kubeconfig YAML is written to a
-      guest temp file and ``os.environ["KUBECONFIG"]`` points at it, so a snippet
-      can ``kubectl``/client-go against the scale-to-zero scratch Kubernetes cluster
-      with no further setup. WARMTH-ONLY: the cluster's state evaporates on the
-      group's roll/TTL/fresh-boot, so treat every wake as possibly-fresh.
-
     Each value is a Python-repr literal so quotes/backslashes/newlines in the secret
-    or the multi-line kubeconfig are escaped safely. When both features are off the
-    code is returned unchanged.
+    are escaped safely. When the feature is off the code is returned unchanged.
     """
-    if not SCRATCH_POSTGRES_DSN and not SCRATCH_K8S_KUBECONFIG:
+    if not SCRATCH_POSTGRES_DSN:
         return code
     lines = ["import os as _os"]
     if SCRATCH_POSTGRES_DSN:
         lines.append(f"_os.environ['SCRATCH_POSTGRES_DSN'] = {SCRATCH_POSTGRES_DSN!r}")
-    if SCRATCH_K8S_KUBECONFIG:
-        # Write the kubeconfig to a guest temp file and point KUBECONFIG at it, so
-        # kubectl and client-go both find it with zero extra snippet code.
-        lines.append("import tempfile as _tf")
-        lines.append(
-            "_kc = _tf.NamedTemporaryFile('w', suffix='.kubeconfig', delete=False)"
-        )
-        lines.append(f"_kc.write({SCRATCH_K8S_KUBECONFIG!r})")
-        lines.append("_kc.close()")
-        lines.append("_os.environ['KUBECONFIG'] = _kc.name")
-        lines.append("del _tf, _kc")
     lines.append("del _os")
     preamble = "\n".join(lines) + "\n"
     return preamble + code

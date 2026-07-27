@@ -32,27 +32,12 @@ helm_chart(
         # R4 stateful consumer (D-R4.PR-11.1): the scratch-postgres base image.
         # Distinct FLAT top-level key (D14a.6), digest-pinned from its .info.
         "scratchPostgres.guestImage": "//projects/embervm/runtimes/postgres:image.info",
-        # R5 composite consumer (plan Task 10): the scratch-k8s k3s server + agent
-        # base images. Two DISTINCT FLAT top-level keys (D14a.6), digest-pinned
-        # from their .info providers so the noded EMBERVM_NODED_IMAGES refs, the
-        # rootfs-builder GUEST_IMAGE, and the composite Workload CR's per-member
-        # source.image.ref all resolve to the same pinned digest.
-        "scratchK8sServer.guestImage": "//projects/embervm/runtimes/k3s/k3s-server:image.info",
-        "scratchK8sAgent.guestImage": "//projects/embervm/runtimes/k3s/k3s-agent:image.info",
         # ADR embervm/010 (Skyframe snapshot demo): the bazel-query base image (a
         # warm Bazel server over Abseil). Distinct FLAT top-level key (D14a.6),
         # digest-pinned from its .info so the noded EMBERVM_NODED_IMAGES ref, the
         # rootfs-builder GUEST_IMAGE, and the Workload CR's source.image.ref all
         # resolve to the same pinned digest.
         "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
-        # Node-provisioning contract (ADR embervm/012 storage-tiers amendment): the
-        # scratch-prep DaemonSet image (busybox + util-linux + e2fsprogs, no repo
-        # code). MUST be a DISTINCT top-level key, not noded.scratchPrep.image:
-        # this is the key the template now reads and helm_images_values pins;
-        # helm_images_values
-        # emits one YAML block per dotted key, so nesting under the noded.* prefix
-        # already claimed by "noded.image" above would collapse to the last on
-        # parse (duplicate-key, D14a.6), silently dropping one pin.
         "scratchPrep.image": "//projects/embervm/scratch-prep:image.info",
     },
     publish = True,

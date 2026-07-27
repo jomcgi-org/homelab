@@ -57,7 +57,7 @@ defmodule Embervm.BrickController do
 
   Recorded policy (2026-07-20, values-declared, not hardcoded): per-class
   min-floor `{2gi: 0, 4gi: 0, 8gi: 0, 16gi: 1}` (one 16Gi stays warm for the
-  scratch-k8s composite, which must fit a single brick) and per-class max
+  composite group, which must fit a single brick) and per-class max
   `{2gi: 4, 4gi: 3, 8gi: 2, 16gi: 2}` (`bricks.autoscale.minReplicas` /
   `maxReplicas` in the chart values, deep-merged like `desiredReplicas`).
 
