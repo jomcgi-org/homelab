@@ -174,7 +174,6 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
             turn = await _transport.deliver(
                 cli_session_id,
                 row.message_text,
-                session_row.workspace,
             )
         except Exception as exc:  # noqa: BLE001 - retain the row for recovery
             await asyncio.to_thread(
