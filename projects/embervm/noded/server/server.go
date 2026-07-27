@@ -1740,6 +1740,9 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 //     memfile.tmp/snapfile.tmp orphan with no snapfile, so ReconcileBasesFromDisk
 //     never registered it), reported with base_state UNSPECIFIED.
 //
+// Staging dirs ending in .building are intentionally excluded: the registry's
+// BUILDING entry is authoritative while a build is in flight.
+//
 // Scanning disk (not just the registry) is what lets the control plane's retention
 // sweep target the .tmp orphans too: a registry-only projection would hide them,
 // stranding the exact bytes PR-3 exists to reclaim. A dir also present in the
@@ -1766,24 +1769,40 @@ func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
 			continue
 		}
 		ref := ent.Name()
+		// Skip staging directories; they are protected by the registry's BUILDING
+		// state and must not be enumerated as independent candidates.
+		if strings.HasSuffix(ref, ".building") {
+			continue
+		}
 		seen[ref] = struct{}{}
 		if b, ok := reg[ref]; ok {
+			state := b.state
+			sizeBytes := uint64(b.sizeBytes)
+			if !isCompleteBase(filepath.Join(root, ref), state) {
+				state = nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED
+				sizeBytes = 0
+			}
 			out = append(out, &nodev1.BaseInventoryEntry{
 				Ref:       ref,
 				Workload:  b.workload,
-				SizeBytes: uint64(b.sizeBytes),
-				BaseState: b.state,
+				SizeBytes: sizeBytes,
+				BaseState: state,
 			})
 			continue
 		}
 		// Unregistered on-disk dir (a superseded dir not re-registered, or a .tmp
 		// orphan): report it so the sweep can reclaim it. base_state UNSPECIFIED
 		// marks "on disk, not a registry-known build".
+		state := nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED
+		sizeBytes := dirSizeBytes(filepath.Join(root, ref))
+		if !isCompleteBase(filepath.Join(root, ref), state) {
+			sizeBytes = 0
+		}
 		out = append(out, &nodev1.BaseInventoryEntry{
 			Ref:       ref,
 			Workload:  workloadFromBaseKey(ref),
-			SizeBytes: dirSizeBytes(filepath.Join(root, ref)),
-			BaseState: nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED,
+			SizeBytes: sizeBytes,
+			BaseState: state,
 		})
 	}
 	// A BUILDING ref whose dir has not yet materialized on disk (the build just
@@ -1806,6 +1825,31 @@ func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
 	return out
 }
 
+func isCompleteBase(baseDir string, state nodev1.BaseBuildState) bool {
+	if state == nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING {
+		return true
+	}
+	ents, err := os.ReadDir(baseDir)
+	if err != nil {
+		return false
+	}
+	seen := make(map[string]bool, 3)
+	for _, ent := range ents {
+		if ent.IsDir() {
+			continue
+		}
+		name := ent.Name()
+		if strings.HasSuffix(name, ".tmp") {
+			return false
+		}
+		switch name {
+		case "imageref", "memfile", "snapfile":
+			seen[name] = true
+		}
+	}
+	return seen["imageref"] && seen["memfile"] && seen["snapfile"]
+}
+
 // localBasesFromRegistry is the registry-only fallback for localBasesStatus when
 // the bases/ dir cannot be scanned (missing on a fresh node, or a read error).
 func (s *Server) localBasesFromRegistry() []*nodev1.BaseInventoryEntry {
@@ -1815,11 +1859,17 @@ func (s *Server) localBasesFromRegistry() []*nodev1.BaseInventoryEntry {
 	}
 	out := make([]*nodev1.BaseInventoryEntry, 0, len(entries))
 	for _, b := range entries {
+		state := b.state
+		sizeBytes := uint64(b.sizeBytes)
+		if !isCompleteBase(filepath.Join(s.cfg.SnapshotRoot, "bases", b.snapshotRef), state) {
+			state = nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED
+			sizeBytes = 0
+		}
 		out = append(out, &nodev1.BaseInventoryEntry{
 			Ref:       b.snapshotRef,
 			Workload:  b.workload,
-			SizeBytes: uint64(b.sizeBytes),
-			BaseState: b.state,
+			SizeBytes: sizeBytes,
+			BaseState: state,
 		})
 	}
 	return out
@@ -2422,6 +2472,27 @@ func (s *Server) ReconcileBasesFromDisk() {
 	if n > 0 || gc > 0 {
 		s.logger.Info("noded: reconciled base snapshots", "adopted", n, "gc_superseded", gc)
 		s.signalChange()
+	}
+}
+
+// CleanupStagingDirs removes abandoned .building/ staging directories.
+// Called only from daemon startup because ReconcileBasesFromDisk also runs at
+// runtime via reregisterRestored after a base hydrate, where a build may be in
+// flight. Startup-only placement ensures no build can be harmed.
+func (s *Server) CleanupStagingDirs() {
+	root := filepath.Join(s.cfg.SnapshotRoot, "bases")
+	ents, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, ent := range ents {
+		if !ent.IsDir() || !strings.HasSuffix(ent.Name(), ".building") {
+			continue
+		}
+		stagingPath := filepath.Join(root, ent.Name())
+		if err := os.RemoveAll(stagingPath); err != nil {
+			s.logger.Warn("noded: cleanup stale staging dir", "path", stagingPath, "err", err)
+		}
 	}
 }
 

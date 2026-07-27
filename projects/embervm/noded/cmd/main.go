@@ -189,6 +189,8 @@ func run(logger *slog.Logger) error {
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.
 	srv.ReconcileBasesFromDisk()
+	// Called only at daemon startup, before any work begins.
+	srv.CleanupStagingDirs()
 	// Report node-local BANKED session snapshots left by a prior incarnation so the
 	// control plane adopts surviving banked sessions (live session VMs died with the
 	// prior daemon; their last banked snapshot, if any, stays restorable).

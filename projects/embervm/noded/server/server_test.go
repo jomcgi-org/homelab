@@ -2064,6 +2064,9 @@ func writeReconcileBase(t *testing.T, basesDir, baseKey, ref string) {
 	if err := os.WriteFile(filepath.Join(d, "snapfile"), []byte("snap"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(d, "memfile"), []byte("mem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if ref != "" {
 		if err := os.WriteFile(filepath.Join(d, "imageref"), []byte(ref), 0o644); err != nil {
 			t.Fatal(err)

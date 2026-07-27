@@ -442,6 +442,15 @@ func TestDriverWarmBaseStartReusesBaseBundle(t *testing.T) {
 	if !baseRef.Base || baseRef.ID != "base-homelab-amd64" || baseRef.SizeBytes == 0 {
 		t.Fatalf("unexpected base ref: %+v", baseRef)
 	}
+	baseDir := d.baseDir("base-homelab-amd64")
+	for _, name := range []string{"snapfile", "memfile"} {
+		if _, err := os.Stat(filepath.Join(baseDir, name)); err != nil {
+			t.Fatalf("final base %s missing: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(baseDir + ".building"); !os.IsNotExist(err) {
+		t.Fatalf("base staging dir still exists, stat err=%v", err)
+	}
 	if err := d.Release(ctx, warm); err != nil {
 		t.Fatalf("Release warm: %v", err)
 	}
