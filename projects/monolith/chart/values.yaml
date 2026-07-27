@@ -744,7 +744,22 @@ jobs:
       # 90s for a cold boot). 300s clears that inside the 5m window, so Forbid
       # never stacks a backlog.
       activeDeadlineSeconds: 300
-      suspend: false
+      # SUSPENDED until the jobs pod can actually reach all four targets. Three
+      # of the four probes failed on environment, not on broken demos, and
+      # latched jomcgi.dev/health to 503 (a false uptime alert):
+      #   bazel    - embervm auth.allowedServiceAccounts admits
+      #              monolith:monolith and monolith-public:monolith-public, but
+      #              this job runs as monolith-workflows:argo-workflow, so the
+      #              control plane 403s "service account not permitted".
+      #   semgrep  - semgrep_scan.client needs FC_INVOKE_URL (set on the backend
+      #              Deployment, never added to this entry's env).
+      #   postgres - POST https://jomcgi.dev/api/ember/postgres/query returns the
+      #              SvelteKit HTML shell, not JSON: /api/ember/* is not on the
+      #              public HTTPRoute for direct external calls.
+      # `pages` was the only one that worked (200 + SSR title on all five).
+      # Re-enable ONLY after a real run proves all four green; a probe that
+      # cannot reach its target is worse than no probe, because it pages you.
+      suspend: true
       emberSynthetic: true
       resources:
         requests:
