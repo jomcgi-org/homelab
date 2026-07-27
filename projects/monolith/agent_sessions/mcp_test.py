@@ -166,3 +166,40 @@ def test_two_sends_are_serialized(monkeypatch, session):
     assert store.get_turn(session, row.id, result1["turn"]) is not None
     assert store.get_turn(session, row.id, result2["turn"]) is not None
     assert execution_order == ["first", "second"]
+
+
+def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
+    row = store.create_session(session, "sid-123", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "hello")
+    claimed: set[tuple[int, int]] = set()
+    executions: list[str] = []
+
+    def claim(session_id: int, turn_seq: int) -> bool:
+        key = (session_id, turn_seq)
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def fake_deliver(_session_id, message):
+        executions.append(message)
+        await asyncio.sleep(0.01)
+        return _completed_turn(message)
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp, "_claim_pending_message_sync", claim)
+    monkeypatch.setattr(mcp._transport, "deliver", fake_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    async def run():
+        await asyncio.gather(
+            mcp._execute_pending_message(row.id, pending.seq),
+            mcp._execute_pending_message(row.id, pending.seq),
+        )
+
+    asyncio.run(run())
+
+    assert executions == ["hello"]
+    assert store.get_turn(session, row.id, pending.seq) is not None

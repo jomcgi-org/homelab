@@ -4,7 +4,7 @@ import json
 import subprocess
 from datetime import datetime, timezone
 
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
@@ -157,6 +157,39 @@ def get_pending_message_sync(session_id: int, turn_seq: int) -> PendingMessage |
     """Fetch one pending message using a fresh synchronous database session."""
     with Session(get_engine()) as session:
         return get_pending_message(session, session_id, turn_seq)
+
+
+def claim_pending_message_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
+    """Atomically claim one queued message for execution on this replica."""
+    with Session(get_engine()) as session:
+        result = session.execute(
+            update(PendingMessage)
+            .where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.seq == turn_seq,
+                PendingMessage.claimed_by_replica.is_(None),
+            )
+            .values(claimed_by_replica=replica_id)
+        )
+        session.commit()
+    return result.rowcount == 1
+
+
+def release_pending_message_claim_sync(
+    session_id: int, turn_seq: int, replica_id: str
+) -> None:
+    """Release this replica's claim after execution completes."""
+    with Session(get_engine()) as session:
+        session.execute(
+            update(PendingMessage)
+            .where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.seq == turn_seq,
+                PendingMessage.claimed_by_replica == replica_id,
+            )
+            .values(claimed_by_replica=None)
+        )
+        session.commit()
 
 
 def persist_turn_from_pending_sync(

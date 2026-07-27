@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import logging
+import platform
 import subprocess
 from uuid import uuid4
 
@@ -15,10 +16,12 @@ from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.transport import LocalSubprocessTransport, Turn
 from app.db import get_engine
 from app.mcp_app import mcp
+from framework import log_task_exception
 
 _transport = LocalSubprocessTransport()
 _session_locks: dict[int, asyncio.Lock] = {}
 _sweep_task: asyncio.Task | None = None
+_REPLICA_ID = platform.node()
 logger = logging.getLogger(__name__)
 
 
@@ -112,6 +115,14 @@ def _get_pending_message_sync(session_id: int, turn_seq: int):
     return store.get_pending_message_sync(session_id, turn_seq)
 
 
+def _claim_pending_message_sync(session_id: int, turn_seq: int) -> bool:
+    return store.claim_pending_message_sync(session_id, turn_seq, _REPLICA_ID)
+
+
+def _release_pending_message_claim_sync(session_id: int, turn_seq: int) -> None:
+    store.release_pending_message_claim_sync(session_id, turn_seq, _REPLICA_ID)
+
+
 def _persist_turn_from_pending_sync(
     session_id: int,
     turn_seq: int,
@@ -146,6 +157,10 @@ async def _with_session_lock(session_id: int, coro):
 
 async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
     """Process one queued message durably."""
+
+    claimed = await asyncio.to_thread(_claim_pending_message_sync, session_id, turn_seq)
+    if not claimed:
+        return
 
     async def _do_execute() -> None:
         row = await asyncio.to_thread(_get_pending_message_sync, session_id, turn_seq)
@@ -183,7 +198,12 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
         await asyncio.to_thread(_delete_pending_message_sync, session_id, turn_seq)
         await _notify_terminal(turn, summary, status)
 
-    await _with_session_lock(session_id, _do_execute())
+    try:
+        await _with_session_lock(session_id, _do_execute())
+    finally:
+        await asyncio.to_thread(
+            _release_pending_message_claim_sync, session_id, turn_seq
+        )
 
 
 async def _sweep_orphaned_pending_messages() -> None:
@@ -195,11 +215,13 @@ async def _sweep_orphaned_pending_messages() -> None:
             asyncio.create_task(_execute_pending_message(row.session_id, row.seq))
 
 
-def start_pending_message_sweep() -> None:
-    """Start the orphan sweep when an event loop is available."""
+def start_pending_message_sweep() -> list[asyncio.Task]:
+    """Start the leader-owned orphan sweep and return its tracked task."""
     global _sweep_task
     if _sweep_task is None or _sweep_task.done():
         _sweep_task = asyncio.create_task(_sweep_orphaned_pending_messages())
+        _sweep_task.add_done_callback(log_task_exception)
+    return [_sweep_task]
 
 
 def _decode_json(value: str | None, default):
