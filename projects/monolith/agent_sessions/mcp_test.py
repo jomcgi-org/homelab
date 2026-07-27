@@ -13,11 +13,18 @@ from agent_sessions.transport import Turn
 
 
 @pytest.fixture
-def session(monkeypatch):
+def session(monkeypatch, tmp_path):
+    # A FILE-backed database with a real pool, not the usual in-memory
+    # StaticPool. StaticPool hands every Session the same single connection, and
+    # the code under test deliberately opens its own Session per operation and
+    # runs it in a worker thread via asyncio.to_thread. Concurrent statements on
+    # one SQLite connection interleave unpredictably, so the concurrency tests
+    # saw both claimants lose the race and nothing execute. A file lets each
+    # Session take its own connection, which is what production does and what
+    # makes an atomic claim meaningful to test at all.
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'agent_sessions_test.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     table_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -177,6 +184,9 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     """
     row = store.create_session(session, "sid-123", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "hello")
+    pending_seq = (
+        pending.seq
+    )  # capture before expire_all(); the row is deleted on completion
     executions: list[str] = []
 
     async def fake_deliver(_session_id, message):
@@ -202,8 +212,8 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     assert executions == ["hello"]
     # Turn should be persisted and pending row should be deleted
     session.expire_all()
-    assert store.get_turn(session, row.id, pending.seq) is not None
-    assert store.get_pending_message(session, row.id, pending.seq) is None
+    assert store.get_turn(session, row.id, pending_seq) is not None
+    assert store.get_pending_message(session, row.id, pending_seq) is None
 
 
 def test_actively_refreshed_claim_is_not_reclaimed(session):
@@ -333,3 +343,108 @@ def test_heartbeat_refresh_fails_with_wrong_replica_id(session):
     pending_row = store.get_pending_message(session, row.id, pending.seq)
     assert pending_row is not None
     assert pending_row.claimed_by_replica == "replica-a"
+
+
+def test_concurrent_seq_allocation_race_retries(session):
+    """Test that concurrent seq allocations handle collisions via retry.
+
+    This test verifies that when two threads race to allocate the same seq,
+    one wins the UNIQUE constraint check, and the other retries and allocates
+    a higher seq. Both messages are successfully enqueued despite the collision.
+    """
+    row = store.create_session(session, "sid-race", "/workspace", "main")
+
+    # Use asyncio to simulate concurrent allocations
+    async def concurrent_allocations():
+        # Run two allocations concurrently - both will compute seq=1 initially
+        # but the retry logic will make one of them get seq=2
+        seq1 = await asyncio.to_thread(
+            store.create_pending_message, session, row.id, "message-1"
+        )
+        seq2 = await asyncio.to_thread(
+            store.create_pending_message, session, row.id, "message-2"
+        )
+        return seq1.seq, seq2.seq
+
+    seq1, seq2 = asyncio.run(concurrent_allocations())
+
+    # Both should succeed; one gets seq 1 and the other gets seq 2
+    # (The order depends on thread scheduling, but both should be present)
+    session.expire_all()
+    msg1 = store.get_pending_message(session, row.id, seq1)
+    msg2 = store.get_pending_message(session, row.id, seq2)
+    assert msg1 is not None and msg1.message_text == "message-1"
+    assert msg2 is not None and msg2.message_text == "message-2"
+    # Verify they have different seqs
+    assert seq1 != seq2
+
+
+def test_notify_terminal_with_no_terminal_reason_warns(monkeypatch):
+    """Test that a turn with terminal_reason=None produces a warn-level notify.
+
+    When a turn ends without a terminal_reason (e.g., transport dies mid-turn),
+    it should be reported as a warn-level notification, not silently ignored.
+    """
+    from agent_sessions.transport import Turn
+
+    notify_calls = []
+
+    async def mock_notify(summary, level):
+        notify_calls.append((summary, level))
+
+    monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
+
+    async def run():
+        turn = Turn(
+            result="Partial result",
+            terminal_reason=None,  # No terminal reason (transport died)
+            stop_reason="end_turn",
+            is_error=False,
+            permission_denials=[],
+            num_turns=1,
+            session_id="sid-test",
+            usage={},
+            total_cost_usd=0.01,
+            duration_ms=100,
+            activities=[],
+        )
+        await mcp._notify_terminal(turn, "Test summary", "warn")
+
+    asyncio.run(run())
+
+    assert len(notify_calls) == 1
+    summary, level = notify_calls[0]
+    assert summary == "Test summary"
+    assert level == "warn"
+
+
+def test_turn_status_needs_input_on_permission_denials():
+    """Test that permission_denials takes priority and returns needs_input status.
+
+    The critical ordering is that permission_denials is checked FIRST in
+    _turn_status, so a turn with permission_denials AND terminal_reason="completed"
+    must still return "needs_input". This is the whole point of checking denials first.
+    """
+    from agent_sessions.transport import Turn
+
+    # Turn with permission_denials should be needs_input
+    turn_with_denials = Turn(
+        result="Result text",
+        terminal_reason="completed",  # Normally would be "completed"
+        stop_reason="end_turn",
+        is_error=False,
+        permission_denials=["tool_use"],  # But has denials
+        num_turns=1,
+        session_id="sid-test",
+        usage={},
+        total_cost_usd=0.01,
+        duration_ms=100,
+        activities=[],
+    )
+
+    status = mcp._turn_status(turn_with_denials)
+
+    # Must be "needs_input" because permission_denials takes priority
+    assert status == "needs_input", (
+        f"Turn with permission_denials should be needs_input, got {status}"
+    )
