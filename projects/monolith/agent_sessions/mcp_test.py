@@ -144,7 +144,7 @@ def test_two_sends_are_serialized(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
     execution_order = []
 
-    async def fake_deliver(_session_id, message, workspace="/tmp"):
+    async def fake_deliver(_session_id, message):
         execution_order.append(message)
         await asyncio.sleep(0.01)
         return _completed_turn(message)
@@ -178,7 +178,7 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     pending = store.create_pending_message(session, row.id, "hello")
     executions: list[str] = []
 
-    async def fake_deliver(_session_id, message, workspace="/tmp"):
+    async def fake_deliver(_session_id, message):
         executions.append(message)
         await asyncio.sleep(0.01)
         return _completed_turn(message)

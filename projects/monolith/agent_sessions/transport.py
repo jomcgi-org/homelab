@@ -102,15 +102,12 @@ class EmberVmShimTransport:
             logger.warning("embervm session creation transport error: %s", exc)
             raise EmberVMTransportError(str(exc)) from exc
 
-    async def deliver(
-        self, session_id: str | None, message: str, workspace: str = "/tmp"
-    ) -> Turn:
+    async def deliver(self, session_id: str | None, message: str) -> Turn:
         """Execute one turn on the guest session and return the result.
 
         Args:
             session_id: Existing EmberVM session ID to reuse, or None to create new.
             message: User message / prompt to send to Claude.
-            workspace: (Ignored; workspace is in the guest, not the pod.)
 
         Returns:
             A Turn with the Claude CLI's response parsed from the guest.
