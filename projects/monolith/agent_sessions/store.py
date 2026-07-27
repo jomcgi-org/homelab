@@ -160,20 +160,43 @@ def get_pending_message_sync(session_id: int, turn_seq: int) -> PendingMessage |
         return get_pending_message(session, session_id, turn_seq)
 
 
-def claim_pending_message_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
-    """Atomically claim one queued message for execution on this replica."""
+def claim_pending_message_for_session_sync(
+    session_id: int, replica_id: str
+) -> int | None:
+    """Atomically claim the lowest unclaimed seq for a session.
+
+    Enforces FIFO ordering across replicas by always claiming the lowest
+    unclaimed seq. This is a single atomic operation, so ordering is
+    guaranteed at the database level and holds across all replicas.
+
+    Returns the seq of the claimed message, or None if no unclaimed messages.
+    """
     with Session(get_engine()) as session:
+        # Get the lowest unclaimed seq for this session
+        lowest_seq_result = session.execute(
+            select(func.min(PendingMessage.seq)).where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.claimed_by_replica.is_(None),
+            )
+        ).scalar()
+
+        if lowest_seq_result is None:
+            return None
+
+        # Claim it atomically
         result = session.execute(
             update(PendingMessage)
             .where(
                 PendingMessage.session_id == session_id,
-                PendingMessage.seq == turn_seq,
+                PendingMessage.seq == lowest_seq_result,
                 PendingMessage.claimed_by_replica.is_(None),
             )
             .values(claimed_by_replica=replica_id, claimed_at=func.now())
         )
         session.commit()
-    return result.rowcount == 1
+
+        # Return the seq if we successfully claimed it, None otherwise
+        return lowest_seq_result if result.rowcount == 1 else None
 
 
 def release_pending_message_claim_sync(
