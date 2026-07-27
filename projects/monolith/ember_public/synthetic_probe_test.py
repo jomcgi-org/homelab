@@ -30,28 +30,36 @@ async def test_semgrep_empty_findings_is_not_ok(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_postgres_busy_is_skipped(monkeypatch):
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, *args, **kwargs):
-            return type(
-                "Response",
-                (),
-                {
-                    "status_code": 200,
-                    "text": "",
-                    "json": lambda self: {"busy": True, "error": "busy"},
-                },
-            )()
-
-    monkeypatch.setenv("EMBER_SYNTHETIC_BASE_URL", "https://example.test")
-    monkeypatch.setattr(probe.httpx, "AsyncClient", lambda **_: Client())
+    monkeypatch.setattr(probe.core, "demo_pg_dsn", lambda: "postgres://test")
+    monkeypatch.setattr(probe.core, "try_acquire_query_slot", lambda: False)
     result = await probe.probe_postgres()
     assert result["skip"] is True
+
+
+@pytest.mark.asyncio
+async def test_postgres_aggregate_roundtrip_success(monkeypatch):
+    """Successful aggregate roundtrip records ok with connect_ms as latency."""
+    monkeypatch.setattr(probe.core, "demo_pg_dsn", lambda: "postgres://test")
+    monkeypatch.setattr(probe.core, "EMBERVM_URL", "http://test")
+    monkeypatch.setattr(
+        probe.core,
+        "cached_demo_pg_status",
+        lambda: {"state": "asleep", "generation": 1},
+    )
+    monkeypatch.setattr(probe.core, "try_acquire_query_slot", lambda: True)
+    monkeypatch.setattr(
+        probe.core,
+        "demo_pg_orders_roundtrip",
+        lambda *_: {"connect_ms": 42, "total_ms": 100},
+    )
+    monkeypatch.setattr(probe.core, "record_query_outcome", lambda **_: None)
+    monkeypatch.setattr(probe.core, "classify_wake", lambda _: "cold")
+    monkeypatch.setattr(probe.core, "release_query_slot", lambda: None)
+
+    result = await probe.probe_postgres()
+    assert result["ok"] is True
+    assert result["latency_ms"] == 42
+    assert "cold" in result["detail"]
 
 
 @pytest.mark.asyncio

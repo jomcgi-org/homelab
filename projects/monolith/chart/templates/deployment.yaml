@@ -98,6 +98,10 @@ spec:
             - name: EMBERVM_URL
               value: {{ .Values.semgrep.embervmUrl | quote }}
             {{- end }}
+            {{- if .Values.emberSynthetic.baseUrl }}
+            - name: EMBER_SYNTHETIC_BASE_URL
+              value: {{ .Values.emberSynthetic.baseUrl | quote }}
+            {{- end }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read
             # base is the in-cluster SeaweedFS S3 host noded GETs archives from;

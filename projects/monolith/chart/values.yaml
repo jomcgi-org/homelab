@@ -718,14 +718,10 @@ jobs:
           memory: 128Mi
         limits:
           memory: 256Mi
-    # Ember synthetic probes. These exercise the public demos and write a
-    # pass/fail latch row that the public tier's /api/health reads, so a broken
-    # exhibit 503s jomcgi.dev/health (and the uptime monitor) before a visitor
-    # finds it. Before this, ember_public/health.py could only read a cached
-    # control-plane status plus the last real visitor's query outcome, so with
-    # no visitors a broken demo reported healthy: an unprovisioned base image
-    # failed every cold boot for hours on 2026-07-19 while /api/health stayed
-    # green.
+    # Ember synthetic probes run in the API pod and write a pass/fail latch row
+    # that the public tier's /api/health reads. The cron only triggers the API
+    # endpoint, so its 180s request timeout plus margin covers a cold Postgres
+    # boot; it no longer runs five sequential page fetches in the job pod.
     #
     # All four probes run in this one job, concurrently, so wall time is the
     # slowest probe rather than their sum. 5m suits all four, including the
@@ -736,31 +732,23 @@ jobs:
     # leave the demo warm for a visitor, and costs ~1% of the sleep-savings
     # accrual. Slowing this down would only trade detection latency for nothing.
     - name: ember-synthetic
-      args: ["ember-synthetic"]
+      args: ["ember-synthetic-trigger"]
       schedule: "*/5 * * * *"
       concurrencyPolicy: Forbid
-      # Worst case is 5 sequential page fetches (30s client timeout each), which
-      # dominates the three concurrent workload probes (the postgres one allows
-      # 90s for a cold boot). 300s clears that inside the 5m window, so Forbid
-      # never stacks a backlog.
+      # The trigger allows 180s for a demo-postgres cold boot, plus margin.
       activeDeadlineSeconds: 300
-      # SUSPENDED until the jobs pod can actually reach all four targets. Three
-      # of the four probes failed on environment, not on broken demos, and
-      # latched jomcgi.dev/health to 503 (a false uptime alert):
-      #   bazel    - embervm auth.allowedServiceAccounts admits
-      #              monolith:monolith and monolith-public:monolith-public, but
-      #              this job runs as monolith-workflows:argo-workflow, so the
-      #              control plane 403s "service account not permitted".
-      #   semgrep  - semgrep_scan.client needs FC_INVOKE_URL (set on the backend
-      #              Deployment, never added to this entry's env).
-      #   postgres - POST https://jomcgi.dev/api/ember/postgres/query returns the
-      #              SvelteKit HTML shell, not JSON: /api/ember/* is not on the
-      #              public HTTPRoute for direct external calls.
-      # `pages` was the only one that worked (200 + SSR title on all five).
-      # Re-enable ONLY after a real run proves all four green; a probe that
-      # cannot reach its target is worse than no probe, because it pages you.
+      # SUSPENDED until a live API-pod run proves all four targets green. The
+      # previous job-pod implementation failed three probes on environment,
+      # not on broken demos: bazel lacked the admitted ServiceAccount, semgrep
+      # lacked FC_INVOKE_URL, and postgres used a public HTTP path that is not
+      # routed for direct calls. The API pod now supplies all of those values.
+      # Re-enable ONLY after a real run proves all four green, because a probe
+      # that cannot reach its target is worse than no probe.
       suspend: true
-      emberSynthetic: true
+      env:
+        # The in-cluster API service the trigger POSTs; injected here (not baked
+        # in code) so a release rename cannot silently break the DNS name.
+        MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
       resources:
         requests:
           cpu: 100m
@@ -768,8 +756,8 @@ jobs:
         limits:
           memory: 256Mi
 
-# Ember synthetic probes (the ember-synthetic CronWorkflow above). Only the
-# base URL lives here; the probes' control-plane address is read from
+# Ember synthetic probes (the ember-synthetic CronWorkflow above). This now
+# feeds the Deployment, not the cron; the probes' control-plane address is read from
 # semgrep.embervmUrl so it cannot drift from the backend's.
 #
 # This is the PUBLIC origin on purpose, not an in-cluster Service: the page and

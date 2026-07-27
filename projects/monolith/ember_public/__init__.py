@@ -45,7 +45,9 @@ def register(app: FastAPI) -> None:
     from ember_public.bazel_router import router as bazel_router
     from ember_public.router import router
     from ember_public.semgrep_router import router as semgrep_router
+    from ember_public.synthetic_router import internal_router
 
     app.include_router(router)
     app.include_router(bazel_router)
     app.include_router(semgrep_router)
+    app.include_router(internal_router)

@@ -1,4 +1,12 @@
-"""Private jobs-pod synthetic probes for the public Ember demos."""
+"""Synthetic probes for the public Ember demos.
+
+These run in the PRIVATE API pod, driven by synthetic_router's internal
+endpoint, which the ember-synthetic CronWorkflow only triggers. The API pod is
+where the admitted ServiceAccount, FC_INVOKE_URL and DEMO_POSTGRES_DSN live;
+running them in the ephemeral job pod instead is what broke the #4065 rollout.
+Each probe returns its failure in-band as {ok, detail, latency_ms} and never
+raises, because a crashing probe IS the finding.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +20,7 @@ import httpx
 from sqlmodel import Session
 
 from app.db import get_engine
-from ember_public import bazel_core, semgrep_core
+from ember_public import bazel_core, core, semgrep_core
 from ember_public.synthetic_models import EmberSyntheticProbe
 
 logger = logging.getLogger(__name__)
@@ -125,13 +133,13 @@ async def probe_pages() -> dict:
     if not base:
         return {"ok": True, "detail": "not configured", "latency_ms": None}
     started = perf_counter()
-    # This deliberately goes over the public internet, rather than in-cluster:
-    # it covers Cloudflare, the HTTPRoute, and SSR as a visitor experiences
-    # them. monolith-public has Cilium ingress policies
-    # (monolith-public-frontend-ingress) that would drop a cross-namespace
-    # fetch from monolith-workflows into monolith-public anyway. The single
-    # retry with 0.2s backoff prevents one Cloudflare blip from latching the
-    # demo down for a full five-minute probe cadence.
+    # This deliberately goes out over the public internet rather than to the
+    # monolith-public Service in-cluster: it covers Cloudflare, the HTTPRoute
+    # and SSR the way a visitor experiences them, and monolith-public's Cilium
+    # ingress policies would drop a cross-namespace fetch anyway. It is the one
+    # probe that still exercises the public edge now that the others call their
+    # cores in-process. The single retry with 0.2s backoff keeps one Cloudflare
+    # blip from latching the demo down for a whole five-minute cadence.
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             for path, sentinel in PAGE_SENTINELS.items():
@@ -177,48 +185,48 @@ async def probe_pages() -> dict:
 
 
 async def probe_postgres() -> dict:
-    """Probe aggregate through the real public HTTP path.
+    """Probe via a direct core call, not HTTP.
 
-    The router nests the Turnstile/session gate entirely inside the insert
-    branch, so aggregate needs no session cookie, Turnstile token, bypass, or
-    secret. A busy response means visitors own the global semaphore, so it is
-    skipped and the previous latch row remains untouched.
+    Aggregate is read-only (same reads without writing, proving wake needs no
+    write), so the probe never appends to the visitor ledger. It respects the
+    query slot semaphore so it never starves real visitors.
     """
-    base = os.environ.get("EMBER_SYNTHETIC_BASE_URL", "").rstrip("/")
-    if not base:
+    dsn = core.demo_pg_dsn()
+    if not dsn:
         return {"ok": True, "detail": "not configured", "latency_ms": None}
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            response = await client.post(
-                f"{base}/api/ember/postgres/query", json={"mode": "aggregate"}
-            )
-        body = response.json()
-        if body.get("busy") or body.get("error") == "busy":
-            return {
-                "ok": True,
-                "detail": "busy, skipped",
-                "latency_ms": None,
-                "skip": True,
-            }
-        if response.status_code != 200:
-            return {
-                "ok": False,
-                "detail": f"status {response.status_code}: {body.get('error', response.text)}",
-                "latency_ms": body.get("connect_ms"),
-            }
-        if body.get("error") is not None:
-            return {
-                "ok": False,
-                "detail": str(body["error"]),
-                "latency_ms": body.get("connect_ms"),
-            }
+
+    before = None
+    if core.EMBERVM_URL:
+        try:
+            before = await core.cached_demo_pg_status()
+        except Exception as exc:  # noqa: BLE001 - classification is best-effort
+            logger.warning("demo-postgres synthetic pre-query status failed: %s", exc)
+            before = None
+
+    if not core.try_acquire_query_slot():
         return {
             "ok": True,
-            "detail": f"{body.get('classification', 'unknown')}, {body.get('connect_ms')}ms",
-            "latency_ms": body.get("connect_ms"),
+            "detail": "busy, skipped",
+            "latency_ms": None,
+            "skip": True,
+        }
+
+    try:
+        result = await asyncio.to_thread(
+            core.demo_pg_orders_roundtrip, dsn, "aggregate", None
+        )
+        core.record_query_outcome(ok=True, connect_ms=result["connect_ms"])
+        return {
+            "ok": True,
+            "detail": f"{core.classify_wake(before)}, {result.get('connect_ms')}ms",
+            "latency_ms": result.get("connect_ms"),
         }
     except Exception as exc:  # noqa: BLE001 - probes report failures in-band
+        logger.warning("demo-postgres synthetic roundtrip failed: %s", exc)
+        core.record_query_outcome(ok=False, connect_ms=None)
         return _failure(exc)
+    finally:
+        core.release_query_slot()
 
 
 def _record_sync(demo: str, result: dict) -> None:
