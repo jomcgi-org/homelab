@@ -144,6 +144,11 @@ def _reclaim_stale_claims_sync():
     return store.reclaim_stale_claims_sync()
 
 
+def _refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
+    """Refresh heartbeat for an active claim. Returns True if claim still held."""
+    return store.refresh_claim_sync(session_id, turn_seq, replica_id)
+
+
 async def _with_session_lock(session_id: int, coro):
     """Run one session turn at a time."""
     lock = _session_locks.setdefault(session_id, asyncio.Lock())
