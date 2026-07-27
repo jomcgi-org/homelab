@@ -15,7 +15,7 @@ go_library(
     deps = [
         "//projects/embervm/noded/fcvm/fcclient",
         "//projects/embervm/noded/substrate",
-        "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//:go_default_library",
     ],
 )
 

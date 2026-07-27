@@ -9,7 +9,7 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/sextant/pkg/schema",
     visibility = ["//visibility:public"],
-    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
+    deps = ["@in_gopkg_yaml_v3//:go_default_library"],
 )
 
 go_test(
@@ -26,5 +26,5 @@ go_test(
         "validate_test.go",
     ],
     embed = [":schema"],
-    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
+    deps = ["@in_gopkg_yaml_v3//:go_default_library"],
 )

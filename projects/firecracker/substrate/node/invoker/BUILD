@@ -8,11 +8,11 @@ go_library(
     deps = [
         "//projects/firecracker/substrate/node/egress",
         "//projects/firecracker/substrate/substrate",
-        "@io_opentelemetry_go_otel//:otel",
-        "@io_opentelemetry_go_otel//attribute",
-        "@io_opentelemetry_go_otel//codes",
-        "@io_opentelemetry_go_otel_trace//:trace",
-        "@org_golang_x_sync//semaphore",
+        "@io_opentelemetry_go_otel//:go_default_library",
+        "@io_opentelemetry_go_otel//attribute:go_default_library",
+        "@io_opentelemetry_go_otel//codes:go_default_library",
+        "@io_opentelemetry_go_otel_trace//:go_default_library",
+        "@org_golang_x_sync//semaphore:go_default_library",
     ],
 )
 

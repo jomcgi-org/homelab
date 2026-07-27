@@ -11,12 +11,12 @@ go_library(
     importpath = "github.com/jomcgi/homelab/bazel/semgrep/defs/gazelle",
     visibility = ["//:__pkg__"],
     deps = [
-        "@gazelle//config",
-        "@gazelle//label",
-        "@gazelle//language",
-        "@gazelle//repo",
-        "@gazelle//resolve",
-        "@gazelle//rule",
+        "@bazel_gazelle//config:go_default_library",
+        "@bazel_gazelle//label:go_default_library",
+        "@bazel_gazelle//language:go_default_library",
+        "@bazel_gazelle//repo:go_default_library",
+        "@bazel_gazelle//resolve:go_default_library",
+        "@bazel_gazelle//rule:go_default_library",
     ],
 )
 
@@ -33,9 +33,9 @@ go_test(
     ],
     embed = [":gazelle"],
     deps = [
-        "@gazelle//config",
-        "@gazelle//label",
-        "@gazelle//language",
-        "@gazelle//rule",
+        "@bazel_gazelle//config:go_default_library",
+        "@bazel_gazelle//label:go_default_library",
+        "@bazel_gazelle//language:go_default_library",
+        "@bazel_gazelle//rule:go_default_library",
     ],
 )

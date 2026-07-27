@@ -16,10 +16,10 @@ go_library(
         "//projects/embervm/noded/store",
         "//projects/embervm/noded/vsockhttp",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
-        "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//codes",
-        "@org_golang_google_grpc//metadata",
-        "@org_golang_google_grpc//status",
+        "@org_golang_google_grpc//:go_default_library",
+        "@org_golang_google_grpc//codes:go_default_library",
+        "@org_golang_google_grpc//metadata:go_default_library",
+        "@org_golang_google_grpc//status:go_default_library",
     ],
 )
 
