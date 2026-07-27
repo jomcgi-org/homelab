@@ -76,8 +76,30 @@ spec:
               value: "embervm@$(EMBERVM_RELEASE_POD_IP)"
             - name: EMBERVM_HTTP_PORT
               value: {{ .Values.service.port | quote }}
+            {{- if .Values.opLog.postgres.enabled }}
+            # Postgres op-log (ADR embervm/007). A set, non-empty
+            # EMBERVM_OPLOG_DSN is what makes op_log_mod/0 select
+            # Embervm.OpLog.Postgres, so EMBERVM_OPLOG_PATH is deliberately NOT
+            # rendered here: leaving both set would make the selected backend
+            # look ambiguous to anyone reading the pod spec, even though the DSN
+            # wins in code.
+# Only the PASSWORD comes from the secret; the DSN is assembled here with
+            # the same $(VAR) interpolation RELEASE_NODE above uses, so the
+            # connection target stays reviewable in git and 1Password holds one
+            # credential rather than a credential plus an assembled copy of it
+            # that could drift. Kubernetes substitutes $(VAR) only from vars
+            # declared EARLIER in this list, so the password must stay above.
+            - name: EMBERVM_OPLOG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "opLog.postgres.secretName is required when opLog.postgres.enabled" .Values.opLog.postgres.secretName | quote }}
+                  key: {{ .Values.opLog.postgres.secretKey | quote }}
+            - name: EMBERVM_OPLOG_DSN
+              value: postgres://{{ .Values.opLog.postgres.user }}:$(EMBERVM_OPLOG_PASSWORD)@{{ .Values.opLog.postgres.host }}:{{ .Values.opLog.postgres.port }}/{{ .Values.opLog.postgres.database }}
+            {{- else }}
             - name: EMBERVM_OPLOG_PATH
               value: /var/lib/embervm/oplog.db
+            {{- end }}
             # Op-log retention (ADR embervm/002): the scheduled sweeper's cadence
             # and the ops-journal prefix-compaction horizon. Seconds/days in values
             # are converted to the ms the runtime parses.
@@ -438,10 +460,14 @@ spec:
         {{- end }}
       volumes:
         - name: oplog
-          {{- if .Values.opLog.persistentVolume }}
+          {{- if and .Values.opLog.persistentVolume (not .Values.opLog.postgres.enabled) }}
           persistentVolumeClaim:
             claimName: {{ include "embervm.fullname" . }}-oplog
           {{- else }}
+          # With the Postgres tier on there is no PVC to claim (pvc.yaml is
+          # suppressed by the same condition), and nothing writes here: the
+          # mount stays only so the volumeMounts block above needs no
+          # conditional.
           # No durable op-log yet (Task 6); the health-only skeleton writes
           # nothing here, so an emptyDir avoids a storage dependency.
           emptyDir: {}

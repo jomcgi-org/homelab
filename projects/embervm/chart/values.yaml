@@ -67,6 +67,53 @@ resources:
 # so a rolling update never runs two writers against one RWO volume, and a pod
 # restart replays the op-log into the ETS hot set on boot (recovery path).
 opLog:
+  # Postgres op-log tier (ADR embervm/007). Embervm.Application.op_log_mod/0
+  # selects Embervm.OpLog.Postgres when EMBERVM_OPLOG_DSN is set and non-empty,
+  # and Embervm.OpLog.SQLite otherwise, so this block is the ONLY thing that
+  # chooses the backend. The adapter runs its own CREATE TABLE IF NOT EXISTS DDL
+  # in init/1, so there is nothing to migrate: pointing it at an empty database
+  # is the whole cutover.
+  #
+  # The database lives on the existing monolith-pg CNPG cluster rather than a
+  # cluster of its own: a second 2-instance cluster costs ~1Gi of requests on a
+  # fleet already at 99% of memory limits on node-4, for a database that is 5%
+  # utilized. Because the adapter owns its own DDL, the monolith chart needs a
+  # Database CR and a role ONCE and never changes again. The coupling that buys
+  # is bounded: EmberVM is already engineered for control-plane absence (the
+  # node-local activator, ADR 018, and fail-open metering, ADR 020), so a
+  # monolith-pg outage degrades this to "no new lifecycle actions", which is the
+  # same case a CP roll already produces.
+  postgres:
+    enabled: false
+    # Connection target. The DSN is assembled in deployment.yaml from these
+    # plus the password, so the only thing 1Password holds is the password
+    # itself. Defaults point at the monolith-pg primary; the role and database
+    # must match projects/monolith/chart/values.yaml postgres.embervmOpLog.
+    user: embervm
+    host: monolith-pg-rw.monolith.svc.cluster.local
+    port: 5432
+    database: embervm_oplog
+    # Secret in THIS namespace holding ONLY the role password, synced from
+    # 1Password by the OnePasswordItem below.
+    #
+    # WARNING: Embervm.OpLog.Postgres.connect/1 parses the DSN with URI.parse
+    # and does NOT percent-decode userinfo, so the password MUST be URL-safe.
+    # A password containing @ / : ? or # mis-parses into the wrong host or
+    # database and the CP fails to boot with {:connect_failed, ...}, which does
+    # not name the real cause.
+    secretName: ""
+    secretKey: password
+    onepassword:
+      # 1Password item exposing a field that lands as a Secret key named
+      # exactly `password`. The SAME item seeds the out-of-band basic-auth
+      # secret CNPG needs, so the role password cannot drift between the two.
+      # See projects/monolith/deploy/embervm-oplog-secret.md.
+      itemPath: ""
+  # SQLite op-log PVC. Ignored when postgres.enabled is true: Postgres makes the
+  # durable store network-reachable, so the control plane stops needing a
+  # node-pinned RWO volume. The Deployment stays at one replica with
+  # strategy: Recreate regardless, because multi-replica needs ADR 007's
+  # single-writer-per-cell op-log appender, which is separate work.
   persistentVolume: true
   storageClass: longhorn
   size: 2Gi

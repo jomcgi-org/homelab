@@ -26,6 +26,14 @@ postgres:
   # public read-only service (ADR 004 security/004) and for availability. CNPG
   # auto-creates the -ro / -r services and streams replication.
   instances: 2
+  # Host the EmberVM control-plane op-log here (ADR embervm/007), replacing its
+  # node-pinned SQLite PVC. Ordering matters on first apply: the Database CR and
+  # the role must exist before EmberVM's opLog.postgres.enabled flips, or the CP
+  # crash-loops on {:connect_failed, ...}. Both charts are in this PR, and
+  # ArgoCD syncs monolith and embervm as separate Applications, so if the CP
+  # comes up first it simply restarts until the role lands.
+  embervmOpLog:
+    enabled: true
   storage:
     size: 50Gi
 
