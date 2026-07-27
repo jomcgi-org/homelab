@@ -205,14 +205,16 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
         if claim_stolen:
             return
 
-        row = await asyncio.to_thread(_get_pending_message_sync, session_id, turn_seq)
+        row = await asyncio.to_thread(
+            _get_pending_message_sync, session_id, claimed_seq
+        )
         if not row:
             return
         # Load session to get workspace and stored session_id for resumption
         session_row, _ = await asyncio.to_thread(_load_session, session_id)
         if not session_row:
             await asyncio.to_thread(
-                _mark_turn_error_sync, session_id, turn_seq, "Session not found"
+                _mark_turn_error_sync, session_id, claimed_seq, "Session not found"
             )
             return
         try:
@@ -232,7 +234,7 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
                 return
         except Exception as exc:  # noqa: BLE001 - retain the row for recovery
             await asyncio.to_thread(
-                _mark_turn_error_sync, session_id, turn_seq, str(exc)
+                _mark_turn_error_sync, session_id, claimed_seq, str(exc)
             )
             return
 
@@ -243,7 +245,7 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
             await asyncio.to_thread(
                 _persist_turn_from_pending_sync,
                 session_id,
-                turn_seq,
+                claimed_seq,
                 row.message_text,
                 turn,
                 summary,
@@ -269,7 +271,7 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
                 session_id,
             )
             return
-        await asyncio.to_thread(_delete_pending_message_sync, session_id, turn_seq)
+        await asyncio.to_thread(_delete_pending_message_sync, session_id, claimed_seq)
         await _notify_terminal(turn, summary, status)
 
     try:
@@ -307,7 +309,7 @@ async def _sweep_orphaned_pending_messages() -> None:
         rows = await asyncio.to_thread(_get_all_pending_messages_sync)
         for row in rows:
             if row.claimed_by_replica is None:
-                asyncio.create_task(_execute_pending_message(row.session_id, row.seq))
+                asyncio.create_task(_execute_pending_message(row.session_id))
 
 
 def start_pending_message_sweep() -> list[asyncio.Task]:
@@ -363,7 +365,7 @@ async def monolith_agent_session_start(prompt: str) -> dict:
 async def monolith_agent_session_send(session_id: int, message: str) -> dict:
     """Enqueue a message for a session, returning once accepted rather than once complete."""
     turn = await asyncio.to_thread(_persist_pending_message, session_id, message)
-    asyncio.create_task(_execute_pending_message(session_id, turn))
+    asyncio.create_task(_execute_pending_message(session_id))
     return {"accepted": True, "session_id": session_id, "turn": turn}
 
 
