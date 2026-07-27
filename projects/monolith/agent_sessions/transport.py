@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+import json
+import subprocess
+from typing import NamedTuple, Protocol
+
+
+class Turn(NamedTuple):
+    result: str
+    terminal_reason: str | None
+    stop_reason: str | None
+    is_error: bool
+    permission_denials: list
+    num_turns: int
+    session_id: str | None
+    usage: dict
+    total_cost_usd: float | None
+    duration_ms: int | None
+    activities: list[dict]
+
+
+class ShimTransport(Protocol):
+    def deliver(self, session_id: str | None, message: str) -> Turn: ...
+
+
+class LocalSubprocessTransport:
+    def __init__(
+        self,
+        expected_api_key_source: str = "none",
+        voice_prompt: str = "Respond with a concise human-readable summary in <voice>...</voice>.",
+    ) -> None:
+        self.expected_api_key_source = expected_api_key_source
+        self.voice_prompt = voice_prompt
+
+    def deliver(self, session_id: str | None, message: str) -> Turn:
+        command = [
+            "claude",
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]
+        if session_id:
+            command.extend(["--resume", session_id])
+        if self.voice_prompt:
+            command.extend(["--append-system-prompt", self.voice_prompt])
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        assert process.stdin is not None
+        process.stdin.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": message}],
+                    },
+                }
+            )
+            + "\n"
+        )
+        process.stdin.close()
+        assert process.stdout is not None
+        activities: list[dict] = []
+        local_session_id = None
+        result_event: dict = {}
+        saw_init = False
+        for line in process.stdout:
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            event_type = event.get("type")
+            if event_type == "system" and not saw_init:
+                saw_init = True
+                local_session_id = event.get("session_id")
+                api_key_source = event.get("apiKeySource")
+                if api_key_source != self.expected_api_key_source:
+                    process.kill()
+                    raise ValueError(
+                        f"Unexpected apiKeySource {api_key_source!r}, "
+                        f"expected {self.expected_api_key_source!r}"
+                    )
+            elif event_type == "assistant":
+                message_data = event.get("message", event)
+                for block in message_data.get("content", []):
+                    if block.get("type") != "tool_use":
+                        continue
+                    name = block.get("name", "unknown")
+                    tool_input = block.get("input", {})
+                    activity = {"tool": name}
+                    if name == "Bash" and "command" in tool_input:
+                        activity["command"] = tool_input["command"]
+                    elif name in {"Edit", "Write"} and "file_path" in tool_input:
+                        activity["file_path"] = tool_input["file_path"]
+                    activities.append(activity)
+            elif event_type == "result":
+                result_event = event
+                break
+        process.wait()
+        if not saw_init:
+            raise ValueError("Claude stream did not emit a system init event")
+        return Turn(
+            result=result_event.get("result", ""),
+            terminal_reason=result_event.get("terminal_reason"),
+            stop_reason=result_event.get("stop_reason"),
+            is_error=bool(result_event.get("is_error", False)),
+            permission_denials=result_event.get("permission_denials") or [],
+            num_turns=int(result_event.get("num_turns", 0)),
+            session_id=result_event.get("session_id") or local_session_id,
+            usage=result_event.get("usage") or {},
+            total_cost_usd=result_event.get("total_cost_usd"),
+            duration_ms=result_event.get("duration_ms"),
+            activities=activities,
+        )
