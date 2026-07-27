@@ -1,4 +1,10 @@
-{{- if .Values.opLog.persistentVolume }}
+{{- /*
+  The SQLite op-log PVC. Suppressed when the Postgres tier is on: the durable
+  store is then network-reachable, so a node-pinned RWO volume would be dead
+  weight. Rolling back is a values flip, but note it comes up with an EMPTY
+  op-log, because the SQLite file is not migrated in either direction.
+*/ -}}
+{{- if and .Values.opLog.persistentVolume (not .Values.opLog.postgres.enabled) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

@@ -739,6 +739,19 @@ postgres:
   storage:
     size: 10Gi
     storageClass: ""
+  # Host EmberVM's control-plane op-log as a separate database on this cluster
+  # (ADR embervm/007). See templates/cnpg-database-embervm.yaml for why it lives
+  # here rather than on a CNPG cluster of EmberVM's own, and
+  # deploy/embervm-oplog-secret.md for the one out-of-band step. The role owns
+  # only its own database and holds no privilege on the monolith's schema.
+  embervmOpLog:
+    enabled: false
+    database: embervm_oplog
+    role: embervm
+    # kubernetes.io/basic-auth secret in THIS namespace, created out-of-band
+    # from the 1Password item (the operator cannot emit a typed, labelled
+    # secret). CNPG reads it to set the role password.
+    passwordSecret: monolith-pg-embervm-oplog
   pgvector:
     image: ghcr.io/cloudnative-pg/pgvector:0.8.2-202604021427-18-trixie
   # Barman object-store backups (WAL archiving + scheduled base backups) to the

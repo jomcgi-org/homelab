@@ -78,7 +78,7 @@ graph TB
         DISP["Dispatcher + class managers<br/>(session/serving/stateful/group)"]
         POOL["PoolManager<br/>primed-pool refill"]
         XDS["EndpointPublisher<br/>sole xDS writer"]
-        OPLOG[("op-log<br/>SQLite-WAL default,<br/>Postgres/CNPG for HA")]
+        OPLOG[("op-log<br/>Postgres/CNPG (live),<br/>SQLite-WAL fallback")]
         ETS[("ETS hot set<br/>rebuilt on start")]
     end
 
@@ -342,10 +342,12 @@ them.
 
 - **State model**: hot working set in ETS (rebuilt on start, healed by
   adoption from node reports); durable book-of-record in the op-log behind
-  the `Embervm.OpLog` behaviour. SQLite-WAL is the zero-dependency
-  single-node default; batched (group-commit) Postgres via CNPG is the
-  deployment default for HA. The dispatch path never reads the durable
-  store.
+  the `Embervm.OpLog` behaviour. Postgres via CNPG is what the homelab
+  runs; SQLite-WAL remains the zero-dependency single-node fallback, and
+  `Embervm.Application.op_log_mod/0` selects between them purely on
+  `EMBERVM_OPLOG_DSN` being set, so the pod spec names the live backend.
+  Either adapter creates its own schema on boot, so there is nothing to
+  migrate. The dispatch path never reads the durable store.
 - **Retention** (ADR 002): result TTLs enforced at read time; terminal tasks
   pruned past 7 days; the ops journal prefix-compacted past a 30-day horizon
   behind a durable `compacted_through_seq` marker; PVC usage alerted at 80%.
@@ -552,9 +554,15 @@ acts on the guest's behalf through the brokered egress path.
   RAID0 satisfies it on EKS.
 - The FC node taint is a recorded option, not applied; co-tenancy runs on
   honest requests plus the disposable priority class.
-- The control plane runs one replica with `strategy: Recreate` on the RWO
-  SQLite PVC today; CP HA is the ADR 007 Postgres-cells path, and CP rolls
-  are the availability events the node-local activator exists to survive.
+- The control plane runs one replica with `strategy: Recreate`. Its op-log is
+  a database on the shared `monolith-pg` CNPG cluster rather than a
+  node-pinned RWO volume, so durability no longer follows a Longhorn volume
+  around the fleet, but availability is unchanged: multi-replica needs ADR
+  007's single-writer-per-cell appender. CP rolls remain the availability
+  events the node-local activator exists to survive. The op-log shares
+  `monolith-pg` deliberately (a second CNPG cluster costs ~1Gi of requests
+  on a fleet at 99% of memory limits on node-4), and the coupling is bounded
+  because a CP outage is already a designed-for state.
 
 **Known walls and provisional numbers** (each states what would move it):
 

@@ -1,0 +1,39 @@
+{{- if .Values.postgres.embervmOpLog.enabled }}
+# The EmberVM control-plane op-log database (ADR embervm/007), hosted on this
+# cluster rather than one of EmberVM's own.
+#
+# Why it lives here: a second 2-instance CNPG cluster costs roughly 1Gi of
+# memory requests and two more Longhorn volumes on a four-node fleet already at
+# 99% of memory limits on node-4, to hold a database that is a few percent
+# utilized. This cluster's 50Gi volume is at ~5%, and its scheduled S3 backups
+# and metrics service cover the op-log for free.
+#
+# Why the coupling is acceptable: EmberVM is explicitly built to tolerate
+# control-plane absence (the node-local activator in ADR embervm/018 keeps cold
+# wakes working, metering fails open per ADR embervm/020, and noded serves warm
+# workloads from its NVMe-cached registry). A monolith-pg outage therefore
+# degrades EmberVM to "no new lifecycle actions", which is the same condition an
+# ordinary CP roll produces and which is already an accepted failure mode.
+#
+# Why this file never needs to change again: Embervm.OpLog.Postgres runs its own
+# CREATE TABLE IF NOT EXISTS DDL inside init/1, so CNPG's entire job is to hand
+# EmberVM an empty database and an owner role. There are no Atlas migrations for
+# the op-log and no schema coupling between the two services. Had the op-log used
+# migrations, every EmberVM schema change would have forced a monolith chart
+# bump, and a separate cluster would have been the better call.
+#
+# databaseReclaimPolicy is retain: dropping this CR must not drop the op-log.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ include "monolith.fullname" . }}-pg-embervm-oplog
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  cluster:
+    name: {{ include "monolith.fullname" . }}-pg
+  name: {{ .Values.postgres.embervmOpLog.database }}
+  owner: {{ .Values.postgres.embervmOpLog.role }}
+  ensure: present
+  databaseReclaimPolicy: retain
+{{- end }}
