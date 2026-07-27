@@ -138,6 +138,11 @@ def _get_all_pending_messages_sync():
     return store.get_all_pending_messages_sync()
 
 
+def _reclaim_stale_claims_sync():
+    """Reclaim messages whose claims have expired (replica crashed or hung)."""
+    return store.reclaim_stale_claims_sync()
+
+
 async def _with_session_lock(session_id: int, coro):
     """Run one session turn at a time."""
     lock = _session_locks.setdefault(session_id, asyncio.Lock())
@@ -222,12 +227,24 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
 
 
 async def _sweep_orphaned_pending_messages() -> None:
-    """Pick up pending messages left behind by a crash or restart."""
+    """Pick up pending messages left behind by a crash or restart.
+
+    The sweep does two things:
+    1. Reclaim any claims that have expired (replica crashed), making them
+       available for re-execution by the current leader.
+    2. Execute any pending messages that are not yet claimed.
+    """
     while True:
         await asyncio.sleep(5)
+        # Reclaim stale claims from crashed replicas
+        reclaimed = await asyncio.to_thread(_reclaim_stale_claims_sync)
+        if reclaimed > 0:
+            logger.info("Reclaimed %d stale claims from crashed replicas", reclaimed)
+        # Execute all unclaimed messages
         rows = await asyncio.to_thread(_get_all_pending_messages_sync)
         for row in rows:
-            asyncio.create_task(_execute_pending_message(row.session_id, row.seq))
+            if row.claimed_by_replica is None:
+                asyncio.create_task(_execute_pending_message(row.session_id, row.seq))
 
 
 def start_pending_message_sweep() -> list[asyncio.Task]:
