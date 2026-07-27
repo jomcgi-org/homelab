@@ -155,14 +155,37 @@ def _refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool
     return store.refresh_claim_sync(session_id, turn_seq, replica_id)
 
 
+_inflight_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_next_message(session_id: int) -> None:
+    """Run this session's next queued message in the background.
+
+    The task is retained in a module-level set until it finishes. Without a
+    strong reference the event loop only holds a weak one, so a task can be
+    garbage collected mid-flight; and without the done-callback any exception
+    escaping the executor is discarded silently. This is the same invariant
+    app/main_summary_test.py asserts for the leader-elected singletons.
+    """
+    task = asyncio.create_task(_execute_pending_message(session_id))
+    _inflight_tasks.add(task)
+    task.add_done_callback(_inflight_tasks.discard)
+    task.add_done_callback(log_task_exception)
+
+
 async def _execute_pending_message(session_id: int) -> None:
     """Process this session's next queued message durably.
 
-    Ordering comes from the claim itself: the database atomically claims the
-    lowest unclaimed seq for the session, so turns run in sequence and that
-    holds across replicas. There is deliberately no in-process lock; one could
-    not provide the guarantee anyway, since it says nothing about what another
-    replica is doing.
+    Ordering comes from the claim itself. The database looks at the lowest
+    OUTSTANDING seq for the session and claims it only if it is still unclaimed,
+    so a later message cannot start while an earlier one is running. Pending
+    rows are deleted when their turn completes, so anything still present is
+    unfinished. Taking the lowest UNCLAIMED seq instead would order assignment
+    but not execution: with seq 1 running, seq 2 would be the lowest unclaimed
+    and would start alongside it.
+
+    There is deliberately no in-process lock. One could not provide this
+    guarantee anyway, since it says nothing about what another replica is doing.
 
     Once claimed, a background task refreshes the claim every 10 seconds. If a
     refresh reports the claim is no longer ours, another replica has reclaimed
@@ -279,6 +302,12 @@ async def _execute_pending_message(session_id: int) -> None:
             return
         await asyncio.to_thread(_delete_pending_message_sync, session_id, claimed_seq)
         await _notify_terminal(turn, summary, status)
+        # This session's next message could not be claimed while this one was
+        # outstanding, so nudge the queue now that it is not. Without this the
+        # follow-up waits for the sweep, which is correct but adds its interval
+        # to every turn after the first. The nudge is safe to lose: the sweep
+        # remains the backstop.
+        _schedule_next_message(session_id)
 
     try:
         # Start the heartbeat refresh task
@@ -315,7 +344,7 @@ async def _sweep_orphaned_pending_messages() -> None:
         rows = await asyncio.to_thread(_get_all_pending_messages_sync)
         for row in rows:
             if row.claimed_by_replica is None:
-                asyncio.create_task(_execute_pending_message(row.session_id))
+                _schedule_next_message(row.session_id)
 
 
 def start_pending_message_sweep() -> list[asyncio.Task]:
@@ -371,7 +400,7 @@ async def monolith_agent_session_start(prompt: str) -> dict:
 async def monolith_agent_session_send(session_id: int, message: str) -> dict:
     """Enqueue a message for a session, returning once accepted rather than once complete."""
     turn = await asyncio.to_thread(_persist_pending_message, session_id, message)
-    asyncio.create_task(_execute_pending_message(session_id))
+    _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}
 
 
