@@ -1,0 +1,56 @@
+{{- if .Values.claudeRuntimeWorkload.enabled }}
+# The claude-runtime workload (issue #4055): voice-drivable Claude Code agent
+# sessions, and the first consumer of the guest egress lane (ADR 023).
+#
+# This is the object the monolith addresses. agent_sessions/transport.py POSTs to
+# /v1/workloads/{name}/sessions and then /v1/sessions/{id}/invoke with
+# X-Ember-Guest-Path: /shim/turn, so the name here is a cross-service contract
+# with that module, not a local label.
+#
+# Session class, not stateful: a session VM survives an invoke (SessionAssign,
+# not Assign), banks to a node snapshot when idle, and relights on the next
+# invoke, so the CLI process and its conversation accrete across turns. It has no
+# writable volume by design; the workspace is tmpfs, which is why memMib carries
+# the checkout as well as the process (see the disk arithmetic in values.yaml).
+#
+# Egress is NOT a field here. The lane is a daemon-level switch
+# (EMBERVM_NODED_EGRESS_ENABLED) and the policy lives in the egress-proxy
+# sidecar, so a workload does not opt in; it simply configures a client to use
+# the port, which only this guest does.
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: {{ .Values.claudeRuntimeWorkload.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Apply after the CRD (wave 0) establishes, like every other workload.
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+spec:
+  class: session
+  source:
+    image:
+      # Bazel-pinned from the runtime-claude guest image's .info provider, the
+      # same digest the rootfs-builder initContainer bakes onto node scratch, so
+      # the Workload and the rootfs on disk can never disagree.
+      ref: "{{ .Values.runtimeClaude.guestImage.repository }}@{{ .Values.runtimeClaude.guestImage.digest }}"
+      port: {{ .Values.claudeRuntimeWorkload.port }}
+      readyPath: {{ .Values.claudeRuntimeWorkload.readyPath | quote }}
+      invokePath: {{ .Values.claudeRuntimeWorkload.invokePath | quote }}
+  resources:
+    vcpus: {{ .Values.claudeRuntimeWorkload.vcpus }}
+    memMib: {{ .Values.claudeRuntimeWorkload.memMib }}
+  concurrency:
+    # floor is the pristine pool kept warm for fast create (0 here: see values),
+    # cap is the max number of LIVE session VMs. Banked sessions hold only disk
+    # and are bounded separately by session.maxSessions.
+    floor: {{ .Values.claudeRuntimeWorkload.floor }}
+    cap: {{ .Values.claudeRuntimeWorkload.cap }}
+  session:
+    idleBankSeconds: {{ .Values.claudeRuntimeWorkload.session.idleBankSeconds }}
+    maxLifetimeSeconds: {{ .Values.claudeRuntimeWorkload.session.maxLifetimeSeconds }}
+    bankedTtlSeconds: {{ .Values.claudeRuntimeWorkload.session.bankedTtlSeconds }}
+    maxSessions: {{ .Values.claudeRuntimeWorkload.session.maxSessions }}
+    invokeQueueCap: {{ .Values.claudeRuntimeWorkload.session.invokeQueueCap }}
+{{- end }}

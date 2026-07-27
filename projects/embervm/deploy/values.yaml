@@ -240,3 +240,22 @@ warmthS3Gc:
     - node-2
     - node-3
     - node-4
+
+# Guest egress lane (ADR 023 phase 6a, issue #4071). Turns on the egress-proxy
+# sidecar and tells noded to serve the vsock egress port for each guest. The
+# claude runtime is the only guest that dials it; every other guest ignores the
+# listener, so this is a lane opening rather than a posture change for the fleet.
+#
+# Phase 6a only: plain allowlist-forward with the split-horizon guardrail. No
+# `secrets` catalog, so no CA is minted and the sidecar never terminates TLS. The
+# public internet is reachable (external: allow) and the cluster is not
+# (internal.default: deny), which is what stops an agent in a guest from reaching
+# in-cluster services.
+egress:
+  enabled: true
+
+# Voice-drivable Claude Code agent sessions (issue #4055). The monolith addresses
+# this workload by name, so it must exist before agent_sessions can create a
+# session at all. Sizing and the node disk arithmetic are in chart/values.yaml.
+claudeRuntimeWorkload:
+  enabled: true

@@ -109,6 +109,18 @@ func setDefaultEnv(logger *slog.Logger) {
 		"PYTHONUNBUFFERED":       "1",
 		"TERM":                   "dumb",
 		"EMBER_CLAUDE_WORKSPACE": "/workspace",
+		// The shim treats a committer identity as mandatory and fails a spawn
+		// without one, so every turn would 503 on a guest that has none. A
+		// session-class guest is restored from a SHARED pristine snapshot, so
+		// there is no per-session boot to carry a per-session identity: boot-args
+		// are consumed once, at base-build time, for every session alike.
+		//
+		// So default to a service identity here and let setMmdsEnv override it,
+		// which keeps the guest bootable today without pretending the value is
+		// per-principal. Attributing a commit to the human who asked for it is
+		// per-commit --author, tracked with the rest of git integration in #4070.
+		"EMBER_GIT_USER_NAME":  "EmberVM Agent",
+		"EMBER_GIT_USER_EMAIL": "agent@jomcgi.dev",
 	}
 	for key, value := range defaults {
 		if _, set := os.LookupEnv(key); set {
