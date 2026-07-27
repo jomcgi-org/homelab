@@ -122,6 +122,7 @@ def test_pending_message_executed_in_background(monkeypatch, session):
         return result
 
     result = asyncio.run(run())
+    session.expire_all()
     turn = store.get_turn(session, row.id, result["turn"])
     assert turn is not None
     assert turn.result_text == "Done: hello"
@@ -162,6 +163,7 @@ def test_two_sends_are_serialized(monkeypatch, session):
         return result1, result2
 
     result1, result2 = asyncio.run(run())
+    session.expire_all()
     assert store.get_turn(session, row.id, result1["turn"]) is not None
     assert store.get_turn(session, row.id, result2["turn"]) is not None
     assert execution_order == ["first", "second"]
@@ -199,6 +201,7 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     # Only one concurrent execution should succeed in claiming the row
     assert executions == ["hello"]
     # Turn should be persisted and pending row should be deleted
+    session.expire_all()
     assert store.get_turn(session, row.id, pending.seq) is not None
     assert store.get_pending_message(session, row.id, pending.seq) is None
 
@@ -251,23 +254,13 @@ def test_stale_claim_is_reclaimed(session):
     claimed_seq = store.claim_pending_message_for_session_sync(row.id, "monolith")
     assert claimed_seq == pending.seq
 
-    # Simulate a crash by manually setting claimed_at to an old time
-    # This makes the claim appear stale without needing to actually sleep.
-    # Coerce the datetime to handle SQLite's naive round-trip: per CLAUDE.md,
-    # "dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)"
-    stale_time = datetime.now(timezone.utc) - timedelta(seconds=40)
-    stale_time = (
-        stale_time if stale_time.tzinfo else stale_time.replace(tzinfo=timezone.utc)
-    )
-    with store.Session(store.get_engine()) as db_session:
-        pm = store.get_pending_message(db_session, row.id, pending.seq)
-        if pm:
-            pm.claimed_at = stale_time
-            db_session.add(pm)
-            db_session.commit()
+    # Simulate a crashed replica by treating any claim as expired, rather than
+    # back-dating claimed_at. The column is written by the database (func.now())
+    # and Python 3.13 removed the sqlite3 datetime adapter, so binding a datetime
+    # here both fights the design and fails outright.
 
     # Run the sweep, which should reclaim the stale claim
-    reclaimed_count = store.reclaim_stale_claims_sync(lease_interval_seconds=30)
+    reclaimed_count = store.reclaim_stale_claims_sync(lease_interval_seconds=0)
     assert reclaimed_count == 1, "Stale claim should be reclaimed"
 
     # Verify the message is no longer claimed
