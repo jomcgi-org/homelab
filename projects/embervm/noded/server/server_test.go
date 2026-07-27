@@ -1160,8 +1160,8 @@ func TestParseMemHeadroomMib(t *testing.T) {
 		{"104857600\n", "4194304\n", 96}, // 100MiB - 4MiB
 	}
 	for _, c := range cases {
-		if got := parseMemHeadroomMib(c.maxRaw, c.curRaw); got != c.want {
-			t.Errorf("parseMemHeadroomMib(%q,%q) = %d, want %d", c.maxRaw, c.curRaw, got, c.want)
+		if got := parseMemHeadroomMib(c.maxRaw, c.curRaw, ""); got != c.want {
+			t.Errorf("parseMemHeadroomMib(%q,%q,%q) = %d, want %d", c.maxRaw, c.curRaw, "", got, c.want)
 		}
 	}
 }

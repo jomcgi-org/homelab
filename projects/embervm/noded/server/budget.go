@@ -135,7 +135,9 @@ func (b *budget) MemBudgetMib() uint64 {
 
 // MemHeadroomMib returns free schedulable guest memory in MiB. Identical
 // semantics to the retired readMemHeadroomMib, folded in here so the daemon
-// has one cgroup reader instead of two.
+// has one cgroup reader instead of two. An unreadable memory.stat falls back
+// to max minus current, which is conservative because it does not subtract
+// any unverified reclaimable cache.
 func (b *budget) MemHeadroomMib() uint64 {
 	dir := cgroupDir()
 	maxRaw, err := os.ReadFile(filepath.Join(dir, "memory.max"))
@@ -146,7 +148,11 @@ func (b *budget) MemHeadroomMib() uint64 {
 	if err != nil {
 		return 0
 	}
-	return parseMemHeadroomMib(string(maxRaw), string(curRaw))
+	statRaw, err := os.ReadFile(filepath.Join(dir, "memory.stat"))
+	if err != nil {
+		statRaw = nil
+	}
+	return parseMemHeadroomMib(string(maxRaw), string(curRaw), string(statRaw))
 }
 
 // CpuBudgetMillicores returns the cgroup v2 cpu.max quota/period pair
@@ -283,26 +289,48 @@ func (s *Server) StartBudgetLoop(ctx context.Context) {
 	}()
 }
 
-// parseMemHeadroomMib computes (max-current) in MiB from cgroup v2
-// memory.max and memory.current contents. "max" (unlimited) or a parse error
-// yields 0. Folded in from the retired free-function readMemHeadroomMib.
-func parseMemHeadroomMib(maxRaw, curRaw string) uint64 {
+// parseMemHeadroomMib computes headroom in MiB from cgroup v2 memory.max,
+// memory.current, and memory.stat contents. "max" (unlimited) or a parse
+// error yields 0. Folded in from the retired free-function readMemHeadroomMib.
+func parseMemHeadroomMib(maxRaw, curRaw, statRaw string) uint64 {
 	maxStr := strings.TrimSpace(maxRaw)
 	if maxStr == "max" || maxStr == "" {
 		return 0
 	}
 	maxB, err := strconv.ParseInt(maxStr, 10, 64)
-	if err != nil {
+	if err != nil || maxB < 0 {
 		return 0
 	}
 	curB, err := strconv.ParseInt(strings.TrimSpace(curRaw), 10, 64)
-	if err != nil {
+	if err != nil || curB < 0 {
 		return 0
 	}
-	if curB >= maxB {
+	workingSetB := curB
+	for _, line := range strings.Split(statRaw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "inactive_file" {
+			continue
+		}
+		inactiveFileB, statErr := strconv.ParseUint(fields[1], 10, 64)
+		if statErr != nil {
+			break
+		}
+		// kubelet uses inactive_file for working_set because this cache is
+		// reclaimed first under pressure. Do not subtract all file cache,
+		// or anon plus slab, since those are not equivalent eviction signals.
+		// The cgroup files are read separately, so inactive_file can race
+		// memory.current. Keep the conservative current-based working set when
+		// the sample is racy instead of treating it as fully reclaimable.
+		if inactiveFileB < uint64(curB) {
+			workingSetB = curB - int64(inactiveFileB)
+		}
+		break
+	}
+
+	if uint64(maxB) <= uint64(workingSetB) {
 		return 0
 	}
-	return uint64(maxB-curB) / (1 << 20)
+	return (uint64(maxB) - uint64(workingSetB)) / (1 << 20)
 }
 
 // parseMemBudgetMib computes (max - reserve) in MiB from cgroup v2
