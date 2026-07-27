@@ -1101,11 +1101,32 @@ defmodule Embervm.BaseBuilder do
   defp node_name(id) when is_binary(id), do: id |> String.split("/", parts: 2) |> hd()
   defp node_name(_), do: nil
 
+  # Group capacity facts by their physical node. Base ownership is a NODE property:
+  # bases live on the node's shared hostPath scratch, so retention and export are
+  # computed once per node even when several bricks run there.
+  defp capacity_facts_by_node(state) do
+    state.capacity_table
+    |> Embervm.NodeCapacity.all()
+    |> Enum.group_by(&node_name(Map.get(&1, :instance_id)))
+  end
+
+  # Pick one node representative, preferring a brick that reports the workload's
+  # base. Any brick on the node can export or evict the shared local base inventory.
+  defp representative_fact(facts, workload) do
+    Enum.find(facts, fn f -> get_in(f, [:workloads, workload]) != nil end) || List.first(facts)
+  end
+
+  defp representative_facts_by_node(state, workload) do
+    for {_node, facts} <- capacity_facts_by_node(state),
+        fact = representative_fact(facts, workload),
+        fact != nil,
+        do: fact
+  end
+
   # Map a (possibly stale) placement instance_id to the CURRENT registered instance
   # on the SAME node, preferring one whose reported facts already include `workload`'s
-  # base (node-mates share the hostPath scratch, so any current instance can
-  # export/evict it). Falls back to the original id when no current node-mate is
-  # registered, so the path behaves exactly as before rather than acting on a guess.
+  # base. Falls back to the original id when no current node-mate is registered, so
+  # the path behaves exactly as before rather than acting on a guess.
   #
   # Base ownership is a NODE property: a built base lives on the node's hostPath
   # scratch and survives a noded pod restart, but the build-time placement instance_id
@@ -1116,17 +1137,9 @@ defmodule Embervm.BaseBuilder do
   defp current_instance_on_node(state, stale_id, workload) do
     target = node_name(stale_id)
 
-    mates =
-      state.capacity_table
-      |> Embervm.NodeCapacity.all()
-      |> Enum.filter(fn f -> node_name(Map.get(f, :instance_id)) == target end)
-
-    reporter = Enum.find(mates, fn f -> get_in(f, [:workloads, workload]) != nil end)
-
-    cond do
-      reporter != nil -> Map.get(reporter, :instance_id)
-      mates != [] -> mates |> hd() |> Map.get(:instance_id)
-      true -> stale_id
+    case state |> capacity_facts_by_node() |> Map.get(target, []) |> representative_fact(workload) do
+      nil -> stale_id
+      fact -> Map.get(fact, :instance_id)
     end
   end
 
@@ -1462,12 +1475,12 @@ defmodule Embervm.BaseBuilder do
     state = put_in(state.workloads[w.name], w)
 
     # Base-durability PR-1: drive the durability floor using each node's own
-    # vendor-specific current ref. The periodic export reconcile remains the
-    # backstop if a result is lost or the store was down.
-    facts = Embervm.NodeCapacity.all(state.capacity_table)
-
+    # vendor-specific current ref. Base ownership is a NODE property, so shared
+    # hostPath scratch is exported once per node even when several bricks report it.
+    # The periodic export reconcile remains the backstop if a result is lost or the
+    # store was down.
     export_targets =
-      Enum.flat_map(facts, fn fact ->
+      Enum.flat_map(representative_facts_by_node(state, w.name), fn fact ->
         case get_in(fact, [:workloads, w.name]) do
           nil -> []
           workload_fact -> [{fact[:instance_id], workload_fact}]
@@ -1573,11 +1586,13 @@ defmodule Embervm.BaseBuilder do
   # gated action. The plan is returned for tests/visibility; the action is the
   # spawned evictions (gate on) or the dry-run log (gate off).
   #
-  # For each capacity fact with a current, exported local base, candidates are
-  # local bases minus the node's current ref and still-refcounted superseded refs.
-  # BUILDING local bases are never candidates, and an unexported current base only
-  # blocks eviction on that same node. noded's in-use/current/BUILDING guard is the
-  # final backstop beneath this.
+  # For each node with a current, exported local base, candidates are local bases
+  # minus the node's current ref and still-refcounted superseded refs. Base ownership
+  # is a NODE property because bases live on shared hostPath scratch, so each node is
+  # considered once even when several bricks report the same local inventory. BUILDING
+  # local bases are never candidates, and an unexported current base only blocks
+  # eviction on that same node. noded's in-use/current/BUILDING guard is the final
+  # backstop beneath this.
   defp retention_sweep_plan(state) do
     Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
       per_node_outcomes = workload_retention(acc, w)
@@ -1600,12 +1615,12 @@ defmodule Embervm.BaseBuilder do
     |> then(fn {plan, acc} -> {Enum.reverse(plan), acc} end)
   end
 
-  # Decide one retention outcome per capacity fact from the node's reported facts:
+  # Decide one retention outcome per node from the representative reported facts:
   #   :skip                          - no local base or nothing to evict
   #   {:skip_unexported, node_id}    - this node's current base is not exported
   #   {:evict, node_id, refs, bytes} - this node's local bases to evict + bytes
   defp workload_retention(state, w) do
-    for fact <- Embervm.NodeCapacity.all(state.capacity_table),
+    for fact <- representative_facts_by_node(state, w.name),
         is_list(Map.get(fact, :local_bases, [])),
         # Deliberate: skip nodes that have local bases but do not report this
         # workload in :workloads (unknown current ref). Without the node's own

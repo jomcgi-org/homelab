@@ -925,6 +925,68 @@ defmodule Embervm.BaseBuilderTest do
     refute_receive {:evicted, "w", "w__old_amd"}, 200
   end
 
+  test "retention and export run once for two bricks sharing a node's base inventory" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    put_brick(table, "node-4", "large", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-4", "small", size_class: "2gi", mem_budget: 2_048, mem_headroom: 2_000)
+
+    local_bases = [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 2_048)
+    ]
+
+    put_node_local_bases_fact(table, "node-4", "large", "w", "w__current", false, local_bases)
+    put_node_local_bases_fact(table, "node-4", "small", "w", "w__current", false, local_bases)
+
+    export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+      send(test_pid, {:exported, ref.ref})
+      {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+    end
+
+    evict_fun = fn :fake_channel, workload, ref ->
+      send(test_pid, {:evicted, workload, ref})
+      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+    end
+
+    builder =
+      start_builder(
+        nodes: [
+          %{id: "node-4/large", address: "large"},
+          %{id: "node-4/small", address: "small"}
+        ],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        export_fun: export_fun,
+        evict_fun: evict_fun,
+        retention_sweep_enabled: true
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "w__current" end)
+
+    assert_receive {:exported, "w__current"}, 1_000
+    refute_receive {:exported, "w__current"}, 100
+
+    # Export coalescing needs the unexported facts above. Retention, however, is
+    # gated on durability, so update both node-mate facts before asserting that the
+    # shared inventory is planned and evicted once.
+    put_node_local_bases_fact(table, "node-4", "large", "w", "w__current", true, local_bases)
+    put_node_local_bases_fact(table, "node-4", "small", "w", "w__current", true, local_bases)
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+    entries = Enum.filter(plan, &(&1.workload == "w"))
+    assert length(entries) == 1
+    assert hd(entries).evict_refs == ["w__old"]
+    assert hd(entries).evict_bytes == 2_048
+
+    assert_receive {:evicted, "w", "w__old"}, 1_000
+    refute_receive {:evicted, "w", "w__old"}, 100
+  end
+
 
   test "export skips targets without node_addr entries and logs warning" do
     agent = start_recorder()
