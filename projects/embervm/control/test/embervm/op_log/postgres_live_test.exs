@@ -41,7 +41,7 @@ defmodule Embervm.OpLog.PostgresLiveTest do
     {:ok, server} = Postgres.start_link(dsn: adapter_opts, name: nil, journal_horizon_ms: 0)
 
     on_exit(fn ->
-      if Process.alive?(server), do: GenServer.stop(server)
+      Embervm.TestProcess.stop_safely(server)
       {:ok, cleanup_conn} = Postgrex.start_link(Keyword.put(opts, :name, nil))
       {:ok, _} = Postgrex.query(cleanup_conn, ~s(DROP SCHEMA "#{schema}" CASCADE), [])
       GenServer.stop(cleanup_conn)

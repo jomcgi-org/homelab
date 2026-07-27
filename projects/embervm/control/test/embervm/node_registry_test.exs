@@ -21,7 +21,7 @@ defmodule Embervm.NodeRegistryTest do
   # every timestamp, and the test advances it to drive age-out deterministically.
   defp new_clock do
     {:ok, pid} = Agent.start_link(fn -> 0 end)
-    on_exit(fn -> if Process.alive?(pid), do: Agent.stop(pid) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
     clock = fn -> Agent.get(pid, & &1) end
     advance = fn ms -> Agent.update(pid, &(&1 + ms)) end
     {clock, advance}
@@ -44,7 +44,7 @@ defmodule Embervm.NodeRegistryTest do
     ]
 
     {:ok, pid} = NodeRegistry.start_link(Keyword.merge(defaults, opts))
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
     {pid, table}
   end
 
@@ -241,7 +241,7 @@ defmodule Embervm.NodeRegistryTest do
 
   test "a real spawn_monitor streamer connects, publishes facts, and reconnects on clean drop" do
     {:ok, connects} = Agent.start_link(fn -> 0 end)
-    on_exit(fn -> if Process.alive?(connects), do: Agent.stop(connects) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(connects) end)
 
     connect_fun = fn _address ->
       Agent.update(connects, &(&1 + 1))
@@ -285,7 +285,7 @@ defmodule Embervm.NodeRegistryTest do
 
   test "a wedged real streamer (emit then silent) ages to down, reassigns, kills, and reconnects" do
     {:ok, connects} = Agent.start_link(fn -> 0 end)
-    on_exit(fn -> if Process.alive?(connects), do: Agent.stop(connects) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(connects) end)
     test_pid = self()
 
     connect_fun = fn _address ->
@@ -338,7 +338,7 @@ defmodule Embervm.NodeRegistryTest do
 
   test "pushes SyncRegistry on every (re)connect, before consuming the watch stream" do
     {:ok, syncs} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(syncs), do: Agent.stop(syncs) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(syncs) end)
     test_pid = self()
 
     # Record each replay (channel, node_id) and let the streamer proceed. The
@@ -382,7 +382,7 @@ defmodule Embervm.NodeRegistryTest do
 
   test "periodically re-pushes the registry to a still-connected daemon (ADR embervm/018 catalog-change convergence)" do
     {:ok, syncs} = Agent.start_link(fn -> 0 end)
-    on_exit(fn -> if Process.alive?(syncs), do: Agent.stop(syncs) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(syncs) end)
     test_pid = self()
 
     sync_registry_fun = fn :fake_channel, node_id, _request ->
@@ -567,9 +567,9 @@ defmodule Embervm.NodeRegistryTest do
 
   test "re-registration at a NEW address re-points the streamer and channel" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(dialed), do: Agent.stop(dialed) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(dialed) end)
     {:ok, chan} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(chan) end)
 
     connect_fun = fn address ->
       Agent.update(dialed, &[address | &1])
@@ -605,7 +605,7 @@ defmodule Embervm.NodeRegistryTest do
     # a node's co-located bricks could only misroute a wake to the wrong sibling. So
     # registration now points a SINGLE key, the instance_id, at the instance's address.
     {:ok, chan} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(chan) end)
 
     {reg, _table} =
       start_registry(
@@ -626,7 +626,7 @@ defmodule Embervm.NodeRegistryTest do
     # [instance_id] post-B0c) registers the static/pinned single-daemon override once,
     # under its node name, which is where a node-scoped fact's dial resolves anyway.
     {:ok, chan} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(chan), do: Agent.stop(chan) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(chan) end)
 
     {reg, _table} =
       start_registry(
@@ -649,7 +649,7 @@ defmodule Embervm.NodeRegistryTest do
     # in the next test).
     {clock, advance} = new_clock()
     {:ok, removed} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(removed), do: Agent.stop(removed) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(removed) end)
 
     {reg, _table} =
       start_registry(
@@ -703,7 +703,7 @@ defmodule Embervm.NodeRegistryTest do
         disconnect_fun: fn _ -> :ok end
       )
 
-    on_exit(fn -> if Process.alive?(nc), do: GenServer.stop(nc) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(nc) end)
 
     {clock, advance} = new_clock()
 
@@ -748,7 +748,7 @@ defmodule Embervm.NodeRegistryTest do
 
   test "registration feeds instance add to the BaseBuilder (so BuildBase can place)" do
     {:ok, bb} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(bb), do: Agent.stop(bb) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(bb) end)
 
     {reg, _table} =
       start_registry(register_seams(base_builder_updater_fun: fn msg -> Agent.update(bb, &[msg | &1]) end))

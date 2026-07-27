@@ -34,7 +34,7 @@ defmodule Embervm.Placement.RetryTest do
 
   setup do
     {:ok, rec} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(rec), do: Agent.stop(rec) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(rec) end)
     %{rec: rec}
   end
 

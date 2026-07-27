@@ -11,13 +11,13 @@ defmodule Embervm.BrickControllerTest do
   # A controllable clock + a scale-call recorder, both backed by Agents.
   defp new_clock do
     {:ok, pid} = Agent.start_link(fn -> 0 end)
-    on_exit(fn -> if Process.alive?(pid), do: Agent.stop(pid) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
     {fn -> Agent.get(pid, & &1) end, fn ms -> Agent.update(pid, &(&1 + ms)) end}
   end
 
   defp new_recorder do
     {:ok, pid} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(pid), do: Agent.stop(pid) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
 
     record = fn ns, name, replicas ->
       Agent.update(pid, &[{ns, name, replicas} | &1])
@@ -40,7 +40,7 @@ defmodule Embervm.BrickControllerTest do
     ]
 
     {:ok, pid} = BrickController.start_link(Keyword.merge(defaults, opts))
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
     pid
   end
 
@@ -115,7 +115,7 @@ defmodule Embervm.BrickControllerTest do
   test "a flagged class clears once registered catches up to desired" do
     {clock, advance} = new_clock()
     {:ok, reg} = Agent.start_link(fn -> %{"2gi" => 1} end)
-    on_exit(fn -> if Process.alive?(reg), do: Agent.stop(reg) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(reg) end)
 
     pid =
       start(
@@ -289,7 +289,7 @@ defmodule Embervm.BrickControllerTest do
 
   defp new_annotator do
     {:ok, pid} = Agent.start_link(fn -> [] end)
-    on_exit(fn -> if Process.alive?(pid), do: Agent.stop(pid) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
 
     annotate = fn ns, pod, annotations ->
       Agent.update(pid, &[{ns, pod, annotations} | &1])
