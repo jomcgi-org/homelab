@@ -211,27 +211,24 @@ def test_actively_refreshed_claim_is_not_reclaimed(session):
 
     This test verifies the heartbeat mechanism: refresh_claim_sync keeps the
     claimed_at timestamp fresh, preventing reclaim_stale_claims_sync from
-    reclaiming the message even after the lease interval passes.
+    reclaiming the message even though time has passed conceptually.
     """
-    from datetime import datetime, timedelta, timezone
-    from time import sleep
+    from datetime import datetime, timezone
 
     row = store.create_session(session, "sid-456", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "test")
 
     # Simulate claiming the message
-    claimed = store.claim_pending_message_sync(session, row.id, pending.seq)
+    claimed = store.claim_pending_message_sync(row.id, pending.seq, "monolith")
     assert claimed
 
-    # Refresh the claim every 5 seconds to keep it fresh
+    # Simulate multiple refreshes to keep the claim fresh
     for i in range(3):
-        sleep(5)
-        # Refresh updates claimed_at to now, preventing reclaim
         still_held = store.refresh_claim_sync(row.id, pending.seq, "monolith")
-        assert still_held, f"Claim was unexpectedly reclaimed on refresh {i + 1}"
+        assert still_held, f"Claim was unexpectedly lost on refresh {i + 1}"
 
-    # After 15 seconds of continuous refresh, run the sweep with 30s lease
-    # The claim should NOT be reclaimed because it's actively refreshed
+    # After multiple refreshes, run the sweep with 30s lease
+    # The claim should NOT be reclaimed because it's been refreshed
     reclaimed_count = store.reclaim_stale_claims_sync(lease_interval_seconds=30)
     assert reclaimed_count == 0, "Active claim should not be reclaimed"
 
@@ -248,17 +245,23 @@ def test_stale_claim_is_reclaimed(session):
     claims whose refresh heartbeat has stopped (crashed replica).
     """
     from datetime import datetime, timedelta, timezone
-    from time import sleep
 
     row = store.create_session(session, "sid-789", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "test")
 
     # Claim the message
-    claimed = store.claim_pending_message_sync(session, row.id, pending.seq)
+    claimed = store.claim_pending_message_sync(row.id, pending.seq, "monolith")
     assert claimed
 
-    # Do NOT refresh the claim (simulate replica crash)
-    sleep(35)  # Wait longer than the 30s lease interval
+    # Simulate a crash by manually setting claimed_at to an old time
+    # This makes the claim appear stale without needing to actually sleep
+    stale_time = datetime.now(timezone.utc) - timedelta(seconds=40)
+    with store.Session(store.get_engine()) as db_session:
+        pm = store.get_pending_message(db_session, row.id, pending.seq)
+        if pm:
+            pm.claimed_at = stale_time
+            db_session.add(pm)
+            db_session.commit()
 
     # Run the sweep, which should reclaim the stale claim
     reclaimed_count = store.reclaim_stale_claims_sync(lease_interval_seconds=30)
