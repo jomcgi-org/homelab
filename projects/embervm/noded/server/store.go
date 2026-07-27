@@ -408,7 +408,7 @@ func (s *Server) StartStoreLoops(ctx context.Context) {
 // proxy in this path, so a stale conntrack/NAT entry for a no-packet TCP flow is
 // the closer, not a mesh proxy) and the CP saw {:error, "the connection is closed"}
 // mid-upload. Every SMALL base (memfile <=768MB) landed; the LARGE ones (bazel-query
-// ~3G, scratch-k8s/sandbox-session ~2G, semgrep ~1.5G) never did. Rather than keep a
+// ~3G, session workloads ~2G, semgrep ~1.5G) never did. Rather than keep a
 // multi-minute synchronous call alive with client keepalive, a BASE export is
 // enqueued onto the existing bounded async export queue (scoped to EXACTLY this ref,
 // never the blanket enqueueReconcileExports sweep, which must not ship the ~245

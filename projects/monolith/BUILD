@@ -382,10 +382,6 @@ py3_image(
     main = "app/main.py",
     multiarch_tars = [
         "@claude_code//:tar",
-        # kubectl + k9s for the private k8s-terminal demo: the backend spawns
-        # k9s in a PTY against the scratch-k8s composite entry (demos domain).
-        "@k9s//:tar",
-        "@kubectl//:tar",
     ],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
 )
@@ -1126,23 +1122,6 @@ py_test(
 py_test(
     name = "sandbox_scratch_postgres_test",
     srcs = ["sandbox/scratch_postgres_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-# EmberVM R5 scratch-k8s kubeconfig plumbing (plan Task 10): asserts the kubeconfig
-# is written to a guest temp file with KUBECONFIG pointing at it (guest-side
-# kubectl/client-go), repr-escaped (multi-line YAML survives), composes with the
-# scratch-postgres DSN, and reaches the POSTed payload; and that an unset
-# kubeconfig is a no-op.
-py_test(
-    name = "sandbox_scratch_k8s_test",
-    srcs = ["sandbox/scratch_k8s_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -5065,16 +5044,6 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "demos_k8s_terminal_api_test",
-    srcs = ["demos/k8s_terminal_api_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
     ],
 )
 

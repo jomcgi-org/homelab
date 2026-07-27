@@ -897,37 +897,6 @@ scratchPostgres:
     # password. Empty leaves the OnePasswordItem + DSN env unrendered.
     itemPath: ""
 
-# EmberVM R5 scratch-k8s consumer (ADR embervm/001, plan Task 10). When enabled the
-# monolith exposes SCRATCH_K8S_KUBECONFIG so agent run_python sessions can
-# kubectl/client-go against the scale-to-zero scratch Kubernetes cluster. The
-# kubeconfig points at the GUEST k3s API (embervm serving Service at listenPort),
-# NOT our cluster, so no monolith RBAC is granted. The bearer token is the stable
-# EMBER_GROUP_SECRET (the SAME 1Password item the embervm chart syncs into its own
-# namespace); the monolith syncs it into ITS OWN namespace via onepassword.itemPath
-# so secretKeyRef stays in-namespace. WARMTH-ONLY: the scratch cluster's state
-# evaporates on the group's roll/TTL/fresh-boot; a snippet must treat every wake as
-# possibly-fresh.
-scratchK8s:
-  enabled: false
-  # The embervm serving Service listenPort the scratch-k8s composite group's entry
-  # (the server API 6443) is exposed on. Must match the embervm chart's
-  # scratchK8s.listenPort (a composite-range port, 5410-5419).
-  listenPort: 5410
-  # The embervm namespace the serving Service lives in (the kubeconfig server is
-  # https://<servingService>.<embervmNamespace>.svc:<listenPort>).
-  embervmNamespace: embervm
-  # The embervm serving Service NAME. Helm prepends the release name to chart
-  # service names, so the embervm chart's `serving` Service is actually
-  # `embervm-embervm-serving` (release `embervm` + `embervm.fullname`). This is NOT
-  # `embervm-serving`; a wrong host silently NXDOMAINs the kubeconfig at runtime.
-  servingService: embervm-embervm-serving
-  onepassword:
-    # 1Password item path whose EMBER_GROUP_SECRET field syncs into the
-    # <fullname>-scratch-k8s Secret in the MONOLITH namespace. Must be the same item
-    # the embervm chart points at, so both namespaces derive the same kubectl token.
-    # Empty leaves the OnePasswordItem + kubeconfig env unrendered.
-    itemPath: ""
-
 # FaaS zip-lane function registry (ADR 045 / embervm R1). s3ReadBase is the
 # in-cluster SeaweedFS S3 read host noded GETs function archives from; it must
 # match the CRD samples' codeUri host so storage.code_uri() and noded agree on

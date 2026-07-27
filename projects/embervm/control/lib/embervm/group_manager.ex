@@ -1491,7 +1491,7 @@ defmodule Embervm.GroupManager do
   end
 
   # StartGroupMember blocks server-side for the member's whole readiness gate (up
-  # to ready_budget_seconds, e.g. 180s for scratch-k8s), so the call deadline must
+  # to ready_budget_seconds, e.g. 180s for a k3s composite), so the call deadline must
   # cover the budget plus RPC margin. Without an explicit timeout the grpc-elixir
   # default 10s deadline fires mid-gate: the daemon cancels the stream (the member
   # is reaped "context canceled" while healthy and mid-join) and the RST_STREAM

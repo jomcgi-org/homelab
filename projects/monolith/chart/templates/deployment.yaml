@@ -156,47 +156,6 @@ spec:
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.demoListenPort }}/scratch"
             {{- end }}
             {{- end }}
-            {{- if and .Values.scratchK8s.enabled .Values.scratchK8s.onepassword.itemPath }}
-            # EmberVM R5 scratch-k8s kubeconfig (plan Task 10). Agent run_python
-            # sessions kubectl/client-go against the scale-to-zero scratch
-            # Kubernetes cluster via this kubeconfig. It points at the GUEST k3s API
-            # (the embervm serving Service routes the composite listenPort to the
-            # server member's 6443, waking the group on the first connection), NOT
-            # our cluster: no monolith RBAC is granted. The bearer token is the
-            # STABLE EMBER_GROUP_SECRET (the SAME 1Password item embervm uses,
-            # synced into the monolith namespace); the k3s server maps it to a
-            # system:masters user via its static token-auth entry, so the token is
-            # identical across rolls/TTL/fresh-boot. insecure-skip-tls-verify is set
-            # because the guest's serving cert is self-signed and rolls with the
-            # group; that is the documented scratch-tier in-cluster posture (the
-            # microVM + cluster-internal-only reachability are the isolation, not
-            # TLS pinning). SCRATCH_K8S_TOKEN is a separate env var so the secret
-            # never appears inline; $(SCRATCH_K8S_TOKEN) is expanded by the kubelet.
-            - name: SCRATCH_K8S_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-scratch-k8s
-                  key: EMBER_GROUP_SECRET
-            - name: SCRATCH_K8S_KUBECONFIG
-              value: |
-                apiVersion: v1
-                kind: Config
-                clusters:
-                - name: scratch-k8s
-                  cluster:
-                    server: https://{{ .Values.scratchK8s.servingService }}.{{ .Values.scratchK8s.embervmNamespace }}.svc:{{ .Values.scratchK8s.listenPort }}
-                    insecure-skip-tls-verify: true
-                users:
-                - name: ember
-                  user:
-                    token: "$(SCRATCH_K8S_TOKEN)"
-                contexts:
-                - name: scratch-k8s
-                  context:
-                    cluster: scratch-k8s
-                    user: ember
-                current-context: scratch-k8s
-            {{- end }}
             {{- if .Values.semgrep.shadowProject }}
             # Route B shadow project: the relay reports App scans under this name
             # instead of the real repo, keeping self-hosted scans in a separate

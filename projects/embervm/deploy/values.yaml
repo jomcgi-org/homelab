@@ -145,7 +145,7 @@ bricks:
     # Re-canary step 2 (large): the 16gi brick, added after the 2gi brick verified
     # clean on the co-located fleet (real mem facts, SUN_LEN-safe short warmth,
     # instance-aware demo-postgres wake, no fleet_full). node-4's serving/session
-    # workloads (the ~10Gi scratch-k8s composite group) need the 16gi class.
+    # workloads with a large composite group need the 16gi class.
     # Values-only flip: foundation images already deployed at 0.1.169.
     16gi: 1
   # Demand-driven brick autoscale (fleet plan Axis C), pinned explicitly so the
@@ -157,7 +157,7 @@ bricks:
   #            scale-down stays observe-only.
   #   full:    drain-aware scale-down acts too (idle 15m + fully-exported
   #            victim rail, never below chart minReplicas; 16gi keeps min 1
-  #            for the scratch-k8s composite).
+  #            for a large composite workload).
   # min/max clamps live in the chart values (recorded policy 2026-07-20:
   # min {16gi: 1}, max {2gi: 4, 4gi: 3, 8gi: 2, 16gi: 2}).
   autoscale:
@@ -192,18 +192,6 @@ scratchPostgres:
   enabled: true
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
-
-# EmberVM R5 scale-to-zero scratch-k8s composite consumer (ADR embervm/001, plan
-# Task 10): enabled with the k8s-homelab 1Password item whose EMBER_GROUP_SECRET
-# field syncs into this namespace's STABLE Secret. listenPort (5410) defaults from
-# the chart. Enabling renders the OnePasswordItem, the composite Workload CR, and
-# (via the scratchK8sServer / scratchK8sAgent workloads entries) the two base
-# rootfs builds. The kubectl token is stable across rolls/TTL/fresh-boot; the
-# cluster's state is warmth-only and evaporates on each of those events.
-scratchK8s:
-  enabled: true
-  onepassword:
-    itemPath: "vaults/k8s-homelab/items/scratch-k8s"
 
 # Demo-postgres (private demos page sleep/wake exhibit): a second stateful
 # Postgres on 5401 with a 1s idle window, so the demo can show the VM banking

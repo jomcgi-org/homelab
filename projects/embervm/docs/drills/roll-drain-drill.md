@@ -22,8 +22,8 @@ caller re-wakes against the new noded.
 ## Preconditions
 
 - `kubectl` context on the cluster, access to the `embervm` namespace.
-- At least one live stateful workload (scratch-postgres) and, for gate 3, one live
-  composite group (scratch-k8s). Confirm they are `:serving` / `:running`, not banked:
+- At least one live stateful workload (scratch-postgres). Confirm it is `:serving`
+  / `:running`, not banked:
   `kubectl get workloads -n embervm` and the control-plane op-log.
 
 ## Gate 2: stateful roll, zero data loss
@@ -40,18 +40,9 @@ caller re-wakes against the new noded.
 
 Record: the drain span, the op-log excerpt, and the psql output.
 
-## Gate 3: composite group roll, banked as a unit
+## Gate 3: full-node drain wall time under 120s
 
-1. Confirm scratch-k8s is `:running` with all members healthy.
-2. Roll noded as above.
-3. Watch the op-log for `node_drain_started`, then `group_banked` for the whole set
-   (all members, one set_id), then `node_drain_finished` with `group: 1`.
-4. After restart, wake the group and confirm every member relit (`group_relit`) and the
-   k3s nodes report Ready (`kubectl --kubeconfig <scratch-k8s> get nodes`).
-
-## Gate 4: full-node drain wall time under 120s
-
-1. Have every class live at once (stateful + group + session + serving).
+1. Have every live class live at once (stateful + session + serving).
 2. Roll noded and measure the `ember.node_drain` span duration (SigNoz), or the wall
    time between `node_drain_started` and the last per-class bank op.
 3. Confirm it is under the 120s deadline with margin.

@@ -61,7 +61,7 @@ Workloads are Kubernetes `Workload` CRs. **Zip is a source lane**
 | **serving** | Warm HTTP endpoint. Guest on a tap NIC; node Envoy routes hits; CP only on miss/wake. | Core warm HTTP / scale-to-zero APIs. |
 | **session** | Bank/relight sandbox; idle snapshotted to disk, restored on next invoke. | Long sandboxes, agent threads, notebook-shaped work. |
 | **stateful** | Singleton L4 scale-to-zero with a durable volume (wake-on-connect). | Optional: scratch DBs and similar (e.g. scratch-postgres). |
-| **composite** | Multi-VM group with a private subnet; whole-set bank/relight. | Optional: ephemeral environments (e.g. scratch-k8s). |
+| **composite** | Multi-VM group with a private subnet; whole-set bank/relight. | No live consumer currently. |
 
 ## Architecture
 
@@ -190,7 +190,8 @@ continuity polish. Full milestone candour lives in
       consumer.
 - [x] **R3 serving**: xDS, per-node Envoy, DNAT data path, public warm route.
 - [x] **R4 stateful**: volume-backed L4 scale-to-zero (scratch-postgres).
-- [x] **R5 composite**: multi-VM groups (scratch-k8s).
+- [x] **R5 composite**: multi-VM groups. The code path currently has no live
+      consumer after the scratch-k8s retirement.
 - [x] **R6 Continuity**: drain, artifact export/restore; routine rolls do not
       cold-boot committed stateful state (ADR embervm/009).
 - [ ] **R7 Distribution**: multi-node pre-warm and copy-not-rebuild placement

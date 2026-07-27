@@ -483,6 +483,19 @@ workloads:
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-postgres/rootfs.ext4
     harnessInit: /usr/local/bin/ember-postgres-init
+  # R5 scratch-k8s composite consumer (ADR embervm/001, plan Task 10). A composite
+  # group has TWO guest images (a k3s server + k3s agents), so it registers as TWO
+  # workload entries here, each with a matching top-level <name>.guestImage: the
+  # noded machinery ranges over `workloads` and bakes one base rootfs + one
+  # EMBERVM_NODED_IMAGES entry PER key. Both members share the same PID-1
+  # ember-k3s-init (the role is data: EMBER_GROUP_ROLE). The keys match the
+  # top-level scratchK8sServer / scratchK8sAgent guestImage blocks below.
+  scratchK8sServer:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-k8s-server/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-k3s-init
+  scratchK8sAgent:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-k8s-agent/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-k3s-init
   # Bazel Skyframe query demo base (ADR embervm/010). Its PID-1 ember-bazel-init
   # mounts a large tmpfs at /tmp, runs the warming `bazel cquery //absl/...`
   # offline (distdir), and only flips /shim/ready after the warming CLIENT exits
@@ -560,6 +573,7 @@ scratchPostgres:
     # OnePasswordItem unrendered (set it to enable the secret sync).
     itemPath: ""
 
+# R5 scratch-k8s composite consumer (ADR embervm/001, plan Task 10 / Fork 4), the
 # named consumer that justifies the composite rung: a scale-to-zero Kubernetes
 # environment for agent workflows. Two Bazel-pinned guest images (server + agent),
 # each a distinct FLAT top-level key (never nested) so the image pin does not
@@ -581,6 +595,7 @@ bazelQuery:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/bazel
     tag: latest
 
+# The scratch-k8s composite consumer knobs (the Workload CR + OnePasswordItem read
 # these). WARMTH-ONLY: the cluster's state (nodes, pods, sqlite/etcd) lives in the
 # group snapshot only and evaporates on roll (maxLifetimeSeconds), banked-TTL
 # expiry, and any fresh boot. The kubectl token is STABLE across all three because
