@@ -722,6 +722,17 @@ defmodule Embervm.BaseBuilderTest do
     )
   end
 
+  defp put_unknown_local_bases_fact(table, node_id, pod_uid, local_bases) do
+    NodeCapacity.put(table, {node_id, pod_uid}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      instance_id: "#{node_id}/#{pod_uid}",
+      workloads: %{},
+      local_bases: local_bases,
+      updated_at: 0
+    })
+  end
+
   defp ready_base(ref, workload, bytes) do
     %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_READY}
   end
@@ -784,6 +795,87 @@ defmodule Embervm.BaseBuilderTest do
     assert_receive {:evicted, "w", "w__superseded"}, 1_000
     assert_receive {:evicted, "w", "w__tmporphan"}, 1_000
     refute_receive {:evicted, "w", "w__current"}, 100
+  end
+
+  test "retention sweep evicts an unknown workload once the watcher is synced and coalesces bricks" do
+    test_pid = self()
+    table = new_cap_table()
+    orphan = ready_base("deleted__old", "deleted", 2_048)
+
+    put_node_local_bases_fact(table, "node-4", "large", "deleted", "deleted__current", true, [orphan])
+    put_node_local_bases_fact(table, "node-4", "small", "deleted", "deleted__current", true, [orphan])
+
+    builder = start_builder(
+      capacity_table: table,
+      evict_fun: fn :fake_channel, workload, ref ->
+        send(test_pid, {:evicted, workload, ref})
+        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+      end,
+      retention_sweep_enabled: true
+    )
+
+    :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
+    [entry] = BaseBuilder.retention_sweep_now(builder)
+    assert entry.workload == "deleted"
+    assert entry.evict_refs == ["deleted__old"]
+    assert entry.evict_bytes == 2_048
+    assert_receive {:evicted, "deleted", "deleted__old"}, 1_000
+    refute_receive {:evicted, "deleted", "deleted__old"}, 100
+  end
+
+  test "retention sweep does not evict unknown workloads before the watcher sync" do
+    table = new_cap_table()
+    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", true, [ready_base("deleted__old", "deleted", 2_048)])
+    builder = start_builder(capacity_table: table, retention_sweep_enabled: true)
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+    assert plan == []
+  end
+
+  test "retention sweep evicts a deleted workload without requiring an exported current base" do
+    test_pid = self()
+    table = new_cap_table()
+    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", false, [ready_base("deleted__old", "deleted", 512)])
+
+    builder = start_builder(
+      capacity_table: table,
+      evict_fun: fn :fake_channel, workload, ref ->
+        send(test_pid, {:evicted, workload, ref})
+        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+      end,
+      retention_sweep_enabled: true
+    )
+
+    :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
+    plan = BaseBuilder.retention_sweep_now(builder)
+    assert [%{evict_refs: ["deleted__old"]}] = plan
+    assert_receive {:evicted, "deleted", "deleted__old"}, 1_000
+  end
+
+  test "retention sweep does not evict a BUILDING base for an unknown workload" do
+    table = new_cap_table()
+    base = Map.put(ready_base("deleted__building", "deleted", 512), :base_state, :BASE_BUILD_STATE_BUILDING)
+    put_unknown_local_bases_fact(table, "node-4", "ds", [base])
+    builder = start_builder(capacity_table: table, retention_sweep_enabled: true)
+
+    :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
+    assert BaseBuilder.retention_sweep_now(builder) == []
+  end
+
+  test "retention sweep protects an unknown base still present in base_refs" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_unknown_local_bases_fact(table, "node-4", "ds", [ready_base("deleted__held", "deleted", 512)])
+    builder = start_builder(capacity_table: table, status_writer: recording_status_writer(agent))
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    :sys.replace_state(builder, fn state ->
+      w = state.workloads["w"]
+      w = %{w | base_refs: %{"deleted__held" => %{primed: 1, sessions: 0, evicted: false}}}
+      %{state | workload_sync_done: true, workloads: %{"w" => w}}
+    end)
+
+    assert BaseBuilder.retention_sweep_now(builder) == []
   end
 
   test "retention sweep is a dry-run no-op with the gate OFF (default): plans but evicts nothing" do
