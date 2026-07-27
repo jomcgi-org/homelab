@@ -53,4 +53,5 @@ class PendingMessage(SQLModel, table=True):
     session_id: int = Field(foreign_key="agent_sessions.agent_sessions.id", index=True)
     seq: int
     message_text: str
+    claimed_by_replica: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
