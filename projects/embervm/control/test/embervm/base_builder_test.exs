@@ -1814,4 +1814,125 @@ defmodule Embervm.BaseBuilderTest do
 
     NodeCapacity.put(table, {node_id, pod_uid}, Map.put(existing, :workloads, workloads))
   end
+
+  # -- per-vendor base refs in status (#4061) ---------------------------------
+
+  # A capacity fact carrying the node's CPU vendor alongside its OWN reported base
+  # ref for `workload`. pod_uid nil keeps instance_id the bare node name, which is
+  # what find_capacity_fact/2 matches for the builder's placement node ("node-4").
+  defp put_vendor_fact(table, node_id, pod_uid, workload, ref, vendor) do
+    instance_id = if pod_uid in [nil, ""], do: node_id, else: "#{node_id}/#{pod_uid}"
+
+    NodeCapacity.put(table, {node_id, pod_uid || "ds"}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      instance_id: instance_id,
+      cpu_vendor: vendor,
+      workloads: %{
+        workload => %{
+          snapshot_ref: ref,
+          base_state: :BASE_BUILD_STATE_READY,
+          exported: true
+        }
+      },
+      local_bases: [],
+      updated_at: 0
+    })
+  end
+
+  test "status carries one entry per CPU vendor the fleet reports a base on" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+    put_vendor_fact(table, "node-1", "ds", "w", "w__intel", "intel")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    build_current(builder, agent, "w__amd")
+
+    status = latest(agent, "w")
+
+    # The single builder-advanced handle is unchanged (additive field).
+    assert status["snapshotRef"] == "w__amd"
+    assert status["snapshotRefs"] == %{"amd" => ["w__amd"], "intel" => ["w__intel"]}
+  end
+
+  test "a vendor mid-rollout carries BOTH of its refs, sorted, not an arbitrary winner" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+    # node-1 rebuilt; node-2 still runs the previous runtime image. Same vendor,
+    # two live refs. Collapsing to one would be order-dependent and could report
+    # the superseded ref as current.
+    put_vendor_fact(table, "node-1", "ds", "w", "w__intel_new", "intel")
+    put_vendor_fact(table, "node-2", "ds", "w", "w__intel_old", "intel")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    build_current(builder, agent, "w__amd")
+
+    assert latest(agent, "w")["snapshotRefs"] == %{
+             "amd" => ["w__amd"],
+             "intel" => ["w__intel_new", "w__intel_old"]
+           }
+  end
+
+  test "a node reporting no CPU vendor is left out rather than keyed under an empty vendor" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+    # A daemon that predates vendor reporting: no key, not a wrong key.
+    put_vendor_fact(table, "node-1", "ds", "w", "w__unknown", "")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    build_current(builder, agent, "w__amd")
+
+    assert latest(agent, "w")["snapshotRefs"] == %{"amd" => ["w__amd"]}
+  end
+
+  test "no vendor known anywhere omits the key rather than writing an empty map" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    build_current(builder, agent, "w__amd")
+
+    status = latest(agent, "w")
+
+    # Absent, NOT %{}: a CP that has heard no vendors must not clobber a good
+    # value already on the CR with an empty map.
+    refute Map.has_key?(status, "snapshotRefs")
+    assert status["snapshotRef"] == "w__amd"
+  end
 end
