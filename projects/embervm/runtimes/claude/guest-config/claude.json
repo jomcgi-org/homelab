@@ -1,0 +1,10 @@
+{
+  "projects": {
+    "/workspace": {
+      "allowedTools": [],
+      "hasTrustDialogAccepted": true,
+      "hasCompletedProjectOnboarding": true,
+      "projectOnboardingSeenCount": 1
+    }
+  }
+}
