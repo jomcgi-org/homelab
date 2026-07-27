@@ -229,7 +229,7 @@ defmodule Embervm.TcpActivatorTest do
         store_mod: NoEndpointStore
       )
 
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
 
     sock = connect(@port_a)
     assert {:error, :closed} = :gen_tcp.recv(sock, 0, 1_000)
