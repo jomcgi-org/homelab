@@ -737,14 +737,21 @@ jobs:
       concurrencyPolicy: Forbid
       # The trigger allows 180s for a demo-postgres cold boot, plus margin.
       activeDeadlineSeconds: 300
-      # SUSPENDED until a live API-pod run proves all four targets green. The
-      # previous job-pod implementation failed three probes on environment,
-      # not on broken demos: bazel lacked the admitted ServiceAccount, semgrep
-      # lacked FC_INVOKE_URL, and postgres used a public HTTP path that is not
-      # routed for direct calls. The API pod now supplies all of those values.
-      # Re-enable ONLY after a real run proves all four green, because a probe
-      # that cannot reach its target is worse than no probe.
-      suspend: true
+      # ARMED 2026-07-27 after a live API-pod run returned all four green:
+      #   bazel    ok  "warm, 501ms"       (was 403: wrong ServiceAccount)
+      #   semgrep  ok  "5 finding(s)"      (was missing FC_INVOKE_URL)
+      #   pages    ok  "all pages, 311ms"
+      #   postgres ok  "relight, 1137ms"   (was an unrouted public HTTP path)
+      # and jomcgi.dev/health returned 200. Each of the three original failures
+      # was environment, not a broken demo, which is why this stayed suspended
+      # until the API pod (which holds the admitted SA and all three env vars)
+      # actually proved them. Landing a prober you have not watched succeed is
+      # how #4074 paged on its own gaps.
+      #
+      # The postgres probe additionally earned its keep before being armed: it
+      # caught #4077 (demo-postgres unwakeable by any visitor) while the passive
+      # component still read "banked, pair valid", i.e. healthy. Fixed in #4081.
+      suspend: false
       env:
         # The in-cluster API service the trigger POSTs; injected here (not baked
         # in code) so a release rename cannot silently break the DNS name.
