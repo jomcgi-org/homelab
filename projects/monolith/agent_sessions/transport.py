@@ -1,16 +1,31 @@
+"""EmberVM shim transport for Claude Code session execution.
+
+The Claude Code CLI runs in an EmberVM guest, not in the monolith pod.
+The guest exposes a session API through the EmberVM control plane.
+
+Reuses the patterns from faas/embervm_client.py (httpx.AsyncClient,
+EMBERVM_URL, auth headers, error types, timeout shape).
+"""
+
 from __future__ import annotations
 
 import json
 import logging
-import queue
-import signal
-import subprocess
-import threading
-import time
 from typing import NamedTuple, Protocol
 
+import httpx
+
+from faas.embervm_client import (
+    EmberVMTimeout,
+    EmberVMTransportError,
+    SUBMIT_CONNECT_TIMEOUT,
+)
+from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
+
+# Read from environment; must be set in monolith pod
+EMBERVM_URL = ""
 
 
 class Turn(NamedTuple):
@@ -28,168 +43,131 @@ class Turn(NamedTuple):
 
 
 class ShimTransport(Protocol):
-    def deliver(self, session_id: str | None, message: str) -> Turn: ...
+    async def deliver(self, session_id: str | None, message: str) -> Turn: ...
 
 
-class LocalSubprocessTransport:
-    overall_timeout_seconds = 30
-    shutdown_grace_seconds = 5
+class EmberVmShimTransport:
+    """HTTP client transport for the Claude runtime guest over EmberVM control plane.
+
+    The guest runs the Claude Code CLI as a session-based REPL, answering over
+    the /shim/turn endpoint. This transport orchestrates session creation and
+    invocation via the control plane's /v1/sessions/:id/invoke API.
+    """
 
     def __init__(
         self,
-        expected_api_key_source: str = "none",
-        voice_prompt: str = "Respond with a concise human-readable summary in <voice>...</voice>.",
-        permission_mode: str = "default",
+        workload: str = "claude-runtime",
+        read_timeout: float = 120.0,
     ) -> None:
-        self.expected_api_key_source = expected_api_key_source
-        self.voice_prompt = voice_prompt
-        # Use "default" mode by default: this transport spawns the CLI in the
-        # monolith pod (the orchestrator), not a sandbox. Unlike the EmberVM guest
-        # (which uses "bypassPermissions" since the VM is the security boundary),
-        # the monolith pod is not isolated. An agent with "bypassPermissions" would
-        # have unrestricted access to the session store, notify path, and MCP
-        # surface, a materially larger blast radius. Callers must choose explicitly.
-        self.permission_mode = permission_mode
+        """Initialize transport for a named EmberVM workload.
 
-    def deliver(self, session_id: str | None, message: str) -> Turn:
-        command = [
-            "claude",
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--permission-mode",
-            self.permission_mode,
-        ]
-        if session_id:
-            command.extend(["--resume", session_id])
-        if self.voice_prompt:
-            command.extend(["--append-system-prompt", self.voice_prompt])
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-        )
-        assert process.stdin is not None
-        process.stdin.write(
-            json.dumps(
-                {
-                    "type": "user",
-                    "message": {
-                        "role": "user",
-                        "content": [{"type": "text", "text": message}],
-                    },
-                }
-            )
-            + "\n"
-        )
-        process.stdin.close()
-        # Deliberate: close stdin to signal end-of-input and let the process exit
-        # after this turn. This is the local dev transport; it prioritizes simplicity.
-        # The in-guest shim (projects/embervm/runtimes/claude/shim.py) reuses the
-        # process across turns to amortize the ~250ms spawn cost over many turns.
-        assert process.stdout is not None
-        activities: list[dict] = []
-        local_session_id = None
-        result_event: dict = {}
-        saw_init = False
-        output_queue: queue.Queue[str | None] = queue.Queue()
+        Args:
+            workload: Name of the EmberVM workload (e.g., 'claude-runtime').
+            read_timeout: HTTP read timeout for invoke calls (seconds).
+                Should be generous to allow for slow API calls; the guest
+                times out independently at 60s for turns, 15s for init.
+        """
+        self.workload = workload
+        self.read_timeout = read_timeout
 
-        def read_output() -> None:
-            try:
-                for line in process.stdout:
-                    output_queue.put(line)
-            except Exception:
-                pass
-            finally:
-                output_queue.put(None)
+    async def create_session(self) -> str:
+        """Create a new session on the guest and return the session ID.
 
-        reader = threading.Thread(target=read_output, daemon=True)
-        reader.start()
-        deadline = time.monotonic() + self.overall_timeout_seconds
-        timed_out = False
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                break
-            try:
-                line = output_queue.get(timeout=remaining)
-            except queue.Empty:
-                timed_out = True
-                break
-            if line is None:
-                break
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                # A CLI interrupted mid-write can leave a truncated JSONL line.
-                continue
-            if not isinstance(event, dict):
-                continue
-            event_type = event.get("type")
-            if event_type == "system" and event.get("subtype") == "init":
-                saw_init = True
-                local_session_id = event.get("session_id")
-                api_key_source = event.get("apiKeySource")
-                if api_key_source != self.expected_api_key_source:
-                    process.kill()
-                    raise ValueError(
-                        f"Unexpected apiKeySource {api_key_source!r}, "
-                        f"expected {self.expected_api_key_source!r}"
-                    )
-            elif event_type == "assistant":
-                message_data = event.get("message", event)
-                for block in message_data.get("content", []):
-                    if block.get("type") != "tool_use":
-                        continue
-                    name = block.get("name", "unknown")
-                    tool_input = block.get("input", {})
-                    activity = {"tool": name}
-                    if name == "Bash" and "command" in tool_input:
-                        activity["command"] = tool_input["command"]
-                    elif name in {"Edit", "Write"} and "file_path" in tool_input:
-                        activity["file_path"] = tool_input["file_path"]
-                    activities.append(activity)
-            elif event_type == "result":
-                result_event = event
+        Returns:
+            The EmberVM session ID (string UUID from the guest).
 
-        if timed_out:
-            logger.warning("Claude turn timed out; sending SIGINT")
-            process.send_signal(signal.SIGINT)
-            try:
-                process.wait(timeout=self.shutdown_grace_seconds)
-            except subprocess.TimeoutExpired:
-                logger.warning("Claude did not exit after SIGINT; sending SIGKILL")
-                process.kill()
-                process.wait()
-            raise RuntimeError("Turn timed out; sent SIGINT, then SIGKILL")
+        Raises:
+            EmberVMTransportError: If session creation fails.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
 
-        # The reader consumed all remaining output, including output after result.
+        url = f"{EMBERVM_URL}/v1/workloads/{self.workload}/sessions"
+        headers = auth_headers()
+        timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
+
         try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        if not saw_init:
-            raise ValueError("Claude stream did not emit a system init event")
-        return Turn(
-            result=result_event.get("result", ""),
-            terminal_reason=result_event.get("terminal_reason"),
-            stop_reason=result_event.get("stop_reason"),
-            is_error=bool(result_event.get("is_error", False)),
-            permission_denials=result_event.get("permission_denials") or [],
-            num_turns=int(result_event.get("num_turns", 0)),
-            session_id=result_event.get("session_id") or local_session_id,
-            usage=result_event.get("usage") or {},
-            total_cost_usd=result_event.get("total_cost_usd"),
-            duration_ms=result_event.get("duration_ms"),
-            activities=activities,
-        )
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                return data.get("id", "")
+        except httpx.TimeoutException as exc:
+            logger.warning("embervm session creation timed out: %s", exc)
+            raise EmberVMTimeout(str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.warning("embervm session creation failed: %s", exc)
+            raise EmberVMTransportError(str(exc)) from exc
+        except httpx.TransportError as exc:
+            logger.warning("embervm session creation transport error: %s", exc)
+            raise EmberVMTransportError(str(exc)) from exc
+
+    async def deliver(
+        self, session_id: str | None, message: str, workspace: str = "/tmp"
+    ) -> Turn:
+        """Execute one turn on the guest session and return the result.
+
+        Args:
+            session_id: Existing EmberVM session ID to reuse, or None to create new.
+            message: User message / prompt to send to Claude.
+            workspace: (Ignored; workspace is in the guest, not the pod.)
+
+        Returns:
+            A Turn with the Claude CLI's response parsed from the guest.
+
+        Raises:
+            EmberVMTransportError: If the invoke fails.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+
+        # Create a new session if none supplied
+        if not session_id:
+            session_id = await self.create_session()
+
+        # Prepare the request body for /shim/turn
+        body = json.dumps({"message": message, "session_id": session_id})
+
+        # Invoke the guest shim
+        url = f"{EMBERVM_URL}/v1/sessions/{session_id}/invoke"
+        headers = {
+            **auth_headers(),
+            "X-Ember-Guest-Path": "/shim/turn",
+        }
+        timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    url, content=body.encode(), headers=headers
+                )
+                response.raise_for_status()
+
+                # Parse the guest's response into a Turn
+                guest_data = response.json()
+                return Turn(
+                    result=guest_data.get("result", ""),
+                    terminal_reason=guest_data.get("terminal_reason"),
+                    stop_reason=guest_data.get("stop_reason"),
+                    is_error=bool(guest_data.get("is_error", False)),
+                    permission_denials=guest_data.get("permission_denials", []),
+                    num_turns=int(guest_data.get("num_turns", 0)),
+                    session_id=guest_data.get("session_id") or session_id,
+                    usage=guest_data.get("usage", {}),
+                    total_cost_usd=guest_data.get("total_cost_usd"),
+                    duration_ms=guest_data.get("duration_ms"),
+                    activities=guest_data.get("activities", []),
+                )
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "embervm invoke timed out for session %s: %s", session_id, exc
+            )
+            raise EmberVMTimeout(str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.warning("embervm invoke failed for session %s: %s", session_id, exc)
+            raise EmberVMTransportError(str(exc)) from exc
+        except httpx.TransportError as exc:
+            logger.warning(
+                "embervm invoke transport error for session %s: %s", session_id, exc
+            )
+            raise EmberVMTransportError(str(exc)) from exc

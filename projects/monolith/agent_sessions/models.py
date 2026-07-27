@@ -14,6 +14,9 @@ class AgentSession(SQLModel, table=True):
     local_session_id: str = Field(unique=True)
     workspace: str
     branch: str
+    cli_session_id: str | None = Field(
+        default=None
+    )  # Claude CLI session_id for resumption
     status: str = Field(default="running")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_turn_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -54,4 +57,5 @@ class PendingMessage(SQLModel, table=True):
     seq: int
     message_text: str
     claimed_by_replica: str | None = Field(default=None)
+    claimed_at: datetime | None = Field(default=None)  # For lease expiry detection
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

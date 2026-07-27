@@ -61,6 +61,7 @@ def create_turn(
     commit_sha: str | None,
     usage: dict | None,
     cost_usd: float | None,
+    cli_session_id: str | None = None,
 ) -> AgentTurn:
     row = AgentTurn(
         session_id=session_id,
@@ -169,7 +170,9 @@ def claim_pending_message_sync(session_id: int, turn_seq: int, replica_id: str) 
                 PendingMessage.seq == turn_seq,
                 PendingMessage.claimed_by_replica.is_(None),
             )
-            .values(claimed_by_replica=replica_id)
+            .values(
+                claimed_by_replica=replica_id, claimed_at=datetime.now(timezone.utc)
+            )
         )
         session.commit()
     return result.rowcount == 1
@@ -187,7 +190,7 @@ def release_pending_message_claim_sync(
                 PendingMessage.seq == turn_seq,
                 PendingMessage.claimed_by_replica == replica_id,
             )
-            .values(claimed_by_replica=None)
+            .values(claimed_by_replica=None, claimed_at=None)
         )
         session.commit()
 
@@ -199,6 +202,7 @@ def persist_turn_from_pending_sync(
     turn: Turn,
     voice_summary: str,
     status: str,
+    cli_session_id: str | None = None,
 ) -> AgentTurn:
     """Persist the result of a queued message using a fresh database session."""
     with Session(get_engine()) as session:
@@ -219,7 +223,13 @@ def persist_turn_from_pending_sync(
             _commit_sha(sess_row.workspace),
             usage,
             turn.total_cost_usd,
+            cli_session_id,
         )
+        # Store CLI session_id if this is the first turn
+        if cli_session_id and not sess_row.cli_session_id:
+            sess_row.cli_session_id = cli_session_id
+            session.add(sess_row)
+            session.commit()
         update_session_status(session, session_id, status, voice_summary)
         return row
 

@@ -1,24 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import platform
-import subprocess
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 import agent.api as agent_api
 from agent_sessions import store, voice
 from agent_sessions.models import AgentSession, AgentTurn
-from agent_sessions.transport import LocalSubprocessTransport, Turn
+from agent_sessions.transport import EmberVmShimTransport, Turn
 from app.db import get_engine
 from app.mcp_app import mcp
 from framework import log_task_exception
 
-_transport = LocalSubprocessTransport()
+_transport = EmberVmShimTransport()
 _session_locks: dict[int, asyncio.Lock] = {}
 _sweep_task: asyncio.Task | None = None
 _REPLICA_ID = platform.node()
@@ -61,10 +60,15 @@ def _persist_start(
             turn.terminal_reason,
             turn.stop_reason,
             turn.permission_denials,
-            _commit_sha(workspace),
+            None,  # commit_sha now from guest, not pod
             usage,
             turn.total_cost_usd,
+            turn.session_id,  # Store CLI session_id for resumption
         )
+        # Store the CLI's session_id in the agent session for reuse
+        row.cli_session_id = turn.session_id
+        db_session.add(row)
+        db_session.commit()
         return store.update_session_status(db_session, row.id, status, summary)
 
 
@@ -85,26 +89,12 @@ def _needs_answer(stop_reason: str | None) -> bool:
     )
 
 
-def _commit_sha(workspace: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", workspace, "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout.strip() or None
-
-
 async def _notify_terminal(turn: Turn, summary: str, status: str) -> None:
     if turn.terminal_reason is None:
         return
-    if status == "completed" and not turn.permission_denials:
-        level = "info"
-    elif turn.permission_denials or _needs_answer(turn.stop_reason):
+    if turn.permission_denials or status == "needs_input":
+        level = "warn"  # Needs user action
+    elif status == "completed":
         level = "info"
     else:
         level = "warn"
@@ -166,8 +156,22 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
         row = await asyncio.to_thread(_get_pending_message_sync, session_id, turn_seq)
         if not row:
             return
+        # Load session to get workspace and stored session_id for resumption
+        session_row, _ = await asyncio.to_thread(_load_session, session_id)
+        if not session_row:
+            await asyncio.to_thread(
+                _mark_turn_error_sync, session_id, turn_seq, "Session not found"
+            )
+            return
         try:
-            turn = await asyncio.to_thread(_transport.deliver, None, row.message_text)
+            # Reuse the session_id from the database (from first turn), or None for new sessions
+            cli_session_id = session_row.cli_session_id
+            turn = await asyncio.to_thread(
+                _transport.deliver,
+                cli_session_id,
+                row.message_text,
+                session_row.workspace,
+            )
             if inspect.isawaitable(turn):
                 turn = await turn
         except Exception as exc:  # noqa: BLE001 - retain the row for recovery
@@ -178,6 +182,7 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
 
         summary = voice.extract_voice_summary(turn.result)
         status = _turn_status(turn)
+        # Store the CLI's session_id from the turn for resumption on next deliver
         try:
             await asyncio.to_thread(
                 _persist_turn_from_pending_sync,
@@ -187,7 +192,20 @@ async def _execute_pending_message(session_id: int, turn_seq: int) -> None:
                 turn,
                 summary,
                 status,
+                turn.session_id,  # Store for resumption
             )
+        except IntegrityError as e:
+            # Turn already exists (duplicate seq), likely from a retry of a completed turn.
+            # Delete the pending row to prevent infinite retry.
+            logger.warning(
+                "Turn %s for session %s already exists (duplicate seq), discarding retry",
+                turn_seq,
+                session_id,
+            )
+            await asyncio.to_thread(
+                store.delete_pending_message_sync, session_id, turn_seq
+            )
+            return
         except Exception:
             logger.exception(
                 "Failed to persist queued turn %s for session %s",
@@ -251,10 +269,11 @@ def _activity_values(turns: list[AgentTurn]) -> tuple[list[str], list[str]]:
 
 
 @mcp.tool
-async def monolith_agent_session_start(workspace: str, prompt: str) -> dict:
+async def monolith_agent_session_start(prompt: str) -> dict:
     """Start a voice-drivable Claude Code session and complete its first turn."""
     local_session_id = str(uuid4())
-    turn = await asyncio.to_thread(_transport.deliver, None, prompt)
+    turn = await _transport.deliver(None, prompt)
+    workspace = "<guest>"  # Workspace is in the guest, not the pod
     row = await asyncio.to_thread(
         _persist_start, local_session_id, workspace, "main", prompt, turn
     )
@@ -307,48 +326,3 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
     _, turns = await asyncio.to_thread(_load_session, session_id)
     selected = _select_turn(turns, turn)
     return {"result_text": selected.result_text, "activities": _activities(selected)}
-
-
-def _git_show(workspace: str, sha: str, path: str | None, stat: bool) -> str:
-    command = ["git", "-C", workspace, "show", sha]
-    if stat:
-        command.append("--stat")
-    if path:
-        command.extend(["--", path])
-    result = subprocess.run(
-        command, check=True, capture_output=True, text=True, timeout=10
-    )
-    return result.stdout
-
-
-def _spoken_diff(diff_stat: str) -> str:
-    for line in reversed(diff_stat.splitlines()):
-        if "file" in line and ("changed" in line or "changed," in line):
-            return line.strip()
-    return "No files changed."
-
-
-@mcp.tool
-async def monolith_agent_diff(
-    session_id: int, turn: int | None = None, path: str | None = None
-) -> dict:
-    """Return commit statistics, an optional raw path diff, and a spoken summary."""
-    row, turns = await asyncio.to_thread(_load_session, session_id)
-    if row is None:
-        raise ValueError(f"Unknown agent session {session_id}")
-    selected = _select_turn(turns, turn)
-    if not selected.commit_sha:
-        return {"diff_stat": "", "raw_diff": "", "spoken_diff": "No commit recorded."}
-    diff_stat = await asyncio.to_thread(
-        _git_show, row.workspace, selected.commit_sha, None, True
-    )
-    raw_diff = ""
-    if path:
-        raw_diff = await asyncio.to_thread(
-            _git_show, row.workspace, selected.commit_sha, path, False
-        )
-    return {
-        "diff_stat": diff_stat,
-        "raw_diff": raw_diff,
-        "spoken_diff": _spoken_diff(diff_stat),
-    }
