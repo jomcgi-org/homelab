@@ -56,6 +56,7 @@ MONOLITH_DOMAINS = [
     "demos",
     "ember_public",
     "agent",
+    "agent_sessions",
     "cluster",
     "semgrep_scan",
     "sandbox",
