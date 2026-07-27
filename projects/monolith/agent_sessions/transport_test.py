@@ -129,3 +129,58 @@ def test_transport_tolerates_truncated_final_line(monkeypatch):
 
     assert turn.session_id == "sid"
     assert turn.activities == [{"tool": "Bash"}]
+
+
+def test_transport_returns_needs_input_on_permission_denials(monkeypatch):
+    """Verify that permission denials are properly extracted and result in needs_input status."""
+    process = FakeProcess(
+        [
+            {"type": "system", "subtype": "hook_started"},
+            {"type": "system", "subtype": "hook_started"},
+            {"type": "system", "subtype": "hook_response"},
+            {"type": "system", "subtype": "hook_response"},
+            {
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "none",
+                "session_id": "sid",
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": "/etc/passwd"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "result",
+                "result": "needs_input",
+                "terminal_reason": None,
+                "stop_reason": "tool_use",
+                "permission_denials": [
+                    {
+                        "tool": "Write",
+                        "reason": "User denied Write permission",
+                    }
+                ],
+                "usage": {"input_tokens": 10},
+                "total_cost_usd": 0.01,
+                "duration_ms": 50,
+                "duration_api_ms": 999,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "agent_sessions.transport.subprocess.Popen", lambda *args, **kwargs: process
+    )
+    turn = LocalSubprocessTransport().deliver(None, "write to /etc/passwd")
+    assert turn.session_id == "sid"
+    assert turn.result == "needs_input"
+    assert turn.terminal_reason is None
+    assert len(turn.permission_denials) == 1
+    assert turn.permission_denials[0]["tool"] == "Write"

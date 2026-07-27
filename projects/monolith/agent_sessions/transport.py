@@ -39,9 +39,17 @@ class LocalSubprocessTransport:
         self,
         expected_api_key_source: str = "none",
         voice_prompt: str = "Respond with a concise human-readable summary in <voice>...</voice>.",
+        permission_mode: str = "default",
     ) -> None:
         self.expected_api_key_source = expected_api_key_source
         self.voice_prompt = voice_prompt
+        # Use "default" mode by default: this transport spawns the CLI in the
+        # monolith pod (the orchestrator), not a sandbox. Unlike the EmberVM guest
+        # (which uses "bypassPermissions" since the VM is the security boundary),
+        # the monolith pod is not isolated. An agent with "bypassPermissions" would
+        # have unrestricted access to the session store, notify path, and MCP
+        # surface, a materially larger blast radius. Callers must choose explicitly.
+        self.permission_mode = permission_mode
 
     def deliver(self, session_id: str | None, message: str) -> Turn:
         command = [
@@ -52,6 +60,8 @@ class LocalSubprocessTransport:
             "--output-format",
             "stream-json",
             "--verbose",
+            "--permission-mode",
+            self.permission_mode,
         ]
         if session_id:
             command.extend(["--resume", session_id])
