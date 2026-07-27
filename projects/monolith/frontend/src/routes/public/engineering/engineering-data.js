@@ -126,10 +126,6 @@ export const projects = [
         label: "projects/embervm",
         href: "https://github.com/jomcgi/homelab/tree/main/projects/embervm",
       },
-      {
-        label: "Rendered warm by an EmberVM serving microVM",
-        href: "/functions/hot-image-demo?title=EmberVM&subtitle=served+warm+from+a+microVM",
-      },
     ],
   },
   {

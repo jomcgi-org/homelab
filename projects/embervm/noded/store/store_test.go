@@ -321,7 +321,7 @@ func TestDeleteArtifactRemovesMetaFirst(t *testing.T) {
 	s, fake := newTestStore(t)
 	ctx := context.Background()
 	srcDir, names := writeLocalArtifact(t, map[string]string{"snapfile": "a", "memfile": "b"})
-	prefix := "serving/hot-image-demo/serv-1"
+	prefix := "serving/serving-test/serv-1"
 	if _, _, err := s.Export(ctx, prefix, srcDir, names, 0, 1, "", ""); err != nil {
 		t.Fatalf("Export: %v", err)
 	}

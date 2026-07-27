@@ -104,13 +104,10 @@ hard-stopped at submit, and metering rides the operation itself rather than a
 flush timer, so a crash cannot lose usage. Usage is billed per task on both
 success and failure and is queryable at `/v1/usage`.
 
-The one public route (jomcgi.dev/functions/hot-image-demo, an image
-renderer served warm) is scoped at
-three layers: the HTTPRoute pins the Host rewrite and matches a single path,
-the node Envoy exact-matches that internal authority and og-image is the only
-serving-class workload on it, and the guest shim reserves the `/shim/` prefix
-so hydration and health endpoints are unreachable from outside. The route is
-rate-limited at Envoy (120/min) and by a daily 3600 vCPU-second quota.
+Public routes are scoped at the HTTPRoute and, for serving workloads, at the
+node Envoy authority match and the guest shim's reserved `/shim/` prefix, so
+hydration and health endpoints are unreachable from outside. Rate limits and
+quotas are applied according to each route's configuration.
 
 The full threat model is in
 [ADR embervm/001](../../docs/decisions/embervm/001-embervm-beam-firecracker-workload-orchestrator.md).

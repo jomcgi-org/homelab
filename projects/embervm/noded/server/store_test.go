@@ -1138,18 +1138,18 @@ func TestEvictArtifactRemote(t *testing.T) {
 	ref := "serv-1"
 	dir := filepath.Join(s.cfg.SnapshotRoot, "serving", ref)
 	writeBundleFiles(t, dir, map[string]string{"snapfile": "s", "memfile": "m"})
-	s.servingSnap.add(servingSnapshotEntry{snapshotRef: ref, workload: "hot-image-demo"})
+	s.servingSnap.add(servingSnapshotEntry{snapshotRef: ref, workload: "serving-test"})
 	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
-		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "hot-image-demo", Ref: ref},
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "serving-test", Ref: ref},
 	}); err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	prefix := "serving/amd/hot-image-demo/serv-1"
+	prefix := "serving/amd/serving-test/serv-1"
 	if !fs.has(prefix) {
 		t.Fatal("store missing artifact before evict")
 	}
 	if _, err := s.EvictArtifact(ctx, &nodev1.EvictArtifactRequest{
-		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "hot-image-demo", Ref: ref},
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "serving-test", Ref: ref},
 		Remote:   true,
 	}); err != nil {
 		t.Fatalf("evict remote: %v", err)
@@ -1159,7 +1159,7 @@ func TestEvictArtifactRemote(t *testing.T) {
 	}
 	// Idempotent.
 	if _, err := s.EvictArtifact(ctx, &nodev1.EvictArtifactRequest{
-		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "hot-image-demo", Ref: ref},
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "serving-test", Ref: ref},
 		Remote:   true,
 	}); err != nil {
 		t.Fatalf("second evict should be idempotent: %v", err)

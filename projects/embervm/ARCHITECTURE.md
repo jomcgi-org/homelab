@@ -517,11 +517,10 @@ injects real credentials from memory-only leases sealed to the brick's
 dial-home identity. RAM scrubbing before snapshot is rejected as a
 load-bearing mechanism; revocation at the validator is the control.
 
-**Public surface hardening** (as shipped): the one public route
-(`jomcgi.dev/functions/hot-image-demo`) is scoped at the HTTPRoute, the node
-Envoy authority match, and the guest shim's reserved `/shim/` prefix,
-rate-limited at Envoy and by a daily vCPU-second quota. The `/ember` Bazel
-demo (ADR 010) serves each visitor query from a disposable CoW clone of a
+**Public surface hardening** (as shipped): the public routes are scoped at their
+HTTPRoutes, with serving routes additionally constrained by node Envoy authority
+matches and the guest shim's reserved `/shim/` prefix. The `/ember` Bazel demo
+(ADR 010) serves each visitor query from a disposable CoW clone of a
 warm-Skyframe snapshot: server-controlled argv, zero egress, reaped per
 request.
 
