@@ -190,8 +190,8 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
 
     async def run():
         await asyncio.gather(
-            mcp._execute_pending_message(row.id, pending.seq),
-            mcp._execute_pending_message(row.id, pending.seq),
+            mcp._execute_pending_message(row.id),
+            mcp._execute_pending_message(row.id),
         )
 
     asyncio.run(run())
@@ -230,6 +230,7 @@ def test_actively_refreshed_claim_is_not_reclaimed(session):
     assert reclaimed_count == 0, "Active claim should not be reclaimed"
 
     # Verify the message is still claimed
+    session.expire_all()
     pending_row = store.get_pending_message(session, row.id, pending.seq)
     assert pending_row is not None
     assert pending_row.claimed_by_replica == "monolith"
@@ -270,6 +271,7 @@ def test_stale_claim_is_reclaimed(session):
     assert reclaimed_count == 1, "Stale claim should be reclaimed"
 
     # Verify the message is no longer claimed
+    session.expire_all()
     pending_row = store.get_pending_message(session, row.id, pending.seq)
     assert pending_row is not None
     assert pending_row.claimed_by_replica is None
@@ -308,6 +310,7 @@ def test_heartbeat_refresh_with_real_replica_id(session, monkeypatch):
     assert reclaimed_count == 0, "Actively refreshed claim should not be reclaimed"
 
     # Verify the claim is still active
+    session.expire_all()
     pending_row = store.get_pending_message(session, row.id, pending.seq)
     assert pending_row is not None
     assert pending_row.claimed_by_replica == real_replica_id
@@ -333,6 +336,7 @@ def test_heartbeat_refresh_fails_with_wrong_replica_id(session):
     )
 
     # The claim is still owned by the original replica
+    session.expire_all()
     pending_row = store.get_pending_message(session, row.id, pending.seq)
     assert pending_row is not None
     assert pending_row.claimed_by_replica == "replica-a"
