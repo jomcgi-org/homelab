@@ -3696,7 +3696,6 @@ py_test(
     ],
 )
 
-
 py_test(
     name = "stars_models_test",
     srcs = ["stars/models_test.py"],
