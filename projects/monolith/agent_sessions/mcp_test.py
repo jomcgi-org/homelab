@@ -215,9 +215,9 @@ def test_actively_refreshed_claim_is_not_reclaimed(session):
     row = store.create_session(session, "sid-456", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "test")
 
-    # Simulate claiming the message
-    claimed = store.claim_pending_message_sync(row.id, pending.seq, "monolith")
-    assert claimed
+    # Simulate claiming the message (database returns lowest unclaimed seq)
+    claimed_seq = store.claim_pending_message_for_session_sync(row.id, "monolith")
+    assert claimed_seq == pending.seq
 
     # Simulate multiple refreshes to keep the claim fresh
     for i in range(3):
@@ -246,9 +246,9 @@ def test_stale_claim_is_reclaimed(session):
     row = store.create_session(session, "sid-789", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "test")
 
-    # Claim the message
-    claimed = store.claim_pending_message_sync(row.id, pending.seq, "monolith")
-    assert claimed
+    # Claim the message (database returns lowest unclaimed seq)
+    claimed_seq = store.claim_pending_message_for_session_sync(row.id, "monolith")
+    assert claimed_seq == pending.seq
 
     # Simulate a crash by manually setting claimed_at to an old time
     # This makes the claim appear stale without needing to actually sleep.
@@ -291,9 +291,9 @@ def test_heartbeat_refresh_with_real_replica_id(session, monkeypatch):
     # Get the actual replica id that would be used
     real_replica_id = platform.node()
 
-    # Claim with the real replica id (simulating what _execute_pending_message does)
-    claimed = store.claim_pending_message_sync(row.id, pending.seq, real_replica_id)
-    assert claimed
+    # Claim with the real replica id (database returns lowest unclaimed seq)
+    claimed_seq = store.claim_pending_message_for_session_sync(row.id, real_replica_id)
+    assert claimed_seq == pending.seq
 
     # Refresh multiple times with the SAME replica id
     for i in range(5):
@@ -322,9 +322,9 @@ def test_heartbeat_refresh_fails_with_wrong_replica_id(session):
     row = store.create_session(session, "sid-wrong-id", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "test")
 
-    # Claim with one replica id
-    claimed = store.claim_pending_message_sync(row.id, pending.seq, "replica-a")
-    assert claimed
+    # Claim with one replica id (database returns lowest unclaimed seq)
+    claimed_seq = store.claim_pending_message_for_session_sync(row.id, "replica-a")
+    assert claimed_seq == pending.seq
 
     # Try to refresh with a DIFFERENT replica id (like the hardcoded "monolith" bug)
     still_held = store.refresh_claim_sync(row.id, pending.seq, "replica-b")
