@@ -112,6 +112,22 @@ func setMmdsEnv(logger *slog.Logger) {
 	}
 }
 
+// setDefaultEnv is the ONLY thing that gives this guest its environment.
+//
+// apko's `environment:` block does NOT apply here. It becomes OCI image config,
+// which is manifest metadata, and the base rootfs is produced with `crane export`
+// (the filesystem alone). A raw Firecracker boot then starts init=<this binary>
+// and never reads the OCI config, so anything declared only in apko.yaml is
+// absent at runtime. That is why this map duplicates apko's values rather than
+// deriving from them: apko covers docker/crane execution, this covers every boot
+// that actually happens in the cluster. Adding a variable to apko.yaml alone is
+// therefore a silent no-op, which has already produced one live incident.
+//
+// These are FORCED, not defaulted-if-unset. The kernel hands PID 1 its own HOME
+// (`/`), so an if-unset guard left HOME at `/` and every turn 503'd on
+// `could not lock config file //.gitconfig: Read-only file system`. Nothing
+// legitimately pre-populates this environment, and setMmdsEnv runs AFTER this,
+// so per-boot overrides still win.
 func setDefaultEnv(logger *slog.Logger) {
 	defaults := map[string]string{
 		"PATH":                   "/usr/bin:/bin:/usr/local/bin",
@@ -119,6 +135,18 @@ func setDefaultEnv(logger *slog.Logger) {
 		"PYTHONUNBUFFERED":       "1",
 		"TERM":                   "dumb",
 		"EMBER_CLAUDE_WORKSPACE": "/workspace",
+		// Egress auth (ADR 023 6b). The CLI talks to the API in CLEARTEXT on
+		// purpose: its only route out is the shim's forwarder over a host-local
+		// vsock, which has no network segment on it, so the egress-proxy sidecar
+		// reads the plaintext request, swaps the placeholder below for the real
+		// token, and originates the real TLS to api.anthropic.com:443 itself.
+		//
+		// The placeholder MUST stay byte-identical to egress.secrets[].placeholder
+		// in the embervm chart values: the sidecar substring-matches this exact
+		// string in request headers, and a mismatch surfaces as a 401 from
+		// Anthropic inside a guest, a long way from the typo.
+		"ANTHROPIC_BASE_URL":      "http://api.anthropic.com",
+		"CLAUDE_CODE_OAUTH_TOKEN": "ember-egress-anthropic-oauth-placeholder-0f3a9c1d7b5e2846-not-a-credential",
 		// The shim treats a committer identity as mandatory and fails a spawn
 		// without one, so every turn would 503 on a guest that has none. A
 		// session-class guest is restored from a SHARED pristine snapshot, so
@@ -133,8 +161,11 @@ func setDefaultEnv(logger *slog.Logger) {
 		"EMBER_GIT_USER_EMAIL": "agent@jomcgi.dev",
 	}
 	for key, value := range defaults {
-		if _, set := os.LookupEnv(key); set {
-			continue
+		// Key only, never the value: one of these carries the egress placeholder,
+		// and a log line that prints credential-shaped values is a habit worth not
+		// forming even when today's value is inert.
+		if existing, set := os.LookupEnv(key); set && existing != value {
+			logger.Info("overriding inherited env", "key", key)
 		}
 		if err := os.Setenv(key, value); err != nil {
 			logger.Warn("could not set default env", "key", key, "err", err)

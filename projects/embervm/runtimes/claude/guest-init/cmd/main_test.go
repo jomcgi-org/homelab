@@ -222,3 +222,30 @@ func TestSeedTrustRecordDoesNotClobber(t *testing.T) {
 		}
 	})
 }
+
+// TestSetDefaultEnvOverridesInherited pins the two things that made every turn
+// 503 in the cluster while CI was green.
+//
+// The kernel hands PID 1 its own HOME (/), and the previous if-unset guard left
+// it there, so git tried to write //.gitconfig on the read-only rootfs. And the
+// egress auth variables lived only in apko.yaml, which is OCI image config that a
+// raw Firecracker boot never reads, so the CLI booted with no base URL and no
+// placeholder to swap.
+func TestSetDefaultEnvOverridesInherited(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	// Exactly what a kernel gives init: a HOME that is wrong for this guest.
+	t.Setenv("HOME", "/")
+
+	setDefaultEnv(logger)
+
+	if got := os.Getenv("HOME"); got != "/home/runtime" {
+		t.Errorf("HOME = %q, want /home/runtime; an inherited HOME must not win", got)
+	}
+	// Only guest-init can deliver these; apko.yaml alone is a silent no-op.
+	if got := os.Getenv("ANTHROPIC_BASE_URL"); got != "http://api.anthropic.com" {
+		t.Errorf("ANTHROPIC_BASE_URL = %q, want the cleartext egress lane", got)
+	}
+	if got := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); got == "" {
+		t.Error("CLAUDE_CODE_OAUTH_TOKEN is empty; the sidecar has no placeholder to swap")
+	}
+}
