@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 
 import pytest
 from fastapi import FastAPI
@@ -138,6 +139,30 @@ def _sqlite_engine(monkeypatch):
     return engine
 
 
+@pytest.fixture
+def _public_app_with_logs(caplog):
+    """Build a PUBLIC tier app without losing caplog capture.
+
+    build_app calls configure_logging, and logging.basicConfig(force=True)
+    removes every handler already on the root logger, including the one
+    caplog installed for this test. Records emitted after build_app are
+    therefore invisible to caplog unless the handler is put back, which is
+    what this fixture does.
+    """
+    root = logging.getLogger()
+
+    def _build(modules):
+        app = build_app(PUBLIC_PROFILE, modules)
+        if caplog.handler not in root.handlers:
+            root.addHandler(caplog.handler)
+        return app
+
+    try:
+        yield _build
+    finally:
+        root.removeHandler(caplog.handler)
+
+
 def test_public_tier_health_has_no_components_when_no_module_registers_health(
     _sqlite_engine,
 ):
@@ -164,7 +189,9 @@ def test_public_tier_health_folds_in_module_components(_sqlite_engine):
     assert body["components"] == {"widget": {"ok": True, "detail": "all good"}}
 
 
-def test_public_tier_health_503s_when_a_component_is_not_ok(_sqlite_engine):
+def test_public_tier_health_503_logs_failing_component(
+    _sqlite_engine, caplog, _public_app_with_logs
+):
     async def unhealthy_check():
         return {"ok": False, "detail": "widget is broken"}
 
@@ -173,16 +200,43 @@ def test_public_tier_health_503s_when_a_component_is_not_ok(_sqlite_engine):
         register_public=lambda app: None,
         register_health={"widget": unhealthy_check},
     )
-    app = build_app(PUBLIC_PROFILE, [module])
-    resp = TestClient(app).get("/api/health")
+    app = _public_app_with_logs([module])
+    with caplog.at_level(logging.WARNING, logger="monolith.public"):
+        resp = TestClient(app).get("/api/health")
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "unhealthy"
     assert body["components"]["widget"]["ok"] is False
+    records = [r for r in caplog.records if r.name == "monolith.public"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert "public health components unhealthy" in records[0].message
+    assert "widget" in records[0].message
+    assert "widget is broken" in records[0].message
+
+
+def test_public_tier_healthy_component_logs_no_component_warning(
+    _sqlite_engine, caplog, _public_app_with_logs
+):
+    async def healthy_check():
+        return {"ok": True, "detail": "all good"}
+
+    module = Module(
+        name="m",
+        register_public=lambda app: None,
+        register_health={"widget": healthy_check},
+    )
+    app = _public_app_with_logs([module])
+    with caplog.at_level(logging.WARNING, logger="monolith.public"):
+        resp = TestClient(app).get("/api/health")
+    assert resp.status_code == 200
+    assert not any(
+        "public health components unhealthy" in r.message for r in caplog.records
+    )
 
 
 def test_public_tier_health_crashing_component_reports_not_ok_not_500(
-    _sqlite_engine,
+    _sqlite_engine, caplog, _public_app_with_logs
 ):
     async def crashing_check():
         raise RuntimeError("kaboom")
@@ -192,12 +246,21 @@ def test_public_tier_health_crashing_component_reports_not_ok_not_500(
         register_public=lambda app: None,
         register_health={"widget": crashing_check},
     )
-    app = build_app(PUBLIC_PROFILE, [module])
-    resp = TestClient(app).get("/api/health")
+    app = _public_app_with_logs([module])
+    with caplog.at_level(logging.WARNING, logger="monolith.public"):
+        resp = TestClient(app).get("/api/health")
     assert resp.status_code == 503
     body = resp.json()
     assert body["components"]["widget"]["ok"] is False
     assert "kaboom" in body["components"]["widget"]["detail"]
+    assert any(
+        r.name == "monolith.public"
+        and r.levelno == logging.WARNING
+        and "public health components unhealthy" in r.message
+        and "widget" in r.message
+        and "kaboom" in r.message
+        for r in caplog.records
+    )
 
 
 def test_public_tier_has_no_lifespan_side_effects_or_mcp():

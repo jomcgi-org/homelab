@@ -28,8 +28,23 @@ export async function GET({ fetch }) {
   }
 
   if (!res.ok) {
+    // Expose component names for attribution, never internal detail strings.
+    let failing = [];
+    try {
+      const body = await res.json();
+      failing = Object.entries(body?.components ?? {})
+        .filter(([, c]) => !c?.ok)
+        .map(([name]) => name)
+        .sort();
+    } catch {
+      // Non-JSON or unreadable error body: names are simply unavailable.
+    }
     return json(
-      { status: "unhealthy", backendStatus: res.status },
+      {
+        status: "unhealthy",
+        backendStatus: res.status,
+        ...(failing.length ? { failing } : {}),
+      },
       { status: 503 },
     );
   }

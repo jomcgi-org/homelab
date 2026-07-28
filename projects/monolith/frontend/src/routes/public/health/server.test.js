@@ -35,13 +35,40 @@ describe("/public/health GET", () => {
     const fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 503,
-      json: async () => ({ status: "unhealthy" }),
+      json: async () => ({
+        status: "unhealthy",
+        components: {
+          b: { ok: true },
+          a: { ok: false, detail: "secret" },
+        },
+      }),
     });
 
     const res = await GET({ fetch });
 
     expect(res.status).toBe(503);
     expect(res.headers.get("cache-control")).toBeNull();
+    const body = await res.json();
+    expect(body.failing).toEqual(["a"]);
+    expect(JSON.stringify(body)).not.toContain("secret");
+  });
+
+  it("omits failing names when the backend body is not parseable", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => {
+        throw new Error("not JSON");
+      },
+    });
+
+    const res = await GET({ fetch });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      status: "unhealthy",
+      backendStatus: 503,
+    });
   });
 
   it("returns an uncached 503 when the backend is unreachable", async () => {
