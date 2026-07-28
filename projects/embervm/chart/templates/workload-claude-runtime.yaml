@@ -13,10 +13,12 @@
 # writable volume by design; the workspace is tmpfs, which is why memMib carries
 # the checkout as well as the process (see the disk arithmetic in values.yaml).
 #
-# Egress is NOT a field here. The lane is a daemon-level switch
-# (EMBERVM_NODED_EGRESS_ENABLED) and the policy lives in the egress-proxy
-# sidecar, so a workload does not opt in; it simply configures a client to use
-# the port, which only this guest does.
+# Egress is not a field here, but this workload's NAME is load-bearing for it.
+# The lane is gated per workload (EMBERVM_NODED_EGRESS_WORKLOADS), and the
+# chart derives that allowlist from the `name` below, so renaming this workload
+# moves the CR and the allowlist together. Sessions banked under the old name
+# do NOT move with it: their workload is durable and is replayed as the relight
+# trace, so they resume outside the allowlist with no egress lane.
 apiVersion: embervm.dev/v1alpha1
 kind: Workload
 metadata:
