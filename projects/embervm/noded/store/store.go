@@ -57,6 +57,25 @@ const reachableTimeout = 3 * time.Second
 // local state with bad bytes.
 var ErrNotPresent = errors.New("store: artifact not present (no meta.json)")
 
+// ErrStaleGeneration is returned by Export when the store already holds a copy of
+// this artifact at a HIGHER generation than the local one. Exporting anyway would
+// overwrite newer durable state with older bytes.
+//
+// This matters most for VOLUME, which keys as a SINGLETON (volume/<workload>: no
+// ref, no vendor segment), so every node that has ever held the volume writes the
+// SAME object. Observed 2026-07-28 on demo-postgres: node-1 exported
+// generation 5076 while node-2 exported generation 1472 to the same key, minutes
+// apart. Whichever landed last won, so a node carrying a long-stale copy could
+// silently replace the live one -- for a Postgres volume, that is data loss.
+//
+// The generation was already the fence everywhere else: the control plane
+// quarantines a stateful volume whose reported generation runs ahead of the
+// blessed watermark, and meta.json has carried `generation` since the artifact
+// layout was introduced. Export simply never compared it, short-circuiting only
+// on byte-identical content -- which is exactly the case that does NOT arise when
+// two nodes have diverged.
+var ErrStaleGeneration = errors.New("store: refusing export, store holds a newer generation")
+
 // FileMeta is one file's completeness record within an artifact's meta.json:
 // its exact byte size and hex SHA-256, verified on restore so a corrupt or
 // truncated object never overwrites good local bytes.
@@ -258,8 +277,22 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 	// per-file checksums match ours, the artifact is already durable at this
 	// content. HEAD-then-GET the marker; a Head miss (or a mismatch) falls
 	// through to a full re-upload.
-	if present, remoteMeta, merr := s.getMeta(ctx, prefix); merr == nil && present && sameFiles(remoteMeta.Files, meta.Files) {
-		return 0, true, nil
+	if present, remoteMeta, merr := s.getMeta(ctx, prefix); merr == nil && present {
+		if sameFiles(remoteMeta.Files, meta.Files) {
+			return 0, true, nil
+		}
+		// Content DIFFERS. Before this fence that fell straight through to a full
+		// re-upload, so an older copy silently overwrote a newer one on the shared
+		// singleton volume key. Compare the generation the marker already carries.
+		// Strictly-greater only: equal generations still re-upload, which keeps the
+		// repair path for a partially-written or corrupted remote copy at the
+		// current generation, and generation 0 (unknown) can never win against a
+		// known one.
+		if remoteMeta.Generation > generation {
+			return 0, false, fmt.Errorf(
+				"%w: local generation %d, store generation %d",
+				ErrStaleGeneration, generation, remoteMeta.Generation)
+		}
 	}
 
 	for name, fm := range meta.Files {

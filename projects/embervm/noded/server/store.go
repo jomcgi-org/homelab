@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
@@ -458,6 +460,22 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	}
 	generation := s.artifactGeneration(ref)
 	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
+	// A refused export is an ANOMALY, not a transport failure: this node holds an
+	// older copy than the store does. Returning Unavailable would make the control
+	// plane retry it on every reconcile forever, so ack it as skipped and say so
+	// loudly. Deliberately NOT marked in s.exported: our bytes are not in the store,
+	// and claiming otherwise would let a retention sweep treat the local copy as
+	// durable. The repeat log every reconcile is the point -- two nodes holding
+	// divergent copies of a singleton volume should not be quiet.
+	if errors.Is(err, store.ErrStaleGeneration) {
+		s.logger.Warn("noded: export REFUSED, store holds a newer generation (divergent copies)",
+			"artifact", prefix,
+			"kind", ref.GetKind().String(),
+			"workload", ref.GetWorkload(),
+			"localGeneration", generation,
+			"err", err)
+		return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: true, Generation: generation}, nil
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: export artifact %q: %v", prefix, err)
 	}
@@ -1044,6 +1062,16 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 		return
 	}
 	_, skipped, err := s.store.Export(ctx, job.key, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
+	// Not a transport failure and NOT retryable: retrying cannot make our older
+	// copy newer. Only BASE rides this queue today (generation 0, so the fence
+	// cannot fire), but handling it here keeps the log honest if another kind is
+	// ever enqueued, rather than claiming "will retry on reconcile" forever.
+	if errors.Is(err, store.ErrStaleGeneration) {
+		s.logger.Warn("noded: async export REFUSED, store holds a newer generation (divergent copies)",
+			"artifact", job.key, "kind", job.ref.GetKind().String(),
+			"localGeneration", generation, "err", err)
+		return
+	}
 	if err != nil {
 		s.logger.Warn("noded: async export failed (will retry on reconcile)", "artifact", job.key, "err", err)
 		return
