@@ -222,9 +222,9 @@ spec:
         {{- if .Values.egress.enabled }}
         # Egress-proxy sidecar (ADR 023 phase 6a, plain allowlist-forward): the
         # only process that reaches the network on a guest's behalf. The daemon
-        # forwards each selected guest's vsock egress here over localhost;
+        # forwards each egress-enabled guest's vsock egress here over localhost;
         # the sidecar never sees the guest's control frames. Pod-level: one sidecar
-        # serves the workloads selected by noded on the node. Runs non-root (uid
+        # serves every egress-enabled workload on the node. Runs non-root (uid
         # 65532). Plain mode: NO secret catalog / CA / secret-swap (a later PR).
         - name: egress-proxy
           image: "{{ .Values.egress.image.repository }}@{{ .Values.egress.image.digest }}"
@@ -240,11 +240,9 @@ spec:
                 - ALL
           env:
             # The daemon tunnels to 127.0.0.1:8888 by default
-            # (FC_INVOKE_EGRESS_SIDECAR_ADDR); the sidecar listens on the same
-            # loopback address. This bind is load-bearing because the sidecar has
-            # no client authentication and holds the real credential.
+            # (FC_INVOKE_EGRESS_SIDECAR_ADDR); the sidecar listens on the same port.
             - name: EGRESS_LISTEN
-              value: "127.0.0.1:8888"
+              value: ":8888"
             # Split-horizon egress guardrail (ADR 023). external: public egress
             # posture ("allow" default lets the agent read the open internet).
             # internal: the cluster is deny-by-default, confined to
@@ -269,22 +267,13 @@ spec:
               value: {{ join "," . | quote }}
             {{- end }}
             {{- if .Values.egress.secrets }}
-            # Credential injection (ADR 023 6b). EGRESS_SECRETS is the non-secret
-            # catalog (header -> env -> egressTo); the real value of each is
-            # supplied below from its Secret (or a literal for tests). The CA
-            # (cert + key) is mounted so the sidecar can mint leaves; the key
-            # never leaves here.
-            #
-            # This emits header/valuePrefix, NOT placeholder. The sidecar dropped
-            # substring substitution for header injection, and its loadSecrets
-            # calls os.Exit on an entry with no header, so a catalog built the old
-            # way does not degrade: the container refuses to start, the pod never
-            # goes Ready, and the Service loses its only endpoint. Emitting the
-            # shape the binary actually parses is what keeps this chart and that
-            # binary shippable in the same release.
+            # Secret swap (ADR 023 6b). EGRESS_SECRETS is the non-secret catalog
+            # (placeholder -> env -> egressTo); the real value of each is supplied
+            # below from its Secret (or a literal for tests). The CA (cert + key)
+            # is mounted so the sidecar can mint leaves; the key never leaves here.
             {{- $catalog := list }}
             {{- range $s := .Values.egress.secrets }}
-            {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "env" $s.env "egressTo" $s.egressTo) }}
+            {{- $catalog = append $catalog (dict "placeholder" $s.placeholder "env" $s.env "egressTo" $s.egressTo) }}
             {{- end }}
             - name: EGRESS_SECRETS
               value: {{ $catalog | toJson | quote }}
