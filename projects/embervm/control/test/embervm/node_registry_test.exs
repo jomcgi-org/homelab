@@ -72,6 +72,11 @@ defmodule Embervm.NodeRegistryTest do
     }
   end
 
+  # `tries` is a poll count at 10ms intervals, so 200 is a 2s budget, not 200ms.
+  # Waits here are bets on scheduler latency rather than properties of the code,
+  # and a budget that is generous costs nothing on the passing path: the poll
+  # returns as soon as the condition holds. Keep new waits at 200 rather than
+  # picking a tighter number that only ever loses on a loaded executor.
   defp eventually(_fun, 0), do: flunk("condition never became true")
 
   defp eventually(fun, tries) do
@@ -670,7 +675,7 @@ defmodule Embervm.NodeRegistryTest do
     # the stream goes dead (advance past down_after with no fresh status).
     advance.(100_000)
     NodeRegistry.tick(reg)
-    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 50)
+    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
 
     # The instance_id was removed from NodeChannel; the bare node name was never a key,
     # so it never appears in the removal list.
@@ -737,7 +742,7 @@ defmodule Embervm.NodeRegistryTest do
     advance.(100_000)
     :ok = NodeRegistry.register(reg, %{"node" => node, "pod_uid" => "uid-B", "address" => b_addr})
     NodeRegistry.tick(reg)
-    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), a_id) end, 50)
+    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), a_id) end, 200)
 
     # A's own key is gone; B's instance_id is untouched; the bare node name still
     # resolves to nothing. A's expiry could not affect B because they never shared a key.
@@ -798,7 +803,7 @@ defmodule Embervm.NodeRegistryTest do
     # Now let the stream go dead too (advance past down_after with no fresh status).
     advance.(100_000)
     NodeRegistry.tick(reg)
-    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 50)
+    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
     assert NodeRegistry.capacity(table) == []
   end
 end
