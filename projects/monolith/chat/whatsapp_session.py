@@ -56,6 +56,7 @@ HOUSEHOLD_TIER = "household"
 # "wa-"-prefixed id never collides with a Discord session id.
 _WA_KEY_PREFIX = "wa-"
 
+
 def wa_session_key(group_jid: str) -> str:
     """Return the sanitized, id-guard-safe session key for a group JID.
 
