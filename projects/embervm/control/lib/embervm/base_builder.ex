@@ -59,10 +59,18 @@ defmodule Embervm.BaseBuilder do
   in the response and is recorded in `status.snapshotDigest` for auditability.
 
   The daemon's own `BuildBase` idempotency (keyed on the resolved digest plus
-  the `workload_revision` we send, the CR's `generation`) is the correctness
-  backstop: re-driving a build we already made returns the existing snapshot
-  with `already_built: true`, cheaply, so the signature map here is a
-  latency optimization, not a source of truth we must persist across restarts.
+  the `workload_revision` we send, a digest of `signature/1` -- see
+  `base_revision/1`) is the correctness backstop: re-driving a build we already
+  made returns the existing snapshot with `already_built: true`, cheaply, so the
+  signature map here is a latency optimization, not a source of truth we must
+  persist across restarts.
+
+  That token is deliberately NOT the CR's `generation`. noded derives the base
+  cache key from it, so `generation` made every spec edit re-key the base --
+  including edits `signature/1` excludes precisely because they cannot shape the
+  base VM. A `nodeLocalWake` flag flip rebuilt the public demo's base and took it
+  offline for the duration; `base_revision/1` is what keeps the "a cap-only edit
+  never rebuilds" property true at the daemon, not just here.
 
   ## failure, backoff, and the Ready gate
 
@@ -1275,8 +1283,70 @@ defmodule Embervm.BaseBuilder do
     # can be identical, only the sha256 changes, and the no-gap turnover property
     # requires that to rebuild. The runtime is included too, so switching runtime
     # (a different base image) also rebuilds even if the archive is unchanged.
-    zip_sig = if w.zip, do: {w.zip.runtime, w.zip.sha256}, else: nil
-    {w.image_ref, zip_sig, w.vcpus, w.mem_mib, w.guest_port, w.ready_path, w.init_env}
+    # Map.get rather than w.zip: `:zip` is optional on a raw reconcile descriptor
+    # (only the normalized workload map is guaranteed to carry it), and this is now
+    # reachable from base_revision/1 with either shape. Identical for a normalized
+    # map, which always has the key.
+    zip = Map.get(w, :zip)
+    zip_sig = if zip, do: {zip.runtime, zip.sha256}, else: nil
+
+    {Map.get(w, :image_ref), zip_sig, Map.get(w, :vcpus), Map.get(w, :mem_mib),
+     Map.get(w, :guest_port), Map.get(w, :ready_path), Map.get(w, :init_env)}
+  end
+
+  @doc false
+  # The `workload_revision` we send the daemon: a stable digest of `signature/1`,
+  # NOT the CR's `metadata.generation`.
+  #
+  # noded keys a base as `sha256(image_ref, workload_revision, cpu_vendor)`, so
+  # whatever we put here IS the base's cache identity. Sending `generation` made
+  # that identity change on EVERY spec edit, including edits `signature/1`
+  # deliberately excludes because they cannot shape the base VM -- defeating this
+  # module's own "a cap-only edit never rebuilds" property one hop downstream.
+  #
+  # Observed 2026-07-27: adding `nodeLocalWake` to the demo-postgres CR (a flag
+  # that gates an activator on the node and provably cannot touch a guest rootfs)
+  # took generation 86 -> 87, re-keyed the base on every node and every CPU
+  # vendor, and left the PUBLIC demo unwakeable until the rebuild finished. The
+  # proto documents this field as "the control plane's opaque revision token", so
+  # narrowing it is a control-plane-only change: no proto change, no daemon change.
+  #
+  # Built as explicit sorted iodata rather than :erlang.term_to_binary/1 because
+  # this is a persisted cache key: map iteration order is not part of the term's
+  # contract, so an unsorted init_env could hash two different ways for identical
+  # input and cause a spurious rebuild -- the exact failure being fixed.
+  def base_revision(w) do
+    {image_ref, zip_sig, vcpus, mem_mib, guest_port, ready_path, init_env} = signature(w)
+
+    zip_part =
+      case zip_sig do
+        {runtime, sha256} -> [to_string(runtime), "\0", to_string(sha256)]
+        _ -> ["", "\0", ""]
+      end
+
+    env_part =
+      (init_env || %{})
+      |> Enum.sort()
+      |> Enum.map(fn {k, v} -> [to_string(k), "=", to_string(v), "\n"] end)
+
+    :sha256
+    |> :crypto.hash([
+      to_string(image_ref || ""),
+      "\0",
+      zip_part,
+      "\0",
+      to_string(vcpus || 0),
+      "\0",
+      to_string(mem_mib || 0),
+      "\0",
+      to_string(guest_port || 0),
+      "\0",
+      to_string(ready_path || ""),
+      "\0",
+      env_part
+    ])
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
   end
 
   # A zip workload whose runtime does not resolve to a pinned image ref: unknown
@@ -1411,7 +1481,7 @@ defmodule Embervm.BaseBuilder do
   defp build_request(%{zip: %{} = zip} = w, runtime_images) do
     %BuildBaseRequest{
       trace: %Trace{workload: w.name},
-      workload_revision: to_string(w.generation || 0),
+      workload_revision: base_revision(w),
       guest_port: w.guest_port || 0,
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
@@ -1437,7 +1507,7 @@ defmodule Embervm.BaseBuilder do
     %BuildBaseRequest{
       trace: %Trace{workload: w.name},
       image_ref: w.image_ref,
-      workload_revision: to_string(w.generation || 0),
+      workload_revision: base_revision(w),
       guest_port: w.guest_port || 0,
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
