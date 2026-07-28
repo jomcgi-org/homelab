@@ -404,17 +404,45 @@ defmodule Embervm.WakeInstance do
   # provisioning wait and not a bug at all.
   defp log_cold_rejection(node_id, workload, need_mib, bricks, capacity_denial?) do
     if throttle_rejection_log?(workload, node_id) do
-      Logger.warning("embervm wake: no cold-placement candidate on node",
+      # The payload rides the MESSAGE, not Logger metadata. Embervm.LogFormatter
+      # encodes a fixed @meta_keys whitelist and drops everything else, on purpose,
+      # so an un-encodable term can never crash the formatter -- and its jsonable/1
+      # only accepts binary/integer/float/boolean, so a list of brick maps was never
+      # going to survive. Shipping this as metadata emitted the line with the two
+      # whitelisted keys and silently discarded every field worth reading, which is
+      # exactly what happened the first time this fired in prod.
+      Logger.warning(
+        "embervm wake: no cold-placement candidate on node " <>
+          rejection_summary(need_mib, capacity_denial?, bricks, workload),
         workload: workload,
-        node_id: node_id,
-        need_mib: need_mib,
-        # true  -> a real capacity wall (this is what feeds the autoscaler)
-        # false -> bricks were eligible but none base-READY (provisioning wait)
-        capacity_denial: capacity_denial?,
-        brick_count: length(bricks),
-        bricks: Enum.map(bricks, &brick_rejection_view(&1, workload, need_mib))
+        node_id: node_id
       )
     end
+  end
+
+  # One flat line describing the rejection. `capacity_denial=true` is a real
+  # capacity wall (the only case that feeds the autoscaler); `false` means bricks
+  # were slot/mem-eligible but none base-READY, i.e. a provisioning wait a
+  # scale-up would not help.
+  @doc false
+  def rejection_summary(need_mib, capacity_denial?, bricks, workload) do
+    rendered =
+      case bricks do
+        [] -> "none"
+        _ -> bricks |> Enum.map(&render_brick(&1, workload, need_mib)) |> Enum.join(" ")
+      end
+
+    "need_mib=#{need_mib} capacity_denial=#{capacity_denial?} " <>
+      "brick_count=#{length(bricks)} bricks=[#{rendered}]"
+  end
+
+  defp render_brick(brick, workload, need_mib) do
+    v = brick_rejection_view(brick, workload, need_mib)
+
+    "{id=#{v.instance_id} class=#{v.size_class} free=#{v.free_slots} " <>
+      "hr=#{v.mem_headroom_mib} budget=#{v.mem_budget_mib} eligible=#{v.eligible} " <>
+      "base_ready=#{v.base_ready} workload_facts=#{v.workload_facts} " <>
+      "base_state=#{inspect(v.base_state)}}"
   end
 
   @doc false
