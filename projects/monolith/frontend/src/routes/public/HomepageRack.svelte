@@ -97,9 +97,9 @@
           Tag <b>@Bosun</b> in a Discord thread and a <b>goose</b> agent wakes
           in its own microVM, runs a recipe, and replies with an artifact or a
           PR. Ambient chat, scheduled routines, and coding agents all dispatch
-          through <b>EmberVM</b> (~{agentFirstModelCallMs}ms to first model call),
-          the workload substrate for semgrep scans, warm HTTP serving, and agent
-          execution.
+          through <b>EmberVM</b> (~{agentFirstModelCallMs}ms to first model
+          call), the workload substrate for semgrep scans, warm HTTP serving,
+          and agent execution.
         </p>
         <div class="clinks">
           <a class="more" href="/ember/firecracker">how &rarr;</a>
