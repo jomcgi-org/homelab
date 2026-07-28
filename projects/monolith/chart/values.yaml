@@ -666,32 +666,10 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
-    # Self-hosted Semgrep (Route B) whole-repo interfile baseline scan of main
-    # (ADR tooling/011). This job only POSTs the API pod's internal trigger; the
-    # actual whole-repo interfile scan runs in the API pod against the semgrep-full
-    # fc-invoke workload (minutes), so the job pod is tiny and short-lived. Daily
-    # keeps the App baseline fresh; Forbid + the API-side in-flight guard prevent
-    # overlap with the single-concurrency semgrep-full workload.
-    - name: semgrep-full-scan
-      args: ["semgrep-full-scan-trigger"]
-      schedule: "0 5 * * *" # daily 05:00 UTC
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 120
-      suspend: false
-      env:
-        # The in-cluster API service the trigger POSTs; injected here (not baked
-        # in code) so a release rename cannot silently break the DNS name.
-        MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
-      resources:
-        requests:
-          cpu: 50m
-          memory: 128Mi
-        limits:
-          memory: 256Mi
     # Semgrep Managed Scans (SMS) scan-perf harvest for the Route B vs SMS
     # comparison page: sweeps the deployment's findings for scan ids and
-    # upserts new SMS rows into semgrep.scan_perf. Like semgrep-full-scan, this
-    # job only POSTs the API pod's internal trigger; the actual harvest (API +
+    # upserts new SMS rows into semgrep.scan_perf. This job only POSTs the API
+    # pod's internal trigger; the actual harvest (API +
     # DB only, no semgrep engine) runs in the API pod. Every 6h since SMS scans
     # trickle in from PR activity rather than a single daily baseline.
     - name: semgrep-scan-harvest
