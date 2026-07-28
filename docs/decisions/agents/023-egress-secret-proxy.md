@@ -246,3 +246,7 @@ redirects the CLI's API client only; it still reaches api.anthropic.com over
 https:// for telemetry and profile calls, which blind-tunnel past the swap
 carrying the inert placeholder and are refused at the destination without
 affecting a turn.
+
+## Amendment (2026-07-27)
+
+**Decision 6's credential provisioning is amended by [ADR 047](047-per-principal-egress-credential-broker.md)**: the one shared credential moves to one credential per principal, the catalog's selection key becomes (principal, host) instead of host alone, and the sidecar gains an unforgeable caller identity (an envelope noded frames onto the connection before the guest's own bytes). Injection itself, decision 4's guest-CA question, and the split-horizon posture are unchanged; ADR 047 is triggered by exactly the deferred item PR #4100 named ("per-user credentials being minted").
