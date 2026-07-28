@@ -2327,8 +2327,19 @@ func (s *Server) WaitForBuildsOrAbort(deadline time.Time) int {
 // created the VM: it must outlive the Prime/Relight RPC and live exactly as long
 // as the guest. Every path that reaps a VM calls the cancel, so the goroutine and
 // its unix socket never outlive the guest they belong to.
+// The workload scope is deny-by-omission on purpose, which makes a wrong or
+// missing workload name look exactly like a guest that was never meant to have
+// egress: no listener, no error, no turn. Relight takes its workload from the
+// request trace and validates only snapshot_ref, so an empty trace would land
+// here silently. Log the skip rather than widening the gate: denying is the safe
+// direction, being undiagnosable is not.
 func (s *Server) startEgress(uds, vmID, workload string) func() {
-	if !s.cfg.EgressEnabled || !egressWorkloadAllowed(s.cfg.EgressWorkloads, workload) {
+	if !s.cfg.EgressEnabled {
+		return func() {}
+	}
+	if !egressWorkloadAllowed(s.cfg.EgressWorkloads, workload) {
+		s.logger.Info("noded: egress lane not opened; workload is outside the configured scope",
+			"vm", vmID, "workload", workload, "scope", s.cfg.EgressWorkloads)
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
