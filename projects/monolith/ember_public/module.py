@@ -8,7 +8,6 @@ demos/module.py.
 import ember_public as _domain
 from ember_public.health import (
     EMBER_SYNTHETIC_STALENESS_S,
-    demo_postgres_health,
     synthetic_probe_health,
 )
 
@@ -20,11 +19,10 @@ MODULE = _Module(
     register=_domain.register,
     register_public=_domain.register_public,
     register_health={
-        "demo_postgres": demo_postgres_health,
         "ember_bazel": synthetic_probe_health("bazel", EMBER_SYNTHETIC_STALENESS_S),
         "ember_semgrep": synthetic_probe_health("semgrep", EMBER_SYNTHETIC_STALENESS_S),
         "ember_pages": synthetic_probe_health("pages", EMBER_SYNTHETIC_STALENESS_S),
-        "ember_postgres_synthetic": synthetic_probe_health(
+        "ember_postgres": synthetic_probe_health(
             "postgres", EMBER_SYNTHETIC_STALENESS_S
         ),
     },

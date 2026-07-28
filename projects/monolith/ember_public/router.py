@@ -159,7 +159,6 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
             )
         except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
             logger.warning("demo-postgres query roundtrip failed: %s", exc)
-            core.record_query_outcome(ok=False, connect_ms=None)
             return {
                 "error": str(exc),
                 "mode": body.mode,
@@ -170,7 +169,6 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
     finally:
         core.release_query_slot()
 
-    core.record_query_outcome(ok=True, connect_ms=result["connect_ms"])
     return {
         **result,
         "total_ms": (perf_counter() - started) * 1000,

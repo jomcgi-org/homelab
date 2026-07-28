@@ -37,8 +37,18 @@ async def test_postgres_busy_is_skipped(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_postgres_unconfigured_is_not_ok(monkeypatch):
+    monkeypatch.setattr(probe.core, "demo_pg_dsn", lambda: "")
+
+    result = await probe.probe_postgres()
+
+    assert result["ok"] is False
+    assert result["detail"] == "DEMO_POSTGRES_DSN not configured"
+
+
+@pytest.mark.asyncio
 async def test_postgres_aggregate_roundtrip_success(monkeypatch):
-    """Successful aggregate roundtrip records ok with connect_ms as latency."""
+    """Successful aggregate roundtrip reports connect_ms as latency."""
     monkeypatch.setattr(probe.core, "demo_pg_dsn", lambda: "postgres://test")
     monkeypatch.setattr(probe.core, "EMBERVM_URL", "http://test")
     monkeypatch.setattr(
@@ -52,7 +62,6 @@ async def test_postgres_aggregate_roundtrip_success(monkeypatch):
         "demo_pg_orders_roundtrip",
         lambda *_: {"connect_ms": 42, "total_ms": 100},
     )
-    monkeypatch.setattr(probe.core, "record_query_outcome", lambda **_: None)
     monkeypatch.setattr(probe.core, "classify_wake", lambda _: "cold")
     monkeypatch.setattr(probe.core, "release_query_slot", lambda: None)
 

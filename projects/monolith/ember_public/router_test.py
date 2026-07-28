@@ -34,21 +34,16 @@ def _client() -> TestClient:
 @pytest.fixture(autouse=True)
 def _reset_ember_public_module_state():
     """Every gating mechanism in core.py is process-global (status cache,
-    semaphore, insert bucket, last-query-outcome), so tests running back to
+    semaphore, insert bucket), so tests running back to
     back within the same 500ms status-cache TTL would otherwise leak state
     (a cached payload, a held slot, a bucket entry) across test functions.
     Reset before AND after each test.
     """
 
     def _reset():
-        core._status_cache.update(
-            {"at": None, "payload": None, "state": None, "state_changed_at": None}
-        )
+        core._status_cache.update({"at": None, "payload": None})
         core._insert_bucket.clear()
         core._presence.clear()
-        core._last_query_outcome.update(
-            {"at_monotonic": None, "ok": None, "connect_ms": None}
-        )
         core._savings_cache.update(
             {"at": None, "total_saved_mib_s": None, "as_of": None}
         )
@@ -691,32 +686,6 @@ def test_status_cache_refetches_after_ttl_expires(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_status_cache_records_state_changed_at_on_transition(monkeypatch):
-    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
-    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
-
-    fake_clock = {"t": 1000.0}
-    monkeypatch.setattr(core, "monotonic", lambda: fake_clock["t"])
-
-    state = {"s": "banked"}
-
-    async def variable_status():
-        return _pg_status_payload(state=state["s"])
-
-    monkeypatch.setattr(core, "fetch_demo_pg_status", variable_status)
-
-    client = _client()
-    client.get("/api/ember/postgres/status")
-    first_changed_at = core.status_cache_state_changed_at()
-    assert first_changed_at == 1000.0
-
-    fake_clock["t"] += core._STATUS_CACHE_TTL_S + 0.01
-    state["s"] = "relighting"
-    client.get("/api/ember/postgres/status")
-    assert core.status_cache_state_changed_at() == fake_clock["t"]
-    assert core.status_cache_state_changed_at() != first_changed_at
-
-
 def test_semaphore_exhausted_returns_in_band_busy(monkeypatch):
     monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
     monkeypatch.setattr(core, "EMBERVM_URL", "")
@@ -982,50 +951,6 @@ def test_sessionless_aggregate_allowed_regardless_of_turnstile_config(monkeypatc
     body = resp.json()
     assert body.get("session_required") is not True
     assert body["mode"] == "aggregate"
-
-
-def test_query_records_last_outcome_on_success(monkeypatch):
-    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
-    monkeypatch.setattr(core, "EMBERVM_URL", "")
-
-    def fake_roundtrip(dsn, mode, session_tag):
-        return {
-            "connect_ms": 42.0,
-            "query_ms": 1.0,
-            "mode": mode,
-            "statements": [],
-            "inserted": None,
-            "rows": [],
-            "breakdown": [],
-            "total_orders": 0,
-            "total_revenue": 0.0,
-            "postmaster_start": "2026-07-17T08:00:00+00:00",
-        }
-
-    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
-
-    _client().post("/api/ember/postgres/query", json={"mode": "aggregate"})
-
-    outcome = core.last_query_outcome()
-    assert outcome["ok"] is True
-    assert outcome["connect_ms"] == 42.0
-    assert outcome["at_monotonic"] is not None
-
-
-def test_query_records_last_outcome_on_failure(monkeypatch):
-    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
-    monkeypatch.setattr(core, "EMBERVM_URL", "")
-
-    def fake_roundtrip(dsn, mode, session_tag):
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
-
-    _client().post("/api/ember/postgres/query", json={"mode": "aggregate"})
-
-    outcome = core.last_query_outcome()
-    assert outcome["ok"] is False
-    assert outcome["connect_ms"] is None
 
 
 # ---------------------------------------------------------------------------
