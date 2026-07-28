@@ -467,7 +467,7 @@ func TestExportArtifactBaseReportsExported(t *testing.T) {
 	// Provision the runtime image so imageProvisioned(digest) is true (else the
 	// READY base is filtered out of NodeStatus and never reports exported).
 	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/semgrep"}})
-	s.bases.readyBuild(ref, workload, digest, "/shim/ready", 2048)
+	s.bases.readyBuild(ref, workload, digest, "", "/shim/ready", 2048)
 
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
 	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
@@ -529,7 +529,7 @@ func TestExportArtifactBaseIsAsyncWhenQueueStarted(t *testing.T) {
 	digest := "img@sha256:cafef00d"
 
 	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel-query"}})
-	s.bases.readyBuild(ref, workload, digest, "/shim/ready", 2048)
+	s.bases.readyBuild(ref, workload, digest, "", "/shim/ready", 2048)
 
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
 	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
@@ -603,7 +603,7 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 	fs.seedArtifact(prefix, sibling, 0, "amd", "")
 
 	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel-query"}})
-	s.bases.readyBuild(ref, workload, digest, "/shim/ready", 2048)
+	s.bases.readyBuild(ref, workload, digest, "", "/shim/ready", 2048)
 
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
 	// Deliberately DIFFERENT bytes from the seeded sibling copy, which is the
@@ -817,7 +817,7 @@ func seedLocalBase(t *testing.T, s *Server, workload, ref string) string {
 	t.Helper()
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
 	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
-	s.bases.readyBuild(ref, workload, "img@sha256:seed", "/shim/ready", 2048)
+	s.bases.readyBuild(ref, workload, "img@sha256:seed", "", "/shim/ready", 2048)
 	return dir
 }
 
@@ -898,7 +898,7 @@ func TestEvictBaseLocalRefusesBuilding(t *testing.T) {
 	building := "bazel-query__building"
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", building)
 	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
-	s.bases.beginBuild(building, "bazel-query", "/shim/ready")
+	s.bases.beginBuild(building, "bazel-query", "", "/shim/ready")
 
 	err := evictBase(s, "bazel-query", building)
 	if status.Code(err) != codes.FailedPrecondition {
@@ -1008,7 +1008,7 @@ func TestLocalBasesStatusSkipsStagingDirectories(t *testing.T) {
 func TestLocalBasesStatusBuildingReportsOnceNotTwice(t *testing.T) {
 	s := newStoreTestServer(t, newFakeStore())
 	ref := "scratch-k8s__building0"
-	s.bases.beginBuild(ref, "scratch-k8s", "/shim/ready")
+	s.bases.beginBuild(ref, "scratch-k8s", "", "/shim/ready")
 	stagingDir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref+".building")
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
 		t.Fatal(err)

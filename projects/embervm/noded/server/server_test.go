@@ -427,7 +427,7 @@ func primeSessionVM(t *testing.T, srv *Server, drv *fakeDriver, sessionID, workl
 }
 
 func seedBase(s *Server, snapshotRef, workload string) {
-	s.bases.readyBuild(snapshotRef, workload, "img@sha256:deadbeef", "/shim/ready", 2048)
+	s.bases.readyBuild(snapshotRef, workload, "img@sha256:deadbeef", "", "/shim/ready", 2048)
 }
 
 func contains(ids []string, id string) bool {
@@ -2009,8 +2009,8 @@ func TestStaleRegistryRefusesColdPrimeButServesWarm(t *testing.T) {
 	s.registry.synced = false
 	s.registry.mu.Unlock()
 	// Register a READY base for two workloads so Prime gets past the base checks.
-	s.bases.readyBuild("snap-cold", "wl-cold", "img-a", "/shim/ready", 2048)
-	s.bases.readyBuild("snap-warm", "wl-warm", "img-a", "/shim/ready", 2048)
+	s.bases.readyBuild("snap-cold", "wl-cold", "img-a", "", "/shim/ready", 2048)
+	s.bases.readyBuild("snap-warm", "wl-warm", "img-a", "", "/shim/ready", 2048)
 	// Seed an EXISTING primed VM for wl-warm so it counts as already-warm.
 	s.vms.add(&vmEntry{id: "vm-warm-1", workload: "wl-warm", snapshotRef: "snap-warm", state: vmPrimed})
 
