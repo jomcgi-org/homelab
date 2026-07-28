@@ -1501,8 +1501,8 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":pkg_cyclegroup",
         ":pkg_core",
+        ":pkg_cyclegroup",
         ":pkg_faas",
         ":pkg_framework",
         ":pkg_shared",
@@ -1561,8 +1561,8 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":pkg_cyclegroup",
         ":pkg_core",
+        ":pkg_cyclegroup",
         ":pkg_framework",
         ":pkg_scheduler",
         "@pip//astral",
@@ -1620,9 +1620,9 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":pkg_cyclegroup",
         ":pkg_cluster",
         ":pkg_core",
+        ":pkg_cyclegroup",
         ":pkg_ember_public",
         ":pkg_framework",
         ":pkg_sandbox",
