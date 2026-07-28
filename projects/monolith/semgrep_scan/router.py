@@ -221,6 +221,8 @@ _GITHUB_TIMEOUT = 30.0
 # gather collapses it toward one round trip. The bound keeps a large PR from
 # opening hundreds of sockets or tripping GitHub secondary rate limits.
 _GATHER_CONCURRENCY = 8
+
+
 # Route diffs with at least this many changed files to the heavier semgrep-hi
 # workload (6 vCPU, parallel multi-file match) instead of the warm 1-vCPU
 # `semgrep`. Measured crossover (debug-pod sweep): semgrep-hi carries a fixed
