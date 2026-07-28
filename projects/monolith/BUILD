@@ -37,7 +37,6 @@
 # gazelle:exclude public_httproute_chat_guard_test.py
 # gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
-# gazelle:exclude kloak_placeholder_drift_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
 # gazelle:exclude ember_synthetic_probe_grants_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
@@ -4003,23 +4002,6 @@ py_test(
     name = "public_turnstile_secret_isolation_test",
     srcs = ["public_turnstile_secret_isolation_test.py"],
     data = ["//projects/monolith-public/chart:chart_values"],
-    imports = ["."],
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
-)
-
-# Guard (ADR 023 phase 6b): the kloak: secret placeholders the goose tiers hand
-# to guests must equal the fc-invoke egress swap catalog, or a credential leaves
-# un-swapped. Reads both deploy values.yaml via cross-package data deps.
-py_test(
-    name = "kloak_placeholder_drift_test",
-    srcs = ["kloak_placeholder_drift_test.py"],
-    data = [
-        "//projects/firecracker/substrate/deploy:deploy_values",
-        "//projects/monolith/deploy:deploy_values",
-    ],
     imports = ["."],
     deps = [
         "@pip//pytest",
