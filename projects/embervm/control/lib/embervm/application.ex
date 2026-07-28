@@ -114,6 +114,7 @@ defmodule Embervm.Application do
        nodes: configured_nodes(),
        runtime_images: configured_runtime_images(),
        retention_sweep_enabled: base_retention_sweep_enabled(),
+       remote_retention_sweep_enabled: base_remote_retention_sweep_enabled(),
        op_log: op_log_mod(),
        op_log_mod: op_log_mod()},
       # The Workload informer (Task 5): LISTs then WATCHes Workload CRs over the
@@ -531,6 +532,23 @@ defmodule Embervm.Application do
   # values env change, no code change. Nothing sets it on in this PR.
   defp base_retention_sweep_enabled do
     case trimmed_env("EMBERVM_BASE_RETENTION_SWEEP") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  # Destructive gate for REMOTE base retention (#3947 PR-4), from
+  # EMBERVM_BASE_REMOTE_RETENTION_SWEEP. UNSET or "0"/"false"/"" => the sweep runs
+  # but only LOGS what it would evict. "1"/"true" => it issues
+  # EvictArtifact{remote: true, vendor: ...} for each superseded STORE base
+  # outside the keep-set.
+  #
+  # Deliberately SEPARATE from base_retention_sweep_enabled/0 even though the
+  # shapes match: the local gate's blast radius is one node's disk, this one's is
+  # the shared bucket, so they are armed and rolled back independently. Flipping
+  # back to "" is the entire rollback lever.
+  defp base_remote_retention_sweep_enabled do
+    case trimmed_env("EMBERVM_BASE_REMOTE_RETENTION_SWEEP") do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end

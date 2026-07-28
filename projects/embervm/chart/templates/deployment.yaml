@@ -343,6 +343,15 @@ spec:
             - name: EMBERVM_BASE_RETENTION_SWEEP
               value: {{ .Values.baseRetention.sweepEnabled | quote }}
             {{- end }}
+            {{- if .Values.baseRetention.remoteSweepEnabled }}
+            # Remote base-retention gate (#3947 PR-4): "1" arms eviction of
+            # superseded STORE bases per (workload, vendor); unset keeps the
+            # dry-run that only logs. Separate from the local gate above because
+            # the blast radius is the shared bucket, not one node's disk, so the
+            # two arm and roll back independently. See baseRetention in values.
+            - name: EMBERVM_BASE_REMOTE_RETENTION_SWEEP
+              value: {{ .Values.baseRetention.remoteSweepEnabled | quote }}
+            {{- end }}
             {{- if .Values.warmthRetention.sweepEnabled }}
             # Warmth-retention sweep gate (base-durability PR-3, extended to
             # stateful and group orphans): "1" arms the reconciled eviction of

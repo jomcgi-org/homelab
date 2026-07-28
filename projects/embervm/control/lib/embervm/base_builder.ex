@@ -316,6 +316,15 @@ defmodule Embervm.BaseBuilder do
     # vendor) and returns {:ok, entries, truncated} or {:error, reason}. Tests
     # inject a fake so no test opens a channel.
     list_fun = Keyword.get(opts, :list_fun, &default_list_artifacts/3)
+    # The remote-evict seam, (channel, workload, vendor, ref). Separate from
+    # evict_fun because the remote verb targets a (vendor, ref) STORE object
+    # rather than this node's local copy, and carries the vendor explicitly.
+    remote_evict_fun = Keyword.get(opts, :remote_evict_fun, &default_remote_evict/4)
+    # Destructive gate for REMOTE base retention. Mirrors retention_sweep_enabled
+    # exactly: false leaves the sweep computing and logging only. Separate from
+    # the local gate on purpose, because the blast radius is the shared bucket
+    # rather than one node's disk, so the two are armed independently.
+    remote_retention_sweep_enabled = Keyword.get(opts, :remote_retention_sweep_enabled, false)
     # Base-durability PR-1: the ExportArtifact seam that writes a freshly-built
     # (or present-but-unexported) base back to the object store. Defaults to the
     # real NodeService.Stub.export_artifact/2 over a per-call channel; tests
@@ -421,6 +430,8 @@ defmodule Embervm.BaseBuilder do
       disconnect_fun: disconnect_fun,
       evict_fun: evict_fun,
       list_fun: list_fun,
+      remote_evict_fun: remote_evict_fun,
+      remote_retention_sweep_enabled: remote_retention_sweep_enabled,
       export_fun: export_fun,
       restore_fun: restore_fun,
       op_log: op_log,
@@ -1643,7 +1654,7 @@ defmodule Embervm.BaseBuilder do
       case list_remote_refs(state, instance_id, w.name, vendor) do
         {:ok, entries, truncated} ->
           candidates = Enum.reject(entries, fn e -> MapSet.member?(keep, e.ref) end)
-          log_remote_retention(w.name, vendor, candidates, truncated, keep)
+          apply_remote_retention(state, instance_id, w.name, vendor, candidates, truncated, keep)
 
         {:error, reason} ->
           # Fail toward KEEPING bytes: a daemon that predates ListArtifacts
@@ -1695,17 +1706,86 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  defp log_remote_retention(workload, vendor, candidates, truncated, keep) do
-    if candidates != [] do
+  # Apply the gated remote retention action. Gate OFF: log the dry-run and change
+  # nothing. Gate ON: issue EvictArtifact{remote: true, vendor: vendor} per
+  # candidate through a node OF THAT VENDOR.
+  #
+  # Deleting a base from the store costs a REBUILD, not data: a base is a
+  # reconstructible artifact by construction. The case that would be real loss is
+  # a pinned session riding a superseded base, and the keep-set already spares it
+  # via w.base_refs, which refcounts superseded refs by primed VMs AND sessions
+  # and only drops an entry once both are known-and-zero.
+  defp apply_remote_retention(state, instance_id, workload, vendor, candidates, truncated, keep) do
+    if candidates == [] do
+      :ok
+    else
       bytes = Enum.reduce(candidates, 0, fn e, acc -> acc + (e.size_bytes || 0) end)
       refs = Enum.map(candidates, & &1.ref)
+      trunc_note = if truncated, do: ", listing TRUNCATED", else: ""
 
-      Logger.info(
-        "embervm base builder: remote base retention (DRY RUN, never evicts in this build) " <>
-          "WOULD evict #{length(candidates)} superseded store base(s) for #{workload}/#{vendor} " <>
-          "(~#{bytes} bytes), keeping #{MapSet.size(keep)} ref(s)#{if truncated, do: ", listing TRUNCATED", else: ""}: " <>
-          inspect(refs)
-      )
+      if state.remote_retention_sweep_enabled do
+        Logger.info(
+          "embervm base builder: remote base retention evicting #{length(candidates)} superseded " <>
+            "store base(s) for #{workload}/#{vendor} (~#{bytes} bytes), keeping " <>
+            "#{MapSet.size(keep)} ref(s)#{trunc_note}: #{inspect(refs)}"
+        )
+
+        Enum.each(refs, fn ref -> spawn_remote_evict(state, instance_id, workload, vendor, ref) end)
+      else
+        Logger.info(
+          "embervm base builder: remote base retention (DRY RUN, gate off) WOULD evict " <>
+            "#{length(candidates)} superseded store base(s) for #{workload}/#{vendor} " <>
+            "(~#{bytes} bytes), keeping #{MapSet.size(keep)} ref(s)#{trunc_note}: #{inspect(refs)}"
+        )
+      end
+
+      :ok
+    end
+  end
+
+  # Fire-and-forget remote eviction of one (vendor, ref) store object through a
+  # node of that vendor. Idempotent on an already-absent object, so a re-sweep is
+  # harmless and a lost result just means the next tick retries.
+  defp spawn_remote_evict(state, instance_id, workload, vendor, ref) do
+    case Map.get(state.node_addr, instance_id) do
+      nil ->
+        :ok
+
+      address ->
+        connect_fun = state.connect_fun
+        disconnect_fun = state.disconnect_fun
+        remote_evict_fun = state.remote_evict_fun
+
+        spawn(fn ->
+          case connect_fun.(address) do
+            {:ok, channel} ->
+              try do
+                case remote_evict_fun.(channel, workload, vendor, ref) do
+                  {:ok, _} ->
+                    :ok
+
+                  {:error, reason} ->
+                    Logger.warning(
+                      "embervm base builder: remote evict #{workload}/#{vendor}/#{ref} failed: #{inspect(reason)}"
+                    )
+                end
+              catch
+                kind, reason ->
+                  Logger.warning(
+                    "embervm base builder: remote evict #{workload}/#{vendor}/#{ref} raised: #{inspect({kind, reason})}"
+                  )
+              after
+                disconnect_fun.(channel)
+              end
+
+            {:error, reason} ->
+              Logger.warning(
+                "embervm base builder: remote evict #{workload}/#{vendor}/#{ref} connect failed: #{inspect(reason)}"
+              )
+          end
+        end)
+
+        :ok
     end
   end
 
@@ -2425,6 +2505,23 @@ defmodule Embervm.BaseBuilder do
       {:ok, resp} -> {:ok, resp.entries || [], resp.truncated}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # EvictArtifact{remote: true} of one (vendor, ref) STORE object. The vendor is
+  # explicit rather than the node's own, so any node of that vendor can reclaim
+  # it; that is what lets a mixed fleet's bucket converge at all. Idempotent on an
+  # already-absent object.
+  defp default_remote_evict(channel, workload, vendor, ref) do
+    NodeService.Stub.evict_artifact(channel, %EvictArtifactRequest{
+      artifact: %ArtifactRef{
+        kind: :ARTIFACT_KIND_BASE,
+        workload: workload,
+        ref: ref
+      },
+      remote: true,
+      vendor: vendor,
+      trace: %Trace{workload: workload}
+    })
   end
 
   defp default_evict(channel, workload, ref) do
