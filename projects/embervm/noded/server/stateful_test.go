@@ -290,7 +290,7 @@ func newStatefulTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeStatefu
 	// serving-image inventory: an opaque-L4 guest has no handler artifact), then
 	// cold-boots the runtime rootfs behind base.imageDigest ("img-a" is in cfg
 	// Images above) with no drive-2 handler.
-	s.bases.readyBuild("img-a", "wl-state", "img-a", "/shim/ready", 2048)
+	s.bases.readyBuild("img-a", "wl-state", "img-a", "", "/shim/ready", 2048)
 	return s, fsn, fsd
 }
 
