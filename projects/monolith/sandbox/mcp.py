@@ -1,10 +1,8 @@
-"""MCP tool that runs Python in the fc-invoke sandbox workload.
+"""MCP tool that runs Python in the EmberVM sandbox workload.
 
 Exposes a single ``run_python`` tool. It is a thin async wrapper that POSTs
-the supplied code (and optional input files) to the in-cluster ``fc-invoke``
-``sandbox`` workload (ADR agents/044) and returns the structured execution
-result. The daemon URL is injected from Helm values as ``FC_INVOKE_URL`` and
-is never hardcoded here.
+    the supplied code (and optional input files) to the EmberVM ``sandbox``
+    workload and returns the structured execution result.
 
 With an optional ``session`` handle the run is served by the EmberVM session
 class (R2, ADR embervm/001): state persists best-effort across calls sharing

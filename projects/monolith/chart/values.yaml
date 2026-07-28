@@ -526,9 +526,8 @@ jobs:
           memory: 256Mi
     # Bosun trust-safeguards forest (ADR chat/003): weekly retrain from the
     # labeled moderation-event dataset. The fit itself runs inside the
-    # Firecracker sandbox (fc-invoke), so this pod only gathers rows and
-    # stores the resulting JSON forest; when the sandbox is unreachable the
-    # job falls back to an in-process numpy fit (hence the 1Gi limit). Only
+    # in-process numpy fit, so this pod gathers rows, trains, and stores the
+    # resulting JSON forest (hence the 1Gi limit). Only
     # ever writes status='shadow' models; promoting one to 'live' is a manual
     # decision after reviewing shadow scores. Skips silently until the
     # dataset crosses the minimum-sample gates.
@@ -538,8 +537,6 @@ jobs:
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 900
       suspend: false
-      env:
-        FC_INVOKE_URL: "http://fc-invoke.monolith.svc.cluster.local:8080"
       resources:
         requests:
           cpu: 250m
@@ -739,7 +736,7 @@ jobs:
       activeDeadlineSeconds: 300
       # ARMED 2026-07-27 after a live API-pod run returned all four green:
       #   bazel    ok  "warm, 501ms"       (was 403: wrong ServiceAccount)
-      #   semgrep  ok  "5 finding(s)"      (was missing FC_INVOKE_URL)
+      #   semgrep  ok  "5 finding(s)"      (was missing EmberVM credentials)
       #   pages    ok  "all pages, 311ms"
       #   postgres ok  "relight, 1137ms"   (was an unrouted public HTTP path)
       # and jomcgi.dev/health returned 200. Each of the three original failures
@@ -907,14 +904,8 @@ chat:
   onepassword:
     itemPath: ""
 
-# semgrep_scan MCP tool: URL of the in-cluster fc-invoke HTTP daemon the
-# tool POSTs changed files to. Empty disables the env injection (the tool then
-# returns a structured "not configured" error). The real address is set in
-# deploy/values.yaml; never hardcode it in a template.
-# The python sandbox demo/tool dispatch (R0 cutover): fc-invoke (default) or
-# embervm (EmberVM's sandbox Workload). Reuses semgrep.embervmUrl -> EMBERVM_URL.
+# EmberVM backs the semgrep and Python sandbox workloads.
 sandbox:
-  dispatch: "fc-invoke"
   # The EmberVM session-class workload backing sessioned run_python (R2, ADR
   # embervm/001). Sessions are created here; the one-shot task class stays on
   # `sandbox`. Empty falls back to the client default ("sandbox-session").
@@ -964,15 +955,8 @@ faas:
   s3Bucket: "faas"
 
 semgrep:
-  fcInvokeUrl: ""
-  # EmberVM dual-path (R0 Task 15). embervmUrl is the EmberVM control-plane base
-  # URL; dispatch selects where the per-PR semgrep DIFF scan is served:
-  #   fc-invoke : serve from fc-invoke (default, unchanged).
-  #   embervm   : serve from EmberVM's semgrep Workload.
-  #   shadow    : serve from fc-invoke, mirror to EmberVM async for comparison.
-  # Empty embervmUrl or default dispatch keeps the served path on fc-invoke.
+  # EmberVM control-plane base URL for the semgrep workload.
   embervmUrl: ""
-  dispatch: "fc-invoke"
   # Shadow project override (Route B vs SMS comparison): when set, the relay
   # reports its App scans under THIS project name instead of the real repo, so
   # Route B (self-hosted) scans land in a SEPARATE Semgrep project from SMS's

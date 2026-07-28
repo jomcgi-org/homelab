@@ -33,7 +33,6 @@ FORBIDDEN_MODULES = [
     # for the ember semgrep demo; the rest of the package is private-only.
     "semgrep_scan.mcp",
     "semgrep_scan.report",
-    "semgrep_scan.full_scan",
     "semgrep_scan.router",
     # Private domains.
     "chat",

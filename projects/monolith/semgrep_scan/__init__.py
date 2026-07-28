@@ -3,10 +3,9 @@
 Two responsibilities live here:
 
 - ``client`` + ``mcp``: the ``semgrep_scan`` MCP tool that forwards changed files
-  to the in-cluster ``fc-invoke`` HTTP daemon and returns its findings. The
-  daemon URL is injected from Helm values (``FC_INVOKE_URL``); this package never
-  hardcodes the in-cluster service address.
-- ``report``: the relay that uploads fc-invoke findings to the Semgrep AppSec
+  to EmberVM and returns its findings. The service address is injected from Helm
+  values; this package never hardcodes it.
+- ``report``: the relay that uploads findings to the Semgrep AppSec
   Platform using pysemgrep's own internal client.
 
 This package is deliberately NOT named ``semgrep``: a top-level ``semgrep``

@@ -28,12 +28,9 @@ no-sync-session-in-async-def / no-session-in-to-thread).
 from __future__ import annotations
 
 import asyncio
-import base64
-import inspect
 import json
 import logging
 import os
-import textwrap
 from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
@@ -88,56 +85,6 @@ def _gather_dataset(now: datetime) -> dict:
     if dropped:
         logger.info("safeguards-train: dropped %d stale/invalid vectors", dropped)
     return {"X": X, "y": y}
-
-
-def _sandbox_code() -> str:
-    """The literal safeguards_forest source plus a train driver: reads
-    dataset.json, fits, writes forest.json. Single-file and stdlib+numpy only,
-    so it runs unchanged in the sandbox guest."""
-    driver = textwrap.dedent(
-        f"""
-        import json
-
-        with open("dataset.json") as fh:
-            dataset = json.load(fh)
-        forest = train_forest(
-            dataset["X"], dataset["y"], n_trees={_N_TREES}, seed={_SEED}
-        )
-        with open("forest.json", "w") as fh:
-            json.dump(forest, fh)
-        print("trained:", json.dumps(forest["metrics"]))
-        """
-    )
-    return inspect.getsource(safeguards_forest) + driver
-
-
-async def _train_in_sandbox(dataset: dict) -> dict | None:
-    """Fit in the Firecracker sandbox; None on any failure (caller falls back).
-    The guest returns changed files base64-encoded; forest.json is the model."""
-    from sandbox.client import run_python_in_sandbox
-
-    payload_b64 = base64.b64encode(json.dumps(dataset).encode("utf-8")).decode("ascii")
-    result = await run_python_in_sandbox(
-        _sandbox_code(),
-        files=[{"path": "dataset.json", "content_b64": payload_b64}],
-    )
-    if result.get("error") or result.get("exit_code", 1) != 0:
-        logger.warning(
-            "safeguards-train: sandbox fit failed (error=%s exit=%s stderr=%s)",
-            result.get("error"),
-            result.get("exit_code"),
-            (result.get("stderr") or "")[:500],
-        )
-        return None
-    for f in result.get("files") or []:
-        if f.get("path") == "forest.json":
-            try:
-                return json.loads(base64.b64decode(f["content_b64"]))
-            except (ValueError, KeyError):
-                logger.exception("safeguards-train: sandbox forest.json unreadable")
-                return None
-    logger.warning("safeguards-train: sandbox run produced no forest.json")
-    return None
 
 
 def _store_model(forest: dict, n_samples: int, n_positive: int, trained_in: str) -> int:
@@ -214,21 +161,14 @@ async def safeguards_train_handler(session: Session) -> None:
         )
         return
 
-    forest = await _train_in_sandbox(dataset)
-    trained_in = "sandbox"
-    if forest is not None and not _forest_usable(forest):
-        logger.warning("safeguards-train: sandbox forest failed sanity check")
-        forest = None
-    if forest is None:
-        logger.info("safeguards-train: falling back to in-process fit")
-        forest = await asyncio.to_thread(
-            safeguards_forest.train_forest,
-            dataset["X"],
-            dataset["y"],
-            n_trees=_N_TREES,
-            seed=_SEED,
-        )
-        trained_in = "local"
+    forest = await asyncio.to_thread(
+        safeguards_forest.train_forest,
+        dataset["X"],
+        dataset["y"],
+        n_trees=_N_TREES,
+        seed=_SEED,
+    )
+    trained_in = "local"
 
     version = await asyncio.to_thread(_store_model, forest, n, n_pos, trained_in)
     safeguards.invalidate_model_cache()

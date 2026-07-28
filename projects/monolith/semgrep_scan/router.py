@@ -1,4 +1,4 @@
-"""GitHub PR webhook that fires the fc-invoke -> Semgrep App reporting relay.
+"""GitHub PR webhook that fires the EmberVM -> Semgrep App reporting relay.
 
 This is Phase 2 of self-hosted Semgrep CI reporting. GitHub POSTs a
 ``pull_request`` webhook here on every PR open/synchronize/reopen; we verify its
@@ -6,8 +6,8 @@ HMAC signature (fail-closed), acknowledge fast with a 200, and run the scan in a
 background task so GitHub's delivery timeout is never held on the (slow) scan.
 
 The background job gathers the PR's changed files, scans them on our own
-Firecracker VM via ``client.scan_files`` (POST to the fc-invoke ``/invoke/semgrep``
-daemon), then relays the resulting cli_output to the Semgrep AppSec Platform via
+EmberVM via ``client.scan_files``, then relays the resulting cli_output to the
+Semgrep AppSec Platform via
 ``report.report_pr_scan`` (Phase 1, live-proven), which posts the native PR check.
 
 AUTH SURFACE (two independent secrets, both fail-closed):
@@ -42,7 +42,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
-from semgrep_scan.client import scan_files, scan_files_hi
+from semgrep_scan.client import scan_files
 from semgrep_scan.cohorts import diff_cohort
 from semgrep_scan.report import report_pr_scan
 
@@ -50,50 +50,7 @@ logger = logging.getLogger("monolith.semgrep.webhook")
 
 router = APIRouter(prefix="/webhooks/github", tags=["semgrep-webhook"])
 
-# Internal, in-cluster-only trigger for the whole-repo baseline scan. It lives
-# under /internal (the CF-Access-gated catch-all route, NOT the Access-bypassed
-# /webhooks/github/semgrep path), so externally it is auth-gated; in-cluster the
-# scheduled jobs pod reaches it directly. It fires run_full_scan in THIS process
-# (which has the semgrep package loaded, the App/GitHub tokens, and a
-# daemon-allowed ServiceAccount), so the lightweight jobs pod needs none of that.
 internal_router = APIRouter(prefix="/internal/semgrep", tags=["semgrep-internal"])
-
-# Guards against overlapping whole-repo scans: a second trigger while one is in
-# flight is a no-op rather than a second (heavy, daemon-concurrency-1) scan.
-_full_scan_in_flight = False
-_full_scan_tasks: set[asyncio.Task] = set()
-
-
-@internal_router.post("/full-scan")
-async def trigger_full_scan(repo: str = "jomcgi/homelab") -> dict:
-    """Fire the whole-repo interfile baseline scan of ``repo``'s main branch as a
-    background task and return immediately. Internal only (see internal_router).
-
-    Runs semgrep_scan.full_scan.run_full_scan in-process: gather all of main,
-    scan on the semgrep-full workload, report a full scan to the Semgrep App. The
-    scan takes minutes, so it is never awaited on the request.
-    """
-    global _full_scan_in_flight
-    if _full_scan_in_flight:
-        return {"status": "already-running", "repo": repo}
-
-    async def _run() -> None:
-        global _full_scan_in_flight
-        _full_scan_in_flight = True
-        try:
-            from semgrep_scan.full_scan import run_full_scan
-
-            await run_full_scan(repo)
-        except Exception:
-            logger.exception("trigger_full_scan: run_full_scan crashed for %s", repo)
-        finally:
-            _full_scan_in_flight = False
-
-    task = asyncio.create_task(_run())
-    _full_scan_tasks.add(task)
-    task.add_done_callback(_full_scan_tasks.discard)
-    logger.info("trigger_full_scan: launched background full scan for %s", repo)
-    return {"status": "started", "repo": repo}
 
 
 # Guards against overlapping harvests: a second trigger while one is in flight
@@ -245,7 +202,7 @@ async def trigger_cohort_backfill(repo: str = "jomcgi/homelab") -> dict:
 # Everything else (labeled, closed, review requests, ...) is acked with no work.
 _SCAN_ACTIONS = {"opened", "synchronize", "reopened"}
 
-# File extensions the fc-invoke semgrep guest has rules for. A changed file with
+# File extensions the EmberVM semgrep guest has rules for. A changed file with
 # any other extension (or a deletion) is skipped: fetching + scanning it would be
 # wasted work the guest has no rules to match against.
 _SCANNABLE_EXTS = (".py", ".go", ".js", ".jsx", ".ts", ".tsx", ".rs")
@@ -270,9 +227,6 @@ _GATHER_CONCURRENCY = 8
 # ~0.9s/scan thread-pool overhead that makes it a net loss below ~5 files, and a
 # clear win above (8 heavy files: ~10.6s vs ~38.9s at 1 vCPU). Tune from the
 # per-cohort perf data once collected.
-_HEAVY_ROUTE_MIN_FILES = 5
-
-
 def _verify_signature(body: bytes, signature_header: str | None) -> None:
     """Verify GitHub's ``X-Hub-Signature-256`` over the raw body, fail-closed.
 
@@ -312,7 +266,7 @@ def _github_headers() -> dict[str, str]:
 
 
 def _is_scannable(path: str) -> bool:
-    """Whether ``path`` has an extension the fc-invoke semgrep guest scans."""
+    """Whether ``path`` has an extension the EmberVM semgrep guest scans."""
     return path.endswith(_SCANNABLE_EXTS)
 
 
@@ -477,7 +431,7 @@ async def _post_commit_status(
 
 
 async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
-    """Background job: gather changed files, scan on fc-invoke, report to the App.
+    """Background job: gather changed files, scan on EmberVM, report to the App.
 
     Runs after the fast 200 so GitHub's delivery never blocks on the scan. Wrapped
     end-to-end in try/except: a failure here is logged, never crashes the app (an
@@ -491,7 +445,7 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
     Two headline timing metrics are logged (both ``scan_*`` so they group in
     SigNoz), plus per-segment debug fields:
 
-    - ``scan_execution_duration`` (s): the fc-invoke engine scan ONLY. Also sent
+    - ``scan_execution_duration`` (s): the EmberVM engine scan ONLY. Also sent
       to the App as the scan's ``total_time``.
     - ``scan_pr_wall_time`` (s): webhook receipt -> developer-visible commit
       status posted. The whole PR check, minus only the GitHub-send-to-us hop we
@@ -531,19 +485,15 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
             )
             return
 
-        # scan_execution_duration: the engine scan ONLY (fc-invoke round trip),
+        # scan_execution_duration: the engine scan ONLY (EmberVM round trip),
         # measured on its own so it is both the App total_time and a clean
         # "how fast is our scanner" signal, independent of gather/report/status.
         t_scan = time.monotonic()
-        # Route large multi-file diffs to the heavier semgrep-hi workload (6 vCPU,
-        # parallel match); small diffs stay on the warm 1-vCPU `semgrep`, which is
-        # faster for them. Both share the same wire shape and response.
-        heavy = len(files) >= _HEAVY_ROUTE_MIN_FILES
-        scan = await (scan_files_hi(files) if heavy else scan_files(files))
+        scan = await scan_files(files)
         scan_execution_duration = time.monotonic() - t_scan
         if not isinstance(scan, dict) or scan.get("error"):
             logger.error(
-                "semgrep webhook: fc-invoke scan failed for %s#%s: %s",
+                "semgrep webhook: EmberVM scan failed for %s#%s: %s",
                 repo,
                 pr_number,
                 (scan or {}).get("error") if isinstance(scan, dict) else scan,

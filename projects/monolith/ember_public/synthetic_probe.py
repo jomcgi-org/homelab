@@ -2,7 +2,7 @@
 
 These run in the PRIVATE API pod, driven by synthetic_router's internal
 endpoint, which the ember-synthetic CronWorkflow only triggers. The API pod is
-where the admitted ServiceAccount, FC_INVOKE_URL and DEMO_POSTGRES_DSN live;
+where the admitted ServiceAccount, EmberVM credentials and DEMO_POSTGRES_DSN live;
 running them in the ephemeral job pod instead is what broke the #4065 rollout.
 Each probe returns its failure in-band as {ok, detail, latency_ms} and never
 raises, because a crashing probe IS the finding.

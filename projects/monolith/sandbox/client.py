@@ -1,8 +1,8 @@
-"""Broker for the fc-invoke sandbox workload (ADR agents/044).
+"""Broker for the EmberVM sandbox workload.
 
 Shared by the MCP tool (sandbox/mcp.py) and the Discord concierge tool
-(chat/agent.py). POSTs code to the in-cluster fc-invoke daemon; the guest is
-zero-egress and one-shot, so this client is the only stateful party.
+(chat/agent.py). POSTs code to EmberVM; the guest is zero-egress and one-shot,
+so this client is the only stateful party.
 """
 
 from __future__ import annotations
@@ -18,14 +18,7 @@ from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 
-FC_INVOKE_URL = os.environ.get("FC_INVOKE_URL", "")
-
-# EmberVM control-plane base URL + dispatch (R0 cutover). EMBERVM_URL is shared
-# with the semgrep client (wired by the chart). SANDBOX_DISPATCH selects where a
-# python run is served: fc-invoke (default) or embervm (EmberVM's sandbox
-# Workload). Same guest contract, so the response shape is identical.
 EMBERVM_URL = os.environ.get("EMBERVM_URL", "")
-SANDBOX_DISPATCH = os.environ.get("SANDBOX_DISPATCH", "fc-invoke")
 
 # The EmberVM session-class workload backing sessioned run_python (R2, plan
 # Task 10). Sessions are created under this workload; the one-shot task class
@@ -101,50 +94,14 @@ async def run_python_in_sandbox(
     if session:
         return await _run_session(session, payload)
 
-    if not FC_INVOKE_URL:
-        return {"error": "FC_INVOKE_URL is not configured"}
-    if SANDBOX_DISPATCH == "embervm":
-        return await _run_embervm(payload)
-    return await _run_fc_invoke(payload)
-
-
-async def _run_fc_invoke(payload: dict) -> dict:
-    """POST to the fc-invoke sandbox workload (the default path)."""
-    if not FC_INVOKE_URL:
-        return {"error": "FC_INVOKE_URL is not configured"}
-
-    timeout = httpx.Timeout(SANDBOX_READ_TIMEOUT, connect=SANDBOX_CONNECT_TIMEOUT)
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            # Carry this pod's ServiceAccount token so fc-invoke's TokenReview
-            # gate admits the call; off-cluster this is an empty header set.
-            resp = await client.post(
-                f"{FC_INVOKE_URL}/invoke/sandbox",
-                json=payload,
-                headers=auth_headers(),
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError as exc:
-        logger.exception("fc-invoke connection failed")
-        return {"error": f"could not reach fc-invoke: {exc}"}
-    except httpx.HTTPStatusError as exc:
-        logger.exception("fc-invoke returned an error status")
-        return {
-            "error": (
-                f"fc-invoke returned HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            )
-        }
-    except Exception as exc:  # noqa: BLE001: surface any failure as structured error
-        logger.exception("sandbox execution failed")
-        return {"error": f"sandbox execution failed: {exc}"}
+    return await _run_embervm(payload)
 
 
 async def _run_embervm(payload: dict) -> dict:
     """POST a python run to EmberVM's ``sandbox`` Workload (the R0 cutover). Submits
     synchronously (``?wait=true``); EmberVM forwards the guest response verbatim, so
-    the shape matches fc-invoke. Idempotency-Key from the code hash dedupes retries.
+    the shape matches the sandbox contract. Idempotency-Key from the code hash
+    dedupes retries.
     """
     if not EMBERVM_URL:
         return {"error": "EMBERVM_URL is not configured"}

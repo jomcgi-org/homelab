@@ -3,7 +3,7 @@
 Mounted at ``/api/ember/semgrep`` on the public app: ``POST /session`` mints a
 Turnstile-gated session cookie the same way the demo-postgres and bazel-query
 sessions do, ``POST /scan`` session-gates, rate-limits, and queue-bounds a
-scan against the production fc-invoke semgrep workload
+scan against the production EmberVM semgrep workload
 (``semgrep_scan.client.scan_files``), and ``GET /savings`` reads the all-time
 scan-time-saved counter through a 30s cache.
 
@@ -75,7 +75,7 @@ async def semgrep_session(
 @router.post("/scan")
 async def semgrep_scan_endpoint(body: SemgrepScanRequest, request: Request) -> dict:
     """Validate, session-gate, rate-limit, queue-bound, then scan against the
-    production fc-invoke semgrep workload.
+    production EmberVM semgrep workload.
 
     Check order: session cookie present (401), snippet validation (422), the
     per-session rate bucket (429), then the bounded queue (503 when both every

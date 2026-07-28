@@ -75,8 +75,7 @@ async def test_dsn_reaches_posted_payload(monkeypatch):
     dsn = "postgresql://postgres:pw@embervm-serving.embervm.svc:5400/scratch"
     monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", dsn)
     monkeypatch.setattr(client.httpx, "AsyncClient", _FakeClient)
-    monkeypatch.setattr(client, "FC_INVOKE_URL", "http://fc")
-    monkeypatch.setattr(client, "SANDBOX_DISPATCH", "fc-invoke")
+    monkeypatch.setattr(client, "EMBERVM_URL", "http://embervm")
 
     await client.run_python_in_sandbox("print('hi')")
 
@@ -91,8 +90,7 @@ async def test_no_dsn_leaves_payload_code_untouched(monkeypatch):
     _FakeClient.posts = []
     monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", "")
     monkeypatch.setattr(client.httpx, "AsyncClient", _FakeClient)
-    monkeypatch.setattr(client, "FC_INVOKE_URL", "http://fc")
-    monkeypatch.setattr(client, "SANDBOX_DISPATCH", "fc-invoke")
+    monkeypatch.setattr(client, "EMBERVM_URL", "http://embervm")
 
     await client.run_python_in_sandbox("print('hi')")
 

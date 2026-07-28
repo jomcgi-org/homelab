@@ -156,13 +156,6 @@ chat:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/discord-bot"
 
-# semgrep_scan MCP tool: the in-cluster fc-invoke daemon endpoint.
-# The python sandbox demo/tool is CUT OVER to EmberVM (2026-07-14): served by
-# EmberVM's sandbox Workload (live + verified). Revert to fc-invoke (one value +
-# rollout) if it regresses. fc-invoke's sandbox path stays deployed as fallback.
-sandbox:
-  dispatch: "embervm"
-
 # FaaS zip-lane function registry (ADR 045 / embervm R1). The read base matches
 # the CRD samples' codeUri host (projects/embervm/crd/samples/workload-echo-fn.yaml)
 # so storage.code_uri() and noded resolve archives at the same URL. S3 write
@@ -172,18 +165,8 @@ faas:
   s3Bucket: "faas"
 
 semgrep:
-  fcInvokeUrl: "http://fc-invoke.monolith.svc.cluster.local:8080"
-  # EmberVM dual-path (R0 Task 15). URL wired now; dispatch stays `fc-invoke` so
-  # the served scan path is UNCHANGED (the EmberVM/shadow code is dormant). Flip
-  # to `shadow` to start the divergence soak, then `embervm` at cutover (Task 16).
+  # EmberVM serves the per-PR Semgrep diff scan and Python sandbox.
   embervmUrl: "http://embervm-embervm.embervm.svc.cluster.local:8080"
-  # CUT OVER to EmberVM (R0 Task 16, 2026-07-14): the per-PR semgrep diff scan is
-  # now served by EmberVM's semgrep Workload. Personal homelab, so a direct cut +
-  # debug-live rather than a 48h shadow soak; the EmberVM semgrep workload was
-  # verified returning identical PRO findings. Revert to "fc-invoke" (one value +
-  # rollout) if a real PR diff regresses. fc-invoke's scan path stays deployed as
-  # the instant fallback until R1/R2 formally deprecates it.
-  dispatch: "embervm"
   # Route B shadow project (Route B vs SMS comparison): self-hosted scans report
   # here instead of jomcgi/homelab, so they land in a separate Semgrep project.
   # UNSET this single value at cutover to report to the real project.
