@@ -2168,4 +2168,85 @@ defmodule Embervm.BaseBuilderTest do
 
     assert length(recorded(agent)) == settled
   end
+
+  describe "base_revision/1 (the daemon's base cache key)" do
+    # noded keys a base as sha256(image_ref, workload_revision, cpu_vendor), so this
+    # token IS the base's cache identity. It used to be the CR's metadata.generation,
+    # which changes on ANY spec edit -- so a flag that cannot touch a guest rootfs
+    # re-keyed the base and took the public demo offline for the rebuild (2026-07-27,
+    # nodeLocalWake on demo-postgres, generation 86 -> 87).
+
+    test "a generation bump alone does NOT change the revision" do
+      # The exact shape of the outage: same base inputs, new CR generation.
+      assert BaseBuilder.base_revision(desc(%{generation: 86})) ==
+               BaseBuilder.base_revision(desc(%{generation: 87}))
+    end
+
+    test "fields signature/1 excludes do not change the revision" do
+      # "a cap-only edit never rebuilds" must hold at the DAEMON, not just in the
+      # signature map this module keeps in memory.
+      base = BaseBuilder.base_revision(desc())
+
+      for extra <- [
+            %{generation: 999},
+            %{idle_bank_seconds: 1},
+            %{node_local_wake: true},
+            %{metering_fail_open: true},
+            %{banked_ttl_seconds: 60}
+          ] do
+        assert BaseBuilder.base_revision(desc(extra)) == base,
+               "#{inspect(extra)} must not re-key the base"
+      end
+    end
+
+    test "every field that DOES shape the base changes the revision" do
+      base = BaseBuilder.base_revision(desc())
+
+      for change <- [
+            %{image_ref: "imgB"},
+            %{vcpus: 2},
+            %{mem_mib: 512},
+            %{guest_port: 9090},
+            %{ready_path: "/other/ready"},
+            %{init_env: %{"A" => "1"}}
+          ] do
+        refute BaseBuilder.base_revision(desc(change)) == base,
+               "#{inspect(change)} must re-key the base"
+      end
+    end
+
+    test "init_env hashes independently of map insertion order" do
+      # This is a PERSISTED cache key: map iteration order is not part of the term's
+      # contract, so an unsorted encoding could hash two ways for identical input and
+      # cause exactly the spurious rebuild being fixed here.
+      a = desc(%{init_env: %{"A" => "1", "B" => "2", "C" => "3"}})
+      b = desc(%{init_env: %{"C" => "3", "B" => "2", "A" => "1"}})
+
+      assert BaseBuilder.base_revision(a) == BaseBuilder.base_revision(b)
+    end
+
+    test "a different init_env VALUE still changes the revision" do
+      refute BaseBuilder.base_revision(desc(%{init_env: %{"A" => "1"}})) ==
+               BaseBuilder.base_revision(desc(%{init_env: %{"A" => "2"}}))
+    end
+
+    test "the revision is a stable short hex digest" do
+      rev = BaseBuilder.base_revision(desc())
+      assert byte_size(rev) == 16
+      assert rev =~ ~r/^[0-9a-f]{16}$/
+      # Deterministic across calls: a cache key that moved on its own would rebuild
+      # the base on every reconcile.
+      assert rev == BaseBuilder.base_revision(desc())
+    end
+
+    test "a zip workload keys on its archive sha256, not on generation" do
+      zip_at = fn sha -> desc(%{zip: %{runtime: "python3.12", sha256: sha}}) end
+
+      assert BaseBuilder.base_revision(zip_at.("aaa")) ==
+               BaseBuilder.base_revision(Map.put(zip_at.("aaa"), :generation, 42))
+
+      refute BaseBuilder.base_revision(zip_at.("aaa")) ==
+               BaseBuilder.base_revision(zip_at.("bbb"))
+    end
+  end
 end
