@@ -457,4 +457,77 @@ defmodule Embervm.WakeInstanceTest do
       refute WakeInstance.throttle_rejection_log?("wl-a", "node-4")
     end
   end
+
+  describe "the rejection diagnostic survives the real log formatter (#4077)" do
+    # The regression this pins: the payload originally rode Logger METADATA, and
+    # Embervm.LogFormatter encodes a fixed @meta_keys whitelist and drops the rest
+    # (deliberately -- an un-encodable term must never crash the formatter). In prod
+    # the line emitted with only workload/node_id and every diagnostic field was
+    # silently discarded. Testing brick_rejection_view/3 alone did NOT catch that:
+    # the data was right and never reached a log line.
+
+    defp diag_brick(opts) do
+      %{
+        instance_id: "node-2/pod-a",
+        size_class: Keyword.get(opts, :size_class, "8gi"),
+        free_slots: Keyword.get(opts, :free_slots, 4),
+        mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 8_000),
+        mem_budget_mib: 8_192,
+        workloads: Keyword.get(opts, :workloads, %{})
+      }
+    end
+
+    test "the summary carries every field needed to tell the two failures apart" do
+      summary =
+        WakeInstance.rejection_summary(512, false, [diag_brick(free_slots: 4)], "wl-a")
+
+      for field <- ~w(need_mib capacity_denial brick_count eligible base_ready workload_facts) do
+        assert summary =~ field, "summary must carry #{field}"
+      end
+    end
+
+    test "the payload renders through Embervm.LogFormatter, not just into a string" do
+      # End-to-end through the ACTUAL formatter, without ExUnit.CaptureLog (which in
+      # an async module also captures other tests' output).
+      summary = WakeInstance.rejection_summary(512, false, [diag_brick([])], "wl-a")
+
+      line =
+        Embervm.LogFormatter.format(
+          %{
+            level: :warning,
+            msg: {:string, "embervm wake: no cold-placement candidate on node " <> summary},
+            meta: %{workload: "wl-a", node_id: "node-2"}
+          },
+          %{}
+        )
+        |> IO.iodata_to_binary()
+
+      assert line =~ "no cold-placement candidate"
+      # The fields that were dropped when this rode metadata:
+      assert line =~ "capacity_denial=false"
+      assert line =~ "workload_facts=0"
+      assert line =~ "brick_count=1"
+      # And the whitelisted metadata still lands as structured JSON fields.
+      assert line =~ ~s("workload":"wl-a")
+      assert line =~ ~s("node_id":"node-2")
+    end
+
+    test "a capacity wall and a provisioning wait are distinguishable in the line" do
+      wall = WakeInstance.rejection_summary(512, true, [diag_brick(free_slots: 0)], "wl-a")
+      wait = WakeInstance.rejection_summary(512, false, [diag_brick(free_slots: 4)], "wl-a")
+
+      assert wall =~ "capacity_denial=true"
+      assert wall =~ "free=0"
+      assert wait =~ "capacity_denial=false"
+      assert wait =~ "eligible=true"
+    end
+
+    test "an empty brick list renders without crashing the formatter" do
+      # node scoping matching nothing is a real outcome; the diagnostic must still
+      # emit rather than raise inside a log call.
+      summary = WakeInstance.rejection_summary(512, true, [], "wl-a")
+      assert summary =~ "brick_count=0"
+      assert summary =~ "bricks=[none]"
+    end
+  end
 end
