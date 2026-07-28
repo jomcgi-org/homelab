@@ -1305,10 +1305,12 @@ func TestVolumeExportSkipsUnchangedGeneration(t *testing.T) {
 	if err := s.volumes.Create("scratch-postgres", 1<<20); err != nil {
 		t.Fatalf("create volume: %v", err)
 	}
-	for i := 0; i < 5; i++ {
-		if _, err := s.volumes.BumpGeneration("scratch-postgres"); err != nil {
-			t.Fatalf("bump: %v", err)
-		}
+	// RecordBlessed, not BumpGeneration: a self-bump leaves the volume UNBLESSED,
+	// which ADR embervm/011 quarantines from export ("an artifact whose generation
+	// was never blessed is quarantined, never exported"). This test is about the
+	// same-generation export short-circuit, so it needs a realistic blessed volume.
+	if _, err := s.volumes.RecordBlessed("scratch-postgres", 5); err != nil {
+		t.Fatalf("bless: %v", err)
 	}
 	volRef := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "scratch-postgres"}
 
@@ -1354,8 +1356,10 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	if err := s.volumes.Create("scratch-postgres", 1<<20); err != nil {
 		t.Fatalf("create volume: %v", err)
 	}
-	if _, err := s.volumes.BumpGeneration("scratch-postgres"); err != nil {
-		t.Fatalf("bump: %v", err)
+	// Blessed, not self-bumped: ADR embervm/011 quarantines an unblessed volume
+	// from export, so a round-trip fixture must model a CP-blessed attach.
+	if _, err := s.volumes.RecordBlessed("scratch-postgres", 1); err != nil {
+		t.Fatalf("bless: %v", err)
 	}
 	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "scratch-postgres"},
@@ -1772,5 +1776,79 @@ func TestEnqueueIfMissingLegacyAliasGatedToAMDNode(t *testing.T) {
 	// The unrelated legacy (AMD) artifact must be untouched by this node's export.
 	if got, _, err := fs.Restore(ctx, legacyPrefix, t.TempDir()); err != nil || got == 0 {
 		t.Fatalf("legacy artifact should be untouched, restore err=%v bytes=%d", err, got)
+	}
+}
+
+// TestExportArtifactVolumeRefusedWhenUnblessed implements ADR embervm/011's
+// declared invariant: "an artifact whose generation was never blessed is
+// quarantined, never exported."
+//
+// VOLUME keys as a SINGLETON (volume/<workload>: no ref, no vendor segment,
+// because volume data is vendor-portable), so every node that has ever held the
+// volume writes the SAME object. The generation fence refuses an OLDER
+// generation; this refuses the subtle case it cannot see. A node that self-bumped
+// its ledger past the blessed watermark carries a HIGHER generation, so it would
+// WIN the generation fence while holding state the control plane never blessed.
+func TestExportArtifactVolumeRefusedWhenUnblessed(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	// A self-bumped ledger: generation advances, the blessed marker never does.
+	if err := s.volumes.Create("demo-postgres", 1); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
+	if _, err := s.volumes.BumpGeneration("demo-postgres"); err != nil {
+		t.Fatalf("BumpGeneration: %v", err)
+	}
+	if s.volumes.GenerationBlessed("demo-postgres") {
+		t.Fatal("precondition: a self-bumped generation must not read as blessed")
+	}
+
+	resp, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "demo-postgres"},
+	})
+	if err != nil {
+		t.Fatalf("ExportArtifact should ack a refusal, not error: %v", err)
+	}
+	if !resp.GetSkipped() || resp.GetBytesMoved() != 0 {
+		t.Fatalf("refused export = (skipped=%v, moved=%d), want (true, 0)", resp.GetSkipped(), resp.GetBytesMoved())
+	}
+	if fs.has("volume/demo-postgres") {
+		t.Fatal("an unblessed volume must NOT reach the store")
+	}
+}
+
+// TestExportArtifactVolumeAllowedWhenBlessed is the other half: a CP-blessed
+// generation exports normally. Without this the gate could pass by refusing
+// everything.
+func TestExportArtifactVolumeAllowedWhenBlessed(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	if err := s.volumes.Create("demo-postgres", 1); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
+	// RecordBlessed writes BOTH the ledger and the blessed marker, which is what a
+	// CP-issued blessed_generation does via attachGeneration.
+	if _, err := s.volumes.RecordBlessed("demo-postgres", 7); err != nil {
+		t.Fatalf("RecordBlessed: %v", err)
+	}
+	if !s.volumes.GenerationBlessed("demo-postgres") {
+		t.Fatal("precondition: a CP-blessed generation must read as blessed")
+	}
+
+	resp, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "demo-postgres"},
+	})
+	if err != nil {
+		t.Fatalf("ExportArtifact: %v", err)
+	}
+	if resp.GetSkipped() {
+		t.Fatal("a blessed volume export must not be skipped")
+	}
+	if !fs.has("volume/demo-postgres") {
+		t.Fatal("store missing volume/demo-postgres after a blessed export")
 	}
 }
