@@ -164,6 +164,22 @@ actions:
         merge_with_base: false
     steps:
       - run: |
+          # Cheap pre-check: the bazel query below loads the whole graph, and
+          # that load is the entire cost of this action in its normal state (no
+          # future-tagged specs exist). `future = True` on a bdd_test appends
+          # the `future` tag (projects/monolith/bdd_test.bzl), and a raw
+          # tags = ["future"] on any test rule would too, so match either to
+          # stay a superset of what the query selects.
+          #
+          # Deliberately no `set -e` here: this action is designed around an
+          # expected non-zero exit (a red future spec is the normal signal), and
+          # it is informational, never a required check. That is also why a grep
+          # proxy is acceptable here when it would not be for a gating action.
+          if ! git grep -qE '(^[[:space:]]*future[[:space:]]*=[[:space:]]*True|"future")' -- '*BUILD' '*BUILD.bazel'; then
+            echo "No future-tagged specs; skipping BDD future features."
+            exit 0
+          fi
+
           # grep '^//' keeps only real target labels. The bb CLI interleaves its
           # own operational log lines (connection warnings, a capabilities JSON
           # blob) into stdout, which transient proxy resets make frequent; without
@@ -378,6 +394,25 @@ actions:
       # BuildBuddy runner is provisioned.
       - run: |
           set -eu
+          # This action must always run on main, so a merge cannot land an
+          # unverified Buck2 tree. On PR branches, the path list MUST stay a
+          # SUPERSET of the real inputs: too broad only costs a redundant
+          # (cache-hit) build, too narrow silently skips real work.
+          #
+          # "Am I main?" is decided by SHA, not by `git rev-parse --abbrev-ref
+          # HEAD`. That returns "HEAD" on a detached checkout, and on main the
+          # path diff against origin/main is empty by construction, so a branch
+          # name test that degraded would silently skip this action on main
+          # forever. A SHA comparison cannot degrade that way, and if
+          # origin/main is unresolvable the diff errors non-zero and the action
+          # runs, which is the safe direction.
+          git fetch origin main --quiet 2>/dev/null || true
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main 2>/dev/null || echo none)" ] && \
+             git diff --quiet origin/main HEAD -- buck2 prelude .buckconfig buildbuddy.yaml; then
+            echo "No Buck2-relevant changes vs origin/main; skipping Buck2 rules."
+            exit 0
+          fi
+
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
           # zstd/curl to fetch+decompress the buck2 release (best-effort — the
