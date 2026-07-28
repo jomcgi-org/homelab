@@ -180,7 +180,7 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 | Design proposals | `docs/decisions/`, numbered per category |
 
 **Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,
-`codex-implement`, `pr-workflow`, `ci-triage`.
+`codex-implement`, `pr-workflow`, `ci-triage`, `improve-buildbuddy-usage`.
 
 **Agents** (`.claude/agents/`): `implementer` (Luna), `reviewer` (Opus),
 `adr-author` and `stpa-analyst` (Sonnet), `escalation` (Fable). Dispatch work to

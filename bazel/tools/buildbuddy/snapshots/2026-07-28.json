@@ -1,0 +1,927 @@
+{
+  "bucket_interval": {
+    "count": "4",
+    "type": "INTERVAL_TYPE_HOUR"
+  },
+  "buckets": [
+    {
+      "action_cache_hits": 9896,
+      "action_cache_misses": 22104,
+      "bucket_start": "2026-07-21T04:00:00+00:00",
+      "builds": 451,
+      "download_bytes": 200752588128,
+      "upload_bytes": 300425102
+    },
+    {
+      "action_cache_hits": 1320,
+      "action_cache_misses": 945,
+      "bucket_start": "2026-07-21T08:00:00+00:00",
+      "builds": 15,
+      "download_bytes": 86790560773,
+      "upload_bytes": 35652926
+    },
+    {
+      "action_cache_hits": 5203,
+      "action_cache_misses": 9790,
+      "bucket_start": "2026-07-21T12:00:00+00:00",
+      "builds": 196,
+      "download_bytes": 121551575489,
+      "upload_bytes": 216900823
+    },
+    {
+      "action_cache_hits": 6666,
+      "action_cache_misses": 12224,
+      "bucket_start": "2026-07-21T16:00:00+00:00",
+      "builds": 262,
+      "download_bytes": 68968929600,
+      "upload_bytes": 174495375
+    },
+    {
+      "action_cache_hits": 3215,
+      "action_cache_misses": 3769,
+      "bucket_start": "2026-07-21T20:00:00+00:00",
+      "builds": 85,
+      "download_bytes": 53011906042,
+      "upload_bytes": 323147403
+    },
+    {
+      "action_cache_hits": 30730,
+      "action_cache_misses": 17569,
+      "bucket_start": "2026-07-22T00:00:00+00:00",
+      "builds": 336,
+      "download_bytes": 430666639456,
+      "upload_bytes": 520375040
+    },
+    {
+      "action_cache_hits": 9590,
+      "action_cache_misses": 19185,
+      "bucket_start": "2026-07-22T04:00:00+00:00",
+      "builds": 414,
+      "download_bytes": 378810081793,
+      "upload_bytes": 404010661
+    },
+    {
+      "action_cache_hits": 10391,
+      "action_cache_misses": 19923,
+      "bucket_start": "2026-07-22T08:00:00+00:00",
+      "builds": 411,
+      "download_bytes": 307263125132,
+      "upload_bytes": 1248350329
+    },
+    {
+      "action_cache_hits": 3735,
+      "action_cache_misses": 3595,
+      "bucket_start": "2026-07-22T16:00:00+00:00",
+      "builds": 66,
+      "download_bytes": 92193107758,
+      "upload_bytes": 418925121
+    },
+    {
+      "action_cache_hits": 4205,
+      "action_cache_misses": 12261,
+      "bucket_start": "2026-07-22T20:00:00+00:00",
+      "builds": 286,
+      "download_bytes": 66436800597,
+      "upload_bytes": 1787827339
+    },
+    {
+      "action_cache_hits": 4479,
+      "action_cache_misses": 6250,
+      "bucket_start": "2026-07-23T00:00:00+00:00",
+      "builds": 137,
+      "download_bytes": 136207025462,
+      "upload_bytes": 388170498
+    },
+    {
+      "action_cache_hits": 24800,
+      "action_cache_misses": 40107,
+      "bucket_start": "2026-07-23T04:00:00+00:00",
+      "builds": 762,
+      "download_bytes": 1002916362883,
+      "upload_bytes": 7830112774
+    },
+    {
+      "action_cache_hits": 3007,
+      "action_cache_misses": 4592,
+      "bucket_start": "2026-07-23T08:00:00+00:00",
+      "builds": 82,
+      "download_bytes": 101940429805,
+      "upload_bytes": 519542511
+    },
+    {
+      "action_cache_hits": 15456,
+      "action_cache_misses": 19730,
+      "bucket_start": "2026-07-23T12:00:00+00:00",
+      "builds": 380,
+      "download_bytes": 250485180602,
+      "upload_bytes": 643037710
+    },
+    {
+      "action_cache_hits": 3866,
+      "action_cache_misses": 1662,
+      "bucket_start": "2026-07-23T16:00:00+00:00",
+      "builds": 34,
+      "download_bytes": 34945772063,
+      "upload_bytes": 121694102
+    },
+    {
+      "action_cache_hits": 9971,
+      "action_cache_misses": 9000,
+      "bucket_start": "2026-07-23T20:00:00+00:00",
+      "builds": 169,
+      "download_bytes": 80963832745,
+      "upload_bytes": 367718904
+    },
+    {
+      "action_cache_hits": 5837,
+      "action_cache_misses": 4523,
+      "bucket_start": "2026-07-24T00:00:00+00:00",
+      "builds": 81,
+      "download_bytes": 22797117432,
+      "upload_bytes": 282202281
+    },
+    {
+      "action_cache_hits": 3409,
+      "action_cache_misses": 2276,
+      "bucket_start": "2026-07-24T04:00:00+00:00",
+      "builds": 54,
+      "download_bytes": 57308960696,
+      "upload_bytes": 126634093
+    },
+    {
+      "action_cache_hits": 1152,
+      "action_cache_misses": 943,
+      "bucket_start": "2026-07-24T08:00:00+00:00",
+      "builds": 14,
+      "download_bytes": 84647757289,
+      "upload_bytes": 28792557
+    },
+    {
+      "action_cache_hits": 673,
+      "action_cache_misses": 712,
+      "bucket_start": "2026-07-24T16:00:00+00:00",
+      "builds": 15,
+      "download_bytes": 14923026967,
+      "upload_bytes": 1736036
+    },
+    {
+      "action_cache_hits": 10255,
+      "action_cache_misses": 10632,
+      "bucket_start": "2026-07-25T04:00:00+00:00",
+      "builds": 215,
+      "download_bytes": 409001471789,
+      "upload_bytes": 458182259
+    },
+    {
+      "action_cache_hits": 1068,
+      "action_cache_misses": 942,
+      "bucket_start": "2026-07-25T08:00:00+00:00",
+      "builds": 15,
+      "download_bytes": 98222571748,
+      "upload_bytes": 28349585
+    },
+    {
+      "action_cache_hits": 1911,
+      "action_cache_misses": 6059,
+      "bucket_start": "2026-07-25T16:00:00+00:00",
+      "builds": 122,
+      "download_bytes": 65163643620,
+      "upload_bytes": 304652949
+    },
+    {
+      "action_cache_hits": 78939,
+      "action_cache_misses": 19170,
+      "bucket_start": "2026-07-25T20:00:00+00:00",
+      "builds": 176,
+      "download_bytes": 387765446023,
+      "upload_bytes": 5438315174
+    },
+    {
+      "action_cache_hits": 20943,
+      "action_cache_misses": 2791,
+      "bucket_start": "2026-07-26T00:00:00+00:00",
+      "builds": 42,
+      "download_bytes": 66308624749,
+      "upload_bytes": 207759213
+    },
+    {
+      "action_cache_hits": 164442,
+      "action_cache_misses": 18021,
+      "bucket_start": "2026-07-26T04:00:00+00:00",
+      "builds": 306,
+      "download_bytes": 183280652178,
+      "upload_bytes": 1646316230
+    },
+    {
+      "action_cache_hits": 999,
+      "action_cache_misses": 734,
+      "bucket_start": "2026-07-26T08:00:00+00:00",
+      "builds": 15,
+      "download_bytes": 45451814873,
+      "upload_bytes": 1911514
+    },
+    {
+      "action_cache_hits": 68756,
+      "action_cache_misses": 33825,
+      "bucket_start": "2026-07-26T16:00:00+00:00",
+      "builds": 335,
+      "download_bytes": 832295625425,
+      "upload_bytes": 988248424
+    },
+    {
+      "action_cache_hits": 17846,
+      "action_cache_misses": 17632,
+      "bucket_start": "2026-07-26T20:00:00+00:00",
+      "builds": 273,
+      "download_bytes": 315616036118,
+      "upload_bytes": 916552136
+    },
+    {
+      "action_cache_hits": 11260,
+      "action_cache_misses": 4618,
+      "bucket_start": "2026-07-27T00:00:00+00:00",
+      "builds": 259,
+      "download_bytes": 210448201650,
+      "upload_bytes": 761943058
+    },
+    {
+      "action_cache_hits": 34757,
+      "action_cache_misses": 12616,
+      "bucket_start": "2026-07-27T04:00:00+00:00",
+      "builds": 391,
+      "download_bytes": 466004824970,
+      "upload_bytes": 1444924000
+    },
+    {
+      "action_cache_hits": 43728,
+      "action_cache_misses": 31777,
+      "bucket_start": "2026-07-27T08:00:00+00:00",
+      "builds": 334,
+      "download_bytes": 288277504837,
+      "upload_bytes": 2789311135
+    },
+    {
+      "action_cache_hits": 22067,
+      "action_cache_misses": 9797,
+      "bucket_start": "2026-07-27T12:00:00+00:00",
+      "builds": 325,
+      "download_bytes": 105840275836,
+      "upload_bytes": 526375263
+    },
+    {
+      "action_cache_hits": 6880,
+      "action_cache_misses": 4280,
+      "bucket_start": "2026-07-27T16:00:00+00:00",
+      "builds": 76,
+      "download_bytes": 41013424227,
+      "upload_bytes": 454983373
+    },
+    {
+      "action_cache_hits": 44143,
+      "action_cache_misses": 7304,
+      "bucket_start": "2026-07-27T20:00:00+00:00",
+      "builds": 541,
+      "download_bytes": 509124805549,
+      "upload_bytes": 819998222
+    },
+    {
+      "action_cache_hits": 159254,
+      "action_cache_misses": 5265,
+      "bucket_start": "2026-07-28T00:00:00+00:00",
+      "builds": 378,
+      "download_bytes": 285504777102,
+      "upload_bytes": 403931183
+    },
+    {
+      "action_cache_hits": 48349,
+      "action_cache_misses": 18297,
+      "bucket_start": "2026-07-28T04:00:00+00:00",
+      "builds": 933,
+      "download_bytes": 1440009790481,
+      "upload_bytes": 5475887096
+    }
+  ],
+  "by_role": {
+    "CI": {
+      "download_bytes": 4050619042834,
+      "download_transferred_bytes": 2137461362050,
+      "invocations": 5005,
+      "upload_bytes": 49745135457,
+      "upload_transferred_bytes": 25346764559
+    },
+    "CI_RUNNER": {
+      "download_bytes": 5510713724609,
+      "download_transferred_bytes": 2085448583412,
+      "invocations": 3844,
+      "upload_bytes": 72902391,
+      "upload_transferred_bytes": 14775728
+    },
+    "HOSTED_BAZEL": {
+      "download_bytes": 949994902243,
+      "download_transferred_bytes": 385287153560,
+      "invocations": 443,
+      "upload_bytes": 1530870,
+      "upload_transferred_bytes": 233314
+    },
+    "LOCAL": {
+      "download_bytes": 0,
+      "download_transferred_bytes": 0,
+      "invocations": 6,
+      "upload_bytes": 400108,
+      "upload_transferred_bytes": 400108
+    }
+  },
+  "by_source": [
+    {
+      "command": "test",
+      "download_bytes": 2551884538875,
+      "download_share": 0.24277471115608665,
+      "invocations": 1015,
+      "pattern": "//...",
+      "role": "CI",
+      "upload_bytes": 29252951322
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 2404074900280,
+      "download_share": 0.2287127730984164,
+      "invocations": 590,
+      "pattern": "Push images",
+      "role": "CI_RUNNER",
+      "upload_bytes": 2669124
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 2075700309288,
+      "download_share": 0.19747270511547152,
+      "invocations": 590,
+      "pattern": "Test",
+      "role": "CI_RUNNER",
+      "upload_bytes": 21270919
+    },
+    {
+      "command": "run",
+      "download_bytes": 1367301283284,
+      "download_share": 0.13007883744574056,
+      "invocations": 613,
+      "pattern": "//bazel/images:push_all",
+      "role": "CI",
+      "upload_bytes": 20140022012
+    },
+    {
+      "command": "remote test //...",
+      "download_bytes": 923791645634,
+      "download_share": 0.0878853437609177,
+      "invocations": 426,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 1457103
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 438566660834,
+      "download_share": 0.04172324130840278,
+      "invocations": 590,
+      "pattern": "Format check",
+      "role": "CI_RUNNER",
+      "upload_bytes": 9879288
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 307166205065,
+      "download_share": 0.029222398417932283,
+      "invocations": 590,
+      "pattern": "Buck2 rules",
+      "role": "CI_RUNNER",
+      "upload_bytes": 28856878
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 220572321224,
+      "download_share": 0.020984249388411372,
+      "invocations": 590,
+      "pattern": "BDD future features",
+      "role": "CI_RUNNER",
+      "upload_bytes": 4597898
+    },
+    {
+      "command": "build",
+      "download_bytes": 105235402575,
+      "download_share": 0.010011618501675312,
+      "invocations": 291,
+      "pattern": "//projects/monolith/frontend/visual:capture",
+      "role": "CI",
+      "upload_bytes": 224838909
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 47805448479,
+      "download_share": 0.004547993363090361,
+      "invocations": 447,
+      "pattern": "Visual regression",
+      "role": "CI_RUNNER",
+      "upload_bytes": 3267678
+    },
+    {
+      "command": "run",
+      "download_bytes": 24615061300,
+      "download_share": 0.0023417651959407823,
+      "invocations": 542,
+      "pattern": "//bazel/tools/format:format",
+      "role": "CI",
+      "upload_bytes": 44390890
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 16827879439,
+      "download_share": 0.0016009280623541528,
+      "invocations": 447,
+      "pattern": "Manifest diff",
+      "role": "CI_RUNNER",
+      "upload_bytes": 2360606
+    },
+    {
+      "command": "remote aquery mnemonic(\"ConvertStatusToJson\", //...)",
+      "download_bytes": 12837198268,
+      "download_share": 0.0012212727708053154,
+      "invocations": 4,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 1
+    },
+    {
+      "command": "remote test //projects/monolith/agent_sessions:agent_sessions_mcp_test",
+      "download_bytes": 9355871644,
+      "download_share": 0.0008900751587244053,
+      "invocations": 4,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote test //projects/monolith:agent_sessions_mcp_test",
+      "download_bytes": 3911882691,
+      "download_share": 0.000372158761854758,
+      "invocations": 2,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "test",
+      "download_bytes": 773576128,
+      "download_share": 7.35945212925808e-5,
+      "invocations": 4,
+      "pattern": "//... and 1 more",
+      "role": "CI",
+      "upload_bytes": 58631987
+    },
+    {
+      "command": "test",
+      "download_bytes": 720618862,
+      "download_share": 6.85564073963957e-5,
+      "invocations": 1,
+      "pattern": "//projects/monolith:main_semgrep_test and 2 more",
+      "role": "CI",
+      "upload_bytes": 10177
+    },
+    {
+      "command": "remote test //projects/monolith:main_semgrep_test",
+      "download_bytes": 98304001,
+      "download_share": 9.35219641982073e-6,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "run",
+      "download_bytes": 45191778,
+      "download_share": 4.299340618058194e-6,
+      "invocations": 137,
+      "pattern": "//projects/monolith/frontend/visual:diff_bin",
+      "role": "CI",
+      "upload_bytes": 2127924
+    },
+    {
+      "command": "run",
+      "download_bytes": 15813917,
+      "download_share": 1.5044642786283155e-6,
+      "invocations": 1,
+      "pattern": "//bazel/tools/format:prettier",
+      "role": "CI",
+      "upload_bytes": 66359
+    },
+    {
+      "command": "run",
+      "download_bytes": 13830121,
+      "download_share": 1.3157349323135638e-6,
+      "invocations": 1,
+      "pattern": "//bazel/tools/format:format_svelte",
+      "role": "CI",
+      "upload_bytes": 60988
+    },
+    {
+      "command": "build",
+      "download_bytes": 13656232,
+      "download_share": 1.2991919221949198e-6,
+      "invocations": 1,
+      "pattern": "//bazel/tools/image:prettier_tar",
+      "role": "CI",
+      "upload_bytes": 11876315
+    },
+    {
+      "command": "test",
+      "download_bytes": 41077,
+      "download_share": 3.9078793175160405e-9,
+      "invocations": 1,
+      "pattern": "//bazel/tools/hooks:prefer_bb_remote_test",
+      "role": "CI",
+      "upload_bytes": 70918
+    },
+    {
+      "command": "test",
+      "download_bytes": 28685,
+      "download_share": 2.728960689021779e-9,
+      "invocations": 1,
+      "pattern": "//bazel/tools/ci:ci_test and 1 more",
+      "role": "CI",
+      "upload_bytes": 26415
+    },
+    {
+      "command": "remote test projects/embervm/control/test/embervm/application_test.exs",
+      "download_bytes": 1,
+      "download_share": 9.513546065964021e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote test //bazel/tools/ci:ci_test",
+      "download_bytes": 1,
+      "download_share": 9.513546065964021e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 9325
+    },
+    {
+      "command": "remote build //bazel/tools/image:prettier_tar",
+      "download_bytes": 1,
+      "download_share": 9.513546065964021e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 8979
+    },
+    {
+      "command": "remote run //bazel/tools/format:format_svelte",
+      "download_bytes": 1,
+      "download_share": 9.513546065964021e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote run //bazel/tools/format:prettier",
+      "download_bytes": 1,
+      "download_share": 9.513546065964021e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "query",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 2114,
+      "pattern": "",
+      "role": "CI",
+      "upload_bytes": 0
+    },
+    {
+      "command": "build",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 278,
+      "pattern": "@multitool//tools/helm",
+      "role": "CI",
+      "upload_bytes": 9621950
+    },
+    {
+      "command": "test",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 2,
+      "pattern": "//projects/monolith:agent_sessions_mcp_test",
+      "role": "LOCAL",
+      "upload_bytes": 353098
+    },
+    {
+      "command": "test",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 4,
+      "pattern": "//projects/monolith/agent_sessions:agent_sessions_mcp_test",
+      "role": "LOCAL",
+      "upload_bytes": 47010
+    },
+    {
+      "command": "test",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 1,
+      "pattern": "projects/embervm/control/test/embervm/application_test.exs",
+      "role": "CI",
+      "upload_bytes": 5229
+    },
+    {
+      "command": "aquery",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 4,
+      "pattern": "//...",
+      "role": "CI",
+      "upload_bytes": 434062
+    },
+    {
+      "command": "remote test //bazel/tools/hooks:prefer_bb_remote_test",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 55462
+    }
+  ],
+  "captured_at": "2026-07-28T05:58:36Z",
+  "concentration": {
+    "invocations": 9298,
+    "max_bytes": 392563297508,
+    "p50_bytes": 2.0,
+    "p90_bytes": 1701088672.0,
+    "p99_bytes": 18969574984.0,
+    "top_shares": {
+      "1%": {
+        "bytes": 4111724023013,
+        "invocations": 93,
+        "share": 0.3911707590346508
+      },
+      "10%": {
+        "bytes": 9628295270263,
+        "invocations": 930,
+        "share": 0.9159923059035054
+      },
+      "5%": {
+        "bytes": 8276448008691,
+        "invocations": 465,
+        "share": 0.7873836939323802
+      }
+    },
+    "total_bytes": 10511327669686
+  },
+  "per_day": {
+    "download_bytes": 1501618238526.5715,
+    "upload_bytes": 7117138403.714286
+  },
+  "repo": "https://github.com/jomcgi/homelab",
+  "schema": 2,
+  "top_invocations": [
+    {
+      "branch": "feat/prettier-plugin-svelte",
+      "command": "test",
+      "download_bytes": 392563297508,
+      "invocation_id": "ef81baf3-3d6a-4b16-83fe-01d1e77c850f",
+      "pattern": "//...",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 9109298013,
+      "url": "https://app.buildbuddy.io/invocation/ef81baf3-3d6a-4b16-83fe-01d1e77c850f"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 207873325889,
+      "invocation_id": "2891a9a9-66bf-4a93-abef-ce48ca37f15a",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 356281174,
+      "url": "https://app.buildbuddy.io/invocation/2891a9a9-66bf-4a93-abef-ce48ca37f15a"
+    },
+    {
+      "branch": "build/bump-rules-apko",
+      "command": "test",
+      "download_bytes": 207226898049,
+      "invocation_id": "e9c380a3-b8cb-442d-b352-d3afc07abac8",
+      "pattern": "//...",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 112620054,
+      "url": "https://app.buildbuddy.io/invocation/e9c380a3-b8cb-442d-b352-d3afc07abac8"
+    },
+    {
+      "branch": "feat/prettier-plugin-svelte",
+      "command": "run",
+      "download_bytes": 204812210862,
+      "invocation_id": "ed3274b1-c6a6-4b83-bf56-2db58741742f",
+      "pattern": "//bazel/images:push_all",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 4894321279,
+      "url": "https://app.buildbuddy.io/invocation/ed3274b1-c6a6-4b83-bf56-2db58741742f"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 159634107782,
+      "invocation_id": "2f8ab26b-741f-4990-bab9-84d8827c1191",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 782239184,
+      "url": "https://app.buildbuddy.io/invocation/2f8ab26b-741f-4990-bab9-84d8827c1191"
+    },
+    {
+      "branch": "build/bump-rules-apko",
+      "command": "test",
+      "download_bytes": 146470410568,
+      "invocation_id": "48b99d54-7b73-4d8a-98ce-037c793edb0b",
+      "pattern": "//...",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 1144621434,
+      "url": "https://app.buildbuddy.io/invocation/48b99d54-7b73-4d8a-98ce-037c793edb0b"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 90536692170,
+      "invocation_id": "6b21b8a9-ab59-48b1-b11f-151c87885019",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 213794081,
+      "url": "https://app.buildbuddy.io/invocation/6b21b8a9-ab59-48b1-b11f-151c87885019"
+    },
+    {
+      "branch": "update/semgrep-20260722",
+      "command": "test",
+      "download_bytes": 90354331501,
+      "invocation_id": "2200fb28-58bc-440e-8961-62e83595e2e1",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 444511230,
+      "url": "https://app.buildbuddy.io/invocation/2200fb28-58bc-440e-8961-62e83595e2e1"
+    },
+    {
+      "branch": "update/semgrep-20260723",
+      "command": "test",
+      "download_bytes": 89604403946,
+      "invocation_id": "5f8fd64c-71d0-44ea-9da3-b5d0b48ef1e5",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 486895360,
+      "url": "https://app.buildbuddy.io/invocation/5f8fd64c-71d0-44ea-9da3-b5d0b48ef1e5"
+    },
+    {
+      "branch": "update/semgrep-20260721",
+      "command": "test",
+      "download_bytes": 70943167200,
+      "invocation_id": "1cf0e1a3-ae27-4799-946b-a9c11e720256",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 8865985,
+      "url": "https://app.buildbuddy.io/invocation/1cf0e1a3-ae27-4799-946b-a9c11e720256"
+    },
+    {
+      "branch": "chore/embervm-drop-image-demos",
+      "command": "test",
+      "download_bytes": 70199852963,
+      "invocation_id": "d359f272-318b-4d73-b711-00fbfd70a478",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 26835701,
+      "url": "https://app.buildbuddy.io/invocation/d359f272-318b-4d73-b711-00fbfd70a478"
+    },
+    {
+      "branch": "dependabot/pip/bazel/requirements/pip-1a1fe7bf02",
+      "command": "test",
+      "download_bytes": 69754715843,
+      "invocation_id": "36a09e65-9317-4716-81c7-766db8829454",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 167237403,
+      "url": "https://app.buildbuddy.io/invocation/36a09e65-9317-4716-81c7-766db8829454"
+    },
+    {
+      "branch": "build/bump-rules-apko",
+      "command": "workflow run",
+      "download_bytes": 66671200096,
+      "invocation_id": "20283160-4e63-4680-aa6b-d69b1108c118",
+      "pattern": "Push images",
+      "role": "CI_RUNNER",
+      "success": false,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/20283160-4e63-4680-aa6b-d69b1108c118"
+    },
+    {
+      "branch": "update/semgrep-20260724",
+      "command": "test",
+      "download_bytes": 66549897148,
+      "invocation_id": "d655cbda-0982-48e6-8ee2-24e5ac662e2a",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 2818181,
+      "url": "https://app.buildbuddy.io/invocation/d655cbda-0982-48e6-8ee2-24e5ac662e2a"
+    },
+    {
+      "branch": "update/semgrep-20260725",
+      "command": "test",
+      "download_bytes": 58574198902,
+      "invocation_id": "009b382a-b4cf-4da9-a399-35966ed08202",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 2406458,
+      "url": "https://app.buildbuddy.io/invocation/009b382a-b4cf-4da9-a399-35966ed08202"
+    },
+    {
+      "branch": "build/bump-rules-apko",
+      "command": "workflow run",
+      "download_bytes": 48542055783,
+      "invocation_id": "843e09d1-3c2f-45ef-a34e-b374fc51f39b",
+      "pattern": "Push images",
+      "role": "CI_RUNNER",
+      "success": false,
+      "upload_bytes": 10566,
+      "url": "https://app.buildbuddy.io/invocation/843e09d1-3c2f-45ef-a34e-b374fc51f39b"
+    },
+    {
+      "branch": "build/bump-rules-apko",
+      "command": "workflow run",
+      "download_bytes": 45965304828,
+      "invocation_id": "961d49c8-b3dd-49c5-99f6-54ec64004ce8",
+      "pattern": "Test",
+      "role": "CI_RUNNER",
+      "success": true,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/961d49c8-b3dd-49c5-99f6-54ec64004ce8"
+    },
+    {
+      "branch": "build/bump-rules-apko",
+      "command": "remote test //...",
+      "download_bytes": 45675800571,
+      "invocation_id": "409e6dbe-a5fa-42d4-89d0-b0d581c5894b",
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "success": false,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/409e6dbe-a5fa-42d4-89d0-b0d581c5894b"
+    },
+    {
+      "branch": "fix/embervm-rootfs-gc-breaks-base-snapshots",
+      "command": "remote test //...",
+      "download_bytes": 43595032581,
+      "invocation_id": "5becba74-7234-413d-8649-6f5cc25633c1",
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "success": false,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/5becba74-7234-413d-8649-6f5cc25633c1"
+    },
+    {
+      "branch": "fix/embervm-drop-scratch-prep",
+      "command": "workflow run",
+      "download_bytes": 41267591605,
+      "invocation_id": "69dd1da1-c901-4427-9c89-8194337f9180",
+      "pattern": "Push images",
+      "role": "CI_RUNNER",
+      "success": false,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/69dd1da1-c901-4427-9c89-8194337f9180"
+    }
+  ],
+  "totals": {
+    "download_bytes": 10511327669686,
+    "download_transferred_bytes": 4608197099022,
+    "invocations": 9298,
+    "upload_bytes": 49819968826,
+    "upload_transferred_bytes": 25362173709
+  },
+  "truncated": false,
+  "window": {
+    "after": "2026-07-21T05:58:27Z",
+    "before": "2026-07-28T05:58:27Z",
+    "days": 7.0
+  }
+}
