@@ -261,9 +261,11 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
     if profile.tier is Tier.PUBLIC:
         health_logger = logging.getLogger("monolith.public")
         health_message = "public health check failed"
+        component_message = "public health components unhealthy"
     else:
         health_logger = logger
         health_message = "deep health check failed"
+        component_message = "deep health components unhealthy"
 
     component_checks: dict[str, HealthCheck] = {}
     for m in modules:
@@ -310,6 +312,21 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
             components = dict(zip(names, results))
 
         all_ok = db_ok and all(c.get("ok") for c in components.values())
+        # Ember checks return {"ok": False, detail} in-band and never raise
+        # (see ember_public/synthetic_probe.py), so _run_component's exception
+        # log never fires for them and a component-caused 503 was silent. This
+        # warning is the only server-side record of which component tripped.
+        if not all_ok:
+            failing = {n: c for n, c in components.items() if not c.get("ok")}
+            if failing:
+                health_logger.warning(
+                    "%s: %s",
+                    component_message,
+                    "; ".join(
+                        f"{n}={c.get('detail') or 'no detail'}"
+                        for n, c in sorted(failing.items())
+                    ),
+                )
         body = {"status": "ok" if all_ok else "unhealthy"}
         if components:
             body["components"] = components
