@@ -34,10 +34,10 @@ def _client() -> TestClient:
 @pytest.fixture(autouse=True)
 def _reset_ember_public_module_state():
     """Every gating mechanism in core.py is process-global (status cache,
-    semaphore, insert bucket), so tests running back to
-    back within the same 500ms status-cache TTL would otherwise leak state
-    (a cached payload, a held slot, a bucket entry) across test functions.
-    Reset before AND after each test.
+    semaphore, insert bucket), so tests running back to back within the same
+    500ms status-cache TTL would otherwise leak state (a cached payload, a
+    held slot, a bucket entry) across test functions. Reset before AND after
+    each test.
     """
 
     def _reset():

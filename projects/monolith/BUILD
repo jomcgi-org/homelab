@@ -6508,6 +6508,25 @@ py_test(
     ],
 )
 
+# Hand-registered (ember_public is gazelle-excluded): the /api/health component
+# registration and the synthetic probe's fail-closed unconfigured branch. This
+# file had no target until 2026-07-28, so nothing in it ran; gazelle cannot
+# catch that here because the whole directory is excluded from it.
+py_test(
+    name = "ember_public_health_test",
+    srcs = ["ember_public/health_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "ember_public_synthetic_health_test",
     srcs = ["ember_public/synthetic_health_test.py"],
