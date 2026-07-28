@@ -33,6 +33,7 @@ defmodule Embervm.PoolManagerTest do
 
     prime_fun = Keyword.get(opts, :prime_fun, default_prime_fun)
     invalidate_fun = Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end)
+    channel_fun = Keyword.get(opts, :channel_fun, fn _ -> {:ok, :ch} end)
 
     status_writer = fn _ns, name, map ->
       Agent.update(status, &[{name, map} | &1])
@@ -47,7 +48,7 @@ defmodule Embervm.PoolManagerTest do
           catalog_table: cat_table,
           depth_table: depth_table,
           clock: fn -> 1_000_000 end,
-          channel_fun: fn _ -> {:ok, :ch} end,
+          channel_fun: channel_fun,
           invalidate_fun: invalidate_fun,
           prime_fun: prime_fun,
           deposit_fun: fn _srv, _node, _wl, _vm -> :ok end,
@@ -65,14 +66,21 @@ defmodule Embervm.PoolManagerTest do
   end
 
   defp put_facts(ctx, workloads, opts) do
+    put_instance_facts(ctx, "node-4", workloads, opts)
+  end
+
+  defp put_instance_facts(ctx, instance_id, workloads, opts) do
     wl_map =
       for {wl, free} <- workloads, into: %{} do
-        {wl, %{free_primed_slots: free, snapshot_ref: "snap-#{wl}", base_state: :BASE_BUILD_STATE_READY}}
+        ready = Keyword.get(opts, :ready, true)
+        state = if ready, do: :BASE_BUILD_STATE_READY, else: :BASE_BUILD_STATE_BUILDING
+        {wl, %{free_primed_slots: free, snapshot_ref: "snap-#{wl}", base_state: state}}
       end
 
-    NodeCapacity.put(ctx.cap_table, "node-4", %{
-      node_id: "node-4",
-      configured_id: "node-4",
+    NodeCapacity.put(ctx.cap_table, {instance_id, instance_id}, %{
+      node_id: instance_id,
+      instance_id: instance_id,
+      configured_id: instance_id,
       workloads: wl_map,
       mem_headroom_mib: 8192,
       cpu_headroom_millicores: 8000,
@@ -199,6 +207,86 @@ defmodule Embervm.PoolManagerTest do
     :ok = PoolManager.refill(ctx.pool)
     Process.sleep(20)
     assert Agent.get(ctx.status, & &1) == writes1
+  end
+
+  test "fleet-wide floor primes four total across two instances" do
+    parent = self()
+    ctx = start_pool(channel_fun: fn node -> {:ok, node} end,
+      prime_fun: fn node, %PrimeRequest{trace: %Trace{workload: wl}} ->
+        send(parent, {:prime, node, wl})
+        {:ok, %PrimeResponse{vm_id: "vm"}}
+      end)
+    put_catalog(ctx, "wl-a", 4)
+    put_instance_facts(ctx, "i-1", [{"wl-a", 0}], max: 5)
+    put_instance_facts(ctx, "i-2", [{"wl-a", 0}], max: 5)
+
+    :ok = PoolManager.refill(ctx.pool)
+    primes = for _ <- 1..4, do: (receive do {:prime, node, "wl-a"} -> node end)
+    assert Enum.frequencies(primes) == %{"i-1" => 2, "i-2" => 2}
+  end
+
+  test "a third instance does not multiply an existing fleet floor" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 4)
+    put_instance_facts(ctx, "i-1", [{"wl-a", 2}], max: 5)
+    put_instance_facts(ctx, "i-2", [{"wl-a", 2}], max: 5)
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{}
+
+    put_instance_facts(ctx, "i-3", [{"wl-a", 0}], max: 5)
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{}
+  end
+
+  test "fleet allocation respects each instance budget" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 4)
+    put_instance_facts(ctx, "i-1", [{"wl-a", 0}], max: 1)
+    put_instance_facts(ctx, "i-2", [{"wl-a", 0}], max: 5)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{"wl-a" => 4}
+  end
+
+  test "not-base-ready instances are excluded from fleet totals and placement" do
+    parent = self()
+    ctx = start_pool(channel_fun: fn node -> {:ok, node} end,
+      prime_fun: fn node, %PrimeRequest{trace: %Trace{workload: wl}} ->
+        send(parent, {:prime, node, wl})
+        {:ok, %PrimeResponse{vm_id: "vm"}}
+      end)
+    put_catalog(ctx, "wl-a", 4)
+    put_instance_facts(ctx, "ready", [{"wl-a", 0}], max: 5)
+    put_instance_facts(ctx, "building", [{"wl-a", 5}], max: 5, ready: false)
+
+    :ok = PoolManager.refill(ctx.pool)
+    primes = for _ <- 1..4, do: (receive do {:prime, node, "wl-a"} -> node end)
+    assert primes == ["ready", "ready", "ready", "ready"]
+  end
+
+  test "primedFloorSatisfied uses the fleet total" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 4)
+    put_instance_facts(ctx, "i-1", [{"wl-a", 2}], max: 5)
+    put_instance_facts(ctx, "i-2", [{"wl-a", 2}], max: 5)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert Enum.any?(Agent.get(ctx.status, & &1), fn {name, map} ->
+             name == "wl-a" and map["primedFloorSatisfied"] == true
+           end)
+  end
+
+  test "fleet-wide floor isolation protects every workload floor" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 2)
+    put_catalog(ctx, "wl-b", 2)
+    put_instance_facts(ctx, "i-1", [{"wl-a", 0}, {"wl-b", 0}], max: 2)
+    put_instance_facts(ctx, "i-2", [{"wl-a", 0}, {"wl-b", 0}], max: 2)
+    set_depth(ctx, "wl-a", 500)
+    set_depth(ctx, "wl-b", 0)
+
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{"wl-a" => 2, "wl-b" => 2}
   end
 
   test "stale or draining capacity is not refilled (fail-closed)" do
