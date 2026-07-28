@@ -19,6 +19,11 @@ MODULE.bazel.lock
 # Buck2 output tree (buck2 build rules)
 /buck-out
 
+# Stray binary from running `go build ./cmd/...` at the repo root, which names
+# its output after the package directory. Anchored: a bare `cmd` would match the
+# many legitimate cmd/ package directories under projects/.
+/cmd
+
 # Local developer tools (from bootstrap.sh / crane export)
 .tools/
 # CI-local tool symlinks (from buildbuddy.yaml format check)
