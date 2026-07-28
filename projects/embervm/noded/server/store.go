@@ -445,6 +445,33 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	if localDir == "" {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: artifact kind %s not exportable on this node", ref.GetKind())
 	}
+	// ADR embervm/011: "an artifact whose generation was never blessed is
+	// quarantined, never exported." That invariant was declared but never
+	// implemented on this path, so an UNBLESSED writer could publish over the
+	// blessed copy of a volume.
+	//
+	// It matters because VOLUME keys as a SINGLETON (volume/<workload>: no ref, no
+	// vendor segment, since volume data is vendor-portable), so every node that has
+	// ever held the volume writes the SAME object. The generation fence added
+	// alongside this refuses an OLDER generation, which is the obvious regression.
+	// This refuses the subtle one: a node that self-bumped its ledger past the
+	// blessed watermark carries a HIGHER generation and would win that fence while
+	// holding state the control plane never blessed. GenerationBlessed is exactly
+	// the divergence StatefulStore.update_quarantine guards CP-side.
+	//
+	// Local-only check: the blessed marker is already on this node's disk
+	// (volume.Manager's genblessed file, written by RecordBlessed from the
+	// CP-issued blessed_generation), so this needs no proto change and no control
+	// plane round trip, and it holds during a CP gap when there is nobody to ask.
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME && s.volumes != nil {
+		if !s.volumes.GenerationBlessed(ref.GetWorkload()) {
+			s.logger.Warn("noded: export REFUSED, volume generation is not blessed (ADR 011)",
+				"artifact", prefix,
+				"workload", ref.GetWorkload(),
+				"localGeneration", s.artifactGeneration(ref))
+			return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: true, Generation: 0}, nil
+		}
+	}
 	files, err := enumerateArtifactFiles(localDir)
 	if err != nil || len(files) == 0 {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: local artifact %q absent or empty (nothing to export)", prefix)
