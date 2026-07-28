@@ -396,6 +396,9 @@ func (s *Server) StartStoreLoops(ctx context.Context) {
 	s.startExportQueue(ctx)
 	s.startStoreProbe(ctx)
 	s.enqueueReconcileExports(ctx)
+	// Local rootfs reclaim (#4088). Not a store loop strictly speaking, but it is
+	// the same "reclaim what nothing references" family and shares this lifecycle.
+	s.startRootfsGC(ctx)
 }
 
 // ---- Continuity verbs (R6) -------------------------------------------------
