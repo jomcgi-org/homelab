@@ -61,8 +61,23 @@ defmodule Embervm.PoolManagerTest do
     %{pool: pool, cap_table: cap_table, cat_table: cat_table, depth_table: depth_table, primes: primes, status: status}
   end
 
-  defp put_catalog(ctx, wl, floor) do
-    WorkloadCatalog.upsert(ctx.cat_table, wl, %{name: wl, namespace: "embervm", floor: floor, cap: 100, invoke_path: "/"})
+  defp put_catalog(ctx, wl, floor, opts \\ []) do
+    resources = Keyword.get(opts, :resources, %{})
+
+    WorkloadCatalog.upsert(ctx.cat_table, wl, %{
+      name: wl,
+      namespace: "embervm",
+      floor: floor,
+      cap: 100,
+      invoke_path: "/",
+      resources: resources,
+      # Flattened exactly as Embervm.WorkloadWatcher's catalog_entry does
+      # (`mem_mib: Map.get(resources, "memMib")`), so these fixtures carry the same
+      # entry shape the pool actually reads in production. Keeping only the nested
+      # `resources` map here would have let the memory gate silently read nil and
+      # pass everything, which is the bug these tests exist to catch.
+      mem_mib: Map.get(resources, "memMib")
+    })
   end
 
   defp put_facts(ctx, workloads, opts) do
@@ -82,10 +97,12 @@ defmodule Embervm.PoolManagerTest do
       instance_id: instance_id,
       configured_id: instance_id,
       workloads: wl_map,
-      mem_headroom_mib: 8192,
+      mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 8192),
       cpu_headroom_millicores: 8000,
       live_vms: Keyword.get(opts, :live, 0),
       max_live_vms: Keyword.fetch!(opts, :max),
+      size_class: Keyword.get(opts, :size_class, ""),
+      mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 0),
       draining: false,
       updated_at: 1_000_000
     })
@@ -307,5 +324,79 @@ defmodule Embervm.PoolManagerTest do
 
     :ok = PoolManager.refill(ctx.pool)
     assert prime_counts(ctx) == %{}
+  end
+
+  test "does not prime a workload onto a classed instance too small for its memory need" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 2, resources: %{"memMib" => 1024})
+    put_instance_facts(ctx, "small", [{"wl-a", 0}], max: 10,
+      size_class: "2gi", mem_budget_mib: 2048, mem_headroom_mib: 512)
+
+    :ok = PoolManager.refill(ctx.pool)
+
+    assert prime_counts(ctx) == %{}
+  end
+
+  test "primes a workload onto a larger instance when a smaller one has insufficient memory" do
+    parent = self()
+    ctx = start_pool(channel_fun: fn node -> {:ok, node} end,
+      prime_fun: fn node, %PrimeRequest{trace: %Trace{workload: wl}} ->
+        send(parent, {:prime, node, wl})
+        {:ok, %PrimeResponse{vm_id: "vm"}}
+      end)
+    put_catalog(ctx, "wl-a", 2, resources: %{"memMib" => 1024})
+    put_instance_facts(ctx, "small", [{"wl-a", 0}], max: 10,
+      size_class: "2gi", mem_budget_mib: 2048, mem_headroom_mib: 512)
+    put_instance_facts(ctx, "large", [{"wl-a", 0}], max: 20,
+      size_class: "16gi", mem_budget_mib: 16_384, mem_headroom_mib: 4096)
+
+    :ok = PoolManager.refill(ctx.pool)
+
+    primes = for _ <- 1..2, do: (receive do {:prime, node, "wl-a"} -> node end)
+    assert Enum.frequencies(primes) == %{"large" => 2}
+  end
+
+  test "wildcard brick (size_class empty, mem_budget_mib zero) is always memory-eligible" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 2, resources: %{"memMib" => 4096})
+    put_instance_facts(ctx, "wildcard", [{"wl-a", 0}], max: 10,
+      size_class: "", mem_budget_mib: 0, mem_headroom_mib: 1)
+
+    :ok = PoolManager.refill(ctx.pool)
+
+    assert prime_counts(ctx) == %{"wl-a" => 2}
+  end
+
+  test "workload with no memMib in catalog is still primed (no regression)" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 2)
+    put_instance_facts(ctx, "small", [{"wl-a", 0}], max: 10,
+      size_class: "2gi", mem_budget_mib: 2048, mem_headroom_mib: 512)
+
+    :ok = PoolManager.refill(ctx.pool)
+
+    assert prime_counts(ctx) == %{"wl-a" => 2}
+  end
+
+  test "fleet-wide floor isolation holds with memory gate" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 2, resources: %{"memMib" => 512})
+    put_catalog(ctx, "wl-b", 2, resources: %{"memMib" => 2048})
+    put_instance_facts(ctx, "small", [{"wl-a", 0}, {"wl-b", 0}], max: 4,
+      size_class: "2gi", mem_budget_mib: 2048, mem_headroom_mib: 1024)
+    # large must hold BOTH floors at once, not just wl-b's: the memory gate is
+    # cumulative within a pass, so headroom has to cover wl-b's 2 x 2048 plus
+    # whatever wl-a lands here. At exactly 4096 the second wl-b prime is squeezed
+    # out by a single 512 MiB wl-a, which would test the arithmetic rather than the
+    # floor-isolation property this case is about.
+    put_instance_facts(ctx, "large", [{"wl-a", 0}, {"wl-b", 0}], max: 8,
+      size_class: "16gi", mem_budget_mib: 16_384, mem_headroom_mib: 8192)
+    set_depth(ctx, "wl-a", 500)
+
+    :ok = PoolManager.refill(ctx.pool)
+
+    counts = prime_counts(ctx)
+    assert counts["wl-b"] == 2
+    assert counts["wl-a"] >= 2
   end
 end
