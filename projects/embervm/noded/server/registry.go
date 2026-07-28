@@ -491,12 +491,16 @@ func (b *baseRegistry) register(e baseEntry) {
 		sizeBytes:   e.sizeBytes,
 		readyPath:   e.readyPath,
 		state:       e.state,
+		// Carried, not dropped: a base reconciled from disk as NONE explains WHY in
+		// buildErr (a missing backing rootfs), and that reason is the only thing
+		// distinguishing it from a base that was simply never built.
+		buildErr: e.buildErr,
 	}
 }
 
-// rootfsPaths returns rootfs files referenced by READY bases. Snapshot state
-// stores these paths directly, so GC must preserve them even when the workload
-// registry has moved on to a newer rootfs.
+// rootfsPaths returns rootfs files referenced by bases in ANY state. Snapshot
+// state stores these paths directly, so GC must preserve them even when the
+// workload registry has moved on to a newer rootfs.
 func (b *baseRegistry) rootfsPaths() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
