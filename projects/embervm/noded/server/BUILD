@@ -46,6 +46,7 @@ go_test(
         "activator_test.go",
         "budget_test.go",
         "drain_test.go",
+        "egress_test.go",
         "evict_local_test.go",
         "group_activator_test.go",
         "group_member_test.go",

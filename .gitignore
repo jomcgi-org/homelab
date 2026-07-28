@@ -16,6 +16,9 @@ MODULE.bazel.lock
 # Symlinks created by Bazel into the output tree
 /bazel-*
 
+# Root-level Go build output. The egress-proxy binary is rebuilt by its branch.
+/cmd
+
 # Buck2 output tree (buck2 build rules)
 /buck-out
 

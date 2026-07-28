@@ -193,16 +193,21 @@ type Config struct {
 	// connection to the egress-proxy sidecar at EgressSidecarAddr, which is the
 	// only process that reaches the network on a guest's behalf.
 	//
-	// Daemon-level rather than per-workload on purpose. A guest reaches the lane
-	// only by dialling the egress port, which nothing but a guest configured to
-	// proxy (today: runtime-claude) ever does, so serving it for every guest costs
-	// one idle listener and changes no existing guest's behaviour. Egress POLICY
-	// belongs to the sidecar, which classifies the resolved IP and denies internal
-	// destinations by default; putting an allow/deny bit here as well would split
-	// that decision across two processes.
+	// The optional workload list makes this lane explicit for credentialed
+	// deployments. A guest reaches the lane only by dialling the egress port, but
+	// guest code is hostile and cooperative configuration is not authentication.
+	// Egress POLICY still belongs to the sidecar, which classifies the resolved IP
+	// and denies internal destinations by default; this list only controls which
+	// workload gets a forwarder at all.
 	//
 	// Defaults false, so a node without the sidecar deployed never opens the lane.
 	EgressEnabled bool
+
+	// EgressWorkloads optionally limits the egress lane to named workloads. An
+	// empty list means every workload when EgressEnabled is true, preserving the
+	// existing opt-in behavior. Deployments with credentialed egress should set
+	// this explicitly because the lane is not client-authenticated.
+	EgressWorkloads []string
 
 	// ArchiveFetchTimeout bounds a single zip-lane archive HTTP GET (the R1 zip
 	// lane fetches the archive from the in-cluster SeaweedFS read path on the pod
@@ -395,6 +400,7 @@ func Load() (Config, error) {
 		DrainTimeout:        110 * time.Second,
 		EgressSidecarAddr:   getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
 		EgressEnabled:       boolDefault("EMBERVM_NODED_EGRESS_ENABLED", false),
+		EgressWorkloads:     csvDefault("EMBERVM_NODED_EGRESS_WORKLOADS"),
 		ArchiveFetchTimeout: 60 * time.Second,
 		ArchiveMaxBytes:     512 << 20,
 
@@ -761,6 +767,16 @@ func boolDefault(key string, def bool) bool {
 		}
 	}
 	return def
+}
+
+func csvDefault(key string) []string {
+	var out []string
+	for _, part := range strings.Split(os.Getenv(key), ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // parseDuration overrides *dst with the named env var parsed as a duration. An

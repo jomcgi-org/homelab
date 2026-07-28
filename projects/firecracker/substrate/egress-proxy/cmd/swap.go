@@ -95,7 +95,9 @@ func loadSecrets(logger *slog.Logger) []secretEntry {
 		}
 		e.value = os.Getenv(e.Env)
 		if !e.live() {
-			logger.Error("secret env empty; its egressTo hosts will be DENIED until it resolves", "env", e.Env, "egressTo", e.EgressTo)
+			// Secret-backed environment variables are fixed for the lifetime of a
+			// container. A pod restart is required after the secret resolves.
+			logger.Error("secret env empty; its egressTo hosts will be DENIED; restart the pod after it resolves", "env", e.Env, "egressTo", e.EgressTo)
 		}
 		out = append(out, e)
 	}
@@ -262,6 +264,10 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 			}
 			return
 		}
+		if rejectSwapRequest(req) {
+			p.logger.Warn("egress swap: unsupported request mode; closing connection", "dest", host, "method", req.Method)
+			return
+		}
 		injected := injectRequest(req, sec)
 		// A guest on the plaintext lane addresses us as a proxy, so its request line
 		// is absolute-form ("POST http://host/path"). Clearing RequestURI and the
@@ -295,6 +301,26 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 	}
 }
 
+// rejectSwapRequest keeps the swap lane strictly request-then-response. Expect
+// and informational responses require concurrent pumping, while CONNECT and
+// Upgrade switch protocols and cannot be represented by this loop.
+func rejectSwapRequest(req *http.Request) bool {
+	if len(req.Header.Values("Expect")) > 0 || req.Method == http.MethodConnect {
+		return true
+	}
+	if len(req.Header.Values("Upgrade")) > 0 {
+		return true
+	}
+	for _, value := range req.Header.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // injectRequest sets the entry's header to the real credential.
 //
 // Only that one header, and only when the guest already sent it: the guest has to
@@ -307,7 +333,11 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 // the point: the guest's value is uncoupled config, and a prompt-injected guest
 // cannot authenticate as a different account by supplying its own token.
 func injectRequest(req *http.Request, sec *secretEntry) bool {
-	if req.Header.Get(sec.Header) == "" {
+	requested := len(req.Header.Values(sec.Header)) > 0
+	// Delete every guest value, including duplicate and empty values, before
+	// deciding whether the guest requested credential injection.
+	req.Header.Del(sec.Header)
+	if !requested {
 		return false
 	}
 	req.Header.Set(sec.Header, sec.ValuePrefix+sec.value)

@@ -28,11 +28,11 @@ We already have the right interception point. ADR 022's vsock contract reserves 
 
 Six decisions.
 
-**1. Placeholder substitution on egress is the primitive.** The guest only ever holds high-entropy placeholders (a fixed-prefix ULID, e.g. `kloak:01JQXK5N8...`). The real value is swapped in at an egress hop outside the guest. This is strictly stronger than Kloak for our threat model: Kloak still parks the value in an eBPF map in the kernel running the workload, whereas here the value never enters the guest's kernel, memory, disk, or snapshot at all. It lives only in a separate process on a different side of the Firecracker boundary.
+**1. Header injection at the egress hop is the deployed primitive.** The guest sends a non-secret login-gate value in the configured header, and the sidecar deletes every guest value before attaching the real credential for the allowlisted host. The real value never enters the guest's kernel, memory, disk, or snapshot. It lives only in a separate process on a different side of the Firecracker boundary.
 
 **2. Intercept at the vsock 1025 egress hop, not eBPF.** The microVM has its own kernel (host eBPF cannot uprobe guest userspace), and the tooling is polyglot (Go `crypto/tls` does not link OpenSSL, so an `SSL_write` uprobe silently misses it). ADR 022 already routes guest egress through vsock 1025 for exactly this kind of mediation. eBPF/Kloak is the right idea on the wrong substrate.
 
-**3. The primitive is env-placeholder + literal swap + per-secret destination allowlist. Nothing else.** We do **not** model auth schemes (no header-injection mode). Any tool that reads a token from an env var and puts it anywhere in a request (header, query, JSON body) works with zero per-integration knowledge on our side, which is essential because we cannot enumerate the tools an agent will run. The **allowlist is the entire exfiltration control**: the swap fires only when the request's destination is in that secret's allowlist; for any other destination the literal placeholder passes through untouched. A prompt-injected agent that POSTs its "token" to `evil.com` sends the useless string `kloak:01JQ...`, so exfiltration fails by construction with no explicit block logic.
+**3. Header injection is scoped by a per-secret destination allowlist.** The sidecar recognizes the configured header and host, removes all guest-supplied values, and attaches the real credential only for that host. This bounds credential EXFILTRATION, not credential ABUSE: any request the guest can make to a covered host gets the credential attached, including a request induced by prompt injection. This is deliberately narrower than a general egress firewall and does not claim to authorize individual API operations.
 
 **4. The proxy terminates TLS.** To swap a placeholder that sits inside an HTTPS body or header, the proxy must see plaintext, so it terminates TLS using a CA baked into the guest image trust store, then re-originates TLS to the real destination. This is unavoidable given the goal: the only alternative is the guest holding the real value in order to encrypt it itself, which is precisely what we are ruling out. We own the guest image, so a guest-scoped trusted CA (never a cluster-wide one) is clean.
 
@@ -46,8 +46,8 @@ A note on the threat model, because decision 5 reverses an earlier instinct to k
 | --------------------------------- | ---------------------------- | ------------------------------------ |
 | Secret in guest env/disk/RAM      | yes (real value)             | no (placeholder only)                |
 | Secret in ADR 022 snapshot bundle | yes (real value, at rest)    | no (placeholder only)                |
-| Exfiltration to arbitrary host    | possible (agent holds value) | fails (literal placeholder leaves)   |
-| Per-tool integration work         | env var per tool             | none (literal swap, scheme-agnostic) |
+| Exfiltration to arbitrary host    | possible (agent holds value) | real credential is not attached    |
+| Per-tool integration work         | env var per tool             | configured header and host catalog  |
 | Where the value lives             | the workload                 | egress-proxy sidecar, off the guest  |
 | Destination control               | none                         | per-secret allowlist                 |
 
@@ -88,7 +88,7 @@ Assignment-time flow: at `KindAssign` (ADR 022's vsock control channel) the gues
 ## Alternatives Considered
 
 - **Literal Kloak / host eBPF uprobe on `SSL_write`.** Rejected: the microVM has its own kernel so a host uprobe cannot see guest userspace, and the Go harness uses `crypto/tls` (no OpenSSL symbol to probe). Right idea, wrong substrate.
-- **Header / auth-injection mode (proxy adds `Authorization` for matching hosts; guest sends no credential).** Rejected for v1: cleaner for standard auth schemes but requires us to model each integration's auth, which defeats the "works for any tool we did not anticipate" goal. The env-placeholder primitive subsumes it.
+- **Literal placeholder substitution in arbitrary request fields.** Rejected for the deployed claude lane: it could expose the real value in a URL, body, or unrelated header, while header injection has a clear credential boundary. Transformed credentials remain a follow-up for integrations that need them.
 - **Standalone horizontally-scaled proxy Deployment + `SecretProxy` CRD + operator, now.** Deferred to Future Work: it buys per-thread proxy selection and independent scaling we do not need at a single agent trust tier, at the cost of a new operator and a cross-node hop. The per-node DaemonSet is the natural scaling unit today.
 - **Per-thread secret table with `source_ref`, resolved at runtime by `fc-agentd` via a 1Password client.** Rejected: puts `fc-agentd` in the secret-fetching business (new creds, new attack surface, new code) and duplicates rotation/audit that the existing `OnePasswordItem`/ESO path already gives us. Reference k8s Secrets instead.
 - **Per-integration capability broker (in-cluster service holds the credential; guest calls the broker).** Rejected as the general mechanism (does not cover arbitrary `curl`/`git`-style calls the agent invents); retained as a possible complement for the transformed-credential cases below.
@@ -100,7 +100,7 @@ Assignment-time flow: at `KindAssign` (ADR 022's vsock control channel) the gues
 Baseline: `docs/security.md`. Deviations and security-relevant properties:
 
 - **TLS interception via a guest-trusted CA.** The proxy MITMs the guest's outbound TLS. The trusted CA is scoped to the agent guest image only, never added to any cluster-wide or host trust store, and the private key lives only in the sidecar. This is the deliberate cost of keeping the value out of the guest.
-- **Allowlist is the exfiltration boundary.** Each secret carries an `egressTo` host allowlist; the swap fires only on a match, so the real value is unreachable for any destination the policy did not name. This is a per-secret property in the GitOps catalog, not something a thread can widen.
+- **Allowlist is the exfiltration boundary, not an abuse boundary.** Each secret carries an `egressTo` host allowlist; injection fires only on a match, so the real value is not attached to an arbitrary destination. Any request to a covered host can still receive the credential, so the design bounds exfiltration but does not bound abuse of the covered service.
 - **Placeholders are non-sensitive** by construction (high-entropy, no relation to the value), so their presence in guest memory, snapshots, logs, or PRs leaks nothing.
 - **Reduced standing exposure**: the value exists only in the sidecar process and its mounted Secret, on the host side of the Firecracker boundary, and never at rest inside a thread snapshot.
 

@@ -219,13 +219,27 @@ containers:
       - name: EMBERVM_NODED_DRAIN_TIMEOUT
         value: "{{ $ctx.Values.noded.drain.timeoutSeconds }}s"
       {{- if $ctx.Values.egress.enabled }}
-      # Guest egress lane (ADR 023 phase 6a). Serve the vsock egress port per
-      # guest and tunnel to the sidecar above; the addr must match its
-      # EGRESS_LISTEN. Absent when disabled, so the daemon's default stays off.
+      # Guest egress lane (ADR 023). Serve the vsock egress port per guest and
+      # tunnel to the sidecar above. The workload list is load-bearing because
+      # the sidecar has no client authentication and holds the real credential.
+      # Absent when disabled, so the daemon's default stays off.
       - name: EMBERVM_NODED_EGRESS_ENABLED
         value: "true"
       - name: EMBERVM_NODED_EGRESS_SIDECAR_ADDR
         value: "127.0.0.1:8888"
+      # The allowlist is DERIVED from the workload that actually consumes the
+      # lane, never hand-copied. An explicit egress.workloads wins; otherwise the
+      # claude runtime's own name is used, so renaming that workload can never
+      # silently close its egress. A second copy of a name, policed by nothing, is
+      # the coupling this chart deleted when placeholder substitution went away.
+      {{- $egressWorkloads := $ctx.Values.egress.workloads }}
+      {{- if and (not $egressWorkloads) $ctx.Values.claudeRuntimeWorkload.enabled }}
+      {{- $egressWorkloads = list $ctx.Values.claudeRuntimeWorkload.name }}
+      {{- end }}
+      {{- with $egressWorkloads }}
+      - name: EMBERVM_NODED_EGRESS_WORKLOADS
+        value: {{ join "," . | quote }}
+      {{- end }}
       {{- end }}
       # R1 zip lane: bounds a single archive HTTP GET and caps the fetched
       # bytes. The archive_url is minted by the control plane (fully-qualified
@@ -314,10 +328,12 @@ containers:
         drop:
           - ALL
     env:
-      # Must match EMBERVM_NODED_EGRESS_SIDECAR_ADDR on the noded container: the
-      # daemon dials what this binds.
+      # Must match EMBERVM_NODED_EGRESS_SIDECAR_ADDR on the noded container. The
+      # loopback bind is load-bearing: this sidecar has no client authentication,
+      # so it is the only barrier to an arbitrary cluster workload using the
+      # credentialed response path.
       - name: EGRESS_LISTEN
-        value: ":8888"
+        value: "127.0.0.1:8888"
       # Split-horizon guardrail. Secret egressTo hosts are external and are
       # reached by external:allow, so they never belong in the internal allowlist.
       - name: EGRESS_EXTERNAL
