@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from home.schedule import get_today_events
 
 router = APIRouter(prefix="/api/home/schedule", tags=["schedule"])

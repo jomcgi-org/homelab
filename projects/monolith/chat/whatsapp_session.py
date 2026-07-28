@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from app.db import get_engine
+from core.db import get_engine
 from chat.models import (
     GoosecrackerSession,
     GoosecrackerSteering,

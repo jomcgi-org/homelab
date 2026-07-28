@@ -37,7 +37,7 @@ from opentelemetry import context as otel_context
 from opentelemetry.propagate import extract
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from goosecracker import replan, sessions, threads, tiers
 from shared.k8s_auth import auth_headers
 

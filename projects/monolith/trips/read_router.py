@@ -20,7 +20,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from trips.models import Trip, TripPoint
 
 router = APIRouter(prefix="/api/trips", tags=["trips"])

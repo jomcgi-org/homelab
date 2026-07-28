@@ -64,7 +64,7 @@ async def fetch_alerts_live() -> dict:
 def _write_cluster_snapshot(health: dict, alerts: dict) -> None:
     """Upsert the single snapshot row. Opens its own session so it can run in a
     worker thread off the event loop."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         session.execute(

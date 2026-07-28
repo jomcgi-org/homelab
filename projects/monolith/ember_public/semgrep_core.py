@@ -15,7 +15,7 @@ from time import monotonic
 
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from ember_public.db import get_savings_engine
 from ember_public.models import DemoSgSavings
 
@@ -157,7 +157,7 @@ async def record_demo_sg_savings(scan_ms: int) -> dict | None:
 
 # GET /savings: a 30s in-process cache over a plain SELECT of the singleton
 # demo_sg_savings row. Reads always use the DEFAULT reader engine
-# (app.db.get_engine, public_reader on the replica): SELECT works fine on the
+# (core.db.get_engine, public_reader on the replica): SELECT works fine on the
 # replica, and reserving the writer engine for accrual keeps the read path
 # off the primary. Missing table (pre-migration) or any error degrades to
 # scans/actual_ms/saved_ms: None, never a 5xx.

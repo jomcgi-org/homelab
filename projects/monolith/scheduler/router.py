@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from scheduler import service
 from scheduler.views import SchedulerJobView
 

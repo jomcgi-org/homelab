@@ -173,7 +173,7 @@ this ADR was written:
    ``register(app)`` + ``register_public(app)`` hooks per domain rather than
    ``_core``/``_public``/``_private`` packages. ``Module`` carries both
    optional callables and ``build_app`` selects by the profile's tier.
-3. **The profile does not own DB plumbing.** ``app.db.get_engine`` reads
+3. **The profile does not own DB plumbing.** ``core.db.get_engine`` reads
    ``DATABASE_URL``, which each deployment points at the right endpoint and
    role, exactly the runtime-capability framing above; adding engine wiring
    to the profile would have changed behavior for no isolation gain.

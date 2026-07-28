@@ -393,7 +393,7 @@ def _make_create_task_patcher():
 @pytest.fixture()
 def client(session):
     """TestClient with DB override and suppressed background tasks."""
-    from app.db import get_session  # noqa: E402
+    from core.db import get_session  # noqa: E402
     from app.main import app  # noqa: E402
 
     def get_session_override():
@@ -479,7 +479,7 @@ def live_server(pg):
     os.environ.pop("ICAL_FEED_URL", None)
 
     # Clear the cached engine so the app picks up the new DATABASE_URL.
-    from app.db import get_engine
+    from core.db import get_engine
 
     get_engine.cache_clear()
 

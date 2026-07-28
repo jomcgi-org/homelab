@@ -18,7 +18,7 @@ import time
 
 from sqlmodel import Session, select
 
-from app.db import get_engine
+from core.db import get_engine
 from chat.models import DiscordFeatureGrant
 
 logger = logging.getLogger(__name__)

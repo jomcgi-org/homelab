@@ -26,7 +26,7 @@ import os
 
 import typer
 
-from app.log import configure_logging
+from core.log import configure_logging
 
 logger = logging.getLogger("monolith.jobs")
 
@@ -82,7 +82,7 @@ def worldcup_sim() -> None:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
     from worldcup.jobs import refresh_handler
 
     configure_logging()
@@ -104,7 +104,7 @@ def knowledge_layout() -> None:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
     from knowledge.service import layout_handler
 
     configure_logging()
@@ -161,7 +161,7 @@ def hikes_scrape_walks() -> None:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
     from hikes.jobs import scrape_walks_handler
 
     configure_logging()
@@ -181,7 +181,7 @@ def stars_load_climatology() -> None:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
     from stars.grid import load_climatology_handler
 
     configure_logging()
@@ -201,7 +201,7 @@ def _run_job(name: str, import_path: str, handler_name: str) -> None:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     handler = getattr(importlib.import_module(import_path), handler_name)
     configure_logging()

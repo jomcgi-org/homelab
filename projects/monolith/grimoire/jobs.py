@@ -289,7 +289,7 @@ def _persist_book_hierarchy(
     session, never the scheduler's), committing per book for incremental
     durability. Delegates the testable write to ``_apply_hierarchy_updates``.
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         matched, updated = _apply_hierarchy_updates(session, book_id, hierarchy_by_ref)
@@ -307,7 +307,7 @@ def _distinct_book_ids(only_book: str | None) -> list[str]:
     """
     if only_book:
         return [only_book]
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         book_ids = (

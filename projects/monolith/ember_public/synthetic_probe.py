@@ -19,7 +19,7 @@ from time import perf_counter
 import httpx
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from ember_public import bazel_core, core, semgrep_core
 from ember_public.synthetic_models import EmberSyntheticProbe
 

@@ -23,7 +23,7 @@ from pathlib import Path
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.db import get_engine
+from core.db import get_engine
 from chat.models import ChannelDirective, UserStylePref
 
 SEED_PATH = Path(__file__).parent / "directive_seed.md"

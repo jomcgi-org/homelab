@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 
 
 _ROW_COLUMNS = (

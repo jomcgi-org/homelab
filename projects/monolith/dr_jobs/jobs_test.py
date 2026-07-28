@@ -1,7 +1,7 @@
 """Unit tests for dr_jobs.jobs.
 
 build_digest is pure (no DB/network). _persist is exercised against in-memory
-SQLite by monkeypatching app.db.get_engine to the test engine (it opens its own
+SQLite by monkeypatching core.db.get_engine to the test engine (it opens its own
 session from get_engine, mirroring hikes._persist_walks). Asserts the Option A
 lifecycle: seed suppression, insert vs update accounting, and that an unseen
 JobId is what counts as "new".
@@ -15,7 +15,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-import app.db as app_db
+import core.db as app_db
 import dr_jobs.jobs as jobs
 from dr_jobs.models import Vacancy
 

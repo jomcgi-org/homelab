@@ -21,11 +21,11 @@ def scheduler_db(pg):
     raw_url = pg.url.replace("postgresql+psycopg://", "postgresql://", 1)
     os.environ["DATABASE_URL"] = raw_url
 
-    # ``app.db.DATABASE_URL`` is a module-level constant captured at import time,
+    # ``core.db.DATABASE_URL`` is a module-level constant captured at import time,
     # so setting ``os.environ`` alone is not enough — ``get_engine()`` (used by
     # dispatch_due_jobs on its own connections) would still build the prod-default
     # engine. Patch the module attribute directly, as the agent_db fixture does.
-    from app import db as app_db
+    from core import db as app_db
     from scheduler.api import _registry
 
     app_db.DATABASE_URL = pg.url

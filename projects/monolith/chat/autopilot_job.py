@@ -196,7 +196,7 @@ def _gather_candidates(since: datetime, now: datetime) -> list[dict]:
     autopilot cooldown. Returns ``{scope_kind, scope_id, episodes, current_directive}``
     per candidate. Opens its own session (runs under ``asyncio.to_thread``).
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     min_evidence = _int_env("AUTOPILOT_MIN_EVIDENCE", _DEFAULT_MIN_EVIDENCE)
     candidates: list[dict] = []
@@ -285,7 +285,7 @@ def _apply_or_log(
         # Guard-blocked text is NEVER applied and never proposed (fail-closed).
         return "guard_blocked"
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         # Defensive manual re-check: the active row may have been manually tuned
@@ -386,7 +386,7 @@ def _apply_or_log(
 
 def _fetch_pending(now: datetime) -> list[int]:
     """Ids of pending_validation rows whose validate_after has passed."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         rows = session.exec(
@@ -409,7 +409,7 @@ def _validate_one(row_id: int, now: datetime, mode: str) -> str:
     shadow mode a would-be revert is deferred (the row stays pending for a later
     live run) so shadow mutates nothing.
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         da = session.get(DirectiveAutopilot, row_id)

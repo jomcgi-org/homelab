@@ -26,7 +26,7 @@ import httpx
 from sqlalchemy import text
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 
 
 def check_stuck_jobs(threshold_mins: int = 10) -> list[dict]:

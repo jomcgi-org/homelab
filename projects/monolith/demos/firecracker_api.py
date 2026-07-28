@@ -44,7 +44,7 @@ from sqlmodel import Session
 
 import demos.loadtest as loadtest
 import goosecracker.api as goosecracker
-from app.db import get_engine
+from core.db import get_engine
 from demos.loadtest_corpus import load_corpus
 from ember_public.core import EMBERVM_URL, destroy_demo_pg_instance
 from home.observability.traces import fetch_correlated_spans, fetch_trace_spans

@@ -18,7 +18,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 import grimoire.search as search_module
-from app.db import get_session
+from core.db import get_session
 from grimoire.models import (
     Campaign,
     Embedding,

@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from hikes.models import Walk, WalkHour
 from shared.forecast_freshness import top_of_hour
 

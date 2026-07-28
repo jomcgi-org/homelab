@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.db import get_session
+from core.db import get_session
 from app.main import app
 from knowledge.router import get_embedding_client
 

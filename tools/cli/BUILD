@@ -65,7 +65,7 @@ py_test(
 # gazelle:resolve py knowledge.gardener //projects/monolith:monolith_backend
 # gazelle:resolve py knowledge.models //projects/monolith:monolith_backend
 # gazelle:resolve py app.main //projects/monolith:monolith_backend
-# gazelle:resolve py app.db //projects/monolith:monolith_backend
+# gazelle:resolve py core.db //projects/monolith:monolith_backend
 py_test(
     name = "knowledge_test",
     srcs = ["knowledge_test.py"],

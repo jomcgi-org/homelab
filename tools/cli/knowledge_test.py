@@ -56,7 +56,7 @@ def _patch_fastapi(session):
     """
     from fastapi.testclient import TestClient
     from app.main import app as fastapi_app
-    from app.db import get_session
+    from core.db import get_session
 
     fastapi_app.dependency_overrides[get_session] = lambda: session
     test_client = TestClient(fastapi_app)

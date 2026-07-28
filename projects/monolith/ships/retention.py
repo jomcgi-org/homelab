@@ -114,7 +114,7 @@ def drop_partition_sql(day: date) -> str:
 
 def _run_partition_maintenance() -> None:
     """Synchronous partition DDL, run off the event loop via asyncio.to_thread."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     today = datetime.now(timezone.utc).date()
     with Session(get_engine()) as session:

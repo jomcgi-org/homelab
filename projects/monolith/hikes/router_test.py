@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from hikes.models import Walk, WalkHour
 from hikes.router import _doable_days, _longest_good_run, router
 from shared.forecast_freshness import top_of_hour

@@ -18,7 +18,7 @@ import hashlib
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from trips import ingest, s3
 from trips.models import Trip, TripPoint
 

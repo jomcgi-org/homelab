@@ -14,7 +14,7 @@ from typing import Literal
 from sqlmodel import Session
 
 from agent.config import load_settings
-from app.db import get_engine
+from core.db import get_engine
 from chat.api import enqueue_message
 
 

@@ -29,7 +29,7 @@ def engine_fixture(monkeypatch):
     try:
         SQLModel.metadata.create_all(engine)
         # _load_climatology_sync opens its own Session(get_engine()); point it here.
-        import app.db as db
+        import core.db as db
 
         monkeypatch.setattr(db, "get_engine", lambda: engine)
         yield engine

@@ -14,7 +14,7 @@ from datetime import datetime
 
 from sqlmodel import Session, select
 
-from app.db import get_engine
+from core.db import get_engine
 from chat import directives
 from chat.models import ChannelDirective, DirectiveAutopilot, UserStylePref
 

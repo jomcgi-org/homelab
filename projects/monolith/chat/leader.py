@@ -48,7 +48,7 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     discord_token = os.environ.get("DISCORD_BOT_TOKEN", "")
     if not discord_token:

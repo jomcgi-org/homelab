@@ -146,7 +146,7 @@ def _create_reminder_sync(
     """Open a session, create the reminder, and extract the (id, due_at) the
     caller needs before the session closes and the ORM instance expires. Runs
     off the event loop via asyncio.to_thread."""
-    from app.db import get_engine
+    from core.db import get_engine
     from chat import reminders
     from sqlmodel import Session
 
@@ -163,7 +163,7 @@ def _create_reminder_sync(
 def _list_pending_sync(author_id: str) -> list[tuple[int, datetime, str]]:
     """Open a session, list the author's pending reminders, and extract the
     fields the caller needs before the session closes."""
-    from app.db import get_engine
+    from core.db import get_engine
     from chat import reminders
     from sqlmodel import Session
 
@@ -174,7 +174,7 @@ def _list_pending_sync(author_id: str) -> list[tuple[int, datetime, str]]:
 
 def _cancel_reminder_sync(author_id: str, reminder_id: int) -> bool:
     """Open a session and cancel the reminder, committing only on success."""
-    from app.db import get_engine
+    from core.db import get_engine
     from chat import reminders
     from sqlmodel import Session
 

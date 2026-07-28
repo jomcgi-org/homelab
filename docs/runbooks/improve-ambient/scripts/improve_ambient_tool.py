@@ -77,7 +77,7 @@ import sys
 
 from sqlalchemy import text
 
-from app.db import get_engine
+from core.db import get_engine
 from artifact import s3
 
 # stdout carries the NDJSON records, so best-effort failures log to stderr.

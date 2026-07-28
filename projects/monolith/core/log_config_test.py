@@ -1,9 +1,9 @@
-"""Unit tests for app.log — _HealthzFilter and configure_logging()."""
+"""Unit tests for core.log — _HealthzFilter and configure_logging()."""
 
 import logging
 from unittest.mock import MagicMock, patch
 
-from app.log import _HealthzFilter, configure_logging
+from core.log import _HealthzFilter, configure_logging
 
 
 # ---------------------------------------------------------------------------

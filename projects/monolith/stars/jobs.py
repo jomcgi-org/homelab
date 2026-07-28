@@ -42,7 +42,7 @@ def _load_sites() -> list[dict]:
 
     Returns the minimal shape the forecast fetch needs (id/lat/lon/altitude_m).
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         rows = session.exec(select(Site)).all()
@@ -96,7 +96,7 @@ def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime)
 
 def _persist_sites(scored: dict[str, list[dict]]) -> int:
     """Write scored sites in a fresh session (runs off the event loop)."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     now = datetime.now(timezone.utc)
     with Session(get_engine()) as session:
@@ -131,7 +131,7 @@ def _prune_elapsed(session: Session) -> int:
 
 def _run_prune() -> int:
     """Prune elapsed hours in a fresh session (runs off the event loop)."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         deleted = _prune_elapsed(session)

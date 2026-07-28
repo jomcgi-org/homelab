@@ -1,6 +1,6 @@
 """Write-path database engine for grimoire_chat (ADR security/005 posture).
 
-The public binary's default engine (``app.db``) connects as the read-only
+The public binary's default engine (``core.db``) connects as the read-only
 ``public_reader`` role to the read replica ``monolith-pg-ro``. Session and
 transcript WRITES must NOT go through it. This module owns a SECOND engine bound
 to ``PUBLIC_WRITER_DATABASE_URL``, which points at the Postgres PRIMARY
@@ -25,7 +25,7 @@ from functools import lru_cache
 from sqlmodel import Session, create_engine
 
 # CNPG hands out postgresql://; SQLAlchemy needs the psycopg v3 driver suffix.
-# Rewrite the scheme to postgresql+psycopg:// (same as app.db). The default is a
+# Rewrite the scheme to postgresql+psycopg:// (same as core.db). The default is a
 # local dev URL; production injects the real primary + public_writer credentials.
 _raw_url = os.environ.get(
     "PUBLIC_WRITER_DATABASE_URL",

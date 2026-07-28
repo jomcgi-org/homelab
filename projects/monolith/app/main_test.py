@@ -19,7 +19,7 @@ from sqlmodel.pool import StaticPool
 # Ensure no valid static directory is set so the conditional mount is skipped.
 os.environ.pop("STATIC_DIR", None)
 
-from app.db import get_session  # noqa: E402
+from core.db import get_session  # noqa: E402
 from app.main import _start_singletons, _stop_singletons, app  # noqa: E402
 
 
@@ -178,7 +178,7 @@ def _lifespan_patches_no_discord():
     mock_session.__enter__ = MagicMock(return_value=mock_session)
     mock_session.__exit__ = MagicMock(return_value=False)
     return [
-        patch("app.db.get_engine", return_value=MagicMock()),
+        patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
         patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
@@ -393,7 +393,7 @@ def _lifespan_patches_with_discord(mock_bot):
     mock_session.__enter__ = MagicMock(return_value=mock_session)
     mock_session.__exit__ = MagicMock(return_value=False)
     return [
-        patch("app.db.get_engine", return_value=MagicMock()),
+        patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
         patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),

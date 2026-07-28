@@ -44,7 +44,7 @@ from chat import reply_repair_log
 from chat import summarizer
 from chat.reply_sanitize import repair_leaked_reply
 from chat.models import ReactionEvent
-from app.db import get_engine
+from core.db import get_engine
 
 from sqlmodel import Session, select
 

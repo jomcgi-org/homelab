@@ -159,7 +159,7 @@ def upsert_doc(
 def _plan_in_thread(entries: list[ManifestEntry]) -> ReconcilePlan:
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         return plan_reconcile(session, entries)
@@ -168,7 +168,7 @@ def _plan_in_thread(entries: list[ManifestEntry]) -> ReconcilePlan:
 def _delete_in_thread(paths: list[str]) -> int:
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         return apply_deletions(session, paths)
@@ -177,7 +177,7 @@ def _delete_in_thread(paths: list[str]) -> int:
 def _upsert_doc_in_thread(entry: ManifestEntry, chunks, vectors) -> None:
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         upsert_doc(session, entry, chunks, vectors)

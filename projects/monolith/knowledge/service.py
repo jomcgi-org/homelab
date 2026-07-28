@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from knowledge.gardener import _slugify
 from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
 from knowledge.models import Note, NoteLink

@@ -3,7 +3,7 @@
 Confinement is a DATABASE property, never a prompt rule. Retrieval embeds the live
 user query and runs a pgvector cosine search over ``public_api.knowledge_chunks``,
 a view that exposes only the chunk embeddings of public, non-deleted notes. The
-search runs on the DEFAULT app engine (``app.db.get_session``), which in the public
+search runs on the DEFAULT app engine (``core.db.get_session``), which in the public
 binary is the read-only ``public_reader`` role on the read replica, so a private
 note is physically unreadable here regardless of any jailbreak. The matching note
 text is returned for grounding; the router injects it as clearly-delimited

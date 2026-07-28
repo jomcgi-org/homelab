@@ -1,4 +1,4 @@
-"""Extra coverage tests for app.log and app.main._wait_for_sidecar.
+"""Extra coverage tests for core.log and app.main._wait_for_sidecar.
 
 Covers branches not addressed by existing log_test.py / log_config_test.py:
 
@@ -25,7 +25,7 @@ import pytest
 # Ensure no valid static directory is set before importing main symbols.
 os.environ.pop("STATIC_DIR", None)
 
-from app.log import configure_logging  # noqa: E402
+from core.log import configure_logging  # noqa: E402
 from app.main import _wait_for_sidecar  # noqa: E402
 
 

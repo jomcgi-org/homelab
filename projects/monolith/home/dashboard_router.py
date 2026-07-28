@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from home.dashboard import build_dashboard
 
 router = APIRouter(prefix="/api/home", tags=["dashboard"])

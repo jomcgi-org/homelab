@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from app.mcp_app import mcp
+from core.mcp_app import mcp
 from cluster import summarize
 from cluster.kubernetes import RESOURCE_KINDS, KubernetesClient, UnknownKindError
 

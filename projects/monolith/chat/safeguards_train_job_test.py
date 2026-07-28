@@ -75,7 +75,7 @@ class TestGatherDataset:
                 ]
             )
             session.commit()
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             dataset = safeguards_train_job._gather_dataset(now)
         assert len(dataset["X"]) == 2
         assert sorted(dataset["y"]) == [0, 1]
@@ -127,7 +127,7 @@ class TestStoreModel:
             session.add(TrustModel(version=1, status="shadow"))
             session.add(TrustModel(version=2, status="live"))
             session.commit()
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             version = safeguards_train_job._store_model(forest, 300, 40, "sandbox")
         assert version == 3
         with Session(engine) as session:
@@ -147,7 +147,7 @@ class TestHandler:
         thin = {"X": [[0.0] * N_FEATURES] * 10, "y": [1] * 5 + [0] * 5}
         with (
             patch.object(safeguards_train_job, "_gather_dataset", return_value=thin),
-            patch("app.db.get_engine", return_value=engine),
+            patch("core.db.get_engine", return_value=engine),
         ):
             asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
         with Session(engine) as session:
@@ -157,7 +157,7 @@ class TestHandler:
         dataset = _dataset()
         with (
             patch.object(safeguards_train_job, "_gather_dataset", return_value=dataset),
-            patch("app.db.get_engine", return_value=engine),
+            patch("core.db.get_engine", return_value=engine),
         ):
             asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
         with Session(engine) as session:

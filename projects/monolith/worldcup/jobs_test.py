@@ -3,7 +3,7 @@
 The worldcup SQLModel tables are schema-qualified (schema="worldcup"), which
 SQLite has no concept of. We strip the schema off every table for the duration
 of the test and recreate them on an in-memory SQLite engine, mirroring exactly
-the fixture in dr_jobs/jobs_test.py (engine_fixture). app.db.get_engine is
+the fixture in dr_jobs/jobs_test.py (engine_fixture). core.db.get_engine is
 monkeypatched at the test engine so any adapter that opens its own Session lands
 on it too.
 
@@ -20,7 +20,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-import app.db as app_db
+import core.db as app_db
 import worldcup.jobs as jobs
 from worldcup.models import Fixture, Qualification, Standing, SwingMatch
 from worldcup.sim import SimResult, Swing, TeamProb

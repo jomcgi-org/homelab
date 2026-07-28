@@ -42,7 +42,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from app.db import get_engine
+from core.db import get_engine
 from chat import attention, attention_log, whatsapp_capabilities, whatsapp_session
 from chat.models import Message, ReactionEvent, WhatsappGroup, WhatsappOutbox
 from chat.whatsapp_outbox import enqueue_media, enqueue_message, enqueue_reaction

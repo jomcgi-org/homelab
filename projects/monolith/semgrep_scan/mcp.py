@@ -7,7 +7,7 @@ EmberVM and returns the structured findings.
 
 from __future__ import annotations
 
-from app.mcp_app import mcp
+from core.mcp_app import mcp
 from semgrep_scan.client import scan_files
 
 

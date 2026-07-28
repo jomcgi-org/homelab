@@ -125,7 +125,7 @@ def _flush(positions: list[dict], vessels: list[dict]) -> None:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
     from ships.store import persist_batch
 
     if not positions and not vessels:

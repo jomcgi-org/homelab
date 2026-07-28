@@ -3,7 +3,7 @@ self-validating revert, and source precedence (ADR chat/007, PR 3).
 
 SQLite create_all fixtures; the sync helpers are driven directly with explicit
 naive ``now`` / ``since`` datetimes so the gate and scoring are deterministic.
-Both ``app.db.get_engine`` (the helpers' own sessions) and
+Both ``core.db.get_engine`` (the helpers' own sessions) and
 ``chat.directives.get_engine`` (the directive mutators' own sessions) are patched
 to the in-memory engine.
 """
@@ -56,7 +56,7 @@ def engine_fixture():
 @contextmanager
 def _patched(engine):
     with (
-        patch("app.db.get_engine", return_value=engine),
+        patch("core.db.get_engine", return_value=engine),
         patch("chat.directives.get_engine", return_value=engine),
     ):
         yield

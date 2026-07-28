@@ -391,7 +391,7 @@ def observe_message(payload: dict, *, _rng=random.random, _now=None) -> Verdict:
         return Verdict(addressed=addressed)
     try:
         now = _now or datetime.now(timezone.utc)
-        from app.db import get_engine
+        from core.db import get_engine
 
         with Session(get_engine()) as session:
             verdict = _observe(session, payload, addressed, now, _rng)
@@ -558,7 +558,7 @@ def _trust_row(
 def log_enforcement(payload: dict, reacted: bool) -> None:
     """Record that a locked-out user's message was suppressed. Best-effort."""
     try:
-        from app.db import get_engine
+        from core.db import get_engine
 
         with Session(get_engine()) as session:
             session.add(
@@ -643,7 +643,7 @@ async def score_intent(payload: dict, *, _caller=None) -> None:
 def _apply_intent(payload: dict, category: str, confidence: float) -> None:
     """Ledger write for a malicious intent verdict. Own session (to_thread)."""
     now = datetime.now(timezone.utc)
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         _apply_intent_core(session, payload, category, confidence, now)
@@ -720,7 +720,7 @@ def trust_status(guild_id: str = "") -> dict:
     """Ledger snapshot for the MCP surface: every tracked user with their
     effective (decay-applied) score, lockout state, and recent event mix."""
     now = datetime.now(timezone.utc)
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         query = select(UserTrust)
@@ -770,7 +770,7 @@ def pardon_user(guild_id: str, user_id: str, pardoned_by: str = "mcp") -> dict:
     """Reset a user's score to 100 and flip their recent training labels to 0
     (the lockout was judged wrong, so its evidence becomes corrective)."""
     now = datetime.now(timezone.utc)
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         row = _trust_row(session, guild_id, user_id, create=False)

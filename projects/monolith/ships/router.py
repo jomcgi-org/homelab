@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from ships.heat import LAT_STEP as HEAT_LAT_STEP
 from ships.heat import LON_STEP as HEAT_LON_STEP
 from ships.models import HeatCell, HeatCellHistorical, LatestPosition, Position, Vessel

@@ -106,7 +106,7 @@ def get_today_events(session: Session) -> list[dict]:
 def _write_calendar_snapshot(event_date: date, events: list[dict]) -> None:
     """Upsert today's parsed events into the single snapshot row. Opens its own
     session so it can run in a worker thread off the event loop."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         session.execute(

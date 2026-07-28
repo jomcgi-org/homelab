@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from dr_jobs.models import Vacancy
 from dr_jobs.router import router
 

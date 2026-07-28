@@ -147,7 +147,7 @@ def client(mock_store, mock_embed_client):
         patch("chat.router._explorer_agent", agent),
         patch("chat.router.get_store", return_value=mock_store),
         patch("chat.router.EmbeddingClient", return_value=mock_embed_client),
-        patch("app.db.get_session", _mock_get_session),
+        patch("core.db.get_session", _mock_get_session),
         agent.override(
             model=FunctionModel(_scripted_model, stream_function=_scripted_stream)
         ),

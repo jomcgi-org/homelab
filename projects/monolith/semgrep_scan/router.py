@@ -77,7 +77,7 @@ async def trigger_harvest(repo: str = "jomcgi/homelab") -> dict:
     def _harvest() -> None:
         from sqlmodel import Session
 
-        from app.db import get_engine
+        from core.db import get_engine
         from semgrep_scan.perf_harvest import harvest_scans
 
         with Session(get_engine()) as session:
@@ -118,7 +118,7 @@ async def _backfill_cohorts(repo: str) -> dict:
 
     from sqlmodel import Session, select
 
-    from app.db import get_engine
+    from core.db import get_engine
     from semgrep_scan.perf_store import ScanPerf
 
     def _needing() -> list[tuple[int, str]]:

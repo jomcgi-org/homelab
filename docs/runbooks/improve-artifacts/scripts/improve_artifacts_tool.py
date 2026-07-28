@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-from app.db import get_engine
+from core.db import get_engine
 from artifact import s3
 
 # Recipe/thread context for the artifact ids found in the bucket. Artifact ids

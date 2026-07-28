@@ -40,7 +40,7 @@ def _drain_reminders() -> datetime | None:
     """Open a fresh session and drain due reminders. Runs off the event loop
     via asyncio.to_thread (so it must own its session, never the caller's).
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     now = datetime.now(timezone.utc)
     with Session(get_engine()) as session:

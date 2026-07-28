@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from grimoire import explore, library, public
 from grimoire.models import EntityType, KnowledgeChunk
 

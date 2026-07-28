@@ -1,4 +1,4 @@
-"""Unit tests for the leader-election state machine (app.leadership).
+"""Unit tests for the leader-election state machine (core.leadership).
 
 The lease query is Postgres-specific (ON CONFLICT ... WHERE, make_interval), so
 it is mocked here; these tests exercise the transition logic - acquire/resign
@@ -13,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-import app.leadership as leadership
+import core.leadership as leadership
 
 
 def _seq(values):

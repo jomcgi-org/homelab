@@ -11,7 +11,7 @@ the handle, and a reset is surfaced as ``session_reset`` in the response.
 
 from __future__ import annotations
 
-from app.mcp_app import mcp
+from core.mcp_app import mcp
 from sandbox.client import run_python_in_sandbox
 
 

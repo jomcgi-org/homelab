@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from semgrep_scan.perf_router import router
 from semgrep_scan.perf_store import ScanPerf
 

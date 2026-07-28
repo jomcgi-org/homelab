@@ -33,7 +33,7 @@ EXPECTED_TOOLS = {
 @pytest.mark.asyncio
 async def test_all_agent_tools_registered():
     importlib.import_module("agent.mcp")
-    from app.mcp_app import mcp
+    from core.mcp_app import mcp
 
     tools = await mcp.list_tools()
     registered = {t.name for t in tools}

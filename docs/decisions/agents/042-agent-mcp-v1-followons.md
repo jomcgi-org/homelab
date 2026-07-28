@@ -92,11 +92,11 @@ Three categories of follow-on. Each phase ships independently — the v2 design 
 
 ### Phase 2: Latent test-infra bug (independent of v2; do when convenient)
 
-A latent bug in `projects/monolith/shared/tests/conftest.py` was discovered while shipping v1. `app/db.py` captures `DATABASE_URL` at module load time as a global, and `get_engine()` reads that global. The conftest mutates `os.environ["DATABASE_URL"]` and calls `get_engine.cache_clear()` — but the cached `DATABASE_URL` global keeps the original value, so cache-clear doesn't help. The agent tests hit this and fixed it locally by also patching `app.db.DATABASE_URL`.
+A latent bug in `projects/monolith/shared/tests/conftest.py` was discovered while shipping v1. `app/db.py` captures `DATABASE_URL` at module load time as a global, and `get_engine()` reads that global. The conftest mutates `os.environ["DATABASE_URL"]` and calls `get_engine.cache_clear()` — but the cached `DATABASE_URL` global keeps the original value, so cache-clear doesn't help. The agent tests hit this and fixed it locally by also patching `core.db.DATABASE_URL`.
 
 The shared scheduler test that should have caught this is `async def` without `pytest_asyncio` in deps, so pytest silently skips with `PytestUnhandledCoroutineWarning`. Result: the scheduler concurrency assertions have been not actually running for an unknown amount of time.
 
-- [ ] Fix `shared/tests/conftest.py` so it patches `app.db.DATABASE_URL` (mirror `agent/tests/conftest.py`).
+- [ ] Fix `shared/tests/conftest.py` so it patches `core.db.DATABASE_URL` (mirror `agent/tests/conftest.py`).
 - [ ] Add `@pip//pytest_asyncio` to `shared_testing` deps so async scheduler tests actually run.
 - [ ] Audit `bdd_scheduler_test` results post-fix — once the tests aren't skipping, they may surface real concurrency issues that were never tested.
 

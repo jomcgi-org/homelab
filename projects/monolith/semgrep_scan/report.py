@@ -719,7 +719,7 @@ def _report_pr_scan_blocking(
         try:
             from semgrep import __VERSION__ as _sg_cli_version
             from sqlmodel import Session
-            from app.db import get_engine
+            from core.db import get_engine
             from semgrep_scan.perf_store import ScanPerf, upsert_scan_perf
 
             # Stamp the completion time at persist (this runs right after the

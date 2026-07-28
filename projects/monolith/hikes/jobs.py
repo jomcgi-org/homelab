@@ -88,7 +88,7 @@ def _persist_walks(walks: list[ScrapedWalk]) -> tuple[int, int]:
     loop via asyncio.to_thread (so it must own its session, never the
     scheduler's). Delegates the testable upsert to ``_upsert_walks``.
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         result = _upsert_walks(session, walks)
@@ -126,7 +126,7 @@ async def scrape_walks_handler(session: Session) -> datetime | None:
 
 def _load_coords() -> list[tuple[str, float, float]]:
     """Load (uuid, lat, lon) for every walk in a fresh session."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         return list(
@@ -174,7 +174,7 @@ def _write_walk_hours(
 
 def _persist_windows(windows_by_uuid: dict[str, list], now: datetime) -> int:
     """Write recomputed hours in a fresh session. Returns total hour count."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         written = _write_walk_hours(session, windows_by_uuid, now)
@@ -202,7 +202,7 @@ def _run_prune() -> int:
     Commits only when rows were actually deleted, so a quiet hour is a no-op
     transaction; fetched_at is never touched (the prune only deletes).
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         deleted = _prune_elapsed(session)

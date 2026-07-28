@@ -129,12 +129,12 @@ def test_public_tier_mounts_register_public_only():
 
 @pytest.fixture
 def _sqlite_engine(monkeypatch):
-    """Point app.db.get_engine at an in-memory sqlite DB so /api/health's
+    """Point core.db.get_engine at an in-memory sqlite DB so /api/health's
     SELECT 1 baseline succeeds without a real Postgres."""
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
-    monkeypatch.setattr("app.db.get_engine", lambda: engine)
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
     return engine
 
 

@@ -13,8 +13,8 @@ import agent.api as agent_api
 from agent_sessions import store, voice
 from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.transport import EmberVmShimTransport, Turn
-from app.db import get_engine
-from app.mcp_app import mcp
+from core.db import get_engine
+from core.mcp_app import mcp
 from framework import log_task_exception
 
 _transport = EmberVmShimTransport()
