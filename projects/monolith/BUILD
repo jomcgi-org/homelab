@@ -5,6 +5,7 @@
 # gazelle:exclude chat_public
 # gazelle:exclude cluster
 # gazelle:exclude app
+# gazelle:exclude core
 # gazelle:exclude demos
 # gazelle:exclude ember_public
 # gazelle:exclude e2e
