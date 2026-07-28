@@ -197,6 +197,23 @@ func (r *workloadRegistry) deregister(workload string) int {
 }
 
 // get returns the entry for a workload and whether it is present.
+// rootfsRefs returns the set of rootfs paths the registry currently references,
+// which is exactly the set the rootfs GC must keep. Every boot and every snapshot
+// restore resolves its rootfs THROUGH this table (see imageForWorkload /
+// getByImageRef), so a rootfs no entry names is unreachable rather than merely
+// unused: nothing can address it.
+func (r *workloadRegistry) rootfsRefs() map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]bool, len(r.entries))
+	for _, e := range r.entries {
+		if e.RootfsRef != "" {
+			out[e.RootfsRef] = true
+		}
+	}
+	return out
+}
+
 func (r *workloadRegistry) get(workload string) (workloadEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
