@@ -1,13 +1,11 @@
 """Tests for chat.whatsapp_session (ADR 039 Phase 4).
 
 Covers session keying (sanitized, id-guard-safe, one row per group), the
-household tool ACL at dispatch (a repo action is refused), the ⏳ reaction +
-checklist enqueue at dispatch, steering with author attribution, the reaction
-lifecycle emitters, and the checklist repost when the WhatsApp edit window closes.
+household tool ACL, steering with author attribution, the reaction lifecycle
+emitters, and the checklist repost when the WhatsApp edit window closes.
 
-All DB-backed via in-memory SQLite (schema stripped like chat.store_test), with
-``goosecracker.api.submit`` patched so no real fc-invoke run is fired. These are
-the pure session-logic seams; the gateway drain is tested on the Go side.
+All DB-backed via in-memory SQLite (schema stripped like chat.store_test). These
+are the pure session-logic seams; the gateway drain is tested on the Go side.
 """
 
 from datetime import datetime, timezone
@@ -16,7 +14,6 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-import goosecracker.api as goose_api
 from chat import goosecracker as gc
 from chat import whatsapp_session
 from chat.models import GoosecrackerSession, GoosecrackerSteering, WhatsappOutbox
@@ -43,18 +40,6 @@ def engine(monkeypatch):
     for table in SQLModel.metadata.tables.values():
         if table.name in originals:
             table.schema = originals[table.name]
-
-
-def _no_dispatch(monkeypatch):
-    """Patch submit to a no-op that records its kwargs, so dispatch fires no run."""
-    calls = []
-
-    def _fake(task, **kwargs):
-        calls.append({"task": task, **kwargs})
-        return {"session": kwargs["session"], "thread_id": "t-x", "action": "create"}
-
-    monkeypatch.setattr(goose_api, "submit", _fake)
-    return calls
 
 
 # --- Session keying ---------------------------------------------------------
@@ -93,88 +78,6 @@ class TestHouseholdAcl:
         assert whatsapp_session.household_allows("calendar") is True
         assert whatsapp_session.household_allows("reminders") is True
         assert whatsapp_session.household_allows("artifact") is True
-
-
-# --- Dispatch ---------------------------------------------------------------
-
-
-class TestDispatch:
-    def test_repo_action_refused(self, engine, monkeypatch):
-        calls = _no_dispatch(monkeypatch)
-        out = whatsapp_session.dispatch_whatsapp_agent(
-            _GROUP,
-            "open a PR on the repo",
-            trigger_message_id="M1",
-            trigger_sender_jid="alice@wa",
-            repo="jomcgi/homelab",
-        )
-        assert out["action"] == "refused"
-        # Nothing dispatched, and no session row created.
-        assert calls == []
-        with Session(engine) as session:
-            assert session.get(GoosecrackerSession, _KEY) is None
-            rows = session.exec(select(WhatsappOutbox)).all()
-        # A one-line refusal is enqueued so the group sees it.
-        assert len(rows) == 1
-        assert rows[0].kind == "message"
-        assert "repositories" in rows[0].content
-
-    def test_dispatch_creates_session_and_ux(self, engine, monkeypatch):
-        calls = _no_dispatch(monkeypatch)
-        out = whatsapp_session.dispatch_whatsapp_agent(
-            _GROUP,
-            "plan the weekend",
-            trigger_message_id="M1",
-            trigger_sender_jid="alice@wa",
-        )
-        assert out["action"] == "dispatched"
-        # submit routed through the whatsapp provider under the household tier,
-        # keyed on the sanitized session id.
-        assert calls[0]["provider"] == "whatsapp"
-        assert calls[0]["tier"] == "household"
-        assert calls[0]["recipe"] == "agent"
-        assert calls[0]["session"] == _KEY
-        assert calls[0]["discord_thread"] == _KEY
-
-        with Session(engine) as session:
-            row = session.get(GoosecrackerSession, _KEY)
-            assert row.provider == "whatsapp"
-            assert row.provider_group_jid == _GROUP
-            assert row.provider_trigger_message_id == "M1"
-            assert row.provider_trigger_sender_jid == "alice@wa"
-            assert row.tier == "household"
-            assert row.running is True
-            assert row.runner_instance == gc.INSTANCE_TOKEN
-            assert row.checklist_outbox_id is not None
-            outbox = session.exec(select(WhatsappOutbox)).all()
-
-        # Exactly a ⏳ reaction on the trigger and one checklist message.
-        assert sorted(r.kind for r in outbox) == ["message", "reaction"]
-        react = next(r for r in outbox if r.kind == "reaction")
-        assert react.target_message_id == "M1"
-        assert react.target_sender_jid == "alice@wa"
-        assert react.reaction == gc.REACTION_QUEUED
-        assert react.reaction_remove is False
-        msg = next(r for r in outbox if r.kind == "message")
-        assert msg.id == row.checklist_outbox_id
-
-    def test_one_active_session_per_group(self, engine, monkeypatch):
-        _no_dispatch(monkeypatch)
-        whatsapp_session.dispatch_whatsapp_agent(
-            _GROUP, "first", trigger_message_id="M1", trigger_sender_jid="a@wa"
-        )
-        whatsapp_session.dispatch_whatsapp_agent(
-            _GROUP, "second", trigger_message_id="M2", trigger_sender_jid="b@wa"
-        )
-        with Session(engine) as session:
-            rows = session.exec(
-                select(GoosecrackerSession).where(
-                    GoosecrackerSession.discord_thread == _KEY
-                )
-            ).all()
-        # PK derived from the group, so re-dispatch reuses the single row.
-        assert len(rows) == 1
-        assert rows[0].provider_trigger_message_id == "M2"
 
 
 # --- Steering ---------------------------------------------------------------

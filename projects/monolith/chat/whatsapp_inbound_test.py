@@ -3,7 +3,7 @@
 Covers bearer auth (401), registry drop (unknown/disabled group), dedupe (a
 replayed message id is a no-op), and attention routing: a directed message
 engages and a chat reply lands a whatsapp_outbox row, while an agent-shaped
-message gets the honest deferred reply behind the (default-off) flag.
+message gets the honest unavailable reply.
 
 DB-backed via in-memory SQLite (schema stripped for SQLite compat, like
 chat.store_test). The concierge reply generator, the depth classifier, and the
@@ -61,10 +61,10 @@ def client(engine, monkeypatch):
 
     # Both the handler and _lookup_enabled_group read get_engine from the module.
     monkeypatch.setattr(whatsapp_inbound, "get_engine", lambda: engine)
-    # The session-keyed helpers (steer_or_none, dispatch) open their own sessions
-    # via chat.whatsapp_session.get_engine; point it at the same test engine so
-    # the real steer_or_none (unpatched in the chat/deferred tests) sees no
-    # session row and returns False rather than hitting a real DB.
+    # The session-keyed steering helper opens its own session via
+    # chat.whatsapp_session.get_engine; point it at the same test engine so the
+    # real steer_or_none sees no session row and returns False rather than hitting
+    # a real DB.
     monkeypatch.setattr(whatsapp_session, "get_engine", lambda: engine)
     # The household capability router (run before the depth split) opens its own
     # sessions to check for a pending action; point it at the test engine so an
@@ -185,8 +185,7 @@ class TestAttentionRouting:
         self, client, engine, monkeypatch
     ):
         _seed_group(engine)
-        # Depth says agent; Phase 3 defers dispatch, so an honest one-liner is
-        # enqueued instead (flag default-off).
+        # Depth says agent, so an honest unavailable one-liner is enqueued.
         monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
         gen = AsyncMock(return_value="should not be called")
         monkeypatch.setattr(whatsapp_inbound, "_generate_reply", gen)
@@ -244,69 +243,25 @@ class TestAttentionRouting:
         assert _outbox(engine) == []
 
 
-class TestAgentDispatch:
-    """Phase 4: engaged agent-shaped messages steer a live run or dispatch one."""
+class TestAgentHandling:
+    """Agent-shaped messages steer a live run or receive an unavailable reply."""
 
     def test_running_session_steers_not_dispatches(self, client, engine, monkeypatch):
         _seed_group(engine)
         monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
-        # A live run swallows the message as steering (real dispatch never called).
+        # A live run swallows the message as steering.
         monkeypatch.setattr(whatsapp_session, "steer_or_none", lambda *a, **k: True)
-        called = []
-        monkeypatch.setattr(
-            whatsapp_session,
-            "dispatch_whatsapp_agent",
-            lambda *a, **k: called.append(k) or {"action": "dispatched"},
-        )
         resp = _post(client, text="bosun tweak that", message_id="S1")
         assert resp.json()["status"] == "steering"
-        assert called == []
 
-    def test_agent_dispatch_when_enabled(self, client, engine, monkeypatch):
+    def test_agent_gets_unavailable_reply_without_live_session(
+        self, client, engine, monkeypatch
+    ):
         _seed_group(engine)
-        monkeypatch.setattr(whatsapp_inbound, "_AGENT_ENABLED", True)
         monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
         monkeypatch.setattr(whatsapp_session, "steer_or_none", lambda *a, **k: False)
-        seen = {}
-
-        def _fake_dispatch(
-            group_jid, prompt, *, trigger_message_id, trigger_sender_jid, repo=""
-        ):
-            seen.update(
-                group_jid=group_jid,
-                prompt=prompt,
-                message_id=trigger_message_id,
-                sender_jid=trigger_sender_jid,
-            )
-            return {"action": "dispatched"}
-
-        monkeypatch.setattr(whatsapp_session, "dispatch_whatsapp_agent", _fake_dispatch)
-        resp = _post(
-            client,
-            text="bosun build me a plan",
-            message_id="A2",
-            sender_jid="alice@s.whatsapp.net",
-        )
-        assert resp.json()["status"] == "dispatched"
-        assert seen["group_jid"] == _GROUP
-        assert seen["message_id"] == "A2"
-        assert seen["sender_jid"] == "alice@s.whatsapp.net"
-        assert seen["prompt"] == "bosun build me a plan"
-
-    def test_agent_disabled_gets_deferred_reply(self, client, engine, monkeypatch):
-        _seed_group(engine)
-        # Flag default-off: no dispatch, honest one-liner instead.
-        monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
-        monkeypatch.setattr(whatsapp_session, "steer_or_none", lambda *a, **k: False)
-        called = []
-        monkeypatch.setattr(
-            whatsapp_session,
-            "dispatch_whatsapp_agent",
-            lambda *a, **k: called.append(k) or {"action": "dispatched"},
-        )
         resp = _post(client, text="bosun ship the feature", message_id="A3")
         assert resp.json()["status"] == "replied"
-        assert called == []
         rows = _outbox(engine)
         assert len(rows) == 1
         assert rows[0].content == whatsapp_inbound._AGENT_DEFERRED_REPLY

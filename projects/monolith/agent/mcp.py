@@ -1,7 +1,7 @@
 """MCP tools for the claude-routine-agent surface.
 
 Thin async wrappers that call into the corresponding operation module
-(``agent.*`` for locks/checks/routines, ``goosecracker`` for agent runs, or
+(``agent.*`` for locks/checks/routines, ``goosecracker`` for ledger lookup, or
 ``chat.directives`` for the directive-autopilot surface) and serialize datetimes
 / UUIDs as strings for JSON transport. The Python function names use
 underscores; FastMCP's wire identifiers use the dashed form
@@ -15,8 +15,7 @@ underscores; FastMCP's wire identifiers use the dashed form
   Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
              register_routine_job, deregister_routine_job,
              trigger_routine_job  (claude_agent.routine_jobs)
-  Runs     : submit_agent_task, list_agent_threads, get_agent_thread,
-             resume_agent_thread (the goosecracker fc-invoke run ledger)
+  Runs     : list_agent_threads, get_agent_thread (the goosecracker run ledger)
   Directives: chat_list_directives, chat_directive_history, chat_set_directive,
              chat_pin_directive, chat_revert_directive (introspect + tune the
              silent directive autopilot, manual writes win precedence)
@@ -27,7 +26,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
@@ -260,47 +259,6 @@ async def monolith_agent_trigger_routine_job(name: str) -> dict:
     return {"ok": routine_jobs.trigger_job(name)}
 
 
-# --- Agent runs (the goosecracker fc-invoke run ledger) ------------------
-
-
-@mcp.tool
-async def monolith_agent_submit_agent_task(
-    task: str,
-    session: str | None = None,
-    recipe: str = "agent",
-    tier: str = "",
-    repo: str = "",
-    branch: str = "main",
-    git_mirror: str = "",
-    git_ref: str = "",
-    discord_thread: str = "",
-) -> dict:
-    """Submit a goose run to the fc-invoke agent substrate.
-
-    The run executes a goose ``recipe`` against ``task`` in an isolated microVM.
-    ``session`` is the stable run id and a fresh one is generated when omitted.
-    ``tier`` picks the model env (empty or "default" reaches in-cluster Qwen,
-    "artifact" reaches OpenRouter). ``git_mirror`` plus ``git_ref`` optionally
-    seed the guest workspace from a repo. Returns the session, thread_id, and the
-    action taken (create or resume). Poll get-agent-thread with the thread_id for
-    the result once the run finishes.
-    """
-    run_session = session or f"s-{uuid4().hex[:12]}"
-    return await asyncio.to_thread(
-        lambda: goosecracker.submit(
-            task,
-            session=run_session,
-            recipe=recipe,
-            tier=tier,
-            repo=repo,
-            branch=branch,
-            git_mirror=git_mirror,
-            git_ref=git_ref,
-            discord_thread=discord_thread,
-        )
-    )
-
-
 @mcp.tool
 async def monolith_agent_list_agent_threads(state: str | None = None) -> dict:
     """List agent runs from the ledger, newest-active first.
@@ -320,16 +278,6 @@ async def monolith_agent_get_agent_thread(thread_id: str) -> dict:
     """
     row = await asyncio.to_thread(goosecracker.get_run, thread_id)
     return {"thread": goosecracker.serialize(row) if row else None}
-
-
-@mcp.tool
-async def monolith_agent_resume_agent_thread(thread_id: str) -> dict:
-    """Re-dispatch an agent run stored task under its existing session.
-
-    A thin re-submit that reruns the same task, recipe, and tier for that thread
-    session. Returns ok=False when the thread id is unknown.
-    """
-    return await asyncio.to_thread(goosecracker.resume, thread_id)
 
 
 # --- Chat directive introspection + tuning (the directive-autopilot surface) --

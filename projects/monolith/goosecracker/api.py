@@ -7,7 +7,7 @@ Other domains (chat's /agent command, agent's MCP tools) must import from
 
 from __future__ import annotations
 
-from goosecracker.dispatch import resume, status, submit  # re-exported
+from goosecracker.dispatch import status  # re-exported
 from goosecracker.recipe_catalog import CATALOG, enabled_enum  # re-exported
 from goosecracker.repo_catalog import describe_repos  # re-exported
 from goosecracker.router_render import (  # re-exported
@@ -27,10 +27,8 @@ __all__ = [
     "list_runs",
     "render_plan_file",
     "render_router",
-    "resume",
     "serialize",
     "stage_title",
     "status",
-    "submit",
     "tier_allows",
 ]

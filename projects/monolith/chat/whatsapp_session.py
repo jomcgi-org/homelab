@@ -2,17 +2,15 @@
 
 WhatsApp has no threads, so a group's agent session is keyed on the group JID.
 This module is the WhatsApp-shaped counterpart to the Discord session logic in
-``chat.goosecracker``: it dispatches a group session, routes participant messages
-during a run to steering (with author attribution), drives the live checklist
-through ``chat.whatsapp_outbox`` edit rows (with the ~15-minute edit-window
-repost), and enforces the household tier's tool subset at dispatch.
+``chat.goosecracker``: it routes participant messages during a run to steering
+(with author attribution), and drives the live checklist through
+``chat.whatsapp_outbox`` edit rows (with the ~15-minute edit-window repost).
 
 Every WhatsApp outbound action goes through ``chat.whatsapp_outbox`` (the Go
 gateway is the only sender), so the reaction lifecycle, the checklist, and the
 final result are all enqueued as outbox rows here rather than posted to Discord.
 The Discord path in ``chat.goosecracker`` / ``goosecracker.runner`` is unchanged;
-these two providers meet only at the ``provider`` discriminator on the session row
-and the ``provider`` param threaded through ``dispatch.submit`` / the runner.
+these two providers meet only at the ``provider`` discriminator on the session row.
 
 Session key: a group JID (``12345-67890@g.us``) contains ':', '@' and '.', which
 the internal progress and steering endpoints reject (their id guard is
@@ -53,28 +51,10 @@ logger = logging.getLogger(__name__)
 # repo and cluster stay denied, being the credentialed families the partner-phone
 # guest must not hold (goosecracker.tiers).
 HOUSEHOLD_TIER = "household"
-AGENT_RECIPE = "agent"
 
 # Sanitized-key prefix. Discord thread ids are numeric snowflakes, so a
 # "wa-"-prefixed id never collides with a Discord session id.
 _WA_KEY_PREFIX = "wa-"
-
-# The first checklist message, posted at dispatch and then edited in place as the
-# run announces and advances its stage plan. Doubles as the prose ack ("a
-# task-shaped request gets a prose ack", spec section 4). No em-dash by house
-# style; a comma instead.
-_WA_PLANNING = "\U0001f916 On it, planning…"
-
-# Shown when a household session is asked to act on a repo (spec section 6
-# acceptance). One line, so the group sees a clear refusal rather than a silent
-# drop. ADR 034's per-tool guest-MCP ACL is not built yet, so this dispatch-time
-# guard plus the credential-omitting household tier env (no git token, no cluster
-# endpoints) is the enforcement the current architecture supports.
-_HOUSEHOLD_REPO_REFUSAL = (
-    "I can't touch code repositories from here. This group is limited to "
-    "knowledge, calendar, and reminders."
-)
-
 
 def wa_session_key(group_jid: str) -> str:
     """Return the sanitized, id-guard-safe session key for a group JID.
@@ -99,108 +79,6 @@ def household_allows(feature: str) -> bool:
     denied; knowledge/calendar/reminders granted). Thin wrapper over the shared
     tier ACL so callers do not hardcode the tier name."""
     return tier_allows(HOUSEHOLD_TIER, feature)
-
-
-# --- Dispatch ---------------------------------------------------------------
-
-
-def dispatch_whatsapp_agent(
-    group_jid: str,
-    prompt: str,
-    *,
-    trigger_message_id: str,
-    trigger_sender_jid: str,
-    repo: str = "",
-) -> dict:
-    """Start (or re-dispatch, for an idle group) a household agent session.
-
-    Enforces the household ACL first: a repo action is refused with a one-line
-    explanation enqueued to the group (spec section 6), and nothing is
-    dispatched. Otherwise dispatches the turn through ``goosecracker.dispatch``
-    with ``provider='whatsapp'`` so the runner delivers via the outbox, writes/
-    updates the single group session row (PK derived from the group, so one
-    active session per group), enqueues the initial ⏳ reaction on the trigger
-    message, and posts the first checklist message (its id kept on the row so the
-    run can edit it in place). Returns the submit result with ``action`` set to
-    ``dispatched`` or ``refused``.
-
-    Synchronous (opens its own session); call via ``asyncio.to_thread``.
-    """
-    prompt = prompt.strip()
-    if repo and not household_allows("repo"):
-        with Session(get_engine()) as session:
-            enqueue_message(session, group_jid, content=_HOUSEHOLD_REPO_REFUSAL)
-            session.commit()
-        logger.info("whatsapp: refused repo action for household group %s", group_jid)
-        return {"action": "refused", "reason": _HOUSEHOLD_REPO_REFUSAL}
-
-    session_key = wa_session_key(group_jid)
-
-    # Imported lazily (chat.goosecracker imports this module for the reaction
-    # lifecycle branch, so a module-level import would cycle). goosecracker.api is
-    # the boundary-approved dispatch surface; INSTANCE_TOKEN is the owning
-    # process's boot token, stamped so the runner's mark/ack recognise this turn.
-    from chat.goosecracker import INSTANCE_TOKEN, _join_transcript
-    from goosecracker.api import submit
-
-    # Dispatch first, so a failed submit leaves the row untouched (mirrors the
-    # Discord start path): the detached runner then drives this session.
-    result = submit(
-        prompt,
-        session=session_key,
-        recipe=AGENT_RECIPE,
-        tier=HOUSEHOLD_TIER,
-        repo=repo,
-        discord_thread=session_key,
-        provider="whatsapp",
-    )
-
-    now = datetime.now(timezone.utc)
-    with Session(get_engine()) as session:
-        row = session.get(GoosecrackerSession, session_key, with_for_update=True)
-        if row is None:
-            row = GoosecrackerSession(
-                discord_thread=session_key,
-                recipe=AGENT_RECIPE,
-                tier=HOUSEHOLD_TIER,
-                repo=repo,
-                transcript=prompt,
-            )
-        else:
-            row.transcript = _join_transcript(row.transcript, prompt)
-        row.provider = "whatsapp"
-        row.provider_group_jid = group_jid
-        row.provider_trigger_message_id = trigger_message_id
-        row.provider_trigger_sender_jid = trigger_sender_jid
-        row.running = True
-        row.running_since = now
-        row.runner_instance = INSTANCE_TOKEN
-        row.inflight_task = prompt
-        row.updated_at = now
-        # ⏳ on the trigger message, then the first checklist message. Both go
-        # through the outbox; the gateway drains oldest-first, so ⏳ lands before
-        # the runner's ⏳ → 👀 flip.
-        enqueue_reaction(
-            session,
-            group_jid,
-            trigger_message_id,
-            trigger_sender_jid,
-            _reaction_queued(),
-        )
-        checklist_id = enqueue_message_returning_id(
-            session, group_jid, content=_WA_PLANNING
-        )
-        row.checklist_outbox_id = checklist_id
-        session.add(row)
-        session.commit()
-
-    return {**result, "action": "dispatched"}
-
-
-def _reaction_queued() -> str:
-    from chat.goosecracker import REACTION_QUEUED
-
-    return REACTION_QUEUED
 
 
 # --- Steering (participant messages during a run) ---------------------------
