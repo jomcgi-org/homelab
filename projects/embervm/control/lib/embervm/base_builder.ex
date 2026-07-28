@@ -1369,16 +1369,32 @@ defmodule Embervm.BaseBuilder do
   # Is a build for this signature already queued or in flight on the node? Avoids
   # enqueuing a duplicate while an identical build is pending.
   defp already_targeting?(state, node_id, name, sig) do
-    n = state.nodes[node_id]
-    building_this = n.building == name and worker_signature(state, node_id) == sig
-    queued = name in n.queue
-    building_this or queued
+    case state.nodes[node_id] do
+      # No live node entry, so there is nothing this workload could already be
+      # targeting: answer false and let the caller fall through to normal
+      # placement. `retry_workload/2` reaches here with `w.node_id`, which is nil
+      # for an unplaced workload (`remove_node_from_state/2` nils it when a node
+      # departs, and a workload that has never placed starts nil), and the old
+      # unguarded `state.nodes[node_id].building` raised KeyError on that, killing
+      # the builder and wiping every snapshot_ref it held (issue #4105).
+      nil ->
+        false
+
+      n ->
+        building_this = n.building == name and worker_signature(state, node_id) == sig
+        queued = name in n.queue
+        building_this or queued
+    end
   end
 
   defp worker_signature(state, node_id) do
-    case state.nodes[node_id].worker do
-      {pid, _ref} -> get_in(state.workers, [pid, :signature])
+    case state.nodes[node_id] do
       nil -> nil
+      n ->
+        case n.worker do
+          {pid, _ref} -> get_in(state.workers, [pid, :signature])
+          nil -> nil
+        end
     end
   end
 
