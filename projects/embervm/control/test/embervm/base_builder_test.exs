@@ -502,6 +502,37 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(count, & &1) == 1
   end
 
+  # A retry timer that fires for a workload with no node placement used to kill the
+  # whole builder: `already_targeting?/4` did `state.nodes[node_id].building`, and
+  # `remove_node_from_state/2` nils a workload's node_id when its node goes away, so
+  # the deref raised `KeyError: key :building not found in: nil`. Each crash wiped
+  # every snapshot_ref and built_signature, re-placing and rebuilding the whole fleet
+  # on a ~30s cycle (issue #4105).
+  #
+  # `worker_signature/2` below the fix carries the same guard. It is defensive only:
+  # `remove_node_from_state/2` nils the workload's node_id rather than leaving it
+  # pointing at a departed node, so a stale non-nil node_id is not reachable through
+  # the public API, and there is no separate test for it.
+  test "a retry for a workload whose node went away keeps the builder alive" do
+    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
+    builder = start_builder(build_fun: build_fun)
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    end)
+
+    :ok = BaseBuilder.remove_node(builder, @node.id)
+    send(builder, {:retry, "w"})
+
+    # status/1 is a call, so it cannot be served until the {:retry, "w"} ahead of it
+    # in the mailbox has been handled. That orders the assertion after the crash
+    # would have happened, without a sleep that would make this test racy.
+    assert BaseBuilder.status(builder).workloads["w"].node_id == nil
+    assert Process.alive?(builder)
+  end
+
   # -- forget -----------------------------------------------------------------
 
   test "forgetting a workload mid-queue drops it without building" do
