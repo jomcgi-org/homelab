@@ -193,7 +193,14 @@ async def probe_postgres() -> dict:
     """
     dsn = core.demo_pg_dsn()
     if not dsn:
-        return {"ok": True, "detail": "not configured", "latency_ms": None}
+        # This used to fail open because demo_postgres caught the unconfigured
+        # case. With that check gone, a misconfigured deploy would otherwise
+        # read green.
+        return {
+            "ok": False,
+            "detail": "DEMO_POSTGRES_DSN not configured",
+            "latency_ms": None,
+        }
 
     before = None
     if core.EMBERVM_URL:
@@ -215,7 +222,6 @@ async def probe_postgres() -> dict:
         result = await asyncio.to_thread(
             core.demo_pg_orders_roundtrip, dsn, "aggregate", None
         )
-        core.record_query_outcome(ok=True, connect_ms=result["connect_ms"])
         return {
             "ok": True,
             "detail": f"{core.classify_wake(before)}, {result.get('connect_ms')}ms",
@@ -223,7 +229,6 @@ async def probe_postgres() -> dict:
         }
     except Exception as exc:  # noqa: BLE001 - probes report failures in-band
         logger.warning("demo-postgres synthetic roundtrip failed: %s", exc)
-        core.record_query_outcome(ok=False, connect_ms=None)
         return _failure(exc)
     finally:
         core.release_query_slot()

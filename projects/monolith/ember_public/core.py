@@ -97,10 +97,6 @@ async def fetch_demo_pg_status() -> dict:
 # caller past the TTL does the real fetch and every concurrent/near-concurrent
 # caller shares that one result instead of piling on the control plane.
 #
-# state_changed_at (monotonic) is bumped whenever the observed state differs
-# from the previous observation. Task 4's health check consumes it to detect a
-# transitional state (relighting/cold_booting/...) stuck past its timeout; no
-# health logic lives here, this module only records the timestamp.
 # ---------------------------------------------------------------------------
 
 _STATUS_CACHE_TTL_S = 0.5
@@ -108,8 +104,6 @@ _status_cache_lock = asyncio.Lock()
 _status_cache: dict = {
     "at": None,
     "payload": None,
-    "state": None,
-    "state_changed_at": None,
 }
 
 
@@ -117,8 +111,8 @@ async def cached_demo_pg_status() -> dict:
     """Single-flight, TTL-cached read through fetch_demo_pg_status.
 
     Concurrent callers within the TTL window share one upstream fetch. Also
-    used by the /status endpoint and (later) the health check, so both read
-    the exact same snapshot rather than racing separate control-plane calls.
+    used by the /status endpoint, so concurrent readers share the exact same
+    snapshot rather than racing separate control-plane calls.
     """
     async with _status_cache_lock:
         now = monotonic()
@@ -127,18 +121,9 @@ async def cached_demo_pg_status() -> dict:
             return _status_cache["payload"]
 
         payload = await fetch_demo_pg_status()
-        state = payload.get("state")
-        if state != _status_cache["state"]:
-            _status_cache["state_changed_at"] = now
-            _status_cache["state"] = state
         _status_cache["at"] = now
         _status_cache["payload"] = payload
         return payload
-
-
-def status_cache_state_changed_at() -> float | None:
-    """Monotonic timestamp of the most recent observed state change, if any."""
-    return _status_cache["state_changed_at"]
 
 
 # ---------------------------------------------------------------------------
@@ -259,25 +244,6 @@ def present_count() -> int:
     now = monotonic()
     _prune_presence(now)
     return len(_presence)
-
-
-# ---------------------------------------------------------------------------
-# Most recent query outcome, module-level. Task 4's health check consumes
-# this to detect a failed or slow wake with no newer success; no health logic
-# lives here, this module only records the observation.
-# ---------------------------------------------------------------------------
-
-_last_query_outcome: dict = {"at_monotonic": None, "ok": None, "connect_ms": None}
-
-
-def record_query_outcome(*, ok: bool, connect_ms: float | None) -> None:
-    _last_query_outcome["at_monotonic"] = monotonic()
-    _last_query_outcome["ok"] = ok
-    _last_query_outcome["connect_ms"] = connect_ms
-
-
-def last_query_outcome() -> dict:
-    return dict(_last_query_outcome)
 
 
 def shape_pg_status(status: dict) -> dict:
