@@ -34,7 +34,7 @@ Six decisions.
 
 **3. Header injection is scoped by a per-secret destination allowlist.** The sidecar recognizes the configured header and host, removes all guest-supplied values, and attaches the real credential only for that host. This bounds credential EXFILTRATION, not credential ABUSE: any request the guest can make to a covered host gets the credential attached, including a request induced by prompt injection. This is deliberately narrower than a general egress firewall and does not claim to authorize individual API operations.
 
-**4. The proxy terminates TLS.** To swap a placeholder that sits inside an HTTPS body or header, the proxy must see plaintext, so it terminates TLS using a CA baked into the guest image trust store, then re-originates TLS to the real destination. This is unavoidable given the goal: the only alternative is the guest holding the real value in order to encrypt it itself, which is precisely what we are ruling out. We own the guest image, so a guest-scoped trusted CA (never a cluster-wide one) is clean.
+**4. The proxy terminates TLS.** To set a header inside an HTTPS request, the proxy must see plaintext, so it terminates TLS using a CA baked into the guest image trust store, then re-originates TLS to the real destination. This is unavoidable given the goal: the only alternative is the guest holding the real value in order to encrypt it itself, which is precisely what we are ruling out. We own the guest image, so a guest-scoped trusted CA (never a cluster-wide one) is clean.
 
 **5. v1 data plane is a sidecar in the per-node `fc-agentd` DaemonSet.** `fc-agentd` stays a secret-free forwarder: it takes the guest's vsock 1025 stream and forwards it over localhost to a co-located `egress-proxy` sidecar that holds the mounted secrets and does terminate + swap + allowlist. A sidecar, not in-process, because `fc-agentd` parses guest-originated control frames (an attack surface from a hostile guest); keeping the secret-holding process off that surface preserves the blast-radius separation even though both run in the same pod. The per-node DaemonSet is the correct scaling unit, since egress volume scales with the number of guests, which scales with nodes; a separately-scaled proxy Deployment would add a cross-node hop to buy independence we do not need yet.
 
@@ -44,10 +44,10 @@ A note on the threat model, because decision 5 reverses an earlier instinct to k
 
 | Aspect                            | Today (ADR 004 injection)    | Decided (this ADR)                   |
 | --------------------------------- | ---------------------------- | ------------------------------------ |
-| Secret in guest env/disk/RAM      | yes (real value)             | no (placeholder only)                |
-| Secret in ADR 022 snapshot bundle | yes (real value, at rest)    | no (placeholder only)                |
-| Exfiltration to arbitrary host    | possible (agent holds value) | real credential is not attached    |
-| Per-tool integration work         | env var per tool             | configured header and host catalog  |
+| Secret in guest env/disk/RAM      | yes (real value)             | no (never present)                   |
+| Secret in ADR 022 snapshot bundle | yes (real value, at rest)    | no (never present)                   |
+| Exfiltration to arbitrary host    | possible (agent holds value) | fails (no credential is attached)    |
+| Per-tool integration work         | env var per tool             | a configured header, per host        |
 | Where the value lives             | the workload                 | egress-proxy sidecar, off the guest  |
 | Destination control               | none                         | per-secret allowlist                 |
 
@@ -59,7 +59,7 @@ The guest's only egress path is vsock 1025. The guest runs no proxy config: it i
 
 This transparent model exists because the model client (goose) ignores `HTTP_PROXY` (a known upstream gap) and the guest is vsock-only. Capturing all egress generically and routing it by SNI/Host in the sidecar means the harness is configured with real URLs and no per-destination routing config exists. Connection capture is per-port loopback listeners today (the harness uses 80/443/8080); generic any-port capture via an `iptables` REDIRECT + `SO_ORIGINAL_DST` is a localized follow-up (it needs the guest kernel built with netfilter).
 
-**Egress posture.** A policy knob governs the open path: `allow` (default) routes to any destination in or out of cluster, so the agent can read arbitrary docs. This is consistent with decision 3: the allowlist is a _per-secret exfiltration_ control (the real value only materialises at its `egressTo`; everywhere else the inert placeholder leaves), not a global egress firewall. `allowlist` is the dormant lockdown knob that additionally confines all egress to the named hosts plus `secrets[*].egressTo`, fail closed, flippable without a rebuild.
+**Egress posture.** A policy knob governs the open path: `allow` (default) routes to any destination in or out of cluster, so the agent can read arbitrary docs. This is consistent with decision 3: the allowlist is a _per-secret exfiltration_ control (the real value only materialises at its `egressTo`; for every other destination no credential is attached at all), not a global egress firewall. `allowlist` is the dormant lockdown knob that additionally confines all egress to the named hosts plus `secrets[*].egressTo`, fail closed, flippable without a rebuild.
 
 ```mermaid
 graph LR
@@ -101,7 +101,7 @@ Baseline: `docs/security.md`. Deviations and security-relevant properties:
 
 - **TLS interception via a guest-trusted CA.** The proxy MITMs the guest's outbound TLS. The trusted CA is scoped to the agent guest image only, never added to any cluster-wide or host trust store, and the private key lives only in the sidecar. This is the deliberate cost of keeping the value out of the guest.
 - **Allowlist is the exfiltration boundary, not an abuse boundary.** Each secret carries an `egressTo` host allowlist; injection fires only on a match, so the real value is not attached to an arbitrary destination. Any request to a covered host can still receive the credential, so the design bounds exfiltration but does not bound abuse of the covered service.
-- **Placeholders are non-sensitive** by construction (high-entropy, no relation to the value), so their presence in guest memory, snapshots, logs, or PRs leaks nothing.
+- **What the guest holds is non-sensitive** by construction. Under header injection it is a login-gate dummy that satisfies the client's own "am I authenticated" check and is validated against nothing, so its presence in guest memory, snapshots, logs, or PRs leaks nothing, and the sidecar discards it before the request leaves.
 - **Reduced standing exposure**: the value exists only in the sidecar process and its mounted Secret, on the host side of the Firecracker boundary, and never at rest inside a thread snapshot.
 
 ---
