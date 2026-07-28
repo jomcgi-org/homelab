@@ -16,12 +16,10 @@ import (
 // ~279 GB, with the registry referencing exactly ONE per workload (semgrep alone
 // held 193 files / 119.7 GB).
 //
-// Why deleting an unreferenced rootfs is safe, and not merely "probably unused":
-// every boot and every snapshot restore resolves its rootfs THROUGH the workload
-// registry (imageForWorkload, getByImageRef). A file no registry entry names is
-// unreachable, not idle. That is the same condition #3992 hit from the other
-// side, where a base whose image was no longer registered failed to export with
-// "not provisioned on this node".
+// The workload registry names the rootfs NEW boots will use. Existing base
+// snapshots are different: their snapshot state embeds absolute paths to the
+// backing rootfs files. GC therefore keeps the union of workload registry refs
+// and rootfs paths recorded by READY bases.
 //
 // Two guards keep that argument honest:
 //
@@ -77,6 +75,9 @@ func (s *Server) sweepRootfs(now time.Time) (removed int, freed int64) {
 		// every rootfs on the node. Fail toward keeping bytes.
 		return 0, 0
 	}
+	for _, path := range s.bases.rootfsPaths() {
+		keep[path] = true
+	}
 
 	// Sweep only the directories the registry itself points into.
 	dirs := make(map[string]bool, len(keep))
@@ -84,7 +85,17 @@ func (s *Server) sweepRootfs(now time.Time) (removed int, freed int64) {
 		dirs[filepath.Dir(ref)] = true
 	}
 
+	// Skip a workload holding any base that does not record its rootfs (every base
+	// predating the field). We cannot compute their keep-set, and deleting on absent
+	// information is exactly what broke the fleet, so those directories are left
+	// whole until their bases turn over. The rootfs layout is one directory per
+	// workload, which is the same assumption filepath.Dir above already relies on.
+	unknown := s.bases.unknownRootfsWorkloads()
+
 	for dir := range dirs {
+		if unknown[filepath.Base(dir)] {
+			continue
+		}
 		ents, err := os.ReadDir(dir)
 		if err != nil {
 			continue
