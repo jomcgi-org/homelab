@@ -242,6 +242,83 @@ spec:
                         a mismatch with a status condition); floor is unused for
                         serving, minInstances is the floor concept there.
                       minimum: 1
+                persistence:
+                  type: object
+                  description: >-
+                    What survives a workload instance, declared INDEPENDENTLY of
+                    class (ADR embervm/027). Class bundled a persistence decision
+                    into itself (task never persists, session persists RAM,
+                    stateful owns a volume), which stranded the shape this block
+                    exists to express: disk-backed resume with NO memory
+                    snapshot.
+
+                    The space is the cross product of two orthogonal booleans,
+                    which is why these are flags rather than an enum:
+                    off/off is task today, on/on is session today, on/off is
+                    memory-only, and off/on is the mode that had no class to land
+                    in.
+
+                    ABSENT means "the class default", exactly as today. It is
+                    deliberately not defaulted in the schema: the default depends
+                    on spec.class, which OpenAPI cannot express, so the watcher
+                    applies it and needs to see that the block was omitted (the
+                    same reason session.bankedTtlSeconds carries no default).
+                  properties:
+                    memory:
+                      type: boolean
+                      description: >-
+                        Capture the guest's RAM, so an instance resumes mid-
+                        process. false means cold boot every time, which is the
+                        ONLY way an instance can carry its own per-instance disk:
+                        a restore never re-runs guest-init and never re-reads
+                        boot args, so a restored instance cannot be handed a
+                        device. false also decouples cost from conversation
+                        length, because a memory snapshot pays for every dirty
+                        page on every bank, relight and archive.
+                    filesystem:
+                      type: object
+                      description: >-
+                        The durable filesystem tier. Unlike the memory tier this
+                        pins nothing against GC (ADR embervm/016), which is what
+                        makes it portable across nodes: a memory snapshot is tied
+                        to CPU vendor and base generation and cannot be handed to
+                        an arbitrary node, a filesystem artifact can.
+                      properties:
+                        enabled:
+                          type: boolean
+                          description: Keep a durable filesystem artifact for this lineage.
+                        scope:
+                          type: string
+                          enum:
+                            - solo
+                            - shared
+                          default: solo
+                          description: >-
+                            `solo` is owned by one lineage. `shared` is readable
+                            by other workloads, which is only coherent BECAUSE
+                            the filesystem tier pins nothing; the memory tier
+                            could never offer it without smuggling placement
+                            constraints into a supposedly opaque blob.
+                        retention:
+                          type: integer
+                          description: >-
+                            Keep the latest artifact plus N previous ones. Above
+                            1 costs N times the steady-state storage and N times
+                            the GC bookkeeping (each generation needs its own
+                            liveness check rather than one is-this-latest test),
+                            so it is a declared bounded scalar and never
+                            "keep everything". solo scope only.
+                          minimum: 0
+                          default: 0
+                        sizeGi:
+                          type: integer
+                          description: >-
+                            Size of the sparse volume backing this tier. Sparse,
+                            so an unfilled volume costs only what is written.
+                            Size it for the artifact, not for RAM: this exists
+                            precisely so state does NOT have to fit in memMib.
+                          minimum: 1
+                          default: 8
                 session:
                   type: object
                   description: >-
@@ -251,6 +328,11 @@ spec:
                     OpenAPI schema cannot express class-conditional requiredness).
                     A session is a long-lived logical sandbox banked to a node
                     snapshot when idle and relit on the next invoke.
+
+                    NOTE: idleBankSeconds describes the `persistence.memory: true`
+                    path. Under `memory: false` there is no bank; the same idle
+                    threshold triggers a close (capture the filesystem artifact,
+                    destroy the VM) and the next invoke cold boots.
                   properties:
                     idleBankSeconds:
                       type: integer
