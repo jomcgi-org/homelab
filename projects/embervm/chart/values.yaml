@@ -1074,17 +1074,23 @@ egress:
     # this chart creates it, precisely because where the matching public cert
     # enters the guest is the hard half of the decision.
     secretName: ""
-  # Phase 6b secret catalog. Each entry gives the guest an inert `placeholder` as
-  # env `env`; the sidecar swaps it for the real value only on a connection to a
-  # host in `egressTo`, so the real credential is unreachable everywhere else and
-  # never enters the guest. The placeholder must match what the guest image bakes
-  # (for claude, CLAUDE_CODE_OAUTH_TOKEN in runtimes/claude/apko.yaml), because
-  # the swap is an exact substring match on request headers.
+  # Phase 6b credential catalog. Each entry names a header the sidecar SETS to the
+  # real value (from `env`, delivered by `secretRef`) on a connection to a host in
+  # `egressTo`. The credential never enters the guest, which is the point: the
+  # guest runs model-driven, prompt-injectable code.
   #
-  #   - placeholder: <the inert string baked into the guest>
-  #     env: <sidecar env name carrying the real value>
-  #     egressTo: [<hosts where the swap may fire>]
-  #     secretRef: {name: <secret>, key: <key>}   # or `value:` for a literal
+  #   - header: Authorization                      # the header to set
+  #     valuePrefix: "Bearer "                     # prepended to the value
+  #     env: EMBER_ANTHROPIC_OAUTH_TOKEN           # sidecar env carrying it
+  #     egressTo: [api.anthropic.com]              # exact hosts, no wildcards
+  #     secretRef: {name: <secret>, key: <key>}    # the ONLY delivery path
+  #
+  # Nothing here has to match anything in the guest. The guest sends whatever it
+  # likes in that header and the sidecar discards it, so there is no byte-identical
+  # coupling to keep in sync and a guest cannot authenticate as another account by
+  # supplying its own token. An entry whose secret fails to resolve DENIES its
+  # egressTo hosts rather than tunnelling them, because a guest on the cleartext
+  # lane would otherwise put its whole request on the public internet.
   secrets: []
   # 1Password item backing the secretRefs above, synced by the operator into a
   # Secret of the same name as the CR. Empty creates no item.

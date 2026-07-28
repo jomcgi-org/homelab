@@ -261,23 +261,24 @@ warmthS3Gc:
 # in-cluster services.
 egress:
   enabled: true
-  # The claude runtime's subscription OAuth token. The guest image bakes an inert
-  # placeholder as CLAUDE_CODE_OAUTH_TOKEN and points the CLI's API client at
-  # http://api.anthropic.com, so every request leaves the guest in cleartext over
-  # its host-local vsock; the sidecar swaps this exact string for the real token
-  # and originates the verified TLS to :443 itself. The credential therefore never
-  # exists inside a guest that runs model-driven code.
+  # The claude runtime's subscription OAuth token. The sidecar SETS the
+  # Authorization header on requests to api.anthropic.com and originates the
+  # verified TLS to :443 itself, so the credential never exists inside a guest
+  # that runs model-driven, prompt-injectable code.
   #
-  # placeholder MUST stay byte-identical to CLAUDE_CODE_OAUTH_TOKEN in
-  # projects/embervm/runtimes/claude/apko.yaml. The swap is an exact substring
-  # match, and a mismatch fails as a 401 from Anthropic inside a guest, which is
-  # a long way from where the typo is.
+  # There is nothing to keep in sync with the guest. The guest sends whatever it
+  # likes in this header (the claude CLI refuses to make any request until it
+  # believes it is logged in, so it must send something) and the sidecar discards
+  # it. That also means a prompt-injected guest cannot authenticate as a different
+  # account by supplying a token of its own.
   #
-  # egressTo bounds where the real value can go: api.anthropic.com only. Exact
-  # host match, no wildcards, so the token is unreachable at every other
-  # destination the agent can dial.
+  # egressTo bounds where the credential can go: api.anthropic.com only, exact
+  # host match, no wildcards. If this entry's secret ever fails to resolve, those
+  # hosts are DENIED rather than tunnelled, because the guest addresses them in
+  # cleartext and a fall-through would put the prompt on the public internet.
   secrets:
-    - placeholder: ember-egress-anthropic-oauth-placeholder-0f3a9c1d7b5e2846-not-a-credential
+    - header: Authorization
+      valuePrefix: "Bearer "
       env: EMBER_ANTHROPIC_OAUTH_TOKEN
       egressTo:
         - api.anthropic.com

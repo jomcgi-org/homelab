@@ -99,3 +99,21 @@ tar(
         "./usr/local/bin/ember-runtime-guest-init type=file content=$(execpath :guest_init_amd64_bin) mode=0755 uid=0 gid=0",
     ],
 )
+
+# Guard (ADR 023 6b): the guest points its API client at an http:// URL, so the
+# sidecar MUST have a credential entry for that host. Without one the connection
+# blind-tunnels and the whole prompt leaves the cluster unencrypted.
+# Hand-registered: gazelle does not generate py_test here.
+py_test(
+    name = "cleartext_lane_guard_test",
+    srcs = ["cleartext_lane_guard_test.py"],
+    data = [
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/runtimes/claude/guest-init/cmd:guest_init_source",
+    ],
+    imports = ["."],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

@@ -333,12 +333,13 @@ containers:
         value: {{ join "," . | quote }}
       {{- end }}
       {{- if $ctx.Values.egress.secrets }}
-      # Phase 6b. EGRESS_SECRETS is the NON-secret catalog (placeholder -> env ->
-      # egressTo); each real value arrives separately from its own Secret below,
-      # so the catalog itself is safe to render into the pod spec.
+      # Phase 6b. EGRESS_SECRETS is the NON-secret catalog (which header to set on
+      # which hosts, and which env carries the value); each real value arrives
+      # separately from its own Secret below, so the catalog itself is safe to
+      # render into the pod spec.
       {{- $catalog := list }}
       {{- range $s := $ctx.Values.egress.secrets }}
-      {{- $catalog = append $catalog (dict "placeholder" $s.placeholder "env" $s.env "egressTo" $s.egressTo) }}
+      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "env" $s.env "egressTo" $s.egressTo) }}
       {{- end }}
       - name: EGRESS_SECRETS
         value: {{ $catalog | toJson | quote }}
@@ -354,15 +355,13 @@ containers:
         value: /etc/egress-ca/tls.key
       {{- end }}
       {{- range $s := $ctx.Values.egress.secrets }}
+      # secretRef ONLY. There is deliberately no literal-value branch: a chart that
+      # accepts an inline credential is a chart someone eventually commits one to.
       - name: {{ $s.env }}
-        {{- if $s.secretRef }}
         valueFrom:
           secretKeyRef:
             name: {{ $s.secretRef.name }}
             key: {{ $s.secretRef.key }}
-        {{- else }}
-        value: {{ $s.value | quote }}
-        {{- end }}
       {{- end }}
       {{- end }}
     {{- if $ctx.Values.egress.ca.enabled }}

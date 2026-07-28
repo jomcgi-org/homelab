@@ -62,26 +62,11 @@ environment:
   # The workspace the shim hydrates into and runs the agent against. The trust
   # record baked at /home/runtime/.claude.json must name this exact path.
   EMBER_CLAUDE_WORKSPACE: /workspace
-  # Egress auth (ADR 023 6b). The CLI talks to the API in CLEARTEXT, on purpose:
-  # its only route out is the shim's forwarder over a host-local vsock, which has
-  # no network segment on it, so guest-side TLS would encrypt against an attacker
-  # who cannot be positioned there. The egress-proxy sidecar reads the plaintext
-  # request, swaps the placeholder below for the real token, and originates the
-  # real TLS to api.anthropic.com:443 itself.
-  #
-  # This redirects the CLI's API client only. It still reaches api.anthropic.com
-  # over https:// for telemetry and profile calls; those blind-tunnel past the
-  # swap carrying the inert placeholder and are refused at the destination, which
-  # does not affect a turn.
-  ANTHROPIC_BASE_URL: http://api.anthropic.com
-  # An INERT stand-in for the subscription OAuth token, and deliberately nothing
-  # like a real credential in shape: the CLI does no local format validation, so
-  # there is no reason to commit a string that reads as an sk-ant- secret to every
-  # scanner that sees this repo. The sidecar substring-matches this exact value in
-  # request headers, so it must stay in lockstep with egress.secrets[].placeholder
-  # in the embervm chart values. Long and distinctive so it cannot collide with
-  # anything else in a request.
-  CLAUDE_CODE_OAUTH_TOKEN: ember-egress-anthropic-oauth-placeholder-0f3a9c1d7b5e2846-not-a-credential
+  # NOTE: egress auth (ANTHROPIC_BASE_URL, CLAUDE_CODE_OAUTH_TOKEN) is NOT here.
+  # This block is OCI image config, which only the docker/crane path reads; a raw
+  # Firecracker boot starts init=ember-runtime-guest-init and never sees it. Those
+  # values live in guest-init's setDefaultEnv, which is what actually delivers
+  # them. Adding a runtime-relevant variable here alone is a silent no-op.
 
 paths:
   - path: /home/runtime
