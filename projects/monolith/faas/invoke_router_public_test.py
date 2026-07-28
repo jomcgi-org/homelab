@@ -95,7 +95,7 @@ def submitted(monkeypatch):
 
 @pytest.fixture
 def client(session):
-    from app.db import get_session
+    from core.db import get_session
     from faas.invoke_router_public import router
 
     app = FastAPI()

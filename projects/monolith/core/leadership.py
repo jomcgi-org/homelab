@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable
 
 from sqlmodel import Session, text
 
-from app.db import get_engine
+from core.db import get_engine
 
 logger = logging.getLogger("monolith.leadership")
 

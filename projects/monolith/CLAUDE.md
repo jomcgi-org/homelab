@@ -22,7 +22,7 @@ The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
 3. The sync helper opens its **own** fresh session and commits:
    ```python
    def _sync_helper(data) -> int:
-       from app.db import get_engine
+       from core.db import get_engine
        with Session(get_engine()) as session:
            ...  # sync DB work
            session.commit()

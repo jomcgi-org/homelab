@@ -39,7 +39,7 @@ from pathlib import Path
 
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from chat import acl, orchestrator_client, orchestrator_plan
 from chat.models import OrchestratorBrief
 from chat.orchestrator_plan import Plan

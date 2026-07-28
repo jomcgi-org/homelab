@@ -15,7 +15,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, text
 
-from app.db import get_session
+from core.db import get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/home/observability", tags=["observability"])

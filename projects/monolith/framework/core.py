@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 
-from app.log import configure_logging
+from core.log import configure_logging
 
 if TYPE_CHECKING:
     pass
@@ -291,7 +291,7 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
         """
         from sqlmodel import Session, text
 
-        from app.db import get_engine
+        from core.db import get_engine
 
         db_ok = True
         try:  # nosemgrep: no-broad-except-swallow - logged via health_logger below
@@ -398,7 +398,7 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
         app.state.elector = None
         elector_task = None
         if profile.leader_singletons and any(m.leader_start for m in modules):
-            from app.leadership import LeaderElector
+            from core.leadership import LeaderElector
 
             elector = LeaderElector(lease_key=profile.leader_lease_key)
             app.state.elector = elector
@@ -456,7 +456,7 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
         # registers tools, preserving the invariant that the private tier
         # always serves /mcp (an empty tool list is a visible symptom; a
         # missing mount looks like an unrelated 404 at the gateway).
-        from app.mcp_app import mcp as monolith_mcp
+        from core.mcp_app import mcp as monolith_mcp
 
         for m in modules:
             if m.register_mcp is not None:

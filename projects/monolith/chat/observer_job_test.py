@@ -208,7 +208,7 @@ def test_gather_candidates_filters_grants_cooldown_and_empty(engine):
         )
         session.commit()
 
-    with patch("app.db.get_engine", return_value=engine):
+    with patch("core.db.get_engine", return_value=engine):
         candidates = observer_job._gather_candidates(NOW, 14)
 
     assert [c[0] for c in candidates] == ["chanA"]

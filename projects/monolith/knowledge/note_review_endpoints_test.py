@@ -57,7 +57,7 @@ def session():
 def client(session):
     from fastapi import FastAPI
 
-    from app.db import get_session
+    from core.db import get_session
     from knowledge.router import router
 
     app = FastAPI()

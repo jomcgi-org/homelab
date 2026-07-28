@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from trips import s3
 from trips.ingest_router import router as ingest_router
 from trips.models import TripPoint

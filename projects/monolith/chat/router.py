@@ -88,7 +88,7 @@ def get_explorer_agent():
 
 @router.post("/explore")
 async def explore(body: ExploreRequest, request: Request):
-    from app.db import get_session
+    from core.db import get_session
 
     session = next(get_session())
     emitter = SSEEmitter()

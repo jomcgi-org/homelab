@@ -90,7 +90,7 @@ def _persist(vacancies: list[dict]) -> tuple[list[dict], int, bool]:
     """
     from sqlmodel import Session, func, select
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     now = datetime.now(timezone.utc)
     new_vacancies: list[dict] = []
@@ -209,7 +209,7 @@ def _notify_pending_sync() -> None:
     )
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     now = datetime.now(timezone.utc)
     today = now.date()

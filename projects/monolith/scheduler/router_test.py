@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.db import get_session
+from core.db import get_session
 from app.main import app
 from scheduler.views import SchedulerJobView
 

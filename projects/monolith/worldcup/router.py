@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from worldcup.models import Qualification, Standing, SwingMatch
 
 logger = logging.getLogger("monolith.worldcup.router")

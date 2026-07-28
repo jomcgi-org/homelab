@@ -49,7 +49,7 @@ import logging
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from faas import embervm_client
 from faas.repository import get_visible_function
 

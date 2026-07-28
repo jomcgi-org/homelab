@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
-from app.db import get_session
+from core.db import get_session
 from app.main import app
 
 

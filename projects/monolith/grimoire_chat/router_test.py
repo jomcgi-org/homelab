@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from grimoire_chat import inference, retrieval, sessions
 from grimoire_chat import router as router_module
 from grimoire_chat.db import get_chat_session

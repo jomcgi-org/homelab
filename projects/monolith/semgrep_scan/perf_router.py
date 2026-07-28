@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from semgrep_scan.perf_compare import (
     build_aggregates,
     build_cohort_aggregates,

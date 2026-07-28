@@ -103,7 +103,7 @@ def submitted(monkeypatch):
 @pytest.fixture
 def client(session):
     from app.main import app
-    from app.db import get_session
+    from core.db import get_session
 
     app.dependency_overrides[get_session] = lambda: session
     yield TestClient(app)

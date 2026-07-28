@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from campsites.models import Availability, Campground, Weather
 
 logger = logging.getLogger("monolith.campsites")

@@ -28,7 +28,7 @@ import logging
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from faas.invoke_router import _INVOKE_METHODS, _json, relay_to_function
 from faas.repository import get_public_function
 

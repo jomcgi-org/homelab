@@ -237,7 +237,7 @@ async def run_changelog_iteration(
 def _enqueue_changelog(channel_id: str, embed_dict: dict) -> None:
     """Enqueue a changelog embed to the Discord outbox. Sync so the async job
     can hand it to a worker thread (no sync Session on the event loop)."""
-    from app.db import get_engine
+    from core.db import get_engine
     from chat.outbox import enqueue_message
     from sqlmodel import Session
 

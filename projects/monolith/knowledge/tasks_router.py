@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from knowledge.router import get_embedding_client
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient

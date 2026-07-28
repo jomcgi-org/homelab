@@ -3,7 +3,7 @@
 The campsites SQLModel tables are schema-qualified (schema="campsites"), which
 SQLite has no concept of, so we strip the schema for the test and recreate the
 tables on an in-memory SQLite engine, mirroring worldcup/jobs_test.py and
-dr_jobs/jobs_test.py. app.db.get_engine is monkeypatched at the test engine so
+dr_jobs/jobs_test.py. core.db.get_engine is monkeypatched at the test engine so
 adapters that open their own Session land on it.
 
 These tests exercise the sync upsert/prune helpers (_load_and_upsert_catalog,
@@ -19,7 +19,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-import app.db as app_db
+import core.db as app_db
 import campsites.jobs as jobs
 from campsites.client import CampgroundRow, DayAvail
 from campsites.models import Availability, Campground, Weather

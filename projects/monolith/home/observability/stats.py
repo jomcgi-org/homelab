@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import text
 
-from app.db import get_engine
+from core.db import get_engine
 from cluster.api import KubernetesClient
 from home.observability.clickhouse import ClickHouseClient
 

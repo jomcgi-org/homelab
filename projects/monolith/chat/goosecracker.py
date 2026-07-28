@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from sqlmodel import Session, select
 
-from app.db import get_engine
+from core.db import get_engine
 from chat.models import GoosecrackerSession, GoosecrackerSteering, Message
 
 if TYPE_CHECKING:

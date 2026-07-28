@@ -24,7 +24,7 @@ def _singleton_patches_no_discord():
     mock_session.__enter__ = MagicMock(return_value=mock_session)
     mock_session.__exit__ = MagicMock(return_value=False)
     return [
-        patch("app.db.get_engine", return_value=MagicMock()),
+        patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
         patch("scheduler.api.purge_stale_jobs"),
@@ -37,7 +37,7 @@ def _singleton_patches_with_discord(mock_bot):
     mock_session.__enter__ = MagicMock(return_value=mock_session)
     mock_session.__exit__ = MagicMock(return_value=False)
     return [
-        patch("app.db.get_engine", return_value=MagicMock()),
+        patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
         patch("scheduler.api.purge_stale_jobs"),
@@ -150,7 +150,7 @@ async def test_lifespan_starts_elector_and_shuts_down_tracer():
         patch("asyncio.create_task", side_effect=cap),
         patch("framework.core._OTEL_PROVIDER", mock_tracer_provider),
         patch("home.observability.rollup.prime_snapshots", new_callable=AsyncMock),
-        patch("app.db.get_engine", return_value=MagicMock()),
+        patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("knowledge.service.on_startup"),
         patch("home.on_startup_jobs"),

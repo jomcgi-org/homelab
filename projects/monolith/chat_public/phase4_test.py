@@ -33,7 +33,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from chat_public import inference, retrieval, sessions
 from chat_public import router as router_module
 from chat_public.db import get_chat_session

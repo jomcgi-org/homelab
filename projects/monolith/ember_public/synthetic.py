@@ -7,7 +7,7 @@ import logging
 
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from ember_public.synthetic_models import EmberSyntheticProbe
 
 logger = logging.getLogger(__name__)

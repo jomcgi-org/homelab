@@ -157,7 +157,7 @@ def _db_session():
     Imported lazily so importing sandbox.client off-cluster (or in the guest
     contract tests) never pulls SQLModel or the DB engine.
     """
-    from app.db import get_engine  # noqa: PLC0415
+    from core.db import get_engine  # noqa: PLC0415
     from sqlmodel import Session  # noqa: PLC0415
 
     return Session(get_engine())

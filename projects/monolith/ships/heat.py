@@ -117,7 +117,7 @@ def _run_heat_rollup() -> None:
     DELETE + INSERT in one transaction so readers of heat_cells never see an
     empty table mid-rebuild (MVCC keeps the old rows visible until commit).
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     insert_sql = rollup_insert_sql(LAT_STEP, LON_STEP, MIN_SPEED_KN, WINDOW_DAYS)
     with Session(get_engine()) as session:

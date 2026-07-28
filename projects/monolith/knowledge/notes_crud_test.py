@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from app.main import app
 from knowledge.models import Note
 from knowledge.router import get_embedding_client

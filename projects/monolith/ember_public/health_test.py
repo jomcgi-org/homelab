@@ -305,7 +305,7 @@ def test_public_app_api_health_503s_when_demo_postgres_unconfigured(monkeypatch)
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
-    monkeypatch.setattr("app.db.get_engine", lambda: engine)
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
 
     app = build_app(PUBLIC_PROFILE, [MODULE])
     resp = TestClient(app).get("/api/health")

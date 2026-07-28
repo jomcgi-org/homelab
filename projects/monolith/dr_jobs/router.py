@@ -22,7 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from dr_jobs.models import Vacancy
 
 logger = logging.getLogger("dr_jobs")

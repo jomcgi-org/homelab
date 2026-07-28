@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
-from app.db import get_session
+from core.db import get_session
 from grimoire import library
 from grimoire.models import (
     Campaign,

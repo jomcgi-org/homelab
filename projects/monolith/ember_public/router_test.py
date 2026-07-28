@@ -1094,7 +1094,7 @@ def test_savings_endpoint_null_on_read_error(monkeypatch):
 
 def test_savings_accrual_uses_writer_engine_not_default(monkeypatch):
     """The accrual sync helper must read/write through
-    ember_public.db.get_savings_engine, not app.db.get_engine directly, so
+    ember_public.db.get_savings_engine, not core.db.get_engine directly, so
     public-tier accrual goes through public_writer rather than the
     read-only public_reader default."""
     calls = {"n": 0}

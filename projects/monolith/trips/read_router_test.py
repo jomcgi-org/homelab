@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from trips.models import Trip, TripPoint
 from trips.read_router import router as read_router
 

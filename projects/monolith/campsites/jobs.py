@@ -57,7 +57,7 @@ def _load_and_upsert_catalog() -> list[client.CampgroundRow]:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     rows = client.load_catalog()
     now = dt.now(timezone.utc)
@@ -97,7 +97,7 @@ def _upsert_availability(
     """
     from sqlmodel import Session, delete
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     now = dt.now(timezone.utc)
     written = 0
@@ -132,7 +132,7 @@ def _upsert_weather(
     """
     from sqlmodel import Session, delete
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     now = dt.now(timezone.utc)
     written = 0

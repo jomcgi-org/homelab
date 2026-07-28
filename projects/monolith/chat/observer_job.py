@@ -148,7 +148,7 @@ def _gather_candidates(
     Opens its own session (runs under ``asyncio.to_thread``, so it must never
     touch the caller's session).
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     candidates: list[tuple[str, list[dict]]] = []
     with Session(get_engine()) as session:
@@ -193,7 +193,7 @@ def _enqueue_proposal(channel_id: str, finding: dict, exchanges: list[dict]) -> 
     channel. Opens its own session (``asyncio.to_thread``). The drain's post-hook
     runs the actual ``propose_update`` once it has the posted message id.
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     evidence_ids = finding["evidence_message_ids"]
     directive_change = finding["directive_change"]

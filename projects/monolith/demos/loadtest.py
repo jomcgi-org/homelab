@@ -14,7 +14,7 @@ fixed run duration. It:
   node footprint, and a per-node/per-core throughput extrapolation) into
   ``demo.load_run.summary``.
 
-All DB work is synchronous SQLAlchemy (``app.db`` engine) run in a worker
+All DB work is synchronous SQLAlchemy (``core.db`` engine) run in a worker
 thread via ``asyncio.to_thread`` so the drain never blocks the event loop. The
 drain logic is unit-testable without a real DB by injecting a fake ``_invoke``
 and an in-memory store subclass (see ``loadtest_test.py``).
@@ -35,7 +35,7 @@ import httpx
 from sqlalchemy import text
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from cluster.api import KubernetesClient
 from demos.loadtest_corpus import load_corpus
 from shared.k8s_auth import auth_headers

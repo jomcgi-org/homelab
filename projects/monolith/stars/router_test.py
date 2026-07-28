@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from shared.forecast_freshness import top_of_hour
 from stars.models import Site, SiteHour, SiteMonthClimatology
 from stars.router import _HISTORY_CACHE_CONTROL, _SITES_CACHE_CONTROL, router

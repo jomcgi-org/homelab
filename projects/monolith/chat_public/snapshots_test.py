@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from app.db import get_session
+from core.db import get_session
 from chat_public import sessions
 from chat_public.db import get_chat_session
 from chat_public.models import ChatMessage, ChatSession, ChatSnapshot

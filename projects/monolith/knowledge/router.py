@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from knowledge.gaps import (
     GapError,
     answer_gap,

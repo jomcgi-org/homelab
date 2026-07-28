@@ -4,7 +4,7 @@ import logging
 
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from chat.bot import download_image_attachments
 from chat.store import MessageStore
 

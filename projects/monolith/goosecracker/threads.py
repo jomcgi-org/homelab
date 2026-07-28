@@ -21,7 +21,7 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 
 # Columns this ledger reads/serializes. The legacy placement columns
 # (node/arch/base_snapshot_ref/...) remain on the table but are unused here.

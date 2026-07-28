@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from shared.forecast_freshness import top_of_hour
 from stars.models import Site, SiteHour, SiteMonthClimatology
 from stars.scoring import CLEAR_CLOUD_MAX_PCT, is_dark_hour, is_twilight_hour

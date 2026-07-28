@@ -56,7 +56,7 @@ def _gather_dataset(now: datetime) -> dict:
     """Labeled feature vectors from moderation events, newest first. Rows with
     a stale feature-vector length (from an older FEATURE_NAMES) are dropped:
     the model must match the running extractor. Own session (to_thread)."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     since = now - timedelta(days=_WINDOW_DAYS)
     n_features = len(safeguards.FEATURE_NAMES)
@@ -91,7 +91,7 @@ def _store_model(forest: dict, n_samples: int, n_positive: int, trained_in: str)
     """Insert the new shadow model and retire superseded shadow rows. Returns
     the new version. Own session (to_thread). A 'live' row is never touched:
     promotion and demotion stay manual."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     now = datetime.now(timezone.utc)
     metrics = dict(forest.get("metrics") or {})

@@ -14,7 +14,7 @@ import logging
 
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from chat.models import AgentReplyRepair
 from chat.reply_sanitize import RepairOutcome
 

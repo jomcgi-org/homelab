@@ -1,4 +1,4 @@
-"""Unit tests for app.db — DATABASE_URL rewriting, engine caching, session."""
+"""Unit tests for core.db — DATABASE_URL rewriting, engine caching, session."""
 
 import importlib
 import os
@@ -8,7 +8,7 @@ import pytest
 from sqlmodel import Session, create_engine
 from sqlmodel.pool import StaticPool
 
-import app.db as db_module
+import core.db as db_module
 
 
 def teardown_module(module):
@@ -90,7 +90,7 @@ class TestGetEngine:
     def test_returns_engine_produced_by_create_engine(self):
         """get_engine() returns whatever create_engine() produces."""
         mock_engine = MagicMock()
-        with patch("app.db.create_engine", return_value=mock_engine):
+        with patch("core.db.create_engine", return_value=mock_engine):
             db_module.get_engine.cache_clear()
             result = db_module.get_engine()
         assert result is mock_engine
@@ -98,7 +98,7 @@ class TestGetEngine:
     def test_same_engine_returned_on_repeated_calls(self):
         """get_engine() returns the identical engine object each call (LRU cache)."""
         mock_engine = MagicMock()
-        with patch("app.db.create_engine", return_value=mock_engine):
+        with patch("core.db.create_engine", return_value=mock_engine):
             db_module.get_engine.cache_clear()
             engine1 = db_module.get_engine()
             engine2 = db_module.get_engine()
@@ -107,7 +107,7 @@ class TestGetEngine:
     def test_create_engine_called_only_once_despite_many_calls(self):
         """create_engine is invoked exactly once however many times get_engine is called."""
         mock_engine = MagicMock()
-        with patch("app.db.create_engine", return_value=mock_engine) as mock_create:
+        with patch("core.db.create_engine", return_value=mock_engine) as mock_create:
             db_module.get_engine.cache_clear()
             for _ in range(5):
                 db_module.get_engine()
@@ -117,7 +117,7 @@ class TestGetEngine:
         """Clearing the LRU cache causes create_engine to be called again."""
         mock_engine_a = MagicMock(name="engine_a")
         mock_engine_b = MagicMock(name="engine_b")
-        with patch("app.db.create_engine", side_effect=[mock_engine_a, mock_engine_b]):
+        with patch("core.db.create_engine", side_effect=[mock_engine_a, mock_engine_b]):
             db_module.get_engine.cache_clear()
             first = db_module.get_engine()
             db_module.get_engine.cache_clear()
@@ -132,7 +132,7 @@ class TestGetEngine:
         be called with any string and the return-value assertion would still pass.
         """
         mock_engine = MagicMock()
-        with patch("app.db.create_engine", return_value=mock_engine) as mock_create:
+        with patch("core.db.create_engine", return_value=mock_engine) as mock_create:
             db_module.get_engine.cache_clear()
             db_module.get_engine()
         mock_create.assert_called_once_with(db_module.DATABASE_URL)

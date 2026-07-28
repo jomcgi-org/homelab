@@ -70,6 +70,7 @@ _BACKEND_SRCS = glob(
         "agent/**/*.py",
         "agent_sessions/**/*.py",
         "app/**/*.py",
+        "core/**/*.py",
         "framework/**/*.py",
         "artifact/**/*.py",
         "chat/**/*.py",
@@ -261,6 +262,7 @@ py_library(
             "agent/**/*.py",
             "agent_sessions/**/*.py",
             "app/**/*.py",
+            "core/**/*.py",
             "framework/**/*.py",
             "artifact/**/*.py",
             "chat/**/*.py",
@@ -526,6 +528,7 @@ py_library(
     srcs = glob(
         [
             "app/**/*.py",
+            "core/**/*.py",
             "framework/**/*.py",
             "artifact/**/*.py",
             "knowledge/**/*.py",
@@ -605,6 +608,7 @@ py_venv_binary(
     srcs = glob(
         [
             "app/**/*.py",
+            "core/**/*.py",
             "framework/**/*.py",
             "artifact/**/*.py",
             "knowledge/**/*.py",
@@ -828,7 +832,7 @@ py_test(
 
 py_test(
     name = "db_test",
-    srcs = ["app/db_test.py"],
+    srcs = ["core/db_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1801,7 +1805,7 @@ py_test(
 
 py_test(
     name = "leadership_test",
-    srcs = ["app/leadership_test.py"],
+    srcs = ["core/leadership_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1945,7 +1949,7 @@ py_test(
 
 py_test(
     name = "log_test",
-    srcs = ["app/log_test.py"],
+    srcs = ["core/log_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1955,7 +1959,7 @@ py_test(
 
 py_test(
     name = "log_config_test",
-    srcs = ["app/log_config_test.py"],
+    srcs = ["core/log_config_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",

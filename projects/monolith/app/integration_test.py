@@ -25,7 +25,7 @@ os.environ.pop("STATIC_DIR", None)
 os.environ.pop("DISCORD_BOT_TOKEN", None)
 os.environ.pop("ICAL_FEED_URL", None)
 
-from app.db import get_session  # noqa: E402
+from core.db import get_session  # noqa: E402
 from app.main import app  # noqa: E402
 
 

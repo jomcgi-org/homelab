@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session
 
-from app.db import get_engine
+from core.db import get_engine
 from chat import whatsapp_calendar
 from chat.models import (
     WhatsappCalendarDraft,

@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from chat_public import (
     cache,
     inference,

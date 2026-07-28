@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.transport import Turn
-from app.db import get_engine
+from core.db import get_engine
 
 logger = logging.getLogger(__name__)
 

@@ -26,7 +26,7 @@ Public-safety (confinement is data, not a prompt rule):
   cannot surface a private entity because it is filtered out in code here, and the
   public_reader role has no grant rows to widen visibility.
 
-Reads go through the DEFAULT app engine (``app.db.get_session``), which in the
+Reads go through the DEFAULT app engine (``core.db.get_session``), which in the
 public binary is the read-only ``public_reader`` role on the read replica; it holds
 SELECT on ``grimoire.embedding/entity/knowledge_chunk`` (and the typed detail
 tables) and nothing that would let it read private campaign data. The embedding

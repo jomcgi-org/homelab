@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from agent import checks, locks
 from agent import notify as notify_mod
 from agent import routine_jobs
-from app.mcp_app import mcp
+from core.mcp_app import mcp
 import chat.api as chat_api
 import goosecracker.api as goosecracker
 

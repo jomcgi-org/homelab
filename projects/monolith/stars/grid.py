@@ -93,7 +93,7 @@ def _load_grid_sync() -> int:
     delete + add_all run in one transaction so a failure leaves the prior table
     intact rather than truncating it.
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     grid = _fetch_grid()
     if not grid:
@@ -202,7 +202,7 @@ def _load_climatology_sync() -> int:
     transaction so a failure leaves the prior table intact rather than truncating
     it.
     """
-    from app.db import get_engine
+    from core.db import get_engine
 
     backfill = _fetch_climatology()
     if not backfill:

@@ -54,7 +54,7 @@ def _upsert(standings_rows: list[dict], fixture_rows: list[dict]) -> bool:
     """
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     now = datetime.now(timezone.utc)
     sim_changed = False
@@ -277,7 +277,7 @@ def _simulate_and_store(inputs_changed: bool) -> None:
     """
     from sqlmodel import Session, select
 
-    from app.db import get_engine
+    from core.db import get_engine
 
     current_n = int(os.environ.get("WORLDCUP_SIM_N", "500000"))
     # Swing is only a ranking, so its expensive per-country cross-product rides a

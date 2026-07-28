@@ -19,7 +19,7 @@ runner = CliRunner()
 def test_worldcup_sim_dispatches_to_refresh_handler():
     handler = mock.AsyncMock(return_value=None)
     with (
-        mock.patch("app.db.get_engine", return_value=object()),
+        mock.patch("core.db.get_engine", return_value=object()),
         mock.patch("sqlmodel.Session"),
         mock.patch("worldcup.jobs.refresh_handler", new=handler),
     ):

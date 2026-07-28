@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from sqlmodel import Field, Session, SQLModel, select, text
 
-from app.db import get_engine
+from core.db import get_engine
 
 if TYPE_CHECKING:
     from scheduler.views import SchedulerJobView

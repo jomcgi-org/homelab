@@ -14,8 +14,8 @@ import logging
 import yaml
 from sqlmodel import Session, select
 
-from app.db import get_engine
-from app.mcp_app import mcp
+from core.db import get_engine
+from core.mcp_app import mcp
 from knowledge import frontmatter
 from knowledge import notes as notes_module
 from knowledge.gaps import answer_gap as _answer_gap

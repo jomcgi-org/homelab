@@ -132,7 +132,7 @@ def _capture_scan(scan_id: int) -> None:
     a failure is logged and swallowed so a bad delivery never 500s the webhook."""
     from sqlmodel import Session
 
-    from app.db import get_engine
+    from core.db import get_engine
     from semgrep_scan.perf_store import upsert_scan_perf
 
     try:

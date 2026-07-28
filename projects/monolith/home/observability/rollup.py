@@ -18,7 +18,7 @@ import logging
 
 from sqlmodel import Session, text
 
-from app.db import get_engine
+from core.db import get_engine
 from home.observability.stats import build_stats
 from scheduler.api import register_job
 

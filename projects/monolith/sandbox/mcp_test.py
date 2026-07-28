@@ -10,7 +10,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_run_python_tool_registered():
     importlib.import_module("sandbox.mcp")
-    from app.mcp_app import mcp
+    from core.mcp_app import mcp
 
     tools = await mcp.list_tools()
     registered = {t.name for t in tools}

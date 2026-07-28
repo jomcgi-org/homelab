@@ -62,7 +62,7 @@ async def test_all_mcp_tool_descriptions_pass_context_forge_validation():
         "no module in app.modules_private.ALL_MODULES declares register_mcp; "
         "the test cannot see the tool set"
     )
-    from app.mcp_app import mcp
+    from core.mcp_app import mcp
 
     tools = await mcp.list_tools()
     violations: list[str] = []

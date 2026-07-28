@@ -357,7 +357,7 @@ def _agent_reply_context(
 
 def _fetch_agent_reply_context(channel_id: str) -> str:
     """Open a fresh session and build the concierge context (sync; via to_thread)."""
-    from app.db import get_engine
+    from core.db import get_engine
 
     with Session(get_engine()) as session:
         return _agent_reply_context(session, channel_id)

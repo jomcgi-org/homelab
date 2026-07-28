@@ -25,7 +25,7 @@ import re
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlmodel import Session
 
-from app.db import get_session
+from core.db import get_session
 from faas import embervm_client, storage, workload
 from faas.repository import (
     delete_function,

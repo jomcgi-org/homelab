@@ -21,7 +21,7 @@ from email.utils import format_datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from core.db import get_session
 from knowledge.gardener import _slugify
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.notes import resolve_note_body

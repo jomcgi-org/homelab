@@ -3,7 +3,7 @@ cancel_reminder) via FunctionModel, mirroring agent_channel_digest_tool_test.py.
 
 Unlike the digest tools (which fake out build_llm_caller), these exercise the
 real chat.reminders CRUD end to end against an in-memory SQLite engine patched
-onto app.db.get_engine -- the interesting behaviour here is the tool's own
+onto core.db.get_engine -- the interesting behaviour here is the tool's own
 ISO-8601 parsing, id coercion, and error-string plumbing around a real
 create/list/cancel round trip, not the CRUD logic itself (already covered by
 chat/reminders_test.py).
@@ -27,7 +27,7 @@ def engine_fixture():
     """In-memory SQLite engine with the full chat schema, schema stripped so
     SQLite accepts the DDL -- mirrors chat.reminders_test's session_fixture,
     but yields the engine (not a session) since the tool code under test
-    opens its own session per call via app.db.get_engine."""
+    opens its own session per call via core.db.get_engine."""
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -94,7 +94,7 @@ class TestSetReminderHappyPath:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -119,7 +119,7 @@ class TestSetReminderHappyPath:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -136,7 +136,7 @@ class TestSetReminderHappyPath:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -158,7 +158,7 @@ class TestSetReminderUnparseableInput:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -173,7 +173,7 @@ class TestSetReminderUnparseableInput:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -198,7 +198,7 @@ class TestSetReminderCrudErrorsPassThrough:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -216,7 +216,7 @@ class TestSetReminderCrudErrorsPassThrough:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -242,7 +242,7 @@ class TestSetReminderCrudErrorsPassThrough:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -264,7 +264,7 @@ class TestSetReminderNoAuthor:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps(author_id="")
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -286,7 +286,7 @@ class TestSetReminderFailsOpen:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", side_effect=RuntimeError("db unreachable")):
+        with patch("core.db.get_engine", side_effect=RuntimeError("db unreachable")):
             result = await _run_tool_capturing_return(
                 agent,
                 "set_reminder",
@@ -325,7 +325,7 @@ class TestListMyReminders:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent, "list_my_reminders", {}, deps
             )
@@ -338,7 +338,7 @@ class TestListMyReminders:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent, "list_my_reminders", {}, deps
             )
@@ -367,7 +367,7 @@ class TestListMyReminders:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps(author_id="user-1")
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent, "list_my_reminders", {}, deps
             )
@@ -380,7 +380,7 @@ class TestListMyReminders:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps(author_id="")
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent, "list_my_reminders", {}, deps
             )
@@ -392,7 +392,7 @@ class TestListMyReminders:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", side_effect=RuntimeError("db unreachable")):
+        with patch("core.db.get_engine", side_effect=RuntimeError("db unreachable")):
             result = await _run_tool_capturing_return(
                 agent, "list_my_reminders", {}, deps
             )
@@ -424,7 +424,7 @@ class TestCancelReminder:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "cancel_reminder",
@@ -445,7 +445,7 @@ class TestCancelReminder:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "cancel_reminder",
@@ -471,7 +471,7 @@ class TestCancelReminder:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps(author_id="user-1")
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "cancel_reminder",
@@ -486,7 +486,7 @@ class TestCancelReminder:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps(author_id="")
 
-        with patch("app.db.get_engine", return_value=engine):
+        with patch("core.db.get_engine", return_value=engine):
             result = await _run_tool_capturing_return(
                 agent,
                 "cancel_reminder",
@@ -501,7 +501,7 @@ class TestCancelReminder:
         agent = create_agent(base_url="http://fake:8080")
         deps = _make_deps()
 
-        with patch("app.db.get_engine", side_effect=RuntimeError("db unreachable")):
+        with patch("core.db.get_engine", side_effect=RuntimeError("db unreachable")):
             result = await _run_tool_capturing_return(
                 agent,
                 "cancel_reminder",
