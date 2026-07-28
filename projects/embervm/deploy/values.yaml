@@ -218,6 +218,14 @@ statefulSweeper:
 # Rollback: set back to "" and bump the chart; that stops further eviction.
 baseRetention:
   sweepEnabled: "1"
+  # Arm REMOTE base retention (#3947 PR-4, Joe 2026-07-27). Local retention has
+  # been reclaiming node disk for a while, but nothing reclaimed the store, so
+  # superseded S3 bases accumulated without bound. Armed directly rather than
+  # after a dry-run soak because a base is a RECONSTRUCTIBLE artifact: a wrong
+  # delete costs a rebuild, not data, and the keep-set already spares a pinned
+  # session's base via the primed/session refcount. Rollback is setting this
+  # back to "".
+  remoteSweepEnabled: "1"
 
 # Arm the warmth-retention sweep (task #36, Joe 2026-07-22): flips the merged-inert
 # WarmthReaper from dry-run to acting. With #38 fix C the reaper SKIPS empty-binding

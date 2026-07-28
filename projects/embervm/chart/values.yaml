@@ -671,6 +671,14 @@ statefulSweeper:
 # this value back to "" is the entire rollback lever.
 baseRetention:
   sweepEnabled: ""
+  # Remote (store) base retention gate, #3947 PR-4. "1" arms eviction of
+  # superseded S3 bases per (workload, vendor), keeping each vendor's current ref
+  # plus any superseded ref still refcounted by a primed VM or a session. Unset
+  # ("") keeps the dry-run that only logs. Flipping back to "" is the whole
+  # rollback lever. Deleting a base costs a REBUILD, not data: a base is a
+  # reconstructible artifact, and a pinned session's base is spared by the
+  # refcount.
+  remoteSweepEnabled: ""
 
 # Warmth-retention sweep gate (base-durability PR-3, extended to stateful and group
 # orphans, task #36): "1" arms the reconciled eviction of orphaned stateful/group

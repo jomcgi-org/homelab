@@ -1989,6 +1989,98 @@ defmodule Embervm.BaseBuilderTest do
     assert_receive {:listed, "w", "amd"}, 1_000
   end
 
+  test "remote retention with the gate ON evicts superseded store bases per vendor" do
+    agent = start_recorder()
+    table = new_cap_table()
+    test_pid = self()
+
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd_cur", "amd")
+    put_vendor_fact(table, "node-1", "ds", "w", "w__intel_cur", "intel")
+
+    list_fun = fn _channel, _workload, vendor ->
+      entries =
+        case vendor do
+          "amd" -> [%{ref: "w__amd_cur", size_bytes: 10}, %{ref: "w__amd_old", size_bytes: 20}]
+          "intel" -> [%{ref: "w__intel_cur", size_bytes: 30}, %{ref: "w__intel_old", size_bytes: 40}]
+        end
+
+      {:ok, entries, false}
+    end
+
+    remote_evict_fun = fn _channel, workload, vendor, ref ->
+      send(test_pid, {:remote_evicted, workload, vendor, ref})
+      {:ok, %{}}
+    end
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd_cur")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        list_fun: list_fun,
+        remote_evict_fun: remote_evict_fun,
+        remote_retention_sweep_enabled: true,
+        nodes: [@node, %{id: "node-1/ds", address: "node-1:9090"}]
+      )
+
+    build_current(builder, agent, "w__amd_cur")
+    _ = BaseBuilder.retention_sweep_now(builder)
+
+    # Each vendor's SUPERSEDED store base is evicted, carrying that vendor.
+    assert_receive {:remote_evicted, "w", "amd", "w__amd_old"}, 1_000
+    assert_receive {:remote_evicted, "w", "intel", "w__intel_old"}, 1_000
+
+    # Neither vendor's CURRENT base is touched.
+    refute_receive {:remote_evicted, "w", _, "w__amd_cur"}, 200
+    refute_receive {:remote_evicted, "w", _, "w__intel_cur"}, 200
+  end
+
+  test "remote retention spares a superseded base a session or primed VM still holds" do
+    agent = start_recorder()
+    table = new_cap_table()
+    test_pid = self()
+
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd_cur", "amd")
+
+    list_fun = fn _channel, _workload, _vendor ->
+      {:ok, [%{ref: "w__amd_cur", size_bytes: 10}, %{ref: "w__pinned", size_bytes: 99}], false}
+    end
+
+    remote_evict_fun = fn _channel, workload, vendor, ref ->
+      send(test_pid, {:remote_evicted, workload, vendor, ref})
+      {:ok, %{}}
+    end
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd_cur")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        list_fun: list_fun,
+        remote_evict_fun: remote_evict_fun,
+        remote_retention_sweep_enabled: true
+      )
+
+    build_current(builder, agent, "w__amd_cur")
+
+    # A superseded ref STILL REFERENCED (not yet drained/evicted): this is the one
+    # case where a wrong delete is real loss rather than a rebuild, because a
+    # pinned session can only relight against this exact base.
+    :sys.replace_state(builder, fn state ->
+      w = state.workloads["w"]
+      w = %{w | base_refs: %{"w__pinned" => %{primed: 0, sessions: 1, evicted: false}}}
+      %{state | workloads: %{"w" => w}}
+    end)
+
+    _ = BaseBuilder.retention_sweep_now(builder)
+
+    refute_receive {:remote_evicted, "w", _, "w__pinned"}, 500
+  end
+
   test "remote retention skips a vendor whose daemon does not implement ListArtifacts" do
     agent = start_recorder()
     table = new_cap_table()
