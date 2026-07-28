@@ -27,7 +27,8 @@ defmodule Embervm.PoolManager do
   That is the floor-isolation property the acceptance test asserts.
 
   Primes are spread round-robin across eligible instances to prevent
-  concentration and allow autoscaling.
+  concentration and allow autoscaling. Instances must also satisfy the
+  workload's memory need according to `Embervm.Placement.mem_eligible?/2`.
 
   ## backpressure
 
@@ -69,7 +70,7 @@ defmodule Embervm.PoolManager do
   use GenServer
   require Logger
 
-  alias Embervm.{NodeCapacity, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, Placement, WorkloadCatalog}
   alias Embervm.Node.V1.{PrimeRequest, PrimeResponse, Trace}
 
   @refill_interval_ms 1_000
@@ -229,7 +230,25 @@ defmodule Embervm.PoolManager do
     node_id = dial_id(facts)
     node_inflight = node_inflight_primes(state, node_id)
     budget = max(0, Map.get(facts, :max_live_vms, 0) - Map.get(facts, :live_vms, 0) - node_inflight)
-    %{node_id: node_id, budget: budget, workloads: ready_workloads(state, facts)}
+    %{
+      node_id: node_id,
+      budget: budget,
+      # Normalized exactly as `Embervm.BrickLedger.to_brick/1` does, so the shared
+      # `Placement.mem_eligible?/2` predicate reads the same shape here as on every
+      # other placement path. `||` rather than a Map.get default because the key can
+      # be PRESENT holding nil, which a default never covers.
+      #
+      # mem_headroom_mib is the one that MUST be normalized: mem_eligible?/2 compares
+      # `mem_headroom_mib >= need_mib`, and Elixir orders atoms above numbers, so a
+      # nil headroom would satisfy EVERY memory need rather than none. Empty
+      # size_class and zero mem_budget_mib deliberately read as the WILDCARD (the
+      # legacy DaemonSet, or a brick under no cgroup limit), which is always
+      # mem-eligible by design: see the Placement moduledoc.
+      size_class: Map.get(facts, :size_class) || "",
+      mem_headroom_mib: Map.get(facts, :mem_headroom_mib) || 0,
+      mem_budget_mib: Map.get(facts, :mem_budget_mib) || 0,
+      workloads: ready_workloads(state, facts)
+    }
   end
 
   # Workloads this node has a ready base for, paired with their catalog entry
@@ -238,7 +257,11 @@ defmodule Embervm.PoolManager do
     for {wl, wc} <- facts.workloads || %{},
         base_ready?(wc),
         {:ok, entry} <- [WorkloadCatalog.fetch(state.catalog_table, wl)] do
-      {wl, %{namespace: entry.namespace, floor: entry.floor,
+      # The catalog entry carries this directly: workload_watcher's catalog_entry/…
+      # sets `mem_mib: Map.get(resources, "memMib")`. nil for a CR that omits it.
+      mem_mib = Map.get(entry, :mem_mib)
+
+      {wl, %{namespace: entry.namespace, floor: entry.floor, mem_mib: mem_mib,
         snapshot_ref: Map.get(wc, :snapshot_ref), free: Map.get(wc, :free_primed_slots, 0)}}
     end
     |> Map.new()
@@ -325,10 +348,40 @@ defmodule Embervm.PoolManager do
 
     case Enum.find(candidates, fn i ->
            instance = Enum.at(instances, i)
-           instance.budget > 0 and Map.has_key?(instance.workloads, wl)
+           instance.budget > 0 and Map.has_key?(instance.workloads, wl) and
+             memory_eligible?(instance, wl)
          end) do
-      nil -> :none
-      index -> {index, List.update_at(instances, index, &%{&1 | budget: &1.budget - 1})}
+      nil ->
+        :none
+
+      index ->
+        {index, List.update_at(instances, index, &consume(&1, wl))}
+    end
+  end
+
+  # Charge one placement to the instance: a slot, AND the workload's memory.
+  #
+  # Decrementing headroom is what makes the memory gate CUMULATIVE within a pass.
+  # A single tick can place several VMs on one instance (a floor deficit, or the
+  # queue-depth surplus), and the capacity facts only refresh on the next
+  # heartbeat, so checking a static `mem_headroom_mib` per placement would happily
+  # commit three 1024 MiB guests to a brick reporting 1933 MiB: each one passes the
+  # gate alone, and the daemon then refuses all but the first with pressure:mem.
+  # That is the failure this whole change exists to stop (issue #4121), so it has
+  # to hold within the pass and not just across ticks.
+  defp consume(instance, wl) do
+    need = instance.workloads[wl].mem_mib || 0
+    %{instance | budget: instance.budget - 1, mem_headroom_mib: max(0, instance.mem_headroom_mib - need)}
+  end
+
+  # A wildcard brick satisfies any need, so this only ever binds on a classed one.
+  # A workload whose CR omits `resources.memMib` has no need to check and stays
+  # eligible: the pool must not stop priming a workload just because its spec did
+  # not pin a size.
+  defp memory_eligible?(instance, wl) do
+    case instance.workloads[wl].mem_mib do
+      nil -> true
+      mem_mib -> Placement.mem_eligible?(instance, mem_mib)
     end
   end
 
