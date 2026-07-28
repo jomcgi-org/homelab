@@ -375,6 +375,16 @@ defmodule Embervm.WakeInstance do
 
         if capacity_denial? do
           Embervm.BrickController.note_denial(need_mib)
+        else
+          # Bricks here were slot/mem-eligible but NONE advertised the workload's
+          # base, so this is a provisioning gap, not a capacity wall. Tell the base
+          # builder, which pins a workload's base to ONE instance and would
+          # otherwise never place one on this node: a stateful wake anchors to the
+          # VOLUME's node, and when that diverges from the pin the anchor is nobody's
+          # responsibility and the wake fails forever (issue #4127). An async cast
+          # that no-ops when the builder is not running, exactly like note_denial
+          # above; the wake outcome is unchanged either way.
+          Embervm.BaseBuilder.note_base_missing(workload, node_id)
         end
 
         {:error, :no_eligible_instance}
