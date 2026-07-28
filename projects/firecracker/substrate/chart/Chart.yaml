@@ -1,5 +1,0 @@
-apiVersion: v2
-name: fc-invoke
-description: Node-affine Firecracker invoke daemon that dispatches HTTP invocations to a pool of warm-base microVMs across named workloads (POST /invoke/{workload}, GET /healthz)
-type: application
-version: 0.4.97
