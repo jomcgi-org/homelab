@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // volFile / genFile / blessedFile are the files under a workload's volume
@@ -45,13 +46,22 @@ type Manager struct {
 	root string
 
 	mu       sync.Mutex
-	attached map[string]struct{}
+	attached map[string]attachment
+}
+
+// attachment records WHO holds a workload's writable-attach lock. owner is
+// the vmID, and is empty while a start is still in flight, because Attach is
+// acquired before the VM exists. Without an owner the lock cannot be
+// reconciled against reality, which is what wedged demo-postgres in #3648.
+type attachment struct {
+	owner string
+	since time.Time
 }
 
 // NewManager builds a Manager rooted at root (VolumeRoot). It does not touch
 // disk; callers create the root lazily via Create.
 func NewManager(root string) *Manager {
-	return &Manager{root: root, attached: make(map[string]struct{})}
+	return &Manager{root: root, attached: make(map[string]attachment)}
 }
 
 // dir is the per-workload volume directory.
@@ -140,8 +150,57 @@ func (m *Manager) Attach(workload string) error {
 	if _, ok := m.attached[workload]; ok {
 		return fmt.Errorf("volume: workload %q already has a writable attach in progress", workload)
 	}
-	m.attached[workload] = struct{}{}
+	m.attached[workload] = attachment{since: time.Now()}
 	return nil
+}
+
+// Bind records the vmID that owns workload's writable attach, once the VM
+// exists. A bound attach can be reclaimed by a later start when the registry
+// says that vm is gone; an unbound one can only age out. No-op if the workload
+// is not attached.
+func (m *Manager) Bind(workload, vmID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	attach, ok := m.attached[workload]
+	if !ok {
+		return
+	}
+	attach.owner = vmID
+	m.attached[workload] = attach
+}
+
+// ReleaseOrphaned reclaims workload's writable attach when it is provably
+// stale, returning the reason and true when it released. liveVMID is the vmID
+// the caller's live-instance registry currently has for this workload, empty
+// when it has none.
+//
+// Two stale cases, both conservative:
+//   - bound to an owner that is not liveVMID: the owning VM is gone or has
+//     been replaced, so nothing holds the device.
+//   - unbound for longer than pendingGrace: a start that never reached the VM.
+//     Gated on a grace far longer than any legitimate boot so a slow start is
+//     never robbed mid-flight.
+//
+// A healthy attach (owner == liveVMID, both non-empty) is never touched.
+func (m *Manager) ReleaseOrphaned(workload, liveVMID string, pendingGrace time.Duration) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	attach, ok := m.attached[workload]
+	if !ok {
+		return "", false
+	}
+	if attach.owner == "" {
+		if time.Since(attach.since) > pendingGrace {
+			delete(m.attached, workload)
+			return fmt.Sprintf("in-flight start exceeded %s without binding a vm", pendingGrace), true
+		}
+		return "", false
+	}
+	if attach.owner == liveVMID {
+		return "", false
+	}
+	delete(m.attached, workload)
+	return fmt.Sprintf("owner vm %q is no longer live", attach.owner), true
 }
 
 // Detach releases the writable-attach lock for a workload. Idempotent: an

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestCreateSparseAndGenerationInit(t *testing.T) {
@@ -245,6 +246,88 @@ func TestDetachIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	m := NewManager(dir)
 	m.Detach("never-attached") // must not panic
+}
+
+func TestReleaseOrphanedHealthyBoundAttach(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.Attach("wl-a"); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	m.Bind("wl-a", "vm-a")
+	if reason, released := m.ReleaseOrphaned("wl-a", "vm-a", 0); released || reason != "" {
+		t.Fatalf("ReleaseOrphaned healthy attach = %q, %v want empty, false", reason, released)
+	}
+	if !m.IsAttached("wl-a") {
+		t.Error("healthy bound attach should remain held")
+	}
+}
+
+func TestReleaseOrphanedReclaimsReplacedBoundAttach(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.Attach("wl-a"); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	m.Bind("wl-a", "vm-a")
+	if reason, released := m.ReleaseOrphaned("wl-a", "vm-b", time.Hour); !released || reason != `owner vm "vm-a" is no longer live` {
+		t.Fatalf("ReleaseOrphaned replaced attach = %q, %v", reason, released)
+	}
+	if m.IsAttached("wl-a") {
+		t.Error("reclaimed attach should not remain held")
+	}
+	if err := m.Attach("wl-a"); err != nil {
+		t.Fatalf("Attach after reclaim: %v", err)
+	}
+}
+
+func TestReleaseOrphanedReclaimsUnboundAttachWithoutLiveVM(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.Attach("wl-a"); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	m.Bind("wl-a", "vm-a")
+	if reason, released := m.ReleaseOrphaned("wl-a", "", time.Hour); !released || reason != `owner vm "vm-a" is no longer live` {
+		t.Fatalf("ReleaseOrphaned missing live VM = %q, %v", reason, released)
+	}
+}
+
+func TestReleaseOrphanedPendingAttachGrace(t *testing.T) {
+	t.Run("slow boot is retained", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		if err := m.Attach("wl-a"); err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+		if reason, released := m.ReleaseOrphaned("wl-a", "", time.Hour); released || reason != "" {
+			t.Fatalf("ReleaseOrphaned within grace = %q, %v want empty, false", reason, released)
+		}
+	})
+	t.Run("expired start is reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		if err := m.Attach("wl-a"); err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+		if reason, released := m.ReleaseOrphaned("wl-a", "", 0); !released || reason == "" {
+			t.Fatalf("ReleaseOrphaned expired attach = %q, %v", reason, released)
+		}
+	})
+}
+
+func TestReleaseOrphanedNeverAttached(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if reason, released := m.ReleaseOrphaned("never-attached", "", 0); released || reason != "" {
+		t.Fatalf("ReleaseOrphaned missing attach = %q, %v", reason, released)
+	}
+}
+
+func TestDetachReleasesAndBindUnattachedIsNoOp(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Bind("never-attached", "vm-a")
+	if err := m.Attach("wl-a"); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	m.Detach("wl-a")
+	if m.IsAttached("wl-a") {
+		t.Error("Detach should fully release the attach")
+	}
 }
 
 // TestDeleteRefusesWhileAttached proves the ONLY destructive data verb refuses

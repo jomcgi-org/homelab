@@ -213,6 +213,7 @@ func (s *Server) startStatefulRelight(ctx context.Context, req *nodev1.StartStat
 	// further write must be witnessed by a strictly newer generation than the
 	// one the bundle was stamped with, or a future relight of a LATER bank
 	// could falsely re-match this now-stale bundle.
+	s.releaseOrphanedAttach(workload)
 	if err := s.volumes.Attach(workload); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: %v", err)
 	}
@@ -296,6 +297,7 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	// a losing racer strand the winner's generation (ledger ahead of the booted
 	// VM's stamp), making every later relight cold-boot. Singleton by construction
 	// upstream, but the daemon enforces it where the data physically lives.
+	s.releaseOrphanedAttach(workload)
 	if err := s.volumes.Attach(workload); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: %v", err)
 	}
@@ -359,6 +361,7 @@ func (s *Server) finishStatefulStart(ctx context.Context, h substrate.Handle, wo
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: install stateful DNAT for %s: %v", ip, err)
 	}
 	probe := serving.StartTCPProbe(s.newTCPProber(), ip, port)
+	s.volumes.Bind(workload, h.ID)
 	s.statefulVMs.add(&statefulEntry{
 		vmID:        h.ID,
 		workload:    workload,
@@ -420,6 +423,25 @@ func (s *Server) waitStatefulReady(ctx context.Context, ip net.IP, port uint32, 
 // DEAD control plane cannot pin a paused VM's live-VM cap slot and memory for more
 // than this. A tuning knob to refine alongside the flap guard.
 const defaultStatefulResolveTimeout = 30 * time.Second
+
+// statefulPendingAttachGrace bounds how long an unbound writable attach may
+// sit before a new start may reclaim it. It is deliberately several times
+// BootReadyTimeout (60s), the longest legitimate in-flight start, so a slow
+// cold boot can never have its attach stolen out from under it.
+const statefulPendingAttachGrace = 5 * time.Minute
+
+// releaseOrphanedAttach clears a writable-attach lock whose owning VM the
+// registry no longer knows about, so a workload wedged by a lost Detach
+// self-heals on its next wake instead of needing a noded restart (#3648).
+func (s *Server) releaseOrphanedAttach(workload string) {
+	live := ""
+	if e, ok := s.statefulVMs.byWorkload(workload); ok {
+		live = e.vmID
+	}
+	if reason, released := s.volumes.ReleaseOrphaned(workload, live, statefulPendingAttachGrace); released {
+		s.logger.Warn("noded: reclaimed orphaned writable attach", "workload", workload, "reason", reason)
+	}
+}
 
 // StopStateful tears down a live stateful VM. BANK pauses it, writes a
 // stateful snapshot stamped with the CURRENT volume generation, evicts any
