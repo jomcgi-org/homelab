@@ -1644,27 +1644,79 @@ defmodule Embervm.BaseBuilder do
   # This logs what it WOULD evict and deletes nothing. Arming it is a separate
   # change, deliberately, because the blast radius is the bucket.
   defp remote_retention_sweep(state) do
-    for {_name, w} <- state.workloads,
-        {vendor, vendor_refs} <- snapshot_refs_by_vendor(state, w),
-        {:ok, instance_id} <- [node_of_vendor(state, w, vendor)] do
-      keep =
-        MapSet.new(vendor_refs ++ desired_refs_for_node(nil, w))
-        |> MapSet.delete(nil)
+    tallies =
+      for {_name, w} <- state.workloads,
+          {vendor, vendor_refs} <- snapshot_refs_by_vendor(state, w) do
+        case node_of_vendor(state, w, vendor) do
+          :error ->
+            # No reachable node reports this vendor, so nobody can answer for its
+            # store prefix this tick. Counted, not silent: a comprehension
+            # generator that fails to match drops the element with no trace, and
+            # a sweep that is silent on skip is indistinguishable from one that
+            # is not running.
+            :no_vendor_node
 
-      case list_remote_refs(state, instance_id, w.name, vendor) do
-        {:ok, entries, truncated} ->
-          candidates = Enum.reject(entries, fn e -> MapSet.member?(keep, e.ref) end)
-          apply_remote_retention(state, instance_id, w.name, vendor, candidates, truncated, keep)
+          {:ok, instance_id} ->
+            keep =
+              MapSet.new(vendor_refs ++ desired_refs_for_node(nil, w))
+              |> MapSet.delete(nil)
 
-        {:error, reason} ->
-          # Fail toward KEEPING bytes: a daemon that predates ListArtifacts
-          # answers UNIMPLEMENTED, and a store hiccup is Unavailable. Either way
-          # the correct move is to skip this (workload, vendor) this tick.
-          Logger.debug(
-            "embervm base builder: remote retention skipped for #{w.name}/#{vendor}: #{inspect(reason)}"
-          )
+            case list_remote_refs(state, instance_id, w.name, vendor) do
+              {:ok, entries, truncated} ->
+                candidates = Enum.reject(entries, fn e -> MapSet.member?(keep, e.ref) end)
+
+                apply_remote_retention(
+                  state,
+                  instance_id,
+                  w.name,
+                  vendor,
+                  candidates,
+                  truncated,
+                  keep
+                )
+
+                {:listed, length(entries), length(candidates)}
+
+              {:error, reason} ->
+                # Fail toward KEEPING bytes: a daemon that predates ListArtifacts
+                # answers UNIMPLEMENTED, and a store hiccup is Unavailable. Either
+                # way the correct move is to skip this (workload, vendor).
+                Logger.debug(
+                  "embervm base builder: remote retention skipped for #{w.name}/#{vendor}: #{inspect(reason)}"
+                )
+
+                :list_failed
+            end
+        end
       end
-    end
+
+    log_remote_retention_summary(state, tallies)
+  end
+
+  # One INFO line per sweep, always. Without it the sweep is unobservable in the
+  # common case: it logs per (workload, vendor) only when there are candidates, so
+  # "found nothing to evict", "no node of that vendor", and "never ran at all"
+  # all look identical from outside. That ambiguity is unacceptable for a sweep
+  # that deletes from a shared bucket, so the summary reports the shape of the
+  # pass even when it is a no-op. One line per 5m tick, not per workload.
+  defp log_remote_retention_summary(state, tallies) do
+    listed = Enum.count(tallies, &match?({:listed, _, _}, &1))
+    no_node = Enum.count(tallies, &(&1 == :no_vendor_node))
+    failed = Enum.count(tallies, &(&1 == :list_failed))
+
+    {objects, candidates} =
+      Enum.reduce(tallies, {0, 0}, fn
+        {:listed, n, c}, {o, cc} -> {o + n, cc + c}
+        _, acc -> acc
+      end)
+
+    mode = if state.remote_retention_sweep_enabled, do: "ARMED", else: "DRY RUN"
+
+    Logger.info(
+      "embervm base builder: remote base retention sweep (#{mode}) covered #{listed} " <>
+        "(workload, vendor) pair(s), #{objects} store object(s), #{candidates} candidate(s); " <>
+        "#{no_node} skipped for no node of that vendor, #{failed} for a failed listing"
+    )
 
     :ok
   end
