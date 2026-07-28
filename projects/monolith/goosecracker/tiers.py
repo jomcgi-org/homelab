@@ -1,4 +1,4 @@
-"""Tier -> guest env map for goose runs (relocated from the fc-agentd chart).
+"""Tier capability gates and retained legacy guest-env parsing.
 
 A tier is the model endpoint plus the secret PLACEHOLDERS the guest is allowed to
 hold, so it is the credential trust boundary. The runner merges the selected
@@ -6,11 +6,9 @@ tier's env into the ``AgentRequest.env`` it POSTs to fc-invoke, which injects it
 into the guest microVM; the placeholders (``kloak:...``) stay inert until the
 fc-invoke egress proxy swaps them for real secrets at the egress hop.
 
-The map itself is injected as the ``GOOSECRACKER_TIERS`` env var (a JSON object
-``{tier: {ENV_KEY: value}}``) from Helm values, never hardcoded here: the values
-carry in-cluster service URLs (OPENAI_HOST, the OTLP endpoint) that would break
-silently on a release rename if baked into Python (semgrep
-``no-hardcoded-k8s-service-url``).
+``env_for_tier`` and its ``GOOSECRACKER_TIERS`` input are now unused by the
+removed guest path, but remain for compatibility with stored configuration and
+their focused tests. Capability gating remains active independently.
 
 Tiers:
   default -> in-cluster Qwen on vLLM (the proven cold-run path). The only tier;

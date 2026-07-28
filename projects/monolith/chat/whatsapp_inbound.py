@@ -21,14 +21,10 @@ Reuse seams:
 - Reply text: the in-monolith chat agent (``chat.agent.create_agent``) run
   non-streamed; ``result.output`` is the full text.
 
-Phase 4 wires the agent path for real (behind ``WHATSAPP_AGENT_ENABLED``): an
-engaged message for a group with a live session steers it (``whatsapp_session.
-steer_or_none``, attributed per author); otherwise an agent-shaped message
-dispatches a household group session (``whatsapp_session.dispatch_whatsapp_agent``),
-which enforces the household tool subset at dispatch (a repo action is refused).
-The reaction lifecycle, live checklist, and result are driven by the runner and
-the progress sink through ``chat.whatsapp_outbox`` (see ``chat.whatsapp_session``).
-The in-monolith chat reply still runs with the shared chat agent's full toolset.
+Agent dispatch is unavailable on WhatsApp. An engaged message for a group with a
+live session still steers it (``whatsapp_session.steer_or_none``, attributed per
+author); otherwise agent-shaped work receives an honest unavailable reply. The
+in-monolith chat reply still runs with the shared chat agent's full toolset.
 """
 
 from __future__ import annotations
@@ -72,15 +68,6 @@ router = APIRouter(prefix="/internal/whatsapp", tags=["whatsapp"])
 # in a non-ambient group, mirroring a Discord mention. Configurable; the persona
 # is "Bosun" (see chat.agent.build_system_prompt).
 _TRIGGER_NAME = os.environ.get("WHATSAPP_TRIGGER_NAME", "bosun").strip().lower()
-
-# Phase 3 defers agent (heavyweight session) escalation. When an engaged message
-# is classified as needing the agent, we reply honestly rather than dispatching.
-# The flag exists so Phase 4 can flip the seam on without another rollout.
-_AGENT_ENABLED = os.environ.get("WHATSAPP_AGENT_ENABLED", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
 
 _AGENT_DEFERRED_REPLY = "I can chat, but running full tasks here is not wired up yet."
 
@@ -393,22 +380,11 @@ async def inbound(
         await _enqueue_bot_reply(embed_client, body, handled["reply"])
         return {"status": handled["status"]}
 
-    # Depth split, mirroring Discord. Agent (heavyweight session) work dispatches
-    # a household group session when enabled; otherwise an honest one-liner.
+    # Depth split, mirroring Discord. Agent work is unavailable on WhatsApp, so
+    # return an honest one-liner instead of dispatching a session.
     if is_agent:
-        if not _AGENT_ENABLED:
-            await _enqueue_bot_reply(embed_client, body, _AGENT_DEFERRED_REPLY)
-            return {"status": "replied"}
-        outcome = await asyncio.to_thread(
-            whatsapp_session.dispatch_whatsapp_agent,
-            body.group_jid,
-            body.text,
-            trigger_message_id=body.message_id,
-            trigger_sender_jid=body.sender_jid,
-        )
-        # dispatch: reactions + checklist are enqueued by the dispatch/runner.
-        # refused: a one-line explanation was already enqueued (household ACL).
-        return {"status": outcome.get("action", "dispatched")}
+        await _enqueue_bot_reply(embed_client, body, _AGENT_DEFERRED_REPLY)
+        return {"status": "replied"}
 
     # Chat path: acknowledge fast, then author the reply OFF the request path.
     # Generating a reply is a full model round-trip (seconds to minutes); doing it

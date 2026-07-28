@@ -950,27 +950,11 @@ semgrep:
   onepassword:
     itemPath: ""
 
-# goosecracker artifact agent (ADR 024): syncs the OpenRouter API key from
-# 1Password into the `goosecracker` Secret, consumed by the fc-invoke egress
-# proxy to swap the artifact tier's kloak:or: placeholder on openrouter.ai.
-# Disabled by default for portability.
-#
-# The monolith orchestrates goose runs by calling the fc-invoke daemon
-# (goose cutover PR C). `tiers` is the per-tier guest env map (rendered to the
-# GOOSECRACKER_TIERS JSON env and merged into the AgentRequest the runner POSTs);
-# `progressUrl` is the monolith's own in-cluster progress endpoint base the guest
-# streams goose stdout to (reached through the fc-invoke egress funnel). Both are
-# empty by default; the real values live in deploy/values.yaml so the in-cluster
-# URLs are never baked into a template.
+# Goosecracker's secret remains available to the Grimoire extract workflow.
 goosecracker:
   enabled: false
   onepassword:
     itemPath: ""
-  tiers: {}
-  progressUrl: ""
-  # The monolith's own in-cluster steering endpoint base the guest polls at
-  # stage boundaries (ADR 035 phase 2); empty disables steering.
-  steeringUrl: ""
 
 # Knowledge gardener: LLM-driven decomposition of raw vault notes into
 # typed knowledge artifacts via the claude Code CLI. Uses CLAUDE_CODE_OAUTH_TOKEN

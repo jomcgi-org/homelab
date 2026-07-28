@@ -150,38 +150,6 @@ spec:
             - name: SEMGREP_SHADOW_PROJECT
               value: {{ .Values.semgrep.shadowProject | quote }}
             {{- end }}
-            {{- if .Values.goosecracker.tiers }}
-            - name: GOOSECRACKER_TIERS
-              value: {{ .Values.goosecracker.tiers | toJson | quote }}
-            {{- end }}
-            {{- if .Values.goosecracker.progressUrl }}
-            - name: GOOSECRACKER_PROGRESS_URL
-              value: {{ .Values.goosecracker.progressUrl | quote }}
-            {{- end }}
-            {{- if .Values.goosecracker.steeringUrl }}
-            - name: GOOSECRACKER_STEERING_URL
-              value: {{ .Values.goosecracker.steeringUrl | quote }}
-            {{- end }}
-            {{- if .Values.goosecracker.gitMirror }}
-            - name: GOOSECRACKER_GIT_MIRROR
-              value: {{ .Values.goosecracker.gitMirror | quote }}
-            {{- end }}
-            {{- if .Values.goosecracker.tiers }}
-            # Egress secret-swap CA public cert (ADR 023 6b). The fc-invoke egress
-            # proxy TLS-terminates swapped hosts with a leaf minted from this CA;
-            # the guest must trust it. Only the fc-invoke daemon can inject env at
-            # boot, but the guest env is orchestrator-owned (carried in the
-            # AgentRequest), so the monolith reads the public cert here and the
-            # goosecracker runner injects it into every tier's guest env. Same
-            # namespace as the substrate release; optional so the monolith still
-            # starts before the CA Secret exists (the swap is inert until then).
-            - name: EGRESS_CA_CERT
-              valueFrom:
-                secretKeyRef:
-                  name: fc-invoke-egress-ca
-                  key: tls.crt
-                  optional: true
-            {{- end }}
             {{- if .Values.chat.enabled }}
             - name: DISCORD_BOT_TOKEN
               valueFrom:
@@ -190,9 +158,7 @@ spec:
                   key: DISCORD_BOT_TOKEN
             - name: LLAMA_CPP_URL
               value: {{ .Values.chat.llamaCppUrl | quote }}
-            # Pinned OpenRouter model for household (WhatsApp) content generation.
-            # The in-monolith concierge reply and the WhatsApp chat agent read this;
-            # the goose guest model is carried in the GOOSECRACKER_TIERS env instead.
+            # Pinned OpenRouter model for household content generation.
             - name: HOUSEHOLD_LLM_MODEL
               value: {{ .Values.whatsapp.model | quote }}
             # Gate the WhatsApp heavy-agent path (goose household dispatch for

@@ -6,8 +6,6 @@ waterfall:
 
 - ``POST /python``  runs a script in the zero-egress sandbox microVM.
 - ``POST /semgrep`` scans supplied files with Semgrep in the fc-invoke workload.
-- ``POST /goose``   submits a goosecracker agent run (async, returns immediately).
-- ``GET  /goose/{thread_id}`` polls the agent run ledger for that run's state.
 - ``GET  /trace/{trace_id}``  returns the SigNoz spans for a captured trace.
 - ``POST /postgres/reset``   destroy the live VM + evict its snapshot (force cold boot).
 
@@ -33,7 +31,6 @@ import asyncio
 import json
 import logging
 from time import perf_counter
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from opentelemetry import trace
@@ -43,7 +40,6 @@ from sqlalchemy import text
 from sqlmodel import Session
 
 import demos.loadtest as loadtest
-import goosecracker.api as goosecracker
 from core.db import get_engine
 from demos.loadtest_corpus import load_corpus
 from ember_public.core import EMBERVM_URL, destroy_demo_pg_instance
@@ -75,7 +71,6 @@ _RUNNING_DRAINS: set[asyncio.Task] = set()
 _tracer = trace.get_tracer("demos.firecracker")
 
 # Lifecycle states the agent run ledger stamps as terminal (run finished).
-_DONE_STATES = {"COMPLETED", "FAILED"}
 
 
 def _current_trace_id() -> str:
@@ -95,12 +90,6 @@ class PythonRequest(BaseModel):
 
 class SemgrepRequest(BaseModel):
     files: list[dict]
-
-
-class GooseRequest(BaseModel):
-    task: str
-    recipe: str = "agent"
-    tier: str = ""
 
 
 @router.post("/python")
@@ -148,61 +137,6 @@ async def run_semgrep(body: SemgrepRequest) -> dict:
         "duration_ms": elapsed_ms,
         "error": result.get("error"),
         "trace_id": trace_id,
-    }
-
-
-@router.post("/goose")
-async def submit_goose(body: GooseRequest) -> dict:
-    """Submit a goosecracker agent run and return immediately.
-
-    The run executes in an isolated microVM off-request; poll
-    ``GET /goose/{thread_id}`` for its result. ``session`` is generated here so
-    each demo submission is its own run. The submit path is synchronous DB work,
-    so it runs off the event loop via ``asyncio.to_thread`` (as the MCP tool does).
-    """
-    with _tracer.start_as_current_span("demo.goose", context=Context()):
-        trace_id = _current_trace_id()
-        session = f"demo-{uuid4().hex[:12]}"
-        result = await asyncio.to_thread(
-            goosecracker.submit,
-            body.task,
-            session=session,
-            recipe=body.recipe,
-            tier=body.tier,
-            # Default the demo to a checkout of this repo at main so the agent
-            # has something real to work on (an empty /workspace makes every
-            # "summarize this repo" task impossible). owner/repo form: the runner
-            # resolves it to <git-mirror>/jomcgi/homelab (see _effective_mirror_ref).
-            repo="jomcgi/homelab",
-        )
-
-    return {
-        "session": result["session"],
-        "thread_id": result["thread_id"],
-        "trace_id": trace_id,
-    }
-
-
-@router.get("/goose/{thread_id}")
-async def poll_goose(thread_id: str) -> dict:
-    """Poll the agent run ledger for one run's state and captured result.
-
-    Returns 404 when the thread id is unknown. ``done`` is true once the run has
-    reached a terminal state (COMPLETED or FAILED); a COMPLETED run carries its
-    ``result`` and a FAILED run carries its ``result_error``.
-    """
-    row = await asyncio.to_thread(goosecracker.get_run, thread_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="thread not found")
-
-    data = goosecracker.serialize(row)
-    state = data.get("state")
-    return {
-        "status": state,
-        "done": state in _DONE_STATES,
-        "result": data.get("result"),
-        "result_error": data.get("result_error"),
-        "thread": data,
     }
 
 
