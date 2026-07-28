@@ -8,9 +8,9 @@ defmodule Embervm.PoolManager do
 
   ## the refill policy (floor-first, then proportional)
 
-  On each tick, for every FRESH, non-draining node with a ready base for a
-  workload, it computes how many more VMs to Prime and allocates the node's
-  remaining live-VM budget in two phases:
+  On each tick, for every workload with at least one FRESH, non-draining
+  instance ready for it, it computes how many more VMs to Prime and allocates
+  the fleet-wide pool in two phases:
 
     1. FLOOR first: bring every workload up to its `concurrency.floor` of primed
        VMs. Under a scarce budget the floor deficits are filled round-robin, one
@@ -25,6 +25,9 @@ defmodule Embervm.PoolManager do
   workload's burst can NEVER consume the budget another workload's floor needs:
   the surplus phase only ever spends what is left after every floor is funded.
   That is the floor-isolation property the acceptance test asserts.
+
+  Primes are spread round-robin across eligible instances to prevent
+  concentration and allow autoscaling.
 
   ## backpressure
 
@@ -46,7 +49,7 @@ defmodule Embervm.PoolManager do
   ## status.primedFloorSatisfied
 
   This loop owns `status.primedFloorSatisfied`: it is true for a workload once the
-  node's `free_primed_slots >= floor`. Ownership is split by key exactly like the
+  fleet's `free_primed_slots >= floor`. Ownership is split by key exactly like the
   BaseBuilder/watcher split: the watcher writes `observedGeneration`, the
   BaseBuilder writes `conditions`/`snapshotRef`/`snapshotDigest`, and this writes
   only `primedFloorSatisfied`, so the three merge-patches never clobber. Status is
@@ -202,12 +205,19 @@ defmodule Embervm.PoolManager do
   defp do_refill(state) do
     now = state.clock.()
 
-    NodeCapacity.all(state.capacity_table)
-    |> Enum.filter(fn f -> not stale?(f, now, state.stale_after_ms) and not draining?(f) end)
-    |> Enum.reduce(state, fn facts, acc -> refill_node(acc, facts) end)
+    instances =
+      NodeCapacity.all(state.capacity_table)
+      |> Enum.filter(fn f -> not stale?(f, now, state.stale_after_ms) and not draining?(f) end)
+      |> Enum.map(&instance_facts(state, &1))
+
+    fleet_totals = fleet_free_totals(instances)
+    state = update_floor_status(state, instances, fleet_totals)
+    global_room = max(0, state.max_concurrent_primes - map_size(state.prime_workers))
+    allocation = plan_fleet_allocation(state, instances, fleet_totals, global_room)
+    spawn_primes(state, allocation)
   end
 
-  defp refill_node(state, facts) do
+  defp instance_facts(state, facts) do
     # Dial the SPECIFIC instance this capacity fact belongs to (its instance_id,
     # `"node/pod_uid"`), not the bare node name (instance-key unification PR-B0a):
     # under brick co-location the node-name channel alias resolves to an arbitrary
@@ -217,24 +227,9 @@ defmodule Embervm.PoolManager do
     # key is also the per-instance bookkeeping key (inflight primes, floor status)
     # so two co-located instances track independently.
     node_id = dial_id(facts)
-    workloads = ready_workloads(state, facts)
-
-    # Node live-VM budget minus what this loop already has in flight for the node.
     node_inflight = node_inflight_primes(state, node_id)
     budget = max(0, Map.get(facts, :max_live_vms, 0) - Map.get(facts, :live_vms, 0) - node_inflight)
-
-    # And the global concurrency cap on primes.
-    global_room = max(0, state.max_concurrent_primes - map_size(state.prime_workers))
-    budget = min(budget, global_room)
-
-    state = update_floor_status(state, facts, workloads)
-
-    if budget <= 0 or workloads == [] do
-      state
-    else
-      allocation = plan_primes(state, node_id, workloads, budget)
-      spawn_primes(state, node_id, allocation)
-    end
+    %{node_id: node_id, budget: budget, workloads: ready_workloads(state, facts)}
   end
 
   # Workloads this node has a ready base for, paired with their catalog entry
@@ -243,44 +238,102 @@ defmodule Embervm.PoolManager do
     for {wl, wc} <- facts.workloads || %{},
         base_ready?(wc),
         {:ok, entry} <- [WorkloadCatalog.fetch(state.catalog_table, wl)] do
-      %{
-        workload: wl,
-        namespace: entry.namespace,
-        floor: entry.floor,
-        snapshot_ref: Map.get(wc, :snapshot_ref),
-        free: Map.get(wc, :free_primed_slots, 0)
-      }
+      {wl, %{namespace: entry.namespace, floor: entry.floor,
+        snapshot_ref: Map.get(wc, :snapshot_ref), free: Map.get(wc, :free_primed_slots, 0)}}
     end
+    |> Map.new()
   end
 
-  # Decide how many VMs to prime per workload within `budget`: floors first
-  # (round-robin fair under scarcity), then surplus proportional to queue depth.
-  defp plan_primes(state, node_id, workloads, budget) do
+  defp fleet_free_totals(instances) do
+    Enum.reduce(instances, %{}, fn instance, totals ->
+      Enum.reduce(instance.workloads, totals, fn {wl, w}, acc ->
+        Map.update(acc, wl, w.free, &(&1 + w.free))
+      end)
+    end)
+  end
+
+  # Plan one fleet-wide allocation. Floors are placed before surplus, and each
+  # placement consumes the selected instance's remaining hard budget.
+  defp plan_fleet_allocation(state, instances, fleet_totals, budget) do
+    workloads = instances |> Enum.flat_map(&Map.keys(&1.workloads)) |> Enum.uniq()
+    # Keep the PRE-allocation instances addressable by dial key: the allocation
+    # phases below rebind `instances` with decremented budgets, and the ref lookup
+    # must read the instance a prime is actually going to (see the comment on the
+    # Enum.map below).
+    by_node = Map.new(instances, &{&1.node_id, &1})
     floor_deficits =
-      for w <- workloads, into: %{} do
-        have = w.free + inflight_for(state, node_id, w.workload)
-        {w.workload, max(0, w.floor - have)}
+      for wl <- workloads, into: %{} do
+        w = Enum.find_value(instances, fn i -> Map.get(i.workloads, wl) end)
+        inflight = Enum.sum(for i <- instances, do: inflight_for(state, i.node_id, wl))
+        {wl, max(0, w.floor - Map.get(fleet_totals, wl, 0) - inflight)}
       end
 
-    floor_alloc = allocate_round_robin(floor_deficits, budget)
-    remaining = budget - map_sum(floor_alloc)
-
+    {floor_plan, instances, remaining} = allocate_phase(floor_deficits, instances, budget, %{})
     depths =
-      for w <- workloads, into: %{} do
-        {w.workload, queue_depth(state, w.workload)}
-      end
+      Map.new(workloads, fn wl ->
+        capacity = Enum.sum(for i <- instances, do: if(Map.has_key?(i.workloads, wl), do: i.budget, else: 0))
+        {wl, min(queue_depth(state, wl), capacity)}
+      end)
+    surplus = allocate_proportional(depths, remaining)
+    {surplus_plan, _instances, _remaining} = allocate_phase(surplus, instances, remaining, %{})
 
-    surplus_alloc = allocate_proportional(depths, remaining)
+    Map.merge(floor_plan, surplus_plan, fn _key, a, b -> a + b end)
+    |> Enum.map(fn {{node_id, wl}, count} ->
+      # The ref MUST come from the instance this prime is dialling, never from
+      # whichever instance happens to advertise the workload first: bases are
+      # per-vendor and per-instance ON DISK, so priming an amd brick with an intel
+      # brick's ref fails "unknown snapshot_ref" and loops at the refill cadence
+      # (the same trap instance_facts/2 documents for the node-name alias). This
+      # fleet is mixed-vendor, so a fleet-wide scan would be actively wrong.
+      ref = get_in(by_node, [node_id, :workloads, wl, :snapshot_ref])
+      %{node_id: node_id, workload: wl, snapshot_ref: ref, count: count}
+    end)
+  end
 
-    for w <- workloads,
-        n = Map.get(floor_alloc, w.workload, 0) + Map.get(surplus_alloc, w.workload, 0),
-        n > 0 do
-      %{workload: w.workload, snapshot_ref: w.snapshot_ref, count: n}
+  defp allocate_phase(demands, instances, budget, plan) do
+    keys = demands |> Enum.filter(fn {_wl, n} -> n > 0 end) |> Enum.map(&elem(&1, 0))
+    allocate_phase_round(keys, demands, instances, budget, plan, %{})
+  end
+
+  defp allocate_phase_round(_keys, _demands, instances, budget, plan, _cursors) when budget <= 0,
+    do: {plan, instances, 0}
+
+  defp allocate_phase_round(keys, demands, instances, budget, plan, cursors) do
+    {plan, instances, budget, cursors, granted} =
+      Enum.reduce(keys, {plan, instances, budget, cursors, false}, fn wl, {p, is, b, cs, g} ->
+        allocated = p |> Enum.filter(fn {{_node, key}, _n} -> key == wl end) |> Enum.map(&elem(&1, 1)) |> Enum.sum()
+
+        if allocated >= Map.get(demands, wl, 0) or b <= 0 do
+          {p, is, b, cs, g}
+        else
+          case place_one(is, wl, Map.get(cs, wl, 0)) do
+            :none -> {p, is, b, cs, g}
+            {index, next} ->
+              node_id = Enum.at(next, index).node_id
+              {Map.update(p, {node_id, wl}, 1, &(&1 + 1)), next, b - 1, Map.put(cs, wl, index + 1), true}
+          end
+        end
+      end)
+
+    if granted and budget > 0, do: allocate_phase_round(keys, demands, instances, budget, plan, cursors), else: {plan, instances, budget}
+  end
+
+  defp place_one([], _wl, _cursor), do: :none
+  defp place_one(instances, wl, cursor) do
+    count = length(instances)
+    candidates = for offset <- 0..(count - 1), do: rem(cursor + offset, count)
+
+    case Enum.find(candidates, fn i ->
+           instance = Enum.at(instances, i)
+           instance.budget > 0 and Map.has_key?(instance.workloads, wl)
+         end) do
+      nil -> :none
+      index -> {index, List.update_at(instances, index, &%{&1 | budget: &1.budget - 1})}
     end
   end
 
-  defp spawn_primes(state, node_id, allocation) do
-    Enum.reduce(allocation, state, fn %{workload: wl, snapshot_ref: ref, count: n}, acc ->
+  defp spawn_primes(state, allocation) do
+    Enum.reduce(allocation, state, fn %{node_id: node_id, workload: wl, snapshot_ref: ref, count: n}, acc ->
       Enum.reduce(1..n//1, acc, fn _i, acc2 -> start_prime_worker(acc2, node_id, wl, ref) end)
     end)
   end
@@ -327,15 +380,18 @@ defmodule Embervm.PoolManager do
 
   # -- primedFloorSatisfied status -------------------------------------------
 
-  defp update_floor_status(state, _facts, workloads) do
-    Enum.reduce(workloads, state, fn w, acc ->
-      satisfied = w.free >= w.floor
+  defp update_floor_status(state, instances, fleet_totals) do
+    workloads = instances |> Enum.flat_map(&Map.keys(&1.workloads)) |> Enum.uniq()
 
-      if Map.get(acc.floor_satisfied, w.workload) == satisfied do
+    Enum.reduce(workloads, state, fn wl, acc ->
+      w = Enum.find_value(instances, fn i -> Map.get(i.workloads, wl) end)
+      satisfied = Map.get(fleet_totals, wl, 0) >= w.floor
+
+      if Map.get(acc.floor_satisfied, wl) == satisfied do
         acc
       else
-        _ = safe(fn -> write_floor_status(acc, w.namespace, w.workload, satisfied) end)
-        %{acc | floor_satisfied: Map.put(acc.floor_satisfied, w.workload, satisfied)}
+        _ = safe(fn -> write_floor_status(acc, w.namespace, wl, satisfied) end)
+        %{acc | floor_satisfied: Map.put(acc.floor_satisfied, wl, satisfied)}
       end
     end)
   end
