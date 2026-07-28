@@ -2,7 +2,7 @@ apiVersion: v2
 name: git-mirror
 description: Hot git mirror for Firecracker agent workspaces on node-4. Keeps bare clones warm via a supervisor loop; serves git:// (port 9418) with a pre-receive hook restricting writes to refs/agents/**.
 type: application
-version: 0.1.12
+version: 0.1.13
 appVersion: "0.1.0"
 maintainers:
   - name: jomcgi
