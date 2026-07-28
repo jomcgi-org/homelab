@@ -354,10 +354,26 @@ sandboxWorkload:
   invokePath: /invoke
   vcpus: 1
   memMib: 512
-  # Task 14b full side-by-side: floor 4 / cap 16 matches the plan's sizing (and
-  # fc-invoke's pre-halving sandbox cap). See the node-4 memory arithmetic on
-  # noded.resources below.
-  floor: 4
+  # floor MUST stay strictly below the SMALLEST brick's live-VM slot ceiling.
+  #
+  # PoolManager applies floor PER BRICK INSTANCE (`refill_node/2` runs once per
+  # capacity fact and compares this floor against that instance's own
+  # `free_primed_slots`), and a brick's real ceiling is not `noded.maxLiveVMs`:
+  # `budget.SlotCeiling` derives it as `memBudgetMib / 512`, so a 2gi brick
+  # reporting ~1933 MiB advertises just THREE slots. The Task 14b sizing of 4 was
+  # written for the wildcard DaemonSet (16 slots on a 63Gi node-4); the DS is now
+  # retired and bricks are the only capacity, which made 4 unsatisfiable on a
+  # 3-slot brick. An unsatisfiable floor never stops priming, so the pool claimed
+  # 100% of every 2gi brick and a node-pinned stateful wake could never find a
+  # free slot (issue #4077: demo-postgres wedged evicted for 2.5h while both
+  # node-2 bricks sat at 3/3, all six slots primed sandbox VMs). Autoscaling made
+  # it worse, not better: because the floor is per instance, each new brick
+  # arrived wanting its own 4.
+  #
+  # 2 leaves at least one free slot on the smallest brick for real demand. This
+  # is a STOPGAP for the per-instance semantics; once floor is a fleet-wide pool
+  # size it should go back up (issue #4077 follow-up).
+  floor: 2
   cap: 16
   timeoutSeconds: 30
 
