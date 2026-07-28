@@ -20,32 +20,115 @@ import (
 	"time"
 )
 
-func TestSwapRequest(t *testing.T) {
-	sec := &secretEntry{Placeholder: "kloak:demo:abc123", value: "ghp_REALTOKEN"}
-	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/user?t=kloak:demo:abc123", strings.NewReader("body holds kloak:demo:abc123 and must stay"))
+func TestInjectRequestSetsOnlyTheHeader(t *testing.T) {
+	sec := &secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", value: "real-token"}
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/user?t=guest-dummy", strings.NewReader("body holds guest-dummy and must stay"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer kloak:demo:abc123")
+	req.Header.Set("Authorization", "Bearer guest-dummy")
 
-	swapRequest(req, sec)
+	if !injectRequest(req, sec) {
+		t.Fatal("injectRequest reported no injection for a request that sent the header")
+	}
 
-	if got := req.Header.Get("Authorization"); got != "Bearer ghp_REALTOKEN" {
-		t.Errorf("Authorization = %q, want swapped", got)
+	if got := req.Header.Get("Authorization"); got != "Bearer real-token" {
+		t.Errorf("Authorization = %q, want the real credential", got)
 	}
-	if !strings.Contains(req.URL.RawQuery, "ghp_REALTOKEN") || strings.Contains(req.URL.RawQuery, "kloak:") {
-		t.Errorf("query not swapped: %q", req.URL.RawQuery)
+	// The old substring swap also rewrote query and path, so a guest could splice
+	// the placeholder into a URL and get the credential reflected into a request
+	// line the destination logs. Injection must never touch the URL.
+	if !strings.Contains(req.URL.RawQuery, "guest-dummy") {
+		t.Errorf("query was rewritten: %q; the credential must never reach a URL", req.URL.RawQuery)
 	}
-	// Body must be untouched (no Content-Length recompute risk).
 	body, _ := io.ReadAll(req.Body)
-	if !strings.Contains(string(body), "kloak:demo:abc123") {
+	if !strings.Contains(string(body), "guest-dummy") {
 		t.Errorf("body should be untouched, got %q", body)
+	}
+}
+
+func TestInjectRequestDoesNotAddAnAbsentHeader(t *testing.T) {
+	sec := &secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", value: "real-token"}
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if injectRequest(req, sec) {
+		t.Error("injected into a request that never sent the header")
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization = %q, want empty; unrequested calls must stay uncredentialed", got)
+	}
+}
+
+func TestInjectRequestDiscardsAGuestSuppliedToken(t *testing.T) {
+	// A prompt-injected guest must not be able to authenticate as another account
+	// by supplying a token of its own: whatever it sends is overwritten.
+	sec := &secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", value: "real-token"}
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer attacker-controlled-token")
+
+	injectRequest(req, sec)
+
+	if got := req.Header.Get("Authorization"); got != "Bearer real-token" {
+		t.Errorf("Authorization = %q, want the guest value discarded", got)
+	}
+}
+
+func TestLoadSecretsFailsClosed(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	originalExit := exitFn
+	t.Cleanup(func() { exitFn = originalExit })
+
+	for _, tc := range []struct {
+		name, catalog string
+		wantExit      bool
+	}{
+		{"malformed json", "{not json", true},
+		{"entry missing header", `[{"env":"TOK","egressTo":["api.example.com"]}]`, true},
+		{"entry missing egressTo", `[{"header":"Authorization","env":"TOK"}]`, true},
+		{"complete entry", `[{"header":"Authorization","env":"TOK","egressTo":["api.example.com"]}]`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exited := false
+			exitFn = func(int) { exited = true }
+			t.Setenv("EGRESS_SECRETS", tc.catalog)
+			t.Setenv("TOK", "real")
+			loadSecrets(logger)
+			if exited != tc.wantExit {
+				t.Errorf("exited = %v, want %v; a bad catalog must not degrade to no catalog", exited, tc.wantExit)
+			}
+		})
+	}
+}
+
+func TestLoadSecretsKeepsAnUnresolvedEntryDead(t *testing.T) {
+	// Dropping it would make secretFor miss, and a guest on the cleartext lane
+	// would then blind-tunnel its prompt over the public internet unencrypted.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	originalExit := exitFn
+	t.Cleanup(func() { exitFn = originalExit })
+	exitFn = func(int) { t.Fatal("an unresolved secret must not exit; it would take down all egress on the node") }
+
+	t.Setenv("EGRESS_SECRETS", `[{"header":"Authorization","env":"MISSING_TOK","egressTo":["api.example.com"]}]`)
+	t.Setenv("MISSING_TOK", "")
+
+	got := loadSecrets(logger)
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want the entry KEPT so its hosts can be denied", len(got))
+	}
+	if got[0].live() {
+		t.Error("entry reports live with no resolved value")
 	}
 }
 
 func TestSecretFor(t *testing.T) {
 	p := &proxy{secrets: []secretEntry{{
-		Env: "GITHUB_TOKEN", Placeholder: "kloak:gh:x", value: "real", EgressTo: []string{"api.github.com", "github.com"},
+		Env: "GITHUB_TOKEN", Header: "Authorization", value: "real", EgressTo: []string{"api.github.com", "github.com"},
 	}}}
 	if p.secretFor("API.GITHUB.COM") == nil {
 		t.Error("expected case-insensitive egressTo match")
@@ -123,10 +206,11 @@ func writeTestCA(t *testing.T) (certFile, keyFile string) {
 // guest addresses the sidecar as a proxy in cleartext, so the request arrives in
 // absolute-form carrying the inert placeholder. The sidecar must swap it, re-emit
 // origin-form, and hand the response back.
-func TestSwapPumpPlaintextLane(t *testing.T) {
+func TestSwapPumpInjectsOnThePlaintextLane(t *testing.T) {
 	sec := &secretEntry{
-		Placeholder: "ember-egress-placeholder-not-a-credential",
-		value:       "swapped-real-value",
+		Header:      "Authorization",
+		ValuePrefix: "Bearer ",
+		value:       "injected-real-value",
 		EgressTo:    []string{"api.example.com"},
 	}
 
@@ -147,7 +231,7 @@ func TestSwapPumpPlaintextLane(t *testing.T) {
 
 	guest := "POST http://api.example.com/v1/messages HTTP/1.1\r\n" +
 		"Host: api.example.com\r\n" +
-		"Authorization: Bearer ember-egress-placeholder-not-a-credential\r\n" +
+		"Authorization: Bearer guest-login-gate-dummy\r\n" +
 		"Content-Length: 0\r\n" +
 		"Connection: close\r\n\r\n"
 
@@ -159,8 +243,8 @@ func TestSwapPumpPlaintextLane(t *testing.T) {
 	if got == nil {
 		t.Fatal("origin never read a request")
 	}
-	if auth := got.Header.Get("Authorization"); auth != "Bearer swapped-real-value" {
-		t.Errorf("Authorization = %q, want the real value swapped in", auth)
+	if auth := got.Header.Get("Authorization"); auth != "Bearer injected-real-value" {
+		t.Errorf("Authorization = %q, want the real value injected", auth)
 	}
 	// The origin must see origin-form, not the proxy's absolute-form request line.
 	if got.RequestURI != "/v1/messages" {

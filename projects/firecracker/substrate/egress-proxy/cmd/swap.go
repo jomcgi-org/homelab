@@ -1,13 +1,17 @@
 package main
 
-// Secret placeholder-swap on egress (ADR 023 6b). For a destination that carries
-// a credential, the sidecar TLS-terminates the guest's connection with a leaf
-// minted from the egress CA (the guest trusts that CA), reads the plaintext
-// request, replaces the high-entropy placeholder the guest holds with the real
-// secret value (mounted only here, never in the guest), and re-originates a fresh
-// TLS connection to the real destination. The swap fires only when the request's
-// destination is in that secret's egressTo, so the real value is unreachable for
-// any other host; everywhere else the inert placeholder passes through untouched.
+// Credential injection on egress (ADR 023 6b). For a destination that carries a
+// credential, the sidecar reads the plaintext request, sets the configured header
+// to the real secret value (mounted only here, never in the guest), and originates
+// a fresh verified TLS connection to the real destination. Injection fires only
+// when the request's destination is in that secret's egressTo, so the credential
+// is unreachable at every other host.
+//
+// This supersedes the original placeholder-substitution design. That scheme needed
+// the same byte string present in the guest AND in this catalog, a coupling that
+// could only be kept honest by a test policing two copies, and it substituted over
+// headers, query and path, so a guest could splice the placeholder into a URL and
+// get the real credential reflected into a request line.
 
 import (
 	"bufio"
@@ -31,19 +35,46 @@ import (
 	"time"
 )
 
-// secretEntry is one catalog entry. The guest holds Placeholder as env Env; the
-// sidecar swaps it for value (resolved from its own env at startup, injected from
-// a mounted Secret) on a connection whose host is in EgressTo.
+// secretEntry is one catalog entry: on a connection to a host in EgressTo, the
+// sidecar sets Header to ValuePrefix+value, where value is resolved from the
+// sidecar's own env (mounted from a Secret) at startup.
+//
+// This REPLACES the placeholder-substitution scheme. A substring swap needs the
+// same byte string in the guest and in this catalog, forever, so it could only be
+// kept honest by a drift test policing two copies. It was also looser than it
+// looked: the swap ran over headers, query AND path, so a guest could splice the
+// placeholder into a URL and get the real credential reflected into a request
+// line, where it lands in the destination's server logs. Injection confines the
+// credential to one header and deletes the coupling.
 type secretEntry struct {
-	Placeholder string   `json:"placeholder"`
+	// Header is the request header to set, e.g. "Authorization".
+	Header string `json:"header"`
+	// ValuePrefix is prepended to the resolved value, e.g. "Bearer ".
+	ValuePrefix string   `json:"valuePrefix"`
 	Env         string   `json:"env"`
 	EgressTo    []string `json:"egressTo"`
-	value       string   // resolved real value; never serialized
+	value       string   // resolved real value; never serialized, never logged
 }
 
+// live reports whether this entry can actually inject. A catalog entry whose
+// secret has not resolved is kept (not dropped) so handle() can DENY its hosts;
+// dropping it would make secretFor miss, and a guest on the cleartext lane would
+// then fall through to the blind tunnel and send its prompt over the public
+// internet unencrypted.
+func (e *secretEntry) live() bool { return e.value != "" }
+
 // loadSecrets parses EGRESS_SECRETS (a JSON catalog) and resolves each real value
-// from the sidecar env. Entries missing a placeholder, egressTo, or a resolved
-// value are dropped with a warning (the placeholder then just passes through).
+// from the sidecar env.
+//
+// FAIL CLOSED, in two different ways on purpose:
+//
+//   - A malformed catalog is a DEPLOY-time config error, so exit non-zero and let
+//     it surface loudly in ArgoCD rather than run on with no catalog. Returning
+//     nil here is what previously turned a typo into silent cleartext egress.
+//   - A well-formed entry whose secret env is empty is a RUNTIME hiccup, so keep
+//     the entry (dead) and deny only its own egressTo hosts. Exiting instead would
+//     crash-loop the sidecar and take down all guest egress on the node over one
+//     unresolved credential.
 func loadSecrets(logger *slog.Logger) []secretEntry {
 	raw := os.Getenv("EGRESS_SECRETS")
 	if strings.TrimSpace(raw) == "" {
@@ -51,19 +82,20 @@ func loadSecrets(logger *slog.Logger) []secretEntry {
 	}
 	var entries []secretEntry
 	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-		logger.Error("EGRESS_SECRETS is not valid JSON; secret swap disabled", "err", err)
+		logger.Error("EGRESS_SECRETS is not valid JSON; refusing to start", "err", err)
+		exitFn(1)
 		return nil
 	}
 	out := make([]secretEntry, 0, len(entries))
 	for _, e := range entries {
-		if e.Placeholder == "" || e.Env == "" || len(e.EgressTo) == 0 {
-			logger.Warn("dropping incomplete secret catalog entry", "env", e.Env)
-			continue
+		if e.Header == "" || e.Env == "" || len(e.EgressTo) == 0 {
+			logger.Error("incomplete secret catalog entry (needs header, env, egressTo); refusing to start", "env", e.Env)
+			exitFn(1)
+			return nil
 		}
 		e.value = os.Getenv(e.Env)
-		if e.value == "" {
-			logger.Warn("secret env empty; entry inert (placeholder passes through)", "env", e.Env)
-			continue
+		if !e.live() {
+			logger.Error("secret env empty; its egressTo hosts will be DENIED until it resolves", "env", e.Env, "egressTo", e.EgressTo)
 		}
 		out = append(out, e)
 	}
@@ -214,8 +246,9 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, ho
 }
 
 // swapPump relays HTTP requests from an already-plaintext guest stream to up,
-// swapping the placeholder for the real value on each one (header values + URL
-// query/path only, never the body, so there is no Content-Length to recompute).
+// injecting the credential into each one. Only the configured header is touched:
+// never the body (so there is no Content-Length to recompute), and never the URL,
+// so the credential cannot end up in a request line the destination logs.
 // guestR carries the guest's request bytes and guestW takes the responses; they
 // are the same connection, split so the TLS and plaintext lanes can share this.
 // It returns when either side closes, or when a request asks to close.
@@ -229,7 +262,7 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 			}
 			return
 		}
-		swapRequest(req, sec)
+		injected := injectRequest(req, sec)
 		// A guest on the plaintext lane addresses us as a proxy, so its request line
 		// is absolute-form ("POST http://host/path"). Clearing RequestURI and the
 		// URL's scheme/host makes req.Write emit origin-form with a Host header,
@@ -253,7 +286,7 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 			p.logger.Warn("egress swap: return response", "dest", host, "err", err)
 			return
 		}
-		p.logger.Info("egress swapped", "dest", host, "env", sec.Env, "path", req.URL.Path)
+		p.logger.Info("egress injected", "dest", host, "header", sec.Header, "injected", injected, "path", req.URL.Path)
 		// Honour the guest's Connection: close rather than blocking on a request it
 		// has already told us will not come; the caller's defer closes both sides.
 		if closeAfter {
@@ -262,20 +295,21 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 	}
 }
 
-// swapRequest replaces the placeholder with the real value in every header value
-// and in the URL query/path. The body is deliberately left untouched.
-func swapRequest(req *http.Request, sec *secretEntry) {
-	for k, vs := range req.Header {
-		for i, v := range vs {
-			if strings.Contains(v, sec.Placeholder) {
-				req.Header[k][i] = strings.ReplaceAll(v, sec.Placeholder, sec.value)
-			}
-		}
+// injectRequest sets the entry's header to the real credential.
+//
+// Only that one header, and only when the guest already sent it: the guest has to
+// send SOMETHING there anyway (the claude CLI refuses to make any request until it
+// believes it is logged in), so requiring it keeps the sidecar from silently
+// credentialing requests the client never meant to authenticate. Query, path and
+// every other header are left alone, which is the leak the substring swap had.
+//
+// Whatever the guest put in the header is DISCARDED rather than matched. That is
+// the point: the guest's value is uncoupled config, and a prompt-injected guest
+// cannot authenticate as a different account by supplying its own token.
+func injectRequest(req *http.Request, sec *secretEntry) bool {
+	if req.Header.Get(sec.Header) == "" {
+		return false
 	}
-	if strings.Contains(req.URL.RawQuery, sec.Placeholder) {
-		req.URL.RawQuery = strings.ReplaceAll(req.URL.RawQuery, sec.Placeholder, sec.value)
-	}
-	if strings.Contains(req.URL.Path, sec.Placeholder) {
-		req.URL.Path = strings.ReplaceAll(req.URL.Path, sec.Placeholder, sec.value)
-	}
+	req.Header.Set(sec.Header, sec.ValuePrefix+sec.value)
+	return true
 }

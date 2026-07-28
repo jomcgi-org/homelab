@@ -46,3 +46,13 @@ go_test(
         "//conditions:default": [],
     }),
 )
+
+# Exposed so the ADR 023 6b cleartext-lane guard one package up can read
+# ANTHROPIC_BASE_URL out of setDefaultEnv. That is the only place the guest
+# actually receives it: apko's environment block is OCI image config, which a raw
+# Firecracker boot never reads.
+filegroup(
+    name = "guest_init_source",
+    srcs = ["main.go"],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)

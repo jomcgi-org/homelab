@@ -138,15 +138,23 @@ func setDefaultEnv(logger *slog.Logger) {
 		// Egress auth (ADR 023 6b). The CLI talks to the API in CLEARTEXT on
 		// purpose: its only route out is the shim's forwarder over a host-local
 		// vsock, which has no network segment on it, so the egress-proxy sidecar
-		// reads the plaintext request, swaps the placeholder below for the real
-		// token, and originates the real TLS to api.anthropic.com:443 itself.
+		// reads the plaintext request, SETS the Authorization header to the real
+		// token, and originates the verified TLS to api.anthropic.com:443 itself.
 		//
-		// The placeholder MUST stay byte-identical to egress.secrets[].placeholder
-		// in the embervm chart values: the sidecar substring-matches this exact
-		// string in request headers, and a mismatch surfaces as a 401 from
-		// Anthropic inside a guest, a long way from the typo.
+		// The token below is a LOGIN GATE DUMMY, not a credential and not a
+		// placeholder. The CLI refuses to make any request at all until it believes
+		// it is logged in (it returns "Not logged in, please run /login" with zero
+		// API time), so this must be non-empty; but its value is validated against
+		// nothing and is discarded by the sidecar. Deliberately uncoupled from chart
+		// config: an earlier design required this to match egress.secrets[] byte for
+		// byte, which bought nothing and could only be kept honest by a drift test.
+		//
+		// The env var NAME is load-bearing twice over: it satisfies that gate, and it
+		// selects the OAuth request shape (anthropic-beta: oauth-2025-04-20) that a
+		// subscription token requires. If a future CLI starts validating the token's
+		// format client-side, this value has to become sk-ant-oat01-shaped junk.
 		"ANTHROPIC_BASE_URL":      "http://api.anthropic.com",
-		"CLAUDE_CODE_OAUTH_TOKEN": "ember-egress-anthropic-oauth-placeholder-0f3a9c1d7b5e2846-not-a-credential",
+		"CLAUDE_CODE_OAUTH_TOKEN": "ember-guest-login-gate-dummy-not-a-credential",
 		// The shim treats a committer identity as mandatory and fails a spawn
 		// without one, so every turn would 503 on a guest that has none. A
 		// session-class guest is restored from a SHARED pristine snapshot, so
