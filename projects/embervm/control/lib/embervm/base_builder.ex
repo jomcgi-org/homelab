@@ -291,6 +291,37 @@ defmodule Embervm.BaseBuilder do
     cast_if_alive(server, {:mark_watcher_synced})
   end
 
+  @doc """
+  A wake found NO base for `workload` on `node_id`, so hydrate one there.
+
+  This exists because nothing else owns the pair `(workload, anchor node)`. This
+  module pins a workload's base to ONE instance (`placement/3` takes the highest
+  `build_rank`, `keep_or_replace` keeps it sticky) and hydrates only that node. A
+  STATEFUL wake, though, is anchored to the node holding the VOLUME. Those two
+  selections are independent, and when they diverge the anchor node is nobody's
+  responsibility: no base is ever placed there and the wake fails
+  `:no_eligible_instance` on every retry, forever (issue #4127, which took the
+  public demo down for hours on a fleet that was otherwise entirely healthy).
+
+  Deliberately NOT gated on `node_reports_base_absent?/3`. That predicate demands
+  the node AFFIRMATIVELY report `BASE_BUILD_STATE_NONE`, treating a MISSING fact as
+  "not absent" so a post-build race cannot trigger a spurious hydrate. But a brick
+  that advertises no workloads at all reports no fact, so it can never satisfy it,
+  which is the second half of #4127. The caller here carries strictly better
+  evidence than the periodic reconcile has: a wake was attempted against this node
+  and the daemon answered that the base is not provisioned. That is affirmative,
+  so this path may proceed where the periodic one correctly will not.
+
+  An async cast, and a no-op when this GenServer is not running (tests, a CP that
+  has not started it), exactly like `Embervm.BrickController.note_denial/2` on the
+  capacity-denial branch this mirrors. The wake outcome is unchanged either way:
+  this only makes the NEXT wake able to succeed.
+  """
+  @spec note_base_missing(GenServer.server(), String.t(), String.t()) :: :ok
+  def note_base_missing(server \\ __MODULE__, workload, node_id) do
+    cast_if_alive(server, {:base_missing, workload, node_id})
+  end
+
   defp cast_if_alive(server, msg) do
     case GenServer.whereis(server) do
       nil -> :ok
@@ -472,6 +503,10 @@ defmodule Embervm.BaseBuilder do
   @impl true
   def handle_cast({:reconcile, desc}, state) do
     {:noreply, reconcile_desc(state, desc)}
+  end
+
+  def handle_cast({:base_missing, workload, node_id}, state) do
+    {:noreply, hydrate_for_anchor(state, workload, node_id)}
   end
 
   def handle_cast({:forget, name}, state) do
@@ -677,6 +712,74 @@ defmodule Embervm.BaseBuilder do
   #      hydrate against a build);
   #   4. no hydrate is already in flight for the workload (the in-flight guard, so
   #      a re-reconcile during the async download does not spawn a second worker).
+  # Hydrate `workload`'s recorded base onto `node_id` after a wake found none there
+  # (issue #4127). See note_base_missing/3 for why this is not gated on
+  # node_reports_base_absent?/3.
+  #
+  # `node_id` here is a BARE node name (the wake's volume anchor), while this module
+  # pins by INSTANCE id, so resolve the best build-eligible instance ON that node.
+  # Every other guard from should_hydrate?/3 still applies: there must be a recorded
+  # ref whose signature is current (never hydrate a stale or mid-change base), and
+  # `hydrating` dedupes so a 10s retry loop spawns one worker, not one per attempt.
+  defp hydrate_for_anchor(state, workload, node_id) when is_binary(workload) and is_binary(node_id) do
+    w = Map.get(state.workloads, workload)
+
+    cond do
+      is_nil(w) ->
+        state
+
+      not is_binary(w.snapshot_ref) ->
+        # Nothing recorded to hydrate FROM: a first build has to happen normally.
+        state
+
+      w.built_signature != signature(w) ->
+        # The spec moved under us; a rebuild owns this, not a hydrate.
+        state
+
+      MapSet.member?(state.hydrating, workload) ->
+        state
+
+      true ->
+        case build_instance_on_node(state, w, node_id) do
+          nil ->
+            # No build-eligible instance on the anchor node. Loud, because the wake
+            # will keep failing and no hydrate can help: the anchor itself is wrong
+            # (stale volume debris flapping it, #4127) or the node is not eligible.
+            Logger.warning(
+              "embervm base builder: wake found no base for #{workload} on #{node_id}, " <>
+                "and no build-eligible instance exists there to hydrate onto"
+            )
+
+            state
+
+          instance_id ->
+            Logger.warning(
+              "embervm base builder: hydrating #{workload} onto #{instance_id} after a wake " <>
+                "found no base on its anchor node #{node_id}"
+            )
+
+            state
+            |> mark_hydrating(workload)
+            |> spawn_hydrate(%{w | node_id: instance_id})
+        end
+    end
+  end
+
+  defp hydrate_for_anchor(state, _workload, _node_id), do: state
+
+  # The best build-eligible INSTANCE whose reported node_id is `node_id`. Reuses the
+  # same eligibility and ranking as placement/3 so a hydrate never targets an
+  # instance placement itself would reject.
+  defp build_instance_on_node(state, w, node_id) do
+    state
+    |> eligible_build_instances(Map.get(w, :mem_mib) || 0)
+    |> Enum.filter(fn i -> Map.get(i, :node_id) == node_id end)
+    |> case do
+      [] -> nil
+      instances -> instances |> Enum.max_by(&build_rank/1) |> Map.get(:instance_id)
+    end
+  end
+
   defp should_hydrate?(state, w, node_id) do
     is_binary(w.snapshot_ref) and w.built_signature == signature(w) and
       node_reports_base_absent?(state, node_id, w.name) and

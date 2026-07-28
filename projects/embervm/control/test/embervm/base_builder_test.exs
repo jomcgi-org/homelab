@@ -2280,4 +2280,117 @@ defmodule Embervm.BaseBuilderTest do
                BaseBuilder.base_revision(zip_at.("bbb"))
     end
   end
+
+  # -- hydrate the wake's anchor node (#4127) ---------------------------------
+
+  # Nothing owned the pair (workload, anchor node): this module pins a base to ONE
+  # instance, a stateful wake anchors to the VOLUME's node, and when those diverge no
+  # base is ever placed where the wake needs one, so the wake fails
+  # :no_eligible_instance on every retry forever. That took the public demo down for
+  # hours on an otherwise healthy fleet.
+  test "note_base_missing hydrates the anchor node that reports NO base fact at all" do
+    test_pid = self()
+
+    restore_fun = fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+      send(test_pid, {:restore_called, ref.ref})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    {builder, _agent, table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    # A SECOND node exists and advertises NOTHING: no base fact for "w" at all. That
+    # is the #4127 shape, and node_reports_base_absent?/3 is false for it (a MISSING
+    # fact is deliberately not "absent"), so the periodic reconcile can never hydrate
+    # it. A wake failure is stronger evidence: the daemon was asked and said no.
+    put_brick(table, "node-9", "b1", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    # Registered too: eligible_build_instances/2 iterates state.node_ids, so a
+    # capacity fact alone is not enough to make it a build candidate.
+    :ok = BaseBuilder.add_node(builder, "node-9/b1", "a9")
+
+    :ok = BaseBuilder.note_base_missing(builder, "w", "node-9")
+
+    assert_receive {:restore_called, "snap1"}, 1_000
+  end
+
+  test "note_base_missing spawns ONE hydrate for a repeating wake failure" do
+    test_pid = self()
+
+    restore_fun = fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+      send(test_pid, {:restore_called, ref.ref})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    {builder, _agent, table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    put_brick(table, "node-9", "b1", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    # Registered too: eligible_build_instances/2 iterates state.node_ids, so a
+    # capacity fact alone is not enough to make it a build candidate.
+    :ok = BaseBuilder.add_node(builder, "node-9/b1", "a9")
+
+    # The wake retry loop runs every ~10s indefinitely; the `hydrating` dedupe is
+    # what keeps that from spawning a worker per attempt.
+    for _ <- 1..5, do: BaseBuilder.note_base_missing(builder, "w", "node-9")
+
+    assert_receive {:restore_called, "snap1"}, 1_000
+    refute_receive {:restore_called, _}, 200
+  end
+
+  test "note_base_missing does nothing when no build-eligible instance is on that node" do
+    test_pid = self()
+
+    restore_fun = fn :fake_channel, _req ->
+      send(test_pid, {:restore_called, :unexpected})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    {builder, _agent, _table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    # The anchor itself is wrong (stale volume debris flapping it onto a node that
+    # is not in the fleet). No hydrate can help, so it must not spawn one.
+    :ok = BaseBuilder.note_base_missing(builder, "w", "node-does-not-exist")
+
+    refute_receive {:restore_called, _}, 200
+  end
+
+  test "note_base_missing does nothing when there is no recorded base to hydrate from" do
+    test_pid = self()
+
+    restore_fun = fn :fake_channel, _req ->
+      send(test_pid, {:restore_called, :unexpected})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    {builder, _agent, _table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    # A first build has to happen normally; there is no ref to restore.
+    :ok = BaseBuilder.note_base_missing(builder, "never-built", "node-4")
+
+    refute_receive {:restore_called, _}, 200
+  end
+
+  test "note_base_missing is a no-op when the builder is not running" do
+    # Mirrors BrickController.note_denial/2: a missing server must never raise into
+    # the wake path, whose outcome is unchanged either way.
+    assert BaseBuilder.note_base_missing(:no_such_base_builder_4127, "w", "node-9") == :ok
+  end
 end
