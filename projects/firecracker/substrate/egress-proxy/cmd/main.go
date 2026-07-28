@@ -39,7 +39,10 @@
 //     and the request reaches the destination with no credential attached.
 //
 // Configuration (env):
-//   - EGRESS_LISTEN: where the fc-invoke daemon forwards guest egress (":8888").
+//   - EGRESS_LISTEN: where the fc-invoke daemon forwards guest egress
+//     ("127.0.0.1:8888"). The loopback bind is load-bearing: this sidecar has no
+//     client authentication, so it is the only barrier preventing an arbitrary
+//     cluster workload from using the credentialed response path.
 //   - EGRESS_EXTERNAL: "allow" (default) or "deny" for public destinations.
 //   - EGRESS_INTERNAL_DEFAULT: "deny" (default) or "allow" for internal ones.
 //   - EGRESS_INTERNAL_ALLOWLIST: comma-separated host[:port] permitted internally.
@@ -68,8 +71,10 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	// EGRESS_LISTEN is where the fc-invoke daemon forwards guest egress (pod-local).
-	listen := envOr("EGRESS_LISTEN", ":8888")
+	// The sidecar has no client authentication. Binding to loopback is therefore
+	// the only barrier preventing an arbitrary cluster workload from connecting to
+	// the credential-holding process and using its response path.
+	listen := envOr("EGRESS_LISTEN", defaultListenAddr)
 
 	// Split-horizon posture: the public internet is open by default; the cluster is
 	// deny-by-default and confined to the internal allowlist.
@@ -131,6 +136,8 @@ func main() {
 		go p.handle(conn)
 	}
 }
+
+const defaultListenAddr = "127.0.0.1:8888"
 
 // proxy holds the split-horizon posture, the secret catalog, and the CA minter.
 type proxy struct {

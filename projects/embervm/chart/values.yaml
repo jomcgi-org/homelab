@@ -1032,11 +1032,14 @@ bricks:
 #
 # Off by default: a node without the sidecar must not open the lane. The claude
 # runtime is the first and only consumer, because it is the only guest that
-# points a client at the egress port (via HTTPS_PROXY); every other guest ignores
-# the listener entirely, which is why this is one daemon-level switch rather than
-# a per-workload field threaded through the CRD and control plane.
+# points a client at the egress port (via HTTPS_PROXY). The workload list below
+# makes the credentialed lane explicit at the node boundary without threading a
+# field through the guest CRD or control plane.
 egress:
   enabled: false
+  # Empty means all workloads when enabled. Deployments with credentials should
+  # name only the runtime workload because the sidecar has no client auth.
+  workloads: []
   # Split-horizon posture (ADR 023). external "allow" lets the agent read the open
   # internet; internal is deny-by-default and confined to internal.allowlist.
   # Classification is on the IP the sidecar actually resolves and dials, not the

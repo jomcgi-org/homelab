@@ -993,7 +993,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		workload:     base.workload,
 		snapshotRef:  ref,
 		handle:       h,
-		egressCancel: s.startEgress(uds, h.ID),
+		egressCancel: s.startEgress(uds, h.ID, base.workload),
 		state:        vmPrimed,
 	})
 	s.signalChange()
@@ -1358,7 +1358,7 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	// Open this guest's egress lane before the health gate, so a guest whose
 	// readiness depends on reaching the network is not deadlocked by a forwarder
 	// that only starts once it is already ready.
-	relitEgressCancel := s.startEgress(uds, h.ID)
+	relitEgressCancel := s.startEgress(uds, h.ID, req.GetTrace().GetWorkload())
 
 	readyCtx, cancelReady := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
 	readyErr := s.transport.WaitReady(readyCtx, uds, defaultReadyPath)
@@ -2327,8 +2327,8 @@ func (s *Server) WaitForBuildsOrAbort(deadline time.Time) int {
 // created the VM: it must outlive the Prime/Relight RPC and live exactly as long
 // as the guest. Every path that reaps a VM calls the cancel, so the goroutine and
 // its unix socket never outlive the guest they belong to.
-func (s *Server) startEgress(uds, vmID string) func() {
-	if !s.cfg.EgressEnabled {
+func (s *Server) startEgress(uds, vmID, workload string) func() {
+	if !s.cfg.EgressEnabled || !egressWorkloadAllowed(s.cfg.EgressWorkloads, workload) {
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2338,6 +2338,18 @@ func (s *Server) startEgress(uds, vmID string) func() {
 		}
 	}()
 	return cancel
+}
+
+func egressWorkloadAllowed(allowed []string, workload string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, name := range allowed {
+		if name == workload {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) subscribe() chan struct{} {

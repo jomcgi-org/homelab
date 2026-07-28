@@ -184,3 +184,10 @@ func TestSplitHostPort(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultListenAddrIsLoopback(t *testing.T) {
+	t.Setenv("EGRESS_LISTEN", "")
+	if got := envOr("EGRESS_LISTEN", defaultListenAddr); got != "127.0.0.1:8888" {
+		t.Fatalf("default listen address = %q, want 127.0.0.1:8888", got)
+	}
+}

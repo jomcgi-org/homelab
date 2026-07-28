@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -76,6 +77,131 @@ func TestInjectRequestDiscardsAGuestSuppliedToken(t *testing.T) {
 
 	if got := req.Header.Get("Authorization"); got != "Bearer real-token" {
 		t.Errorf("Authorization = %q, want the guest value discarded", got)
+	}
+}
+
+func TestInjectRequestHandlesEveryAuthorizationValue(t *testing.T) {
+	sec := &secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", value: "real-token"}
+	tests := []struct {
+		name, wire string
+		want       bool
+	}{
+		{"single header", "Authorization: guest\r\n", true},
+		{"duplicate headers", "Authorization: first\r\nAuthorization: second\r\n", true},
+		{"empty first plus nonempty second", "Authorization:\r\nAuthorization: Bearer attacker-own-token\r\n", true},
+		{"mixed case spelling", "aUtHoRiZaTiOn: guest\r\n", true},
+		{"absent header", "X-Test: present\r\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.ReadRequest(bufio.NewReader(strings.NewReader(
+				"POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\n" + tt.wire + "Content-Length: 0\r\n\r\n")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := injectRequest(req, sec); got != tt.want {
+				t.Fatalf("injected = %v, want %v", got, tt.want)
+			}
+			values := req.Header.Values("Authorization")
+			if tt.want && (len(values) != 1 || values[0] != "Bearer real-token") {
+				t.Fatalf("Authorization values = %#v, want only the real credential", values)
+			}
+			if !tt.want && len(values) != 0 {
+				t.Fatalf("Authorization values = %#v, want absent", values)
+			}
+		})
+	}
+}
+
+func TestSwapPumpRejectsUnsupportedRequestModes(t *testing.T) {
+	for _, tt := range []struct {
+		name, request string
+	}{
+		{"expect", "POST /v1/messages HTTP/1.1\r\nHost: api.example.com\r\nExpect: 100-continue\r\nContent-Length: 0\r\n\r\n"},
+		{"connect", "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com\r\n\r\n"},
+		{"connection upgrade", "GET / HTTP/1.1\r\nHost: api.example.com\r\nConnection: Upgrade\r\n\r\n"},
+		{"upgrade header", "GET / HTTP/1.1\r\nHost: api.example.com\r\nUpgrade: websocket\r\n\r\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			upClient, upOrigin := net.Pipe()
+			defer upClient.Close()
+			defer upOrigin.Close()
+			sec := &secretEntry{Header: "Authorization", value: "real"}
+			p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			p.swapPump(bufio.NewReader(strings.NewReader(tt.request)), io.Discard, upClient, "api.example.com", sec)
+			_ = upOrigin.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+			var b [1]byte
+			if n, err := upOrigin.Read(b[:]); n != 0 || err == nil {
+				t.Fatalf("unsupported request was forwarded: n=%d err=%v", n, err)
+			}
+		})
+	}
+}
+
+type signalBuffer struct {
+	mu       sync.Mutex
+	data     bytes.Buffer
+	contains chan struct{}
+	signaled bool
+}
+
+func (w *signalBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, _ := w.data.Write(p)
+	if !w.signaled && bytes.Contains(w.data.Bytes(), []byte("hello")) {
+		w.signaled = true
+		close(w.contains)
+	}
+	return n, nil
+}
+
+func (w *signalBuffer) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.data.String()
+}
+
+func TestSwapPumpRelaysStreamingResponseIncrementally(t *testing.T) {
+	upClient, upOrigin := net.Pipe()
+	defer upClient.Close()
+	defer upOrigin.Close()
+	sec := &secretEntry{Header: "Authorization", value: "real"}
+	guest := "GET http://api.example.com/stream HTTP/1.1\r\n" +
+		"Host: api.example.com\r\nAuthorization: guest\r\nConnection: close\r\n\r\n"
+	var back signalBuffer
+	back.contains = make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, upClient, "api.example.com", sec)
+		close(done)
+	}()
+
+	if _, err := http.ReadRequest(bufio.NewReader(upOrigin)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(upOrigin, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-back.contains:
+		if !strings.Contains(back.String(), "hello") {
+			t.Fatal("first response chunk was not relayed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first response chunk was not relayed incrementally")
+	}
+	if _, err := io.WriteString(upOrigin, "world"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("swap pump did not finish after streaming response completed")
+	}
+	if !strings.HasSuffix(back.String(), "helloworld") {
+		t.Fatalf("response = %q, want streamed body", back.String())
 	}
 }
 
