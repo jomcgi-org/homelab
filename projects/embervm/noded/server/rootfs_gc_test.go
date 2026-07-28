@@ -3,8 +3,11 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
 // writeRootfs creates a rootfs file with a given age, mirroring what the
@@ -124,5 +127,142 @@ func TestSweepRootfsOnlyTouchesRegisteredDirectories(t *testing.T) {
 	}
 	if _, err := os.Stat(untouched); err != nil {
 		t.Fatalf("a directory the registry does not reference must not be swept: %v", err)
+	}
+}
+
+// TestSweepRootfsKeepsBaseRootfs proves a base's absolute rootfs reference
+// survives registry turnover. Existing snapshots still need their original
+// rootfs even after new workloads point at a different file.
+func TestSweepRootfsKeepsBaseRootfs(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	dir := filepath.Join(t.TempDir(), "semgrep")
+	baseRootfs := writeRootfs(t, dir, "rootfs-A.ext4", 48*time.Hour)
+	currentRootfs := writeRootfs(t, dir, "rootfs-B.ext4", 48*time.Hour)
+
+	s.registry.sync([]workloadEntry{{Workload: "semgrep", ImageRef: "img", RootfsRef: currentRootfs}})
+	s.bases.readyBuild("semgrep__base", "semgrep", "img", baseRootfs, "", 0)
+
+	if removed, _ := s.sweepRootfs(time.Now()); removed != 0 {
+		t.Fatalf("removed = %d, want 0 when both rootfs files are referenced", removed)
+	}
+	for _, path := range []string{baseRootfs, currentRootfs} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("referenced rootfs %s must survive: %v", path, err)
+		}
+	}
+}
+
+// TestSweepRootfsRemovesCompletelyOrphanedRootfs proves an old file is
+// reclaimable once the registry has completed an authoritative empty sync.
+// The second registry entry only establishes the directory to scan; it points
+// at a different, absent rootfs and does not reference the orphan.
+func TestSweepRootfsRemovesCompletelyOrphanedRootfs(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	dir := filepath.Join(t.TempDir(), "semgrep")
+	orphaned := writeRootfs(t, dir, "rootfs-orphaned.ext4", 48*time.Hour)
+
+	s.registry.sync([]workloadEntry{{Workload: "semgrep", ImageRef: "img", RootfsRef: filepath.Join(dir, "rootfs-current.ext4")}})
+
+	if removed, _ := s.sweepRootfs(time.Now()); removed != 1 {
+		t.Fatalf("removed = %d, want 1 for the orphaned rootfs", removed)
+	}
+	if _, err := os.Stat(orphaned); !os.IsNotExist(err) {
+		t.Fatalf("orphaned rootfs should be gone, stat error = %v", err)
+	}
+}
+
+// TestSweepRootfsEmptyRegistryGuard proves an unsynced empty registry is a
+// boot-safety condition, not evidence that every rootfs is disposable.
+func TestSweepRootfsEmptyRegistryGuard(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	rootfs := writeRootfs(t, filepath.Join(t.TempDir(), "semgrep"), "rootfs.ext4", 48*time.Hour)
+
+	if removed, _ := s.sweepRootfs(time.Now()); removed != 0 {
+		t.Fatalf("removed = %d, want 0 with an unsynced empty registry", removed)
+	}
+	if _, err := os.Stat(rootfs); err != nil {
+		t.Fatalf("rootfs must survive the empty-registry guard: %v", err)
+	}
+}
+
+// TestSweepRootfsMinAgeGuard proves a freshly baked file is spared while its
+// registry update may still be in flight.
+func TestSweepRootfsMinAgeGuard(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	rootfs := writeRootfs(t, filepath.Join(t.TempDir(), "semgrep"), "rootfs.ext4", time.Minute)
+
+	if removed, _ := s.sweepRootfs(time.Now()); removed != 0 {
+		t.Fatalf("removed = %d, want 0 for a young rootfs", removed)
+	}
+	if _, err := os.Stat(rootfs); err != nil {
+		t.Fatalf("young rootfs must survive the min-age guard: %v", err)
+	}
+}
+
+// TestReconcileBasesCheckRootfsExists proves restart reconciliation reports a base
+// with a lost backing file as NONE, which is the ONLY state the control plane acts
+// on: Embervm.BaseBuilder.node_reports_base_absent?/3 matches NONE and nothing there
+// matches FAILED, so reporting FAILED would leave the base unusable AND unrecovered.
+func TestReconcileBasesCheckRootfsExists(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "semgrep__missing-rootfs"
+	baseDir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		t.Fatalf("mkdir base dir: %v", err)
+	}
+	for name, contents := range map[string]string{
+		"snapfile":   "snap",
+		"imageref":   "img",
+		"rootfspath": filepath.Join(t.TempDir(), "does-not-exist.ext4"),
+	} {
+		if err := os.WriteFile(filepath.Join(baseDir, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	s.ReconcileBasesFromDisk()
+	got, ok := s.bases.get(baseKey)
+	if !ok {
+		t.Fatal("missing-rootfs base was not registered")
+	}
+	if got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_NONE {
+		t.Fatalf("base state = %v, want NONE", got.state)
+	}
+	if !(strings.Contains(got.buildErr, "rootfs") &&
+		(strings.Contains(got.buildErr, "missing") || strings.Contains(got.buildErr, "rebuild"))) {
+		t.Fatalf("build error = %q, want rootfs missing/rebuild explanation", got.buildErr)
+	}
+}
+
+// TestReconcileBasesAcceptsExistingRootfs proves a restart adopts a complete
+// base as READY when its persisted backing rootfs is still present.
+func TestReconcileBasesAcceptsExistingRootfs(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "semgrep__existing-rootfs"
+	baseDir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		t.Fatalf("mkdir base dir: %v", err)
+	}
+	rootfs := writeRootfs(t, t.TempDir(), "rootfs.ext4", 0)
+	for name, contents := range map[string]string{
+		"snapfile":   "snap",
+		"imageref":   "img",
+		"rootfspath": rootfs,
+	} {
+		if err := os.WriteFile(filepath.Join(baseDir, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	s.ReconcileBasesFromDisk()
+	got, ok := s.bases.get(baseKey)
+	if !ok {
+		t.Fatal("existing-rootfs base was not registered")
+	}
+	if got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Fatalf("base state = %v, want READY", got.state)
+	}
+	if got.buildErr != "" {
+		t.Fatalf("build error = %q, want empty", got.buildErr)
 	}
 }

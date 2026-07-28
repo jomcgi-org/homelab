@@ -374,6 +374,7 @@ type baseEntry struct {
 	snapshotRef string
 	workload    string
 	imageDigest string
+	rootfsPath  string
 	sizeBytes   int64
 	readyPath   string
 	state       nodev1.BaseBuildState
@@ -430,7 +431,7 @@ func (b *baseRegistry) readyByWorkload(workload string) (string, bool) {
 // blocking. A READY or FAILED entry is re-driven (a rebuild after failure, or a
 // forced rebuild) - the READY idempotency short-circuit is checked by the caller
 // before beginBuild.
-func (b *baseRegistry) beginBuild(ref, workload, readyPath string) bool {
+func (b *baseRegistry) beginBuild(ref, workload, rootfsPath, readyPath string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if e, ok := b.bases[ref]; ok && e.state == nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING {
@@ -439,6 +440,7 @@ func (b *baseRegistry) beginBuild(ref, workload, readyPath string) bool {
 	b.bases[ref] = &baseEntry{
 		snapshotRef: ref,
 		workload:    workload,
+		rootfsPath:  rootfsPath,
 		readyPath:   readyPath,
 		state:       nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING,
 	}
@@ -446,13 +448,14 @@ func (b *baseRegistry) beginBuild(ref, workload, readyPath string) bool {
 }
 
 // readyBuild records a completed base build.
-func (b *baseRegistry) readyBuild(ref, workload, imageDigest, readyPath string, sizeBytes int64) {
+func (b *baseRegistry) readyBuild(ref, workload, imageDigest, rootfsPath, readyPath string, sizeBytes int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.bases[ref] = &baseEntry{
 		snapshotRef: ref,
 		workload:    workload,
 		imageDigest: imageDigest,
+		rootfsPath:  rootfsPath,
 		sizeBytes:   sizeBytes,
 		readyPath:   readyPath,
 		state:       nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
@@ -484,10 +487,50 @@ func (b *baseRegistry) register(e baseEntry) {
 		snapshotRef: e.snapshotRef,
 		workload:    e.workload,
 		imageDigest: e.imageDigest,
+		rootfsPath:  e.rootfsPath,
 		sizeBytes:   e.sizeBytes,
 		readyPath:   e.readyPath,
 		state:       e.state,
 	}
+}
+
+// rootfsPaths returns rootfs files referenced by READY bases. Snapshot state
+// stores these paths directly, so GC must preserve them even when the workload
+// registry has moved on to a newer rootfs.
+func (b *baseRegistry) rootfsPaths() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var paths []string
+	for _, e := range b.bases {
+		// Any state, not just READY: a BUILDING base is actively writing against its
+		// rootfs, and sweeping it mid-build is the same corruption by a narrower
+		// window. A base that names a rootfs is holding it open, whatever its state.
+		if e.rootfsPath != "" {
+			paths = append(paths, e.rootfsPath)
+		}
+	}
+	return paths
+}
+
+// unknownRootfsWorkloads names the workloads holding at least one base that does
+// NOT record which rootfs it was built against: every base that predates the
+// rootfsPath field, since it is repopulated from disk with no path to read.
+//
+// Their true keep-set is unknowable, so sweepRootfs declines to sweep those
+// workloads' directories entirely rather than deleting a file that might be the
+// one a base still has open. That trades reclaimed bytes for correctness on
+// exactly the bases that caused the outage, and it drains by itself: each rebuild
+// records a path, so a workload leaves this set for good once its bases turn over.
+func (b *baseRegistry) unknownRootfsWorkloads() map[string]bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	unknown := make(map[string]bool)
+	for _, e := range b.bases {
+		if e.rootfsPath == "" && e.workload != "" {
+			unknown[e.workload] = true
+		}
+	}
+	return unknown
 }
 
 // remove forgets a base entry by snapshot_ref (after its on-disk dir is deleted),

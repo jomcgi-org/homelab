@@ -710,7 +710,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	}
 	// Serialize builds per key. A concurrent duplicate is rejected rather than
 	// double-booting a build guest.
-	if !s.bases.beginBuild(baseKey, workload, readyPath) {
+	if !s.bases.beginBuild(baseKey, workload, img.RootfsPath, readyPath) {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: base build already in progress for %q", baseKey)
 	}
 	s.signalChange()
@@ -742,13 +742,14 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		s.signalChange()
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: build base %q: %v", baseKey, err)
 	}
-	s.bases.readyBuild(baseKey, workload, imageDigest, readyPath, sizeBytes)
+	s.bases.readyBuild(baseKey, workload, imageDigest, img.RootfsPath, readyPath, sizeBytes)
 	// Persist the runtime image ref alongside the snapshot so a daemon restart can
 	// restore it (ReconcileBasesFromDisk). The base dir name is <workload>__<sig>
 	// and does NOT encode the runtime image, but a stateful cold boot resolves the
 	// rootfs via base.imageDigest -> cfg.Images, so a base adopted from disk without
 	// it is unbootable. Best-effort: a missing ref file just forces a rebuild.
 	s.writeBaseImageRef(baseKey, imageDigest)
+	s.writeBaseRootfsPath(baseKey, img.RootfsPath)
 
 	// Serving base (R3, D-R3.11.2): additionally persist a cold-boot-readable handler
 	// artifact from the SAME verified archive bytes noded already holds, so a serving
@@ -2494,6 +2495,30 @@ func (s *Server) ReconcileBasesFromDisk() {
 			}
 			continue
 		}
+		// A base whose backing rootfs has been deleted cannot restore: Firecracker
+		// reopens the absolute path baked into the snapshot state, so the failure is
+		// a hard `PUT /snapshot/load` 400 on every attempt, not a degraded boot.
+		//
+		// Report NONE, not FAILED. NONE is the ONLY state the control plane acts on:
+		// `Embervm.BaseBuilder.node_reports_base_absent?/3` matches
+		// `:BASE_BUILD_STATE_NONE` and nothing there matches FAILED, so a FAILED base
+		// would be both unusable AND never recovered.
+		//
+		// An UNRECORDED path (a base built before this field existed) is UNKNOWN, not
+		// missing, so it stays READY: we never invalidate a working base on absent
+		// information. sweepRootfs applies the matching rule from the other side and
+		// declines to sweep that workload's directory at all.
+		rootfsPath := s.readBaseRootfsPath(baseKey)
+		state := nodev1.BaseBuildState_BASE_BUILD_STATE_READY
+		buildErr := ""
+		if rootfsPath != "" {
+			if _, err := os.Stat(rootfsPath); err != nil {
+				state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
+				buildErr = fmt.Sprintf("rootfs missing at %q, base cannot restore", rootfsPath)
+				s.logger.Warn("noded: base rootfs missing during reconcile, reporting base absent",
+					"base", baseKey, "rootfs", rootfsPath, "err", err)
+			}
+		}
 		memfile := filepath.Join(root, baseKey, "memfile")
 		var size int64 = fi.Size()
 		if mfi, err := os.Stat(memfile); err == nil {
@@ -2503,9 +2528,11 @@ func (s *Server) ReconcileBasesFromDisk() {
 			snapshotRef: baseKey,
 			workload:    workloadFromBaseKey(baseKey),
 			imageDigest: imageRef,
+			rootfsPath:  rootfsPath,
 			readyPath:   defaultReadyPath,
 			sizeBytes:   size,
-			state:       nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
+			state:       state,
+			buildErr:    buildErr,
 		})
 		n++
 	}
@@ -2551,6 +2578,26 @@ func (s *Server) writeBaseImageRef(baseKey, imageRef string) {
 // file is absent (a base built before persistence, or a partial write).
 func (s *Server) readBaseImageRef(baseKey string) string {
 	b, err := os.ReadFile(filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey, "imageref"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// writeBaseRootfsPath persists the rootfs backing a base snapshot. Snapshot
+// restore reads the absolute path from snapshot state, independently of the
+// current workload registry.
+func (s *Server) writeBaseRootfsPath(baseKey, rootfsPath string) {
+	path := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey, "rootfspath")
+	if err := os.WriteFile(path, []byte(rootfsPath), 0o644); err != nil {
+		s.logger.Warn("noded: persist base rootfs path", "base", baseKey, "err", err)
+	}
+}
+
+// readBaseRootfsPath reads the rootfs backing a base snapshot, or "" when the
+// metadata is absent.
+func (s *Server) readBaseRootfsPath(baseKey string) string {
+	b, err := os.ReadFile(filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey, "rootfspath"))
 	if err != nil {
 		return ""
 	}
