@@ -269,13 +269,22 @@ spec:
               value: {{ join "," . | quote }}
             {{- end }}
             {{- if .Values.egress.secrets }}
-            # Secret swap (ADR 023 6b). EGRESS_SECRETS is the non-secret catalog
-            # (placeholder -> env -> egressTo); the real value of each is supplied
-            # below from its Secret (or a literal for tests). The CA (cert + key)
-            # is mounted so the sidecar can mint leaves; the key never leaves here.
+            # Credential injection (ADR 023 6b). EGRESS_SECRETS is the non-secret
+            # catalog (header -> env -> egressTo); the real value of each is
+            # supplied below from its Secret (or a literal for tests). The CA
+            # (cert + key) is mounted so the sidecar can mint leaves; the key
+            # never leaves here.
+            #
+            # This emits header/valuePrefix, NOT placeholder. The sidecar dropped
+            # substring substitution for header injection, and its loadSecrets
+            # calls os.Exit on an entry with no header, so a catalog built the old
+            # way does not degrade: the container refuses to start, the pod never
+            # goes Ready, and the Service loses its only endpoint. Emitting the
+            # shape the binary actually parses is what keeps this chart and that
+            # binary shippable in the same release.
             {{- $catalog := list }}
             {{- range $s := .Values.egress.secrets }}
-            {{- $catalog = append $catalog (dict "placeholder" $s.placeholder "env" $s.env "egressTo" $s.egressTo) }}
+            {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "env" $s.env "egressTo" $s.egressTo) }}
             {{- end }}
             - name: EGRESS_SECRETS
               value: {{ $catalog | toJson | quote }}

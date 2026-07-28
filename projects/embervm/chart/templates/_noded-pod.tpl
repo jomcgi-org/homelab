@@ -229,17 +229,32 @@ containers:
         value: "127.0.0.1:8888"
       # The allowlist is DERIVED from the workload that actually consumes the
       # lane, never hand-copied. An explicit egress.workloads wins; otherwise the
-      # claude runtime's own name is used, so renaming that workload can never
-      # silently close its egress. A second copy of a name, policed by nothing, is
-      # the coupling this chart deleted when placeholder substitution went away.
+      # claude runtime's own name is used. A second copy of a name, policed by
+      # nothing, is the coupling this chart deleted when placeholder substitution
+      # went away.
+      #
+      # This covers the CR and the allowlist, which move together. It does NOT
+      # cover sessions banked before a rename: session.workload is durable and is
+      # replayed as the relight trace, so those resume under the old name, miss
+      # the new allowlist, and come back with no egress lane.
       {{- $egressWorkloads := $ctx.Values.egress.workloads }}
       {{- if and (not $egressWorkloads) $ctx.Values.claudeRuntimeWorkload.enabled }}
       {{- $egressWorkloads = list $ctx.Values.claudeRuntimeWorkload.name }}
       {{- end }}
-      {{- with $egressWorkloads }}
-      - name: EMBERVM_NODED_EGRESS_WORKLOADS
-        value: {{ join "," . | quote }}
+      {{- if not $egressWorkloads }}
+      {{- $egressWorkloads = list "__no_workload__" }}
       {{- end }}
+      # ALWAYS emitted while egress is on, never omitted. The daemon reads an
+      # absent list as "every workload", so omitting this on the one path that
+      # derives nothing (egress.enabled with claudeRuntimeWorkload disabled)
+      # would hand every task, session, stateful and group guest on the node a
+      # forwarder to a sidecar that still holds the real credential, because
+      # egress.secrets is a separate key that does not move with it. Disabling
+      # the claude runtime during an incident would silently restore the very
+      # capability this scoping removed. The sentinel is not a legal Kubernetes
+      # object name (underscores), so it matches nothing and denies everything.
+      - name: EMBERVM_NODED_EGRESS_WORKLOADS
+        value: {{ join "," $egressWorkloads | quote }}
       {{- end }}
       # R1 zip lane: bounds a single archive HTTP GET and caps the fetched
       # bytes. The archive_url is minted by the control plane (fully-qualified

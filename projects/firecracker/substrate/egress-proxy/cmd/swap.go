@@ -282,6 +282,17 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 			return
 		}
 		resp, err := http.ReadResponse(upR, req)
+		// Skip interim responses. Rejecting Expect only stops the guest SOLICITING
+		// a 1xx; a destination can still send 103 Early Hints unasked, and
+		// http.ReadResponse does not skip them (that lives in Transport's read
+		// loop, not the parser). Relayed, a 103 becomes the guest's answer and the
+		// real final response gets paired with whatever request arrives next.
+		// api.anthropic.com does not do this today, but egressTo is per-secret, so
+		// every future credentialed host would inherit it.
+		for err == nil && resp.StatusCode >= 100 && resp.StatusCode < 200 {
+			_ = resp.Body.Close()
+			resp, err = http.ReadResponse(upR, req)
+		}
 		if err != nil {
 			p.logger.Warn("egress swap: read response", "dest", host, "err", err)
 			return
@@ -323,10 +334,12 @@ func rejectSwapRequest(req *http.Request) bool {
 
 // injectRequest sets the entry's header to the real credential.
 //
-// Only that one header, and only when the guest already sent it: the guest has to
-// send SOMETHING there anyway (the claude CLI refuses to make any request until it
-// believes it is logged in), so requiring it keeps the sidecar from silently
-// credentialing requests the client never meant to authenticate. Query, path and
+// Only that one header, and only when the guest sent it AT ALL: presence is the
+// signal, not content, so an empty value counts. The guest has to send something
+// there anyway (the claude CLI refuses to make any request until it believes it is
+// logged in), and keying on presence stops the sidecar silently credentialing
+// requests the client never meant to authenticate, without letting a guest suppress
+// injection by sending an empty value. Query, path and
 // every other header are left alone, which is the leak the substring swap had.
 //
 // Whatever the guest put in the header is DISCARDED rather than matched. That is

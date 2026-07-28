@@ -90,6 +90,10 @@ func TestInjectRequestHandlesEveryAuthorizationValue(t *testing.T) {
 		{"duplicate headers", "Authorization: first\r\nAuthorization: second\r\n", true},
 		{"empty first plus nonempty second", "Authorization:\r\nAuthorization: Bearer attacker-own-token\r\n", true},
 		{"mixed case spelling", "aUtHoRiZaTiOn: guest\r\n", true},
+		// Presence, not content: a guest must not be able to suppress injection by
+		// sending the header empty. This is the one behaviour the header-discard
+		// change deliberately altered, so it is the one that needs pinning.
+		{"single empty header", "Authorization:\r\n", true},
 		{"absent header", "X-Test: present\r\n", false},
 	}
 	for _, tt := range tests {

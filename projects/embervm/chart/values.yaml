@@ -1037,8 +1037,10 @@ bricks:
 # field through the guest CRD or control plane.
 egress:
   enabled: false
-  # Empty means all workloads when enabled. Deployments with credentials should
-  # name only the runtime workload because the sidecar has no client auth.
+  # Empty here does NOT mean "all workloads": the template derives the claude
+  # runtime's own name, and falls back to a sentinel that matches nothing if that
+  # workload is disabled. Set this only to name a DIFFERENT consumer; the daemon
+  # never sees an empty list while egress is enabled.
   workloads: []
   # Split-horizon posture (ADR 023). external "allow" lets the agent read the open
   # internet; internal is deny-by-default and confined to internal.allowlist.
