@@ -11,7 +11,7 @@ from the job pod failed on three counts, none of which CI could catch:
 - bazel: embervm's auth.allowedServiceAccounts admits
   system:serviceaccount:monolith:monolith, but an Argo job runs as
   monolith-workflows:argo-workflow, so the control plane 403s.
-- semgrep: semgrep_scan.client needs FC_INVOKE_URL, which the backend
+- semgrep: semgrep_scan.client needs EmberVM credentials, which the backend
   Deployment sets and the job pod never had.
 - postgres: reaching the demo over the public origin returns the SvelteKit HTML
   shell, because /api/ember/* is not on the public HTTPRoute.

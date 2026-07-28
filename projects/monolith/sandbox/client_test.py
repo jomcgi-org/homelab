@@ -1,7 +1,7 @@
-"""Tests for the sandbox dual-path dispatch (client.py, R0 cutover).
+"""Tests for the EmberVM sandbox client.
 
 Hermetic: `httpx.AsyncClient` is replaced by a fake that records each POST, so we
-assert fc-invoke (default) vs embervm routing and the EmberVM Idempotency-Key.
+assert the EmberVM routing and Idempotency-Key.
 """
 
 from __future__ import annotations
@@ -45,25 +45,13 @@ class _FakeClient:
 @pytest.fixture(autouse=True)
 def _fake(monkeypatch):
     _FakeClient.posts = []
-    original = client.SANDBOX_DISPATCH
     monkeypatch.setattr(client.httpx, "AsyncClient", _FakeClient)
-    monkeypatch.setattr(client, "FC_INVOKE_URL", "http://fc")
     monkeypatch.setattr(client, "EMBERVM_URL", "http://ev")
     yield
-    client.SANDBOX_DISPATCH = original
 
 
 @pytest.mark.asyncio
-async def test_fc_invoke_is_the_default():
-    client.SANDBOX_DISPATCH = "fc-invoke"
-    result = await client.run_python_in_sandbox("print(6*7)")
-    assert _FakeClient.posts[0]["url"] == "http://fc/invoke/sandbox"
-    assert result["exit_code"] == 0
-
-
-@pytest.mark.asyncio
-async def test_embervm_mode_posts_to_submit_api_with_idempotency_key():
-    client.SANDBOX_DISPATCH = "embervm"
+async def test_posts_to_embervm_submit_api_with_idempotency_key():
     await client.run_python_in_sandbox("print(6*7)")
     post = _FakeClient.posts[0]
     assert post["url"] == "http://ev/v1/workloads/sandbox/tasks?wait=true"
@@ -73,7 +61,6 @@ async def test_embervm_mode_posts_to_submit_api_with_idempotency_key():
 
 @pytest.mark.asyncio
 async def test_empty_code_short_circuits():
-    client.SANDBOX_DISPATCH = "embervm"
     result = await client.run_python_in_sandbox("   ")
     assert "error" in result
     assert _FakeClient.posts == []

@@ -223,16 +223,14 @@ async def test_token_never_logged(caplog):
 @pytest.mark.asyncio
 async def test_one_shot_path_untouched_when_session_absent(monkeypatch):
     # With no session handle, run_python_in_sandbox must NOT touch the session
-    # surface: it routes to the fc-invoke/embervm one-shot path exactly as before.
+    # surface: it routes to the EmberVM one-shot path exactly as before.
     called = {"fc": False}
 
     async def fake_fc(payload):
         called["fc"] = True
         return {"stdout": "one-shot\n", "exit_code": 0}
 
-    monkeypatch.setattr(client, "_run_fc_invoke", fake_fc)
-    monkeypatch.setattr(client, "FC_INVOKE_URL", "http://fc")
-    monkeypatch.setattr(client, "SANDBOX_DISPATCH", "fc-invoke")
+    monkeypatch.setattr(client, "_run_embervm", fake_fc)
     result = await client.run_python_in_sandbox("print(1)")
     assert result["stdout"] == "one-shot\n"
     assert called["fc"] is True

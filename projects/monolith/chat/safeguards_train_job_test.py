@@ -4,7 +4,7 @@ import asyncio
 import json
 import random
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -81,18 +81,6 @@ class TestGatherDataset:
         assert sorted(dataset["y"]) == [0, 1]
 
 
-class TestSandboxCode:
-    def test_ships_forest_source_plus_driver(self):
-        code = safeguards_train_job._sandbox_code()
-        assert "def train_forest(" in code
-        assert "def predict_forest(" in code
-        assert "json.load" in code
-        assert "forest.json" in code
-        # Standalone: the sandbox has no monolith packages on its path.
-        assert "from chat" not in code
-        assert "import chat" not in code
-
-
 class TestForestUsable:
     def test_rejects_wrong_feature_count(self):
         forest = {
@@ -165,15 +153,10 @@ class TestHandler:
         with Session(engine) as session:
             assert session.exec(select(TrustModel)).all() == []
 
-    def test_falls_back_to_local_fit_when_sandbox_fails(self, engine):
+    def test_trains_in_process(self, engine):
         dataset = _dataset()
         with (
             patch.object(safeguards_train_job, "_gather_dataset", return_value=dataset),
-            patch.object(
-                safeguards_train_job,
-                "_train_in_sandbox",
-                AsyncMock(return_value=None),
-            ),
             patch("app.db.get_engine", return_value=engine),
         ):
             asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
@@ -184,75 +167,3 @@ class TestHandler:
             metrics = json.loads(row.metrics_json)
             assert metrics["trained_in"] == "local"
             assert metrics["oob_accuracy"] > 0.8
-
-    def test_uses_sandbox_forest_when_valid(self, engine):
-        dataset = _dataset()
-        sandbox_forest = {
-            "n_features": N_FEATURES,
-            "trees": [
-                {
-                    "feature": [-1],
-                    "threshold": [0.0],
-                    "left": [-1],
-                    "right": [-1],
-                    "value": [0.5],
-                }
-            ],
-            "metrics": {"oob_accuracy": 0.99},
-        }
-        with (
-            patch.object(safeguards_train_job, "_gather_dataset", return_value=dataset),
-            patch.object(
-                safeguards_train_job,
-                "_train_in_sandbox",
-                AsyncMock(return_value=sandbox_forest),
-            ),
-            patch("app.db.get_engine", return_value=engine),
-        ):
-            asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
-        with Session(engine) as session:
-            row = session.exec(select(TrustModel)).one()
-            metrics = json.loads(row.metrics_json)
-            assert metrics["trained_in"] == "sandbox"
-
-    def test_invalid_sandbox_forest_falls_back(self, engine):
-        dataset = _dataset()
-        with (
-            patch.object(safeguards_train_job, "_gather_dataset", return_value=dataset),
-            patch.object(
-                safeguards_train_job,
-                "_train_in_sandbox",
-                AsyncMock(return_value={"n_features": 2, "trees": []}),
-            ),
-            patch("app.db.get_engine", return_value=engine),
-        ):
-            asyncio.run(safeguards_train_job.safeguards_train_handler(MagicMock()))
-        with Session(engine) as session:
-            row = session.exec(select(TrustModel)).one()
-            metrics = json.loads(row.metrics_json)
-            assert metrics["trained_in"] == "local"
-
-
-class TestTrainInSandbox:
-    def test_unconfigured_sandbox_returns_none(self):
-        # With no FC_INVOKE_URL the client short-circuits with an error dict
-        # and the trainer reports "no sandbox" as None (handler falls back).
-        with patch("sandbox.client.FC_INVOKE_URL", ""):
-            result = asyncio.run(safeguards_train_job._train_in_sandbox(_dataset(20)))
-        assert result is None
-
-    def test_sandbox_forest_json_decoded(self):
-        import base64
-
-        forest = {"n_features": N_FEATURES, "trees": []}
-        payload = base64.b64encode(json.dumps(forest).encode()).decode()
-        result_dict = {
-            "exit_code": 0,
-            "files": [{"path": "forest.json", "content_b64": payload}],
-        }
-        with patch(
-            "sandbox.client.run_python_in_sandbox",
-            AsyncMock(return_value=result_dict),
-        ):
-            result = asyncio.run(safeguards_train_job._train_in_sandbox(_dataset(20)))
-        assert result == forest

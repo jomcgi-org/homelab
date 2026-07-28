@@ -42,8 +42,8 @@ def ember_synthetic_trigger() -> None:
     """Trigger the synthetic probes in the monolith API pod.
 
     Deliberately lightweight: it POSTs the running API pod's internal endpoint,
-    which fires all four probes IN THAT process (where the embervm token,
-    FC_INVOKE_URL, DEMO_POSTGRES_DSN, and a DB session already live). The
+    which fires all four probes IN THAT process (where the EmberVM credentials,
+    DEMO_POSTGRES_DSN, and a DB session already live). The
     probes run in the API pod, not this ephemeral job pod, so the job needs
     only HTTP access, not tokens or DB.
     """
@@ -414,9 +414,8 @@ def safeguards_train() -> None:
     """Train the Bosun trust-safeguards random forest (one-shot of
     chat.safeguards_train_job.safeguards_train_handler).
 
-    Gathers the labeled moderation-event dataset, fits the forest inside the
-    Firecracker sandbox (needs FC_INVOKE_URL; falls back to an in-process
-    numpy fit when the sandbox is unreachable), and stores the result as a
+    Gathers the labeled moderation-event dataset, fits the forest in-process,
+    and stores the result as a
     status='shadow' chat.trust_model row. Skips silently when the dataset is
     below SAFEGUARDS_TRAIN_MIN_SAMPLES / _MIN_POSITIVE / _MIN_NEGATIVE.
     Promotion to status='live' is a manual decision, never this job's."""

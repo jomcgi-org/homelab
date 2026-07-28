@@ -86,15 +86,8 @@ spec:
               value: "http://localhost:3000/"
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
               value: {{ .Values.backend.otelEndpoint | quote }}
-            {{- if .Values.semgrep.fcInvokeUrl }}
-            - name: FC_INVOKE_URL
-              value: {{ .Values.semgrep.fcInvokeUrl | quote }}
-            {{- end }}
             {{- if .Values.semgrep.embervmUrl }}
-            # EmberVM control-plane URL + dispatch mode (R0 Task 15). The per-PR
-            # semgrep diff scan can be served from EmberVM's semgrep Workload, or
-            # shadow-mirrored to it, selected by SEMGREP_DISPATCH. Default
-            # `fc-invoke` keeps the served path unchanged until cutover.
+            # EmberVM control-plane URL for the semgrep and sandbox workloads.
             - name: EMBERVM_URL
               value: {{ .Values.semgrep.embervmUrl | quote }}
             {{- end }}
@@ -116,16 +109,6 @@ spec:
             - name: FAAS_S3_BUCKET
               value: {{ .Values.faas.s3Bucket | quote }}
             {{- end }}
-            {{- end }}
-            {{- if .Values.semgrep.dispatch }}
-            - name: SEMGREP_DISPATCH
-              value: {{ .Values.semgrep.dispatch | quote }}
-            {{- end }}
-            {{- if .Values.sandbox.dispatch }}
-            # Where the python sandbox demo/tool is served (R0 cutover): fc-invoke
-            # (default) or embervm (EmberVM's sandbox Workload). Reuses EMBERVM_URL.
-            - name: SANDBOX_DISPATCH
-              value: {{ .Values.sandbox.dispatch | quote }}
             {{- end }}
             {{- if .Values.sandbox.sessionWorkload }}
             # The EmberVM session-class workload backing sessioned run_python

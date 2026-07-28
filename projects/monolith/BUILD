@@ -429,7 +429,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "semgrep_scan/mcp.py",
     "semgrep_scan/module.py",
     "semgrep_scan/report.py",
-    "semgrep_scan/full_scan.py",
     "semgrep_scan/router.py",
     "semgrep_scan/cohorts.py",
     "semgrep_scan/perf_*.py",
@@ -977,23 +976,6 @@ py_test(
         # bazel/requirements/tools.in to match the fc-invoke Pro engine that
         # produced the fixture. NOT ScanHandler / app_session.
         "@pip//semgrep",
-    ],
-)
-
-py_test(
-    name = "semgrep_full_scan_test",
-    srcs = ["semgrep_scan/full_scan_test.py"],
-    imports = ["."],
-    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
-    # Drives the async gather/scan/report via pytest-asyncio (auto mode from
-    # shared/testing/plugin.py), mocking gather_main_files / scan_files_full /
-    # report_pr_scan and faking httpx.AsyncClient's trees/commits/contents GETs so
-    # no live GitHub, fc-invoke, or Semgrep App is touched.
-    deps = [
-        ":monolith_backend",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 
