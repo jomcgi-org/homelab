@@ -106,14 +106,7 @@ egress:
     # INVARIANT: the placeholder set here must equal the set of kloak: placeholders
     # the monolith goose tiers hand to guests. kloak_placeholder_drift_test.py
     # (in projects/monolith) fails CI if they drift.
-    #
-    # header/valuePrefix are what the sidecar actually reads now. The placeholder
-    # below is no longer substituted; it survives only as the value the guest
-    # holds so its client sends SOME Authorization header, which is the condition
-    # injection fires on, and so the drift test above keeps its anchor.
     - env: GITHUB_TOKEN
-      header: Authorization
-      valuePrefix: "Bearer "
       placeholder: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
       egressTo: [api.github.com]
       secretRef: { name: monolith-chat-secrets, key: GITHUB_TOKEN }
@@ -125,8 +118,6 @@ egress:
     # referenced by that exact name). placeholder MUST match
     # tiers.household.OPENAI_API_KEY in the monolith deploy values.
     - env: OPENROUTER_KEY
-      header: Authorization
-      valuePrefix: "Bearer "
       placeholder: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
       egressTo: [openrouter.ai]
       secretRef: { name: goosecracker, key: OPENROUTER_API_KEY }
