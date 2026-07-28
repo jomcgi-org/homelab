@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,14 @@ func (f *fakeObjectStore) has(key string) bool {
 	defer f.mu.Unlock()
 	_, ok := f.objects[key]
 	return ok
+}
+
+// object returns a stored object's bytes, for asserting that a REFUSED export
+// left the newer copy byte-for-byte intact.
+func (f *fakeObjectStore) object(key string) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.objects[key]
 }
 
 func (f *fakeObjectStore) putOrderCopy() []string {
@@ -400,5 +409,100 @@ func TestReachable(t *testing.T) {
 	var nilStore *Store
 	if nilStore.Reachable(context.Background()) {
 		t.Fatal("a nil (disabled) store is never reachable")
+	}
+}
+
+// TestExportRefusesOlderGenerationOverNewer is the split-brain guard. VOLUME keys
+// as a singleton (volume/<workload>: no ref, no vendor segment), so every node
+// that has ever held the volume writes the SAME object. Observed 2026-07-28 on
+// demo-postgres: node-1 exported generation 5076 and node-2 exported generation
+// 1472 to the same key minutes apart, and whichever landed last won. Before the
+// fence, differing content fell straight through to a full re-upload, so a stale
+// node could silently replace the live volume -- data loss for a Postgres volume.
+func TestExportRefusesOlderGenerationOverNewer(t *testing.T) {
+	s, fake := newTestStore(t)
+	ctx := context.Background()
+	prefix := "volume/demo-postgres"
+
+	newer, newerNames := writeLocalArtifact(t, map[string]string{"vol.img": "live-data-gen-5076"})
+	if _, _, err := s.Export(ctx, prefix, newer, newerNames, 5076, 1, "", ""); err != nil {
+		t.Fatalf("seed Export: %v", err)
+	}
+	putsAfterSeed := len(fake.putOrderCopy())
+
+	// A different node, holding a long-stale copy, exports the same singleton key.
+	stale, staleNames := writeLocalArtifact(t, map[string]string{"vol.img": "stale-data-gen-1472"})
+	moved, skipped, err := s.Export(ctx, prefix, stale, staleNames, 1472, 2, "", "")
+
+	if !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("Export err = %v, want ErrStaleGeneration", err)
+	}
+	if moved != 0 || skipped {
+		t.Fatalf("refused Export = (moved=%d, skipped=%v), want (0, false)", moved, skipped)
+	}
+	if got := len(fake.putOrderCopy()); got != putsAfterSeed {
+		t.Fatalf("refused Export issued %d PUTs, want 0 (it must not overwrite)", got-putsAfterSeed)
+	}
+	// The newer bytes are still what the store holds.
+	if got := string(fake.object("/embervm/" + prefix + "/vol.img")); got != "live-data-gen-5076" {
+		t.Fatalf("store content = %q, want the newer copy intact", got)
+	}
+}
+
+// TestExportAllowsNewerGenerationOverOlder is the other half: real progress must
+// still land. The fence is strictly-greater on the REMOTE generation, so a newer
+// local copy overwrites an older store copy exactly as before.
+func TestExportAllowsNewerGenerationOverOlder(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	prefix := "volume/demo-postgres"
+
+	old, oldNames := writeLocalArtifact(t, map[string]string{"vol.img": "old"})
+	if _, _, err := s.Export(ctx, prefix, old, oldNames, 100, 1, "", ""); err != nil {
+		t.Fatalf("seed Export: %v", err)
+	}
+
+	newer, newerNames := writeLocalArtifact(t, map[string]string{"vol.img": "new"})
+	if _, skipped, err := s.Export(ctx, prefix, newer, newerNames, 101, 2, "", ""); err != nil || skipped {
+		t.Fatalf("Export = (skipped=%v, %v), want (false, nil): progress must not be fenced", skipped, err)
+	}
+}
+
+// TestExportAllowsEqualGenerationRepair keeps the repair path open: an equal
+// generation with differing content re-uploads, so a partially-written or
+// corrupted remote copy at the CURRENT generation can be fixed. Only a strictly
+// newer remote generation is refused.
+func TestExportAllowsEqualGenerationRepair(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	prefix := "volume/demo-postgres"
+
+	a, aNames := writeLocalArtifact(t, map[string]string{"vol.img": "corrupt"})
+	if _, _, err := s.Export(ctx, prefix, a, aNames, 42, 1, "", ""); err != nil {
+		t.Fatalf("seed Export: %v", err)
+	}
+
+	b, bNames := writeLocalArtifact(t, map[string]string{"vol.img": "repaired"})
+	if _, skipped, err := s.Export(ctx, prefix, b, bNames, 42, 2, "", ""); err != nil || skipped {
+		t.Fatalf("Export = (skipped=%v, %v), want a repair re-upload", skipped, err)
+	}
+}
+
+// TestExportUnknownGenerationCannotWin: generation 0 means "unknown" (the server's
+// artifactGeneration returns 0 when it cannot resolve one). It must never
+// overwrite a copy with a known, higher generation.
+func TestExportUnknownGenerationCannotWin(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	prefix := "volume/demo-postgres"
+
+	known, knownNames := writeLocalArtifact(t, map[string]string{"vol.img": "known-good"})
+	if _, _, err := s.Export(ctx, prefix, known, knownNames, 900, 1, "", ""); err != nil {
+		t.Fatalf("seed Export: %v", err)
+	}
+
+	unknown, unknownNames := writeLocalArtifact(t, map[string]string{"vol.img": "unknown-gen"})
+	if _, _, err := s.Export(ctx, prefix, unknown, unknownNames, 0, 2, "", ""); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("Export err = %v, want ErrStaleGeneration for an unknown generation", err)
 	}
 }
