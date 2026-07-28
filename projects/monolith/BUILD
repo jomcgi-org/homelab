@@ -256,6 +256,1418 @@ py_venv_binary(
     visibility = ["//:__subpackages__"],
 )
 
+# Per-package libraries. Splitting :monolith_backend by subtree means a
+# change under grimoire/ invalidates grimoire's tests, not all 354. The
+# four packages in the agent/chat/goosecracker/home import cycle share one
+# target because Bazel deps must be acyclic; everything else is a DAG.
+py_library(
+    name = "pkg_core",
+    srcs = glob(
+        [
+            "core/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_shared",
+    srcs = glob(
+        [
+            "shared/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+            "shared/testing/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_framework",
+    srcs = glob(
+        [
+            "framework/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_artifact",
+    srcs = glob(
+        [
+            "artifact/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_framework",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_scheduler",
+    srcs = glob(
+        [
+            "scheduler/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_cluster",
+    srcs = glob(
+        [
+            "cluster/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_trips",
+    srcs = glob(
+        [
+            "trips/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+            "trips/backfill/**",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_faas",
+    srcs = glob(
+        [
+            "faas/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_sandbox",
+    srcs = glob(
+        [
+            "sandbox/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_semgrep_scan",
+    srcs = glob(
+        [
+            "semgrep_scan/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_campsites",
+    srcs = glob(
+        [
+            "campsites/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_scheduler",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_ships",
+    srcs = glob(
+        [
+            "ships/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_scheduler",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_worldcup",
+    srcs = glob(
+        [
+            "worldcup/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_scheduler",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_knowledge",
+    srcs = glob(
+        [
+            "knowledge/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_scheduler",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_hikes",
+    srcs = glob(
+        [
+            "hikes/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_scheduler",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_stars",
+    srcs = glob(
+        [
+            "stars/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+            "stars/grid_gen/**",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_scheduler",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_chat_public",
+    srcs = glob(
+        [
+            "chat_public/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_knowledge",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_grimoire",
+    srcs = glob(
+        [
+            "grimoire/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_knowledge",
+        ":pkg_scheduler",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_grimoire_chat",
+    srcs = glob(
+        [
+            "grimoire_chat/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_ember_public",
+    srcs = glob(
+        [
+            "ember_public/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_chat_public",
+        ":pkg_core",
+        ":pkg_faas",
+        ":pkg_framework",
+        ":pkg_semgrep_scan",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_cyclegroup",
+    srcs = glob(
+        [
+            "agent/**/*.py",
+            "chat/**/*.py",
+            "goosecracker/**/*.py",
+            "home/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_artifact",
+        ":pkg_cluster",
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_knowledge",
+        ":pkg_sandbox",
+        ":pkg_scheduler",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_agent_sessions",
+    srcs = glob(
+        [
+            "agent_sessions/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_cyclegroup",
+        ":pkg_core",
+        ":pkg_faas",
+        ":pkg_framework",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_dr_jobs",
+    srcs = glob(
+        [
+            "dr_jobs/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_cyclegroup",
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_scheduler",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_library(
+    name = "pkg_demos",
+    srcs = glob(
+        [
+            "demos/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_cyclegroup",
+        ":pkg_cluster",
+        ":pkg_core",
+        ":pkg_ember_public",
+        ":pkg_framework",
+        ":pkg_sandbox",
+        ":pkg_semgrep_scan",
+        ":pkg_shared",
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//curl_cffi",
+        "@pip//defusedxml",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//hera",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//pillow",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//semgrep",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
 py_library(
     name = "monolith_backend",
     srcs = glob(
@@ -766,7 +2178,7 @@ py_test(
     srcs = ["home/schedule_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//icalendar",
         "@pip//pytest",
@@ -780,7 +2192,7 @@ py_test(
     srcs = ["home/schedule_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//icalendar",
         "@pip//pytest",
@@ -823,7 +2235,7 @@ py_test(
     srcs = ["home/cluster_snapshot_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -836,7 +2248,7 @@ py_test(
     srcs = ["core/db_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -902,7 +2314,7 @@ py_test(
     srcs = ["framework/core_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_framework",
         "@pip//fastapi",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -929,7 +2341,7 @@ py_test(
     srcs = ["cluster/summarize_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cluster",
         "@pip//pytest",
     ],
 )
@@ -939,7 +2351,8 @@ py_test(
     srcs = ["cluster/mcp_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cluster",
+        ":pkg_core",
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -951,7 +2364,8 @@ py_test(
     srcs = ["semgrep_scan/mcp_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_semgrep_scan",
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -972,7 +2386,7 @@ py_test(
     # Drives the async relay via asyncio.run (sync test fns), so no
     # pytest-asyncio plugin is needed.
     deps = [
-        ":monolith_backend",
+        ":pkg_semgrep_scan",
         "@pip//pytest",
         # httpx: the test mocks semgrep_scan.report.httpx.post to capture the three
         # App uploads (CREATE + /results + /complete) and their Bearer auth.
@@ -993,7 +2407,7 @@ py_test(
     # after the response), mocking scan_files / report_pr_scan / httpx so no live
     # GitHub, fc-invoke, or Semgrep App is touched.
     deps = [
-        ":monolith_backend",
+        ":pkg_semgrep_scan",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -1006,7 +2420,7 @@ py_test(
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
-        ":monolith_backend",
+        ":pkg_semgrep_scan",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -1018,7 +2432,7 @@ py_test(
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
-        ":monolith_backend",
+        ":pkg_semgrep_scan",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -1031,7 +2445,7 @@ py_test(
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
-        ":monolith_backend",
+        ":pkg_semgrep_scan",
         "@pip//pytest",
     ],
 )
@@ -1042,7 +2456,7 @@ py_test(
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
-        ":monolith_backend",
+        ":pkg_semgrep_scan",
         "@pip//pytest",
     ],
 )
@@ -1053,7 +2467,8 @@ py_test(
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_semgrep_scan",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -1067,7 +2482,7 @@ py_test(
     imports = ["."],
     # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
     deps = [
-        ":monolith_backend",
+        ":pkg_semgrep_scan",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -1079,7 +2494,8 @@ py_test(
     srcs = ["sandbox/mcp_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_sandbox",
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1092,7 +2508,7 @@ py_test(
     srcs = ["sandbox/client_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_sandbox",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1107,7 +2523,7 @@ py_test(
     srcs = ["sandbox/session_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_sandbox",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1123,7 +2539,7 @@ py_test(
     srcs = ["sandbox/scratch_postgres_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_sandbox",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1151,7 +2567,7 @@ py_test(
     srcs = ["chat/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -1163,7 +2579,7 @@ py_test(
     srcs = ["chat/models_db_constraints_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -1176,7 +2592,7 @@ py_test(
     srcs = ["chat/models_reminder_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -1189,7 +2605,7 @@ py_test(
     srcs = ["chat/reminders_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -1202,7 +2618,7 @@ py_test(
     srcs = ["chat/jobs_reminder_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -1215,7 +2631,7 @@ py_test(
     srcs = ["chat/models_coverage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -1227,7 +2643,7 @@ py_test(
     srcs = ["shared/embedding_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1239,7 +2655,7 @@ py_test(
     srcs = ["shared/k8s_auth_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//pytest",
     ],
 )
@@ -1249,7 +2665,7 @@ py_test(
     srcs = ["shared/embedding_retry_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1261,7 +2677,7 @@ py_test(
     srcs = ["shared/embedding_batch_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1273,7 +2689,7 @@ py_test(
     srcs = ["chat/store_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1286,7 +2702,7 @@ py_test(
     srcs = ["chat/query_stats_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1299,7 +2715,7 @@ py_test(
     srcs = ["chat/store_fetch_window_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1312,7 +2728,7 @@ py_test(
     srcs = ["chat/digest_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1324,7 +2740,7 @@ py_test(
     srcs = ["chat/channel_data_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1336,7 +2752,7 @@ py_test(
     srcs = ["chat/observer_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1348,7 +2764,7 @@ py_test(
     srcs = ["chat/observer_job_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1361,7 +2777,7 @@ py_test(
     srcs = ["chat/outbox_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -1372,7 +2788,7 @@ py_test(
     srcs = ["chat/whatsapp_outbox_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -1385,7 +2801,7 @@ py_test(
     srcs = ["chat/whatsapp_group_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -1398,7 +2814,7 @@ py_test(
     srcs = ["chat/whatsapp_inbound_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -1413,7 +2829,7 @@ py_test(
     srcs = ["chat/whatsapp_session_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -1426,7 +2842,7 @@ py_test(
     srcs = ["chat/whatsapp_timeparse_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -1436,7 +2852,7 @@ py_test(
     srcs = ["chat/whatsapp_intents_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -1446,7 +2862,7 @@ py_test(
     srcs = ["chat/whatsapp_calendar_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
     ],
@@ -1457,7 +2873,7 @@ py_test(
     srcs = ["chat/whatsapp_capabilities_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pgvector",
         "@pip//pytest",
@@ -1470,7 +2886,7 @@ py_test(
     srcs = ["chat/whatsapp_digest_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -1482,7 +2898,7 @@ py_test(
     srcs = ["chat/goosecracker_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1506,7 +2922,8 @@ py_test(
     ],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -1516,7 +2933,7 @@ py_test(
     srcs = ["chat/goosecracker_steering_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -1528,7 +2945,7 @@ py_test(
     srcs = ["chat/acl_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -1540,7 +2957,7 @@ py_test(
     srcs = ["chat/attention_log_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -1556,7 +2973,7 @@ py_test(
     data = ["chat/directive_seed.md"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -1568,7 +2985,7 @@ py_test(
     srcs = ["chat/ambient_analysis_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1581,7 +2998,7 @@ py_test(
     srcs = ["chat/autopilot_job_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1594,7 +3011,7 @@ py_test(
     srcs = ["chat/attention_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
@@ -1609,7 +3026,7 @@ py_test(
     srcs = ["chat/reply_sanitize_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1622,7 +3039,7 @@ py_test(
     srcs = ["chat/goosecracker_progress_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -1632,7 +3049,7 @@ py_test(
     srcs = ["chat/goosecracker_progress_stages_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -1642,7 +3059,7 @@ py_test(
     srcs = ["chat/web_search_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1654,7 +3071,7 @@ py_test(
     srcs = ["chat/bot_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
     ],
@@ -1665,7 +3082,7 @@ py_test(
     srcs = ["chat/bot_send_message_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -1676,7 +3093,7 @@ py_test(
     srcs = ["chat/agent_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -1689,7 +3106,7 @@ py_test(
     srcs = ["chat/store_coverage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1702,7 +3119,7 @@ py_test(
     srcs = ["chat/bot_on_message_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -1716,7 +3133,7 @@ py_test(
     srcs = ["chat/bot_streaming_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -1729,7 +3146,7 @@ py_test(
     srcs = ["chat/bot_checklist_render_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -1743,7 +3160,7 @@ py_test(
     srcs = ["chat/web_search_coverage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1755,7 +3172,7 @@ py_test(
     srcs = ["shared/embedding_coverage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1767,7 +3184,7 @@ py_test(
     srcs = ["chat/agent_deps_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -1780,7 +3197,7 @@ py_test(
     srcs = ["chat/agent_coverage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -1809,7 +3226,7 @@ py_test(
     srcs = ["core/leadership_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -1820,7 +3237,7 @@ py_test(
     srcs = ["chat/agent_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -1834,7 +3251,7 @@ py_test(
     srcs = ["chat/bot_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -1847,7 +3264,7 @@ py_test(
     srcs = ["chat/web_search_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1859,7 +3276,7 @@ py_test(
     srcs = ["chat/store_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1886,7 +3303,7 @@ py_test(
     srcs = ["shared/embedding_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1898,7 +3315,7 @@ py_test(
     srcs = ["chat/changelog_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//httpx",
         "@pip//pgvector",
@@ -1912,7 +3329,7 @@ py_test(
     srcs = ["chat/changelog_fetch_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1924,7 +3341,7 @@ py_test(
     srcs = ["chat/summarizer_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -1953,7 +3370,7 @@ py_test(
     srcs = ["core/log_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
         "@pip//pytest",
     ],
 )
@@ -1963,7 +3380,7 @@ py_test(
     srcs = ["core/log_config_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
         "@pip//pytest",
     ],
 )
@@ -2000,7 +3417,7 @@ py_test(
     srcs = ["chat/store_integrity_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2014,7 +3431,7 @@ py_test(
     srcs = ["chat/bot_self_message_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2026,7 +3443,7 @@ py_test(
     srcs = ["chat/bot_embed_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2038,7 +3455,7 @@ py_test(
     srcs = ["chat/web_search_headers_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2050,7 +3467,7 @@ py_test(
     srcs = ["chat/models_summary_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -2061,7 +3478,7 @@ py_test(
     srcs = ["chat/store_channel_summary_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2074,7 +3491,7 @@ py_test(
     srcs = ["chat/store_summary_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2087,7 +3504,7 @@ py_test(
     srcs = ["chat/vision_errors_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2099,7 +3516,7 @@ py_test(
     srcs = ["chat/orchestrator_client_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2111,7 +3528,7 @@ py_test(
     srcs = ["chat/orchestrator_plan_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -2124,7 +3541,7 @@ py_test(
     data = ["chat/orchestrator_bundle.md"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2138,7 +3555,7 @@ py_test(
     srcs = ["chat/summarizer_llm_caller_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pgvector",
         "@pip//pytest",
@@ -2152,7 +3569,7 @@ py_test(
     srcs = ["chat/summarizer_agent_reply_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2165,7 +3582,7 @@ py_test(
     srcs = ["chat/bot_agent_prompt_echo_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2177,7 +3594,7 @@ py_test(
     srcs = ["chat/summarizer_channel_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2190,7 +3607,7 @@ py_test(
     srcs = ["chat/bot_exception_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -2201,7 +3618,7 @@ py_test(
     srcs = ["chat/bot_error_handling_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2213,7 +3630,7 @@ py_test(
     srcs = ["chat/agent_tools_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2225,7 +3642,7 @@ py_test(
     srcs = ["chat/store_attachments_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2238,7 +3655,7 @@ py_test(
     srcs = ["chat/agent_coerce_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -2248,7 +3665,7 @@ py_test(
     srcs = ["chat/store_blob_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2261,7 +3678,7 @@ py_test(
     srcs = ["chat/store_flush_blob_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2275,7 +3692,7 @@ py_test(
     srcs = ["chat/store_save_messages_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2288,7 +3705,7 @@ py_test(
     srcs = ["chat/store_embed_text_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -2298,7 +3715,7 @@ py_test(
     srcs = ["chat/agent_tool_execution_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2312,7 +3729,7 @@ py_test(
     srcs = ["chat/agent_channel_digest_tool_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2326,7 +3743,7 @@ py_test(
     srcs = ["chat/agent_reminder_tools_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2340,7 +3757,7 @@ py_test(
     srcs = ["chat/bot_attachments_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2353,7 +3770,7 @@ py_test(
     srcs = ["chat/bot_multimodal_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2366,7 +3783,8 @@ py_test(
     srcs = ["chat/startup_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -2378,7 +3796,8 @@ py_test(
     srcs = ["chat/summarizer_startup_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -2390,7 +3809,7 @@ py_test(
     srcs = ["chat/summarizer_prompts_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2403,7 +3822,7 @@ py_test(
     srcs = ["chat/vision_timeout_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2415,7 +3834,7 @@ py_test(
     srcs = ["chat/web_search_null_results_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2427,7 +3846,7 @@ py_test(
     srcs = ["chat/models_persistence_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -2439,7 +3858,7 @@ py_test(
     srcs = ["chat/store_upsert_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2452,7 +3871,7 @@ py_test(
     srcs = ["chat/store_bulk_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2465,7 +3884,7 @@ py_test(
     srcs = ["chat/models_validation_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -2529,7 +3948,7 @@ py_test(
     srcs = ["chat/agent_helper_functions_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2543,7 +3962,7 @@ py_test(
     srcs = ["chat/backfill_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -2555,7 +3974,7 @@ py_test(
     srcs = ["chat/vision_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2567,7 +3986,7 @@ py_test(
     srcs = ["chat/chat_new_coverage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
@@ -2583,7 +4002,7 @@ py_test(
     srcs = ["chat/web_search_missing_fields_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2595,7 +4014,7 @@ py_test(
     srcs = ["chat/store_non_integrity_error_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2609,7 +4028,7 @@ py_test(
     srcs = ["chat/summarizer_none_id_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2622,7 +4041,7 @@ py_test(
     srcs = ["shared/embedding_null_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2634,7 +4053,7 @@ py_test(
     srcs = ["chat/bot_session_failure_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2646,7 +4065,7 @@ py_test(
     srcs = ["chat/bot_thinking_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2659,7 +4078,7 @@ py_test(
     srcs = ["chat/bot_embeddable_content_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2671,7 +4090,7 @@ py_test(
     srcs = ["chat/agent_max_tokens_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
     ],
@@ -2682,7 +4101,7 @@ py_test(
     srcs = ["chat/agent_signpost_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2694,7 +4113,7 @@ py_test(
     srcs = ["shared/embedding_retryable_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
     ],
@@ -2705,7 +4124,7 @@ py_test(
     srcs = ["chat/vision_retryable_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
     ],
@@ -2716,7 +4135,7 @@ py_test(
     srcs = ["chat/store_null_data_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2729,7 +4148,7 @@ py_test(
     srcs = ["chat/bot_auto_search_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2742,7 +4161,7 @@ py_test(
     srcs = ["chat/bot_response_storage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2755,7 +4174,7 @@ py_test(
     srcs = ["shared/embedding_connect_timeout_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2767,7 +4186,7 @@ py_test(
     srcs = ["chat/agent_web_search_tool_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2779,7 +4198,7 @@ py_test(
     srcs = ["chat/bot_summary_injection_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2793,7 +4212,7 @@ py_test(
     srcs = ["chat/bot_identity_note_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2807,7 +4226,7 @@ py_test(
     srcs = ["chat/bot_subject_note_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -2821,7 +4240,7 @@ py_test(
     srcs = ["chat/bot_attachment_download_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2845,7 +4264,7 @@ py_test(
     imports = ["."],
     tags = ["e2e"],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         ":shared_testing",
         "@pip//fastapi",
         "@pip//httpx",
@@ -2881,7 +4300,7 @@ py_test(
         "playwright",
     ],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         ":shared_testing",
         "@pip//fastapi",
         "@pip//httpx",
@@ -2899,7 +4318,7 @@ py_test(
     srcs = ["chat/router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -2911,7 +4330,7 @@ py_test(
     srcs = ["chat/router_backfill_exception_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -2921,7 +4340,7 @@ py_test(
     srcs = ["chat/backfill_flush_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -2933,7 +4352,7 @@ py_test(
     srcs = ["chat/store_find_user_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2946,7 +4365,7 @@ py_test(
     srcs = ["chat/store_search_model_validate_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -2958,7 +4377,7 @@ py_test(
     srcs = ["chat/bot_thinking_view_callback_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -2990,7 +4409,7 @@ py_test(
     srcs = ["chat/store_lock_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -3003,7 +4422,7 @@ py_test(
     srcs = ["chat/bot_reprocess_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -3047,7 +4466,7 @@ py_test(
     srcs = ["scheduler/scheduler_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -3059,7 +4478,7 @@ py_test(
     srcs = ["scheduler/argo_handled_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pytest",
     ],
 )
@@ -3069,7 +4488,7 @@ py_test(
     srcs = ["scheduler/scheduler_loop_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -3081,7 +4500,7 @@ py_test(
     srcs = ["scheduler/scheduler_tick_missing_job_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -3093,7 +4512,7 @@ py_test(
     srcs = ["scheduler/scheduler_claim_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3104,7 +4523,7 @@ py_test(
     srcs = ["scheduler/scheduler_transitions_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3130,7 +4549,7 @@ py_test(
     srcs = ["home/schedule_calendar_handler_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//icalendar",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -3143,7 +4562,7 @@ py_test(
     srcs = ["scheduler/scheduler_loop_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -3155,7 +4574,7 @@ py_test(
     srcs = ["shared/forecast_freshness_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
         "@pip//pytest",
     ],
 )
@@ -3165,7 +4584,7 @@ py_test(
     srcs = ["knowledge/chunker_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3175,7 +4594,7 @@ py_test(
     srcs = ["knowledge/chunker_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3185,7 +4604,7 @@ py_test(
     srcs = ["knowledge/chunker_split_edge_cases_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3195,7 +4614,7 @@ py_test(
     srcs = ["knowledge/frontmatter_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pyyaml",
     ],
@@ -3206,7 +4625,7 @@ py_test(
     srcs = ["knowledge/layout_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//networkx",
         "@pip//pytest",
     ],
@@ -3217,7 +4636,7 @@ py_test(
     srcs = ["knowledge/links_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3227,7 +4646,7 @@ py_test(
     srcs = ["knowledge/links_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3237,7 +4656,7 @@ py_test(
     srcs = ["knowledge/links_coverage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3247,7 +4666,7 @@ py_test(
     srcs = ["knowledge/store_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pydantic",
         "@pip//pytest",
@@ -3261,7 +4680,7 @@ py_test(
     srcs = ["knowledge/indexing_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -3272,7 +4691,7 @@ py_test(
     srcs = ["knowledge/wikilinks_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3282,7 +4701,7 @@ py_test(
     srcs = ["knowledge/visibility_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3292,7 +4711,7 @@ py_test(
     srcs = ["knowledge/profile_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3302,7 +4721,7 @@ py_test(
     srcs = ["knowledge/tools/add_visibility_field_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3312,7 +4731,7 @@ py_test(
     srcs = ["knowledge/tools/classify_visibility_backfill_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3322,7 +4741,7 @@ py_test(
     srcs = ["knowledge/gen_repo_docs_manifest_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3332,7 +4751,7 @@ py_test(
     srcs = ["knowledge/gen_docs_manifest_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3342,7 +4761,7 @@ py_test(
     srcs = ["knowledge/repo_docs_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3352,7 +4771,7 @@ py_test(
     srcs = ["knowledge/gardener_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -3362,7 +4781,7 @@ py_test(
     srcs = ["knowledge/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -3375,7 +4794,7 @@ py_test(
     srcs = ["grimoire/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -3388,7 +4807,7 @@ py_test(
     srcs = ["grimoire/visibility_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -3401,7 +4820,8 @@ py_test(
     srcs = ["grimoire/router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_grimoire",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -3414,7 +4834,8 @@ py_test(
     srcs = ["grimoire/entities_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_grimoire",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -3427,7 +4848,9 @@ py_test(
     srcs = ["grimoire/search_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -3442,7 +4865,8 @@ py_test(
     srcs = ["grimoire/library_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_grimoire",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -3457,7 +4881,7 @@ py_test(
     srcs = ["grimoire/public_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -3470,7 +4894,7 @@ py_test(
     srcs = ["grimoire/explore_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -3483,7 +4907,8 @@ py_test(
     srcs = ["grimoire/router_public_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_grimoire",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -3498,7 +4923,7 @@ py_test(
     srcs = ["grimoire/ingest_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -3511,7 +4936,7 @@ py_test(
     srcs = ["grimoire/extract_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//httpx",
         "@pip//pgvector",
         "@pip//pytest",
@@ -3526,7 +4951,7 @@ py_test(
     srcs = ["grimoire/marker_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//pytest",
     ],
 )
@@ -3536,7 +4961,7 @@ py_test(
     srcs = ["grimoire/jobs_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//httpx",
         "@pip//pgvector",
         "@pip//pytest",
@@ -3550,7 +4975,7 @@ py_test(
     srcs = ["grimoire/hierarchy_backfill_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_grimoire",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -3563,7 +4988,7 @@ py_test(
     srcs = ["ships/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ships",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3574,7 +4999,7 @@ py_test(
     srcs = ["hikes/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_hikes",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3585,7 +5010,7 @@ py_test(
     srcs = ["faas/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_faas",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3596,7 +5021,7 @@ py_test(
     srcs = ["faas/storage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_faas",
         "@pip//boto3",
         "@pip//pytest",
     ],
@@ -3607,7 +5032,7 @@ py_test(
     srcs = ["faas/runtime_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_faas",
         "@pip//pytest",
     ],
 )
@@ -3617,7 +5042,7 @@ py_test(
     srcs = ["faas/embervm_client_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_faas",
         "@pip//httpx",
         "@pip//pytest",
     ],
@@ -3628,7 +5053,7 @@ py_test(
     srcs = ["faas/workload_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_faas",
         "@pip//kubernetes_asyncio",
         "@pip//pytest",
         "@pip//pyyaml",
@@ -3666,7 +5091,8 @@ py_test(
     srcs = ["faas/invoke_router_public_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_faas",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -3679,7 +5105,7 @@ py_test(
     srcs = ["stars/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_stars",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3690,7 +5116,7 @@ py_test(
     srcs = ["stars/scoring_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_stars",
         "@pip//pydantic",
         "@pip//pytest",
     ],
@@ -3701,7 +5127,7 @@ py_test(
     srcs = ["stars/forecast_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_stars",
         "@pip//pytest",
     ],
 )
@@ -3711,7 +5137,8 @@ py_test(
     srcs = ["stars/jobs_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_shared",
+        ":pkg_stars",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3722,7 +5149,8 @@ py_test(
     srcs = ["stars/grid_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_stars",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3733,7 +5161,8 @@ py_test(
     srcs = ["stars/climatology_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_stars",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -3744,7 +5173,9 @@ py_test(
     srcs = ["stars/router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_shared",
+        ":pkg_stars",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -3757,7 +5188,7 @@ py_test(
     srcs = ["hikes/walkhighlands_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_hikes",
         "@pip//pytest",
     ],
 )
@@ -3767,7 +5198,7 @@ py_test(
     srcs = ["hikes/forecast_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_hikes",
         "@pip//pytest",
     ],
 )
@@ -3777,7 +5208,9 @@ py_test(
     srcs = ["hikes/router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_hikes",
+        ":pkg_shared",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -3807,7 +5240,7 @@ py_test(
     srcs = ["artifact/router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_artifact",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -3819,7 +5252,7 @@ py_test(
     srcs = ["artifact/s3_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_artifact",
         "@pip//boto3",
         "@pip//pytest",
     ],
@@ -3833,7 +5266,7 @@ py_test(
     srcs = ["artifact/session_router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_artifact",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -3845,7 +5278,7 @@ py_test(
     srcs = ["artifact/session_s3_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_artifact",
         "@pip//boto3",
         "@pip//pytest",
     ],
@@ -3857,7 +5290,7 @@ py_test(
     srcs = ["artifact/jobs_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_artifact",
         "@pip//boto3",
         "@pip//pytest",
     ],
@@ -4013,7 +5446,8 @@ py_test(
     srcs = ["hikes/jobs_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_hikes",
+        ":pkg_shared",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -4024,7 +5458,7 @@ py_test(
     srcs = ["hikes/__init___test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_hikes",
         "@pip//pytest",
     ],
 )
@@ -4034,7 +5468,7 @@ py_test(
     srcs = ["dr_jobs/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_dr_jobs",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -4045,7 +5479,7 @@ py_test(
     srcs = ["dr_jobs/scraper_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_dr_jobs",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -4057,7 +5491,8 @@ py_test(
     srcs = ["dr_jobs/router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_dr_jobs",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4070,7 +5505,8 @@ py_test(
     srcs = ["dr_jobs/jobs_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_dr_jobs",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -4083,7 +5519,7 @@ py_test(
     data = ["worldcup/ratings/elo_2026.json"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_worldcup",
         "@pip//pytest",
     ],
 )
@@ -4093,7 +5529,7 @@ py_test(
     srcs = ["worldcup/outcome_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_worldcup",
         "@pip//pytest",
     ],
 )
@@ -4104,7 +5540,7 @@ py_test(
     data = ["worldcup/ratings/elo_2026.json"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_worldcup",
         "@pip//pytest",
     ],
 )
@@ -4114,7 +5550,7 @@ py_test(
     srcs = ["worldcup/strength_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_worldcup",
         "@pip//pytest",
     ],
 )
@@ -4124,7 +5560,7 @@ py_test(
     srcs = ["worldcup/client_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_worldcup",
         "@pip//httpx",
         "@pip//pytest",
     ],
@@ -4136,7 +5572,8 @@ py_test(
     data = ["worldcup/ratings/elo_2026.json"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_worldcup",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -4148,7 +5585,8 @@ py_test(
     data = ["worldcup/ratings/elo_2026.json"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_worldcup",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4164,7 +5602,7 @@ py_test(
     data = ["campsites/catalog.json"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_campsites",
         "@pip//pytest",
     ],
 )
@@ -4174,7 +5612,7 @@ py_test(
     srcs = ["campsites/weather_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_campsites",
         "@pip//pytest",
     ],
 )
@@ -4184,7 +5622,8 @@ py_test(
     srcs = ["campsites/jobs_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_campsites",
+        ":pkg_core",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -4195,7 +5634,8 @@ py_test(
     srcs = ["campsites/router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_campsites",
+        ":pkg_core",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4208,7 +5648,7 @@ py_test(
     srcs = ["stars/__init___test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_stars",
         "@pip//pytest",
     ],
 )
@@ -4248,7 +5688,7 @@ py_test(
     srcs = ["ships/heat_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ships",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -4259,7 +5699,7 @@ py_test(
     srcs = ["ships/ais_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ships",
         "@pip//pytest",
     ],
 )
@@ -4269,7 +5709,7 @@ py_test(
     srcs = ["ships/store_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ships",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -4280,7 +5720,7 @@ py_test(
     srcs = ["ships/ingest_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ships",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//websockets",
@@ -4292,7 +5732,8 @@ py_test(
     srcs = ["ships/router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_ships",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4305,7 +5746,7 @@ py_test(
     srcs = ["ships/retention_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ships",
         "@pip//pytest",
     ],
 )
@@ -4315,7 +5756,7 @@ py_test(
     srcs = ["knowledge/gap_model_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4328,7 +5769,7 @@ py_test(
     srcs = ["knowledge/gap_lifecycle_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4341,7 +5782,7 @@ py_test(
     srcs = ["knowledge/gap_discover_fileless_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4354,7 +5795,7 @@ py_test(
     srcs = ["knowledge/gap_commit_hook_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4367,7 +5808,7 @@ py_test(
     srcs = ["knowledge/gap_set_class_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4380,7 +5821,7 @@ py_test(
     srcs = ["knowledge/gap_answer_fileless_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -4394,7 +5835,7 @@ py_test(
     srcs = ["knowledge/deleted_at_filter_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -4407,7 +5848,7 @@ py_test(
     srcs = ["knowledge/gap_logic_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4420,7 +5861,7 @@ py_test(
     srcs = ["knowledge/gap_slug_resolution_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4433,7 +5874,7 @@ py_test(
     srcs = ["knowledge/store_gap_queries_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4446,7 +5887,8 @@ py_test(
     srcs = ["knowledge/service_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
+        ":pkg_scheduler",
         "@pip//networkx",
         "@pip//pgvector",
         "@pip//pytest",
@@ -4476,7 +5918,7 @@ py_test(
     srcs = ["chat/backfill_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -4487,7 +5929,7 @@ py_test(
     srcs = ["knowledge/store_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -4499,7 +5941,7 @@ py_test(
     srcs = ["knowledge/frontmatter_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pyyaml",
     ],
@@ -4510,7 +5952,7 @@ py_test(
     srcs = ["knowledge/frontmatter_json_safe_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pyyaml",
     ],
@@ -4521,7 +5963,7 @@ py_test(
     srcs = ["chat/store_reclaim_race_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -4534,7 +5976,7 @@ py_test(
     srcs = ["home/schedule_naive_dtend_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//icalendar",
         "@pip//pytest",
         "@pip//tzdata",
@@ -4546,7 +5988,7 @@ py_test(
     srcs = ["knowledge/store_zero_chunk_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -4558,7 +6000,7 @@ py_test(
     srcs = ["knowledge/store_optional_metadata_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -4570,7 +6012,7 @@ py_test(
     srcs = ["knowledge/raw_paths_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -4580,7 +6022,7 @@ py_test(
     srcs = ["knowledge/migrate_raw_bucketing_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -4592,7 +6034,7 @@ py_test(
     srcs = ["knowledge/knowledge_fixes_coverage_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -4638,7 +6080,7 @@ py_test(
     srcs = ["knowledge/mcp_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//fastmcp",
         "@pip//httpx",
         "@pip//pytest",
@@ -4651,7 +6093,8 @@ py_test(
     srcs = ["knowledge/gap_api_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_knowledge",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -4667,7 +6110,8 @@ py_test(
     srcs = ["knowledge/gap_review_endpoints_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_knowledge",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -4683,7 +6127,8 @@ py_test(
     srcs = ["knowledge/note_review_endpoints_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_knowledge",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -4699,7 +6144,7 @@ py_test(
     srcs = ["knowledge/notes_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pyyaml",
@@ -4712,7 +6157,7 @@ py_test(
     srcs = ["knowledge/mcp_gap_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//fastmcp",
         "@pip//httpx",
         "@pip//pgvector",
@@ -4741,7 +6186,7 @@ py_test(
     srcs = ["knowledge/ingest_queue_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -4755,7 +6200,7 @@ py_test(
     srcs = ["knowledge/raw_store_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//boto3",
         "@pip//pytest",
     ],
@@ -4766,7 +6211,7 @@ py_test(
     srcs = ["knowledge/store_note_links_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -4778,7 +6223,7 @@ py_test(
     srcs = ["knowledge/ingest_queue_extra_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -4789,7 +6234,7 @@ py_test(
     srcs = ["knowledge/ingest_queue_claim_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -4799,7 +6244,7 @@ py_test(
     srcs = ["knowledge/ingest_queue_webpage_title_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -4810,7 +6255,7 @@ py_test(
     srcs = ["chat/web_search_type_error_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -4822,7 +6267,7 @@ py_test(
     srcs = ["chat/sse_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//anyio",
         "@pip//pytest",
     ],
@@ -4833,7 +6278,7 @@ py_test(
     srcs = ["chat/explorer_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//anyio",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -4858,7 +6303,8 @@ py_test(
     srcs = ["chat/cluster_agent_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cluster",
+        ":pkg_cyclegroup",
         "@pip//anyio",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -4896,7 +6342,7 @@ py_test(
     srcs = ["knowledge/tasks_store_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4909,7 +6355,7 @@ py_test(
     srcs = ["knowledge/tasks_rollup_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -4922,7 +6368,7 @@ py_test(
     srcs = ["home/observability/clickhouse_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -4934,7 +6380,7 @@ py_test(
     srcs = ["home/observability/slo_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -5000,7 +6446,7 @@ py_test(
     srcs = ["home/observability/stats_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -5012,7 +6458,7 @@ py_test(
     srcs = ["home/observability/traces_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -5023,7 +6469,8 @@ py_test(
     srcs = ["demos/firecracker_api_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_demos",
+        ":pkg_ember_public",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -5053,7 +6500,8 @@ py_test(
     srcs = ["ember_public/bazel_core_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ember_public",
+        ":pkg_faas",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -5065,7 +6513,7 @@ py_test(
     srcs = ["ember_public/synthetic_health_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ember_public",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -5077,7 +6525,7 @@ py_test(
     srcs = ["ember_public/synthetic_probe_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ember_public",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -5090,7 +6538,7 @@ py_test(
     srcs = ["ember_public/synthetic_router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_ember_public",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -5103,7 +6551,7 @@ py_test(
     data = glob(["demos/loadtest_corpus/**/*.sample"]),
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_demos",
         "@pip//pytest",
     ],
 )
@@ -5116,7 +6564,7 @@ py_test(
     data = glob(["demos/loadtest_corpus/**/*.sample"]),
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_demos",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -5127,7 +6575,7 @@ py_test(
     srcs = ["home/observability/rollup_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -5138,7 +6586,7 @@ py_test(
     srcs = ["cluster/kubernetes_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cluster",
         "@pip//kubernetes_asyncio",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -5150,7 +6598,7 @@ py_test(
     srcs = ["scheduler/views_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pydantic",
         "@pip//pytest",
     ],
@@ -5161,7 +6609,7 @@ py_test(
     srcs = ["scheduler/service_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_scheduler",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -5336,7 +6784,7 @@ py_test(
     srcs = ["agent/config_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -5346,7 +6794,7 @@ py_test(
     srcs = ["agent/notify_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
@@ -5393,7 +6841,7 @@ py_test(
     srcs = ["goosecracker/tests/sessions_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -5403,7 +6851,7 @@ py_test(
     srcs = ["goosecracker/tests/tiers_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -5418,7 +6866,7 @@ py_test(
     data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -5433,7 +6881,7 @@ py_test(
     srcs = ["goosecracker/tests/replan_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         # replan_test imports goosecracker.runner (httpx at module top) and, via
         # the loop tests, chat.orchestrator_plan; the router_render module is
         # transitively reachable (yaml) so declare pyyaml like runner_test does.
@@ -5449,7 +6897,7 @@ py_test(
     srcs = ["goosecracker/tests/repo_catalog_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -5466,7 +6914,7 @@ py_test(
     data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
     ],
 )
@@ -5482,7 +6930,7 @@ py_test(
     data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//pyyaml",
     ],
@@ -5493,7 +6941,7 @@ py_test(
     srcs = ["agent/checks_firing_alerts_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_cyclegroup",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -5505,7 +6953,8 @@ py_test(
     srcs = ["agent/mcp_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_cyclegroup",
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -5529,7 +6978,7 @@ py_test(
     srcs = ["agent_sessions/store_voice_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_agent_sessions",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -5540,7 +6989,7 @@ py_test(
     srcs = ["agent_sessions/mcp_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_agent_sessions",
         "@pip//fastmcp",
         "@pip//pytest",
         "@pip//sqlmodel",
@@ -5649,7 +7098,7 @@ py_test(
     srcs = ["trips/models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_trips",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -5660,7 +7109,7 @@ py_test(
     srcs = ["trips/transform_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_trips",
         "@pip//pytest",
     ],
 )
@@ -5670,7 +7119,7 @@ py_test(
     srcs = ["trips/exif_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_trips",
         "@pip//pytest",
     ],
 )
@@ -5684,7 +7133,7 @@ py_test(
     data = glob(["trips/testdata/**"]),
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_trips",
         "@pip//pytest",
     ],
 )
@@ -5696,7 +7145,8 @@ py_test(
     data = glob(["trips/testdata/**"]),
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_trips",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -5710,7 +7160,8 @@ py_test(
     srcs = ["trips/read_router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_trips",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -5822,7 +7273,7 @@ py_test(
     srcs = ["knowledge/http_cache_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
     ],
 )
@@ -5834,7 +7285,7 @@ py_test(
     srcs = ["knowledge/public_models_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_knowledge",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -5847,7 +7298,8 @@ py_test(
     srcs = ["knowledge/public_router_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_core",
+        ":pkg_knowledge",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -5862,7 +7314,7 @@ py_test(
     srcs = ["trips/s3_test.py"],
     imports = ["."],
     deps = [
-        ":monolith_backend",
+        ":pkg_trips",
         "@pip//boto3",
         "@pip//botocore",
         "@pip//pytest",
