@@ -391,6 +391,12 @@ defmodule Embervm.StatefulStore do
     GenServer.call(store, {:get_volume, workload})
   end
 
+  @doc "Every volume row in the hot set, for reconciliation."
+  @spec all_volumes(GenServer.server()) :: [map()]
+  def all_volumes(store \\ __MODULE__) do
+    GenServer.call(store, :all_volumes)
+  end
+
   @doc """
   Upsert the volume fact for `workload` (ETS-only: the durable volume row is
   written by the op-log's `volume_created` projection; this is the live-fact
@@ -835,6 +841,11 @@ defmodule Embervm.StatefulStore do
 
   def handle_call({:get_volume, workload}, _from, state) do
     {:reply, fetch_volume(state, workload), state}
+  end
+
+  def handle_call(:all_volumes, _from, state) do
+    volumes = :ets.foldl(fn {_workload, volume}, acc -> [volume | acc] end, [], state.volumes)
+    {:reply, volumes, state}
   end
 
   def handle_call({:upsert_volume, workload, fields}, _from, state) do

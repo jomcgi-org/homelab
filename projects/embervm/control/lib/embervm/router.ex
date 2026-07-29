@@ -1132,6 +1132,14 @@ defmodule Embervm.Router do
           retryable: false
         })
 
+      {:error, {:delete_incomplete, nodes}} ->
+        send_json(conn, 500, %{
+          error: "volume delete incomplete",
+          workload: workload,
+          nodes: nodes,
+          retryable: true
+        })
+
       {:error, reason} ->
         send_json(conn, 500, %{error: "volume delete failed", reason: inspect(reason), workload: workload, retryable: true})
     end
