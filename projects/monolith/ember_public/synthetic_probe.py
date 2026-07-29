@@ -37,12 +37,40 @@ PAGE_SENTINELS = {
     "/ember/semgrep": "Ember Semgrep",
 }
 
+# A real control-plane outage persists and still latches red on its first
+# probe run; #4137 lasted over an hour. A CP roll takes 15 to 60s, so this
+# absorbs normal Recreate downtime without blunting outage detection. The 90s
+# ceiling leaves 90s of margin inside the CronWorkflow's documented 180s API
+# request timeout (all four probes run concurrently) and stays below its 300s
+# deadline, so runs cannot overlap.
+EMBER_SYNTHETIC_RETRY_BUDGET_S = float(
+    os.environ.get("EMBER_SYNTHETIC_RETRY_BUDGET_S", "90.0")
+)
+EMBER_SYNTHETIC_RETRY_INTERVAL_S = 15.0
+
 
 def _failure(exc: Exception) -> dict:
     return {"ok": False, "detail": str(exc), "latency_ms": None}
 
 
-async def probe_bazel() -> dict:
+async def _retry_probe(probe) -> dict:
+    started = perf_counter()
+    retries = 0
+    result = await probe()
+    while not result["ok"]:
+        elapsed = perf_counter() - started
+        if elapsed + EMBER_SYNTHETIC_RETRY_INTERVAL_S >= EMBER_SYNTHETIC_RETRY_BUDGET_S:
+            break
+        await asyncio.sleep(EMBER_SYNTHETIC_RETRY_INTERVAL_S)
+        result = await probe()
+        retries += 1
+    if result["ok"] and retries:
+        result = dict(result)
+        result["detail"] += f" (recovered after {retries} retries)"
+    return result
+
+
+async def _probe_bazel_once() -> dict:
     # A missing warmth marker is a FAILURE even though bazel_core._check_drift
     # only logs a WARNING for the same condition. The query still returns 200
     # OK, so a passive check stays green while the exhibit's premise, that
@@ -74,7 +102,11 @@ async def probe_bazel() -> dict:
         return _failure(exc)
 
 
-async def probe_semgrep() -> dict:
+async def probe_bazel() -> dict:
+    return await _retry_probe(_probe_bazel_once)
+
+
+async def _probe_semgrep_once() -> dict:
     try:
         from semgrep_scan.client import scan_files
 
@@ -126,6 +158,10 @@ def run():
         }
     except Exception as exc:  # noqa: BLE001 - probes report failures in-band
         return _failure(exc)
+
+
+async def probe_semgrep() -> dict:
+    return await _retry_probe(_probe_semgrep_once)
 
 
 async def probe_pages() -> dict:
@@ -184,7 +220,7 @@ async def probe_pages() -> dict:
         return _failure(exc)
 
 
-async def probe_postgres() -> dict:
+async def _probe_postgres_once() -> dict:
     """Probe via a direct core call, not HTTP.
 
     Aggregate is read-only (same reads without writing, proving wake needs no
@@ -232,6 +268,10 @@ async def probe_postgres() -> dict:
         return _failure(exc)
     finally:
         core.release_query_slot()
+
+
+async def probe_postgres() -> dict:
+    return await _retry_probe(_probe_postgres_once)
 
 
 def _record_sync(demo: str, result: dict) -> None:
