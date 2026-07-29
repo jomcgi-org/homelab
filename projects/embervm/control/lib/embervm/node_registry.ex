@@ -622,7 +622,7 @@ defmodule Embervm.NodeRegistry do
       instance_id: rt.instance_id,
       # Brick fact (brick-capacity PR-1, additive): the daemon-reported T-shirt
       # size-class label ("2gi"/"4gi"/"8gi"/"16gi") this instance was deployed
-      # as. Embervm.BrickLedger buckets per-instance headroom by it and (from
+      # as. Embervm.Brick buckets per-instance headroom by it and (from
       # PR-2) pick_brick/3 selects a brick of the matching class. EMPTY on the
       # legacy DaemonSet and any daemon that predates the field, which the
       # ledger treats as the wildcard class (matches every request) so DS-only

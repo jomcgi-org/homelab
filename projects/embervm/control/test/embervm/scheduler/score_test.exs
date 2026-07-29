@@ -1,8 +1,7 @@
-defmodule Embervm.Placement.ScoreTest do
+defmodule Embervm.Scheduler.ScoreTest do
   use ExUnit.Case, async: true
 
-  alias Embervm.BrickLedger
-  alias Embervm.Placement.Score
+  alias Embervm.Scheduler.Score
 
   defp brick(opts \\ []) do
     %{
@@ -86,9 +85,9 @@ defmodule Embervm.Placement.ScoreTest do
     assert length(heads) == 2
   end
 
-  test "order head equals BrickLedger.choose/2" do
+  test "order head is the selected candidate" do
     candidates = [brick(instance_id: "a"), brick(instance_id: "b", live_vms: 4)]
-    assert List.first(Score.order(candidates, "wl")) == BrickLedger.choose(candidates, "wl")
+    assert List.first(Score.order(candidates, "wl")).instance_id == "b"
   end
 
   test "order is a permutation" do

@@ -109,7 +109,7 @@ defmodule Embervm.BrickController do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{BrickLedger, K8s, NodeCapacity}
+  alias Embervm.{Brick, K8s, NodeCapacity}
 
   @default_interval_ms 30_000
   @default_fleet_full_after_ms 300_000
@@ -151,7 +151,7 @@ defmodule Embervm.BrickController do
       sets the victim's pod-deletion-cost; default
       `&Embervm.K8s.annotate_pod/3` (injected in tests).
     * `:registered_fun`       - `() -> %{class => count}` of registered bricks,
-      default derived from `Embervm.BrickLedger.by_class/0` (injected in tests).
+      default derived from `Embervm.Brick.by_class/0` (injected in tests).
     * `:facts_fun`            - `() -> [facts]` raw capacity facts (idle/victim
       inputs), default `NodeCapacity.all/1` (injected in tests).
     * `:up_threshold` / `:up_window_ms` / `:up_cooldown_ms` /
@@ -747,7 +747,7 @@ defmodule Embervm.BrickController do
   # ("") bricks (the legacy DaemonSet) are bucketed under "" and simply do not
   # match any concrete class's fleet-full accounting.
   defp registered_by_class do
-    BrickLedger.by_class()
+    Brick.by_class()
     |> Map.new(fn {class, bricks} -> {class, length(bricks)} end)
   end
 

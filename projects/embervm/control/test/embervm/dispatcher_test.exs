@@ -15,7 +15,7 @@ defmodule Embervm.DispatcherTest do
 
   alias Embervm.{Dispatcher, NodeCapacity, TaskStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Placement.Score
+  alias Embervm.Scheduler.Score
   alias Embervm.Node.V1.{AssignRequest, AssignResponse, GuestResponse, PrimeResponse, Trace, UsageStats}
 
   # -- harness ---------------------------------------------------------------

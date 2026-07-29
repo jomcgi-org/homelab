@@ -28,14 +28,14 @@ defmodule Embervm.WakeInstance do
        `warmth_key`) contains the wake's `ref`, and returns its `instance_id`.
 
     2. Else (a cold boot, or no owning instance found) a mem-ELIGIBLE instance on the
-       node: the node's bricks (`Embervm.BrickLedger.bricks/1`) filtered by the
-       DS-wildcard rule, then `Embervm.BrickLedger.choose(list, workload)` for a
+       node: the node's bricks (`Embervm.Brick.bricks/1`) filtered by the
+       DS-wildcard rule, then the scheduler's score order for a
        deterministic, sticky pick. `need_mib` is the workload's `mem_mib`. The
        DS-wildcard rule: a wildcard/zero-budget instance (`size_class == ""`, the big
        burst-envelope DaemonSet with no cgroup limit, reporting `mem_headroom_mib =
        0` / `mem_budget_mib = 0`) is ALWAYS eligible on the mem gate; only a CLASSED
        brick with a real budget is gated on `mem_headroom_mib >= need_mib`. We do NOT
-       reuse `BrickLedger.candidates/3` here: it gates EVERY brick on headroom (right
+       reuse a class-specific query here: it gates EVERY brick on headroom (right
        for the dispatcher, where a co-located brick reports a real budget), which
        would wrongly exclude a zero-headroom wildcard on the still-DS-only fleet.
 
@@ -64,7 +64,9 @@ defmodule Embervm.WakeInstance do
 
   require Logger
 
-  alias Embervm.{BrickLedger, NodeCapacity}
+  alias Embervm.{Brick, NodeCapacity}
+  alias Embervm.Scheduler
+  alias Embervm.Scheduler.Request
 
   # How often one {workload, node} pair may log a cold-rejection diagnostic. An
   # autoWake workload whose placement fails retries every ~10s indefinitely
@@ -116,7 +118,7 @@ defmodule Embervm.WakeInstance do
   returns and whose tail is the next-candidate frontier. Returns
   `{:ok, [dial_id]}` (never empty on success) or `{:error, :no_eligible_instance}`.
 
-  Same node scoping, same `Embervm.Placement` readiness/eligibility rule, and the
+  Same node scoping, same `Embervm.Scheduler` readiness/eligibility rule, and the
   same Axis-C denial note as `cold_instance/4`, so the single-attempt cold pick and
   the retry candidate list cannot drift. A cold create passes NO `:warmth_key`
   (there is no owning snapshot to prefer); this is the cold frontier only.
@@ -128,16 +130,11 @@ defmodule Embervm.WakeInstance do
     workload = Keyword.fetch!(opts, :workload)
     need_mib = Keyword.fetch!(opts, :need_mib)
 
-    node_bricks =
-      table
-      |> BrickLedger.bricks()
-      |> Enum.filter(fn brick -> brick.node_id == node_id end)
-
-    case Embervm.Placement.candidates_ready(node_bricks, workload, need_mib) do
+    case Scheduler.place(%Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}) do
       [] ->
         # Same demand-signal discrimination as cold_instance/4: only a true
         # no-eligible-brick wall feeds the autoscaler, not a base-not-ready wait.
-        unless Enum.any?(node_bricks, &Embervm.Placement.eligible?(&1, need_mib)) do
+        if Scheduler.place(%Request{table: table, node_id: node_id, need_mib: need_mib}) == [] do
           Embervm.BrickController.note_denial(need_mib)
         end
 
@@ -328,7 +325,7 @@ defmodule Embervm.WakeInstance do
 
   # A mem-eligible AND base-READY cold candidate on the node, then a deterministic
   # sticky pick keyed by the workload. The gate is the SHARED
-  # `Embervm.Placement.pick_ready/3` predicate (the one source of truth every NEW-
+  # `Embervm.Scheduler.place/1` predicate (the one source of truth every NEW-
   # COLD-placement path uses): a free slot, mem-eligibility (the DS wildcard/zero-
   # budget brick is always mem-eligible, the big burst envelope reporting
   # `mem_headroom_mib = 0` under no cgroup limit; a CLASSED brick needs
@@ -349,19 +346,14 @@ defmodule Embervm.WakeInstance do
   # this only changes behaviour in the post-roll/post-scale-up window (the gap).
   #
   # We scope the node's bricks first, then delegate the filter+`choose` to
-  # `Placement.pick_ready/3` so the wake and dispatcher/session/serving paths can
-  # never drift on the readiness gate. `BrickLedger.candidates/3` is deliberately NOT
+  # `Scheduler.place/1` so the wake and dispatcher/session/serving paths can
+  # never drift on the readiness gate. A class-specific query is deliberately NOT
   # used: it gates EVERY brick on headroom, wrongly excluding a zero-headroom wildcard
   # on the still-DS-only fleet. This is the COLD path only; the warmth/relight-owner
   # branch of `select/2` is unchanged (the banked instance already holds the base).
   defp cold_instance(table, node_id, workload, need_mib) do
-    node_bricks =
-      table
-      |> BrickLedger.bricks()
-      |> Enum.filter(fn brick -> brick.node_id == node_id end)
-
-    case Embervm.Placement.pick_ready(node_bricks, workload, need_mib) do
-      nil ->
+    case Scheduler.place(%Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}) do
+      [] ->
         # Distinguish WHY the pick failed before feeding the autoscaler (Axis C):
         # if some brick was slot/mem-eligible but merely not base-READY yet, the
         # wake is waiting on provisioning, not on capacity, and a scale-up would
@@ -369,8 +361,9 @@ defmodule Embervm.WakeInstance do
         # eligible at all is this a CAPACITY denial worth a demand signal. The
         # note is an async cast: a missing controller (tests, DS-only fleet)
         # makes it a silent no-op, and the wake outcome is unchanged either way.
-        capacity_denial? = not Enum.any?(node_bricks, &Embervm.Placement.eligible?(&1, need_mib))
+        capacity_denial? = Scheduler.place(%Request{table: table, node_id: node_id, need_mib: need_mib}) == []
 
+        node_bricks = Brick.bricks(table) |> Enum.filter(&(&1.node_id == node_id))
         log_cold_rejection(node_id, workload, need_mib, node_bricks, capacity_denial?)
 
         if capacity_denial? do
@@ -389,7 +382,7 @@ defmodule Embervm.WakeInstance do
 
         {:error, :no_eligible_instance}
 
-      brick ->
+      [brick | _] ->
         {:ok, dial_id_from_brick(brick)}
     end
   end
@@ -402,11 +395,11 @@ defmodule Embervm.WakeInstance do
   # that ambiguity: `/v1/nodes` (NodeRegistry) showed a brick with 6 free slots,
   # 15698 MiB against a 512 MiB ask, AND the workload's base READY, while placement
   # (which reads NodeCapacity, a SEPARATE store fed by the same node reports) kept
-  # rejecting it. Nothing in the logs said which half of `pick_ready/3` was false.
+  # rejecting it. Nothing in the logs said which half of the cold filter was false.
   #
   # `workload_facts` is the field that discriminates the leading hypothesis:
-  # `BrickLedger.to_brick/1` defaults a missing `:workloads` submap to `%{}`, which
-  # `Placement.base_ready?/2` reads as not-ready (fail-closed, deliberately). So a
+  # `Brick.to_brick/1` defaults a missing `:workloads` submap to `%{}`, which
+  # `Scheduler.base_ready?/2` reads as not-ready (fail-closed, deliberately). So a
   # fact that LOST its workloads map is indistinguishable from a brick that has
   # simply not advertised yet -- unless we record whether the map was there at all.
   # A brick reporting `workload_facts: 0` while NodeRegistry shows bases READY is
@@ -470,8 +463,8 @@ defmodule Embervm.WakeInstance do
       mem_headroom_mib: Map.get(brick, :mem_headroom_mib, 0),
       mem_reject_floor_mib: Map.get(brick, :mem_reject_floor_mib, 0),
       mem_budget_mib: Map.get(brick, :mem_budget_mib, 0),
-      eligible: Embervm.Placement.eligible?(brick, need_mib),
-      base_ready: Embervm.Placement.base_ready?(brick, workload),
+      eligible: Embervm.Scheduler.eligible?(brick, need_mib),
+      base_ready: Embervm.Scheduler.base_ready?(brick, workload),
       # How many workloads this fact advertises at all. 0 means the submap is
       # absent or empty, i.e. base_ready is false by the fail-closed default
       # rather than by anything the daemon actually said about this workload.
@@ -526,7 +519,7 @@ defmodule Embervm.WakeInstance do
     end
   end
 
-  # Same fallback for a brick map (BrickLedger normalizes instance_id to "" when the
+  # Same fallback for a brick map (Brick normalizes instance_id to "" when the
   # fact lacked it, so treat "" as absent and fall back to node_id).
   defp dial_id_from_brick(%{instance_id: id, node_id: node_id}) do
     if is_binary(id) and id != "", do: id, else: node_id

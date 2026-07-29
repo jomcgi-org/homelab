@@ -686,7 +686,7 @@ defmodule Embervm.ServingManager do
     # fact the next report immediately overwrites, so the cross-burst advisory
     # decrement (ADR 014 decision 3, explicitly advisory) is intentionally deferred
     # to that report rather than mutated in place.
-    case Embervm.Placement.Retry.run(candidates, attempt_fun) do
+    case Embervm.Scheduler.Retry.run(candidates, attempt_fun) do
       {:ok, outcome} -> outcome
       # Every candidate rejected (or gate-off single attempt rejected): the fleet is
       # under pressure. Report the existing no-capacity-shaped failure so the parked

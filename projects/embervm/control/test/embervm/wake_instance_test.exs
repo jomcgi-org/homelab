@@ -396,7 +396,7 @@ defmodule Embervm.WakeInstanceTest do
 
     test "a fact with NO workloads submap is distinguishable from one that advertised" do
       # The #4077 hypothesis shape: slots and memory fine, workloads absent, so
-      # BrickLedger.to_brick/1's `|| %{}` default makes base_ready false even though
+      # Brick.to_brick/1's `|| %{}` default makes base_ready false even though
       # nothing ever said this workload was unready.
       view = WakeInstance.brick_rejection_view(brick(workloads: %{}), "wl-a", 512)
 

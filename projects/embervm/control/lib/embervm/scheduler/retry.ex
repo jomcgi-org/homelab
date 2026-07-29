@@ -1,4 +1,4 @@
-defmodule Embervm.Placement.Retry do
+defmodule Embervm.Scheduler.Retry do
   @moduledoc """
   The ONE reject/retry placement policy every NEW-placement boot path shares (ADR
   embervm/014 decision 3: "placement is reject/retry, not ledger-perfect"). A brick
@@ -34,7 +34,7 @@ defmodule Embervm.Placement.Retry do
   success or after `max_attempts`." The caller passes:
 
     * `candidates` - the ordered brick list it already computed
-      (`BrickLedger.candidates/3` output, or any list of maps carrying at least
+      (`the prior class-specific query` output, or any list of maps carrying at least
       `:instance_id` and the advisory `:mem_headroom_mib`), best candidate first;
     * `attempt_fun` - a 1-arity closure over one brick that issues the caller's
       boot RPC and returns `{:ok, result}`, `{:reject, reason}` (retryable node

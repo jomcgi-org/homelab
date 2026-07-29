@@ -446,7 +446,7 @@ defmodule Embervm.GroupManager do
     # Node-anchored: a group member boots onto its group's per-instance bridge/tap
     # on ONE node (the whole set shares one group network), so there is no alternative
     # brick and the reject/retry frontier is a SINGLE element by construction. Routing
-    # through Embervm.Placement.Retry keeps the reject/retry POLICY one piece of code
+    # through Embervm.Scheduler.Retry keeps the reject/retry POLICY one piece of code
     # across every boot path; with one candidate it is exactly one attempt. Do NOT
     # expand this list: a different brick does not host this group's network.
     attempt_fun = fn _only ->
@@ -476,7 +476,7 @@ defmodule Embervm.GroupManager do
       end
     end
 
-    case Embervm.Placement.Retry.run([%{instance_id: state.instance_id}], attempt_fun) do
+    case Embervm.Scheduler.Retry.run([%{instance_id: state.instance_id}], attempt_fun) do
       {:ok, outcome} -> outcome
       {:error, :no_capacity} -> {:error, {:member_start_failed, member.expanded_name, {:error, :no_capacity}}}
       {:error, reason} -> {:error, reason}
@@ -876,7 +876,7 @@ defmodule Embervm.GroupManager do
         # Node-anchored: a group member RELIGHT resumes its banked bundle on the SAME
         # group network on the SAME node (relight never moves nodes, ADR embervm/014),
         # so the reject/retry frontier is a SINGLE element by construction. Routing
-        # through Embervm.Placement.Retry keeps the reject/retry POLICY one piece of
+        # through Embervm.Scheduler.Retry keeps the reject/retry POLICY one piece of
         # code; with one candidate it is exactly one attempt. Do NOT expand this list.
         attempt_fun = fn _only ->
           case safe_start_group_member(state, req) do
@@ -909,7 +909,7 @@ defmodule Embervm.GroupManager do
           end
         end
 
-        case Embervm.Placement.Retry.run([%{instance_id: state.instance_id}], attempt_fun) do
+        case Embervm.Scheduler.Retry.run([%{instance_id: state.instance_id}], attempt_fun) do
           {:ok, outcome} -> outcome
           {:error, :no_capacity} -> {:error, {:member_relight_failed, member.expanded_name, {:error, :no_capacity}}}
           {:error, reason} -> {:error, reason}

@@ -97,7 +97,9 @@ defmodule Embervm.Dispatcher do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{BrickLedger, NodeCapacity, WorkloadCatalog}
+  alias Embervm.{Brick, NodeCapacity, WorkloadCatalog}
+  alias Embervm.Scheduler
+  alias Embervm.Scheduler.Request
 
   alias Embervm.Node.V1.{
     AssignRequest,
@@ -559,7 +561,7 @@ defmodule Embervm.Dispatcher do
         # DISTINCT candidate pools (R0 PR-2, brick-capacity). We deliberately do
         # NOT collapse a node to one instance: each brick is its own capacity unit,
         # so all of a node's healthy instances stay candidates. Warmth stays a
-        # two-tier decision here, with BrickLedger.choose selecting the warm brick
+        # two-tier decision here, with Score ordering selecting the warm brick
         # and Score.order selecting the miss frontier. A draining instance
         # never reaches here (its capacity row is dropped fail-closed); the removed
         # prefer-newest also covered the seconds-wide surge window before the old
@@ -570,7 +572,7 @@ defmodule Embervm.Dispatcher do
         # SIZE-AWARE MISS TIER (Step 5): the WARM tier is left unchanged (a brick
         # that already holds a primed VM for wl is by construction big enough to run
         # it, and we must not refuse a warm hit). The MISS tier, which places a BRAND-
-        # NEW VM, is additionally gated on `Embervm.Placement.mem_eligible?/2` so a
+        # NEW VM, is additionally gated on `Embervm.Scheduler.mem_eligible?/2` so a
         # miss never primes onto a brick too small to boot the workload: a wildcard/
         # zero-budget DS is always eligible (inert on the DS-only fleet), a classed
         # brick needs `mem_headroom_mib >= mem_mib`. No eligible brick -> the existing
@@ -578,25 +580,19 @@ defmodule Embervm.Dispatcher do
         warm_candidates =
           Enum.filter(candidates, fn f -> inventory_ready?(state, instance_id_of(f), wl) end)
 
-        case BrickLedger.choose(warm_candidates, wl) do
+        case Scheduler.Score.order(warm_candidates, wl) |> List.first() do
           nil ->
-            # No warm VM anywhere: a miss needs a brick that both has node budget to
-            # prime (has_budget?, the free-slot check) AND is mem-eligible for the
-            # workload's mem_mib (the size gate). We filter the raw facts (not brick
-            # maps) so the chosen fact still carries its `workloads` for snapshot_ref_of.
-            miss_candidates =
-              Enum.filter(candidates, fn f ->
-                has_budget?(f) and Embervm.Placement.mem_eligible?(f, need_mib)
-              end)
-
-            # The ORDERED miss frontier (ADR 014 decision 3 reject/retry) and the
-            # committed brick, read from ONE `Score.order` result so they cannot
-            # diverge: the head IS the commit. They used to be computed apart, the
-            # frontier keeping a flat instance_id sort plus hash rotation from
-            # before scoring existed, and since the worker Primes the frontier head
-            # (gate off = exactly one attempt) that stale order was what actually
-            # placed, so packing and best-fit never reached this path.
-            ordered = Embervm.Placement.Score.order(miss_candidates, wl)
+            # No warm VM anywhere, so a miss must place a NEW VM: `place/1` applies
+            # the free-slot and size gates. We pass the raw facts (not normalized
+            # bricks) so the chosen one still carries its `workloads` for
+            # snapshot_ref_of; `Brick.free_slots/1` reads either shape.
+            #
+            # The result is BOTH the frontier and the commit: the head IS the
+            # committed brick. They were computed apart until c7439e144, the frontier
+            # keeping a flat instance_id sort from before scoring existed, and since
+            # the worker Primes the FRONTIER head (retry gate off = exactly one
+            # attempt) that stale order was what actually placed. Keep them one value.
+            ordered = Scheduler.place(%Request{bricks: candidates, key: wl, need_mib: need_mib})
 
             case ordered do
               [] ->
@@ -663,12 +659,6 @@ defmodule Embervm.Dispatcher do
   defp base_state_ready?(_), do: false
 
   defp snapshot_ref_of(f, wl), do: get_in(f.workloads, [wl, :snapshot_ref])
-
-  defp has_budget?(f) do
-    live = Map.get(f, :live_vms, 0)
-    max = Map.get(f, :max_live_vms, 0)
-    max > 0 and live < max
-  end
 
   defp inventory_ready?(state, node_id, wl) do
     case Map.get(state.inventory, {node_id, wl}) do
@@ -920,7 +910,7 @@ defmodule Embervm.Dispatcher do
       end
     end
 
-    case Embervm.Placement.Retry.run(ctx.candidates, attempt_fun) do
+    case Embervm.Scheduler.Retry.run(ctx.candidates, attempt_fun) do
       {:ok, {vm_id, node_id, channel}} ->
         {:ok, vm_id, node_id, channel}
 

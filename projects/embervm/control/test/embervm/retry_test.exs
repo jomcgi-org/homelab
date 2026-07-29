@@ -1,79 +1,143 @@
-defmodule Embervm.RetryTest do
+defmodule Embervm.Scheduler.RetryTest do
   @moduledoc """
-  Unit tests for failure classification and full-jitter backoff. Pure
-  functions, no op-log or ETS involved, so these run fast and deterministic
-  (the RNG is always seeded explicitly here).
+  Exercises Embervm.Scheduler.Retry (ADR embervm/014 decision 3): the ONE
+  reject/retry policy every NEW-placement boot path shares. Covers the gate
+  (`EMBERVM_PLACEMENT_RETRY`, default off => single attempt), first-success,
+  reject-then-retry-next-candidate, exhaustion after exactly max_attempts,
+  terminal-error-never-retries, and the empty-list fast fail.
+
+  Tests pass `:enabled?` explicitly rather than touching the process env, so they
+  are deterministic and `async: true`.
   """
-  # async: false: this module mutates the process-global EMBERVM_PLACEMENT_RETRY
-  # env (enabled?/0 test), which would race concurrent async modules asserting the
-  # gate-off single-attempt path.
+  # async: false, the enabled?/0 test mutates the process-global
+  # EMBERVM_PLACEMENT_RETRY env, which would leak into other async modules'
+  # gate-sensitive assertions if this ran concurrently. The core cases pass
+  # :enabled? explicitly and do not touch env, but the module as a whole must be
+  # serial because of that one sub-test.
   use ExUnit.Case, async: false
 
-  alias Embervm.Retry
+  alias Embervm.Scheduler.Retry
 
-  @cfg Retry.default_config()
+  defp brick(id, headroom \\ 8_000) do
+    %{instance_id: id, mem_headroom_mib: headroom}
+  end
 
-  describe "classify/3" do
-    test "guest4xx is always permanent, even on attempt 1" do
-      assert Retry.classify(:guest4xx, 1, @cfg) == :fail_permanent
-    end
-
-    test "a retryable reason under max_attempts is retryable" do
-      assert @cfg.max_attempts == 3
-      assert Retry.classify(:transport, 1, @cfg) == :fail_retryable
-      assert Retry.classify(:transport, 2, @cfg) == :fail_retryable
-    end
-
-    test "a retryable reason at max_attempts is permanent (budget exhausted)" do
-      assert Retry.classify(:transport, @cfg.max_attempts, @cfg) == :fail_permanent
-    end
-
-    test "a reason not in retry_on is permanent regardless of attempt" do
-      cfg = %{@cfg | retry_on: [:timeout]}
-      assert Retry.classify(:transport, 1, cfg) == :fail_permanent
+  # An attempt_fun that records (into an Agent) each brick it is called on, and
+  # returns a scripted result per instance_id. Missing id => a reject (so an
+  # unexpected extra candidate does not silently succeed).
+  defp scripted(script, recorder) do
+    fn brick ->
+      Agent.update(recorder, fn ids -> ids ++ [brick.instance_id] end)
+      Map.get(script, brick.instance_id, {:reject, :pressure})
     end
   end
 
-  describe "backoff_ms/3" do
-    test "always within [0, min(cap, base * 2^(attempt-1))] across attempts 1..10, and varies" do
-      # Deterministic seeded rand_fun: returns bound itself on odd calls, 0 on
-      # even calls, so the sequence is far from constant while still staying
-      # in-bounds for every call (exercises both ends of the interval).
-      {:ok, counter} = Agent.start_link(fn -> 0 end)
+  setup do
+    {:ok, rec} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(rec) end)
+    %{rec: rec}
+  end
 
-      rand_fun = fn bound ->
-        n = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
-        if rem(n, 2) == 0, do: bound, else: 0
-      end
+  describe "gate OFF (single attempt)" do
+    test "attempts only the first candidate and returns its success", %{rec: rec} do
+      script = %{"a" => {:ok, :booted_a}, "b" => {:ok, :booted_b}}
 
-      results =
-        for attempt <- 1..10 do
-          bound = min(@cfg.backoff_cap_ms, trunc(@cfg.backoff_ms * :math.pow(2, attempt - 1)))
-          value = Retry.backoff_ms(attempt, @cfg, rand_fun)
-          assert value >= 0
-          assert value <= bound
-          {attempt, bound, value}
-        end
+      assert {:ok, :booted_a} =
+               Retry.run([brick("a"), brick("b")], scripted(script, rec), enabled?: false)
 
-      Agent.stop(counter)
-
-      # Not constant across attempts: the returned value tracks the growing
-      # bound (odd calls echo the bound back).
-      values = Enum.map(results, fn {_a, _b, v} -> v end)
-      assert Enum.uniq(values) |> length() > 1
-
-      # The bound itself must respect the cap once 2^(attempt-1) * base
-      # exceeds backoff_cap_ms.
-      {_attempt, bound_at_10, _value} = List.last(results)
-      assert bound_at_10 == @cfg.backoff_cap_ms
+      assert Agent.get(rec, & &1) == ["a"]
     end
 
-    test "default_rand produces a value in range with real randomness (smoke test)" do
-      for attempt <- 1..5 do
-        value = Retry.backoff_ms(attempt, @cfg)
-        bound = min(@cfg.backoff_cap_ms, trunc(@cfg.backoff_ms * :math.pow(2, attempt - 1)))
-        assert value >= 0
-        assert value <= bound
+    test "a reject from the sole attempt maps to :no_capacity, never a retry", %{rec: rec} do
+      script = %{"a" => {:reject, :pressure}, "b" => {:ok, :booted_b}}
+
+      assert {:error, :no_capacity} =
+               Retry.run([brick("a"), brick("b")], scripted(script, rec), enabled?: false)
+
+      # Gate off never touched the second brick even though it would have succeeded.
+      assert Agent.get(rec, & &1) == ["a"]
+    end
+  end
+
+  describe "gate ON (reject/retry)" do
+    test "first brick rejects -> second brick receives the RPC and succeeds", %{rec: rec} do
+      script = %{"a" => {:reject, :pressure}, "b" => {:ok, :booted_b}}
+
+      assert {:ok, :booted_b} =
+               Retry.run([brick("a"), brick("b")], scripted(script, rec), enabled?: true)
+
+      assert Agent.get(rec, & &1) == ["a", "b"]
+    end
+
+    test "all reject -> :no_capacity after exactly max_attempts", %{rec: rec} do
+      # Five candidates all reject, but max_attempts is 3: exactly three are tried.
+      cands = for id <- ~w(a b c d e), do: brick(id)
+      script = %{}
+
+      assert {:error, :no_capacity} =
+               Retry.run(cands, scripted(script, rec), enabled?: true, max_attempts: 3)
+
+      assert Agent.get(rec, & &1) == ["a", "b", "c"]
+    end
+
+    test "fewer candidates than max_attempts fails cleanly when all reject", %{rec: rec} do
+      script = %{}
+
+      assert {:error, :no_capacity} =
+               Retry.run([brick("a"), brick("b")], scripted(script, rec), enabled?: true, max_attempts: 3)
+
+      assert Agent.get(rec, & &1) == ["a", "b"]
+    end
+
+    test "a terminal {:error, _} stops immediately without retrying", %{rec: rec} do
+      # 'a' errors terminally; 'b' would succeed but must NOT be tried (an error is
+      # not a capacity signal).
+      script = %{"a" => {:error, :transport_boom}, "b" => {:ok, :booted_b}}
+
+      assert {:error, :transport_boom} =
+               Retry.run([brick("a"), brick("b")], scripted(script, rec), enabled?: true)
+
+      assert Agent.get(rec, & &1) == ["a"]
+    end
+
+    test "an empty candidate list is an immediate :no_capacity", %{rec: rec} do
+      assert {:error, :no_capacity} = Retry.run([], scripted(%{}, rec), enabled?: true)
+      assert Agent.get(rec, & &1) == []
+    end
+
+    test "default max_attempts is 3" do
+      {:ok, rec} = Agent.start_link(fn -> [] end)
+      cands = for id <- ~w(a b c d), do: brick(id)
+
+      assert {:error, :no_capacity} =
+               Retry.run(cands, scripted(%{}, rec), enabled?: true)
+
+      assert length(Agent.get(rec, & &1)) == 3
+      Agent.stop(rec)
+    end
+  end
+
+  describe "enabled?/0 reads the env gate" do
+    test "unset / falsey is OFF, truthy is ON" do
+      original = System.get_env("EMBERVM_PLACEMENT_RETRY")
+
+      try do
+        System.delete_env("EMBERVM_PLACEMENT_RETRY")
+        refute Retry.enabled?()
+
+        System.put_env("EMBERVM_PLACEMENT_RETRY", "0")
+        refute Retry.enabled?()
+
+        System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+        assert Retry.enabled?()
+
+        System.put_env("EMBERVM_PLACEMENT_RETRY", "true")
+        assert Retry.enabled?()
+      after
+        case original do
+          nil -> System.delete_env("EMBERVM_PLACEMENT_RETRY")
+          v -> System.put_env("EMBERVM_PLACEMENT_RETRY", v)
+        end
       end
     end
   end

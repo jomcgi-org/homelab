@@ -1328,13 +1328,13 @@ defmodule Embervm.StatefulManager do
   end
 
   # Route a NODE-ANCHORED boot (stateful volume-anchored, no cross-node move) through
-  # the shared Embervm.Placement.Retry policy with a SINGLE-element candidate list, so
+  # the shared Embervm.Scheduler.Retry policy with a SINGLE-element candidate list, so
   # the reject/retry code is one piece across all boot paths while these paths remain
   # exactly one attempt by construction. `no_capacity_outcome` is the failure tuple to
   # surface when that sole candidate rejects under node pressure (mapped from the
   # Retry :no_capacity), keeping the existing wake-failure shape unchanged.
   defp single_candidate_boot(dial_id, attempt_fun, no_capacity_outcome) do
-    case Embervm.Placement.Retry.run([%{instance_id: dial_id}], attempt_fun) do
+    case Embervm.Scheduler.Retry.run([%{instance_id: dial_id}], attempt_fun) do
       {:ok, outcome} -> outcome
       {:error, :no_capacity} -> {:error, no_capacity_outcome}
       {:error, reason} -> {:error, reason}
@@ -2131,10 +2131,10 @@ defmodule Embervm.StatefulManager do
 
   # Whether some reporting instance advertises this workload's base as READY (the
   # signal that a wake can resolve a boot_image_ref and cold-boot). Reuses the
-  # shared Placement.base_ready?/2 predicate so the READY representation (proto atom
+  # shared Scheduler.base_ready?/2 predicate so the READY representation (proto atom
   # or the integer form) can never drift from the cold-placement paths.
   defp base_ready_somewhere?(facts, workload) do
-    Enum.any?(facts, fn fact -> Embervm.Placement.base_ready?(fact, workload) end)
+    Enum.any?(facts, fn fact -> Embervm.Scheduler.base_ready?(fact, workload) end)
   end
 
   defp index_stateful_vms(facts) do
