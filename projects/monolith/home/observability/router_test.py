@@ -12,7 +12,17 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from core.db import get_session
-from app.main import app
+import dataclasses
+import home.module
+from framework import PRIVATE_PROFILE, build_app
+
+# Compose only the home domain instead of the whole monolith: the
+# same framework wiring the production app gets, without depending on
+# the app composition root, which imports every other domain.
+app = build_app(
+    dataclasses.replace(PRIVATE_PROFILE, otel_enabled=False),
+    (home.module.MODULE,),
+)
 
 
 def _session_returning(row):

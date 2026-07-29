@@ -7,8 +7,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.db import get_session
-from app.main import app
+import dataclasses
+import scheduler.module
+from framework import PRIVATE_PROFILE, build_app
 from scheduler.views import SchedulerJobView
+
+# Compose only the scheduler domain instead of the whole monolith: the
+# same framework wiring the production app gets, without depending on
+# the app composition root, which imports every other domain.
+app = build_app(
+    dataclasses.replace(PRIVATE_PROFILE, otel_enabled=False),
+    (scheduler.module.MODULE,),
+)
 
 
 def _view(name: str = "j", *, has_handler: bool = True) -> SchedulerJobView:
