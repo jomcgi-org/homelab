@@ -244,7 +244,7 @@ defmodule Embervm.GroupWakeManagerTest do
       # The node advertises the group workload's base as READY (the node-shared
       # base is persistent; a restore-on-miss loses only the per-instance banked
       # bundle SET, not the base), so the cold-pick base-readiness gate
-      # (Embervm.Placement.base_ready?/2) is satisfied and instance selection can
+      # (Embervm.Scheduler.base_ready?/2) is satisfied and instance selection can
       # proceed to the restore/boot. A test wanting a not-yet-advertised instance
       # would override :workloads with an empty/absent grp-a entry.
       workloads: %{"grp-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap/grp-a"}}

@@ -1,4 +1,4 @@
-defmodule Embervm.Placement.Score do
+defmodule Embervm.Scheduler.Score do
   @moduledoc """
   Brick placement scoring and deterministic ordering: the single ordering
   primitive every placement path shares.
@@ -16,7 +16,7 @@ defmodule Embervm.Placement.Score do
   `-1.0 - slot_ratio`, range [-2.0, -1.0], higher = emptier = preferred. That
   keeps every wildcard below every classed brick while spreading among
   themselves. Packing them would concentrate a workload onto one arbitrary brick
-  with the memory gate disabled (`Placement.mem_eligible?/2` short-circuits true
+  with the memory gate disabled (`Scheduler.mem_eligible?/2` short-circuits true
   for a wildcard) for none of the reclaim benefit that justifies packing.
 
   `slot_ratio` is an exact count and is the only signal trusted for wildcards.
@@ -32,7 +32,7 @@ defmodule Embervm.Placement.Score do
     live = Map.get(brick, :live_vms, 0)
     slot_ratio = if max_live == 0, do: 0.0, else: live / max_live
 
-    if Embervm.Placement.wildcard?(brick) do
+    if Embervm.Brick.wildcard?(brick) do
       -1.0 - slot_ratio
     else
       budget = Map.get(brick, :mem_budget_mib, 0)

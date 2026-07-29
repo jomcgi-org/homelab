@@ -28,7 +28,7 @@ defmodule Embervm.PoolManager do
 
   Primes prefer the fullest eligible instance so load concentrates and empty
   bricks can drain. Instances must also satisfy the workload's memory need
-  according to `Embervm.Placement.mem_eligible?/2`.
+  according to `Embervm.Scheduler.mem_eligible?/2`.
 
   ## backpressure
 
@@ -70,7 +70,9 @@ defmodule Embervm.PoolManager do
   use GenServer
   require Logger
 
-  alias Embervm.{NodeCapacity, Placement, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, WorkloadCatalog}
+  alias Embervm.Scheduler
+  alias Embervm.Scheduler.Request
   alias Embervm.Node.V1.{PrimeRequest, PrimeResponse, Trace}
 
   @refill_interval_ms 1_000
@@ -233,9 +235,9 @@ defmodule Embervm.PoolManager do
     %{
       node_id: node_id,
       instance_id: node_id,
-      budget: budget,
-      # Normalized exactly as `Embervm.BrickLedger.to_brick/1` does, so the shared
-      # `Placement.mem_eligible?/2` predicate reads the same shape here as on every
+      free_slots: budget,
+      # Normalized exactly as `Embervm.Brick.to_brick/1` does, so the shared
+      # `Scheduler.mem_eligible?/2` predicate reads the same shape here as on every
       # other placement path. `||` rather than a Map.get default because the key can
       # be PRESENT holding nil, which a default never covers.
       #
@@ -244,7 +246,7 @@ defmodule Embervm.PoolManager do
       # nil headroom would satisfy EVERY memory need rather than none. Empty
       # size_class and zero mem_budget_mib deliberately read as the WILDCARD (the
       # legacy DaemonSet, or a brick under no cgroup limit), which is always
-      # mem-eligible by design: see the Placement moduledoc.
+      # mem-eligible by design: see the Scheduler moduledoc.
       size_class: Map.get(facts, :size_class) || "",
       mem_headroom_mib: Map.get(facts, :mem_headroom_mib) || 0,
       mem_reject_floor_mib: Map.get(facts, :mem_reject_floor_mib) || 0,
@@ -298,7 +300,7 @@ defmodule Embervm.PoolManager do
     {floor_plan, instances, remaining} = allocate_phase(floor_deficits, instances, budget, %{})
     depths =
       Map.new(workloads, fn wl ->
-        capacity = Enum.sum(for i <- instances, do: if(Map.has_key?(i.workloads, wl), do: i.budget, else: 0))
+        capacity = Enum.sum(for i <- instances, do: if(Map.has_key?(i.workloads, wl), do: i.free_slots, else: 0))
         {wl, min(queue_depth(state, wl), capacity)}
       end)
     surplus = allocate_proportional(depths, remaining)
@@ -347,13 +349,10 @@ defmodule Embervm.PoolManager do
 
   defp place_one([], _wl), do: :none
   defp place_one(instances, wl) do
-    candidates =
-      Enum.filter(instances, fn instance ->
-        instance.budget > 0 and Map.has_key?(instance.workloads, wl) and
-          memory_eligible?(instance, wl)
-      end)
+    need = Enum.find_value(instances, fn i -> get_in(i, [:workloads, wl, :mem_mib]) end)
+    candidates = Enum.filter(instances, &Map.has_key?(&1.workloads, wl))
 
-    case Embervm.Placement.Score.order(candidates, wl) do
+    case Scheduler.place(%Request{bricks: candidates, key: wl, need_mib: need}) do
       [] ->
         :none
 
@@ -376,21 +375,10 @@ defmodule Embervm.PoolManager do
   defp consume(instance, wl) do
     need = instance.workloads[wl].mem_mib || 0
     %{instance |
-      budget: instance.budget - 1,
+      free_slots: instance.free_slots - 1,
       live_vms: instance.live_vms + 1,
       mem_headroom_mib: max(0, instance.mem_headroom_mib - need)
     }
-  end
-
-  # A wildcard brick satisfies any need, so this only ever binds on a classed one.
-  # A workload whose CR omits `resources.memMib` has no need to check and stays
-  # eligible: the pool must not stop priming a workload just because its spec did
-  # not pin a size.
-  defp memory_eligible?(instance, wl) do
-    case instance.workloads[wl].mem_mib do
-      nil -> true
-      mem_mib -> Placement.mem_eligible?(instance, mem_mib)
-    end
   end
 
   defp spawn_primes(state, allocation) do

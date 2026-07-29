@@ -1297,7 +1297,7 @@ defmodule Embervm.BaseBuilder do
   # An instance can build the workload when it is a wildcard (empty class or zero
   # budget: the full-node envelope, always able to boot) or its budget covers need.
   defp build_eligible?(i, need_mib) do
-    Embervm.Placement.wildcard?(i) or i.mem_budget_mib >= need_mib
+    Embervm.Brick.wildcard?(i) or i.mem_budget_mib >= need_mib
   end
 
   # Rank for "largest-budget eligible": the DS wildcard ranks above every classed
@@ -1305,7 +1305,7 @@ defmodule Embervm.BaseBuilder do
   # is better; max_by picks the biggest. (A zero-budget wildcard still beats a classed
   # brick because its first tuple element is 1.)
   defp build_rank(i) do
-    if Embervm.Placement.wildcard?(i), do: {1, i.mem_budget_mib}, else: {0, i.mem_budget_mib}
+    if Embervm.Brick.wildcard?(i), do: {1, i.mem_budget_mib}, else: {0, i.mem_budget_mib}
   end
 
   # Bases are node-shared, so at most one instance per node_id needs to build: keep the

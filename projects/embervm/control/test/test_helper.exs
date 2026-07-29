@@ -33,7 +33,7 @@ defmodule Embervm.TestProcess do
   INSIDE the teardown callback. ExUnit attributes that to the test whose body
   already passed, so the failure surfaces as an unrelated test failing with a
   stack ending in `ExUnit.OnExitHandler` and no assertion diff (issue #4078,
-  observed on `Embervm.Placement.RetryTest` and `Embervm.BrickControllerTest`).
+  observed on `Embervm.Scheduler.RetryTest` and `Embervm.BrickControllerTest`).
 
   Catching the exit closes the race instead of narrowing it. Graceful shutdown is
   preserved, so a `terminate/2` a test depends on still runs; only the

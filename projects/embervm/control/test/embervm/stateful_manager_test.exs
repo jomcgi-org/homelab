@@ -1531,7 +1531,7 @@ defmodule Embervm.StatefulManagerTest do
   # Put ONE per-instance capacity fact (keyed by {node, pod_uid}) for a co-located
   # brick, carrying the fields WakeInstance.select reads.
   defp put_brick(ctx, node_id, pod_uid, opts) do
-    # free_slots (BrickLedger.to_brick) = max(max_live_vms - live_vms, 0), and a cold
+    # free_slots (Brick.to_brick) = max(max_live_vms - live_vms, 0), and a cold
     # pick requires free_slots > 0 (a full instance cannot take a new VM). Default to a
     # free slot (max_live_vms 4, live_vms 0) so a brick this fixture expects the cold
     # path to select is not filtered out on SLOTS - a too-small brick must be excluded
