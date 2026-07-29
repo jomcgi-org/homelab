@@ -305,32 +305,43 @@ func parseMemHeadroomMib(maxRaw, curRaw, statRaw string) uint64 {
 	if err != nil || curB < 0 {
 		return 0
 	}
-	workingSetB := curB
+	var fileB, shmemB uint64
 	for _, line := range strings.Split(statRaw, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 2 || fields[0] != "inactive_file" {
+		if len(fields) != 2 || (fields[0] != "file" && fields[0] != "shmem") {
 			continue
 		}
-		inactiveFileB, statErr := strconv.ParseUint(fields[1], 10, 64)
+		statB, statErr := strconv.ParseUint(fields[1], 10, 64)
 		if statErr != nil {
-			break
+			continue
 		}
-		// kubelet uses inactive_file for working_set because this cache is
-		// reclaimed first under pressure. Do not subtract all file cache,
-		// or anon plus slab, since those are not equivalent eviction signals.
-		// The cgroup files are read separately, so inactive_file can race
-		// memory.current. Keep the conservative current-based working set when
-		// the sample is racy instead of treating it as fully reclaimable.
-		if inactiveFileB < uint64(curB) {
-			workingSetB = curB - int64(inactiveFileB)
+		if fields[0] == "file" {
+			fileB = statB
+		} else {
+			shmemB = statB
 		}
-		break
 	}
 
-	if uint64(maxB) <= uint64(workingSetB) {
+	var reclaimableB uint64
+	if fileB > shmemB {
+		reclaimableB = fileB - shmemB
+	}
+	if reclaimableB > uint64(curB) {
+		reclaimableB = uint64(curB)
+	}
+	nonReclaimableB := uint64(curB) - reclaimableB
+
+	// Kubelet's working set answers "how close is this container to being
+	// OOM-killed", where reclaiming active_file has a cost, so counting it as
+	// free under-predicts OOM risk. noded asks a different question: "can a VM
+	// of N MiB allocate here". Clean page cache is available for that question
+	// because the kernel evicts it long before it OOM-kills. shmem is excluded
+	// because it is not reclaimable without swap.
+	// Subtracting only inactive_file was the incomplete earlier fix for #4058.
+	if uint64(maxB) <= nonReclaimableB {
 		return 0
 	}
-	return (uint64(maxB) - uint64(workingSetB)) / (1 << 20)
+	return (uint64(maxB) - nonReclaimableB) / (1 << 20)
 }
 
 // parseMemBudgetMib computes (max - reserve) in MiB from cgroup v2
