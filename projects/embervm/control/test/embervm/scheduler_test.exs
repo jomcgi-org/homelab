@@ -8,6 +8,7 @@ defmodule Embervm.SchedulerTest do
     %{
       instance_id: Keyword.get(opts, :instance_id, "node/pod"),
       node_id: Keyword.get(opts, :node_id, "node"),
+      configured_id: Keyword.get(opts, :configured_id, "node"),
       size_class: Keyword.get(opts, :size_class, "8gi"),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 8_000),
       mem_reject_floor_mib: Keyword.get(opts, :mem_reject_floor_mib, 0),
@@ -105,6 +106,36 @@ defmodule Embervm.SchedulerTest do
   end
 
   describe "place translated from pick/3" do
+    test "session fleet placement escapes a too-small rendezvous winner" do
+      too_small = brick(instance_id: "node-a/small", configured_id: "node-a", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048)
+      fits = brick(instance_id: "node-b/big", configured_id: "node-b", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+
+      assert [%{configured_id: "node-b", instance_id: "node-b/big"}] =
+               Scheduler.place(%Request{bricks: [too_small, fits], workload: "wl", key: "wl", need_mib: 4_000, base: :none})
+    end
+
+    test "serving frontier entries retain each brick's serving image ref" do
+      a = brick(instance_id: "node-a/pod", configured_id: "node-a", serving_subnet_cidr: "10.0.0.0/24", workloads: ready("wl", %{serving_image_ref: "vendor-a"}))
+      b = brick(instance_id: "node-b/pod", configured_id: "node-b", serving_subnet_cidr: "10.0.1.0/24", workloads: ready("wl", %{serving_image_ref: "vendor-b"}))
+
+      frontier =
+        Scheduler.place(%Request{bricks: [a, b], workload: "wl", key: "wl", need_mib: 512, require_subnet: true, base: {:ready, :serving_image_ref}})
+        |> Enum.map(fn brick -> %{instance_id: brick.instance_id, node_id: brick.configured_id, base_ref: brick.workloads["wl"].serving_image_ref} end)
+
+      assert Enum.sort_by(frontier, & &1.node_id) == [
+               %{instance_id: "node-a/pod", node_id: "node-a", base_ref: "vendor-a"},
+               %{instance_id: "node-b/pod", node_id: "node-b", base_ref: "vendor-b"}
+             ]
+    end
+
+    test "stateful fresh placement excludes a brick too small for the workload" do
+      small = brick(instance_id: "node-a/small", configured_id: "node-a", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048, serving_subnet_cidr: "10.0.0.0/24")
+      big = brick(instance_id: "node-b/big", configured_id: "node-b", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192, serving_subnet_cidr: "10.0.1.0/24")
+
+      assert [%{configured_id: "node-b"}] =
+               Scheduler.place(%Request{bricks: [small, big], workload: "wl", key: "wl", need_mib: 4_000, require_subnet: true, base: :none})
+    end
+
     test "skips a too-small classed brick and lands on the big one for every key" do
       small = brick(instance_id: "n/small", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048)
       big = brick(instance_id: "n/big", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192)

@@ -178,20 +178,22 @@ defmodule Embervm.SessionManagerTest do
   end
 
   # A per-INSTANCE capacity fact on a node (Step 5 size-aware create). Two co-located
-  # bricks share configured_id "node-4" so node_for_create resolves the node, then
+  # bricks share configured_id "node-4" so the placement row records the node, then
   # dial_instance selects the mem-eligible one among them.
   defp put_brick(ctx, wl, pod_uid, opts) do
-    NodeCapacity.put(ctx.cap_table, {"node-4", pod_uid}, %{
-      node_id: "node-4",
-      configured_id: "node-4",
-      instance_id: "node-4/#{pod_uid}",
+    node_id = Keyword.get(opts, :node_id, "node-4")
+
+    NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      instance_id: "#{node_id}/#{pod_uid}",
       size_class: Keyword.get(opts, :size_class, "8gi"),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom, 8_000),
       mem_budget_mib: Keyword.get(opts, :mem_budget, 8_192),
       workloads: %{
         wl => %{
           free_primed_slots: 1,
-          snapshot_ref: "snap-#{wl}",
+          snapshot_ref: Keyword.get(opts, :snapshot_ref, "snap-#{wl}"),
           base_state: :BASE_BUILD_STATE_READY,
           primed_vm_ids: []
         }
@@ -249,6 +251,50 @@ defmodule Embervm.SessionManagerTest do
     # node-scoped, not the dial instance_id.
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.node_id == "node-4"
+  end
+
+  test "fleet placement skips a too-small rendezvous winner" do
+    parent = self()
+    suffix =
+      Enum.find(0..100_000, fn n ->
+        wl = "wl-b4-session-#{n}"
+        :erlang.phash2({wl, "node-a"}, 4_294_967_296) >
+          :erlang.phash2({wl, "node-b"}, 4_294_967_296)
+      end)
+
+    wl = "wl-b4-session-#{suffix}"
+    node_a_hash = :erlang.phash2({wl, "node-a"}, 4_294_967_296)
+    node_b_hash = :erlang.phash2({wl, "node-b"}, 4_294_967_296)
+
+    ctx =
+      start_stack(
+        claim_fun: fn _d, dial_id, _w ->
+          send(parent, {:claimed, dial_id})
+          {:ok, "vm-#{dial_id}"}
+        end
+      )
+
+    WorkloadCatalog.upsert(ctx.cat_table, wl, %{
+      name: wl,
+      namespace: "embervm",
+      class: "session",
+      image_ref: "img@sha256:abc",
+      invoke_path: "/",
+      timeout_ms: 90_000,
+      cap: 8,
+      floor: 1,
+      mem_mib: 4_000,
+      session: %{idle_bank_seconds: 300, max_lifetime_seconds: 3600, banked_ttl_seconds: 3600, max_sessions: 16, invoke_queue_cap: 4}
+    })
+
+    put_brick(ctx, wl, "a", node_id: "node-a", size_class: "2gi", mem_headroom: 100, mem_budget: 2_048, snapshot_ref: "snap-a")
+    put_brick(ctx, wl, "b", node_id: "node-b", size_class: "8gi", mem_headroom: 8_000, mem_budget: 8_192, snapshot_ref: "snap-b")
+
+    # This assertion encodes that the old rendezvous stage would have chosen the node that cannot fit this guest.
+    assert node_a_hash > node_b_hash
+    {:ok, _created} = SessionManager.create(ctx.mgr, wl, "p1")
+    assert_receive {:claimed, "node-b/b"}
+    refute_received {:claimed, "node-a/a"}
   end
 
   test "the per-invoke dial targets the OWNER instance_id, not the node-name alias (task #4)" do

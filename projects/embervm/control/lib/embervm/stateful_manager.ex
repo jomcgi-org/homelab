@@ -65,7 +65,8 @@ defmodule Embervm.StatefulManager do
     * no bundle at all: cold or fresh, `{:cold, node_id, boot_ref, mode}`, `mode`
       is `FRESH` when the workload has never had a volume (no volume row yet:
       the daemon must create it) and `COLD` when a volume row already exists
-      (an explicit cold boot against existing data, no bundle to resume).
+      (an explicit cold boot against existing data, no bundle to resume). A fresh
+      plan also carries its selected dial key so placement and boot target match.
 
   Unlike serving (whose cold placement is a rendezvous hash over any eligible
   node), a stateful wake is NOT a free placement choice once the workload has a
@@ -76,7 +77,7 @@ defmodule Embervm.StatefulManager do
   gone, the wake is `{:error, :volume_node_gone}` (a FAILED_PRECONDITION-shaped
   refusal, never a silent recreate on a different node). Only a workload with NO
   volume row yet (its true first boot) is free to place via
-  `Embervm.ServingPlacement`-style eligibility, because there is no data to
+  serving-subnet eligibility, because there is no data to
   anchor to.
 
   ## wake-rate limit: per-workload (the per-principal intent, singleton-reduced)
@@ -140,9 +141,12 @@ defmodule Embervm.StatefulManager do
   use GenServer
   require Logger
 
+  alias Embervm.Scheduler
+  alias Embervm.Scheduler.Request
+
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{EndpointPublisher, NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
+  alias Embervm.{Brick, EndpointPublisher, NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
     ArtifactRef,
@@ -632,7 +636,7 @@ defmodule Embervm.StatefulManager do
     # worth its own child span at this granularity).
     wake_start = :opentelemetry.timestamp()
     plan = plan_wake(state, workload)
-    cold = match?({:cold, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan)
+    cold = match?({:cold, _, _, _, _}, plan) or match?({:cold, _, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan)
     state = stamp_wake_trace(state, workload, %{wake_start: wake_start, cold: cold})
 
     # Generation blessing (R7, ADR embervm/011, standing decision 4): every plan
@@ -751,6 +755,10 @@ defmodule Embervm.StatefulManager do
           {:error, reason} ->
             send(self(), {:wake_done, workload, {:error, reason}})
         end
+
+      {:cold, node_id, dial_id, boot_ref, :fresh, reason} ->
+        req = cold_request(state, entry, workload, boot_ref, :fresh, blessed_generation)
+        spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, dial_id, boot_ref, :fresh, reason, req) end)
 
       {:cold, node_id, _plan_boot_ref, mode, reason} ->
         # A cold boot has no owning bundle: select a mem-eligible instance on the
@@ -1017,9 +1025,23 @@ defmodule Embervm.StatefulManager do
   # `reason` is the discarded-warmth reason threaded into the boot op (nil for a
   # fresh first boot). Both modes are anchored to the resolved node.
   defp cold_plan(state, workload, nil, _reason) do
-    case eligible_node_for_fresh(state, workload) do
-      {:ok, node_id} -> {:cold, node_id, boot_image_ref(state, node_id, workload), :fresh, nil}
-      {:error, reason} -> {:error, reason}
+    %ResourceSpec{mem_mib: need_mib} = resource_spec(catalog_entry(state, workload))
+
+    case Scheduler.place(%Request{
+           table: state.capacity_table,
+           workload: workload,
+           key: workload,
+           need_mib: need_mib,
+           require_subnet: true,
+           base: :none
+         }) do
+      [brick | _] ->
+        node_id = brick.configured_id
+        dial_id = Brick.dial_id(brick)
+        {:cold, node_id, dial_id, boot_image_ref(state, dial_id, workload), :fresh, nil}
+
+      [] ->
+        {:error, :no_capacity}
     end
   end
 
@@ -1047,34 +1069,6 @@ defmodule Embervm.StatefulManager do
   end
 
   defp anchor_node(_state, nil), do: {:error, :volume_node_missing}
-
-  # A genuine first boot (no volume row anywhere): any node reporting a
-  # stateful-capable subnet AND live-VM budget is eligible. Rendezvous-hashed on
-  # the workload, mirroring ServingPlacement.node_for_create/2; with one node
-  # this is trivially that node.
-  defp eligible_node_for_fresh(state, workload) do
-    NodeCapacity.all(state.capacity_table)
-    |> Enum.filter(&stateful_capable?/1)
-    |> Enum.filter(&has_budget?/1)
-    |> rendezvous_pick(workload)
-    |> case do
-      nil -> {:error, :no_capacity}
-      fact -> {:ok, fact.configured_id}
-    end
-  end
-
-  defp stateful_capable?(fact) do
-    cidr = Map.get(fact, :serving_subnet_cidr)
-    is_binary(cidr) and cidr != ""
-  end
-
-  defp has_budget?(fact) do
-    max = Map.get(fact, :max_live_vms, 0)
-    max > 0 and Map.get(fact, :live_vms, 0) < max
-  end
-
-  defp rendezvous_pick([], _key), do: nil
-  defp rendezvous_pick(facts, key), do: Enum.max_by(facts, fn fact -> :erlang.phash2({key, fact.configured_id}, 4_294_967_296) end)
 
   # The cold-boot source: the node's base SNAPSHOT ref for the workload. A
   # stateful workload is an image-lane, opaque-L4 guest (e.g. Postgres): its base

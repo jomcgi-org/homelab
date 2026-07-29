@@ -57,6 +57,18 @@ defmodule Embervm.Brick do
     Map.get(brick, :size_class, "") == "" or Map.get(brick, :mem_budget_mib, 0) == 0
   end
 
+  @doc """
+  Returns the dial key for a brick. Legacy or statically-seeded capacity facts
+  carry no `instance_id`, so the node name is the correct dial key for them.
+  """
+  @spec dial_id(map()) :: String.t()
+  def dial_id(brick) do
+    case Map.get(brick, :instance_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> Map.get(brick, :configured_id, "")
+    end
+  end
+
   @doc "Return available VM slots, honoring an explicit value when present."
   @spec free_slots(map()) :: non_neg_integer()
   def free_slots(brick) do

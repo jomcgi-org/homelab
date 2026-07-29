@@ -51,6 +51,7 @@ defmodule Embervm.WakeInstanceTest do
         max_live_vms: Keyword.get(opts, :max_live_vms, 4),
         workloads: workloads,
         stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
+        session_snapshots: Keyword.get(opts, :session_snapshots, []),
         serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
         group_bundle_sets: Keyword.get(opts, :group_bundle_sets, []),
         group_member_vms: Keyword.get(opts, :group_member_vms, []),
@@ -59,6 +60,33 @@ defmodule Embervm.WakeInstanceTest do
 
     NodeCapacity.put(table, {node_id, pod_uid}, facts)
     instance_id
+  end
+
+  test "session relight resolves the instance reporting the snapshot", %{table: table} do
+    put_instance(table, "node-4", "pod-a", session_snapshots: [%{snapshot_ref: "sess-1"}])
+    assert {:ok, "node-4/pod-a"} = WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: "sess-1"}, table)
+  end
+
+  test "session relight reports snapshot_lost when the snapshot is absent", %{table: table} do
+    put_instance(table, "node-4", "pod-a", [])
+    assert {:error, :snapshot_lost} = WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: "gone"}, table)
+  end
+
+  test "serving relight resolves a serving-capable node", %{table: table} do
+    NodeCapacity.put(table, "node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      serving_subnet_cidr: "10.99.0.0/24",
+      serving_snapshots: [%{snapshot_ref: "serving-1"}]
+    })
+
+    assert {:ok, "node-4"} = WakeInstance.serving_node_for_relight(%{node_id: "node-4", snapshot_ref: "serving-1"}, table)
+  end
+
+  test "current serving image ref reads the node workload entry", %{table: table} do
+    NodeCapacity.put(table, "node-4", %{node_id: "node-4", workloads: %{"wl-a" => %{serving_image_ref: "img-1"}}})
+    assert WakeInstance.current_serving_image_ref(table, "node-4", "wl-a") == "img-1"
+    assert WakeInstance.current_serving_image_ref(table, "node-dead", "wl-a") == nil
   end
 
   describe "warmth_also_keys (a bank of a RUNNING group resolves to its node, #4006)" do

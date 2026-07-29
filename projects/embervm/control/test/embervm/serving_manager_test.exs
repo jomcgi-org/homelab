@@ -124,7 +124,7 @@ defmodule Embervm.ServingManagerTest do
         "wl-a" => %{
           base_state: :BASE_BUILD_STATE_READY,
           snapshot_ref: "snap-a",
-          serving_image_ref: "base-a"
+          serving_image_ref: Keyword.get(opts, :serving_image_ref, "base-a")
         }
       },
       serving_vms: Keyword.get(opts, :serving_vms, []),
@@ -735,7 +735,7 @@ defmodule Embervm.ServingManagerTest do
   defp serving_brick(ctx, node_id, pod_uid, instance_id) do
     NodeCapacity.put(ctx.cap_table, {node_id, pod_uid}, %{
       # configured_id is the NODE NAME (matching production + the serving_node
-      # helper), not the instance_id: ServingPlacement.node_for_create returns
+      # helper), not the instance_id: fleet placement returns
       # fact.configured_id as the node_id, which WakeInstance.cold_candidates then
       # matches against each brick's :node_id field. Setting it to instance_id here
       # would make that filter ("node-4" == "node-4/pod-a") fail and yield no
@@ -808,6 +808,38 @@ defmodule Embervm.ServingManagerTest do
     # The published instance is the one that succeeded (the non-rejecting brick).
     assert [instance] = ServingStore.list(ctx.store, "wl-a")
     assert instance.state == :published
+  end
+
+  test "gate ON: each retry candidate uses its own serving base ref" do
+    {:ok, attempts} = Agent.start_link(fn -> [] end)
+
+    start_fun = fn dial_id, req ->
+      n = Agent.get_and_update(attempts, fn calls -> {length(calls), calls ++ [{dial_id, req}]} end)
+
+      if n == 0 do
+        {:error, %GRPC.RPCError{status: 8, message: "pressure:mem"}}
+      else
+        {:ok, %StartServingResponse{vm_id: "vm-#{dial_id}", ip: "10.99.0.5", port: 8080}}
+      end
+    end
+
+    System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+    on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
+    ctx = start_stack(start_serving_fun: start_fun, channel_fun: fn dial_id -> {:ok, dial_id} end)
+    serving_workload(ctx, "wl-a")
+    serving_node(ctx, "node-a", serving_image_ref: "vendor-a")
+    serving_node(ctx, "node-b", serving_image_ref: "vendor-b")
+
+    assert {:ok, %{ip: "10.99.0.5", port: 8080}} =
+             ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a")
+
+    [{first_id, _first_req}, {second_id, second_req}] = Agent.get(attempts, & &1)
+    second_node = if second_id == "node-a", do: "node-a", else: "node-b"
+    expected_ref = if second_node == "node-a", do: "vendor-a", else: "vendor-b"
+    assert second_req.source == {:fresh, %Embervm.Node.V1.FreshSource{serving_image_ref: expected_ref}}
+    refute first_id == second_id
+    assert [instance] = ServingStore.list(ctx.store, "wl-a")
+    assert instance.node_id == second_node
   end
 
   test "gate OFF: a first-brick rejection is NOT retried (503, single attempt)" do

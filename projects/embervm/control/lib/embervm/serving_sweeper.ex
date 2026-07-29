@@ -869,7 +869,7 @@ defmodule Embervm.ServingSweeper do
   end
 
   defp stale_lineage?(capacity_table, instance) do
-    case Embervm.ServingPlacement.current_serving_image_ref(
+    case Embervm.WakeInstance.current_serving_image_ref(
            capacity_table,
            instance.node_id,
            instance.workload

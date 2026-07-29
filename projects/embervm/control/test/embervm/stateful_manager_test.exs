@@ -1728,6 +1728,29 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(dialed, & &1) == ["node-4/pod-big"]
   end
 
+  test "a fresh wake skips a too-small brick when another stateful brick fits" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    cold_fun = fn _ch, _req ->
+      {:ok, %StartStatefulResponse{vm_id: "vm-fresh-b4", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    ctx = start_stack(start_stateful_fun: cold_fun, channel_fun: capture_channel)
+    stateful_workload(ctx, "wl-a", %{resources: %{vcpus: 2, mem_mib: 4_000}})
+    put_brick(ctx, "node-a", "small", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048)
+    put_brick(ctx, "node-b", "big", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(dialed, & &1) == ["node-b/big"]
+    assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+    assert instance.node_id == "node-b"
+  end
+
   test "boot_image_ref resolves from the CHOSEN instance's fact, not a co-located sibling that lacks the workload" do
     # Instance-key unification (PR-B0a): the cold pick is instance-aware, but
     # boot_image_ref used to re-resolve the base snapshot_ref by BARE node name,
@@ -1910,7 +1933,8 @@ defmodule Embervm.StatefulManagerTest do
     # The node's only instance is a too-small 2Gi classed brick.
     put_brick(ctx, "node-4", "pod-small", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048)
 
-    assert {:error, {:wake_failed, :no_eligible_instance}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    # Placement is now a single fleet-wide pass, so the refusal is :no_capacity.
+    assert {:error, {:wake_failed, :no_capacity}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
     # No dial happened: the wake failed at selection, never sending a StartStateful.
     assert Agent.get(dialed, & &1) == []
     assert Agent.get(ctx.starts, & &1) == 0

@@ -65,7 +65,9 @@ defmodule Embervm.ServingManager do
   # must be required even though it is called fully-qualified via the alias.
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{EndpointPublisher, NodeCapacity, ServingPlacement, ServingState, ServingStore, SessionTrace, WorkloadCatalog}
+  alias Embervm.{Brick, EndpointPublisher, NodeCapacity, ServingState, ServingStore, SessionTrace, WakeInstance, WorkloadCatalog}
+  alias Embervm.Scheduler
+  alias Embervm.Scheduler.Request
 
   alias Embervm.Node.V1.{
     ArtifactRef,
@@ -340,7 +342,7 @@ defmodule Embervm.ServingManager do
     placement_start = :opentelemetry.timestamp()
     plan = plan_wake(state, workload)
     wake_start = :opentelemetry.timestamp()
-    cold = match?({:cold, _, _}, plan)
+    cold = match?({:cold, _}, plan)
 
     state =
       stamp_wake_trace(state, workload, %{
@@ -407,23 +409,8 @@ defmodule Embervm.ServingManager do
             send(self(), {:wake_done, workload, {:error, reason}})
         end
 
-      {:cold, node_id, base_ref} ->
-        # A cold boot has no owning snapshot: it may land on ANY mem-eligible,
-        # base-ready co-located brick on the node (a too-small classed brick is
-        # skipped, the DS wildcard is always eligible). Fetch the ORDERED candidate
-        # frontier (head == the single-attempt pick) so the worker can reject/retry
-        # the next brick when the first is under node pressure (ADR 014 decision 3).
-        case cold_dial_candidates(state, workload, entry, node_id) do
-          {:ok, dial_ids} ->
-            req = cold_request(entry, workload, base_ref)
-
-            spawn_wake(owner, workload, fn ->
-              run_cold(state, workload, node_id, dial_ids, base_ref, req)
-            end)
-
-          {:error, select_reason} ->
-            send(self(), {:wake_done, workload, {:error, select_reason}})
-        end
+      {:cold, candidates} ->
+        spawn_wake(owner, workload, fn -> run_cold(state, workload, candidates, entry) end)
 
       {:error, reason} ->
         # No capacity / snapshot lost: report it so the parked callers 503.
@@ -451,20 +438,6 @@ defmodule Embervm.ServingManager do
     )
   end
 
-  # The ORDERED cold-create dial candidates on `node_id` (ADR 014 decision 3
-  # reject/retry frontier): the ready + mem-eligible co-located bricks, head ==
-  # what dial_instance/5's cold pick returns. run_cold retries the next when the
-  # first rejects under node pressure. Same node scoping / eligibility rule as the
-  # single-attempt cold pick (WakeInstance keeps them on one predicate).
-  defp cold_dial_candidates(state, workload, entry, node_id) do
-    Embervm.WakeInstance.cold_candidates(
-      node_id,
-      table: state.capacity_table,
-      workload: workload,
-      need_mib: Map.get(entry, :mem_mib) || 512
-    )
-  end
-
   # Spawn a wake worker that ALWAYS reports a {:wake_done} outcome, even if the RPC
   # body crashes: a worker that died without reporting would leave the parked
   # `:infinity` callers blocked forever (they only unblock when finish_wake replies).
@@ -489,7 +462,7 @@ defmodule Embervm.ServingManager do
   # whose serving snapshot a node still reports relights; otherwise a cold create on
   # a serving-capable node with the workload's base + budget. Returns
   # `{:relight, instance, node_id}` | `{:restore_then_relight, instance, node_id}` |
-  # `{:cold, node_id, base_ref}` | `{:error, r}`.
+  # `{:cold, candidates}` | `{:error, r}`.
   #
   # Restore-on-miss (R6, Task 8): a relight candidate's snapshot may be EXPORTED to
   # the object store but no longer on the anchor node's local disk (disk lost, or the
@@ -510,10 +483,21 @@ defmodule Embervm.ServingManager do
         end
 
       :none ->
-        case ServingPlacement.node_for_create(workload, state.capacity_table) do
-          {:ok, node_id, base_ref} -> {:cold, node_id, base_ref}
-          {:error, :no_capacity} -> {:error, :no_capacity}
-        end
+        candidates =
+          Scheduler.place(%Request{
+            table: state.capacity_table,
+            workload: workload,
+            key: workload,
+            need_mib: Map.get(catalog_entry(state, workload), :mem_mib) || 512,
+            require_subnet: true,
+            base: {:ready, :serving_image_ref}
+          })
+          |> Enum.map(fn brick ->
+            workload_entry = Map.get(brick.workloads, workload, %{})
+            %{instance_id: Brick.dial_id(brick), node_id: brick.configured_id, base_ref: workload_entry.serving_image_ref}
+          end)
+
+        if candidates == [], do: {:error, :no_capacity}, else: {:cold, candidates}
     end
   end
 
@@ -559,7 +543,7 @@ defmodule Embervm.ServingManager do
     |> Enum.filter(&(&1.state == :banked))
     |> Enum.sort_by(& &1.updated_at, :desc)
     |> Enum.find_value(:none, fn instance ->
-      case ServingPlacement.node_for_relight(instance, state.capacity_table) do
+      case WakeInstance.serving_node_for_relight(instance, state.capacity_table) do
         {:ok, node_id} ->
           if lineage_current?(state.capacity_table, node_id, instance) do
             {:ok, instance, node_id}
@@ -596,7 +580,7 @@ defmodule Embervm.ServingManager do
   # yet (nil/empty): the new base is not built, so the existing snapshot stays
   # relightable for warmth rather than forcing a cold boot with no base to boot from.
   defp lineage_current?(capacity_table, node_id, instance) do
-    case ServingPlacement.current_serving_image_ref(capacity_table, node_id, instance.workload) do
+    case WakeInstance.current_serving_image_ref(capacity_table, node_id, instance.workload) do
       ref when is_binary(ref) and ref != "" -> ref == instance.base_snapshot_ref
       _ -> true
     end
@@ -642,17 +626,13 @@ defmodule Embervm.ServingManager do
     end
   end
 
-  # The cold-create RPC (in the spawned worker), reject/retrying across the ordered
-  # candidate bricks on the node (ADR 014 decision 3). Each attempt dials one
-  # candidate's StartServing; a node-pressure RESOURCE_EXHAUSTED rejection retries
-  # the next co-located brick (gated by EMBERVM_PLACEMENT_RETRY, off = one attempt).
-  # All candidates are on the SAME resolved node_id, so a success reports the same
-  # node_id and only the dial_id (which brick) varies, keeping the durable
-  # serving_started record's node identity stable.
-  defp run_cold(state, workload, node_id, dial_ids, base_ref, req) do
-    candidates = Enum.map(dial_ids, fn id -> %{instance_id: id} end)
+  # The cold-create RPC retries the ordered fleet frontier. Each candidate carries
+  # its own dial key, configured node id, and serving image ref because serving
+  # bases are per-instance and may differ across vendors.
+  defp run_cold(state, workload, candidates, entry) do
+    attempt_fun = fn %{instance_id: dial_id, node_id: node_id, base_ref: base_ref} ->
+      req = cold_request(entry, workload, base_ref)
 
-    attempt_fun = fn %{instance_id: dial_id} ->
       case safe_start_serving(state, dial_id, req) do
         {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
         when is_binary(vm_id) and vm_id != "" ->
