@@ -45,6 +45,7 @@ defmodule Embervm.BrickLedger do
   """
 
   alias Embervm.NodeCapacity
+  alias Embervm.Placement.Score
 
   @typedoc """
   One brick: a dispatchable noded instance, normalized from its capacity facts to
@@ -110,10 +111,9 @@ defmodule Embervm.BrickLedger do
   MiB, keyed by `key` (the workload/session identifier). `{:ok, brick}` when a
   brick can serve it, `{:error, :fleet_full}` when none can.
 
-  Selection hashes `key` across the sorted candidate list (`:erlang.phash2/2`), so
-  the same key sticks to the same brick as long as that brick stays a candidate
-  (warmth reuse) while distinct keys spread across the available bricks. It
-  deliberately does NOT prefer the newest instance per node: preferring newest
+  Selection prefers the fullest eligible brick. The same key sticks to the same
+  brick as long as that brick stays the FULLEST eligible one; equal-fullness
+  bricks still spread by hash. It deliberately does NOT prefer the newest instance per node: preferring newest
   collapses a node that holds several bricks down to a single instance, which is
   the exact multi-brick regression the placement rewrite must avoid.
   """
@@ -128,10 +128,8 @@ defmodule Embervm.BrickLedger do
 
   @doc """
   Deterministically choose one entry from an ALREADY-FILTERED candidate list,
-  keyed by `key`. Sorts by `:instance_id` so the order is stable regardless of the
-  caller's list order, then hashes `key` across it (`:erlang.phash2/2`, always
-  0..n-1 so the index is in-bounds). Same key sticks to the same entry as long as
-  it stays a candidate; distinct keys spread across the list. Returns `nil` for an
+  keyed by `key`. The head of the shared MostAllocated order is selected, with
+  equal-fullness candidates rotated by the sticky hash. Returns `nil` for an
   empty list.
 
   This is the selection primitive `pick/4` uses after applying the class/headroom/
@@ -145,10 +143,7 @@ defmodule Embervm.BrickLedger do
   @spec choose([map()], term()) :: map() | nil
   def choose([], _key), do: nil
 
-  def choose(candidates, key) do
-    sorted = Enum.sort_by(candidates, fn c -> Map.get(c, :instance_id, "") end)
-    Enum.at(sorted, :erlang.phash2(key, length(sorted)))
-  end
+  def choose(candidates, key), do: candidates |> Score.order(key) |> List.first()
 
   # A brick serves a request when its class matches (exact, or it is a wildcard/
   # empty-class brick) AND its headroom covers need plus the node admission floor

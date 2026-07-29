@@ -226,7 +226,7 @@ defmodule Embervm.PoolManagerTest do
     assert Agent.get(ctx.status, & &1) == writes1
   end
 
-  test "fleet-wide floor primes four total across two instances" do
+  test "fleet-wide floor packs four total onto one of two equal wildcard instances" do
     parent = self()
     ctx = start_pool(channel_fun: fn node -> {:ok, node} end,
       prime_fun: fn node, %PrimeRequest{trace: %Trace{workload: wl}} ->
@@ -239,7 +239,25 @@ defmodule Embervm.PoolManagerTest do
 
     :ok = PoolManager.refill(ctx.pool)
     primes = for _ <- 1..4, do: (receive do {:prime, node, "wl-a"} -> node end)
-    assert Enum.frequencies(primes) == %{"i-1" => 2, "i-2" => 2}
+    assert primes |> Enum.uniq() |> length() == 1
+    assert length(primes) == 4
+  end
+
+  test "packs primes onto the fuller instance until its memory makes it ineligible" do
+    parent = self()
+    ctx = start_pool(channel_fun: fn node -> {:ok, node} end,
+      prime_fun: fn node, %PrimeRequest{trace: %Trace{workload: wl}} ->
+        send(parent, {:prime, node, wl})
+        {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}}
+      end)
+
+    put_catalog(ctx, "wl-a", 3, resources: %{"memMib" => 2_048})
+    put_instance_facts(ctx, "full", [{"wl-a", 0}], max: 5, live: 1, mem_budget_mib: 8_192, mem_headroom_mib: 2_048, size_class: "8gi")
+    put_instance_facts(ctx, "empty", [{"wl-a", 0}], max: 5, live: 0, mem_budget_mib: 8_192, mem_headroom_mib: 8_192, size_class: "8gi")
+
+    :ok = PoolManager.refill(ctx.pool)
+    primes = for _ <- 1..3, do: (receive do {:prime, node, "wl-a"} -> node end)
+    assert Enum.frequencies(primes) == %{"full" => 1, "empty" => 2}
   end
 
   test "a third instance does not multiply an existing fleet floor" do

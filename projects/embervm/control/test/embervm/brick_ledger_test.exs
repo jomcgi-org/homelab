@@ -156,5 +156,29 @@ defmodule Embervm.BrickLedgerTest do
       chosen = for k <- 1..60, do: BrickLedger.choose(cands, "wl-#{k}").instance_id
       assert chosen |> Enum.uniq() |> length() > 1
     end
+
+    test "chooses the fuller classed brick by headroom" do
+      table = new_table()
+      put_brick(table, node: "n", pod_uid: "full", size_class: "8gi", mem_headroom_mib: 2_000, mem_budget_mib: 8_192)
+      put_brick(table, node: "n", pod_uid: "empty", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+
+      assert BrickLedger.choose(BrickLedger.candidates("8gi", 1_000, table), "wl").pod_uid == "full"
+    end
+
+    test "chooses the fuller classed brick by live VM count" do
+      table = new_table()
+      put_brick(table, node: "n", pod_uid: "full", size_class: "8gi", live_vms: 6, max_live_vms: 8, mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+      put_brick(table, node: "n", pod_uid: "empty", size_class: "8gi", live_vms: 1, max_live_vms: 8, mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+
+      assert BrickLedger.choose(BrickLedger.candidates("8gi", 1_000, table), "wl").pod_uid == "full"
+    end
+
+    test "prefers a classed brick over a wildcard" do
+      table = new_table()
+      put_brick(table, node: "n", pod_uid: "wild", size_class: "", mem_headroom_mib: 8_000, mem_budget_mib: 0)
+      put_brick(table, node: "n", pod_uid: "classed", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+
+      assert BrickLedger.choose(BrickLedger.candidates("8gi", 1_000, table), "wl").pod_uid == "classed"
+    end
   end
 end

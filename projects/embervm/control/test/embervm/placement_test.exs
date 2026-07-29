@@ -250,5 +250,14 @@ defmodule Embervm.PlacementTest do
       assert Enum.sort(frontier_ids) == ["n/a", "n/b", "n/c"]
       assert length(frontier_ids) == length(Enum.uniq(frontier_ids))
     end
+
+    test "HEAD == pick_ready/3 when ready bricks differ in fullness" do
+      fuller = brick(instance_id: "n/full", mem_headroom_mib: 2_000, mem_budget_mib: 8_192, workloads: advertising("wl"))
+      emptier = brick(instance_id: "n/empty", mem_headroom_mib: 8_000, mem_budget_mib: 8_192, workloads: advertising("wl"))
+
+      [head | _] = Placement.candidates_ready([emptier, fuller], "wl", 1_000)
+      assert head.instance_id == Placement.pick_ready([emptier, fuller], "wl", 1_000).instance_id
+      assert head.instance_id == "n/full"
+    end
   end
 end

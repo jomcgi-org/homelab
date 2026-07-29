@@ -1,6 +1,6 @@
 defmodule Embervm.Placement do
   @moduledoc """
-  The one shared brick-eligibility predicate every NEW-placement path reasons
+  The one shared brick-eligibility predicate and packing order every NEW-placement path reasons
   about (brick co-location foundation, Step 5). Before this module the memory
   gate lived in three shapes that could drift: `Embervm.WakeInstance` had the
   correct DS-wildcard-always-eligible rule (Step 4), `Embervm.BrickLedger.candidates/3`
@@ -50,6 +50,7 @@ defmodule Embervm.Placement do
   """
 
   alias Embervm.BrickLedger
+  alias Embervm.Placement.Score
 
   @typedoc "A brick or capacity-fact map carrying at least the fields the rule reads."
   @type brick :: map()
@@ -130,10 +131,9 @@ defmodule Embervm.Placement do
   defp base_state_ready?(_), do: false
 
   @doc """
-  Filter `bricks` to those `eligible?/2` for `need_mib`, then deterministically
-  pick one keyed by `key` (`BrickLedger.choose/2`: sorted by `instance_id`,
-  hashed on the key, so the same key sticks and distinct keys spread across the
-  eligible bricks). Returns the chosen brick map or `nil` when none is eligible.
+  Filter `bricks` to those `eligible?/2` for `need_mib`, then pick the fullest
+  eligible brick with sticky equal-fullness tie-breaking. Returns the chosen
+  brick map or `nil` when none is eligible.
   The NEW-placement primitive the wake cold pick and the session create pick
   share.
   """
@@ -146,8 +146,8 @@ defmodule Embervm.Placement do
 
   @doc """
   The COLD NEW-placement primitive: filter `bricks` to those `eligible?/2` for
-  `need_mib` AND `base_ready?/2` for `workload` (`workload` is also the sticky
-  `key`), then deterministically pick one via `BrickLedger.choose/2`. Returns the
+  `need_mib` AND `base_ready?/2` for `workload`, then pick the fullest via
+  `BrickLedger.choose/2`. Returns the
   chosen brick or `nil` when no brick is BOTH eligible and base-ready.
 
   This is the wake cold pick's primitive. It adds the co-location READINESS gate on
@@ -173,7 +173,7 @@ defmodule Embervm.Placement do
   @doc """
   The ORDERED cold-placement candidate list `pick_ready/3` chooses one from: the
   bricks that are BOTH `eligible?/2` for `need_mib` AND `base_ready?/2` for
-  `workload`, sorted deterministically by the same `BrickLedger.choose/2` key
+  `workload`, sorted by the same `BrickLedger.choose/2` key
   (`workload`) so the FIRST element is exactly what `pick_ready/3` would return and
   the tail is the reject/retry frontier (ADR embervm/014 decision 3).
 
@@ -189,7 +189,7 @@ defmodule Embervm.Placement do
   def candidates_ready(bricks, workload, need_mib) do
     bricks
     |> ready_candidates(workload, need_mib)
-    |> sort_by_choose_key(workload)
+    |> Score.order(workload)
   end
 
   # The shared eligible + base-ready filter both pick_ready/3 and candidates_ready/3
@@ -199,16 +199,4 @@ defmodule Embervm.Placement do
     Enum.filter(bricks, fn brick -> eligible?(brick, need_mib) and base_ready?(brick, workload) end)
   end
 
-  # Order the candidate list the SAME way BrickLedger.choose/2 would traverse it:
-  # sorted by :instance_id, then rotated so the choose/2-selected brick is first and
-  # the deterministic sticky order continues from there. This makes candidates_ready/3
-  # head == pick_ready/3 result, and the tail the natural next-candidate sequence.
-  defp sort_by_choose_key([], _key), do: []
-
-  defp sort_by_choose_key(candidates, key) do
-    sorted = Enum.sort_by(candidates, fn c -> Map.get(c, :instance_id, "") end)
-    idx = :erlang.phash2(key, length(sorted))
-    {head, tail} = Enum.split(sorted, idx)
-    tail ++ head
-  end
 end
