@@ -2005,6 +2005,16 @@ message NodeStatus {
   // refreshes, rather than hard-coded 0.
   uint64 cpu_budget_millicores = 27;
 
+  // -- Admission floor fact (additive) -----------------------------------------
+  // mem_reject_floor_mib is the cushion this daemon requires ON TOP of a
+  // workload's own footprint before it will admit a boot: it rejects unless
+  // mem_headroom_mib >= need_mib + mem_reject_floor_mib (see noded's
+  // pressure predicate). The control plane MUST apply the same term when it
+  // picks a brick, or it will place a workload on a brick that structurally
+  // cannot admit it and retry forever. 0 means unknown/unset, which reads as
+  // "no floor" and is wire-compatible with a daemon that predates this field.
+  uint64 mem_reject_floor_mib = 34;
+
   // -- CPU-sku fact (PR-E, additive) -------------------------------------------
   // cpu_sku is this node's full CPU-restore identity: vendor plus the CPU
   // template in force (standing decision from the artifact-decoupling plan:

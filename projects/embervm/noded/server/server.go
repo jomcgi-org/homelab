@@ -1703,6 +1703,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		CpuVendor:             s.cfg.CpuVendor,
 		Workloads:             caps,
 		MemHeadroomMib:        s.memHeadroom(),
+		MemRejectFloorMib:     s.memRejectFloorMib(),
 		CpuHeadroomMillicores: uint32(s.cpuHeadroom()),
 		LiveVms:               uint32(live),
 		MaxLiveVms:            uint32(maxLive),

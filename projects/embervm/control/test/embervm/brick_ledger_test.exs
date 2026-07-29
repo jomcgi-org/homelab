@@ -23,6 +23,7 @@ defmodule Embervm.BrickLedgerTest do
       instance_id: "#{node}/#{pod_uid}",
       size_class: Keyword.get(opts, :size_class, ""),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 100_000),
+      mem_reject_floor_mib: Keyword.get(opts, :mem_reject_floor_mib, 0),
       mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 0),
       live_vms: Keyword.get(opts, :live_vms, 0),
       max_live_vms: Keyword.get(opts, :max_live_vms, 8),
@@ -86,6 +87,15 @@ defmodule Embervm.BrickLedgerTest do
   end
 
   describe "pick/4" do
+    test "does not pick a brick that clears need but not need plus the admission floor" do
+      table = new_table()
+      put_brick(table, node: "n", pod_uid: "small", size_class: "2gi", mem_headroom_mib: 1_933, mem_reject_floor_mib: 512, mem_budget_mib: 2_048)
+      put_brick(table, node: "n", pod_uid: "large", size_class: "2gi", mem_headroom_mib: 16_384, mem_reject_floor_mib: 512, mem_budget_mib: 16_384)
+
+      {:ok, brick} = BrickLedger.pick("2gi", 1_536, "key", table)
+      assert brick.pod_uid == "large"
+    end
+
     test "fleet_full when no brick can serve the request" do
       table = new_table()
       put_brick(table, node: "n", pod_uid: "wrong", size_class: "2gi", mem_headroom_mib: 100)
