@@ -16,18 +16,39 @@ defmodule Embervm.Placement.ScoreTest do
   end
 
   test "wildcards score last" do
-    assert Score.most_allocated(brick(size_class: "")) == -1.0
-    assert Score.most_allocated(brick(mem_budget_mib: 0)) == -1.0
+    assert Score.score(brick(size_class: "", live_vms: 0)) == -1.0
+    assert Score.score(brick(mem_budget_mib: 0, live_vms: 0)) == -1.0
   end
 
   test "classed fullness scores from empty to full" do
-    assert Score.most_allocated(brick(mem_headroom_mib: 8_192, live_vms: 0)) == 0.0
-    assert Score.most_allocated(brick(mem_headroom_mib: 0, live_vms: 4)) == 1.0
-    assert_in_delta Score.most_allocated(brick(mem_headroom_mib: 4_096, live_vms: 2)), 0.5, 0.0001
+    assert Score.score(brick(mem_headroom_mib: 8_192, live_vms: 0)) == 0.0
+    assert Score.score(brick(mem_headroom_mib: 0, live_vms: 4)) == 1.0
+    assert_in_delta Score.score(brick(mem_headroom_mib: 4_096, live_vms: 2)), 0.5, 0.0001
   end
 
   test "headroom race is clamped" do
-    assert Score.most_allocated(brick(mem_headroom_mib: 16_384, live_vms: 0)) == 0.0
+    assert Score.score(brick(mem_headroom_mib: 16_384, live_vms: 0)) == 0.0
+  end
+
+  test "emptier wildcards score ahead of fuller wildcards" do
+    emptier = brick(instance_id: "empty", size_class: "", live_vms: 1)
+    fuller = brick(instance_id: "full", size_class: "", live_vms: 3)
+
+    assert Score.score(emptier) > Score.score(fuller)
+    assert [emptier, fuller] == Score.order([fuller, emptier], "key")
+  end
+
+  test "wildcards score behind every classed brick, including a full one" do
+    full = brick(instance_id: "full", mem_headroom_mib: 0, live_vms: 4)
+    wildcard = brick(instance_id: "wild", size_class: "", live_vms: 0)
+
+    assert Score.score(full) == 1.0
+    assert Score.score(wildcard) == -1.0
+    assert [full, wildcard] == Score.order([wildcard, full], "key")
+  end
+
+  test "wildcard with no live-VM capacity scores -1.0" do
+    assert Score.score(brick(size_class: "", max_live_vms: 0, live_vms: 0)) == -1.0
   end
 
   test "order prefers fuller classed bricks and classed bricks over wildcards" do
