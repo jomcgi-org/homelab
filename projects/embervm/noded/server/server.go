@@ -921,8 +921,8 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
 	}
-	if s.cfg.MaxLiveVMs > 0 && s.liveVMCount() >= s.cfg.MaxLiveVMs {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.cfg.MaxLiveVMs)
+	if s.slotsExhausted() {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
 	base, ok := s.bases.get(ref)
 	if !ok {
@@ -1134,6 +1134,15 @@ func (s *Server) liveVMCount() int {
 	return s.driver.LiveCount()
 }
 
+// slotsExhausted keeps the advertised and enforced ceilings identical. A
+// control plane that filters on the advertised number while the daemon admits
+// past it is the #4101 divergence. A zero ceiling preserves the existing
+// unlimited semantics.
+func (s *Server) slotsExhausted() bool {
+	ceiling := s.SlotCeiling()
+	return ceiling > 0 && s.liveVMCount() >= ceiling
+}
+
 // ---- Session verbs (R2) ----------------------------------------------------
 
 // adoptPrimedSession promotes a primed VM from the task registry into the session
@@ -1334,8 +1343,8 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
 	}
-	if s.cfg.MaxLiveVMs > 0 && s.liveVMCount() >= s.cfg.MaxLiveVMs {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.cfg.MaxLiveVMs)
+	if s.slotsExhausted() {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
 	if !s.sessionSnap.has(ref) {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: unknown session snapshot_ref %q", ref)
@@ -1669,16 +1678,7 @@ func (s *Server) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStrea
 func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	primed, taskLive := s.vms.capacity()
 	caps := s.workloadCapacities(primed)
-	maxLive := s.cfg.MaxLiveVMs
-	if maxLive < 0 {
-		maxLive = 0
-	}
-	// The reported MaxLiveVms is the brick's cgroup-derived slot ceiling (ADR
-	// embervm/013 section 7), with the configured backstop as an upper clamp:
-	// a size-class brick advertises a budget-honest slot count, never the raw
-	// configured default. When the cgroup budget is unknown the ceiling equals
-	// the configured backstop, preserving pre-budget behavior.
-	maxLive = int(s.slotCeiling(uint64(maxLive)))
+	maxLive := s.SlotCeiling()
 	// Session and serving VMs both count against the node live-VM total alongside
 	// task-pool VMs (all three classes Claim through the same driver, but this sum
 	// names the invariant at the call site).
