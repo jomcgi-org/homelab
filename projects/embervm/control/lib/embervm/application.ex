@@ -133,6 +133,10 @@ defmodule Embervm.Application do
       # Mint gRPC connection, so it does not depend on the Finch pool. With no node
       # wired (empty address), it supervises an empty node list and does nothing.
       {Embervm.NodeRegistry, node_registry_opts()},
+      # The shadow reservation ledger must be up before any claim site can use it.
+      # It is placed before the readers so a ledger restart also bounces them
+      # rather than leaving them reading a dead ETS table.
+      {Embervm.Scheduler.Reservation, []},
       # The shared per-node gRPC channel holder (Task 11): one long-lived, reused
       # Mint channel per node for the Prime/Assign hot path (unlike NodeRegistry/
       # BaseBuilder, which each own their own channel and can afford a per-op
