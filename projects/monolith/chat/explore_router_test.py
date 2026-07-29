@@ -13,8 +13,18 @@ from fastapi.testclient import TestClient
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, DeltaToolCalls, FunctionModel
 
-from app.main import app
+import dataclasses
+import chat.module
+from framework import PRIVATE_PROFILE, build_app
 from chat.explorer import create_explorer_agent
+
+# Compose only the chat domain instead of the whole monolith: the
+# same framework wiring the production app gets, without depending on
+# the app composition root, which imports every other domain.
+app = build_app(
+    dataclasses.replace(PRIVATE_PROFILE, otel_enabled=False),
+    (chat.module.MODULE,),
+)
 
 
 # ---------------------------------------------------------------------------

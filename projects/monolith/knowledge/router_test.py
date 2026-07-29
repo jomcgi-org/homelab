@@ -9,7 +9,9 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from core.db import get_session
-from app.main import app
+import dataclasses
+import knowledge.module
+from framework import PRIVATE_PROFILE, build_app
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.gaps import (
     GapAnswerInvalidError,
@@ -20,6 +22,14 @@ from knowledge.links import Link
 from knowledge.public_models import PublicNote, PublicNoteLink
 from knowledge.router import get_embedding_client
 from knowledge.store import KnowledgeStore
+
+# Compose only the knowledge domain instead of the whole monolith: the
+# same framework wiring the production app gets, without depending on
+# the app composition root, which imports every other domain.
+app = build_app(
+    dataclasses.replace(PRIVATE_PROFILE, otel_enabled=False),
+    (knowledge.module.MODULE,),
+)
 
 FAKE_EMBEDDING = [0.1] * 1024
 

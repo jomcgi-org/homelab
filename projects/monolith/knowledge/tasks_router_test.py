@@ -6,8 +6,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.db import get_session
-from app.main import app
+import dataclasses
+import knowledge.module
+from framework import PRIVATE_PROFILE, build_app
 from knowledge.router import get_embedding_client
+
+# Compose only the knowledge domain instead of the whole monolith: the
+# same framework wiring the production app gets, without depending on
+# the app composition root, which imports every other domain.
+app = build_app(
+    dataclasses.replace(PRIVATE_PROFILE, otel_enabled=False),
+    (knowledge.module.MODULE,),
+)
 
 FAKE_EMBEDDING = [0.1] * 1024
 

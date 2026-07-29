@@ -122,7 +122,17 @@ def fakes(monkeypatch):
 
 @pytest.fixture
 def client(session):
-    from app.main import app
+    import dataclasses
+    import faas.module
+    from framework import PRIVATE_PROFILE, build_app
+
+    # Compose only the faas domain instead of the whole monolith: the
+    # same framework wiring the production app gets, without depending on
+    # the app composition root, which imports every other domain.
+    app = build_app(
+        dataclasses.replace(PRIVATE_PROFILE, otel_enabled=False),
+        (faas.module.MODULE,),
+    )
     from core.db import get_session
 
     app.dependency_overrides[get_session] = lambda: session
