@@ -274,6 +274,54 @@ defmodule Embervm.WakeInstance do
 
   def owning_instance_for(_table, _node_id, _key, _match_field, _ref), do: :none
 
+  @doc """
+  Resolves a banked session to the instance on its recorded node that reports its
+  snapshot, or returns `{:error, :snapshot_lost}`.
+  """
+  @spec node_for_relight(map(), atom()) :: {:ok, String.t()} | {:error, :snapshot_lost}
+  def node_for_relight(session, capacity_table \\ NodeCapacity.table()) do
+    snapshot_ref = Map.get(session, :snapshot_ref)
+    node_id = Map.get(session, :node_id)
+
+    if is_binary(snapshot_ref) and snapshot_ref != "" do
+      case owning_instance_for(capacity_table, node_id, :session_snapshots, :snapshot_ref, snapshot_ref) do
+        {:ok, dial_key} -> {:ok, dial_key}
+        :none -> {:error, :snapshot_lost}
+      end
+    else
+      {:error, :snapshot_lost}
+    end
+  end
+
+  @doc """
+  Resolves a banked serving instance to its recorded node when that node reports
+  its snapshot, or returns `{:error, :snapshot_lost}`.
+  """
+  @spec serving_node_for_relight(map(), atom()) :: {:ok, String.t()} | {:error, :snapshot_lost}
+  def serving_node_for_relight(instance, capacity_table \\ NodeCapacity.table()) do
+    snapshot_ref = Map.get(instance, :snapshot_ref)
+    node_id = Map.get(instance, :node_id)
+
+    if is_binary(snapshot_ref) and snapshot_ref != "" and
+         node_reports_snapshot?(capacity_table, node_id, snapshot_ref) do
+      {:ok, node_id}
+    else
+      {:error, :snapshot_lost}
+    end
+  end
+
+  @doc """
+  Returns the current serving image ref for a node and workload, or `nil` when
+  either is absent.
+  """
+  @spec current_serving_image_ref(atom(), term(), String.t()) :: String.t() | nil
+  def current_serving_image_ref(capacity_table \\ NodeCapacity.table(), node_id, workload) do
+    case NodeCapacity.fetch(capacity_table, node_id) do
+      {:ok, fact} -> get_in(fact, [:workloads, workload, :serving_image_ref])
+      :error -> nil
+    end
+  end
+
   # The owning instance on `node_id` whose capacity fact reports `ref` in the
   # inventory list `key` under `field`, else the bare `node_id` (legacy/single-
   # instance fact, or the row not re-reported yet). The shared core of the
@@ -507,6 +555,23 @@ defmodule Embervm.WakeInstance do
     |> Map.get(warmth_key, [])
     |> Kernel.||([])
     |> Enum.any?(fn row -> Map.get(row, match_field) == ref end)
+  end
+
+  defp node_reports_snapshot?(_capacity_table, node_id, _snapshot_ref) when not is_binary(node_id),
+    do: false
+
+  defp node_reports_snapshot?(capacity_table, node_id, snapshot_ref) do
+    case NodeCapacity.fetch(capacity_table, node_id) do
+      {:ok, fact} ->
+        is_binary(Map.get(fact, :serving_subnet_cidr)) and
+          Map.get(fact, :serving_subnet_cidr) != "" and
+          Enum.any?(Map.get(fact, :serving_snapshots, []), fn snap ->
+            Map.get(snap, :snapshot_ref) == snapshot_ref
+          end)
+
+      :error ->
+        false
+    end
   end
 
   # The dial key for a capacity fact: its instance_id when present, else the node
