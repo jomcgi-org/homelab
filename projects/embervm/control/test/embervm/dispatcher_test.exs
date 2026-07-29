@@ -15,6 +15,7 @@ defmodule Embervm.DispatcherTest do
 
   alias Embervm.{Dispatcher, NodeCapacity, TaskStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
+  alias Embervm.Placement.Score
   alias Embervm.Node.V1.{AssignRequest, AssignResponse, GuestResponse, PrimeResponse, Trace, UsageStats}
 
   # -- harness ---------------------------------------------------------------
@@ -297,6 +298,74 @@ defmodule Embervm.DispatcherTest do
     stats = Dispatcher.stats(ctx.name)
     assert stats.misses >= 1
     assert stats.warm_hits == 0
+  end
+
+  test "a miss commits and retries in Score.order order" do
+    parent = self()
+    suffix =
+      Enum.find(0..1_024, fn n ->
+        :erlang.phash2("wl-test-ordering-#{n}", 2) == 0
+      end)
+
+    wl = "wl-test-ordering-#{suffix}"
+    flat_rotation = :erlang.phash2(wl, 2)
+    assert flat_rotation == 0
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        channel_fun: fn instance ->
+          send(parent, {:miss_dialed, instance})
+          {:ok, instance}
+        end
+      )
+
+    put_catalog(ctx, wl, cap: 10, mem_mib: 1_000)
+
+    put_facts(ctx, wl,
+      key: {"node-4", "apple"},
+      instance_id: "apple",
+      size_class: "8gi",
+      mem_budget: 8_192,
+      mem_headroom: 8_192,
+      free: 0,
+      live: 0,
+      max: 8
+    )
+
+    put_facts(ctx, wl,
+      key: {"node-4", "zoo"},
+      instance_id: "zoo",
+      size_class: "8gi",
+      mem_budget: 8_192,
+      mem_headroom: 8_192,
+      free: 0,
+      live: 1,
+      max: 8
+    )
+
+    candidates = [
+      %{instance_id: "apple", size_class: "8gi", mem_budget_mib: 8_192, mem_headroom_mib: 8_192, live_vms: 0, max_live_vms: 8},
+      %{instance_id: "zoo", size_class: "8gi", mem_budget_mib: 8_192, mem_headroom_mib: 8_192, live_vms: 1, max_live_vms: 8}
+    ]
+
+    score_ids = Score.order(candidates, wl) |> Enum.map(& &1.instance_id)
+    flat_ids =
+      candidates
+      |> Enum.sort_by(& &1.instance_id)
+      |> then(fn sorted ->
+        {head, tail} = Enum.split(sorted, flat_rotation)
+        Enum.map(tail ++ head, & &1.instance_id)
+      end)
+
+    assert score_ids == ["zoo", "apple"]
+    assert flat_ids == ["apple", "zoo"]
+    assert score_ids != flat_ids
+    [score_head | _] = score_ids
+
+    tid = submit(ctx, wl, "p1")
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+    assert_receive {:miss_dialed, ^score_head}, 2_000
   end
 
   # -- size-aware miss placement (Step 5) ------------------------------------

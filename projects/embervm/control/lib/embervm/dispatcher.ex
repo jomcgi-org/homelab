@@ -559,11 +559,8 @@ defmodule Embervm.Dispatcher do
         # DISTINCT candidate pools (R0 PR-2, brick-capacity). We deliberately do
         # NOT collapse a node to one instance: each brick is its own capacity unit,
         # so all of a node's healthy instances stay candidates. Warmth stays a
-        # two-tier decision here (prefer a brick that already holds a primed VM
-        # over a miss that must prime one); within each tier BrickLedger.choose is
-        # the deterministic sticky tie-break (sorted by instance_id, hashed on the
-        # workload) so misses spread across same-node bricks instead of hot-spotting
-        # the first one, and the choice is stable run to run. A draining instance
+        # two-tier decision here, with BrickLedger.choose selecting the warm brick
+        # and Score.order selecting the miss frontier. A draining instance
         # never reaches here (its capacity row is dropped fail-closed); the removed
         # prefer-newest also covered the seconds-wide surge window before the old
         # pod flips to draining, so we accept a rare, self-healing chance of picking
@@ -592,8 +589,17 @@ defmodule Embervm.Dispatcher do
                 has_budget?(f) and Embervm.Placement.mem_eligible?(f, need_mib)
               end)
 
-            case BrickLedger.choose(miss_candidates, wl) do
-              nil ->
+            # The ORDERED miss frontier (ADR 014 decision 3 reject/retry) and the
+            # committed brick, read from ONE `Score.order` result so they cannot
+            # diverge: the head IS the commit. They used to be computed apart, the
+            # frontier keeping a flat instance_id sort plus hash rotation from
+            # before scoring existed, and since the worker Primes the frontier head
+            # (gate off = exactly one attempt) that stale order was what actually
+            # placed, so packing and best-fit never reached this path.
+            ordered = Embervm.Placement.Score.order(miss_candidates, wl)
+
+            case ordered do
+              [] ->
                 # A true CAPACITY wall (Axis C demand signal): ready, base-holding
                 # candidates exist but every one is out of slots or too small for
                 # the workload's mem_mib. The no-base / stale branches above are
@@ -603,14 +609,20 @@ defmodule Embervm.Dispatcher do
                 Embervm.BrickController.note_denial(need_mib)
                 {:error, :no_capacity}
 
-              f ->
-                # The ORDERED miss frontier (ADR 014 decision 3 reject/retry): the
-                # eligible bricks in the SAME order BrickLedger.choose traverses, so
-                # its HEAD is exactly `f` (today's single pick, gate-off equivalence)
-                # and the tail is the next-candidate sequence the worker retries when
-                # a brick rejects under node pressure. Each entry carries the
-                # instance_id to dial AND that instance's base snapshot_ref for Prime.
-                miss_frontier = miss_candidate_frontier(miss_candidates, wl)
+              [f | _] ->
+                # Each entry is a MAP carrying the :instance_id to dial (the
+                # Retry.run contract reads it for logging/on_reject) plus that
+                # instance's own :snapshot_ref for the Prime. A bare tuple crashes
+                # Retry's Logger.debug with a BadMapError on the first rejection,
+                # so the map shape is load-bearing, not cosmetic.
+                miss_frontier =
+                  Enum.map(ordered, fn brick ->
+                    %{
+                      instance_id: instance_id_of(brick),
+                      snapshot_ref: snapshot_ref_of(brick, wl)
+                    }
+                  end)
+
                 {:ok, instance_id_of(f), :miss, snapshot_ref_of(f, wl), miss_frontier}
             end
 
@@ -623,27 +635,6 @@ defmodule Embervm.Dispatcher do
              [%{instance_id: instance_id_of(warm), snapshot_ref: snapshot_ref_of(warm, wl)}]}
         end
     end
-  end
-
-  # Order raw capacity FACTS the same way BrickLedger.choose/2 traverses them
-  # (sorted by :instance_id, rotated so the choose-selected fact is first), then
-  # project each to the {instance_id, snapshot_ref} pair the miss worker Primes.
-  # HEAD == BrickLedger.choose(facts, key), so a gate-off single attempt dials
-  # exactly the brick today's code would; the tail is the deterministic retry
-  # frontier. Mirrors Embervm.Placement's sort_by_choose_key rotation, but over
-  # raw facts (which carry `workloads` for snapshot_ref_of) rather than bricks.
-  # Each candidate is a MAP carrying :instance_id (the Retry.run contract, which
-  # reads Map.get(brick, :instance_id) for its logging/on_reject) plus the
-  # :snapshot_ref the Prime needs. A bare {id, ref} tuple would crash Retry's
-  # Logger.debug with a BadMapError on the first rejection, so the map shape is
-  # load-bearing, not cosmetic.
-  defp miss_candidate_frontier(facts, key) do
-    sorted = Enum.sort_by(facts, fn f -> instance_id_of(f) end)
-    idx = :erlang.phash2(key, length(sorted))
-    {head, tail} = Enum.split(sorted, idx)
-
-    (tail ++ head)
-    |> Enum.map(fn f -> %{instance_id: instance_id_of(f), snapshot_ref: snapshot_ref_of(f, key)} end)
   end
 
   # The instance handle the dispatcher keys inventory / NodeChannel / BaseBuilder
