@@ -26,9 +26,9 @@ defmodule Embervm.PoolManager do
   the surplus phase only ever spends what is left after every floor is funded.
   That is the floor-isolation property the acceptance test asserts.
 
-  Primes are spread round-robin across eligible instances to prevent
-  concentration and allow autoscaling. Instances must also satisfy the
-  workload's memory need according to `Embervm.Placement.mem_eligible?/2`.
+  Primes prefer the fullest eligible instance so load concentrates and empty
+  bricks can drain. Instances must also satisfy the workload's memory need
+  according to `Embervm.Placement.mem_eligible?/2`.
 
   ## backpressure
 
@@ -232,6 +232,7 @@ defmodule Embervm.PoolManager do
     budget = max(0, Map.get(facts, :max_live_vms, 0) - Map.get(facts, :live_vms, 0) - node_inflight)
     %{
       node_id: node_id,
+      instance_id: node_id,
       budget: budget,
       # Normalized exactly as `Embervm.BrickLedger.to_brick/1` does, so the shared
       # `Placement.mem_eligible?/2` predicate reads the same shape here as on every
@@ -248,6 +249,8 @@ defmodule Embervm.PoolManager do
       mem_headroom_mib: Map.get(facts, :mem_headroom_mib) || 0,
       mem_reject_floor_mib: Map.get(facts, :mem_reject_floor_mib) || 0,
       mem_budget_mib: Map.get(facts, :mem_budget_mib) || 0,
+      live_vms: Map.get(facts, :live_vms) || 0,
+      max_live_vms: Map.get(facts, :max_live_vms) || 0,
       workloads: ready_workloads(state, facts)
     }
   end
@@ -316,46 +319,46 @@ defmodule Embervm.PoolManager do
 
   defp allocate_phase(demands, instances, budget, plan) do
     keys = demands |> Enum.filter(fn {_wl, n} -> n > 0 end) |> Enum.map(&elem(&1, 0))
-    allocate_phase_round(keys, demands, instances, budget, plan, %{})
+    allocate_phase_round(keys, demands, instances, budget, plan)
   end
 
-  defp allocate_phase_round(_keys, _demands, instances, budget, plan, _cursors) when budget <= 0,
+  defp allocate_phase_round(_keys, _demands, instances, budget, plan) when budget <= 0,
     do: {plan, instances, 0}
 
-  defp allocate_phase_round(keys, demands, instances, budget, plan, cursors) do
-    {plan, instances, budget, cursors, granted} =
-      Enum.reduce(keys, {plan, instances, budget, cursors, false}, fn wl, {p, is, b, cs, g} ->
+  defp allocate_phase_round(keys, demands, instances, budget, plan) do
+    {plan, instances, budget, granted} =
+      Enum.reduce(keys, {plan, instances, budget, false}, fn wl, {p, is, b, g} ->
         allocated = p |> Enum.filter(fn {{_node, key}, _n} -> key == wl end) |> Enum.map(&elem(&1, 1)) |> Enum.sum()
 
         if allocated >= Map.get(demands, wl, 0) or b <= 0 do
-          {p, is, b, cs, g}
+          {p, is, b, g}
         else
-          case place_one(is, wl, Map.get(cs, wl, 0)) do
-            :none -> {p, is, b, cs, g}
+          case place_one(is, wl) do
+            :none -> {p, is, b, g}
             {index, next} ->
               node_id = Enum.at(next, index).node_id
-              {Map.update(p, {node_id, wl}, 1, &(&1 + 1)), next, b - 1, Map.put(cs, wl, index + 1), true}
+              {Map.update(p, {node_id, wl}, 1, &(&1 + 1)), next, b - 1, true}
           end
         end
       end)
 
-    if granted and budget > 0, do: allocate_phase_round(keys, demands, instances, budget, plan, cursors), else: {plan, instances, budget}
+    if granted and budget > 0, do: allocate_phase_round(keys, demands, instances, budget, plan), else: {plan, instances, budget}
   end
 
-  defp place_one([], _wl, _cursor), do: :none
-  defp place_one(instances, wl, cursor) do
-    count = length(instances)
-    candidates = for offset <- 0..(count - 1), do: rem(cursor + offset, count)
+  defp place_one([], _wl), do: :none
+  defp place_one(instances, wl) do
+    candidates =
+      Enum.filter(instances, fn instance ->
+        instance.budget > 0 and Map.has_key?(instance.workloads, wl) and
+          memory_eligible?(instance, wl)
+      end)
 
-    case Enum.find(candidates, fn i ->
-           instance = Enum.at(instances, i)
-           instance.budget > 0 and Map.has_key?(instance.workloads, wl) and
-             memory_eligible?(instance, wl)
-         end) do
-      nil ->
+    case Embervm.Placement.Score.order(candidates, wl) do
+      [] ->
         :none
 
-      index ->
+      [selected | _] ->
+        index = Enum.find_index(instances, &(&1.instance_id == selected.instance_id))
         {index, List.update_at(instances, index, &consume(&1, wl))}
     end
   end
