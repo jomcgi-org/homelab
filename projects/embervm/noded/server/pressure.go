@@ -90,13 +90,49 @@ func (s *Server) admitOrReject(needMib uint64, class pressureClass) error {
 // admission check can reuse the verdict without producing a gRPC error, and so it
 // is unit-testable in isolation from the wire path.
 func (s *Server) underPressure(needMib uint64, class pressureClass) (rejectReason, bool) {
-	if s.memPressured(needMib) {
+	if s.memExhausted(needMib) {
 		return reasonPressureMem, true
 	}
 	if class == classTapBearing && s.tapsExhausted() {
 		return reasonPressureTaps, true
 	}
 	return "", false
+}
+
+// memExhausted selects the node's memory admission model. The observed model
+// delegates unchanged to today's cgroup-headroom predicate. The reserved model
+// derives declared claims from the driver's live map, charging the requested VM
+// and configured host overhead for the VM about to be admitted. A zero budget
+// means unlimited or unreadable cgroup and fails open for the reserved model
+// only.
+func (s *Server) memExhausted(needMib uint64) bool {
+	// Observed model: unchanged from before the claims ledger existed. The
+	// budget guards below belong to the reserved arithmetic only; applying them
+	// here would fail open on a brick whose memory.max is at or below the daemon
+	// reserve, where budget reads 0 but headroom is still positive.
+	if s.cfg.AdmissionModel != "reserved" {
+		return s.memPressured(needMib)
+	}
+	if s.memBudget == nil {
+		return false
+	}
+	budget := s.memBudget()
+	if budget == 0 {
+		return false
+	}
+	live := uint64(s.driver.LiveCount())
+	overhead := uint64(0)
+	if s.cfg.VMOverheadMib > 0 {
+		overhead = uint64(s.cfg.VMOverheadMib)
+	}
+	return s.claimedMib()+needMib+overhead*(live+1) > budget
+}
+
+func (s *Server) claimedMib() uint64 {
+	if d, ok := s.driver.(interface{ ClaimedMib() uint64 }); ok {
+		return d.ClaimedMib()
+	}
+	return 0
 }
 
 // memPressured reports whether free schedulable memory is below the workload's

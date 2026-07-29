@@ -87,6 +87,22 @@ func TestLoadCpuVendorEnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoadAdmissionConfig(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_ADMISSION_MODEL", "reserved")
+	t.Setenv("EMBERVM_NODED_VM_OVERHEAD_MIB", "64")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.AdmissionModel != "reserved" || c.VMOverheadMib != 64 {
+		t.Fatalf("admission config = (%q, %d), want (reserved, 64)", c.AdmissionModel, c.VMOverheadMib)
+	}
+	t.Setenv("EMBERVM_NODED_ADMISSION_MODEL", "invalid")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted an unknown admission model")
+	}
+}
+
 func TestLoadActivatorAddress(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_ACTIVATOR_ADDR", "127.0.0.1:18081")
 	c, err := Load()

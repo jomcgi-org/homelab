@@ -117,6 +117,13 @@ type Config struct {
 	// EMBERVM_NODED_MEM_REJECT_FLOOR_MIB. Read only by the pressure predicate; a
 	// cgroup reporting unknown (unlimited) headroom fails the check open regardless.
 	MemRejectFloorMib int
+	// AdmissionModel selects memory admission: observed preserves the current
+	// cgroup-headroom predicate; reserved gates on declared live claims.
+	// Env EMBERVM_NODED_ADMISSION_MODEL. Default observed.
+	AdmissionModel string
+	// VMOverheadMib is host memory charged per live VM in the reserved model.
+	// Env EMBERVM_NODED_VM_OVERHEAD_MIB. Default 0.
+	VMOverheadMib int
 
 	// DaemonReserveMib is subtracted from the cgroup memory.max ceiling
 	// before it is reported as NodeStatus.mem_budget_mib, covering the
@@ -388,6 +395,8 @@ func Load() (Config, error) {
 		// footprint); the two live in different packages (config cannot import
 		// server), so the literal is duplicated with this note tying them together.
 		MemRejectFloorMib:   atoiDefault("EMBERVM_NODED_MEM_REJECT_FLOOR_MIB", 512),
+		AdmissionModel:      getenvDefault("EMBERVM_NODED_ADMISSION_MODEL", "observed"),
+		VMOverheadMib:       atoiDefault("EMBERVM_NODED_VM_OVERHEAD_MIB", 0),
 		SnapshotRoot:        os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
 		BinPath:             getenvDefault("EMBERVM_NODED_FIRECRACKER_BIN", "/opt/fc/firecracker"),
 		KernelImagePath:     getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
@@ -432,6 +441,9 @@ func Load() (Config, error) {
 		StoreBucket:   getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
 
 		RequireBlessing: boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),
+	}
+	if c.AdmissionModel != "observed" && c.AdmissionModel != "reserved" {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_ADMISSION_MODEL must be observed or reserved, got %q", c.AdmissionModel)
 	}
 	statefulActivatorRangeRaw := "5400-5409"
 	if raw, ok := os.LookupEnv("EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE"); ok {
