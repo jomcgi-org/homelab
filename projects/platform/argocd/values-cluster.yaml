@@ -33,6 +33,24 @@ argo-cd:
       server.basehref: "/app/argocd"
       server.rootpath: "/app/argocd"
       otlp.address: "signoz-otel-collector.signoz.svc.cluster.local:4317"
+      # Manifest-generation cache TTL, 24h default -> 10m. Populates
+      # ARGOCD_REPO_CACHE_EXPIRATION on repo-server.
+      #
+      # The repo-server caches manifest generation RESULTS, including FAILURES,
+      # keyed by revision (for a Helm OCI source that includes the chart
+      # version). A chart is published by CI on merge, so there is a window
+      # where a commit on main already names a targetRevision the registry does
+      # not have yet. ArgoCD renders in that window, caches "not found", and
+      # then serves it for 24h: `timeout.reconciliation` (180s) keeps re-reading
+      # the cached failure, so the app sits in ComparisonError and NEVER rolls
+      # until a human forces a hard refresh. Silent, because the app still
+      # reports Healthy while running the previous build. Hit on 3 of 3 embervm
+      # deploys on 2026-07-29 (issue #4165).
+      #
+      # 10m bounds that stall instead of eliminating it: the negative entry
+      # expires and the next reconcile renders successfully. It is not 180s
+      # because we want most of the cache benefit retained.
+      reposerver.repo.cache.expiration: "10m"
   # Enable metrics endpoints for all ArgoCD components
   # These expose Prometheus metrics including argocd_app_info for health/sync status
   # Pod annotations enable SigNoz autodiscovery (scraper uses role: pod)
@@ -76,13 +94,28 @@ argo-cd:
     # CPU limit raised 125m -> 1000m: manifest generation (helm template /
     # kustomize build) is CPU-bound and gates every ArgoCD sync; it was throttled
     # ~22% with p99 ~3.7s (max 34s) over 22k GenerateManifest calls.
+    #
+    # Raised again 1000m -> 10000m alongside the 10m repo cache TTL above, which
+    # makes 28 apps re-render every ~10m rather than being cached for 24h.
+    # Measured steady state before the change was 3m and 8m CPU across the two
+    # replicas, i.e. under 1% of the old limit, so this is burst headroom rather
+    # than expected consumption. CPU is compressible and the REQUEST stays 25m,
+    # so neighbours are protected by their own requests; the limit only stops
+    # throttling during a render storm.
+    #
+    # Memory 512Mi -> 1Gi is the change to actually watch. Memory is
+    # incompressible, so a render storm overshooting means OOMKill rather than
+    # slowdown, and the controller in this same file has an OOMKilled-x5 history
+    # from sync storms. Steady state was ~160Mi. If repo-server starts OOMing,
+    # raise the repo cache TTL back up before raising memory again: the cache
+    # TTL is the cause and this is the symptom.
     resources:
       requests:
         cpu: 25m
         memory: 128Mi
       limits:
-        cpu: 1000m
-        memory: 512Mi
+        cpu: 10000m
+        memory: 1Gi
     livenessProbe:
       timeoutSeconds: 5
       failureThreshold: 5
