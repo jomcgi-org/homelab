@@ -87,6 +87,23 @@ defmodule Embervm.SchedulerTest do
     refute Scheduler.base_ready?(brick(workloads: %{}), "wl")
   end
 
+  test "base-gated placement distinguishes a provisioning gap from capacity" do
+    missing_base = brick(configured_id: "node-base", workloads: %{})
+    no_capacity = brick(configured_id: "node-full", free_slots: 0, workloads: %{})
+
+    request = fn bricks ->
+      Scheduler.place_with_demand(%Request{
+        bricks: bricks,
+        workload: "wl",
+        need_mib: 512,
+        base: {:ready, :snapshot_ref}
+      })
+    end
+
+    assert {:error, {:base_missing, "node-base"}} = request.([missing_base])
+    assert {:error, :capacity} = request.([no_capacity])
+  end
+
   test "snapshot and serving base variants require a non-empty field" do
     snapshot = brick(instance_id: "snapshot", workloads: ready("wl", %{snapshot_ref: "snap"}))
     serving = brick(instance_id: "serving", workloads: ready("wl", %{serving_image_ref: "image"}))

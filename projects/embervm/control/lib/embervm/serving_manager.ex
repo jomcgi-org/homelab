@@ -484,18 +484,22 @@ defmodule Embervm.ServingManager do
 
       :none ->
         candidates =
-          Scheduler.place(%Request{
+          case Scheduler.place_with_demand(%Request{
             table: state.capacity_table,
             workload: workload,
             key: workload,
             need_mib: Map.get(catalog_entry(state, workload), :mem_mib) || 512,
             require_subnet: true,
             base: {:ready, :serving_image_ref}
-          })
-          |> Enum.map(fn brick ->
-            workload_entry = Map.get(brick.workloads, workload, %{})
-            %{instance_id: Brick.dial_id(brick), node_id: brick.configured_id, base_ref: workload_entry.serving_image_ref}
-          end)
+          }) do
+            {:ok, bricks} ->
+              Enum.map(bricks, fn brick ->
+                workload_entry = Map.get(brick.workloads, workload, %{})
+                %{instance_id: Brick.dial_id(brick), node_id: brick.configured_id, base_ref: Map.get(workload_entry, :serving_image_ref)}
+              end)
+
+            {:error, _reason} -> []
+          end
 
         if candidates == [], do: {:error, :no_capacity}, else: {:cold, candidates}
     end

@@ -29,6 +29,31 @@ defmodule Embervm.Scheduler do
     |> Score.order(req.key || req.workload)
   end
 
+  @doc """
+  Places a cold request and distinguishes capacity from a missing workload base.
+  A base-gated miss is retried without the base gate using the same request. An
+  empty ungated result records capacity demand; a non-empty ungated result tells
+  the base builder to provision on the brick that would have been selected.
+  """
+  @spec place_with_demand(Request.t()) :: {:ok, [map()]} | {:error, :capacity | {:base_missing, term()}}
+  def place_with_demand(%Request{base: base} = req) when base == :ready or is_tuple(base) do
+    case place(req) do
+      [_ | _] = candidates ->
+        {:ok, candidates}
+
+      [] ->
+        case place(%{req | base: :none}) do
+          [] ->
+            Embervm.BrickController.note_denial(req.need_mib || 0)
+            {:error, :capacity}
+
+          [brick | _] ->
+            Embervm.BaseBuilder.note_base_missing(req.workload, Map.get(brick, :configured_id))
+            {:error, {:base_missing, Map.get(brick, :configured_id)}}
+        end
+    end
+  end
+
   @spec eligible?(brick(), non_neg_integer()) :: boolean()
   def eligible?(brick, need_mib), do: Brick.free_slots(brick) > 0 and mem_eligible?(brick, need_mib)
 

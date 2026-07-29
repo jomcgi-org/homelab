@@ -1027,20 +1027,20 @@ defmodule Embervm.StatefulManager do
   defp cold_plan(state, workload, nil, _reason) do
     %ResourceSpec{mem_mib: need_mib} = resource_spec(catalog_entry(state, workload))
 
-    case Scheduler.place(%Request{
+    case Scheduler.place_with_demand(%Request{
            table: state.capacity_table,
            workload: workload,
            key: workload,
            need_mib: need_mib,
            require_subnet: true,
-           base: :none
+           base: {:ready, :snapshot_ref}
          }) do
-      [brick | _] ->
+      {:ok, [brick | _]} ->
         node_id = brick.configured_id
         dial_id = Brick.dial_id(brick)
         {:cold, node_id, dial_id, boot_image_ref(state, dial_id, workload), :fresh, nil}
 
-      [] ->
+      {:error, _reason} ->
         {:error, :no_capacity}
     end
   end
