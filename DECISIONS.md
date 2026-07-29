@@ -942,3 +942,212 @@ Task 10 choices where the plan was silent (sessioned run_python across guest + c
 - BOUNDS (deviation from the ADR's sketched 2 nodes / 3 VMs): 1 node / 2 VMs / 2 tasks / 2 principals. Both historical bugs are single-node phenomena (one node's status stream vs the control plane), so one node is the minimal faithful witness; two VMs still exercise double-assign and adoption idempotence; 2n/3v blew the safety space to ~45M states for no new interleaving class.
 - THE FINDING (pilot value, no code change): modeling `known_vm_ids/1` with only two of its three sources (inventory + in-flight miss meta, omitting every assign worker's `meta.vm_id`) produced a real double-assign counterexample in TLC. The three-source union is load-bearing exactly as written; the spec now fails if a future change narrows it. No interleaving was found where the SHIPPED implementation violates an invariant.
 - LAYER-2 (trace validation) is PR2, per the plan; the ADR's exit judgment happens after that.
+
+## D-PLACE.1: placement scores fullness, and the two tiers get opposite policies
+
+- **WHY:** ADR embervm/016 section 4 and ARCHITECTURE.md section 7 both described a
+  pack-to-empty score as BUILT behaviour. It did not exist: `grep score` over
+  `control/lib/` returned nothing. Selection was `BrickLedger.choose/2`
+  (`phash2(key, len)` into a sorted list), two copies of `rendezvous_pick`, and
+  `PoolManager`'s round-robin cursor, all of which distribute uniformly. ADR 016's
+  own alternatives table REJECTS spread placement by name, predicting "no brick
+  ever empties, EmberPool cannot shrink, consolidation never fires". That
+  prediction had come true: `brick_controller.ex` `pick_victim` requires
+  `live_vms == 0`, so scale-down was structurally starved and was recorded as
+  waiting on soak when it was actually waiting on this.
+- **DECISION:** one ordering primitive, `Embervm.Placement.Score.order/2`, with two
+  policies on one comparable scale. Classed bricks PACK (k8s MostAllocated,
+  `(slot_ratio + mem_ratio) / 2`, range `[0.0, 1.0]`). Wildcards SPREAD (k8s
+  LeastAllocated, `-1.0 - slot_ratio`, range `[-2.0, -1.0]`), which keeps every
+  wildcard below every classed brick while spreading among themselves.
+- **WHY WILDCARDS SPREAD RATHER THAN PACK:** an intermediate version packed
+  everything, and that was wrong. A wildcard (empty `size_class`, or an unreadable
+  cgroup reporting zero budget) has NO fullness signal, so all of them score
+  identically, the hash pins a workload to one, and `Placement.mem_eligible?/2`
+  short-circuits true for a wildcard regardless of headroom. Nothing then
+  dislodges it on memory and the only brake is its slot count. That is not
+  packing, it is concentrating a workload onto one arbitrary brick with the memory
+  gate switched off. The justification does not survive either: MostAllocated
+  exists to make bricks reclaimable, and a wildcard is never a reclaim target (it
+  is the legacy DaemonSet, one per node, or a fault condition). k8s ships both
+  plugins and LeastAllocated is its scheduler default.
+- **ONE PRIMITIVE, NOT TWO:** `BrickLedger.choose/2` became
+  `order(...) |> List.first()` and `Placement.sort_by_choose_key/2` was deleted.
+  Those two previously maintained the same ordering in parallel, kept in sync by a
+  comment asserting "head == choose result". Making one a projection of the other
+  removes the drift seam rather than documenting it.
+- **NON-OBVIOUS PROPERTY:** equal-fullness bricks tie and fall through to the
+  pre-existing sticky hash, so behaviour is unchanged wherever there is nothing to
+  pack toward. Both existing "spreads distinct keys" tests kept passing UNMODIFIED,
+  because their fixtures happen to be equal. A green suite is therefore not
+  evidence the packing works; that needs fixtures which differ in fullness.
+- **ALSO FIXED:** `PoolManager.consume/2` advanced `budget` and `mem_headroom_mib`
+  but never `live_vms`, so the classed `slot_ratio` term was frozen within a
+  refill pass and packing ran on the memory term alone.
+- **STATUS:** shipped, PR #4142.
+
+## D-PLACE.2: brick class is a supply-side construct only; best-fit replaces class-exactness
+
+- **WHY:** ADR embervm/016 section 4 says "a VM places only into bricks of its size
+  class, cross-class borrowing is rejected". Two problems. First, it is NOT
+  implemented: no live placement path filters on `size_class`, and
+  `BrickLedger.candidates/3` and `pick/4` have zero production callers (every
+  reference to them is a comment explaining why they are not used). Second, ADR
+  embervm/021 makes `memMib` the only declared dial with CPU derived, so a
+  workload has no class at all and the rule has nothing to match on.
+- **DECISION:** class is supply-side only. It survives as pod shape (a brick is a
+  Guaranteed-QoS pod with a fixed limit, and in-place resize is retired by ADR 013
+  section 7, so supply is necessarily discrete even though demand is continuous),
+  as reclaim granularity, and as procurement (you cannot instantiate "1536 MiB of
+  brick", so `class_for_need` must pick a shape). Placement matches on declared
+  memory, which is what the code already did.
+- **SECTION 4's GOAL IS KEPT, ITS MECHANISM IS NOT:** the stated goal, do not strand
+  a large brick's contiguous headroom, is right. Best-fit achieves it without
+  class-exactness. The ratio-based score already gets most of the way (a 2gi brick
+  holding one 512 MiB VM scores ~0.33 against a 16gi's ~0.03), but two EMPTY bricks
+  score exactly 0.0, tie, and the hash can put a small VM on the empty 16gi. That
+  brick exists at `minReplicas: 1` specifically to hold a ~10 GiB composite, and a
+  small VM there makes it non-idle and unreclaimable.
+- **THE ORDERING IS THREE LEVELS, and the naive version is wrong:** rounded score
+  descending, then `mem_budget_mib` ascending, then the sticky hash applied WITHIN
+  bricks sharing both. Sorting the tie group by capacity and rotating the whole
+  sorted list does NOT work, because rotation puts `Enum.at(sorted, hash_index)` at
+  the head rather than the smallest brick. Sub-group by capacity first, rotate only
+  within each sub-group.
+- **FIT IS A TIE-BREAK, NEVER A COMPETITOR TO THE SCORE:** a 16gi brick at higher
+  fullness still beats an emptier 2gi, because concentrating on the already-filling
+  brick is what lets the other empty and be reclaimed. Fit only decides between
+  equally-full bricks. Inverting that precedence would trade reclaim for
+  fragmentation.
+- **NO ADR AMENDMENT:** recorded here rather than amending ADR 016, by owner's call.
+  `mem_budget_mib` is already on every normalized brick and is usable capacity as
+  the daemon computes it, so this needed no new plumbing.
+- **STATUS:** shipped.
+
+## D-PLACE.3: proto3 has no null, so an unset scalar is a zero, and four bugs came from reading it as one
+
+- **WHY:** four defects in one family surfaced in a single session, all the same
+  shape: a value meaning "unset" on one side read as a number on the other.
+  #4101 (noded advertises `SlotCeiling` but admits on raw `cfg.MaxLiveVMs`), #4141
+  (the CP placed on `headroom >= need` while noded admits on `need + floor`), #4145
+  (denial attribution used the class nameplate rather than usable capacity), and
+  the near-miss in #4145's own fix.
+- **THE NEAR-MISS, recorded because it nearly shipped:** the new floor lookup was
+  written `Map.get(fact, :mem_reject_floor_mib) || 512`. `||` catches only `nil`
+  and `false`, and **0 is truthy in Elixir**. That case is live, not hypothetical:
+  `node_registry.ex:646` copies the value straight off the decoded proto, and
+  proto3 decodes an unset `uint64` as 0, so every daemon predating the field
+  reports a PRESENT zero. The floor would have read 0 and attribution would have
+  reverted to exactly the defect the PR closes.
+- **DECISION:** read it as noded reads it. `noded/server/pressure.go` `memRejectFloorMib`
+  treats `<= 0` as unset and falls back to 512, so the control plane does
+  `floor when is_integer(floor) and floor > 0 -> floor; _ -> 512`. Reading it
+  literally would have been a FOURTH advertise-versus-enforce divergence. The
+  regression test is named after the bug so a future simplification back to `||`
+  fails loudly.
+- **THE GENERAL RULE:** on any never-converging retry loop, suspect that the two
+  sides disagree by exactly one term. And when a proto scalar can legitimately be
+  zero, carry an explicit presence signal rather than inferring it. ADR embervm/020
+  already anticipated this in writing by specifying its capability bit as an
+  explicit bool rather than inferring it from a zero reserved count.
+- **STATUS:** shipped, PR #4150.
+
+## D-PLACE.4: class capacity is chart-declared, and reconciled against node truth
+
+- **WHY:** `class_for_need` parsed the class nameplate out of the label
+  (`"2gi"` -> 2048). Real schedulable memory is `MemBudgetMib()`, which subtracts
+  `DaemonReserveMib` (default 512), so a 2gi brick's usable budget is **1536**, not
+  2048 and not the ~1933 that `MemHeadroomMib()` reports (headroom does NOT
+  subtract the reserve; earlier write-ups conflated the two). Cross-check:
+  `SlotCeiling` = 1536/512 = exactly 3, which is the `max_live_vms=3` observed in
+  #4101.
+- **DECISION:** the chart declares `usable_mib` per class, and
+  `bricks.daemonReserveMib` renders BOTH that arithmetic and noded's own
+  `EMBERVM_NODED_DAEMON_RESERVE_MIB`, so the two cannot drift. Hardcoding 512 in a
+  Helm template would have repeated the duplicate-constant mistake that caused
+  #4141.
+- **DECLARED RATHER THAN OBSERVED, deliberately:** denial attribution and the future
+  floor bin-pack both need class capacity AT ZERO REPLICAS, when no brick of that
+  class exists to report anything. A live brick's reported `mem_budget_mib` becomes
+  a drift CHECK against the declared value instead. Declared intent reconciled
+  against node truth is invariant 5's shape.
+- **CONSEQUENCE TO WATCH:** semgrep needs 1536 and a 2gi brick's usable budget is
+  exactly 1536. With the floor term it is correctly excluded; once declared
+  arithmetic retires the floor, 2gi becomes a legitimate but exactly-fitting
+  target. The real cushion then is the 512 MiB declared reserve against actual
+  daemon RSS, and the commonly-cited ~115 MiB figure for that RSS is an INFERENCE
+  from one idle-state reading (`2048 - 1933`), not a measurement.
+- **STATUS:** shipped, PR #4150.
+
+## D-PLACE.5: the probes retry through a control-plane roll, and that is not the same as surviving one
+
+- **WHY:** `bazel-query` and `semgrep` are `class: task`, so the hit/miss invariant
+  puts the control plane on their dispatch path BY DEFINITION, and `demo-postgres`
+  needs it to wake. The CP runs one replica with `strategy: Recreate`, so every
+  roll is 15 to 60s of total downtime. `probe_bazel`, `probe_semgrep` and
+  `probe_postgres` had NO retry at all, and `health.py` latches red on a single
+  failed row against a `*/5` cadence. So every roll that overlapped a probe run
+  paged, with the same component signature as the genuine #4137 outage.
+- **DECISION:** a bounded 90s wall-clock retry budget at 15s intervals on the three
+  CP-dependent probes. `probe_pages` is untouched: it exercises the public edge,
+  which does not depend on the CP, and its existing 0.2s retry is tuned for a
+  Cloudflare blip.
+- **WHY 90s:** the bound is the CronWorkflow trigger's documented **180s API request
+  timeout**, not its 300s `activeDeadlineSeconds`. All four probes run
+  concurrently, so wall time is the slowest rather than the sum, and 90s leaves 90s
+  of margin inside the request timeout while staying well under the 300s cadence so
+  `concurrencyPolicy: Forbid` runs cannot pile up.
+- **DETECTION IS NOT BLUNTED:** a real outage persists (#4137 ran over an hour) and
+  still latches on its first probe run; the cost is 90s of extra latency on the
+  first red. A recovery after retrying APPENDS the retry count to the detail text,
+  because a silent recovery is indistinguishable from a clean run and would hide a
+  flapping control plane.
+- **WHAT THIS IS NOT:** it does not make task dispatch survive a CP restart. That
+  needs the CP off the task path, which is ADR embervm/015's isolated lane (Envoy
+  to per-brick listeners, brick pops from its local primed pool). This makes the
+  HEALTH CHECK survive a roll. A retry that masked a genuine dispatch outage would
+  be strictly worse than the current red.
+- **STATUS:** shipped, PR #4151.
+
+## D-PLACE.6: capacity accounting is two-tier, brick-authoritative and CP-advisory
+
+- **WHY:** EmberVM schedules against OBSERVED cgroup usage where Kubernetes
+  schedules against DECLARED, RESERVED requests. `budget.go` computes headroom as
+  `memory.max - working_set` and `pressure.go` admits on it. k8s increments
+  `NodeInfo.Requested` at ASSUME time before the pod runs, and kubelet admission
+  checks the same arithmetic; observed usage appears only in eviction. Most of the
+  compensating machinery here (the reject floor cushion, `Placement.Retry`,
+  `minSlotWorkloadMib`, the #4101 advertise/admit split) exists only because the
+  number is a measurement rather than a reservation. `pool_manager.ex` `consume/2`
+  is already a reservation ledger, scoped to one tick inside one module.
+- **DECISION (direction, tracked on #4140):** two tiers with asymmetric authority
+  and the same arithmetic. The BRICK is authoritative: noded's claims ledger plus a
+  unified `admitVM` gating `claimed_mib + need <= MemBudgetMib()`, O(1), per brick,
+  no coordination, passed by every VM creation regardless of initiator. The CONTROL
+  PLANE is advisory, at ASSIGNMENT granularity, cell-scoped: it predicts what the
+  brick will admit and a wrong guess costs one rejected RPC.
+- **WHY NOT CP-AUTHORITATIVE:** ADR embervm/020 decision 1 says the CP "remains a
+  placement engine" but computes "at forecast cadence rather than per arrival, with
+  the decision advisory rather than authoritative because the brick's
+  `admitOrReject` arbitrates". ADR embervm/020 decision 4 independently requires
+  brick-side assume-time reservation: "Candidates decrement capacity at ACCEPT under
+  a short reservation TTL, and an inbound acceptance runs the same `admitOrReject`
+  predicate". Building a CP-authoritative gate would have cost the same and then
+  needed unwinding.
+- **A MISREADING CORRECTED, recorded so it is not repeated:** ADR embervm/015's
+  "balancing is least-request plus cheap rejection, NOT a capacity ledger" was read
+  as exempting the isolated lane from memory accounting. It does not. That phrase
+  is in the BALANCING decision and rejects a central ledger for routing requests
+  across bricks. Decision 4 of the same ADR puts the CP squarely in that lane's
+  loop: "It sizes each brick's primed pool from observed demand (the existing
+  PoolManager refill loop)". The lane is memory-neutral per request under declared
+  arithmetic, because a primed VM is a restored snapshot already holding its full
+  declared `MemMib`; a pop converts a primed reservation into a running one of
+  identical size and destroy plus background re-prime nets to zero. So CP
+  accounting at POOL granularity is exact for that lane without ever seeing a
+  request.
+- **WHY IT HOLDS AT A MILLION SANDBOXES:** CP ledger write rate is the
+  assignment-change rate, not the miss rate. Cardinality is live VMs per CELL,
+  bounded by cell fleet memory over smallest VM, never by sandbox-definition count,
+  because a banked artifact reserves no memory.
+- **STATUS:** decided, not yet built. Sequenced on #4140.

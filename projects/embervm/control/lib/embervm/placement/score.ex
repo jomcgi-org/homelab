@@ -43,7 +43,11 @@ defmodule Embervm.Placement.Score do
   end
 
   @doc """
-  Order candidates by score with sticky tie-breaking.
+  Order candidates by score, then best-fit toward the smallest usable brick,
+  with the sticky hash breaking remaining ties. This pursues ADR embervm/016
+  section 4's anti-fragmentation goal by best-fit, not its unimplemented
+  class-exact mechanism, which ADR embervm/021 makes obsolete because a
+  workload has no class.
   """
   @spec order([map()], term()) :: [map()]
   def order([], _key), do: []
@@ -56,9 +60,20 @@ defmodule Embervm.Placement.Score do
   end
 
   defp order_groups([{_score, group} | rest], key) do
-    leading = Enum.sort_by(group, &Map.get(&1, :instance_id, ""))
-    rotated = rotate(leading, :erlang.phash2(key, length(leading)))
-    rotated ++ Enum.flat_map(rest, fn {_score, items} -> Enum.sort_by(items, &Map.get(&1, :instance_id, "")) end)
+    order_by_fit(group, key) ++
+      Enum.flat_map(rest, fn {_score, items} -> order_by_fit(items, key) end)
+  end
+
+  defp order_by_fit(items, key) do
+    items
+    |> Enum.group_by(&Map.get(&1, :mem_budget_mib, 0))
+    |> Enum.sort_by(&elem(&1, 0), :asc)
+    |> Enum.flat_map(fn {_budget, same} -> rotate_sticky(same, key) end)
+  end
+
+  defp rotate_sticky(items, key) do
+    sorted = Enum.sort_by(items, &Map.get(&1, :instance_id, ""))
+    rotate(sorted, :erlang.phash2(key, length(sorted)))
   end
 
   defp rounded_score(brick), do: Float.round(score(brick), 3)

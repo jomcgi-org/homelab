@@ -59,6 +59,33 @@ defmodule Embervm.Placement.ScoreTest do
     assert [full, empty, wildcard] == Score.order([wildcard, empty, full], "key")
   end
 
+  test "a small VM must not strand the large brick" do
+    small = brick(instance_id: "small", mem_budget_mib: 1_536, mem_headroom_mib: 1_536, live_vms: 0)
+    large = brick(instance_id: "large", mem_budget_mib: 15_872, mem_headroom_mib: 15_872, live_vms: 0)
+
+    assert [small, large] == Score.order([large, small], "key")
+  end
+
+  test "score still dominates best-fit" do
+    large_full = brick(instance_id: "large", mem_budget_mib: 16_384, mem_headroom_mib: 8_192)
+    small_empty = brick(instance_id: "small", mem_budget_mib: 2_048, mem_headroom_mib: 2_048, live_vms: 0)
+
+    assert Score.score(large_full) > Score.score(small_empty)
+    assert [large_full, small_empty] == Score.order([small_empty, large_full], "key")
+  end
+
+  test "distinct keys spread across bricks sharing score and budget" do
+    first = brick(instance_id: "a", mem_budget_mib: 8_192, mem_headroom_mib: 8_192, live_vms: 0)
+    second = brick(instance_id: "b", mem_budget_mib: 8_192, mem_headroom_mib: 8_192, live_vms: 0)
+
+    heads =
+      1..32
+      |> Enum.map(&Score.order([first, second], "workload-#{&1}") |> List.first())
+      |> Enum.uniq()
+
+    assert length(heads) == 2
+  end
+
   test "order head equals BrickLedger.choose/2" do
     candidates = [brick(instance_id: "a"), brick(instance_id: "b", live_vms: 4)]
     assert List.first(Score.order(candidates, "wl")) == BrickLedger.choose(candidates, "wl")
@@ -69,6 +96,19 @@ defmodule Embervm.Placement.ScoreTest do
     ordered = Score.order(candidates, "wl")
     assert Enum.sort(Enum.map(ordered, & &1.instance_id)) == Enum.sort(Enum.map(candidates, & &1.instance_id))
     assert length(ordered) == length(Enum.uniq_by(ordered, & &1.instance_id))
+  end
+
+  test "wildcards tie on zero budget and remain behind classed bricks" do
+    classed = brick(instance_id: "classed", mem_budget_mib: 1_536, mem_headroom_mib: 1_536, live_vms: 0)
+    wildcards = [
+      brick(instance_id: "wild-a", size_class: "", mem_budget_mib: 0, live_vms: 0),
+      brick(instance_id: "wild-b", size_class: "", mem_budget_mib: 0, live_vms: 0)
+    ]
+
+    ordered = Score.order(wildcards ++ [classed], "key")
+
+    assert List.first(ordered) == classed
+    assert Enum.map(Enum.drop(ordered, 1), & &1.mem_budget_mib) == [0, 0]
   end
 
   test "order breaks ties by instance_id rather than input order" do
