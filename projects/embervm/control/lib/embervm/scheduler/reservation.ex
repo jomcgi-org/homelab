@@ -12,9 +12,19 @@ defmodule Embervm.Scheduler.Reservation do
   restart, which is correct because NodeCapacity is fail-closed empty until a node
   reports again.
 
+  Because absence collection deliberately never reclaims a `:pool_target`, callers
+  must zero the target when retiring a workload and drop the instance when a brick
+  expires. The wiring PR that handles those lifecycle events owns that obligation;
+  otherwise a deleted workload's pool reservation persists for the lifetime of the
+  CP process.
+
   NodeStatus does not report declared memory for any live VM. `adopt/3` therefore
   requires a workload-to-memory catalog lookup supplied in its options; it must
-  not derive memory from observed node usage.
+  not derive memory from observed node usage. The per-VM declared memory is absent
+  from `NodeStatus`, but the node-level declared SUM crosses the wire as
+  `NodeStatus.mem_reserved_mib` (proto field 35), populated by noded in both
+  admission models. That makes the divergence directly measurable per brick in
+  shadow mode.
   """
 
   use GenServer
@@ -114,17 +124,28 @@ defmodule Embervm.Scheduler.Reservation do
   other signal is `live_vms`, an aggregate COUNT with no ids. So a row rebuilt
   by adoption under-counts by the number of in-flight task assignments.
 
-  That is safe in the direction it fails. An under-count means the CP believes
-  a brick has MORE room than it does, so it may over-place; noded's own
-  declared-memory admission then refuses, costing one rejected RPC and never an
-  overcommit. An over-count would be the dangerous direction, and adoption
-  cannot produce one.
+  That fails safe in the direction it fails: an under-count means the CP believes
+  a brick has more room than it does, so it may over-place. On today's fleet the
+  backstop is noded's OBSERVED headroom gate, because the missing VM's memory is
+  already inside the brick's cgroup usage: the node charges it by measurement,
+  with no ledger involved, and a genuinely full brick refuses the boot for one
+  rejected RPC. That protection is lag-bounded rather than absolute, since a
+  just-restored guest faults its pages in lazily, which is the same lag this ledger
+  exists to close. Once admission flips to `reserved` it becomes exact: noded's
+  claims are a projection of its own live VM map, which DOES include in-flight
+  assigned task VMs, so the node refuses precisely the placements an under-counted
+  CP row would allow.
+
+  A missing catalog entry is skipped rather than raised. Adoption runs in this
+  GenServer, which is supervised under `:rest_for_one`; raising here would restart
+  every control-plane child after `Reservation`, including the HTTP listener.
 
   It is NOT safe to mistake for a leak. Reading the shadow-mode divergence
   data, a persistent CP-below-node gap after a restart is this, not a lost
   release, and it shrinks as assigned tasks complete rather than staying flat.
   """
-  @spec adopt(term(), Enumerable.t(), keyword()) :: :ok
+  @spec adopt(term(), Enumerable.t(), keyword()) ::
+          {:ok, %{adopted: non_neg_integer(), skipped: non_neg_integer()}}
   def adopt(instance_id, live_refs, opts) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:adopt, instance_id, Enum.to_list(live_refs), opts})
@@ -214,13 +235,25 @@ defmodule Embervm.Scheduler.Reservation do
   def handle_call({:adopt, instance_id, live_refs, opts}, _from, state) do
     now_ms = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
 
-    Enum.each(live_refs, fn live ->
+    counts = Enum.reduce(live_refs, %{adopted: 0, skipped: 0}, fn live, counts ->
       {ref, workload} = live_ref(live)
-      mem_mib = catalog_memory!(workload, live, opts)
-      put_entry(state.table, instance_id, build_entry(ref, [workload: workload, mem_mib: mem_mib], now_ms, now_ms))
+
+      case catalog_memory(workload, Keyword.put(opts, :live, live)) do
+        {:ok, mem_mib} ->
+          put_entry(
+            state.table,
+            instance_id,
+            build_entry(ref, [workload: workload, mem_mib: mem_mib], now_ms, now_ms)
+          )
+
+          %{counts | adopted: counts.adopted + 1}
+
+        :error ->
+          %{counts | skipped: counts.skipped + 1}
+      end
     end)
 
-    {:reply, :ok, state}
+    {:reply, {:ok, counts}, state}
   end
 
   defp build_entry(ref, opts, now_ms, confirmed_at_ms) do
@@ -239,8 +272,9 @@ defmodule Embervm.Scheduler.Reservation do
   defp live_ref(%{vm_id: ref, workload: workload}), do: {ref, workload}
   defp live_ref({ref, workload}), do: {ref, workload}
 
-  defp catalog_memory!(workload, live, opts) do
+  defp catalog_memory(workload, opts) do
     source = Keyword.get(opts, :mem_mib, Keyword.get(opts, :memory_by_workload, Keyword.get(opts, :catalog)))
+    live = Keyword.get(opts, :live)
 
     value =
       cond do
@@ -252,9 +286,9 @@ defmodule Embervm.Scheduler.Reservation do
       end
 
     if is_integer(value) and value >= 0 do
-      value
+      {:ok, value}
     else
-      raise ArgumentError, "adopt requires declared memory from the workload catalog"
+      :error
     end
   end
 

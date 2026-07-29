@@ -77,6 +77,23 @@ defmodule Embervm.Scheduler.ReservationTest do
     assert Reservation.entries("n/a", table) == []
   end
 
+  test "adoption skips workloads absent from the catalog and keeps the server alive", %{
+    server: server,
+    table: table
+  } do
+    assert {:ok, %{adopted: 2, skipped: 1}} =
+             Reservation.adopt(
+               "n/a",
+               [{"vm-1", "known-a"}, {"vm-2", "missing"}, {"vm-3", "known-b"}],
+               server: server,
+               catalog: %{"known-a" => 128, "known-b" => 256}
+             )
+
+    assert Process.alive?(server)
+    assert Reservation.reserved_mib("n/a", table) == 384
+    assert :ok = claim(server, "n/a", "subsequent-claim")
+  end
+
   test "fresh table is empty and fail-closed", %{table: table} do
     assert Reservation.reserved_mib("missing", table) == 0
     assert Reservation.entries("missing", table) == []
