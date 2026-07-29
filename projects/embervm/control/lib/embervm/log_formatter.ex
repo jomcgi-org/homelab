@@ -14,8 +14,32 @@ defmodule Embervm.LogFormatter do
 
   # Metadata keys the control plane sets on structured log calls (plus a few the
   # runtime always provides). Anything else in metadata is dropped, so the JSON
-  # encode only ever sees strings/numbers.
-  @meta_keys [:task_id, :workload, :principal, :node_id, :reason, :attempt, :kind, :mfa, :error]
+  # encode only ever sees strings/numbers. A caller adding new metadata MUST add
+  # its keys here or they are silently dropped.
+  @meta_keys [
+    :task_id,
+    :workload,
+    :principal,
+    :node_id,
+    :reason,
+    :attempt,
+    :kind,
+    :mfa,
+    :error,
+    # CapacityObserver metadata.
+    :instance_id,
+    :size_class,
+    :mem_budget_mib,
+    :mem_headroom_mib,
+    :mem_reserved_mib,
+    :admits_on_reservation,
+    :live_vms,
+    :max_live_vms,
+    :nameplate_mib,
+    :total_working_set_mib,
+    :guest_free?,
+    :cp_reserved_mib
+  ]
 
   @doc """
   The Erlang `:logger` formatter callback. `event` is `%{level, msg, meta}`;
