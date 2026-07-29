@@ -104,6 +104,28 @@ defmodule Embervm.SchedulerTest do
     assert {:error, :capacity} = request.([no_capacity])
   end
 
+  test "empty candidate universe is distinct from a capacity wall" do
+    request = %Request{bricks: [], workload: "wl", need_mib: 512, base: :ready}
+
+    # BrickController.note_denial/2 casts to an optionally absent named process,
+    # so the returned distinction is the observable no-signal contract here.
+    assert {:error, :no_bricks} = Scheduler.place_with_demand(request)
+  end
+
+  test "a non-empty candidate universe with no eligible bricks is capacity" do
+    full = brick(free_slots: 0)
+
+    assert {:error, :capacity} =
+             Scheduler.place_with_demand(%Request{bricks: [full], workload: "wl", need_mib: 512, base: :ready})
+  end
+
+  test "a non-empty eligible brick without a ready base is base missing" do
+    not_ready = brick(configured_id: "node-base", workloads: %{})
+
+    assert {:error, {:base_missing, "node-base"}} =
+             Scheduler.place_with_demand(%Request{bricks: [not_ready], workload: "wl", need_mib: 512, base: :ready})
+  end
+
   test "snapshot and serving base variants require a non-empty field" do
     snapshot = brick(instance_id: "snapshot", workloads: ready("wl", %{snapshot_ref: "snap"}))
     serving = brick(instance_id: "serving", workloads: ready("wl", %{serving_image_ref: "image"}))

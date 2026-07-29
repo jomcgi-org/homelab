@@ -131,6 +131,12 @@ defmodule Embervm.WakeInstance do
     need_mib = Keyword.fetch!(opts, :need_mib)
 
     case Scheduler.place_with_demand(%Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}) do
+      {:error, :capacity} ->
+        {:error, :no_eligible_instance}
+
+      {:error, :no_bricks} ->
+        {:error, :no_eligible_instance}
+
       {:error, _reason} ->
         {:error, :no_eligible_instance}
 
@@ -397,10 +403,23 @@ defmodule Embervm.WakeInstance do
     req = %Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}
 
     case Scheduler.place_with_demand(req) do
-      {:error, reason} ->
-        capacity_denial? = reason == :capacity
+      {:error, :no_bricks} ->
+        # The CP is blind, not out of room: NodeCapacity is fail-closed empty until
+        # a brick dials home, so this is the restart window. The brick list is
+        # provably empty here (that is what :no_bricks means), so pass it rather
+        # than re-reading the table, and log capacity_denial? false so the line
+        # does not read as demand.
+        log_cold_rejection(node_id, workload, need_mib, [], false)
+        {:error, :no_eligible_instance}
+
+      {:error, :capacity} ->
         node_bricks = Brick.bricks(table) |> Enum.filter(&(&1.node_id == node_id))
-        log_cold_rejection(node_id, workload, need_mib, node_bricks, capacity_denial?)
+        log_cold_rejection(node_id, workload, need_mib, node_bricks, true)
+        {:error, :no_eligible_instance}
+
+      {:error, _reason} ->
+        node_bricks = Brick.bricks(table) |> Enum.filter(&(&1.node_id == node_id))
+        log_cold_rejection(node_id, workload, need_mib, node_bricks, false)
         {:error, :no_eligible_instance}
 
       {:ok, [brick | _]} ->

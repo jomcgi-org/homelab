@@ -32,24 +32,35 @@ defmodule Embervm.Scheduler do
   @doc """
   Places a cold request and distinguishes capacity from a missing workload base.
   A base-gated miss is retried without the base gate using the same request. An
-  empty ungated result records capacity demand; a non-empty ungated result tells
+  An empty resolved universe means the control plane is blind and returns
+  `:no_bricks` without recording demand. An empty ungated result from a
+  non-empty universe records capacity demand; a non-empty ungated result tells
   the base builder to provision on the brick that would have been selected.
   """
-  @spec place_with_demand(Request.t()) :: {:ok, [map()]} | {:error, :capacity | {:base_missing, term()}}
+  @spec place_with_demand(Request.t()) ::
+          {:ok, [map()]} | {:error, :no_bricks | :capacity | {:base_missing, term()}}
   def place_with_demand(%Request{base: base} = req) when base == :ready or is_tuple(base) do
-    case place(req) do
-      [_ | _] = candidates ->
-        {:ok, candidates}
+    bricks = req.bricks || Brick.bricks(req.table || NodeCapacity.table())
 
+    case bricks do
       [] ->
-        case place(%{req | base: :none}) do
-          [] ->
-            Embervm.BrickController.note_denial(req.need_mib || 0)
-            {:error, :capacity}
+        {:error, :no_bricks}
 
-          [brick | _] ->
-            Embervm.BaseBuilder.note_base_missing(req.workload, Map.get(brick, :configured_id))
-            {:error, {:base_missing, Map.get(brick, :configured_id)}}
+      _ ->
+        case place(%{req | bricks: bricks}) do
+          [_ | _] = candidates ->
+            {:ok, candidates}
+
+          [] ->
+            case place(%{req | bricks: bricks, base: :none}) do
+              [] ->
+                Embervm.BrickController.note_denial(req.need_mib || 0)
+                {:error, :capacity}
+
+              [brick | _] ->
+                Embervm.BaseBuilder.note_base_missing(req.workload, Map.get(brick, :configured_id))
+                {:error, {:base_missing, Map.get(brick, :configured_id)}}
+            end
         end
     end
   end
