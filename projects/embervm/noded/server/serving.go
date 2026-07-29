@@ -34,8 +34,8 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
 	}
-	if s.cfg.MaxLiveVMs > 0 && s.liveVMCount() >= s.cfg.MaxLiveVMs {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.cfg.MaxLiveVMs)
+	if s.slotsExhausted() {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
 	// Cheap rejection under real memory/tap pressure (ADR embervm/014 decision 3),
 	// BEFORE the tap allocation and cold boot below. Serving is tap-bearing, so

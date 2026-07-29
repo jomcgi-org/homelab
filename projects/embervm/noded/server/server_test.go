@@ -602,6 +602,89 @@ func TestPrimeCapExhausted(t *testing.T) {
 	}
 }
 
+// TestSlotCeilingAdmissionParity4101 proves that admission stops at the same
+// cgroup-derived ceiling that NodeStatus advertises, including a second
+// lifecycle verb that shares the node-wide cap.
+func TestSlotCeilingAdmissionParity4101(t *testing.T) {
+	t.Run("Prime", func(t *testing.T) {
+		drv := &fakeDriver{}
+		client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+		srv.budget.memBudgetOverride = func() uint64 { return 1536 }
+		srv.slotCeiling = srv.budget.SlotCeiling
+		seedBase(srv, "echo__4101", "echo")
+
+		ns, err := client.GetNodeStatus(context.Background(), &nodev1.GetNodeStatusRequest{})
+		if err != nil {
+			t.Fatalf("GetNodeStatus: %v", err)
+		}
+		if got, want := ns.GetMaxLiveVms(), uint32(3); got != want {
+			t.Fatalf("advertised max_live_vms = %d, want %d", got, want)
+		}
+		for i := uint32(0); i < ns.GetMaxLiveVms(); i++ {
+			if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__4101"}); err != nil {
+				t.Fatalf("Prime %d: %v", i+1, err)
+			}
+		}
+		_, err = client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__4101"})
+		if status.Code(err) != codes.ResourceExhausted {
+			t.Fatalf("Prime at advertised ceiling code = %v, want ResourceExhausted", status.Code(err))
+		}
+		if !strings.Contains(err.Error(), "cap 3 reached") {
+			t.Fatalf("Prime error = %q, want enforced ceiling 3", err)
+		}
+	})
+
+	t.Run("StartServing", func(t *testing.T) {
+		srv, _, fsd := newServingTestServer(t)
+		srv.budget.memBudgetOverride = func() uint64 { return 1536 }
+		fsd.mu.Lock()
+		fsd.live = 3
+		fsd.mu.Unlock()
+
+		if got, want := srv.nodeStatus().GetMaxLiveVms(), uint32(3); got != want {
+			t.Fatalf("advertised max_live_vms = %d, want %d", got, want)
+		}
+		_, err := srv.StartServing(context.Background(), &nodev1.StartServingRequest{})
+		if status.Code(err) != codes.ResourceExhausted {
+			t.Fatalf("StartServing at advertised ceiling code = %v, want ResourceExhausted", status.Code(err))
+		}
+		if !strings.Contains(err.Error(), "cap 3 reached") {
+			t.Fatalf("StartServing error = %q, want enforced ceiling 3", err)
+		}
+	})
+}
+
+func TestSlotCeilingUnknownBudgetPreservesBackstop(t *testing.T) {
+	drv := &fakeDriver{}
+	client, srv := newTestServer(t, drv, &fakeTransport{}, 2)
+	srv.budget.memBudgetOverride = func() uint64 { return 0 }
+	srv.slotCeiling = srv.budget.SlotCeiling
+	seedBase(srv, "echo__unknown", "echo")
+
+	if got := srv.nodeStatus().GetMaxLiveVms(); got != 2 {
+		t.Fatalf("unknown budget max_live_vms = %d, want 2", got)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__unknown"}); err != nil {
+			t.Fatalf("Prime %d with unknown budget: %v", i+1, err)
+		}
+	}
+	_, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__unknown"})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("Prime beyond configured backstop code = %v, want ResourceExhausted", status.Code(err))
+	}
+}
+
+func TestSlotCeilingZeroRemainsUnlimited(t *testing.T) {
+	drv := &fakeDriver{live: 100}
+	s := New(Options{Config: config.Config{MaxLiveVMs: 0}, Driver: drv})
+	s.budget.memBudgetOverride = func() uint64 { return 0 }
+	s.slotCeiling = s.budget.SlotCeiling
+	if s.slotsExhausted() {
+		t.Fatal("zero configured backstop must remain unlimited")
+	}
+}
+
 // TestDestroyIdempotent: Destroy reaps a primed VM once, and a repeat Destroy is
 // a no-op OK.
 func TestDestroyIdempotent(t *testing.T) {
