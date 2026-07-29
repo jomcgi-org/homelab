@@ -986,6 +986,10 @@ bricks:
       4gi: 3
       8gi: 2
       16gi: 2
+  # Memory each brick's noded reserves for itself, subtracted from the class
+  # limit to get guest-schedulable capacity. It MUST match noded's own
+  # EMBERVM_NODED_DAEMON_RESERVE_MIB default; this single source renders both.
+  daemonReserveMib: 512
   classes:
     - name: 2gi
       resources:

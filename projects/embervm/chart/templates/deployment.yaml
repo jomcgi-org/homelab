@@ -263,7 +263,9 @@ spec:
             {{- if .Values.bricks.enabled }}
             # Brick capacity (PR-3): the per-size-class DESIRED replica counts the
             # Embervm.BrickController reconciles the brick Deployments to, as a JSON
-            # array of {name,desired,min,max} (desired from the bricks.desiredReplicas
+            # array of {name,desired,min,max,usable_mib}; usable_mib is declared here
+            # rather than observed because classes must work before any brick exists.
+            # desired from the bricks.desiredReplicas
             # map, default 0 for an unlisted class; min/max are the Axis C autoscale
             # clamp from bricks.autoscale.minReplicas/maxReplicas, unlisted min reads
             # 0 and unlisted max falls back to the class's desired: no headroom), plus
@@ -275,9 +277,12 @@ spec:
             {{- $auto := .Values.bricks.autoscale | default dict }}
             {{- $mins := $auto.minReplicas | default dict }}
             {{- $maxs := $auto.maxReplicas | default dict }}
+            {{- $daemonReserve := .Values.bricks.daemonReserveMib | default 512 | int }}
             {{- $classes := list }}
             {{- range .Values.bricks.classes }}
-            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0))) }}
+            {{- $nameplateMib := trimSuffix "Gi" .resources.limits.memory | int | mul 1024 }}
+            {{- $usableMib := max 0 (sub $nameplateMib $daemonReserve) }}
+            {{- $classes = append $classes (dict "name" .name "desired" (index $desired .name | default 0) "min" (index $mins .name | default 0) "max" (index $maxs .name | default (index $desired .name | default 0)) "usable_mib" $usableMib) }}
             {{- end }}
             - name: EMBERVM_BRICK_CLASSES
               value: {{ $classes | toJson | quote }}

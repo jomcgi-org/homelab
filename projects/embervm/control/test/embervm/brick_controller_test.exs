@@ -406,4 +406,186 @@ defmodule Embervm.BrickControllerTest do
     assert log =~ "would scale class 16gi from 0 to 1"
     refute log =~ "would scale class 2gi"
   end
+
+  test "usable capacity includes the admission floor" do
+    {clock, advance} = new_clock()
+
+    pid =
+      start(
+        mode: :observe,
+        classes: [
+          %{name: "2gi", desired: 0, min: 0, max: 2, usable_mib: 1_536},
+          %{name: "4gi", desired: 0, min: 0, max: 2, usable_mib: 3_584}
+        ],
+        scale_fun: fn _ns, _name, _r -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+        facts_fun: fn -> [%{size_class: "2gi", mem_reject_floor_mib: 512}] end,
+        registered_fun: fn -> %{} end,
+        up_threshold: 1,
+        clock: clock
+      )
+
+    BrickController.note_denial(pid, 1_536)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "would scale class 4gi from 0 to 1"
+    refute log =~ "would scale class 2gi"
+  end
+
+  test "regression: a registered floor of zero falls back to 512 instead of selecting 1536" do
+    {clock, advance} = new_clock()
+
+    pid =
+      start(
+        mode: :observe,
+        classes: [
+          %{name: "2gi", desired: 0, min: 0, max: 2, usable_mib: 1_536},
+          %{name: "4gi", desired: 0, min: 0, max: 2, usable_mib: 3_584}
+        ],
+        scale_fun: fn _ns, _name, _r -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+        facts_fun: fn -> [%{size_class: "2gi", mem_reject_floor_mib: 0}] end,
+        registered_fun: fn -> %{} end,
+        up_threshold: 1,
+        clock: clock
+      )
+
+    BrickController.note_denial(pid, 1_536)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "would scale class 4gi from 0 to 1"
+    refute log =~ "would scale class 2gi"
+  end
+
+  test "a registered positive floor overrides the 512 fallback" do
+    {clock, advance} = new_clock()
+
+    pid =
+      start(
+        mode: :observe,
+        classes: [
+          %{name: "2gi", desired: 0, min: 0, max: 2, usable_mib: 1_536},
+          %{name: "4gi", desired: 0, min: 0, max: 2, usable_mib: 3_584}
+        ],
+        scale_fun: fn _ns, _name, _r -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+        facts_fun: fn -> [%{size_class: "2gi", mem_reject_floor_mib: 256}] end,
+        registered_fun: fn -> %{} end,
+        up_threshold: 1,
+        clock: clock
+      )
+
+    # 1280 + 256 fits 1536, while 1280 + 512 does not.
+    BrickController.note_denial(pid, 1_280)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "would scale class 2gi from 0 to 1"
+    refute log =~ "would scale class 4gi"
+  end
+
+  test "denial attribution uses declared usable capacity instead of the label" do
+    {clock, advance} = new_clock()
+
+    pid =
+      start(
+        mode: :observe,
+        classes: [
+          %{name: "2gi", desired: 0, min: 0, max: 2, usable_mib: 8_000},
+          %{name: "8gi", desired: 0, min: 0, max: 2, usable_mib: 9_000}
+        ],
+        scale_fun: fn _ns, _name, _r -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+        facts_fun: fn -> [] end,
+        registered_fun: fn -> %{} end,
+        up_threshold: 1,
+        clock: clock
+      )
+
+    BrickController.note_denial(pid, 4_000)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "would scale class 2gi from 0 to 1"
+    refute log =~ "would scale class 8gi"
+  end
+
+  test "old class config falls back to the nameplate capacity" do
+    {clock, advance} = new_clock()
+
+    pid =
+      start(
+        mode: :observe,
+        classes: [%{name: "2gi", desired: 0, min: 0, max: 2}, %{name: "4gi", desired: 0, min: 0, max: 2}],
+        scale_fun: fn _ns, _name, _r -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+        facts_fun: fn -> [] end,
+        registered_fun: fn -> %{} end,
+        up_threshold: 1,
+        clock: clock
+      )
+
+    BrickController.note_denial(pid, 1_536)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "would scale class 2gi from 0 to 1"
+  end
+
+  test "floor attribution uses the largest registered floor and defaults to 512" do
+    {clock, advance} = new_clock()
+
+    opts = [
+      mode: :observe,
+      classes: [%{name: "2gi", desired: 0, min: 0, max: 2, usable_mib: 2_048}, %{name: "4gi", desired: 0, min: 0, max: 2, usable_mib: 3_584}],
+      scale_fun: fn _ns, _name, _r -> :ok end,
+      scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+      registered_fun: fn -> %{} end,
+      up_threshold: 1,
+      clock: clock
+    ]
+
+    pid = start(opts ++ [facts_fun: fn -> [%{size_class: "2gi", mem_reject_floor_mib: 100}, %{size_class: "2gi", mem_reject_floor_mib: 600}] end])
+    BrickController.note_denial(pid, 1_500)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    assert log =~ "would scale class 4gi from 0 to 1"
+
+    pid = start(opts ++ [facts_fun: fn -> [] end])
+    BrickController.note_denial(pid, 1_536)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    assert log =~ "would scale class 2gi from 0 to 1"
+  end
+
+  test "a denial no class can serve is logged and traced" do
+    pid = start(classes: [%{name: "2gi", desired: 0, usable_mib: 1_536}], facts_fun: fn -> [] end)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        BrickController.note_denial(pid, 1_536)
+        BrickController.reconcile_now(pid)
+      end)
+
+    assert log =~ "embervm brick denial cannot be served"
+  end
+
+  test "capacity drift warns only when the mismatch transitions" do
+    facts = fn -> [%{size_class: "2gi", mem_budget_mib: 1_400}] end
+
+    pid =
+      start(
+        classes: [%{name: "2gi", desired: 0, usable_mib: 1_536}],
+        facts_fun: facts,
+        scale_fun: fn _ns, _name, _r -> :ok end
+      )
+
+    first = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    second = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert first =~ "embervm brick capacity drift"
+    refute second =~ "embervm brick capacity drift"
+  end
 end
