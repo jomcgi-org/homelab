@@ -183,6 +183,8 @@ containers:
         value: {{ printf "http://%s.%s.svc:%v" (include "embervm.fullname" $ctx) $ctx.Release.Namespace $ctx.Values.service.port | quote }}
       - name: EMBERVM_NODED_MAX_LIVE_VMS
         value: {{ $ctx.Values.noded.maxLiveVMs | quote }}
+      - name: EMBERVM_NODED_DAEMON_RESERVE_MIB
+        value: {{ $ctx.Values.bricks.daemonReserveMib | default 512 | quote }}
       # Serving tap pre-provisioning (ADR embervm/014 decision 4). Zero (default)
       # disables it; the daemon clamps a positive value to its own cgroup-derived
       # slot ceiling regardless of what is configured here (server.go SlotCeiling).

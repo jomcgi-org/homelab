@@ -40,8 +40,9 @@ defmodule Embervm.BrickController do
   (`Embervm.WakeInstance`) when NO brick on the node is slot/mem-eligible, and
   the dispatcher miss tier when ready candidates exist but none has budget/mem
   headroom. A denial is attributed to the SMALLEST configured class whose
-  capacity fits the workload's `need_mib` (class capacity parsed from the ladder
-  label, `"2gi"` -> 2048 MiB). `up_threshold` denials (default 3) inside
+  usable capacity plus the admission floor fits the workload's `need_mib`; the
+  chart-declared capacity works even before a brick exists. `up_threshold` denials
+  (default 3) inside
   `up_window_ms` (default 60s) step the class +1, clamped to `max`.
 
   Scale-down signal: the class has at least one IDLE brick (a registered,
@@ -182,7 +183,7 @@ defmodule Embervm.BrickController do
   never blocks on (or crashes with) the controller; when the controller is not
   running (tests, DS-only fleets) the cast is a silent no-op. The denial is
   attributed to the smallest configured class whose capacity fits `need_mib`;
-  a need no class can hold is dropped (scaling any class would not help).
+  a need no class can hold is logged/traced and dropped (scaling any class would not help).
   """
   @spec note_denial(GenServer.server(), non_neg_integer()) :: :ok
   def note_denial(server \\ __MODULE__, need_mib) do
@@ -224,7 +225,9 @@ defmodule Embervm.BrickController do
       last_up_at: %{},
       last_down_at: %{},
       # last tick the class was flagged fleet-full (blocks down for the idle window).
-      last_full_at: %{}
+      last_full_at: %{},
+      # Classes whose latest capacity-fact snapshot disagrees with declared usable_mib.
+      drifted: MapSet.new()
     }
 
     if Keyword.get(opts, :reconcile_on_start, true), do: send(self(), :reconcile)
@@ -241,8 +244,16 @@ defmodule Embervm.BrickController do
 
   @impl true
   def handle_cast({:denial, need_mib}, state) do
-    case class_for_need(state.classes, need_mib) do
+    case class_for_need(state.classes, need_mib, state.facts_fun.()) do
       nil ->
+        Logger.warning("embervm brick denial cannot be served", need_mib: need_mib)
+
+        Tracer.with_span "embervm.brick.denial_unservable", %{
+          attributes: %{"ember.need_mib" => need_mib}
+        } do
+          :ok
+        end
+
         {:noreply, state}
 
       class ->
@@ -320,7 +331,9 @@ defmodule Embervm.BrickController do
 
   defp reconcile(state) do
     registered = state.registered_fun.()
+    facts = state.facts_fun.()
     now = state.clock.()
+    state = check_capacity_drift(state, facts)
     state = if state.mode == :off, do: state, else: state |> prune_denials(now) |> track_idle(now)
 
     {over_since, flagged, state} =
@@ -610,21 +623,44 @@ defmodule Embervm.BrickController do
 
   # -- denial attribution ------------------------------------------------------
 
-  # The smallest configured class whose capacity holds need_mib. Class capacity
-  # is parsed from the ladder label ("2gi" -> 2048 MiB): the label IS the size by
-  # chart construction (each class's memory request==limit is its name), so the
-  # name is the one source the CP already has. A label that does not parse (or a
-  # need bigger than every class) attributes nowhere: scaling cannot serve it.
-  defp class_for_need(classes, need_mib) do
+  defp class_for_need(classes, need_mib, facts) do
+    floors =
+      facts
+      |> Enum.group_by(&Map.get(&1, :size_class, ""))
+      |> Map.new(fn {name, class_facts} ->
+        floors = Enum.map(class_facts, &mem_reject_floor_mib/1)
+        {name, Enum.max(floors, fn -> 512 end)}
+      end)
+
     classes
-    |> Enum.map(fn c -> {class_name(c), class_capacity_mib(class_name(c))} end)
-    |> Enum.filter(fn {_name, cap} -> is_integer(cap) and cap >= need_mib end)
+    |> Enum.map(fn class ->
+      name = class_name(class)
+      usable = class_field(class, [:usable_mib, "usable_mib"])
+      capacity = if is_integer(usable), do: usable, else: class_capacity_mib(name)
+      floor = Map.get(floors, name, 512)
+      {name, capacity, floor}
+    end)
+    |> Enum.filter(fn {_name, capacity, floor} ->
+      is_integer(capacity) and capacity >= need_mib + floor
+    end)
     |> case do
       [] -> nil
-      fits -> fits |> Enum.min_by(fn {_name, cap} -> cap end) |> elem(0)
+      fits -> fits |> Enum.min_by(fn {_name, capacity, _floor} -> capacity end) |> elem(0)
     end
   end
 
+  # Mirrors noded/server/pressure.go's memRejectFloorMib rule: only a configured
+  # positive integer is used; zero, negative, and non-integer values mean unset.
+  defp mem_reject_floor_mib(fact) do
+    case Map.get(fact, :mem_reject_floor_mib) do
+      floor when is_integer(floor) and floor > 0 -> floor
+      _ -> 512
+    end
+  end
+
+  # Legacy compatibility path for ConfigMaps that predate chart-declared usable_mib.
+  # It parses the class nameplate, which is not guest-schedulable capacity in the
+  # current daemon model.
   defp class_capacity_mib(name) do
     case Regex.run(~r/^(\d+)gi$/, name) do
       [_, n] -> String.to_integer(n) * 1024
@@ -673,6 +709,32 @@ defmodule Embervm.BrickController do
         :ok
       end
     end
+  end
+
+  defp check_capacity_drift(state, facts) do
+    drifted =
+      Enum.reduce(state.classes, state.drifted, fn class, seen ->
+        name = class_name(class)
+        declared = class_field(class, [:usable_mib, "usable_mib"])
+        reports = Enum.filter(facts, &(Map.get(&1, :size_class, "") == name))
+        mismatch? = is_integer(declared) and reports != [] and
+          Enum.any?(reports, &(Map.get(&1, :mem_budget_mib) != declared))
+
+        cond do
+          mismatch? and not MapSet.member?(seen, name) ->
+            Logger.warning("embervm brick capacity drift",
+              size_class: name,
+              declared_usable_mib: declared,
+              reported_mem_budget_mib: Enum.map(reports, &Map.get(&1, :mem_budget_mib))
+            )
+            MapSet.put(seen, name)
+
+          not mismatch? -> MapSet.delete(seen, name)
+          true -> seen
+        end
+      end)
+
+    %{state | drifted: drifted}
   end
 
   defp maybe_unflag(state, class) do
