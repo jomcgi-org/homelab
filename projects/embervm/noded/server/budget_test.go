@@ -33,7 +33,7 @@ func TestBudgetReadsCgroupV2(t *testing.T) {
 	withBudgetFsRoot(t, map[string]string{
 		"memory.max":     "4294967296\n", // 4 GiB
 		"memory.current": "1073741824\n", // 1 GiB
-		"memory.stat":    "inactive_file 0\n",
+		"memory.stat":    "file 0\n",
 		"cpu.max":        "200000 100000\n", // 2 cores
 		"cpu.stat":       "usage_usec 1000000\nnr_periods 5\n",
 	})
@@ -86,51 +86,100 @@ func TestParseMemHeadroomMibWithPageCache(t *testing.T) {
 		name                    string
 		maxRaw, curRaw, statRaw string
 		want                    uint64
+		min                     uint64
 	}{
+		// #4058 was the same bug on node-2, with only 13 percent of cache active.
+		// Its fix subtracted inactive_file alone and passed because of that ratio.
+		// The ratio reflects recent access patterns, not the workload itself.
+		// That is why #4157 recurred once active_file reached half the cache.
 		{
-			name:    "issue 4058 reclaimable cache",
+			name:    "issue 4058 reclaimable cache regression",
 			maxRaw:  "2147483648",
 			curRaw:  "1482084352",
-			statRaw: "inactive_file 1263054848\n",
-			want:    1839,
+			statRaw: "file 1456840704\nshmem 0\n",
+			want:    2023,
+			min:     1024,
 		},
 		{
-			name:    "current equals max with reclaimable",
+			name:    "issue 4157 production cache regression",
 			maxRaw:  "2147483648",
-			curRaw:  "2147483648",
-			statRaw: "inactive_file 1073741824\n",
+			curRaw:  "2144251904",
+			statRaw: "file 2111016960\nshmem 0\n",
+			want:    2016,
+			min:     1024,
+		},
+		{
+			name:    "shmem is not reclaimable",
+			maxRaw:  "2147483648",
+			curRaw:  "1073741824",
+			statRaw: "file 1073741824\nshmem 1073741824\n",
 			want:    1024,
 		},
 		{
-			name:    "stat missing falls back to max minus current",
+			name:    "racy file sample is clamped to current",
 			maxRaw:  "2147483648",
-			curRaw:  "1482084352",
-			statRaw: "",
-			want:    634,
+			curRaw:  "536870912",
+			statRaw: "file 1073741824\n",
+			want:    2048,
 		},
-		{name: "missing stat", maxRaw: "4294967296", curRaw: "1073741824", want: 3072},
 		{
-			name:    "stat without inactive file",
+			name:    "missing shmem defaults to zero",
 			maxRaw:  "4294967296",
 			curRaw:  "1073741824",
-			statRaw: "anon 123456\nfile 987654\n",
+			statRaw: "file 987654\n",
 			want:    3072,
 		},
 		{
-			name:    "racy inactive file",
-			maxRaw:  "2147483648",
-			curRaw:  "536870912",
-			statRaw: "inactive_file 1073741824\n",
-			want:    1536,
+			name:    "missing stat",
+			maxRaw:  "4294967296",
+			curRaw:  "1073741824",
+			statRaw: "",
+			want:    3072,
 		},
-		{name: "unlimited", maxRaw: "max", curRaw: "1073741824", statRaw: "inactive_file 1\n", want: 0},
-		{name: "invalid inputs", maxRaw: "garbage", curRaw: "1", statRaw: "inactive_file 1\n", want: 0},
-		{name: "invalid current", maxRaw: "2147483648", curRaw: "garbage", statRaw: "inactive_file 1\n", want: 0},
+		{
+			name:    "max is unknown",
+			maxRaw:  "max",
+			curRaw:  "1073741824",
+			statRaw: "file 1\n",
+			want:    0,
+		},
+		{
+			name:    "empty max is unknown",
+			maxRaw:  "",
+			curRaw:  "1073741824",
+			statRaw: "file 1\n",
+			want:    0,
+		},
+		{
+			name:    "invalid max",
+			maxRaw:  "garbage",
+			curRaw:  "1",
+			statRaw: "file 1\n",
+			want:    0,
+		},
+		{
+			name:    "invalid current",
+			maxRaw:  "2147483648",
+			curRaw:  "garbage",
+			statRaw: "file 1\n",
+			want:    0,
+		},
+		{
+			name:    "max is no greater than nonreclaimable",
+			maxRaw:  "2147483648",
+			curRaw:  "2147483648",
+			statRaw: "file 1\nshmem 1\n",
+			want:    0,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := parseMemHeadroomMib(c.maxRaw, c.curRaw, c.statRaw); got != c.want {
+			got := parseMemHeadroomMib(c.maxRaw, c.curRaw, c.statRaw)
+			if got != c.want {
 				t.Errorf("parseMemHeadroomMib(%q, %q, %q) = %d, want %d", c.maxRaw, c.curRaw, c.statRaw, got, c.want)
+			}
+			if c.min != 0 && got <= c.min {
+				t.Errorf("parseMemHeadroomMib(%q, %q, %q) = %d, want comfortably above %d", c.maxRaw, c.curRaw, c.statRaw, got, c.min)
 			}
 		})
 	}
@@ -290,7 +339,7 @@ func TestCgroupDirResolvesHostNsPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(leaf, "memory.current"), []byte("536870912\n"), 0o644); err != nil {
 		t.Fatalf("write leaf memory.current: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(leaf, "memory.stat"), []byte("inactive_file 0\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(leaf, "memory.stat"), []byte("file 0\n"), 0o644); err != nil {
 		t.Fatalf("write leaf memory.stat: %v", err)
 	}
 	withSelfCgroup(t, "0::/kubepods.slice/cri-containerd-abc.scope\n")
