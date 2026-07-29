@@ -226,7 +226,7 @@ defmodule Embervm.PoolManagerTest do
     assert Agent.get(ctx.status, & &1) == writes1
   end
 
-  test "fleet-wide floor packs four total onto one of two equal wildcard instances" do
+  test "fleet-wide floor spreads four total across two equal wildcard instances" do
     parent = self()
     ctx = start_pool(channel_fun: fn node -> {:ok, node} end,
       prime_fun: fn node, %PrimeRequest{trace: %Trace{workload: wl}} ->
@@ -239,8 +239,7 @@ defmodule Embervm.PoolManagerTest do
 
     :ok = PoolManager.refill(ctx.pool)
     primes = for _ <- 1..4, do: (receive do {:prime, node, "wl-a"} -> node end)
-    assert primes |> Enum.uniq() |> length() == 1
-    assert length(primes) == 4
+    assert Enum.frequencies(primes) == %{"i-1" => 2, "i-2" => 2}
   end
 
   test "packs primes onto the fuller instance until its memory makes it ineligible" do

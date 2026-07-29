@@ -128,7 +128,7 @@ defmodule Embervm.BrickLedger do
 
   @doc """
   Deterministically choose one entry from an ALREADY-FILTERED candidate list,
-  keyed by `key`. The head of the shared MostAllocated order is selected, with
+  keyed by `key`. The head of the shared score order is selected, with
   equal-fullness candidates rotated by the sticky hash. Returns `nil` for an
   empty list.
 

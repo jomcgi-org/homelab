@@ -375,7 +375,11 @@ defmodule Embervm.PoolManager do
   # to hold within the pass and not just across ticks.
   defp consume(instance, wl) do
     need = instance.workloads[wl].mem_mib || 0
-    %{instance | budget: instance.budget - 1, mem_headroom_mib: max(0, instance.mem_headroom_mib - need)}
+    %{instance |
+      budget: instance.budget - 1,
+      live_vms: instance.live_vms + 1,
+      mem_headroom_mib: max(0, instance.mem_headroom_mib - need)
+    }
   end
 
   # A wildcard brick satisfies any need, so this only ever binds on a classed one.
