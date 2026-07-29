@@ -91,8 +91,21 @@ _HEX_DEPS = [
     #      Elixir/Erlang (no NIF). telemetry (1.4.2), mint (1.9.1), and hpax are
     #      shared with group 2. googleapis is a hard dep of grpc_core (a bundle of
     #      precompiled google.* protos); its `~> 0.1.0` bound pins 0.1.0 exactly.
-    ("grpc", "1.0.2", "5ea5258e2ef6e0fd38191bb5d66f23575db6e208b256e9d2efe2c44da472d50f"),
-    ("grpc_core", "1.0.2", "73b916dc3f2767bd68f95a35507a9c2b389fb71997fad16558184f40b6fa148a"),
+    #
+    #      grpc is held at >= 1.0.3 for issue #4144. 1.0.2's Mint adapter has no
+    #      `process_response/2` clause for `{:error, ref, reason}`, so a server
+    #      cancelled stream (Mint reports `{:server_closed_request, :cancel}`)
+    #      raised FunctionClauseError and killed the connection process. The
+    #      status the node had already sent was discarded, and every following
+    #      call on that dead pid failed with `:noproc`, so roughly two wake
+    #      failures in three reported a dead channel instead of the node's real
+    #      FAILED_PRECONDITION. 1.0.3 adds that clause and ends the stream
+    #      cleanly. grpc 1.0.3 requires `grpc_core ~> 1.0.3`, so the pair moves
+    #      together; grpc_core 1.0.3 needs protobuf `~> 0.17`, telemetry `~> 1.0`,
+    #      googleapis `~> 0.1.0` and jason, all already satisfied below, so no
+    #      new package enters the closure.
+    ("grpc", "1.0.3", "fc80371b72001c56d5dd7bd24859b83d25d8960f1e67680712c98524bf4bb3a8"),
+    ("grpc_core", "1.0.3", "8167fa6e06190d229df25b2386173b385add6682f87c27960699439083145f78"),
     ("googleapis", "0.1.0", "1989a7244fd17d3eb5f3de311a022b656c3736b39740db46506157c4604bd212"),
     ("jason", "1.4.5", "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"),
     ("protobuf", "0.17.0", "ca6c91f6f63e2c147b47f03eefd10b80538aa6fc55ff4b12b795efb786b0152f"),
