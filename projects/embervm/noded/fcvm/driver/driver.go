@@ -189,6 +189,7 @@ type instance struct {
 	client fcAPI
 	dir    string
 	sock   string
+	memMib int
 }
 
 var (
@@ -754,7 +755,7 @@ func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sock
 		return d.abort(proc, err)
 	}
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
-	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock})
+	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: d.cfg.MemMib})
 	return h, nil
 }
 
@@ -952,7 +953,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	}
 
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
-	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock})
+	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: cb.memMib})
 	return h, nil
 }
 
@@ -2191,6 +2192,22 @@ func (d *Driver) LiveCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.live)
+}
+
+// ClaimedMib derives the declared memory sum from the live map. It is a
+// projection, never a counter, so it cannot leak: Release removes the live-map
+// entry, and a daemon restart starts with an empty map because Firecracker
+// children are owned by noded and there is no adoption path for pre-existing VMs.
+func (d *Driver) ClaimedMib() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var total uint64
+	for _, inst := range d.live {
+		if inst.memMib > 0 {
+			total += uint64(inst.memMib)
+		}
+	}
+	return total
 }
 
 func bundleSize(paths ...string) int64 {

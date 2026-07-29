@@ -2080,4 +2080,17 @@ message NodeStatus {
   // forward-compat but only the L7 serving lane consumes an activator this phase;
   // the L4 lane moves node-local in Fork A Phase 2. Empty until then.
   string activator_ip = 33;
+
+  // -- Admission reservation facts (Phase B2b, additive) --------------------
+  // mem_reserved_mib is the declared-memory sum projected from the daemon's
+  // live VM map. It is the reconciliation counterpart to the control plane's
+  // own reservation view and is 0 on an empty brick.
+  uint64 mem_reserved_mib = 35;
+  // admits_on_reservation explicitly identifies the daemon's admission model.
+  // It MUST NOT be inferred from mem_reserved_mib: zero is a legitimate empty
+  // reservation, and proto3 has no null value.
+  bool admits_on_reservation = 36;
+  // vm_overhead_mib is the configured per-VM host overhead charged by the
+  // reserved admission model. It is additive and may be 0.
+  uint64 vm_overhead_mib = 37;
 }

@@ -153,3 +153,60 @@ func TestUnderPressureFloorFallback(t *testing.T) {
 		t.Fatalf("memRejectFloorMib fallback = %d, want %d", got, minSlotWorkloadMib)
 	}
 }
+
+func TestReservedAdmissionBoundaryAndOverhead(t *testing.T) {
+	_, srv := newTestServer(t, &fakeDriver{live: 1, claimedMib: 400}, &fakeTransport{}, 8)
+	srv.cfg.AdmissionModel = "reserved"
+	srv.memBudget = func() uint64 { return 1000 }
+	if got := srv.memExhausted(600); got {
+		t.Fatal("reserved admission rejected the exact claimed+need boundary")
+	}
+	if got := srv.memExhausted(601); !got {
+		t.Fatal("reserved admission admitted above the claimed+need boundary")
+	}
+	srv.cfg.VMOverheadMib = 1
+	if got := srv.memExhausted(599); !got {
+		t.Fatal("positive VM overhead did not tighten reserved admission")
+	}
+	srv.cfg.VMOverheadMib = 0
+	if got := srv.memExhausted(600); got {
+		t.Fatal("zero VM overhead changed the boundary")
+	}
+}
+
+func TestObservedAdmissionMatchesExistingPredicate(t *testing.T) {
+	_, srv := newTestServer(t, &fakeDriver{live: 1, claimedMib: 9999}, &fakeTransport{}, 8)
+	srv.cfg.AdmissionModel = "observed"
+	srv.memBudget = func() uint64 { return 4096 }
+	for _, headroom := range []uint64{0, 511, 512, 1024} {
+		srv.memHeadroom = func() uint64 { return headroom }
+		for _, need := range []uint64{0, 512, 1024} {
+			if got, want := srv.memExhausted(need), srv.memPressured(need); got != want {
+				t.Fatalf("observed admission headroom=%d need=%d = %v, want existing %v", headroom, need, got, want)
+			}
+		}
+	}
+}
+
+func TestObservedModelRefusesOnLowHeadroomEvenWhenBudgetReadsZero(t *testing.T) {
+	_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	// The admission model is unset, so this is the observed model. A zero budget
+	// with positive headroom is the memory.max <= DaemonReserveMib case.
+	srv.memBudget = func() uint64 { return 0 }
+	srv.memHeadroom = func() uint64 { return minSlotWorkloadMib - 1 }
+
+	if got := srv.memExhausted(0); !got {
+		t.Fatal("observed model admitted on low headroom even when budget reads zero")
+	}
+}
+
+func TestUnknownBudgetAdmitsBothModels(t *testing.T) {
+	_, srv := newTestServer(t, &fakeDriver{live: 2, claimedMib: 9999}, &fakeTransport{}, 8)
+	srv.memBudget = func() uint64 { return 0 }
+	for _, model := range []string{"observed", "reserved"} {
+		srv.cfg.AdmissionModel = model
+		if got := srv.memExhausted(1 << 30); got {
+			t.Fatalf("unknown budget in %s model exhausted admission", model)
+		}
+	}
+}

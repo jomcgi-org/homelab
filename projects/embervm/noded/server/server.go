@@ -1346,6 +1346,9 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
+	if err := s.admitOrReject(0, classMemOnly); err != nil {
+		return nil, err
+	}
 	if !s.sessionSnap.has(ref) {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: unknown session snapshot_ref %q", ref)
 	}
@@ -1696,6 +1699,10 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	live := taskLive + len(sessionVMs) + len(servingVMs) + len(statefulVMs) + len(groupMemberVMs)
 	snaps := s.sessionSnapshotsStatus()
 	freeBytes, usedBytes := s.snapshotDiskUsage()
+	vmOverheadMib := uint64(0)
+	if s.cfg.VMOverheadMib > 0 {
+		vmOverheadMib = uint64(s.cfg.VMOverheadMib)
+	}
 	ns := &nodev1.NodeStatus{
 		NodeId:                s.cfg.Node,
 		PodUid:                s.cfg.PodUID,
@@ -1725,6 +1732,9 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		GroupBundleSets:       s.groupBundleSetsStatus(),
 		StoreReachable:        s.storeReachableNow(),
 		MemBudgetMib:          s.memBudget(),
+		MemReservedMib:        s.claimedMib(),
+		AdmitsOnReservation:   s.cfg.AdmissionModel == "reserved",
+		VmOverheadMib:         vmOverheadMib,
 		CpuBudgetMillicores:   s.cpuBudget(),
 		CpuSku:                s.cpuSku(),
 		LocalBases:            s.localBasesStatus(),

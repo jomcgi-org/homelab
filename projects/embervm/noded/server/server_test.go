@@ -42,6 +42,7 @@ type fakeDriver struct {
 	statsCalls    int
 	snapshots     int
 	live          int
+	claimedMib    uint64
 	failClaim     error
 	// failRelease injects a driver Release failure so a test can prove a reap
 	// failure surfaces as a Destroy error (teardown NOT confirmed), not a false
@@ -124,6 +125,12 @@ func (f *fakeDriver) LiveCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.live
+}
+
+func (f *fakeDriver) ClaimedMib() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.claimedMib
 }
 
 func (f *fakeDriver) SnapshotBase(_ context.Context, _ substrate.Handle, baseKey string) (substrate.SnapshotRef, error) {
@@ -1337,6 +1344,18 @@ func TestNodeStatusCarriesBudgetFields(t *testing.T) {
 	}
 	if got, want := ns.GetCpuHeadroomMillicores(), uint32(1500); got != want {
 		t.Errorf("cpu_headroom_millicores = %d, want %d (must no longer be hard-coded 0)", got, want)
+	}
+	if ns.GetAdmitsOnReservation() {
+		t.Error("default admission model advertises admits_on_reservation=true")
+	}
+	if got := ns.GetMemReservedMib(); got != 0 {
+		t.Errorf("empty brick mem_reserved_mib = %d, want 0", got)
+	}
+	if got := ns.GetVmOverheadMib(); got != 0 {
+		t.Errorf("default vm_overhead_mib = %d, want 0", got)
+	}
+	if ns.GetMemReservedMib() == 0 && ns.GetAdmitsOnReservation() {
+		t.Error("zero mem_reserved_mib must not be interpreted as reservation model off")
 	}
 }
 

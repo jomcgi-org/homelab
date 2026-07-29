@@ -135,6 +135,45 @@ func TestDriverClaimBootsMicroVM(t *testing.T) {
 	}
 }
 
+func TestDriverClaimedMibProjectsLiveMap(t *testing.T) {
+	d := testDriver(t)
+	ctx := context.Background()
+	handles := make([]substrate.Handle, 0, 4)
+	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "claimed-task"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	handles = append(handles, h)
+	for _, claim := range []func() (substrate.Handle, error){
+		func() (substrate.Handle, error) {
+			return d.ClaimServing(ctx, "", "", 1, 200, substrate.NICSpec{HostDevName: "tap-serving"}, "", 0)
+		},
+		func() (substrate.Handle, error) {
+			return d.ClaimStateful(ctx, "", "", 1, 300, substrate.NICSpec{HostDevName: "tap-stateful"}, "", 0, "/volume", "/data", nil)
+		},
+		func() (substrate.Handle, error) {
+			return d.ClaimGroupMember(ctx, "", "", 1, 400, substrate.NICSpec{HostDevName: "tap-group"}, nil)
+		},
+	} {
+		h, err := claim()
+		if err != nil {
+			t.Fatalf("mixed claim path: %v", err)
+		}
+		handles = append(handles, h)
+	}
+	if got, want := d.ClaimedMib(), uint64(d.cfg.MemMib+200+300+400); got != want {
+		t.Fatalf("ClaimedMib = %d, want %d", got, want)
+	}
+	for _, h := range handles {
+		if err := d.Release(ctx, h); err != nil {
+			t.Fatalf("Release %s: %v", h.ID, err)
+		}
+	}
+	if got := d.ClaimedMib(); got != 0 {
+		t.Fatalf("ClaimedMib after releasing all live entries = %d, want 0", got)
+	}
+}
+
 // TestDriverClaimClearsStaleVsockUDS reproduces the orphan-recovery failure
 // after a pod roll: a thread's bundle dir persists on the snapshot disk, so a
 // vsock.sock left by the dead incarnation makes Firecracker's PUT /vsock bind
