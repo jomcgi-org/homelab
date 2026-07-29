@@ -1040,6 +1040,12 @@ defmodule Embervm.StatefulManager do
         dial_id = Brick.dial_id(brick)
         {:cold, node_id, dial_id, boot_image_ref(state, dial_id, workload), :fresh, nil}
 
+      {:error, :capacity} ->
+        {:error, :no_capacity}
+
+      {:error, :no_bricks} ->
+        {:error, :no_capacity}
+
       {:error, _reason} ->
         {:error, :no_capacity}
     end

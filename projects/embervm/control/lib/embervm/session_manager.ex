@@ -489,6 +489,12 @@ defmodule Embervm.SessionManager do
         workload_entry = Map.get(brick.workloads, workload, %{})
         {:ok, brick.configured_id, Brick.dial_id(brick), Map.get(workload_entry, :snapshot_ref)}
 
+      {:error, :capacity} ->
+        {:error, :no_capacity}
+
+      {:error, :no_bricks} ->
+        {:error, :no_capacity}
+
       {:error, _reason} ->
         {:error, :no_capacity}
     end

@@ -498,6 +498,8 @@ defmodule Embervm.ServingManager do
                 %{instance_id: Brick.dial_id(brick), node_id: brick.configured_id, base_ref: Map.get(workload_entry, :serving_image_ref)}
               end)
 
+            {:error, :capacity} -> []
+            {:error, :no_bricks} -> []
             {:error, _reason} -> []
           end
 
