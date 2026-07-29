@@ -82,6 +82,7 @@ defmodule Embervm.StatefulManagerTest do
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_stateful_fun: start_stateful_fun,
         stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, fn _ch, _req -> {:ok, %Embervm.Node.V1.StopStatefulResponse{}} end),
+        delete_volume_fun: Keyword.get(opts, :delete_volume_fun, fn _ch, _req -> {:ok, %{}} end),
         get_secret_fun: get_secret_fun,
         op_log: op_log,
         reconcile_interval_ms: 0,
@@ -1311,6 +1312,117 @@ defmodule Embervm.StatefulManagerTest do
     assert %{destroyed: 1, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
     assert {:ok, %{deleted: true}} = StatefulManager.delete_volume(ctx.mgr, "wl-a")
     assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+  end
+
+  test "delete_volume fans out to every node reporting the volume and the store anchor" do
+    {:ok, deleted} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn node_id -> {:ok, node_id} end,
+        delete_volume_fun: fn node_id, _req ->
+          Agent.update(deleted, &[node_id | &1])
+          {:ok, %{}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    Enum.each(["node-1", "node-2", "node-3"], fn node_id ->
+      stateful_node(ctx, node_id, volumes: [%{workload: "wl-a"}])
+    end)
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{
+      node_id: "node-1",
+      generation: 1,
+      size_bytes: 10,
+      allocated_bytes: 1
+    })
+
+    assert {:ok, %{deleted: true}} = StatefulManager.delete_volume(ctx.mgr, "wl-a")
+    assert Enum.sort(Agent.get(deleted, & &1)) == ["node-1", "node-2", "node-3"]
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+  end
+
+  test "delete_volume reports failed nodes and retains the store record" do
+    {:ok, deleted} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn node_id -> {:ok, node_id} end,
+        delete_volume_fun: fn node_id, req ->
+          Agent.update(deleted, &[req.workload | &1])
+          if node_id == "node-1", do: {:error, :failed}, else: {:ok, %{}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-1", volumes: [%{workload: "wl-a"}])
+    stateful_node(ctx, "node-2", volumes: [%{workload: "wl-a"}])
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+
+    assert {:error, {:delete_incomplete, ["node-1"]}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert StatefulStore.get_volume(ctx.store, "wl-a")
+    assert length(Agent.get(deleted, & &1)) == 2
+  end
+
+  test "refresh drops a volume record when its reporting anchor omits the volume" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-1")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+
+    assert :ok = StatefulManager.reconcile(ctx.mgr)
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+  end
+
+  test "refresh keeps a volume record when its reporting anchor includes the volume" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-1",
+      volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
+    )
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+
+    assert :ok = StatefulManager.reconcile(ctx.mgr)
+    assert %{workload: "wl-a", node_id: "node-1"} = StatefulStore.get_volume(ctx.store, "wl-a")
+  end
+
+  test "refresh keeps a volume record when its anchor is absent from facts" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+
+    assert :ok = StatefulManager.reconcile(ctx.mgr)
+    assert %{workload: "wl-a", node_id: "node-1"} = StatefulStore.get_volume(ctx.store, "wl-a")
+  end
+
+  test "a vanished volume record makes the next wake plan a fresh boot" do
+    {:ok, requests} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        start_stateful_fun: fn _ch, req ->
+          Agent.update(requests, &[req | &1])
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-fresh",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: 1,
+             was_relight: false
+           }}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-1")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+    assert :ok = StatefulManager.reconcile(ctx.mgr)
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
+    assert [%{mode: :START_STATEFUL_MODE_FRESH}] = Agent.get(requests, & &1)
   end
 
   # -- wake-worker bound + adoption self-recovery (Task 10) --------------------

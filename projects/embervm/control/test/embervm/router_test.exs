@@ -181,6 +181,7 @@ defmodule Embervm.RouterTest do
     def destroy_instance(_srv, _wl), do: %{destroyed: 0, evicted: 1}
 
     def delete_volume(_srv, "wl-blocked"), do: {:error, :instance_exists}
+    def delete_volume(_srv, "wl-incomplete"), do: {:error, {:delete_incomplete, ["node-2"]}}
     def delete_volume(_srv, "wl-boom"), do: {:error, {:store, :disk_full}}
     def delete_volume(_srv, _wl), do: {:ok, %{deleted: true}}
   end
@@ -900,6 +901,17 @@ defmodule Embervm.RouterTest do
 
     resp = req(:delete, "/v1/stateful/wl-boom/volume", auth("good"))
     assert resp.status == 500
+  end
+
+  test "DELETE /v1/stateful/:name/volume names nodes when deletion is incomplete" do
+    with_stateful_manager_fake()
+
+    resp = req(:delete, "/v1/stateful/wl-incomplete/volume", auth("good"))
+    assert resp.status == 500
+    body = json(resp.body)
+    assert body["error"] == "volume delete incomplete"
+    assert body["nodes"] == ["node-2"]
+    assert body["retryable"]
   end
 
   test "DELETE /v1/stateful/:name/volume needs management auth" do

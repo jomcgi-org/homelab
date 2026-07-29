@@ -1789,48 +1789,79 @@ defmodule Embervm.StatefulManager do
       {{:error, :instance_exists}, state}
     else
       volume = StatefulStore.get_volume(state.store, workload)
-      _ = safe_delete_volume(state, volume, workload)
+      node_ids =
+        nodes_with_volume(state, workload)
+        |> Kernel.++([Map.get(volume || %{}, :node_id)])
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+
+      outcomes = Enum.map(node_ids, &{&1, safe_delete_volume(state, &1, workload)})
+      failed_node_ids =
+        (for {node_id, :error} <- outcomes, do: node_id)
+        |> Enum.sort()
+
       # R6, Task 9: the store copy of the volume follows the local deletion. Safe
       # without a further pairing guard: delete was refused above while any
       # non-terminal instance existed, so no banked bundle still pairs with this
       # volume's generation (standing decision 8). Best-effort.
       _ = evict_remote_volume(state, volume, workload)
 
-      case StatefulStore.delete_volume(state.store, workload) do
-        :ok ->
-          Logger.info("embervm stateful: volume deleted", workload: workload)
-          {{:ok, %{deleted: true}}, state}
+      if failed_node_ids != [] do
+        {{:error, {:delete_incomplete, failed_node_ids}}, state}
+      else
+        case StatefulStore.delete_volume(state.store, workload) do
+          :ok ->
+            Logger.info("embervm stateful: volume deleted", workload: workload)
+            {{:ok, %{deleted: true}}, state}
 
-        {:error, reason} ->
-          Logger.error("embervm stateful: volume_deleted append failed", workload: workload, reason: inspect(reason))
-          {{:error, {:store, reason}}, state}
+          {:error, reason} ->
+            Logger.error("embervm stateful: volume_deleted append failed", workload: workload, reason: inspect(reason))
+            {{:error, {:store, reason}}, state}
+        end
       end
     end
   end
 
-  defp safe_delete_volume(state, %{node_id: node_id}, workload) when is_binary(node_id) do
+  defp nodes_with_volume(state, workload) do
+    state.capacity_table
+    |> NodeCapacity.all()
+    |> Enum.filter(fn f ->
+      Enum.any?(Map.get(f, :volumes, []) || [], &(&1.workload == workload))
+    end)
+    |> Enum.map(& &1.configured_id)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
+
+  defp safe_delete_volume(state, node_id, workload) when is_binary(node_id) do
     req = %DeleteVolumeRequest{trace: %Trace{workload: workload}, workload: workload}
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
-      try do
-        state.delete_volume_fun.(channel, req)
-      rescue
-        _ -> :error
-      catch
-        # Same dead-ConnectionProcess invalidation as stop_stateful_destroy.
-        :exit, _ ->
-          _ = state.invalidate_fun.(node_id, channel)
-          :error
+    case safe_channel(state.channel_fun, node_id) do
+      {:ok, channel} ->
+        try do
+          case state.delete_volume_fun.(channel, req) do
+            {:ok, _} -> :ok
+            :ok -> :ok
+            _ -> :error
+          end
+        rescue
+          _ -> :error
+        catch
+          # Same dead-ConnectionProcess invalidation as stop_stateful_destroy.
+          :exit, _ ->
+            _ = state.invalidate_fun.(node_id, channel)
+            :error
 
-        _, _ ->
-          :error
-      end
+          _, _ ->
+            :error
+        end
+
+      _ ->
+        :error
     end
-
-    :ok
   end
 
-  defp safe_delete_volume(_state, _volume, _workload), do: :ok
+  defp safe_delete_volume(_state, _node_id, _workload), do: :ok
 
   # -- adoption ------------------------------------------------------------
 
@@ -2333,6 +2364,24 @@ defmodule Embervm.StatefulManager do
         # StatefulStore's quarantine derivation (see its moduledoc).
         generation_blessed: Map.get(v, :generation_blessed, false)
       })
+    end
+
+    drop_vanished_volume_records(state, facts)
+  end
+
+  defp drop_vanished_volume_records(state, facts) do
+    by_node = Map.new(facts, fn f -> {f.configured_id, f} end)
+
+    for v <- StatefulStore.all_volumes(state.store) do
+      with %{} = fact <- Map.get(by_node, v.node_id),
+           false <- Enum.any?(Map.get(fact, :volumes, []) || [], &(&1.workload == v.workload)) do
+        Logger.info("embervm stateful: volume record dropped, anchor node no longer reports it",
+          workload: v.workload,
+          node_id: v.node_id
+        )
+
+        StatefulStore.delete_volume(state.store, v.workload)
+      end
     end
 
     state
