@@ -59,7 +59,8 @@ defmodule Embervm.Brick do
 
   @doc """
   Returns the dial key for a brick. Legacy or statically-seeded capacity facts
-  carry no `instance_id`, so the node name is the correct dial key for them.
+  carry no `instance_id`, so the `configured_id` is the correct dial-home
+  registration id for them.
   """
   @spec dial_id(map()) :: String.t()
   def dial_id(brick) do

@@ -1660,7 +1660,14 @@ defmodule Embervm.StatefulManagerTest do
       mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 8_192),
       live_vms: Keyword.get(opts, :live_vms, 0),
       max_live_vms: Keyword.get(opts, :max_live_vms, 4),
-      workloads: Keyword.get(opts, :workloads, %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}}),
+      workloads:
+        Keyword.get_lazy(opts, :workloads, fn ->
+          if Keyword.get(opts, :base_ready, true) do
+            %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}}
+          else
+            %{}
+          end
+        end),
       stateful_vms: Keyword.get(opts, :stateful_vms, []),
       stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
       volumes: Keyword.get(opts, :volumes, []),
@@ -1749,6 +1756,28 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(dialed, & &1) == ["node-b/big"]
     assert [instance] = StatefulStore.list(ctx.store, "wl-a")
     assert instance.node_id == "node-b"
+  end
+
+  test "a fresh wake with no advertised base does not dial and remains retryable" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    cold_fun = fn _ch, _req ->
+      Agent.update(dialed, &[:start | &1])
+      {:ok, %StartStatefulResponse{vm_id: "vm-must-not-start", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    capture_channel = fn key ->
+      Agent.update(dialed, &[key | &1])
+      {:ok, :ch}
+    end
+
+    ctx = start_stack(start_stateful_fun: cold_fun, channel_fun: capture_channel)
+    stateful_workload(ctx, "wl-a")
+    put_brick(ctx, "node-4", "pod-no-base", base_ready: false)
+
+    assert {:error, {:wake_failed, :no_capacity}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(dialed, & &1) == []
+    assert Agent.get(ctx.starts, & &1) == 0
   end
 
   test "boot_image_ref resolves from the CHOSEN instance's fact, not a co-located sibling that lacks the workload" do

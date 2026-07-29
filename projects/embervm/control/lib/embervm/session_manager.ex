@@ -478,18 +478,18 @@ defmodule Embervm.SessionManager do
   end
 
   defp place_create(state, workload, entry) do
-    case Scheduler.place(%Request{
+    case Scheduler.place_with_demand(%Request{
            table: state.capacity_table,
            workload: workload,
            key: workload,
            need_mib: Map.get(entry, :mem_mib) || 512,
            base: {:ready, :snapshot_ref}
          }) do
-      [brick | _] ->
+      {:ok, [brick | _]} ->
         workload_entry = Map.get(brick.workloads, workload, %{})
-        {:ok, brick.configured_id, Brick.dial_id(brick), workload_entry.snapshot_ref}
+        {:ok, brick.configured_id, Brick.dial_id(brick), Map.get(workload_entry, :snapshot_ref)}
 
-      [] ->
+      {:error, _reason} ->
         {:error, :no_capacity}
     end
   end

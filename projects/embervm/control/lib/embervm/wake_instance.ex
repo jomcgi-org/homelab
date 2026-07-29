@@ -130,17 +130,11 @@ defmodule Embervm.WakeInstance do
     workload = Keyword.fetch!(opts, :workload)
     need_mib = Keyword.fetch!(opts, :need_mib)
 
-    case Scheduler.place(%Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}) do
-      [] ->
-        # Same demand-signal discrimination as cold_instance/4: only a true
-        # no-eligible-brick wall feeds the autoscaler, not a base-not-ready wait.
-        if Scheduler.place(%Request{table: table, node_id: node_id, need_mib: need_mib}) == [] do
-          Embervm.BrickController.note_denial(need_mib)
-        end
-
+    case Scheduler.place_with_demand(%Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}) do
+      {:error, _reason} ->
         {:error, :no_eligible_instance}
 
-      bricks ->
+      {:ok, bricks} ->
         {:ok, Enum.map(bricks, &dial_id_from_brick/1)}
     end
   end
@@ -400,37 +394,16 @@ defmodule Embervm.WakeInstance do
   # on the still-DS-only fleet. This is the COLD path only; the warmth/relight-owner
   # branch of `select/2` is unchanged (the banked instance already holds the base).
   defp cold_instance(table, node_id, workload, need_mib) do
-    case Scheduler.place(%Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}) do
-      [] ->
-        # Distinguish WHY the pick failed before feeding the autoscaler (Axis C):
-        # if some brick was slot/mem-eligible but merely not base-READY yet, the
-        # wake is waiting on provisioning, not on capacity, and a scale-up would
-        # not help (a fresh brick is equally un-ready). Only when NO brick is
-        # eligible at all is this a CAPACITY denial worth a demand signal. The
-        # note is an async cast: a missing controller (tests, DS-only fleet)
-        # makes it a silent no-op, and the wake outcome is unchanged either way.
-        capacity_denial? = Scheduler.place(%Request{table: table, node_id: node_id, need_mib: need_mib}) == []
+    req = %Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}
 
+    case Scheduler.place_with_demand(req) do
+      {:error, reason} ->
+        capacity_denial? = reason == :capacity
         node_bricks = Brick.bricks(table) |> Enum.filter(&(&1.node_id == node_id))
         log_cold_rejection(node_id, workload, need_mib, node_bricks, capacity_denial?)
-
-        if capacity_denial? do
-          Embervm.BrickController.note_denial(need_mib)
-        else
-          # Bricks here were slot/mem-eligible but NONE advertised the workload's
-          # base, so this is a provisioning gap, not a capacity wall. Tell the base
-          # builder, which pins a workload's base to ONE instance and would
-          # otherwise never place one on this node: a stateful wake anchors to the
-          # VOLUME's node, and when that diverges from the pin the anchor is nobody's
-          # responsibility and the wake fails forever (issue #4127). An async cast
-          # that no-ops when the builder is not running, exactly like note_denial
-          # above; the wake outcome is unchanged either way.
-          Embervm.BaseBuilder.note_base_missing(workload, node_id)
-        end
-
         {:error, :no_eligible_instance}
 
-      [brick | _] ->
+      {:ok, [brick | _]} ->
         {:ok, dial_id_from_brick(brick)}
     end
   end
