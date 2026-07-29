@@ -239,13 +239,14 @@ defmodule Embervm.PoolManager do
       # be PRESENT holding nil, which a default never covers.
       #
       # mem_headroom_mib is the one that MUST be normalized: mem_eligible?/2 compares
-      # `mem_headroom_mib >= need_mib`, and Elixir orders atoms above numbers, so a
+      # `mem_headroom_mib >= need_mib + mem_reject_floor_mib`, and Elixir orders atoms above numbers, so a
       # nil headroom would satisfy EVERY memory need rather than none. Empty
       # size_class and zero mem_budget_mib deliberately read as the WILDCARD (the
       # legacy DaemonSet, or a brick under no cgroup limit), which is always
       # mem-eligible by design: see the Placement moduledoc.
       size_class: Map.get(facts, :size_class) || "",
       mem_headroom_mib: Map.get(facts, :mem_headroom_mib) || 0,
+      mem_reject_floor_mib: Map.get(facts, :mem_reject_floor_mib) || 0,
       mem_budget_mib: Map.get(facts, :mem_budget_mib) || 0,
       workloads: ready_workloads(state, facts)
     }

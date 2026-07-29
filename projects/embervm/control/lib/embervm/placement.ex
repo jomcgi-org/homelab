@@ -21,7 +21,9 @@ defmodule Embervm.Placement do
       headroom it reports (a zero-budget wildcard reports `mem_headroom_mib = 0`
       but can still boot the guest);
     * a CLASSED brick with a real budget is mem-eligible only when its
-      `mem_headroom_mib >= need_mib`.
+      `mem_headroom_mib >= need_mib + mem_reject_floor_mib`. The node rejects
+      on need plus its floor, so gating on need alone places workloads the node
+      refuses, forever.
 
   This is exactly the rule `Embervm.WakeInstance` encoded for the WAKE dial;
   extracting it here lets the dispatcher miss tier and the session/serving CREATE
@@ -30,9 +32,9 @@ defmodule Embervm.Placement do
 
   ## why NOT `BrickLedger.candidates/3`
 
-  `candidates/3` gates every brick on `mem_headroom_mib >= need_mib` (correct for
-  a fleet of only classed bricks, where a wildcard reports a real budget), which
-  wrongly excludes a zero-headroom wildcard. On the still-DS-only fleet the single
+  `candidates/3` gates every brick on its class and headroom, including the node
+  admission floor (correct for a fleet of only classed bricks, where a wildcard
+  reports a real budget), which wrongly excludes a zero-headroom wildcard. On the still-DS-only fleet the single
   DS instance IS a zero-budget wildcard, so gating it on headroom would deny every
   placement. Keeping the wildcard always-eligible is what makes this change INERT
   today: the sole DS brick per node is a wildcard, so it is always the (only)
@@ -66,12 +68,16 @@ defmodule Embervm.Placement do
   @doc """
   The MEMORY half of eligibility (no slot check): a wildcard brick is always
   mem-eligible; a classed brick with a real budget needs `mem_headroom_mib >=
-  need_mib`. Split out so a caller that has already applied its own slot check
+  need_mib + mem_reject_floor_mib`. The node rejects on need plus its floor, so
+  gating on need alone places workloads the node refuses, forever. Split out so
+  a caller that has already applied its own slot check
   (the dispatcher's `has_budget?`) can reuse just the memory rule.
   """
   @spec mem_eligible?(brick(), non_neg_integer()) :: boolean()
   def mem_eligible?(brick, need_mib) do
-    wildcard?(brick) or Map.get(brick, :mem_headroom_mib, 0) >= need_mib
+    wildcard?(brick) or
+      Map.get(brick, :mem_headroom_mib, 0) >=
+        need_mib + Map.get(brick, :mem_reject_floor_mib, 0)
   end
 
   @doc """

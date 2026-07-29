@@ -19,6 +19,7 @@ defmodule Embervm.PlacementTest do
       node_id: Keyword.get(opts, :node_id, "node"),
       size_class: Keyword.get(opts, :size_class, "8gi"),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 8_000),
+      mem_reject_floor_mib: Keyword.get(opts, :mem_reject_floor_mib, 0),
       mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 8_192),
       free_slots: Keyword.get(opts, :free_slots, 4),
       workloads: Keyword.get(opts, :workloads, %{})
@@ -50,9 +51,25 @@ defmodule Embervm.PlacementTest do
       assert Placement.mem_eligible?(brick(size_class: "", mem_headroom_mib: 0, mem_budget_mib: 0), 4_000)
     end
 
-    test "a classed brick needs headroom >= need" do
+    test "a classed brick needs headroom >= need plus the admission floor" do
       assert Placement.mem_eligible?(brick(mem_headroom_mib: 8_000), 4_000)
       refute Placement.mem_eligible?(brick(mem_headroom_mib: 100), 4_000)
+    end
+
+    test "rejects the semgrep-sized request when headroom clears need but not need plus floor" do
+      refute Placement.mem_eligible?(brick(mem_headroom_mib: 1_933, mem_reject_floor_mib: 512), 1_536)
+    end
+
+    test "a zero floor preserves eligibility for a classed brick" do
+      assert Placement.mem_eligible?(brick(mem_headroom_mib: 1_933, mem_reject_floor_mib: 0), 1_536)
+    end
+
+    test "accepts the exact need plus floor boundary" do
+      assert Placement.mem_eligible?(brick(mem_headroom_mib: 2_048, mem_reject_floor_mib: 512), 1_536)
+    end
+
+    test "wildcard remains eligible regardless of the admission floor" do
+      assert Placement.mem_eligible?(brick(size_class: "", mem_budget_mib: 0, mem_headroom_mib: 0, mem_reject_floor_mib: 512), 1_536)
     end
   end
 

@@ -56,6 +56,7 @@ defmodule Embervm.BrickLedger do
           instance_id: String.t(),
           size_class: String.t(),
           mem_headroom_mib: non_neg_integer(),
+          mem_reject_floor_mib: non_neg_integer(),
           mem_budget_mib: non_neg_integer(),
           live_vms: non_neg_integer(),
           max_live_vms: non_neg_integer(),
@@ -90,7 +91,9 @@ defmodule Embervm.BrickLedger do
   @doc """
   The bricks that can currently serve a request for `size_class` needing
   `need_mib` MiB: class matches (an exact-class brick OR a wildcard/empty-class
-  brick), memory headroom covers the need, and at least one live-VM slot is free.
+  brick), memory headroom covers the workload's need PLUS the node's admission
+  floor, because a brick that clears need but not need+floor is one noded will
+  refuse, and at least one live-VM slot is free.
   Sorted by `instance_id` so the order is deterministic regardless of ETS scan
   order (the stable base `pick/4` selects over).
   """
@@ -148,10 +151,12 @@ defmodule Embervm.BrickLedger do
   end
 
   # A brick serves a request when its class matches (exact, or it is a wildcard/
-  # empty-class brick) AND it has the memory headroom AND a free live-VM slot.
+  # empty-class brick) AND its headroom covers need plus the node admission floor
+  # AND it has a free live-VM slot.
   defp serves?(brick, size_class, need_mib) do
     class_ok = brick.size_class == size_class or brick.size_class == ""
-    class_ok and brick.mem_headroom_mib >= need_mib and brick.free_slots > 0
+    required_mib = need_mib + brick.mem_reject_floor_mib
+    class_ok and brick.mem_headroom_mib >= required_mib and brick.free_slots > 0
   end
 
   # Normalize one capacity-facts map to a brick. Missing numeric facts read as 0
@@ -167,6 +172,7 @@ defmodule Embervm.BrickLedger do
       instance_id: Map.get(facts, :instance_id, ""),
       size_class: Map.get(facts, :size_class, ""),
       mem_headroom_mib: Map.get(facts, :mem_headroom_mib, 0),
+      mem_reject_floor_mib: Map.get(facts, :mem_reject_floor_mib, 0),
       mem_budget_mib: Map.get(facts, :mem_budget_mib, 0),
       live_vms: live,
       max_live_vms: max_live,

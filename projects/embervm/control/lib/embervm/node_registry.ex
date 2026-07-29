@@ -643,6 +643,7 @@ defmodule Embervm.NodeRegistry do
       cpu_vendor: cpu_vendor_from_status(s),
       workloads: workloads,
       mem_headroom_mib: s.mem_headroom_mib,
+      mem_reject_floor_mib: s.mem_reject_floor_mib,
       cpu_headroom_millicores: s.cpu_headroom_millicores,
       live_vms: s.live_vms,
       max_live_vms: s.max_live_vms,

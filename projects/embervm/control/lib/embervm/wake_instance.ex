@@ -468,6 +468,7 @@ defmodule Embervm.WakeInstance do
       size_class: Map.get(brick, :size_class, ""),
       free_slots: Map.get(brick, :free_slots, 0),
       mem_headroom_mib: Map.get(brick, :mem_headroom_mib, 0),
+      mem_reject_floor_mib: Map.get(brick, :mem_reject_floor_mib, 0),
       mem_budget_mib: Map.get(brick, :mem_budget_mib, 0),
       eligible: Embervm.Placement.eligible?(brick, need_mib),
       base_ready: Embervm.Placement.base_ready?(brick, workload),

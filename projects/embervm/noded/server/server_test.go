@@ -1257,6 +1257,21 @@ func TestNodeStatusCarriesBudgetFields(t *testing.T) {
 	}
 }
 
+func TestNodeStatusCarriesMemRejectFloor(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newTestServer(t, drv, tr, 8)
+	srv.cfg.MemRejectFloorMib = 512
+
+	ns, err := client.GetNodeStatus(context.Background(), &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetNodeStatus: %v", err)
+	}
+	if got, want := ns.GetMemRejectFloorMib(), uint64(512); got != want {
+		t.Errorf("mem_reject_floor_mib = %d, want %d", got, want)
+	}
+}
+
 // ---- R2 session verb tests -------------------------------------------------
 
 // sessionVMIDs / sessionSnapRefs extract the session facts from a NodeStatus.
