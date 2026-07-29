@@ -674,8 +674,17 @@ defmodule Embervm.NodeRegistryTest do
     # Drive both expiry signals: registration lapses (advance past expire_after) AND
     # the stream goes dead (advance past down_after with no fresh status).
     advance.(100_000)
-    NodeRegistry.tick(reg)
-    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
+    :ok = NodeRegistry.tick(reg)
+
+    # Asserted, not polled. tick/1 is a GenServer.call whose handler runs evaluate_ages/1
+    # inline before replying, and status/1 is a call from this same process, so it is
+    # strictly ordered after that reply. No later expiry pass can land inside a poll
+    # window either (age_check_ms is 60_000 here). Waiting could therefore never turn a
+    # missed expiry into a pass; it only delayed the failure by the poll budget and
+    # reported "condition never became true" instead of what was actually in the map.
+    # This has failed intermittently (#4078): when it does, that is a real expiry bug,
+    # and refute prints the offending status map at the moment it happens.
+    refute Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1")
 
     # The instance_id was removed from NodeChannel; the bare node name was never a key,
     # so it never appears in the removal list.
@@ -802,8 +811,11 @@ defmodule Embervm.NodeRegistryTest do
 
     # Now let the stream go dead too (advance past down_after with no fresh status).
     advance.(100_000)
-    NodeRegistry.tick(reg)
-    eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
+    :ok = NodeRegistry.tick(reg)
+
+    # Asserted rather than polled, for the same reason as the expiry test above: tick/1
+    # applies the age-out inline before it replies, so there is nothing to wait for.
+    refute Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1")
     assert NodeRegistry.capacity(table) == []
   end
 end

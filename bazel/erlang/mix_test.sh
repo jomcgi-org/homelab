@@ -138,11 +138,28 @@ cd "$work/control"
 # exqlite.app"). --no-deps-check keeps mix from auditing against a (nonexistent)
 # lock or reaching hex.
 mix deps.compile --no-deps-check >&2
-if mix test --no-deps-check >"$out" 2>&1; then
+# EXUNIT_SEED replays a specific run's test ordering. ExUnit prints the seed it chose
+# ("Running ExUnit with seed: N"), but without this there was no way to feed one back,
+# so a captured seed from a failing CI run could not be replayed (#4078). Note a seed
+# only reproduces an ordering against the SAME test corpus: adding or removing a test
+# changes the permutation that seed yields, which is why the commit is echoed with it.
+seed_args=""
+if [ -n "${EXUNIT_SEED:-}" ]; then
+	seed_args="--seed ${EXUNIT_SEED}"
+	echo "MIX TEST replaying with EXUNIT_SEED=${EXUNIT_SEED}" >&2
+fi
+
+if mix test --no-deps-check $seed_args >"$out" 2>&1; then
 	echo "MIX TEST OK on the executor" >&2
 	cat "$out" >&2
 else
 	echo "MIX TEST FAILED on the executor:" >&2
 	cat "$out" >&2
+	# Reproduction recipe on one line, otherwise buried in thousands. The seed alone is
+	# NOT enough: ExUnit shuffles the actual test list, so the same seed over a different
+	# corpus yields a different ordering and silently fails to reproduce. The test count
+	# is a cheap corpus fingerprint (the commit is not available here: builds are not
+	# stamped, deliberately, and the sandbox has no .git).
+	echo "MIX TEST reproduce with: EXUNIT_SEED=$(grep -oE 'seed: [0-9]+' "$out" | head -1 | grep -oE '[0-9]+') against a $(grep -oE '[0-9]+ tests, [0-9]+ failures?' "$out" | tail -1 | grep -oE '^[0-9]+')-test corpus (a seed only replays the same ordering at the same test count)" >&2
 	exit 1
 fi

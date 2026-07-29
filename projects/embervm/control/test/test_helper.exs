@@ -7,7 +7,13 @@
 # message lands) and only lengthens how long a genuinely failing assertion waits
 # before reporting. refute_receive is unaffected: it reads refute_receive_timeout,
 # which stays at 100ms, so no test that must wait out a full window got slower.
-ExUnit.start(assert_receive_timeout: 2_000)
+# capture_log attributes log output to the test that produced it. The suite runs with
+# max_cases: 8, so without it eight concurrent tests interleave into one stream and the
+# lines next to a failure usually belong to some other test. That cost real debugging
+# time on #4078: an "expired; tearing down" line sat directly above a "registered" line
+# and read as one instance being resurrected, when they came from different tests.
+# Adjacency in a shared stream is not causality; captured logs make it causality again.
+ExUnit.start(assert_receive_timeout: 2_000, capture_log: true)
 
 defmodule Embervm.TestProcess do
   @moduledoc """
