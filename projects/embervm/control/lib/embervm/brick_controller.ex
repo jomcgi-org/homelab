@@ -662,6 +662,12 @@ defmodule Embervm.BrickController do
   # It parses the class nameplate, which is not guest-schedulable capacity in the
   # current daemon model.
   defp class_capacity_mib(name) do
+    nameplate_mib(name)
+  end
+
+  @doc "Returns the full cgroup nameplate represented by a size-class label."
+  @spec nameplate_mib(String.t()) :: non_neg_integer() | nil
+  def nameplate_mib(name) do
     case Regex.run(~r/^(\d+)gi$/, name) do
       [_, n] -> String.to_integer(n) * 1024
       _ -> nil

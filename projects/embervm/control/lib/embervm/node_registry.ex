@@ -644,6 +644,11 @@ defmodule Embervm.NodeRegistry do
       workloads: workloads,
       mem_headroom_mib: s.mem_headroom_mib,
       mem_reject_floor_mib: s.mem_reject_floor_mib,
+      # Declared-memory facts (B5b-1, additive): preserve both the daemon's
+      # declared sum and its explicit admission model. The latter is not
+      # inferred from a zero sum because an empty reservation ledger is valid.
+      mem_reserved_mib: Map.get(s, :mem_reserved_mib, 0),
+      admits_on_reservation: Map.get(s, :admits_on_reservation, false),
       cpu_headroom_millicores: s.cpu_headroom_millicores,
       live_vms: s.live_vms,
       max_live_vms: s.max_live_vms,

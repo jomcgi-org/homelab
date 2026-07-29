@@ -381,7 +381,11 @@ defmodule Embervm.Application do
       # Bandit + the router last: its handlers call Auth, TaskStore, SyncWait, and
       # the dispatcher's admit? gate, so the HTTP surface must not accept requests
       # until all are up.
-      {Bandit, plug: Embervm.Router, scheme: :http, port: port}
+      {Bandit, plug: Embervm.Router, scheme: :http, port: port},
+      # This is deliberately the final child. A measurement process must never
+      # be able to take down the control plane it is measuring: under
+      # :rest_for_one, an observer crash restarts nothing else.
+      {Embervm.CapacityObserver, capacity_observer_opts()}
     ]
 
     opts = [strategy: :rest_for_one, name: Embervm.Supervisor]
@@ -1149,6 +1153,8 @@ defmodule Embervm.Application do
   # BrickController reads all of its inputs from Application env at init, so no
   # start options are threaded here (the test suite injects its own).
   defp brick_controller_opts, do: []
+
+  defp capacity_observer_opts, do: []
 
   # Parse EMBERVM_BRICK_CLASSES (a JSON array of {"name","desired"} objects, plus
   # optional autoscale clamp fields "min"/"max") into a list of
