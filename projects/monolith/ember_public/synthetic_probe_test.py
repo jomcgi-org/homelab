@@ -6,6 +6,93 @@ import ember_public.synthetic_probe as probe
 from ember_public.synthetic_models import EmberSyntheticProbe
 
 
+@pytest.fixture(autouse=True)
+def no_retry_wait_in_existing_tests(monkeypatch):
+    monkeypatch.setattr(probe, "EMBER_SYNTHETIC_RETRY_BUDGET_S", 0.0)
+
+
+@pytest.mark.asyncio
+async def test_retry_recovers_and_reports_retry(monkeypatch):
+    results = iter(
+        [
+            {"ok": False, "detail": "control plane unavailable", "latency_ms": None},
+            {"ok": True, "detail": "warm, 501ms", "latency_ms": 501},
+        ]
+    )
+    monkeypatch.setattr(probe, "EMBER_SYNTHETIC_RETRY_BUDGET_S", 30.0)
+    monkeypatch.setattr(probe.asyncio, "sleep", lambda *_: _done())
+    monkeypatch.setattr(probe, "perf_counter", _clock([0.0, 0.0, 15.0]))
+    monkeypatch.setattr(probe, "_probe_bazel_once", lambda: _next_result(results))
+
+    result = await probe.probe_bazel()
+
+    assert result["ok"] is True
+    assert result["detail"] == "warm, 501ms (recovered after 1 retries)"
+
+
+@pytest.mark.asyncio
+async def test_retry_returns_last_failure_detail(monkeypatch):
+    results = iter(
+        [
+            {"ok": False, "detail": "first failure", "latency_ms": None},
+            {"ok": False, "detail": "last failure", "latency_ms": None},
+        ]
+    )
+    monkeypatch.setattr(probe, "EMBER_SYNTHETIC_RETRY_BUDGET_S", 30.0)
+    monkeypatch.setattr(probe.asyncio, "sleep", lambda *_: _done())
+    monkeypatch.setattr(probe, "perf_counter", _clock([0.0, 0.0, 15.0]))
+
+    result = await probe._retry_probe(lambda: _next_result(results))
+
+    assert result == {"ok": False, "detail": "last failure", "latency_ms": None}
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_exceed_budget(monkeypatch):
+    calls = 0
+
+    async def always_fails():
+        nonlocal calls
+        calls += 1
+        return {"ok": False, "detail": f"failure {calls}", "latency_ms": None}
+
+    sleeps = []
+    monkeypatch.setattr(probe, "EMBER_SYNTHETIC_RETRY_BUDGET_S", 30.0)
+    monkeypatch.setattr(
+        probe.asyncio, "sleep", lambda interval: _sleep(sleeps, interval)
+    )
+    monkeypatch.setattr(probe, "perf_counter", _clock([0.0, 0.0, 15.0, 30.0]))
+
+    result = await probe._retry_probe(always_fails)
+
+    assert result["detail"] == "failure 2"
+    assert calls == 2
+    assert sleeps == [15.0]
+
+
+@pytest.mark.asyncio
+async def test_retry_immediate_success_has_no_retry_note(monkeypatch):
+    async def succeeds():
+        return {"ok": True, "detail": "warm, 501ms", "latency_ms": 501}
+
+    result = await probe._retry_probe(succeeds)
+
+    assert result["detail"] == "warm, 501ms"
+
+
+async def _next_result(results):
+    return next(results)
+
+
+def _clock(values):
+    values = iter(values)
+    return lambda: next(values)
+
+
+async def _sleep(sleeps, interval):
+    sleeps.append(interval)
+
+
 @pytest.mark.asyncio
 async def test_bazel_drift_is_not_ok(monkeypatch):
     async def run_query(_):
