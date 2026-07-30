@@ -21,6 +21,24 @@ spec:
     server: https://kubernetes.default.svc
     # Own namespace; nothing monolith-coupled.
     namespace: embervm
+  ignoreDifferences:
+    # The BrickController owns each brick Deployment's replica count: the chart
+    # value is only the count at FIRST create, and the controller PATCHes /scale
+    # thereafter from demand-driven autoscale. With selfHeal on, ArgoCD would
+    # revert every scale decision back to the chart value, so /spec/replicas has
+    # to stay out of the diff for this app.
+    #
+    # This used to be inherited from a fleet-wide argocd-cm rule. That rule was
+    # removed because it applied to EVERY Deployment in the cluster, silently
+    # making any git-declared replica count unchangeable while the Application
+    # still reported Synced and Healthy (cloudflare-gateway PR #4168 merged
+    # green and moved nothing). monolith and monolith-public already carried
+    # their own copies of this; embervm was relying on the fleet-wide one, so it
+    # is made explicit here. Mirrors those two apps.
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true

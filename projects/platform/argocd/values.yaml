@@ -44,11 +44,22 @@ argo-cd:
         jsonPointers:
           - /spec/template/metadata/annotations/otel.injected-by
           - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
-          # HPA-managed replicas: the chart omits replicas so the HPA owns it;
-          # keep live's HPA-set value out of the diff. Only HPAs mutate
-          # replicas in this cluster (kubectl scale is forbidden by
-          # convention), so a fleet-wide ignore is safe.
-          - /spec/replicas
+          # /spec/replicas used to be ignored HERE, fleet-wide. It is now scoped
+          # to the three Applications that actually have a controller owning
+          # replicas (monolith, monolith-public, embervm), via ignoreDifferences
+          # on each Application.
+          #
+          # The old rationale was "the chart omits replicas so the HPA owns it",
+          # which is true for the HPA charts and false for every other chart in
+          # the cluster. A chart that DOES render `replicas:` had its value
+          # silently ignored: no drift, no warning, and the Application still
+          # reported Synced and Healthy while the live count never moved.
+          # cloudflare-gateway hit exactly that (PR #4168 merged green and did
+          # nothing; the tunnel stayed at 2 replicas), which is a bad failure
+          # mode because every signal says success.
+          #
+          # Fleet-wide was never safe, only quiet. Keep replica ignores scoped
+          # to the specific Application whose controller owns the field.
     rbac:
       policy.csv: |
         p, mcp-agent, applications, *, */*, allow
