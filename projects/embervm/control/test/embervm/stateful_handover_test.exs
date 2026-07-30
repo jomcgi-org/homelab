@@ -186,6 +186,60 @@ defmodule Embervm.StatefulHandoverTest do
     assert StatefulHandover.move("nonexistent", "node-b", opts(ctx)) == {:error, :no_volume}
   end
 
+  # The shape production actually uses, and the one the first live drill got
+  # wrong: NodeCapacity keys facts by INSTANCE id ("node-4/<uuid>") and a volume
+  # row anchors on one, while an operator naming a target says "node-4". A bare
+  # name cannot be an instance id because the "/" would not survive a URL path
+  # segment, so both forms must resolve.
+  defp put_brick(ctx, node, uuid, updated_at) do
+    NodeCapacity.put(ctx.cap_table, {node, uuid}, %{
+      node_id: "#{node}/#{uuid}",
+      updated_at: updated_at,
+      max_live_vms: 8,
+      live_vms: 0,
+      workloads: %{},
+      stateful_vms: [],
+      stateful_bundles: []
+    })
+  end
+
+  test "resolves a bare node name to a reporting instance and anchors on the instance id" do
+    ctx = start_stack()
+    put_brick(ctx, "node-c", "aaaa", 10)
+    put_brick(ctx, "node-d", "bbbb", 20)
+    seed_volume(ctx, "demo-postgres", "node-c/aaaa")
+
+    assert {:ok, moved} = StatefulHandover.move("demo-postgres", "node-d", opts(ctx))
+
+    assert moved.from == "node-c/aaaa"
+    # Resolved, not the shorthand that was typed.
+    assert moved.to == "node-d/bbbb"
+
+    # The anchor MUST be the instance id: StatefulManager resolves it through an
+    # exact NodeCapacity match, so a bare name here would make every subsequent
+    # wake fail :volume_node_gone.
+    assert anchor(ctx, "demo-postgres") == "node-d/bbbb"
+
+    assert calls(ctx.calls) == [
+             {:export, "node-c/aaaa"},
+             {:restore, "node-d/bbbb"},
+             {:evict, "node-c/aaaa"}
+           ]
+  end
+
+  test "refuses a bare-name move onto the node that already holds the volume" do
+    ctx = start_stack()
+    put_brick(ctx, "node-c", "aaaa", 10)
+    seed_volume(ctx, "demo-postgres", "node-c/aaaa")
+
+    # Comparing the raw strings would MISS this ("node-c/aaaa" != "node-c") and
+    # export and restore the volume onto the node that already holds it.
+    assert StatefulHandover.move("demo-postgres", "node-c", opts(ctx)) ==
+             {:error, :already_anchored}
+
+    assert calls(ctx.calls) == []
+  end
+
   test "a refused source eviction still completes the move" do
     ctx = start_stack()
     seed_volume(ctx, "demo-postgres", "node-a")
