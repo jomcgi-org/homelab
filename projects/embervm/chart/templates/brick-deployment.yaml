@@ -21,13 +21,47 @@
 # plane learns each brick by dial-home registration (POST /v1/nodes/register),
 # not Service/EndpointSlice discovery, so brick pods need not sit behind the noded
 # Service.
+#
+# ROLLOUT SEQUENCING (argocd.argoproj.io/sync-wave, below). Every brick
+# Deployment used to render at the default wave 0, so a chart bump applied all
+# of them in the same instant and ArgoCD rolled the whole fleet at once. Each
+# replacement pod runs the rootfs-builder init container and pulls its images,
+# so the fleet-wide roll is a CPU + disk + uplink stampede on every node
+# simultaneously. Observed 2026-07-30 06:06, one minute after a merge: ghcr.io
+# pulls failing with ImagePullBackOff, the whole wired LAN at 100% packet loss
+# while the gateway still answered in 3ms, and the cloudflared replica on an
+# unshaped node losing all four tunnel connections. With ~12 embervm merges in
+# a day that is a recurring self-inflicted outage.
+#
+# Each brick Deployment now gets its own ascending wave, so ArgoCD applies one,
+# waits for it to report Healthy (its rollout complete), and only then applies
+# the next. maxSurge:0/maxUnavailable:1 already serialised the pods WITHIN a
+# Deployment; waves serialise ACROSS them, which is the part that was missing.
+#
+# Waves are assigned by list position: classes take syncWaveBase + index, then
+# floors continue from syncWaveBase + len(classes) + index, so the two ranges
+# never collide and adding a class or a floor shifts only the entries after it.
+# Base defaults to 2, which leaves wave 0 for the control plane and shared infra
+# (bricks dial home to the CP, so it must be up first) and wave 1 for the
+# Workload CRs, both of which keep their current waves untouched.
+#
+# This is a stopgap, NOT ADR embervm/011. That decision is OnDelete pod
+# semantics with the control plane as the rollout controller, checking
+# interlocks, draining, confirming banked, deleting the pod and verifying the
+# replacement, so rolls land in idle windows and pause on an unhealthy store.
+# None of that is implemented; sync waves only remove the simultaneity. The
+# trade-off is real: a brick that never goes Healthy now stalls the sync at its
+# wave instead of letting later waves through, which is why the Application
+# keeps its retry limit.
 {{- $ctx := . }}
-{{- range $class := .Values.bricks.classes }}
+{{- range $i, $class := .Values.bricks.classes }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: {{ add $ctx.Values.bricks.syncWaveBase $i | quote }}
   labels:
     {{- include "embervm.brick.labels" (dict "ctx" $ctx "class" $class.name) | nindent 4 }}
 spec:
@@ -92,13 +126,23 @@ spec:
 # top of the shared class selector, so this Deployment's selector is DISJOINT
 # from its class Deployment's. Reusing the class selector here would be a real
 # bug (two ReplicaSet controllers fighting over the same pods), not just style.
-{{- range $floor := .Values.bricks.nodeFloors }}
+#
+# Floors roll AFTER every class (wave syncWaveBase + len(classes) + index).
+# They are the fixed per-node capacity guarantee, so rolling them last keeps a
+# pinned brick alive on each node for as long as possible while the elastic
+# class Deployments cycle. Rolling them last also spreads them across distinct
+# waves, which matters more than it looks: the floors are pinned to different
+# nodes, so rolling them together would put a rootfs build on every node at once
+# even though no single node is over-subscribed.
+{{- range $j, $floor := .Values.bricks.nodeFloors }}
 {{- $class := $floor.class }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class }}-{{ $floor.node }}
+  annotations:
+    argocd.argoproj.io/sync-wave: {{ add $ctx.Values.bricks.syncWaveBase (len $ctx.Values.bricks.classes) $j | quote }}
   labels:
     {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 4 }}
 spec:

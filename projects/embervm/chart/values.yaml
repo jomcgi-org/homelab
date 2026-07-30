@@ -955,6 +955,20 @@ noded:
 # netns), which the 16Gi class covers.
 bricks:
   enabled: false
+  # First ArgoCD sync-wave handed out to a brick Deployment. Each brick then
+  # takes its own ascending wave (classes by list index, then floors continuing
+  # after them), so ArgoCD rolls the fleet ONE Deployment at a time instead of
+  # applying all of them in the same instant. Before this every brick rendered
+  # at the default wave 0 and a single chart bump stampeded the whole fleet:
+  # every replacement pod running its rootfs-builder init and pulling images at
+  # once, which saturates the shared uplink hard enough to take the wired LAN to
+  # 100% packet loss and drop the cloudflared tunnel on unshaped nodes.
+  #
+  # 2 keeps the existing waves intact underneath it: wave 0 is the control plane
+  # and shared infra (bricks dial home to the CP, so it goes first) and wave 1 is
+  # the Workload CRs. Raise it only if something new needs to land between the CP
+  # and the bricks; the relative order of the bricks themselves is positional.
+  syncWaveBase: 2
   # Per-class DESIRED replica count the Embervm.BrickController reconciles the
   # brick Deployments to (and the value each renders at first create). A MAP keyed
   # by size-class label, not a per-class list field, so a deploy-values overlay can
