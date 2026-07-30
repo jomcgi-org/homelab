@@ -240,6 +240,27 @@ defmodule Embervm.StatefulHandoverTest do
     assert calls(ctx.calls) == []
   end
 
+  test "an op-log failure aborts before anything is dispatched" do
+    ctx = start_stack()
+    seed_volume(ctx, "demo-postgres", "node-a")
+
+    # The started op is the record that adjudicates a crash mid-move, so a move
+    # that cannot record it must not begin. Note the EXIT rather than a raise:
+    # a GenServer.call to a name that is not running exits, which is exactly how
+    # the first live drill escaped as an unhandled 500 with an empty body.
+    boom = fn _op_log, _op -> exit(:noproc) end
+
+    assert {:error, {:op_log_unavailable, _}} =
+             StatefulHandover.move(
+               "demo-postgres",
+               "node-b",
+               Keyword.put(opts(ctx), :append_fun, boom)
+             )
+
+    assert anchor(ctx, "demo-postgres") == "node-a"
+    assert calls(ctx.calls) == []
+  end
+
   test "a refused source eviction still completes the move" do
     ctx = start_stack()
     seed_volume(ctx, "demo-postgres", "node-a")
