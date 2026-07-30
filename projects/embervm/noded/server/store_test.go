@@ -1865,16 +1865,17 @@ func TestExportArtifactVolumeAllowedWhenBlessed(t *testing.T) {
 	}
 }
 
-// TestRunExportJobVolumeSkippedWhenUnblessed covers the ASYNC half of the same
-// ADR 011 invariant. Gating only the sync verb left the dominant path open: the
-// sync verb serves explicit control-plane exports, while this queue runs on every
-// export-after-commit, so a self-bumped generation reaching the S3 singleton in
-// practice does so through here.
+// TestRunExportJobVolumeExportsUnblessedWithWarning pins the OBSERVE-ONLY
+// decision on the async queue. Enforcing ADR 011 here stopped volume durability
+// fleet-wide (31 skips, zero successful volume exports) because `genblessed`
+// only advances on a WAKE while `gen` bumps on every BANK, so a volume is almost
+// never blessed at the moment its export-after-commit fires.
 //
-// runExportJob is called directly rather than through the queue so the assertion
-// is deterministic: proving a negative ("the bytes never landed") against a
-// worker pool would be a sleep-and-hope.
-func TestRunExportJobVolumeSkippedWhenUnblessed(t *testing.T) {
+// The sync ExportArtifact path still REFUSES, and that asymmetry is the point:
+// it is the path a control-plane-driven move uses, where an unblessed copy would
+// be promoted to authoritative on a peer. Losing every off-node copy to guard a
+// rarer, conditional hazard is the worse trade.
+func TestRunExportJobVolumeExportsUnblessedWithWarning(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
 	ctx := context.Background()
@@ -1890,16 +1891,10 @@ func TestRunExportJobVolumeSkippedWhenUnblessed(t *testing.T) {
 	}
 
 	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "demo-postgres"}
-	key := artifactPrefix(ref, s.cfg.CpuVendor)
-	s.runExportJob(ctx, exportJob{ref: ref, key: key})
+	s.runExportJob(ctx, exportJob{ref: ref, key: artifactPrefix(ref, s.cfg.CpuVendor)})
 
-	if fs.has("volume/demo-postgres") {
-		t.Fatal("an unblessed volume must NOT reach the store via the async queue")
-	}
-	// Deliberately not recorded as exported: claiming durability for bytes that
-	// never left would let a retention sweep treat the local copy as safe.
-	if _, ok := s.exported.generation(key); ok {
-		t.Fatal("a skipped export must not record an exported generation")
+	if !fs.has("volume/demo-postgres") {
+		t.Fatal("durability regression: an unblessed volume must still reach the store via the async queue")
 	}
 }
 
