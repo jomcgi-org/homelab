@@ -659,8 +659,20 @@ func TestExportQueueVolumeStillReExportsAtStaleGeneration(t *testing.T) {
 	if err := s.volumes.Create(workload, 1<<20); err != nil {
 		t.Fatalf("create volume: %v", err)
 	}
-	if _, err := s.volumes.BumpGeneration(workload); err != nil {
-		t.Fatalf("bump: %v", err)
+	// Advance the generation via a CP-style BLESSING rather than a bare self-bump.
+	// This test is about the PRESENCE gate, not the ADR 011 blessing gate, but the
+	// queue now refuses an unblessed volume ahead of the presence check, so a
+	// self-bumped fixture would make this pass for the wrong reason (0 export calls
+	// because it was quarantined, not because presence skipped it). RecordBlessed
+	// advances the ledger and writes the blessed marker together, exactly as a
+	// CP-issued blessed_generation does, and requires the new generation to exceed
+	// the current one.
+	gen0, err := s.volumes.Generation(workload)
+	if err != nil {
+		t.Fatalf("generation: %v", err)
+	}
+	if _, err := s.volumes.RecordBlessed(workload, gen0+1); err != nil {
+		t.Fatalf("RecordBlessed: %v", err)
 	}
 	cur, err := s.volumes.Generation(workload)
 	if err != nil {
@@ -1850,5 +1862,66 @@ func TestExportArtifactVolumeAllowedWhenBlessed(t *testing.T) {
 	}
 	if !fs.has("volume/demo-postgres") {
 		t.Fatal("store missing volume/demo-postgres after a blessed export")
+	}
+}
+
+// TestRunExportJobVolumeSkippedWhenUnblessed covers the ASYNC half of the same
+// ADR 011 invariant. Gating only the sync verb left the dominant path open: the
+// sync verb serves explicit control-plane exports, while this queue runs on every
+// export-after-commit, so a self-bumped generation reaching the S3 singleton in
+// practice does so through here.
+//
+// runExportJob is called directly rather than through the queue so the assertion
+// is deterministic: proving a negative ("the bytes never landed") against a
+// worker pool would be a sleep-and-hope.
+func TestRunExportJobVolumeSkippedWhenUnblessed(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	if err := s.volumes.Create("demo-postgres", 1); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
+	if _, err := s.volumes.BumpGeneration("demo-postgres"); err != nil {
+		t.Fatalf("BumpGeneration: %v", err)
+	}
+	if s.volumes.GenerationBlessed("demo-postgres") {
+		t.Fatal("precondition: a self-bumped generation must not read as blessed")
+	}
+
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "demo-postgres"}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.runExportJob(ctx, exportJob{ref: ref, key: key})
+
+	if fs.has("volume/demo-postgres") {
+		t.Fatal("an unblessed volume must NOT reach the store via the async queue")
+	}
+	// Deliberately not recorded as exported: claiming durability for bytes that
+	// never left would let a retention sweep treat the local copy as safe.
+	if _, ok := s.exported.generation(key); ok {
+		t.Fatal("a skipped export must not record an exported generation")
+	}
+}
+
+// TestRunExportJobVolumeExportsWhenBlessed is the paired positive, so the async
+// gate cannot pass by skipping everything.
+func TestRunExportJobVolumeExportsWhenBlessed(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	if err := s.volumes.Create("demo-postgres", 1); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
+	if _, err := s.volumes.RecordBlessed("demo-postgres", 7); err != nil {
+		t.Fatalf("RecordBlessed: %v", err)
+	}
+
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "demo-postgres"}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.runExportJob(ctx, exportJob{ref: ref, key: key})
+
+	if !fs.has("volume/demo-postgres") {
+		t.Fatal("a blessed volume must reach the store via the async queue")
 	}
 }

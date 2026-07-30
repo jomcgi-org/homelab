@@ -1059,6 +1059,27 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	}()
 
 	generation := s.artifactGeneration(job.ref)
+	// SKIP an unblessed VOLUME, the async half of the ADR 011 "never exported"
+	// invariant that ExportArtifact enforces synchronously above. Both halves are
+	// needed and this is the one that fires most: the sync verb serves explicit
+	// control-plane exports, while THIS queue runs on every export-after-commit, so
+	// a self-bumped generation reaching the S3 singleton would do so through here.
+	// Same local-only GenerationBlessed check, same fail-closed reading of an absent
+	// marker, so the two paths cannot disagree about what is exportable.
+	//
+	// Skipping (not failing) is right for a queue with no caller to answer: the
+	// generation is deliberately NOT recorded in s.exported, so nothing downstream
+	// can mistake the local copy for a durable one, and the next bank re-enqueues.
+	// A blessed generation exports on the following pass with no operator action.
+	if job.ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME && s.volumes != nil {
+		if !s.volumes.GenerationBlessed(job.ref.GetWorkload()) {
+			s.logger.Warn("noded: async export SKIPPED, volume generation is not blessed (ADR 011)",
+				"artifact", job.key,
+				"workload", job.ref.GetWorkload(),
+				"localGeneration", generation)
+			return
+		}
+	}
 	// Local short-circuit for a VOLUME whose current generation is already the
 	// exported one (standing decision 6: skip a re-export when gen is unchanged).
 	if job.ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME {
