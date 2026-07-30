@@ -1059,25 +1059,34 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	}()
 
 	generation := s.artifactGeneration(job.ref)
-	// SKIP an unblessed VOLUME, the async half of the ADR 011 "never exported"
-	// invariant that ExportArtifact enforces synchronously above. Both halves are
-	// needed and this is the one that fires most: the sync verb serves explicit
-	// control-plane exports, while THIS queue runs on every export-after-commit, so
-	// a self-bumped generation reaching the S3 singleton would do so through here.
-	// Same local-only GenerationBlessed check, same fail-closed reading of an absent
-	// marker, so the two paths cannot disagree about what is exportable.
+	// OBSERVE-ONLY blessing check for a VOLUME. ADR 011 says an unblessed
+	// generation is "never exported", and enforcing that here (as this queue
+	// briefly did) stopped volume durability fleet-wide within minutes: 31 skips
+	// and ZERO successful volume exports across every brick.
 	//
-	// Skipping (not failing) is right for a queue with no caller to answer: the
-	// generation is deliberately NOT recorded in s.exported, so nothing downstream
-	// can mistake the local copy for a durable one, and the next bank re-enqueues.
-	// A blessed generation exports on the following pass with no operator action.
+	// The invariant is right; its PRECONDITION does not hold. `genblessed` only
+	// advances on a WAKE (bless_wake_generation on the dispatch), while `gen`
+	// bumps on every BANK, and banks vastly outnumber wakes. Measured on the live
+	// fleet: demo-postgres gen 6494 vs blessed 6416, scratch-postgres gen 20767
+	// vs blessed 20182. A volume is therefore almost never blessed at the moment
+	// its export-after-commit fires, so a fail-closed gate here is not "refuse
+	// the divergent case", it is "refuse everything".
+	//
+	// Enforcing costs an immediate, silent loss of every off-node volume copy.
+	// The divergence it guards against is rarer and conditional, and the sync
+	// ExportArtifact path still refuses (unchanged, and that is the path a
+	// control-plane-driven move uses, where an unblessed copy really would be
+	// promoted to authoritative). So this logs and continues: the signal is kept,
+	// the durability is not sacrificed for it.
+	//
+	// Flipping this to enforce requires blessing to track generation first, which
+	// is the actual bug.
 	if job.ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME && s.volumes != nil {
 		if !s.volumes.GenerationBlessed(job.ref.GetWorkload()) {
-			s.logger.Warn("noded: async export SKIPPED, volume generation is not blessed (ADR 011)",
+			s.logger.Warn("noded: exporting an UNBLESSED volume generation (ADR 011 observe-only; blessing watermark lags the ledger)",
 				"artifact", job.key,
 				"workload", job.ref.GetWorkload(),
 				"localGeneration", generation)
-			return
 		}
 	}
 	// Local short-circuit for a VOLUME whose current generation is already the
