@@ -105,13 +105,13 @@ defmodule Embervm.StatefulHandover do
   # ---- sequence ---------------------------------------------------------------
 
   defp run(ctx, workload, source, target, source_dial, target_dial) do
-    append_op(ctx, :stateful_handover_started, %{
-      workload: workload,
-      from: source,
-      to: target
-    })
-
-    with {:ok, generation} <- export_source(ctx, workload, source_dial),
+    with :ok <-
+           require_op(ctx, :stateful_handover_started, %{
+             workload: workload,
+             from: source,
+             to: target
+           }),
+         {:ok, generation} <- export_source(ctx, workload, source_dial),
          :ok <- restore_target(ctx, workload, target_dial) do
       # Re-anchor on the RESOLVED instance id, never the bare name a caller may
       # have typed: StatefulManager.anchor_node/2 resolves the stored value
@@ -131,7 +131,7 @@ defmodule Embervm.StatefulHandover do
       # anchor that was actually written rather than the shorthand that was
       # typed. A drill that reads back "to: node-4" while the row says
       # "node-4/<uuid>" is a drill that cannot be checked.
-      append_op(ctx, :stateful_handover_finished, %{
+      note_op(ctx, :stateful_handover_finished, %{
         workload: workload,
         from: source,
         to: target_dial,
@@ -158,7 +158,7 @@ defmodule Embervm.StatefulHandover do
        }}
     else
       {:error, reason} = error ->
-        append_op(ctx, :stateful_handover_aborted, %{
+        note_op(ctx, :stateful_handover_aborted, %{
           workload: workload,
           from: source,
           to: target,
@@ -351,28 +351,62 @@ defmodule Embervm.StatefulHandover do
     e -> {:error, {:rpc_raised, inspect(e)}}
   end
 
+  # The STARTED op is load-bearing and must land before anything is dispatched:
+  # it is the record that adjudicates a crash mid-move, so proceeding without it
+  # would mutate the fleet with no durable trace of an in-flight handover. A
+  # failure here aborts, and nothing has happened yet.
+  defp require_op(ctx, kind, payload) do
+    case append_op(ctx, kind, payload) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:op_log_unavailable, reason}}
+    end
+  end
+
+  # Terminal ops are best-effort by contrast: the move has already happened, and
+  # refusing to report it would not un-happen it. Logged loudly instead.
+  defp note_op(ctx, kind, payload) do
+    case append_op(ctx, kind, payload) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("embervm stateful handover: op-log append failed after the move",
+          kind: kind,
+          reason: inspect(reason)
+        )
+
+        :ok
+    end
+  end
+
+  # Both a raise and an EXIT have to be caught. The first live drill 500'd on the
+  # latter: a GenServer.call to a name that is not running exits rather than
+  # raising, so a `rescue` alone let it escape as an unhandled error with an
+  # empty body.
   defp append_op(ctx, kind, payload) do
     op = %Op{kind: kind, tenant: ctx.tenant, ts: ctx.clock.(), payload: payload}
     _ = ctx.append_fun.(ctx.op_log, op)
     :ok
   rescue
-    e ->
-      Logger.warning("embervm stateful handover: op-log append raised",
-        kind: kind,
-        error: inspect(e)
-      )
-
-      :ok
+    e -> {:error, e}
+  catch
+    :exit, reason -> {:error, reason}
   end
 
   defp context(opts) do
-    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
+    # The op-log backend is SELECTED AT BOOT (SQLite or Postgres, per
+    # EMBERVM_OPLOG_DSN), so hardcoding one dispatches at a GenServer name that
+    # does not exist in production. The first live drill 500'd on exactly that:
+    # prod runs Postgres, and the call went to Embervm.OpLog.SQLite. Ask the
+    # application, as every store and sweeper does via its :op_log_mod opt.
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.Application.op_log_mod())
 
     %{
       store: Keyword.get(opts, :store, StatefulStore),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       op_log: Keyword.get(opts, :op_log, op_log_mod),
-      append_fun: Keyword.get(opts, :append_fun, &default_append/2),
+      append_fun:
+        Keyword.get(opts, :append_fun, fn op_log, op -> op_log_mod.append(op_log, op) end),
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       export_fun: Keyword.get(opts, :export_fun, &default_export/2),
       restore_fun: Keyword.get(opts, :restore_fun, &default_restore/2),
@@ -381,8 +415,6 @@ defmodule Embervm.StatefulHandover do
       clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     }
   end
-
-  defp default_append(op_log, op), do: Embervm.OpLog.SQLite.append(op_log, op)
 
   defp default_export(channel, req),
     do: Embervm.Node.V1.NodeService.Stub.export_artifact(channel, req)
