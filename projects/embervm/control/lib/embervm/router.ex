@@ -163,6 +163,22 @@ defmodule Embervm.Router do
     handle_delete_stateful_volume(conn, name)
   end
 
+  # POST /v1/stateful/:name/handover/:target (management auth): move the
+  # workload's VOLUME off its current anchor node onto :target and re-anchor it
+  # there (#4119 slice 4), so a workload whose anchor cannot host its wake stops
+  # being pinned to a node that will never have room. REFUSED (409) while any
+  # live instance exists: the move is defined only for a banked workload,
+  # because moving a volume out from under a writable attach is exactly the
+  # split brain the single-writer fence exists to prevent.
+  #
+  # The target is a PATH segment rather than a body field so the verb needs no
+  # request parser and stays drillable with a bare curl, which matters for a
+  # manual-trigger verb whose whole point is being rehearsed by hand before
+  # anything automates it.
+  post "/v1/stateful/:name/handover/:target" do
+    handle_stateful_handover(conn, name, target)
+  end
+
   # -- composite (group) routes (R5, management introspection) ---------------
 
   get "/v1/groups/:name" do
@@ -1145,8 +1161,57 @@ defmodule Embervm.Router do
     end
   end
 
+  # POST /v1/stateful/:name/handover/:target. Every refusal that leaves the
+  # anchor untouched is a 4xx with retryable:false unless waiting would actually
+  # change the answer: :not_banked clears itself once the sweeper banks the live
+  # instance, so it is retryable, while a refused export means the source's
+  # bytes are not the authoritative ones and no amount of retrying fixes that.
+  defp handle_stateful_handover(conn, workload, target) do
+    case stateful_handover().move(workload, target) do
+      {:ok, moved} ->
+        send_json(conn, 200, %{
+          workload: workload,
+          from: moved.from,
+          to: moved.to,
+          generation: moved.generation,
+          source_evicted: moved.source_evicted
+        })
+
+      {:error, :no_volume} ->
+        send_json(conn, 404, %{error: "no volume for this workload", workload: workload, retryable: false})
+
+      {:error, :volume_node_missing} ->
+        send_json(conn, 409, %{error: "volume has no anchor node recorded", workload: workload, retryable: false})
+
+      {:error, :already_anchored} ->
+        send_json(conn, 409, %{error: "volume is already anchored on that node", workload: workload, target: target, retryable: false})
+
+      {:error, {:not_banked, live}} ->
+        send_json(conn, 409, %{
+          error: "workload has a live instance; it must be banked before its volume can move",
+          workload: workload,
+          live: live,
+          retryable: true
+        })
+
+      {:error, :source_export_refused} ->
+        send_json(conn, 409, %{
+          error: "source refused to export the volume (unblessed or superseded generation); anchor unchanged",
+          workload: workload,
+          retryable: false
+        })
+
+      {:error, {:node_not_reporting, node}} ->
+        send_json(conn, 409, %{error: "node is not reporting", node: node, workload: workload, retryable: true})
+
+      {:error, reason} ->
+        send_json(conn, 500, %{error: "handover failed", reason: inspect(reason), workload: workload, retryable: true})
+    end
+  end
+
   defp stateful_manager, do: Application.get_env(:embervm, :stateful_manager_mod, Embervm.StatefulManager)
   defp stateful_manager_server, do: Application.get_env(:embervm, :stateful_manager, Embervm.StatefulManager)
+  defp stateful_handover, do: Application.get_env(:embervm, :stateful_handover_mod, Embervm.StatefulHandover)
 
   # GET /v1/groups/:name (management auth): the composite group's instance state,
   # members with health, set id + completeness (the banked set_id, null when nothing
