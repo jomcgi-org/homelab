@@ -113,17 +113,29 @@ defmodule Embervm.StatefulHandover do
 
     with {:ok, generation} <- export_source(ctx, workload, source_dial),
          :ok <- restore_target(ctx, workload, target_dial) do
-      # Re-anchor. From here the workload's next wake plans against the target,
-      # and StatefulManager issues a fresh blessed generation on that wake, so
+      # Re-anchor on the RESOLVED instance id, never the bare name a caller may
+      # have typed: StatefulManager.anchor_node/2 resolves the stored value
+      # through NodeCapacity.fetch, which is an exact match, so parking a bare
+      # node name in the volume row would make every subsequent wake fail
+      # `:volume_node_gone`. Writing the instance id keeps the row in the same
+      # shape the boot-report projection maintains.
+      #
+      # From here the workload's next wake plans against the target, and
+      # StatefulManager issues a fresh blessed generation on that wake, so
       # nothing needs to pre-bless the restored copy.
-      :ok = reanchor(ctx, workload, target)
+      :ok = reanchor(ctx, workload, target_dial)
 
       evicted = evict_source(ctx, workload, source_dial)
 
+      # Report the RESOLVED target, so the op log and the caller both record the
+      # anchor that was actually written rather than the shorthand that was
+      # typed. A drill that reads back "to: node-4" while the row says
+      # "node-4/<uuid>" is a drill that cannot be checked.
       append_op(ctx, :stateful_handover_finished, %{
         workload: workload,
         from: source,
-        to: target,
+        to: target_dial,
+        requested_target: target,
         generation: generation,
         source_evicted: evicted
       })
@@ -131,7 +143,7 @@ defmodule Embervm.StatefulHandover do
       Logger.info("embervm stateful handover: volume moved",
         workload: workload,
         from: source,
-        to: target,
+        to: target_dial,
         generation: generation,
         source_evicted: evicted
       )
@@ -140,7 +152,7 @@ defmodule Embervm.StatefulHandover do
        %{
          workload: workload,
          from: source,
-         to: target,
+         to: target_dial,
          generation: generation,
          source_evicted: evicted
        }}
@@ -245,8 +257,20 @@ defmodule Embervm.StatefulHandover do
 
   defp anchor_of(_), do: {:error, :volume_node_missing}
 
-  defp refuse_same_node(source, target) when source == target, do: {:error, :already_anchored}
-  defp refuse_same_node(_source, _target), do: :ok
+  # The anchor is an instance id ("node-3/<uuid>") while a caller names a node
+  # ("node-3"), so comparing them raw would never match and a "move" onto the
+  # node already holding the volume would proceed as an export and restore onto
+  # itself. Compare NODE identity: everything before the first "/". Both forms
+  # reduce to the same name, so this holds whichever the caller used.
+  defp refuse_same_node(source, target) do
+    if node_name(source) == node_name(target) do
+      {:error, :already_anchored}
+    else
+      :ok
+    end
+  end
+
+  defp node_name(id), do: id |> to_string() |> String.split("/", parts: 2) |> hd()
 
   # "Banked" means no LIVE instance. StatefulStore maintains `live` as
   # "non-terminal, non-banked", which is exactly the set that could be holding a
@@ -275,13 +299,40 @@ defmodule Embervm.StatefulHandover do
   # and it needs to push bytes, not host a guest. Selecting on capacity would
   # refuse precisely the moves worth making.
   #
-  # `configured_id` first because that is the key NodeChannel is configured with
-  # (`nodes: configured_nodes()`), so it is the name a dial resolves; node_id is
-  # the fallback for facts that predate the field.
-  defp dial_key(ctx, node_id) do
-    case NodeCapacity.fetch(ctx.capacity_table, node_id) do
-      {:ok, facts} -> {:ok, Map.get(facts, :configured_id) || node_id}
-      :error -> {:error, {:node_not_reporting, node_id}}
+  # Accepts EITHER an instance id ("node-4/<uuid>", which is what a volume row's
+  # node_id holds and what NodeCapacity keys on) OR a bare node name ("node-4").
+  #
+  # Both forms are required, for different callers. The anchor read hands us an
+  # instance id, so the exact match is the source path. A human moving a
+  # workload names a NODE, and must be able to: the instance id contains a "/"
+  # and cannot survive a URL path segment, so a target could not be expressed at
+  # all without this. Bare names resolve by "<node>/" prefix over the reporting
+  # set, newest fact winning, which is the same "any instance on that node will
+  # do" reasoning that makes a node-scoped volume transferable in the first
+  # place.
+  defp dial_key(ctx, node) do
+    case NodeCapacity.fetch(ctx.capacity_table, node) do
+      {:ok, facts} -> {:ok, Map.get(facts, :node_id) || node}
+      :error -> resolve_by_node_prefix(ctx, node)
+    end
+  end
+
+  defp resolve_by_node_prefix(ctx, node) do
+    prefix = node <> "/"
+
+    ctx.capacity_table
+    |> NodeCapacity.all()
+    |> Enum.filter(fn facts ->
+      id = Map.get(facts, :node_id)
+      is_binary(id) and String.starts_with?(id, prefix)
+    end)
+    |> case do
+      [] ->
+        {:error, {:node_not_reporting, node}}
+
+      matches ->
+        newest = Enum.max_by(matches, fn facts -> Map.get(facts, :updated_at, 0) end)
+        {:ok, Map.get(newest, :node_id)}
     end
   end
 
