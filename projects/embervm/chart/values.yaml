@@ -529,6 +529,7 @@ sandbox:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # The semgrep guest image, Bazel-pinned (helm_chart images="semgrep.guestImage")
 # from the frozen fc-invoke semgrep guest's .info provider. Distinct top-level key
@@ -537,6 +538,7 @@ semgrep:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # The runtime-python base image (R1 zip lane, ADR embervm/002), Bazel-pinned
 # (helm_chart images="runtimePython.guestImage") from its .info provider. Distinct
@@ -552,6 +554,7 @@ runtimePython:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/python
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # The runtime-claude base image (issue #4055): a session-class guest running the
 # Claude Code CLI headlessly under a shim, driven over the vsock guest contract so
@@ -573,6 +576,7 @@ runtimeClaude:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/claude
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # R4 scratch-postgres stateful consumer (ADR embervm/001, D-R4.PR-11.1), the
 # named consumer that justifies the stateful rung. Bazel-pinned
@@ -602,6 +606,7 @@ scratchPostgres:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/postgres
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   onepassword:
     # 1Password item path (vaults/<vault>/items/<item>) whose POSTGRES_PASSWORD
     # field syncs into the <fullname>-scratch-postgres Secret. Empty leaves the
@@ -628,6 +633,7 @@ bazelQuery:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/bazel
     tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # these). WARMTH-ONLY: the cluster's state (nodes, pods, sqlite/etcd) lives in the
 # group snapshot only and evaporates on roll (maxLifetimeSeconds), banked-TTL

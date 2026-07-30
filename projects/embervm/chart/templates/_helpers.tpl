@@ -154,17 +154,29 @@ service name here (survives a release rename).
 {{- end -}}
 
 {{/*
-Per-guest-digest rootfs path: <dir>/rootfs-<tag>.ext4, so each pinned guest-image
+Per-guest-digest rootfs path: <dir>/rootfs-<digest>.ext4, so each pinned guest-image
 version bakes its OWN read-only rootfs file instead of overwriting one fixed path.
 The Firecracker memfile embeds this host path (restore re-attaches it, never
 re-issuing PutDrive), so a chart roll that rebuilt the fixed file in place used to
 swap the bytes under every banked session snapshot -> EXT4 corruption on restore.
-Digest-naming makes the artifact immutable per version; old files persist until an
-(external) reaper drains them. Input: (dict "wl" $wl "top" $top). MUST be used by
-BOTH the rootfs-builder BASE_ROOTFS_PATH and the EMBERVM_NODED_IMAGES rootfsPath so
-the built file and the path noded attaches are byte-identical.
+Digest-naming makes the artifact immutable per version; old files are reaped by the
+noded rootfs GC (#4088) once no registry ref and no READY base points at them.
+
+The suffix is the DIGEST, never the tag, and that distinction is load-bearing.
+Bazel stamps every build with a fresh <timestamp>-<commit> tag even when the image
+content is byte-identical, so a tag-derived name changed on EVERY deploy. That name
+is BASE_ROOTFS_PATH in the shared noded pod spec, so it rolled all brick
+Deployments on every chart bump, killing live VMs mid-flight for a rebuild that
+produced identical bytes (issue #4147: 11 brick rolls in a day against 1 real image
+change). The digest moves only when the guest image actually moves, which is the
+property this path always meant to express.
+
+Input: (dict "wl" $wl "top" $top). MUST be used by BOTH the rootfs-builder
+BASE_ROOTFS_PATH and the EMBERVM_NODED_IMAGES rootfsPath so the built file and the
+path noded attaches are byte-identical.
 */}}
 {{- define "embervm.noded.rootfsPath" -}}
-{{- $suffix := .top.guestImage.tag | toString | replace ":" "-" | replace "@" "-" | replace "/" "-" -}}
+{{- $digest := required "guestImage.digest is required to name a base rootfs (Bazel pins it via helm_chart images=). An empty suffix would collide across guest versions and swap bytes under banked snapshots." .top.guestImage.digest -}}
+{{- $suffix := $digest | toString | replace ":" "-" | replace "@" "-" | replace "/" "-" -}}
 {{- printf "%s-%s.ext4" (trimSuffix ".ext4" .wl.rootfsPath) $suffix -}}
 {{- end -}}
