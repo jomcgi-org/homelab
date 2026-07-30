@@ -96,15 +96,17 @@ defmodule Embervm.StatefulHandover do
          {:ok, source} <- anchor_of(volume),
          :ok <- refuse_same_node(source, target_node),
          :ok <- refuse_unless_banked(ctx, workload),
-         {:ok, source_dial} <- dial_key(ctx, source),
-         {:ok, target_dial} <- dial_key(ctx, target_node) do
-      run(ctx, workload, source, target_node, source_dial, target_dial)
+         {:ok, src} <- resolve(ctx, source),
+         {:ok, tgt} <- resolve(ctx, target_node) do
+      run(ctx, workload, target_node, src, tgt)
     end
   end
 
   # ---- sequence ---------------------------------------------------------------
 
-  defp run(ctx, workload, source, target, source_dial, target_dial) do
+  defp run(ctx, workload, target, src, tgt) do
+    %{anchor: source, dial: source_dial} = src
+
     with :ok <-
            require_op(ctx, :stateful_handover_started, %{
              workload: workload,
@@ -112,29 +114,29 @@ defmodule Embervm.StatefulHandover do
              to: target
            }),
          {:ok, generation} <- export_source(ctx, workload, source_dial),
-         :ok <- restore_target(ctx, workload, target_dial) do
-      # Re-anchor on the RESOLVED instance id, never the bare name a caller may
-      # have typed: StatefulManager.anchor_node/2 resolves the stored value
-      # through NodeCapacity.fetch, which is an exact match, so parking a bare
-      # node name in the volume row would make every subsequent wake fail
-      # `:volume_node_gone`. Writing the instance id keeps the row in the same
-      # shape the boot-report projection maintains.
+         :ok <- restore_target(ctx, workload, tgt.dial) do
+      # Re-anchor on the target's BARE node name, never its dial id. The row is
+      # read back by StatefulManager.anchor_node/2 through an exact
+      # NodeCapacity.fetch against `facts.node_id`, so storing the instance id
+      # here would make every later wake fail `:volume_node_gone`: the move
+      # would report success and leave the workload permanently unwakeable,
+      # which is worse than the outage it set out to fix.
       #
       # From here the workload's next wake plans against the target, and
       # StatefulManager issues a fresh blessed generation on that wake, so
       # nothing needs to pre-bless the restored copy.
-      :ok = reanchor(ctx, workload, target_dial)
+      :ok = reanchor(ctx, workload, tgt.anchor)
 
       evicted = evict_source(ctx, workload, source_dial)
 
-      # Report the RESOLVED target, so the op log and the caller both record the
-      # anchor that was actually written rather than the shorthand that was
-      # typed. A drill that reads back "to: node-4" while the row says
-      # "node-4/<uuid>" is a drill that cannot be checked.
+      # Report the anchor that was WRITTEN plus the id that was dialled, so the
+      # op log records both halves. A drill that cannot tell which string went
+      # where is a drill that cannot be checked.
       note_op(ctx, :stateful_handover_finished, %{
         workload: workload,
         from: source,
-        to: target_dial,
+        to: tgt.anchor,
+        dialled: tgt.dial,
         requested_target: target,
         generation: generation,
         source_evicted: evicted
@@ -143,7 +145,7 @@ defmodule Embervm.StatefulHandover do
       Logger.info("embervm stateful handover: volume moved",
         workload: workload,
         from: source,
-        to: target_dial,
+        to: tgt.anchor,
         generation: generation,
         source_evicted: evicted
       )
@@ -152,7 +154,7 @@ defmodule Embervm.StatefulHandover do
        %{
          workload: workload,
          from: source,
-         to: target_dial,
+         to: tgt.anchor,
          generation: generation,
          source_evicted: evicted
        }}
@@ -299,40 +301,48 @@ defmodule Embervm.StatefulHandover do
   # and it needs to push bytes, not host a guest. Selecting on capacity would
   # refuse precisely the moves worth making.
   #
-  # Accepts EITHER an instance id ("node-4/<uuid>", which is what a volume row's
-  # node_id holds and what NodeCapacity keys on) OR a bare node name ("node-4").
+  # Returns BOTH identities a move needs, because they are NOT the same string
+  # and using either for both jobs is a live bug that the drills found:
   #
-  # Both forms are required, for different callers. The anchor read hands us an
-  # instance id, so the exact match is the source path. A human moving a
-  # workload names a NODE, and must be able to: the instance id contains a "/"
-  # and cannot survive a URL path segment, so a target could not be expressed at
-  # all without this. Bare names resolve by "<node>/" prefix over the reporting
-  # set, newest fact winning, which is the same "any instance on that node will
-  # do" reasoning that makes a node-scoped volume transferable in the first
-  # place.
-  defp dial_key(ctx, node) do
-    case NodeCapacity.fetch(ctx.capacity_table, node) do
-      {:ok, facts} -> {:ok, Map.get(facts, :node_id) || node}
-      :error -> resolve_by_node_prefix(ctx, node)
+  #   * `anchor` is `facts.node_id`, the BARE node name. It is what a volume row
+  #     stores and what StatefulManager.anchor_node/2 resolves through an exact
+  #     NodeCapacity match, so writing anything else into the row makes every
+  #     later wake fail `:volume_node_gone`.
+  #   * `dial` is `facts.instance_id` ("node-3/<uuid>"), the key NodeChannel
+  #     learns from dial-home registration. Production seeds NodeChannel EMPTY
+  #     (configured_nodes/0 returns [] without a pinned override), so dialing a
+  #     bare node name returns `:unknown_node`.
+  defp resolve(ctx, node) do
+    case find_facts(ctx, node) do
+      {:ok, facts} ->
+        anchor = Map.get(facts, :node_id) || node
+        {:ok, %{anchor: anchor, dial: Map.get(facts, :instance_id) || anchor}}
+
+      :error ->
+        {:error, {:node_not_reporting, node}}
     end
   end
 
-  defp resolve_by_node_prefix(ctx, node) do
-    prefix = node <> "/"
+  # Accepts a bare node name (the common case, and the only form a URL path
+  # segment can carry) or an instance id, since an anchor row may hold either.
+  defp find_facts(ctx, node) do
+    case NodeCapacity.fetch(ctx.capacity_table, node) do
+      {:ok, facts} ->
+        {:ok, facts}
 
-    ctx.capacity_table
-    |> NodeCapacity.all()
-    |> Enum.filter(fn facts ->
-      id = Map.get(facts, :node_id)
-      is_binary(id) and String.starts_with?(id, prefix)
-    end)
-    |> case do
-      [] ->
-        {:error, {:node_not_reporting, node}}
+      :error ->
+        prefix = node_name(node) <> "/"
 
-      matches ->
-        newest = Enum.max_by(matches, fn facts -> Map.get(facts, :updated_at, 0) end)
-        {:ok, Map.get(newest, :node_id)}
+        ctx.capacity_table
+        |> NodeCapacity.all()
+        |> Enum.filter(fn facts ->
+          id = Map.get(facts, :instance_id) || Map.get(facts, :node_id)
+          is_binary(id) and (id == node or String.starts_with?(id, prefix))
+        end)
+        |> case do
+          [] -> :error
+          matches -> {:ok, Enum.max_by(matches, &Map.get(&1, :updated_at, 0))}
+        end
     end
   end
 

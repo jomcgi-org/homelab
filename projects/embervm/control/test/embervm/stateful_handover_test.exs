@@ -193,7 +193,12 @@ defmodule Embervm.StatefulHandoverTest do
   # segment, so both forms must resolve.
   defp put_brick(ctx, node, uuid, updated_at) do
     NodeCapacity.put(ctx.cap_table, {node, uuid}, %{
-      node_id: "#{node}/#{uuid}",
+      # The production shape: node_id is the BARE name (what a volume row stores
+      # and anchor_node/2 resolves), instance_id is the qualified dial key
+      # NodeChannel learns from dial-home registration. Different strings, and
+      # using either for both jobs is a live bug.
+      node_id: node,
+      instance_id: "#{node}/#{uuid}",
       updated_at: updated_at,
       max_live_vms: 8,
       live_vms: 0,
@@ -203,23 +208,26 @@ defmodule Embervm.StatefulHandoverTest do
     })
   end
 
-  test "resolves a bare node name to a reporting instance and anchors on the instance id" do
+  test "dials the instance id but anchors on the bare node name" do
     ctx = start_stack()
     put_brick(ctx, "node-c", "aaaa", 10)
     put_brick(ctx, "node-d", "bbbb", 20)
-    seed_volume(ctx, "demo-postgres", "node-c/aaaa")
+    seed_volume(ctx, "demo-postgres", "node-c")
 
     assert {:ok, moved} = StatefulHandover.move("demo-postgres", "node-d", opts(ctx))
 
-    assert moved.from == "node-c/aaaa"
-    # Resolved, not the shorthand that was typed.
-    assert moved.to == "node-d/bbbb"
+    assert moved.from == "node-c"
+    assert moved.to == "node-d"
 
-    # The anchor MUST be the instance id: StatefulManager resolves it through an
-    # exact NodeCapacity match, so a bare name here would make every subsequent
-    # wake fail :volume_node_gone.
-    assert anchor(ctx, "demo-postgres") == "node-d/bbbb"
+    # The anchor MUST be the bare name: anchor_node/2 resolves the stored value
+    # through an exact NodeCapacity match against facts.node_id, so an instance
+    # id here would make every later wake fail :volume_node_gone, reporting
+    # success while leaving the workload permanently unwakeable.
+    assert anchor(ctx, "demo-postgres") == "node-d"
 
+    # ...while every RPC goes to the QUALIFIED instance id, because production
+    # seeds NodeChannel empty and it only learns dial-home instance ids, so
+    # dialing the bare name returns :unknown_node.
     assert calls(ctx.calls) == [
              {:export, "node-c/aaaa"},
              {:restore, "node-d/bbbb"},
