@@ -40,7 +40,25 @@ gateway:
 
 # --- Cloudflare Tunnel ---
 tunnel:
-  replicaCount: 2
+  # One replica per node (4), up from 2. The tunnel only serves a 530 when
+  # EVERY connection across EVERY replica is gone, so replica count is the
+  # redundancy budget for that. At 2 it was routinely spent: measured over a
+  # 78h window, the node-1 replica alone was blacked out for 96.5 min across 87
+  # episodes (159 `dial tcp :7844 i/o timeout`, against 1 on node-4), so the
+  # tunnel spent most of that time one blip away from having no origin at all.
+  # All 5 full outages in the window were exactly that overlap.
+  #
+  # The asymmetry is not node-1 being broken: an EmberVM rollout applies all its
+  # brick Deployments in the same sync wave, and the resulting rootfs-build plus
+  # image-pull stampede saturates the shared uplink (observed 2026-07-30 06:06,
+  # whole wired LAN at 100% loss while the gateway answered in 3ms). node-4
+  # survives it because it has the node-local CAKE shaper and node-1/2/3 do not.
+  #
+  # So this is defence in depth, not the fix: node-2 and node-3 are unshaped too,
+  # and their replicas can die in the same stampede. It buys 4 chances instead of
+  # 2. The root fix is sequencing the rollout; the durable one is shaping every
+  # node. Each replica costs 25m CPU / 64Mi, so the headroom is free.
+  replicaCount: 4
   fullnameOverride: "cloudflared"
 
   image:
