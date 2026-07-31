@@ -96,14 +96,12 @@ type Config struct {
 
 	// MaxLiveVMs is the node-level backstop cap on concurrently live microVMs
 	// (primed + assigning). The control plane owns real concurrency; this only
-	// stops a runaway from exhausting the node. Prime returns RESOURCE_EXHAUSTED
-	// at the cap. Default 8. Zero or negative means unbounded (no backstop).
+	// stops a runaway from exhausting the node. Memory pressure is admitted or
+	// rejected separately. Default 8. Zero or negative means unbounded.
 	//
-	// After the budget-agnostic daemon (ADR embervm/005 item 4), no capacity
-	// decision may read MaxLiveVMs; it keeps only this runaway-backstop
-	// meaning. The real slot ceiling for a brick size-class is derived from
-	// MemBudgetMib/CpuBudgetMillicores (see server/budget.go), reported on
-	// NodeStatus for the control plane to consume.
+	// MaxLiveVMs keeps only this runaway-backstop meaning. Memory admission is
+	// measured separately from cgroup headroom and reported on NodeStatus for the
+	// control plane to consume.
 	MaxLiveVMs int
 
 	// MemRejectFloorMib is the memory cushion (MiB) the node-side cheap-rejection
@@ -111,7 +109,7 @@ type Config struct {
 	// (Prime/Start*): free schedulable memory must exceed need + this floor or the
 	// verb is rejected RESOURCE_EXHAUSTED with reason `pressure:mem` (ADR
 	// embervm/014 decision 3). It is one smallest-workload footprint by default
-	// (minSlotWorkloadMib, 512) so a brick never admits a boot that would drive it
+	// (512 MiB) so a brick never admits a boot that would drive it
 	// to the memory edge; a zero/unset value falls back to that same default in
 	// the predicate (the floor is never accidentally disabled). Env
 	// EMBERVM_NODED_MEM_REJECT_FLOOR_MIB. Read only by the pressure predicate; a
@@ -391,9 +389,7 @@ func Load() (Config, error) {
 		BearerToken:      os.Getenv("EMBERVM_NODED_BEARER_TOKEN"),
 		MaxLiveVMs:       atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
 		DaemonReserveMib: atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
-		// Default 512 == server.minSlotWorkloadMib (one smallest-workload
-		// footprint); the two live in different packages (config cannot import
-		// server), so the literal is duplicated with this note tying them together.
+		// Default 512 MiB memory reject floor; zero means use this fallback.
 		MemRejectFloorMib:   atoiDefault("EMBERVM_NODED_MEM_REJECT_FLOOR_MIB", 512),
 		AdmissionModel:      getenvDefault("EMBERVM_NODED_ADMISSION_MODEL", "observed"),
 		VMOverheadMib:       atoiDefault("EMBERVM_NODED_VM_OVERHEAD_MIB", 0),

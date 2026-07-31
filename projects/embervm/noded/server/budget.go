@@ -109,12 +109,6 @@ type budget struct {
 	// can pin the sample instant and assert an exact usage-rate delta instead
 	// of racing sub-microsecond wall-clock jitter between two time.Now calls.
 	now func() time.Time
-
-	// memBudgetOverride, when set, replaces MemBudgetMib as the source
-	// SlotCeiling divides. Test-only seam so the ceiling arithmetic can be
-	// asserted against fixed budgets without a fixture cgroup filesystem; nil
-	// in production, where SlotCeiling reads the real budget.
-	memBudgetOverride func() uint64
 }
 
 // newBudget constructs a reader with the given daemon-RSS reserve.
@@ -166,44 +160,12 @@ func (b *budget) CpuBudgetMillicores() uint64 {
 	return parseCpuBudgetMillicores(string(raw))
 }
 
-// minSlotWorkloadMib is the smallest guest footprint a live-VM slot is assumed
-// to hold, used only to turn the memory budget into a slot ceiling. It is a
-// floor for the divisor, not a real per-workload size (workloads are sized from
-// the registry): dividing the budget by it yields the MOST slots a brick could
-// ever host, which is the honest ceiling maxLiveVMs must not exceed. Set to a
-// conservative small-guest size so the ceiling errs high (the configured
-// MaxLiveVMs backstop and real per-VM Claim accounting are the tighter caps);
-// 512 MiB keeps a 2gi/512-reserve brick at 3 slots rather than the configured
-// default of 8/16.
-const minSlotWorkloadMib = 512
-
-// SlotCeiling returns the brick's cgroup-derived live-VM slot ceiling per ADR
-// embervm/013 section 7 ("maxLiveVMs is the brick's cgroup-derived slot
-// ceiling, never a control-plane knob"): floor(MemBudgetMib /
-// minSlotWorkloadMib), clamped so it never EXCEEDS the configured backstop
-// (configured stays an upper bound). When the budget is unknown (0, an
-// unlimited or unreadable cgroup) the ceiling is unknown too, so the configured
-// backstop is used unchanged: an environment that cannot observe its cgroup
-// keeps exactly the pre-budget behavior rather than collapsing to zero slots.
+// SlotCeiling returns the configured live-VM backstop unchanged. Memory admission
+// is enforced separately by admitOrReject using measured headroom, the workload's
+// need, and the configured reject floor. A zero or unreadable memory budget does
+// not change the backstop.
 func (b *budget) SlotCeiling(configured uint64) uint64 {
-	budgetMib := b.MemBudgetMib()
-	if b.memBudgetOverride != nil {
-		budgetMib = b.memBudgetOverride()
-	}
-	if budgetMib == 0 {
-		return configured
-	}
-	derived := budgetMib / minSlotWorkloadMib
-	if derived == 0 {
-		// A budget smaller than one slot still hosts at least one VM (the
-		// backstop and Claim accounting gate the real limit); never advertise
-		// a zero ceiling that would wedge a small brick out of all placement.
-		derived = 1
-	}
-	if configured > 0 && derived > configured {
-		return configured
-	}
-	return derived
+	return configured
 }
 
 // CpuHeadroomMillicores returns the last computed CPU headroom: budget minus

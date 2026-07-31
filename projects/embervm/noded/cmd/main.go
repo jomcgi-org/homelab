@@ -183,8 +183,8 @@ func run(logger *slog.Logger) error {
 	}
 	srv := server.New(opts)
 	// Cap the tap-prealloc pool (ADR embervm/014 decision 4) at the brick's
-	// cgroup-derived slot ceiling: pre-creating more taps than the brick could ever
-	// host wastes boot-time netlink work. Must run before EnsureNetwork below.
+	// configured live-VM backstop: pre-creating more taps than the daemon's runaway
+	// limit wastes boot-time netlink work. Must run before EnsureNetwork below.
 	servingNet.ClampTapPrealloc(srv.SlotCeiling())
 	// Report node-local base snapshots left by a prior incarnation so the control
 	// plane reconciles rather than rebuilding.

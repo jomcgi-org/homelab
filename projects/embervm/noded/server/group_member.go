@@ -47,9 +47,6 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
 	}
-	if s.slotsExhausted() {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
-	}
 	// Cheap rejection under real memory pressure (ADR embervm/014 decision 3),
 	// BEFORE the member cold boot below. A group member's tap is pinned on its
 	// PER-GROUP bridge (groupNet), not the serving IP allocator (servingNet), and
