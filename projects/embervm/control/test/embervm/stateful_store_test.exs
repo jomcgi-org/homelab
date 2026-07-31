@@ -50,6 +50,52 @@ defmodule Embervm.StatefulStoreTest do
     assert StatefulStore.next_blessed_generation(restarted, "wl-a") == 1001
   end
 
+  test "ensure_blessing_lease grants when the lease is absent", %{path: path} do
+    {op_log, store} = start_pair(path)
+    expected_start = StatefulStore.next_blessed_generation(store, "wl-a")
+
+    assert {:ok, [lease]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
+    assert lease.next_generation == expected_start
+    assert lease.lease_end == expected_start + 50
+
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    assert [%{kind: :blessing_lease_granted, workload: "wl-a"}] =
+             Enum.filter(ops, &(&1.kind == :blessing_lease_granted))
+  end
+
+  test "ensure_blessing_lease grants when the lease is stale at the watermark", %{path: path} do
+    {op_log, store} = start_pair(path)
+
+    {:ok, old_lease} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-4", 4)
+    assert old_lease.lease_end == 5
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
+
+    assert {:ok, [new_lease]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
+    assert new_lease != old_lease
+    assert new_lease.next_generation > old_lease.lease_end
+
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    assert 2 == Enum.count(ops, &(&1.kind == :blessing_lease_granted and &1.workload == "wl-a"))
+  end
+
+  test "ensure_blessing_lease is a no-op when a healthy lease exists", %{path: path} do
+    {op_log, store} = start_pair(path)
+    {:ok, original} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-4", 50)
+
+    results =
+      for _ <- 1..3 do
+        assert {:ok, leases} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
+        leases
+      end
+
+    assert Enum.all?(results, &(&1 == [%{workload_name: "wl-a", next_generation: 1, lease_end: 51}]))
+    assert original.next_generation == 1
+    assert original.lease_end == 51
+
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    assert 1 == Enum.count(ops, &(&1.kind == :blessing_lease_granted and &1.workload == "wl-a"))
+  end
+
   defp start_instance(store, opts \\ []) do
     StatefulStore.start(store, %{
       instance_id: Keyword.get(opts, :instance_id, "sf-1"),

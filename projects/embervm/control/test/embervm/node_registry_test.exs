@@ -12,7 +12,8 @@ defmodule Embervm.NodeRegistryTest do
   # test), proving connect -> emit -> ETS publish -> reconnect-on-drop.
   use ExUnit.Case, async: true
 
-  alias Embervm.{NodeRegistry, WorkloadCatalog}
+  alias Embervm.{NodeRegistry, StatefulStore, WorkloadCatalog}
+  alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, WorkloadCapacity}
 
   # -- helpers ---------------------------------------------------------------
@@ -467,6 +468,83 @@ defmodule Embervm.NodeRegistryTest do
 
     assert Enum.map(entry.group_member_plan, & &1.member_name) == ["api", "worker-0", "worker-1"]
     assert Enum.all?(entry.group_member_plan, &(&1.ready_budget_seconds == 47))
+  end
+
+  test "registry resync grants a lease for a stateful node-local-wake workload" do
+    workload = "registry-stateful-lease-#{System.unique_integer([:positive])}"
+
+    WorkloadCatalog.upsert(WorkloadCatalog.table(), workload, %{
+      image_ref: "registry-stateful-lease-image",
+      stateful: %{node_local_wake: true, listen_port: 5411, port: 8080, volume_mount_path: "/data"},
+      serving: %{port: 8080, health_path: "/health"}
+    })
+
+    on_exit(fn -> WorkloadCatalog.drop(WorkloadCatalog.table(), workload) end)
+    test_pid = self()
+
+    {_reg, _table} =
+      start_registry(
+        watch_startup: true,
+        connect_fun: fn _address -> {:ok, :fake_channel} end,
+        watch_fun: blocking_watch(),
+        sync_registry_fun: fn :fake_channel, "node-4", request ->
+          send(test_pid, {:registry_sync, request})
+          :ok
+        end,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    assert_receive {:registry_sync, request}, 1_000
+    entry = Enum.find(request.entries, &(&1.workload == workload))
+    assert entry.blessing_leases != []
+
+    leases =
+      StatefulStore.blessing_leases_for_node("node-4")
+      |> Enum.filter(&(&1.workload_name == workload))
+
+    assert [%{workload_name: ^workload, next_generation: next_generation, lease_end: lease_end}] = leases
+
+    assert lease_end > next_generation
+    {:ok, ops} = SQLite.read_from(Embervm.OpLog.SQLite, 0)
+    assert Enum.any?(ops, &(&1.kind == :blessing_lease_granted and &1.workload == workload))
+  end
+
+  test "registry resync does not grant a lease for a serving-only node-local-wake workload" do
+    workload = "registry-serving-lease-#{System.unique_integer([:positive])}"
+
+    WorkloadCatalog.upsert(WorkloadCatalog.table(), workload, %{
+      image_ref: "registry-serving-lease-image",
+      serving: %{node_local_wake: true, port: 8080, health_path: "/health"}
+    })
+
+    on_exit(fn -> WorkloadCatalog.drop(WorkloadCatalog.table(), workload) end)
+    test_pid = self()
+
+    {_reg, _table} =
+      start_registry(
+        watch_startup: true,
+        connect_fun: fn _address -> {:ok, :fake_channel} end,
+        watch_fun: blocking_watch(),
+        sync_registry_fun: fn :fake_channel, "node-4", request ->
+          send(test_pid, {:registry_sync, request})
+          :ok
+        end,
+        disconnect_fun: fn :fake_channel -> :ok end,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    assert_receive {:registry_sync, request}, 1_000
+    entry = Enum.find(request.entries, &(&1.workload == workload))
+    assert entry.blessing_leases == []
+    refute Enum.any?(StatefulStore.blessing_leases_for_node("node-4"), &(&1.workload_name == workload))
+
+    {:ok, ops} = SQLite.read_from(Embervm.OpLog.SQLite, 0)
+    refute Enum.any?(ops, &(&1.kind == :blessing_lease_granted and &1.workload == workload))
   end
 
   test "SyncRegistry carries the configured control-plane activator IP, or empty when unset" do
