@@ -600,7 +600,7 @@ planned-drain contract).
 
 How to read a decision: start here, then open the ADR for rationale. Status
 is the ADR's own header plus its amendment trail. Draft ADRs are 014, 015,
-and 019-027. ADRs 019-027 are one design pass answering "what changes to
+and 019-028. ADRs 019-027 are one design pass answering "what changes to
 manage 100k+ workload definitions" (see `docs/decisions/embervm/README.md`
 for their reading order); they are decided direction, not yet built. ADRs
 014 and 015 predate that pass and are a separate case. ADRs 014 and 015 have
@@ -612,7 +612,7 @@ since been amended for fail-open metering.
 | [002](../../docs/decisions/embervm/002-op-log-retention-and-compaction.md) | Op-log retention: read-time TTLs, sweeps, journal horizon + marker | Accepted; shape being restructured by 019 |
 | [003](../../docs/decisions/embervm/003-control-plane-managed-snapshot-distribution.md) | CP-managed snapshot distribution; Build/Restore/Export/Evict verbs | Accepted; verbs generalized by 009, placement resolved by 011 |
 | [004](../../docs/decisions/embervm/004-agent-sandbox-interface-compatibility.md) | Back kubernetes-sigs/agent-sandbox as the session interface via a deferred edge adapter | Accepted; adapter still gated on upstream traction |
-| [005](../../docs/decisions/embervm/005-embervm-eks-scale-out-metal-pool-bricks.md) | EKS scale-out: metal pool, bricks, EmberPool, dial-home, snapshot keys | Accepted |
+| [005](../../docs/decisions/embervm/005-embervm-eks-scale-out-metal-pool-bricks.md) | EKS scale-out: metal pool, bricks, EmberPool, dial-home, snapshot keys | Accepted; decision 3 (Pattern A guest base) superseded by 028 |
 | [006](../../docs/decisions/embervm/006-tla-formal-specification-pilot.md) | Scoped TLA+ pilot with three conformance layers | Accepted; deferred until protocols stabilize |
 | [007](../../docs/decisions/embervm/007-sharded-control-plane-pg-oplog-cells.md) | Batched Postgres op-log tier; cells; hot-loop corrections | Accepted; metering-write rejection reversed by 020 |
 | [008](../../docs/decisions/embervm/008-interruptible-bank-stateful-datastores.md) | Opt-in two-phase interruptible bank (hot-or-warm wakes) | Accepted |
@@ -635,6 +635,7 @@ since been amended for fail-open metering.
 | [025](../../docs/decisions/embervm/025-local-disk-authoritative-s3-archive-interval.md) | Local disk authoritative; S3 archive; `archiveInterval`; planned drain | Draft |
 | [026](../../docs/decisions/embervm/026-template-composition-gitops-registration.md) | Templates not stamps; GitOps without per-workload CRs; desired-set registration | Draft |
 | [027](../../docs/decisions/embervm/027-snapshot-modes-workload-property.md) | Snapshot modes as a declared workload property (persistence flags, shared keyspace) | Draft |
+| [028](../../docs/decisions/embervm/028-demand-loaded-rootfs-oci-chunk-store.md) | Demand-loaded rootfs: OCI ref as the interface, EROFS + content-defined chunk store, ublk presentation | Draft; supersedes 005 decision 3 (Pattern A) |
 
 Operational entry points: ArgoCD and SigNoz at `private.jomcgi.dev/app/*`,
 `kubectl get workloads` for definition status, `/v1/usage` for metering,
