@@ -436,6 +436,12 @@ defmodule Embervm.StatefulStore do
     GenServer.call(store, {:grant_blessing_lease, workload, node_id, size})
   end
 
+  @spec ensure_blessing_lease(GenServer.server(), String.t(), String.t()) ::
+          {:ok, [map()]} | {:error, term()}
+  def ensure_blessing_lease(store \\ __MODULE__, workload, node_id) do
+    GenServer.call(store, {:ensure_blessing_lease, workload, node_id})
+  end
+
   def blessing_leases_for_node(store \\ __MODULE__, node_id) do
     GenServer.call(store, {:blessing_leases_for_node, node_id})
   end
@@ -969,16 +975,23 @@ defmodule Embervm.StatefulStore do
   end
 
   def handle_call({:grant_blessing_lease, workload, node_id, size}, _from, state) do
-    start = handle_call_next_blessed(state, workload)
-    lease_end = start + max(size, 1)
-    op = %Op{kind: :blessing_lease_granted, tenant: "homelab", principal: "system:stateful:#{workload}", workload: workload, ts: state.clock.(), payload: %{node_id: node_id, next_generation: start, lease_end: lease_end}}
-
-    case state.op_log_mod.append(state.op_log, op) do
-      {:ok, _seq} ->
-        row = %{workload: workload, node_id: node_id, next_generation: start, lease_end: lease_end, created_at: state.clock.(), updated_at: state.clock.()}
-        :ets.insert(state.blessing_leases, {{workload, node_id}, row})
-        {:reply, {:ok, %{start_generation: start, next_generation: start, lease_end: lease_end}}, state}
+    case append_blessing_lease(state, workload, node_id, size) do
+      {:ok, lease, state} -> {:reply, {:ok, lease}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:ensure_blessing_lease, workload, node_id}, _from, state) do
+    if lease_low_or_absent?(state, workload, node_id) do
+      case append_blessing_lease(state, workload, node_id, @blessing_lease_size) do
+        {:ok, _lease, state} ->
+          {:reply, {:ok, blessing_leases_for_workload_node(state, workload, node_id)}, state}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
+    else
+      {:reply, {:ok, blessing_leases_for_workload_node(state, workload, node_id)}, state}
     end
   end
 
@@ -1606,6 +1619,74 @@ defmodule Embervm.StatefulStore do
       |> Enum.map(fn {_key, row} -> row.lease_end end)
 
     Enum.max([current + 1 | ends])
+  end
+
+  defp append_blessing_lease(state, workload, node_id, size) do
+    start = handle_call_next_blessed(state, workload)
+    lease_end = start + max(size, 1)
+
+    op = %Op{
+      kind: :blessing_lease_granted,
+      tenant: "homelab",
+      principal: "system:stateful:#{workload}",
+      workload: workload,
+      ts: state.clock.(),
+      payload: %{node_id: node_id, next_generation: start, lease_end: lease_end}
+    }
+
+    case state.op_log_mod.append(state.op_log, op) do
+      {:ok, _seq} ->
+        row = %{
+          workload: workload,
+          node_id: node_id,
+          next_generation: start,
+          lease_end: lease_end,
+          created_at: state.clock.(),
+          updated_at: state.clock.()
+        }
+
+        :ets.insert(state.blessing_leases, {{workload, node_id}, row})
+        {:ok, %{start_generation: start, next_generation: start, lease_end: lease_end}, state}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp lease_low_or_absent?(state, workload, node_id) do
+    watermark = Map.get(fetch_blessing(state, workload), :blessed_generation, 0) || 0
+
+    leases =
+      :ets.foldl(
+        fn {{wl, node}, row}, acc ->
+          if wl == workload and node == node_id and row.next_generation < row.lease_end do
+            [%{workload_name: workload, next_generation: row.next_generation, lease_end: row.lease_end} | acc]
+          else
+            acc
+          end
+        end,
+        [],
+        state.blessing_leases
+      )
+
+    case leases do
+      [] -> true
+      [lease | _] -> lease.lease_end <= watermark or lease.lease_end - lease.next_generation < 12
+    end
+  end
+
+  defp blessing_leases_for_workload_node(state, workload, node_id) do
+    :ets.foldl(
+      fn {{wl, node}, row}, acc ->
+        if wl == workload and node == node_id and row.next_generation < row.lease_end do
+          [%{workload_name: workload, next_generation: row.next_generation, lease_end: row.lease_end} | acc]
+        else
+          acc
+        end
+      end,
+      [],
+      state.blessing_leases
+    )
   end
 
   # Re-derive and persist `workload`'s quarantine flag in the SEPARATE blessing

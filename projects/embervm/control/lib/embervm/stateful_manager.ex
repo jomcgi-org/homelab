@@ -684,8 +684,8 @@ defmodule Embervm.StatefulManager do
   end
 
   defp maybe_grant_blessing_lease(state, workload, node_id) do
-    if node_local_wake?(state, workload) and lease_low_or_absent?(state, workload, node_id) do
-      StatefulStore.grant_blessing_lease(state.store, workload, node_id)
+    if node_local_wake?(state, workload) do
+      StatefulStore.ensure_blessing_lease(state.store, workload, node_id)
     end
   end
 
@@ -699,16 +699,6 @@ defmodule Embervm.StatefulManager do
           get_in(entry, [:serving, :node_local_wake]) == true or
           get_in(entry, [:stateful, :node_local_wake]) == true or
           get_in(entry, [:group, :node_local_wake]) == true
-    end
-  end
-
-  defp lease_low_or_absent?(state, workload, node_id) do
-    watermark = StatefulStore.blessing_watermark(state.store, workload)
-    leases = StatefulStore.blessing_leases_for_node(state.store, node_id)
-
-    case Enum.find(leases, &(&1.workload_name == workload)) do
-      nil -> true
-      lease -> lease.lease_end <= watermark or lease.lease_end - lease.next_generation < 12
     end
   end
 
