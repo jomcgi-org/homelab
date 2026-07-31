@@ -35,6 +35,21 @@ defmodule Embervm.StatefulStoreTest do
     fn -> Agent.get_and_update(counter, fn n -> {n, n + 1} end) end
   end
 
+  test "blessing leases burn ranges durably and next generation skips them", %{path: path} do
+    {op_log, store} = start_pair(path)
+
+    {:ok, lease} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-a", 1000)
+    assert lease.start_generation == 1
+    assert lease.next_generation == 2
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 1001
+    assert [%{workload_name: "wl-a", next_generation: 2, lease_end: 1001}] =
+             StatefulStore.blessing_leases_for_node(store, "node-a")
+
+    GenServer.stop(store)
+    {:ok, restarted} = StatefulStore.start_link(op_log: op_log, name: nil)
+    assert StatefulStore.next_blessed_generation(restarted, "wl-a") == 1001
+  end
+
   defp start_instance(store, opts \\ []) do
     StatefulStore.start(store, %{
       instance_id: Keyword.get(opts, :instance_id, "sf-1"),

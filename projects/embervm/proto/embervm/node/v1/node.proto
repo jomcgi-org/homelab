@@ -1305,6 +1305,18 @@ message RegistryEntry {
   // group_member_plan is the full expanded member plan for a node-local-wakeable
   // composite; empty for non-composite or non-node-local-wake workloads.
   repeated GroupMemberPlanEntry group_member_plan = 16;
+  // blessing_leases are delivered in the existing registry replay because the
+  // registry is already the authoritative per-workload state channel. They
+  // are scoped to this workload and the connected brick; they are not RPCs.
+  repeated BlessingLease blessing_leases = 17;
+}
+
+// BlessingLease is a pre-issued, exclusive generation range for one workload.
+// The daemon persists next_generation after every consumption.
+message BlessingLease {
+  uint64 next_generation = 1;
+  uint64 lease_end = 2;
+  string workload_name = 3;
 }
 
 // SyncRegistryRequest carries the AUTHORITATIVE full workload set the daemon must

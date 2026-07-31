@@ -313,6 +313,17 @@ defmodule Embervm.OpLog.SQLite do
       updated_at INTEGER NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS blessing_lease (
+      workload TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      next_generation INTEGER NOT NULL,
+      lease_end INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workload, node_id)
+    )
+    """,
     # Checkpoint-dispatch record (R7, ADR embervm/017): one row per workload with an
     # in-flight interruptible-bank CHECKPOINT the control plane dispatched, so a
     # recovered control plane can recognize its OWN auto-aborted checkpoint (noded's
@@ -461,6 +472,11 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def load_blessing_leases(server \\ __MODULE__) do
+    GenServer.call(server, :load_blessing_leases)
+  end
+
+  @impl Embervm.OpLog
   def load_checkpoint_dispatches(server \\ __MODULE__) do
     GenServer.call(server, :load_checkpoint_dispatches)
   end
@@ -582,6 +598,10 @@ defmodule Embervm.OpLog.SQLite do
 
   def handle_call(:load_volume_blessing, _from, state) do
     {:reply, do_load_volume_blessing(state.conn), state}
+  end
+
+  def handle_call(:load_blessing_leases, _from, state) do
+    {:reply, do_load_blessing_leases(state.conn), state}
   end
 
   def handle_call(:load_checkpoint_dispatches, _from, state) do
@@ -1209,6 +1229,24 @@ defmodule Embervm.OpLog.SQLite do
              op.ts,
              op.ts
            ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  defp project(conn, %Op{kind: :blessing_lease_granted} = op, _seq) do
+    payload = op.payload
+    sql = """
+    INSERT INTO blessing_lease (workload, node_id, next_generation, lease_end, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(workload, node_id) DO UPDATE SET
+      next_generation = excluded.next_generation,
+      lease_end = excluded.lease_end,
+      updated_at = excluded.updated_at
+    """
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.workload, Map.get(payload, :node_id), Map.get(payload, :next_generation), Map.get(payload, :lease_end), op.ts, op.ts]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -2489,6 +2527,23 @@ defmodule Embervm.OpLog.SQLite do
       rows = collect_volume_blessing(conn, stmt, [])
       :ok = Sqlite3.release(conn, stmt)
       {:ok, rows}
+    end
+  end
+
+  defp do_load_blessing_leases(conn) do
+    sql = "SELECT workload, node_id, next_generation, lease_end, created_at, updated_at FROM blessing_lease"
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      rows = collect_blessing_leases(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, rows}
+    end
+  end
+
+  defp collect_blessing_leases(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [workload, node_id, next_generation, lease_end, created_at, updated_at]} ->
+        collect_blessing_leases(conn, stmt, [%{workload: workload, node_id: node_id, next_generation: next_generation, lease_end: lease_end, created_at: created_at, updated_at: updated_at} | acc])
+      :done -> Enum.reverse(acc)
     end
   end
 

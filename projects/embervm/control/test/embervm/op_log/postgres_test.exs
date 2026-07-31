@@ -18,7 +18,7 @@ defmodule Embervm.OpLog.PostgresTest do
     behaviours = Postgres.__info__(:attributes) |> Keyword.get_values(:behaviour) |> List.flatten()
     assert Embervm.OpLog in behaviours
 
-    # The exact 17-callback closure (op_log.ex): asserted by name+arity so a
+    # The exact callback closure (op_log.ex): asserted by name+arity so a
     # callback silently dropped from the adapter fails here, not just via the
     # (also-real) @behaviour compile warning.
     expected = [
@@ -30,6 +30,7 @@ defmodule Embervm.OpLog.PostgresTest do
       {:load_stateful_instances, 1},
       {:load_volumes, 1},
       {:load_volume_blessing, 1},
+      {:load_blessing_leases, 1},
       {:load_checkpoint_dispatches, 1},
       {:load_group_instances, 1},
       {:load_group_members, 1},

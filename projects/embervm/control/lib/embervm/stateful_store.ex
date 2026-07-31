@@ -149,6 +149,8 @@ defmodule Embervm.StatefulStore do
   # non-nil, node_id-less volume row for a workload with no real volume, which
   # both defeats that nil check AND crashes anchor_node/2 (no node_id to match).
   @blessing_table :embervm_stateful_blessing
+  @blessing_lease_table :embervm_stateful_blessing_leases
+  @blessing_lease_size 50
   # In-flight checkpoint-dispatch records (R7, ADR embervm/017): workload ->
   # %{vm_id, generation} for an interruptible-bank CHECKPOINT the control plane
   # dispatched but has not yet resolved. Rebuilt from the durable
@@ -427,6 +429,17 @@ defmodule Embervm.StatefulStore do
     GenServer.call(store, {:next_blessed_generation, workload})
   end
 
+  def blessing_watermark(store \\ __MODULE__, workload) do
+    GenServer.call(store, {:blessing_watermark, workload})
+  end
+  def grant_blessing_lease(store \\ __MODULE__, workload, node_id, size \\ @blessing_lease_size) do
+    GenServer.call(store, {:grant_blessing_lease, workload, node_id, size})
+  end
+
+  def blessing_leases_for_node(store \\ __MODULE__, node_id) do
+    GenServer.call(store, {:blessing_leases_for_node, node_id})
+  end
+
   @doc """
   Durably records that this control plane is about to issue `generation` as
   `workload`'s next writable-attach generation (R7, ADR embervm/011): appends
@@ -581,6 +594,7 @@ defmodule Embervm.StatefulStore do
     instances = :ets.new(@instances_table, [:set, :private])
     volumes = :ets.new(@volumes_table, [:set, :private])
     blessing = :ets.new(@blessing_table, [:set, :private])
+    blessing_leases = :ets.new(@blessing_lease_table, [:set, :private])
     checkpoint_dispatch = :ets.new(@checkpoint_dispatch_table, [:set, :private])
 
     state = %{
@@ -590,6 +604,7 @@ defmodule Embervm.StatefulStore do
       instances: instances,
       volumes: volumes,
       blessing: blessing,
+      blessing_leases: blessing_leases,
       checkpoint_dispatch: checkpoint_dispatch,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
       counts: %{},
@@ -621,7 +636,8 @@ defmodule Embervm.StatefulStore do
     with {:ok, rows} <- state.op_log_mod.load_stateful_instances(state.op_log),
          {:ok, volumes} <- state.op_log_mod.load_volumes(state.op_log),
          {:ok, blessing_rows} <- state.op_log_mod.load_volume_blessing(state.op_log),
-         {:ok, dispatch_rows} <- state.op_log_mod.load_checkpoint_dispatches(state.op_log) do
+         {:ok, dispatch_rows} <- state.op_log_mod.load_checkpoint_dispatches(state.op_log),
+         {:ok, lease_rows} <- state.op_log_mod.load_blessing_leases(state.op_log) do
       state =
         Enum.reduce(rows, state, fn row, acc ->
           instance = row_to_instance(row)
@@ -647,6 +663,10 @@ defmodule Embervm.StatefulStore do
       # absent here by construction.
       Enum.each(dispatch_rows, fn row ->
         :ets.insert(state.checkpoint_dispatch, {row.workload, %{vm_id: row.vm_id, generation: row.generation}})
+      end)
+
+      Enum.each(lease_rows, fn row ->
+        :ets.insert(state.blessing_leases, {{row.workload, row.node_id}, row})
       end)
 
       {:ok, state}
@@ -926,8 +946,35 @@ defmodule Embervm.StatefulStore do
   end
 
   def handle_call({:next_blessed_generation, workload}, _from, state) do
-    current = fetch_blessing(state, workload) |> Map.get(:blessed_generation, 0) || 0
-    {:reply, current + 1, state}
+    {:reply, handle_call_next_blessed(state, workload), state}
+  end
+  def handle_call({:blessing_watermark, workload}, _from, state) do
+    watermark = fetch_blessing(state, workload) |> Map.get(:blessed_generation, 0) || 0
+    {:reply, watermark, state}
+  end
+
+  def handle_call({:blessing_leases_for_node, node_id}, _from, state) do
+    leases =
+      state.blessing_leases
+      |> :ets.tab2list()
+      |> Enum.filter(fn {{_workload, node}, row} -> node == node_id and row.next_generation < row.lease_end end)
+      |> Enum.map(fn {{workload, _node}, row} -> %{workload_name: workload, next_generation: row.next_generation, lease_end: row.lease_end} end)
+
+    {:reply, leases, state}
+  end
+
+  def handle_call({:grant_blessing_lease, workload, node_id, size}, _from, state) do
+    start = handle_call_next_blessed(state, workload)
+    lease_end = start + max(size, 1)
+    op = %Op{kind: :blessing_lease_granted, tenant: "homelab", principal: "system:stateful:#{workload}", workload: workload, ts: state.clock.(), payload: %{node_id: node_id, next_generation: start + 1, lease_end: lease_end}}
+
+    case state.op_log_mod.append(state.op_log, op) do
+      {:ok, _seq} ->
+        row = %{workload: workload, node_id: node_id, next_generation: start + 1, lease_end: lease_end, created_at: state.clock.(), updated_at: state.clock.()}
+        :ets.insert(state.blessing_leases, {{workload, node_id}, row})
+        {:reply, {:ok, %{start_generation: start, next_generation: start + 1, lease_end: lease_end}}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:bless_generation, workload, generation}, _from, state) do
@@ -1538,6 +1585,17 @@ defmodule Embervm.StatefulStore do
       [{^workload, fact}] -> fact
       [] -> %{quarantined: false}
     end
+  end
+
+  defp handle_call_next_blessed(state, workload) do
+    current = fetch_blessing(state, workload) |> Map.get(:blessed_generation, 0) || 0
+    ends =
+      state.blessing_leases
+      |> :ets.tab2list()
+      |> Enum.filter(fn {{w, _node}, row} -> w == workload and row.next_generation < row.lease_end end)
+      |> Enum.map(fn {_key, row} -> row.lease_end end)
+
+    Enum.max([current + 1 | ends])
   end
 
   # Re-derive and persist `workload`'s quarantine flag in the SEPARATE blessing

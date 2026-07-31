@@ -96,11 +96,11 @@ func (s *Server) startStateful(ctx context.Context, req *nodev1.StartStatefulReq
 
 // attachGeneration resolves the generation a writable attach records. A nonzero
 // blessedGeneration on the request is recorded via volume.Manager.RecordBlessed
-// (the control-plane-issued value, never invented here). Zero means the legacy self-bump
-// lane: allowed for the trusted node-local activator and, while
+// (the control-plane-issued value, never invented here). Zero means the lease
+// lane for a trusted node-local activator and, while
 // s.cfg.RequireBlessing is false, the legacy RPC path. The activator follows
-// the same self-bump discipline as checkpoint auto-abort and relies on the
-// physical volume attach fence rather than a delegated control-plane grant.
+// the same self-bump discipline as checkpoint auto-abort when its lease is
+// absent or exhausted and relies on the physical volume attach fence.
 func (s *Server) attachGeneration(workload string, blessedGeneration uint64, activatorOrigin bool) (uint64, error) {
 	if blessedGeneration > 0 {
 		gen, err := s.volumes.RecordBlessed(workload, blessedGeneration)
@@ -108,6 +108,20 @@ func (s *Server) attachGeneration(workload string, blessedGeneration uint64, act
 			return 0, status.Errorf(codes.Internal, "noded: record blessed generation for %q: %v", workload, err)
 		}
 		return gen, nil
+	}
+	if activatorOrigin {
+		generations, err := s.volumes.ConsumeGenerationFromLease(workload, 1)
+		if err != nil {
+			s.logger.Error("noded: blessing lease read or persist failed; falling back to unblessable self-bump", "workload", workload, "err", err)
+		} else if len(generations) > 0 {
+			gen, recordErr := s.volumes.RecordBlessed(workload, generations[0])
+			if recordErr == nil {
+				return gen, nil
+			}
+			s.logger.Warn("noded: blessing lease generation was not ahead of ledger; falling back to unblessable self-bump", "workload", workload, "generation", generations[0], "err", recordErr)
+		} else {
+			s.logger.Warn("blessing lease exhausted for workload, falling back to unblessable self-bump", "workload", workload)
+		}
 	}
 	if s.cfg.RequireBlessing && !activatorOrigin {
 		return 0, status.Errorf(codes.FailedPrecondition, "noded: writable attach for %q requires a blessed_generation (EMBERVM_NODED_REQUIRE_BLESSING is set)", workload)

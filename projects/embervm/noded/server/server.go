@@ -1577,7 +1577,13 @@ func (s *Server) evictGroupMemberSnapshot(ref string) (*nodev1.EvictSnapshotResp
 func (s *Server) SyncRegistry(_ context.Context, req *nodev1.SyncRegistryRequest) (*nodev1.SyncRegistryResponse, error) {
 	entries := make([]workloadEntry, 0, len(req.GetEntries()))
 	for _, e := range req.GetEntries() {
-		entries = append(entries, entryFromProto(e))
+		entry := entryFromProto(e)
+		entries = append(entries, entry)
+		for _, lease := range entry.BlessingLeases {
+			if err := s.volumes.ApplyBlessingLease(entry.Workload, lease); err != nil {
+				s.logger.Error("noded: persist blessing lease failed; node-local wakes remain fail-open", "workload", entry.Workload, "err", err)
+			}
+		}
 	}
 	n := s.registry.syncFromControlPlane(entries, req.GetControlPlaneActivatorIp())
 	s.logger.Info("workload registry synced", "entries", n)

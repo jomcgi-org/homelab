@@ -113,8 +113,11 @@
         # R4 stateful lifecycle + volume kinds, out of scope. generation_blessed
         # is the volume-generation blessing ledger audit kind (control plane as
         # sole generation issuer), part of the same out-of-scope volume machinery.
+        # blessing_lease_granted is a durability operation, not modeled in
+        # adoption.tla per ADR embervm/006 scope.
         # stateful_destroying is the ADR embervm/014 destroy-intent kind.
-        ~w(volume_created volume_deleted generation_blessed stateful_started
+        ~w(volume_created volume_deleted generation_blessed blessing_lease_granted
+           stateful_started
            stateful_published stateful_unpublished stateful_banked stateful_relit
            stateful_cold_booted stateful_evicted stateful_destroying stateful_destroyed
            stateful_failed stateful_stats)a ++
