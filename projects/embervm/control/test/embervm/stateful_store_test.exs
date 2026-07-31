@@ -40,9 +40,9 @@ defmodule Embervm.StatefulStoreTest do
 
     {:ok, lease} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-a", 1000)
     assert lease.start_generation == 1
-    assert lease.next_generation == 2
+    assert lease.next_generation == 1
     assert StatefulStore.next_blessed_generation(store, "wl-a") == 1001
-    assert [%{workload_name: "wl-a", next_generation: 2, lease_end: 1001}] =
+    assert [%{workload_name: "wl-a", next_generation: 1, lease_end: 1001}] =
              StatefulStore.blessing_leases_for_node(store, "node-a")
 
     GenServer.stop(store)

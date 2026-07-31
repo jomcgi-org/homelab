@@ -193,6 +193,7 @@ defmodule Embervm.StatefulManager do
       nil -> GenServer.start_link(__MODULE__, opts)
       name -> GenServer.start_link(__MODULE__, opts, name: name)
     end
+  end
 
   @doc """
   Handles one activator connect for `workload` on behalf of `principal` (the
