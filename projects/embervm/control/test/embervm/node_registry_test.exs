@@ -479,6 +479,7 @@ defmodule Embervm.NodeRegistryTest do
       serving: %{port: 8080, health_path: "/health"}
     })
 
+    StatefulStore.upsert_volume(workload, %{node_id: "node-4", generation: 0})
     on_exit(fn -> WorkloadCatalog.drop(WorkloadCatalog.table(), workload) end)
     test_pid = self()
 
