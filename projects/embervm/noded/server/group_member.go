@@ -55,6 +55,9 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	// serving-allocator tap freelist is the wrong pool for a group member and
 	// checking it would reject on unrelated serving pressure. Its mem need comes
 	// from the request's ResourceSpec.
+	if s.slotsExhausted() {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
+	}
 	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classMemOnly); err != nil {
 		return nil, err
 	}

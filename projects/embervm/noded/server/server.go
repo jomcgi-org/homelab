@@ -931,6 +931,9 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	// BEFORE the expensive Claim/restore. Prime is vsock-only (no tap), so it is
 	// memory-only. The base is resolved above; its workload's registry sizing gives
 	// the need (0 when unknown, gating on the floor alone).
+	if s.slotsExhausted() {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
+	}
 	if err := s.admitOrReject(s.primeNeedMib(base.workload), classMemOnly); err != nil {
 		return nil, err
 	}
@@ -1129,9 +1132,9 @@ func (s *Server) liveVMCount() int {
 	return s.driver.LiveCount()
 }
 
-// slotsExhausted remains for the stateful path, which carries a count backstop
-// pending follow-up work. Prime, Relight, StartServing, and StartGroupMember admission
-// use memory headroom through admitOrReject.
+// slotsExhausted is the node-side runaway backstop enforced by all boot verbs
+// (Prime, Relight, StartServing, StartGroupMember) and the stateful path. Admission
+// applies both the configured backstop and the memory predicate.
 func (s *Server) slotsExhausted() bool {
 	ceiling := s.SlotCeiling()
 	return ceiling > 0 && s.liveVMCount() >= ceiling
@@ -1336,6 +1339,9 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	ref := req.GetSnapshotRef()
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
+	}
+	if s.slotsExhausted() {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
 	if err := s.admitOrReject(0, classMemOnly); err != nil {
 		return nil, err
