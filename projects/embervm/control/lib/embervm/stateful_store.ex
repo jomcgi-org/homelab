@@ -982,16 +982,22 @@ defmodule Embervm.StatefulStore do
   end
 
   def handle_call({:ensure_blessing_lease, workload, node_id}, _from, state) do
-    if lease_low_or_absent?(state, workload, node_id) do
+    should_grant =
+      case fetch_volume(state, workload) do
+        %{node_id: ^node_id} -> true
+        _ -> false
+      end
+
+    if should_grant and lease_low_or_absent?(state, workload, node_id) do
       case append_blessing_lease(state, workload, node_id, @blessing_lease_size) do
         {:ok, _lease, state} ->
-          {:reply, {:ok, blessing_leases_for_workload_node(state, workload, node_id)}, state}
+          {:reply, {:ok, blessing_leases_for_node_workload(state, node_id, workload)}, state}
 
         {:error, reason} ->
           {:reply, {:error, reason}, state}
       end
     else
-      {:reply, {:ok, blessing_leases_for_workload_node(state, workload, node_id)}, state}
+      {:reply, {:ok, blessing_leases_for_node_workload(state, node_id, workload)}, state}
     end
   end
 
@@ -1622,7 +1628,15 @@ defmodule Embervm.StatefulStore do
   end
 
   defp append_blessing_lease(state, workload, node_id, size) do
-    start = handle_call_next_blessed(state, workload)
+    current = fetch_blessing(state, workload) |> Map.get(:blessed_generation, 0) || 0
+    reported_generation = Map.get(fetch_volume(state, workload) || %{}, :generation, 0) || 0
+
+    start =
+      Enum.max([
+        handle_call_next_blessed(state, workload),
+        current + 1,
+        reported_generation + 1
+      ])
     lease_end = start + max(size, 1)
 
     op = %Op{
@@ -1675,18 +1689,21 @@ defmodule Embervm.StatefulStore do
     end
   end
 
-  defp blessing_leases_for_workload_node(state, workload, node_id) do
-    :ets.foldl(
-      fn {{wl, node}, row}, acc ->
-        if wl == workload and node == node_id and row.next_generation < row.lease_end do
-          [%{workload_name: workload, next_generation: row.next_generation, lease_end: row.lease_end} | acc]
-        else
-          acc
-        end
-      end,
-      [],
-      state.blessing_leases
-    )
+  defp blessing_leases_for_node_workload(state, node_id, workload) do
+    case :ets.lookup(state.blessing_leases, {workload, node_id}) do
+      [{_, row}] ->
+        [
+          %{
+            workload_name: workload,
+            node_id: node_id,
+            next_generation: row.next_generation,
+            lease_end: row.lease_end
+          }
+        ]
+
+      [] ->
+        []
+    end
   end
 
   # Re-derive and persist `workload`'s quarantine flag in the SEPARATE blessing
