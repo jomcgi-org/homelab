@@ -1619,7 +1619,7 @@ defmodule Embervm.NodeRegistry do
           stateful_volume_mount: Map.get(stateful, :volume_mount_path) || "",
           group_listen_port: group_listen_port(group, node_local_wake),
           group_member_plan: group_member_plan(group, node_local_wake),
-          blessing_leases: blessing_leases_for(node_id, name)
+          blessing_leases: blessing_leases_for(node_id, name, stateful)
         }
       end
 
@@ -1650,10 +1650,27 @@ defmodule Embervm.NodeRegistry do
     catalog_entries ++ identity_entries
   end
 
-  defp blessing_leases_for(node_id, workload) do
-    Embervm.StatefulStore.blessing_leases_for_node(Embervm.StatefulStore, node_id)
-    |> Enum.filter(&(&1.workload_name == workload))
-    |> Enum.map(fn lease -> %BlessingLease{workload_name: lease.workload_name, next_generation: lease.next_generation, lease_end: lease.lease_end} end)
+  defp blessing_leases_for(node_id, workload, stateful) do
+    node_local_wake = Map.get(stateful, :node_local_wake, false)
+
+    if node_local_wake do
+      case Embervm.StatefulStore.ensure_blessing_lease(Embervm.StatefulStore, workload, node_id) do
+        {:ok, leases} ->
+          Enum.map(leases, fn lease ->
+            %BlessingLease{
+              workload_name: lease.workload_name,
+              next_generation: lease.next_generation,
+              lease_end: lease.lease_end
+            }
+          end)
+
+        {:error, _reason} ->
+          Logger.warning("embervm node registry: ensure_blessing_lease for workload #{inspect(workload)} on node #{inspect(node_id)} failed; proceeding with empty leases")
+          []
+      end
+    else
+      []
+    end
   rescue
     e ->
       Logger.warning("embervm node registry: blessing_leases_for workload #{inspect(workload)} failed: #{inspect(e)}; if this persists, leases may silently never reach bricks")
