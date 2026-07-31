@@ -52,6 +52,7 @@ defmodule Embervm.StatefulStoreTest do
 
   test "ensure_blessing_lease grants when the lease is absent", %{path: path} do
     {op_log, store} = start_pair(path)
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 0})
     expected_start = StatefulStore.next_blessed_generation(store, "wl-a")
 
     assert {:ok, [lease]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
@@ -65,6 +66,7 @@ defmodule Embervm.StatefulStoreTest do
 
   test "ensure_blessing_lease grants when the lease is stale at the watermark", %{path: path} do
     {op_log, store} = start_pair(path)
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 0})
 
     {:ok, old_lease} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-4", 4)
     assert old_lease.lease_end == 5
@@ -80,6 +82,7 @@ defmodule Embervm.StatefulStoreTest do
 
   test "ensure_blessing_lease is a no-op when a healthy lease exists", %{path: path} do
     {op_log, store} = start_pair(path)
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 0})
     {:ok, original} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-4", 50)
 
     results =
@@ -88,12 +91,34 @@ defmodule Embervm.StatefulStoreTest do
         leases
       end
 
-    assert Enum.all?(results, &(&1 == [%{workload_name: "wl-a", next_generation: 1, lease_end: 51}]))
+    assert Enum.all?(results, &(&1 == [%{
+      workload_name: "wl-a",
+      node_id: "node-4",
+      next_generation: 1,
+      lease_end: 51
+    }]))
     assert original.next_generation == 1
     assert original.lease_end == 51
 
     {:ok, ops} = SQLite.read_from(op_log, 0)
     assert 1 == Enum.count(ops, &(&1.kind == :blessing_lease_granted and &1.workload == "wl-a"))
+  end
+
+  test "ensure_blessing_lease does not grant to a non-anchor node", %{path: path} do
+    {op_log, store} = start_pair(path)
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 100})
+
+    assert {:ok, leases} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-9")
+    assert leases == []
+
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+
+    assert 0 ==
+             Enum.count(
+               ops,
+               &(&1.kind == :blessing_lease_granted and &1.workload == "wl-a" and
+                   &1.payload.node_id == "node-9")
+             )
   end
 
   defp start_instance(store, opts \\ []) do
