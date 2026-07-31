@@ -267,7 +267,7 @@ defmodule Embervm.StatefulManagerTest do
     StatefulManager.destroy_instance(ctx.mgr, "wl-a")
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
     {req2, _blessed_ops2} = Agent.get(captured, & &1)
-    assert req2.blessed_generation == 1001
+    assert req2.blessed_generation == 2
   end
 
   test "an unblessed report (generation past the last blessed one, generation_blessed=false) quarantines the volume and parks the next wake" do
@@ -276,7 +276,7 @@ defmodule Embervm.StatefulManagerTest do
     stateful_node(ctx, "node-4")
 
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
-    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") - 1 == 1000
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") - 1 == 1
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
 
     # A forward-unblessed generation reported by a node that is NOT the volume's
@@ -299,7 +299,7 @@ defmodule Embervm.StatefulManagerTest do
     stateful_node(ctx, "node-4")
 
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
-    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") - 1 == 1000
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") - 1 == 1
 
     # node-4 holds the fenced attach. A generation it reports past the watermark is
     # the single writer running ahead of a watermark that rewound (e.g. a CP roll),
@@ -308,7 +308,7 @@ defmodule Embervm.StatefulManagerTest do
     # reconciliation applied to the R7 blessing watermark.
     StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 3, generation_blessed: false})
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
-    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") == 1001
+    assert StatefulStore.next_blessed_generation(ctx.store, "wl-a") == 4
 
     # The next wake proceeds (the deadlock is gone): destroy the live instance and
     # rewake, which must NOT refuse with :volume_quarantined.

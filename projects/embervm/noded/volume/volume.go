@@ -343,8 +343,7 @@ func (m *Manager) ConsumeGenerationFromLease(workload string, count uint64) ([]u
 	}
 	start := lease.NextGeneration
 	// Clamp to the local ledger: never hand out a generation already past
-	current, _ := m.ReadGeneration(workload)
-	if start <= current {
+	if current, err := m.Generation(workload); err == nil && start <= current {
 		start = current + 1
 	}
 	if start >= lease.LeaseEnd {

@@ -966,13 +966,13 @@ defmodule Embervm.StatefulStore do
   def handle_call({:grant_blessing_lease, workload, node_id, size}, _from, state) do
     start = handle_call_next_blessed(state, workload)
     lease_end = start + max(size, 1)
-    op = %Op{kind: :blessing_lease_granted, tenant: "homelab", principal: "system:stateful:#{workload}", workload: workload, ts: state.clock.(), payload: %{node_id: node_id, next_generation: start + 1, lease_end: lease_end}}
+    op = %Op{kind: :blessing_lease_granted, tenant: "homelab", principal: "system:stateful:#{workload}", workload: workload, ts: state.clock.(), payload: %{node_id: node_id, next_generation: start, lease_end: lease_end}}
 
     case state.op_log_mod.append(state.op_log, op) do
       {:ok, _seq} ->
-        row = %{workload: workload, node_id: node_id, next_generation: start + 1, lease_end: lease_end, created_at: state.clock.(), updated_at: state.clock.()}
+        row = %{workload: workload, node_id: node_id, next_generation: start, lease_end: lease_end, created_at: state.clock.(), updated_at: state.clock.()}
         :ets.insert(state.blessing_leases, {{workload, node_id}, row})
-        {:reply, {:ok, %{start_generation: start, next_generation: start + 1, lease_end: lease_end}}, state}
+        {:reply, {:ok, %{start_generation: start, next_generation: start, lease_end: lease_end}}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
