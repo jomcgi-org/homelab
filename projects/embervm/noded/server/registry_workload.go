@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
@@ -37,6 +38,7 @@ type workloadEntry struct {
 	StatefulVolumeDevice string                 `json:"statefulVolumeDevice"`
 	GroupListenPort      uint32                 `json:"groupListenPort"`
 	GroupMemberPlan      []groupMemberPlanEntry `json:"groupMemberPlan,omitempty"`
+	BlessingLeases       []volume.BlessingLease `json:"blessingLeases,omitempty"`
 }
 
 type groupMemberPlanEntry struct {
@@ -83,7 +85,19 @@ func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 		StatefulVolumeDevice: e.GetStatefulVolumeDevice(),
 		GroupListenPort:      e.GetGroupListenPort(),
 		GroupMemberPlan:      groupPlan,
+		BlessingLeases:       blessingLeasesFromProto(e.GetBlessingLeases()),
 	}
+}
+
+func blessingLeasesFromProto(leases []*nodev1.BlessingLease) []volume.BlessingLease {
+	out := make([]volume.BlessingLease, 0, len(leases))
+	for _, lease := range leases {
+		out = append(out, volume.BlessingLease{
+			NextGeneration: lease.GetNextGeneration(),
+			LeaseEnd:       lease.GetLeaseEnd(),
+		})
+	}
+	return out
 }
 
 // workloadRegistry is the daemon's in-memory, control-plane-pushed workload

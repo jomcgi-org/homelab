@@ -167,6 +167,9 @@ defmodule Embervm.OpLog do
     # `{generation}`; stateful_instance_id is nil (it is workload-scoped, like
     # volume_created/volume_deleted, not instance-scoped).
     :generation_blessed,
+    # blessing_lease_granted burns a per-workload, per-brick generation range
+    # before the range is carried by the existing SyncRegistry envelope.
+    :blessing_lease_granted,
     # Checkpoint-abort auto-heal (R7, ADR embervm/017). The interruptible-bank
     # CHECKPOINT (ADR embervm/008) arms a noded resolve-timeout auto-abort that
     # self-bumps the volume generation with no control plane reachable to bless it,
@@ -288,6 +291,7 @@ defmodule Embervm.OpLog do
   # StatefulStore.get_volume/2's nil-means-no-volume-yet contract). A
   # projection read, never the raw ops log.
   @callback load_volume_blessing(server()) :: {:ok, [map()]} | {:error, term()}
+  @callback load_blessing_leases(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every in-flight checkpoint-dispatch row from the durable
   # `checkpoint_dispatch` projection (R7, ADR embervm/017): the per-workload
   # `{vm_id, generation}` of a CHECKPOINT the control plane dispatched but has not

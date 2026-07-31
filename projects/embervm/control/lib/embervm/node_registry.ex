@@ -94,6 +94,7 @@ defmodule Embervm.NodeRegistry do
     NodeService,
     NodeStatus,
     RegistryEntry,
+    BlessingLease,
     ResourceSpec,
     ServingSnapshot,
     ServingVm,
@@ -1540,7 +1541,7 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp sync_registry(sync_registry_fun, channel, node_id, control_plane_activator_ip) do
-    sync_registry_fun.(channel, node_id, sync_registry_request(control_plane_activator_ip))
+    sync_registry_fun.(channel, node_id, sync_registry_request(control_plane_activator_ip, node_id))
   rescue
     e ->
       Logger.warning("embervm node registry: SyncRegistry to #{node_id} raised: #{inspect(e)}")
@@ -1551,9 +1552,9 @@ defmodule Embervm.NodeRegistry do
       :ok
   end
 
-  defp sync_registry_request(control_plane_activator_ip) do
+  defp sync_registry_request(control_plane_activator_ip, node_id) do
     %SyncRegistryRequest{
-      entries: registry_entries(),
+      entries: registry_entries(node_id),
       control_plane_activator_ip: control_plane_activator_ip
     }
   end
@@ -1569,7 +1570,7 @@ defmodule Embervm.NodeRegistry do
   # not know still gets an entry (empty rootfs/harness), so the CP stays
   # authoritative for the SET of workloads regardless; the daemon then falls back
   # to its configured defaults for the missing node-side facts.
-  defp registry_entries do
+  defp registry_entries(node_id) do
     identity = node_image_identity()
 
     catalog_entries =
@@ -1617,7 +1618,8 @@ defmodule Embervm.NodeRegistry do
           stateful_port: Map.get(stateful, :port) || 0,
           stateful_volume_mount: Map.get(stateful, :volume_mount_path) || "",
           group_listen_port: group_listen_port(group, node_local_wake),
-          group_member_plan: group_member_plan(group, node_local_wake)
+          group_member_plan: group_member_plan(group, node_local_wake),
+          blessing_leases: blessing_leases_for(node_id, name)
         }
       end
 
@@ -1646,6 +1648,16 @@ defmodule Embervm.NodeRegistry do
       end
 
     catalog_entries ++ identity_entries
+  end
+
+  defp blessing_leases_for(node_id, workload) do
+    Embervm.StatefulStore.blessing_leases_for_node(Embervm.StatefulStore, node_id)
+    |> Enum.filter(&(&1.workload_name == workload))
+    |> Enum.map(fn lease -> %BlessingLease{workload_name: lease.workload_name, next_generation: lease.next_generation, lease_end: lease.lease_end} end)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
   end
 
   # The composite plan is pushed only with the explicit node-local-wake opt-in.

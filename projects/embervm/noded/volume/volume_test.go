@@ -433,3 +433,86 @@ func TestScanEmptyRoot(t *testing.T) {
 		t.Errorf("Scan on absent root should be empty, got %+v", inv)
 	}
 }
+
+func TestBlessingLeasePersistsAndConsumesMonotonically(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	if err := m.Create("wl", 4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyBlessingLease("wl", BlessingLease{NextGeneration: 10, LeaseEnd: 13}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.ConsumeGenerationFromLease("wl", 1)
+	if err != nil || len(got) != 1 || got[0] != 10 {
+		t.Fatalf("first consume = %v, %v", got, err)
+	}
+	restarted := NewManager(dir)
+	got, err = restarted.ConsumeGenerationFromLease("wl", 2)
+	if err != nil || len(got) != 2 || got[0] != 11 || got[1] != 12 {
+		t.Fatalf("restart consume = %v, %v", got, err)
+	}
+	got, err = restarted.ConsumeGenerationFromLease("wl", 1)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("exhausted consume = %v, %v", got, err)
+	}
+}
+
+func TestApplyBlessingLeaseAppliesForwardRenewalOfActiveLease(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.ApplyBlessingLease("wl", BlessingLease{NextGeneration: 4, LeaseEnd: 1001}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyBlessingLease("wl", BlessingLease{NextGeneration: 1002, LeaseEnd: 2002}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := m.ConsumeGenerationFromLease("wl", 1)
+	if err != nil || len(got) != 1 || got[0] != 1002 {
+		t.Fatalf("renewed lease consume = %v, %v", got, err)
+	}
+}
+
+func TestBlessingLeaseForwardRenewalAfterControlPlaneBlessing(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.Create("wl", 4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyBlessingLease("wl", BlessingLease{NextGeneration: 1, LeaseEnd: 1001}); err != nil {
+		t.Fatal(err)
+	}
+
+	for want := uint64(1); want <= 3; want++ {
+		generations, err := m.ConsumeGenerationFromLease("wl", 1)
+		if err != nil || len(generations) != 1 || generations[0] != want {
+			t.Fatalf("activator consume #%d = %v, %v", want, generations, err)
+		}
+		if _, err := m.RecordBlessed("wl", want); err != nil {
+			t.Fatalf("RecordBlessed #%d: %v", want, err)
+		}
+	}
+
+	if _, err := m.RecordBlessed("wl", 1001); err != nil {
+		t.Fatalf("RecordBlessed CP generation: %v", err)
+	}
+	if err := m.ApplyBlessingLease("wl", BlessingLease{NextGeneration: 1002, LeaseEnd: 2002}); err != nil {
+		t.Fatal(err)
+	}
+
+	generations, err := m.ConsumeGenerationFromLease("wl", 1)
+	if err != nil || len(generations) != 1 || generations[0] != 1002 {
+		t.Fatalf("renewed activator consume = %v, %v", generations, err)
+	}
+	gen, err := m.RecordBlessed("wl", generations[0])
+	if err != nil || gen != 1002 {
+		t.Fatalf("renewed RecordBlessed = %d, %v", gen, err)
+	}
+}
+
+func TestBlessingLeaseMissingFailsOpen(t *testing.T) {
+	m := NewManager(t.TempDir())
+	got, err := m.ConsumeGenerationFromLease("missing", 1)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("missing lease = %v, %v", got, err)
+	}
+}

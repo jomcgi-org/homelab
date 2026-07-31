@@ -18,7 +18,9 @@
 package volume
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,7 +40,15 @@ const (
 	volFile     = "vol.img"
 	genFile     = "gen"
 	blessedFile = "genblessed"
+	leaseFile   = ".blessing-lease"
 )
+
+// BlessingLease is the durable, exclusive generation range a brick may use
+// for node-local writable attaches. lease_end is exclusive.
+type BlessingLease struct {
+	NextGeneration uint64 `json:"next_generation"`
+	LeaseEnd       uint64 `json:"lease_end"`
+}
 
 // Manager owns the on-disk volume layout under root and the in-process
 // singleton writable-attach lock. Safe for concurrent use.
@@ -47,6 +57,7 @@ type Manager struct {
 
 	mu       sync.Mutex
 	attached map[string]attachment
+	leaseMu  sync.Mutex
 }
 
 // attachment records WHO holds a workload's writable-attach lock. owner is
@@ -79,6 +90,10 @@ func (m *Manager) genPath(workload string) string {
 
 func (m *Manager) blessedPath(workload string) string {
 	return filepath.Join(m.dir(workload), blessedFile)
+}
+
+func (m *Manager) leasePath(workload string) string {
+	return filepath.Join(m.dir(workload), leaseFile)
 }
 
 // Exists reports whether a workload's volume file is already on disk.
@@ -286,6 +301,106 @@ func (m *Manager) RecordBlessed(workload string, gen uint64) (uint64, error) {
 		return 0, fmt.Errorf("volume: record blessed marker for %q: %w", workload, err)
 	}
 	return gen, nil
+}
+
+// ApplyBlessingLease persists a lease delivered through SyncRegistry. A replay
+// must never move a locally consumed cursor backward, so an existing lease is
+// only replaced by a range that starts at or beyond its current cursor.
+func (m *Manager) ApplyBlessingLease(workload string, lease BlessingLease) error {
+	if workload == "" || lease.NextGeneration >= lease.LeaseEnd {
+		return nil
+	}
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	current, err := m.readBlessingLease(workload)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err == nil && current.NextGeneration >= lease.NextGeneration && current.LeaseEnd >= lease.LeaseEnd {
+		return nil
+	}
+	return m.persistBlessingLease(workload, &lease)
+}
+
+// ConsumeGenerationFromLease atomically advances the persisted lease cursor.
+// An absent or exhausted lease returns an empty result so callers can preserve
+// the legacy self-bump behavior.
+func (m *Manager) ConsumeGenerationFromLease(workload string, count uint64) ([]uint64, error) {
+	if count == 0 {
+		return nil, nil
+	}
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	lease, err := m.readBlessingLease(workload)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if lease.NextGeneration >= lease.LeaseEnd {
+		return nil, nil
+	}
+	start := lease.NextGeneration
+	// Clamp to the local ledger: never hand out a generation already past
+	current, _ := m.ReadGeneration(workload)
+	if start <= current {
+		start = current + 1
+	}
+	if start >= lease.LeaseEnd {
+		return nil, nil
+	}
+	n := count
+	if remaining := lease.LeaseEnd - start; n > remaining {
+		n = remaining
+	}
+	lease.NextGeneration = start + n
+	if err := m.persistBlessingLease(workload, lease); err != nil {
+		return nil, err
+	}
+	values := make([]uint64, n)
+	for i := range values {
+		values[i] = start + uint64(i)
+	}
+	return values, nil
+}
+
+func (m *Manager) readBlessingLease(workload string) (*BlessingLease, error) {
+	b, err := os.ReadFile(m.leasePath(workload))
+	if err != nil {
+		return nil, err
+	}
+	var lease BlessingLease
+	if err := json.Unmarshal(b, &lease); err != nil {
+		return nil, fmt.Errorf("volume: malformed blessing lease for %q: %w", workload, err)
+	}
+	return &lease, nil
+}
+
+func (m *Manager) persistBlessingLease(workload string, lease *BlessingLease) error {
+	dir := m.dir(workload)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("volume: mkdir %q: %w", dir, err)
+	}
+	b, err := json.Marshal(lease)
+	if err != nil {
+		return fmt.Errorf("volume: encode blessing lease for %q: %w", workload, err)
+	}
+	path := m.leasePath(workload)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return fmt.Errorf("volume: write blessing lease temp file %q: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("volume: publish blessing lease %q: %w", path, err)
+	}
+	return nil
+}
+
+// LogLeaseFailure keeps the fail-open warning consistent at the server edge
+// without making the volume package depend on the server logger interface.
+func LogLeaseFailure(workload string, err error) {
+	slog.Error("noded: blessing lease unavailable, falling back to self-bump", "workload", workload, "err", err)
 }
 
 // GenerationBlessed reports whether a workload's CURRENT generation (per

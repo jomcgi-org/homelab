@@ -193,7 +193,6 @@ defmodule Embervm.StatefulManager do
       nil -> GenServer.start_link(__MODULE__, opts)
       name -> GenServer.start_link(__MODULE__, opts, name: name)
     end
-  end
 
   @doc """
   Handles one activator connect for `workload` on behalf of `principal` (the
@@ -669,14 +668,55 @@ defmodule Embervm.StatefulManager do
   # plan_wake/2, e.g. :volume_node_gone, so there is no attach to bless).
   defp bless_wake_generation(_state, _workload, {:error, _reason}), do: :none
 
-  defp bless_wake_generation(state, workload, _plan) do
-    next = StatefulStore.next_blessed_generation(state.store, workload)
+  defp bless_wake_generation(state, workload, plan) do
+    node_id = wake_plan_node_id(plan)
+    gen = StatefulStore.next_blessed_generation(state.store, workload)
 
-    case StatefulStore.bless_generation(state.store, workload, next) do
-      {:ok, _volume} -> {:ok, next}
-      {:error, reason} -> {:error, reason}
+    case StatefulStore.bless_generation(state.store, workload, gen) do
+      {:ok, _volume} ->
+        maybe_grant_blessing_lease(state, workload, node_id)
+        {:ok, gen}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  defp maybe_grant_blessing_lease(state, workload, node_id) do
+    if node_local_wake?(state, workload) and lease_low_or_absent?(state, workload, node_id) do
+      StatefulStore.grant_blessing_lease(state.store, workload, node_id)
+    end
+  end
+
+  defp node_local_wake?(state, workload) do
+    case WorkloadCatalog.fetch(state.catalog_table, workload) do
+      :error ->
+        false
+
+      {:ok, entry} ->
+        Map.get(entry, :node_local_wake, false) == true or
+          get_in(entry, [:serving, :node_local_wake]) == true or
+          get_in(entry, [:stateful, :node_local_wake]) == true or
+          get_in(entry, [:group, :node_local_wake]) == true
+    end
+  end
+
+  defp lease_low_or_absent?(state, workload, node_id) do
+    watermark = StatefulStore.blessing_watermark(state.store, workload)
+    leases = StatefulStore.blessing_leases_for_node(state.store, node_id)
+
+    case Enum.find(leases, &(&1.workload_name == workload)) do
+      nil -> true
+      lease -> lease.lease_end <= watermark or lease.lease_end - lease.next_generation < 12
+    end
+  end
+
+  defp wake_plan_node_id({:relight, _instance, node_id, _ref}), do: node_id
+  defp wake_plan_node_id({:restore_then_relight, _instance, node_id, _ref}), do: node_id
+  defp wake_plan_node_id({:cold, node_id, _boot_ref, _mode, _reason}), do: node_id
+  defp wake_plan_node_id({:cold, node_id, _dial_id, _boot_ref, _mode, _reason}), do: node_id
+  defp wake_plan_node_id({:restore_volume_then_cold, _workload, node_id, _volume}), do: node_id
+  defp wake_plan_node_id(_), do: "unknown"
 
   # Dispatches the wake worker for `plan`, threading `blessed_generation` (0 for
   # the {:error, _} arm, which never reaches a request builder) into every

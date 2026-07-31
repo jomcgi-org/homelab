@@ -220,6 +220,17 @@ defmodule Embervm.OpLog.Postgres do
       updated_at BIGINT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS blessing_lease (
+      workload TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      next_generation BIGINT NOT NULL,
+      lease_end BIGINT NOT NULL,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY (workload, node_id)
+    )
+    """,
     # Checkpoint-dispatch record (R7, ADR embervm/017): one row per workload with an
     # in-flight CHECKPOINT the control plane dispatched, so a recovered control plane
     # can auto-heal ONLY its own auto-aborted checkpoint (same vm_id, exactly +1).
@@ -325,6 +336,11 @@ defmodule Embervm.OpLog.Postgres do
   @impl Embervm.OpLog
   def load_volume_blessing(server \\ __MODULE__) do
     GenServer.call(server, :load_volume_blessing)
+  end
+
+  @impl Embervm.OpLog
+  def load_blessing_leases(server \\ __MODULE__) do
+    GenServer.call(server, :load_blessing_leases)
   end
 
   @impl Embervm.OpLog
@@ -468,6 +484,10 @@ defmodule Embervm.OpLog.Postgres do
 
   def handle_call(:load_volume_blessing, _from, state) do
     {:reply, do_load_volume_blessing(state.conn), state}
+  end
+
+  def handle_call(:load_blessing_leases, _from, state) do
+    {:reply, do_load_blessing_leases(state.conn), state}
   end
 
   def handle_call(:load_checkpoint_dispatches, _from, state) do
@@ -893,6 +913,19 @@ defmodule Embervm.OpLog.Postgres do
       op.ts,
       op.ts
     ])
+  end
+
+  defp project(conn, %Op{kind: :blessing_lease_granted} = op, _seq) do
+    payload = op.payload
+    sql = """
+    INSERT INTO blessing_lease (workload, node_id, next_generation, lease_end, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT(workload, node_id) DO UPDATE SET
+      next_generation = excluded.next_generation,
+      lease_end = excluded.lease_end,
+      updated_at = excluded.updated_at
+    """
+    exec(conn, sql, [op.workload, Map.get(payload, :node_id), Map.get(payload, :next_generation), Map.get(payload, :lease_end), op.ts, op.ts])
   end
 
   # checkpoint_dispatched (R7, ADR embervm/017): upsert the one-per-workload
@@ -1776,6 +1809,15 @@ defmodule Embervm.OpLog.Postgres do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp do_load_blessing_leases(conn) do
+    sql = "SELECT workload, node_id, next_generation, lease_end, created_at, updated_at FROM blessing_lease"
+    case Postgrex.query(conn, sql, []) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        {:ok, Enum.map(rows, fn [workload, node_id, next_generation, lease_end, created_at, updated_at] -> %{workload: workload, node_id: node_id, next_generation: next_generation, lease_end: lease_end, created_at: created_at, updated_at: updated_at} end)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
