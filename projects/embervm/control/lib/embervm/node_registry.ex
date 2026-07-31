@@ -1655,9 +1655,13 @@ defmodule Embervm.NodeRegistry do
     |> Enum.filter(&(&1.workload_name == workload))
     |> Enum.map(fn lease -> %BlessingLease{workload_name: lease.workload_name, next_generation: lease.next_generation, lease_end: lease.lease_end} end)
   rescue
-    _ -> []
+    e ->
+      Logger.warning("embervm node registry: blessing_leases_for workload #{inspect(workload)} failed: #{inspect(e)}; if this persists, leases may silently never reach bricks")
+      []
   catch
-    _, _ -> []
+    kind, reason ->
+      Logger.warning("embervm node registry: blessing_leases_for workload #{inspect(workload)} exited: #{inspect({kind, reason})}; if this persists, leases may silently never reach bricks")
+      []
   end
 
   # The composite plan is pushed only with the explicit node-local-wake opt-in.

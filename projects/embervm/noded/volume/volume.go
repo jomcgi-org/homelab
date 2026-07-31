@@ -20,7 +20,6 @@ package volume
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -342,7 +341,14 @@ func (m *Manager) ConsumeGenerationFromLease(workload string, count uint64) ([]u
 		return nil, nil
 	}
 	start := lease.NextGeneration
-	// Clamp to the local ledger: never hand out a generation already past
+	// This clamp is load-bearing: it prevents double-issuance on the real path
+	// where auto_heal_checkpoint_abort (in control/lib/embervm/stateful_store.ex)
+	// durably blesses reported_gen directly, bypassing handle_call_next_blessed,
+	// and can therefore bless a value INSIDE this outstanding lease range.
+	// Fenced-writer adoption advances the watermark the same way. Removing this
+	// clamp on the belief that the CP-side max() guarantees invariant 1 would
+	// reintroduce double-issuance. This is not defensive; it is critical to the
+	// pairing mechanism.
 	if current, err := m.Generation(workload); err == nil && start <= current {
 		start = current + 1
 	}
@@ -394,12 +400,6 @@ func (m *Manager) persistBlessingLease(workload string, lease *BlessingLease) er
 		return fmt.Errorf("volume: publish blessing lease %q: %w", path, err)
 	}
 	return nil
-}
-
-// LogLeaseFailure keeps the fail-open warning consistent at the server edge
-// without making the volume package depend on the server logger interface.
-func LogLeaseFailure(workload string, err error) {
-	slog.Error("noded: blessing lease unavailable, falling back to self-bump", "workload", workload, "err", err)
 }
 
 // GenerationBlessed reports whether a workload's CURRENT generation (per

@@ -516,3 +516,41 @@ func TestBlessingLeaseMissingFailsOpen(t *testing.T) {
 		t.Fatalf("missing lease = %v, %v", got, err)
 	}
 }
+
+func TestConsumeClampsPastInRangeLedgerFromAutoHeal(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.Create("wl", 4096); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := m.ApplyBlessingLease("wl", BlessingLease{NextGeneration: 10, LeaseEnd: 15}); err != nil {
+		t.Fatalf("ApplyBlessingLease: %v", err)
+	}
+
+	// This models auto_heal_checkpoint_abort directly blessing reported_gen
+	// inside the outstanding lease. The load-bearing clamp must skip that
+	// already-ledgered generation so the lease cannot double-issue it.
+	if _, err := m.RecordBlessed("wl", 12); err != nil {
+		t.Fatalf("auto-heal RecordBlessed(12): %v", err)
+	}
+	ledger, err := m.Generation("wl")
+	if err != nil {
+		t.Fatalf("Generation after auto-heal blessing: %v", err)
+	}
+	if ledger != 12 {
+		t.Fatalf("auto-heal ledger = %d, want 12 before consuming lease", ledger)
+	}
+
+	got, err := m.ConsumeGenerationFromLease("wl", 1)
+	if err != nil {
+		t.Fatalf("ConsumeGenerationFromLease: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("clamped consume returned %v, want exactly one generation", got)
+	}
+	if got[0] <= ledger {
+		t.Fatalf("clamped consume returned %v with ledger at %d, want a generation strictly greater than the ledger", got, ledger)
+	}
+	if got[0] != 13 {
+		t.Fatalf("clamped consume returned %v, want [13] after in-range ledger advance to 12", got)
+	}
+}

@@ -957,6 +957,11 @@ defmodule Embervm.StatefulStore do
     leases =
       state.blessing_leases
       |> :ets.tab2list()
+      # This filter is a tautology for consumption: the CP cannot observe
+      # consumption because noded does not report it. It reads as though it
+      # excludes consumed leases, but actual exclusion happens via the
+      # staleness check in lease_low_or_absent? and via max() dominance. It
+      # only ever excludes a zero-width range.
       |> Enum.filter(fn {{_workload, node}, row} -> node == node_id and row.next_generation < row.lease_end end)
       |> Enum.map(fn {{workload, _node}, row} -> %{workload_name: workload, next_generation: row.next_generation, lease_end: row.lease_end} end)
 
@@ -1592,6 +1597,11 @@ defmodule Embervm.StatefulStore do
     ends =
       state.blessing_leases
       |> :ets.tab2list()
+      # This filter is a tautology for consumption: the CP cannot observe
+      # consumption because noded does not report it. It reads as though it
+      # excludes consumed leases, but actual exclusion happens via the
+      # staleness check in lease_low_or_absent? and via max() dominance. It
+      # only ever excludes a zero-width range.
       |> Enum.filter(fn {{w, _node}, row} -> w == workload and row.next_generation < row.lease_end end)
       |> Enum.map(fn {_key, row} -> row.lease_end end)
 
