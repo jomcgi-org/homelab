@@ -38,6 +38,9 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	// BEFORE the tap allocation and cold boot below. Serving is tap-bearing, so
 	// both mem headroom and the tap freelist are checked; the workload's mem need
 	// comes from the request's ResourceSpec.
+	if s.slotsExhausted() {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
+	}
 	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classTapBearing); err != nil {
 		return nil, err
 	}

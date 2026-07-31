@@ -604,9 +604,29 @@ func TestSlotCeilingAdmissionParity4101(t *testing.T) {
 	}
 }
 
+func TestSlotCeilingUnknownBudgetPreservesBackstop(t *testing.T) {
+	drv := &fakeDriver{}
+	client, srv := newTestServer(t, drv, &fakeTransport{}, 2)
+	srv.slotCeiling = srv.budget.SlotCeiling
+	seedBase(srv, "echo__unknown", "echo")
+
+	if got := srv.nodeStatus().GetMaxLiveVms(); got != 2 {
+		t.Fatalf("unknown budget max_live_vms = %d, want 2", got)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__unknown"}); err != nil {
+			t.Fatalf("Prime %d with unknown budget: %v", i+1, err)
+		}
+	}
+	_, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__unknown"})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("Prime beyond configured backstop code = %v, want ResourceExhausted", status.Code(err))
+	}
+}
+
 // TestSlotCeilingZeroRemainsUnlimited verifies that slotsExhausted preserves
 // unlimited semantics when MaxLiveVMs is configured to 0. This tests the
-// ceiling > 0 guard that is still live in stateful and group member paths.
+// ceiling > 0 guard that is live in all boot verbs (Prime, Relight, StartServing, StartGroupMember) and the stateful path.
 func TestSlotCeilingZeroRemainsUnlimited(t *testing.T) {
 	drv := &fakeDriver{live: 100}
 	s := New(Options{Config: config.Config{MaxLiveVMs: 0}, Driver: drv})

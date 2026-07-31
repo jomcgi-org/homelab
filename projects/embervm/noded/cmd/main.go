@@ -103,7 +103,7 @@ func run(logger *slog.Logger) error {
 	// cold-boot-with-NIC ClaimServing plus SnapshotServing/RestoreServing under the
 	// serving/ prefix, and its live map counts serving VMs against the node cap.
 	// cfg.TapPrealloc (ADR embervm/014 decision 4) is clamped to the brick's slot
-	// ceiling below, once server.New has built the budget reader that ceiling reads.
+	// ceiling below, a configured runaway backstop no longer derived from the memory budget.
 	servingNet, err := serving.NewManager(serving.ExecRunner{}, cfg.ServingBridge, cfg.ServingSubnetCIDR, cfg.PodIP, cfg.ServingPortBase, cfg.TapPrealloc)
 	if err != nil {
 		return err
