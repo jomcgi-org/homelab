@@ -358,13 +358,16 @@ sandboxWorkload:
   #
   # PoolManager applies floor PER BRICK INSTANCE (`refill_node/2` runs once per
   # capacity fact and compares this floor against that instance's own
-  # `free_primed_slots`), and a brick's real ceiling is not `noded.maxLiveVMs`:
-  # `budget.SlotCeiling` derives it as `memBudgetMib / 512`, so a 2gi brick
-  # reporting ~1933 MiB advertises just THREE slots. The Task 14b sizing of 4 was
-  # written for the wildcard DaemonSet (16 slots on a 63Gi node-4); the DS is now
-  # retired and bricks are the only capacity, which made 4 unsatisfiable on a
-  # 3-slot brick. An unsatisfiable floor never stops priming, so the pool claimed
-  # 100% of every 2gi brick and a node-pinned stateful wake could never find a
+  # `free_primed_slots`), and memory capacity is not represented by
+  # `noded.maxLiveVMs`:
+  # Admission gates on measured memory headroom (workload need + reject floor),
+  # not on a count derived from the cgroup budget. MaxLiveVMs is only the runaway
+  # backstop and is no longer derived from the budget, so this floor must stay
+  # below the configured backstop. The Task 14b sizing of 4 was written for the
+  # wildcard DaemonSet (16 slots on a 63Gi node-4); the DS is now retired and
+  # bricks are the only capacity. An unsatisfiable floor never stops priming, so
+  # the pool claimed 100% of every 2gi brick and a node-pinned stateful wake could
+  # never find a
   # free slot (issue #4077: demo-postgres wedged evicted for 2.5h while both
   # node-2 bricks sat at 3/3, all six slots primed sandbox VMs). Autoscaling made
   # it worse, not better: because the floor is per instance, each new brick
@@ -797,8 +800,8 @@ noded:
   # one, so instance boot skips netlink create/attach work. Zero (the default)
   # disables pre-provisioning: taps are created/deleted on demand exactly as before
   # this feature existed. A positive value is clamped at the daemon to the brick's
-  # cgroup-derived slot ceiling (server.Server.SlotCeiling), so pre-creating more
-  # taps than the brick could ever host is not possible even if this is set too
+  # configured live-VM backstop (server.Server.SlotCeiling), so pre-creating more
+  # taps than the daemon's runaway limit is not possible even if this is set too
   # high. Not yet flipped fleet-wide; canary one brick class first (Task 4.2).
   tapPrealloc: 0
 

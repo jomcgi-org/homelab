@@ -5,6 +5,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const minSlotWorkloadMib = 512
+
 // This file holds the node-side CHEAP rejection predicate (ADR embervm/014
 // decision 3: "placement is reject/retry, not ledger-perfect"). Before a boot
 // verb (Prime / StartServing / StartStateful / StartGroupMember) claims any

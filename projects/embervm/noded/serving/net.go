@@ -338,17 +338,12 @@ func (m *Manager) CIDR() string {
 	return m.cidr.String()
 }
 
-// ClampTapPrealloc lowers the configured tap-prealloc count to ceiling when it
-// exceeds it, a no-op otherwise. It must be called before EnsureNetwork. The
-// daemon entrypoint uses it to cap the pool at the brick's cgroup-derived slot
-// ceiling (server.Server.SlotCeiling, ADR embervm/013 section 7): that ceiling is
-// only known once server.New has built the budget reader, which happens after this
-// Manager is constructed, so the clamp is applied as a separate step rather than a
-// NewManager argument. A ceiling of 0 (MaxLiveVMs configured to 0 AND the cgroup
-// memory budget unreadable/unlimited, the one combination server.Server.SlotCeiling
-// can return 0 for, see budget.SlotCeiling) disables pre-provisioning entirely
-// rather than erroring: fails safe to today's create-on-demand behaviour instead of
-// wedging a brick whose capacity cannot be observed.
+// ClampTapPrealloc lowers the configured tap-prealloc count to the configured
+// live-VM backstop when it exceeds it, a no-op otherwise. It must be called before
+// EnsureNetwork. The backstop is only known once server.New has built the server,
+// so the clamp is applied as a separate step rather than a NewManager argument.
+// A ceiling of 0 disables pre-provisioning entirely rather than erroring, leaving
+// taps on the create-on-demand path.
 func (m *Manager) ClampTapPrealloc(ceiling int) {
 	if ceiling >= 0 && m.tapPrealloc > ceiling {
 		m.tapPrealloc = ceiling

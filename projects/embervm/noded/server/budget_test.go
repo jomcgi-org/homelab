@@ -405,32 +405,26 @@ func TestCgroupDirFallsBackWhenJoinedDirLacksControllers(t *testing.T) {
 func TestSlotCeiling(t *testing.T) {
 	cases := []struct {
 		name       string
-		budgetMib  uint64
 		configured uint64
-		want       uint64
 	}{
-		// 2gi brick, 512 reserve -> 1536 budget -> floor(1536/512)=3 slots,
-		// clamped under the configured default of 8 (the whole point: not 8/16).
-		{"2gi-brick", 1536, 8, 3},
-		// 4gi brick -> 3584 budget -> 7 slots, still under configured 8.
-		{"4gi-brick", 3584, 8, 7},
-		// 16gi brick -> derived exceeds configured 8, so configured clamps it.
-		{"large-brick-clamped", 15872, 8, 8},
-		// Unknown budget (unlimited/unreadable cgroup) -> configured unchanged.
-		{"unknown-budget", 0, 8, 8},
-		// Budget smaller than one slot still reports at least 1.
-		{"sub-slot-budget", 256, 8, 1},
-		// Configured 0 (unbounded backstop) -> report the derived ceiling.
-		{"unbounded-config", 1536, 0, 3},
+		{"configured-default", 8},
+		{"configured-small", 2},
+		{"configured-unlimited", 0},
+		{"configured-large", 64},
 	}
+	// Memory admission gates on headroom (need + floor), not count.
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			b := newBudget(0)
-			b.memBudgetOverride = func() uint64 { return c.budgetMib }
-			if got := b.SlotCeiling(c.configured); got != c.want {
-				t.Errorf("SlotCeiling(%d) with budget %d = %d, want %d", c.configured, c.budgetMib, got, c.want)
+			if got := b.SlotCeiling(c.configured); got != c.configured {
+				t.Errorf("SlotCeiling(%d) = %d, want configured value", c.configured, got)
 			}
 		})
+	}
+
+	b := newBudget(0)
+	if got := b.SlotCeiling(8); got != 8 {
+		t.Fatalf("SlotCeiling with unknown budget = %d, want 8", got)
 	}
 }
 

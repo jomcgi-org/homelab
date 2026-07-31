@@ -178,11 +178,9 @@ type Server struct {
 	// minus the observed usage rate across the two most recent Refresh
 	// calls). 0 until a second sample exists. Overridable in tests.
 	cpuHeadroom func() uint64
-	// slotCeiling maps the configured MaxLiveVMs backstop to the brick's
-	// cgroup-derived live-VM slot ceiling (floor(MemBudgetMib/minWorkload),
-	// clamped to the configured value). The reported MaxLiveVms is this
-	// ceiling, so a 2gi brick advertises a handful of slots rather than the
-	// configured default. Overridable in tests.
+	// slotCeiling maps the configured MaxLiveVMs backstop to the value advertised
+	// in NodeStatus. Memory admission is enforced separately by admitOrReject.
+	// Overridable in tests.
 	slotCeiling func(configured uint64) uint64
 
 	// httpClient fetches zip-lane archives from the in-cluster SeaweedFS read path
@@ -912,7 +910,7 @@ func (s *Server) fetchAndVerifyArchive(ctx context.Context, archiveURL, wantSha2
 // ---- Prime -----------------------------------------------------------------
 
 // Prime restores one pristine VM from snapshot_ref, waits for the guest ready
-// path, and parks it idle. It enforces the node-level live-VM backstop cap.
+// path, and parks it idle. Prime admission gates on memory headroom only.
 func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.PrimeResponse, error) {
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
@@ -920,9 +918,6 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	ref := req.GetSnapshotRef()
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
-	}
-	if s.slotsExhausted() {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
 	base, ok := s.bases.get(ref)
 	if !ok {
@@ -1134,10 +1129,9 @@ func (s *Server) liveVMCount() int {
 	return s.driver.LiveCount()
 }
 
-// slotsExhausted keeps the advertised and enforced ceilings identical. A
-// control plane that filters on the advertised number while the daemon admits
-// past it is the #4101 divergence. A zero ceiling preserves the existing
-// unlimited semantics.
+// slotsExhausted remains for the stateful path, which carries a count backstop
+// pending follow-up work. Prime, Relight, StartServing, and StartGroupMember admission
+// use memory headroom through admitOrReject.
 func (s *Server) slotsExhausted() bool {
 	ceiling := s.SlotCeiling()
 	return ceiling > 0 && s.liveVMCount() >= ceiling
@@ -1342,9 +1336,6 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	ref := req.GetSnapshotRef()
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
-	}
-	if s.slotsExhausted() {
-		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
 	if err := s.admitOrReject(0, classMemOnly); err != nil {
 		return nil, err
@@ -1618,11 +1609,9 @@ func (s *Server) RegistrySynced() bool {
 	return s.registry.isSynced()
 }
 
-// SlotCeiling returns the brick's cgroup-derived live-VM slot ceiling (ADR
-// embervm/013 section 7), the same value nodeStatus reports as MaxLiveVms. The
-// daemon entrypoint uses it to size the ADR embervm/014 decision-4 tap prealloc
-// pool by default: pre-creating more taps than a brick could ever host is wasted
-// setup work, so the pool is capped at this ceiling.
+// SlotCeiling returns the configured live-VM backstop, the same value nodeStatus
+// reports as MaxLiveVms. Memory admission is enforced by admitOrReject; this
+// value is only a runaway backstop and tap-preallocation limit.
 func (s *Server) SlotCeiling() int {
 	maxLive := s.cfg.MaxLiveVMs
 	if maxLive < 0 {
