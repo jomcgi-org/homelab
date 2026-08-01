@@ -656,6 +656,67 @@ defmodule Embervm.StatefulStoreTest do
     refute StatefulStore.quarantined?(store, "wl-a")
   end
 
+  test "a lease-derived blessed report past the watermark does not clear quarantine", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-9", generation: 5, generation_blessed: false})
+    assert StatefulStore.quarantined?(store, "wl-a")
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: true})
+    assert StatefulStore.quarantined?(store, "wl-a")
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: true})
+    assert StatefulStore.quarantined?(store, "wl-a")
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 3, generation_blessed: false})
+    refute StatefulStore.quarantined?(store, "wl-a")
+  end
+
+  test "ensure_blessing_lease does not grant or renew while quarantined", %{path: path} do
+    {op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-9", generation: 5, generation_blessed: false})
+    assert StatefulStore.quarantined?(store, "wl-a")
+
+    assert {:ok, []} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    assert 0 == Enum.count(ops, &(&1.kind == :blessing_lease_granted))
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 3, generation_blessed: false})
+    refute StatefulStore.quarantined?(store, "wl-a")
+
+    assert {:ok, [_lease]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    assert 1 == Enum.count(ops, &(&1.kind == :blessing_lease_granted))
+  end
+
+  test "a blessed forward report on a healthy workload stays un-quarantined", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 10, generation_blessed: true})
+    refute StatefulStore.quarantined?(store, "wl-a")
+  end
+
+  test "bless_generation clears an active quarantine even when leased blessed reports were suppressed", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-9", generation: 5, generation_blessed: false})
+    assert StatefulStore.quarantined?(store, "wl-a")
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: true})
+    assert StatefulStore.quarantined?(store, "wl-a")
+
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 7)
+    refute StatefulStore.quarantined?(store, "wl-a")
+  end
+
   test "upsert_volume ADOPTS an unblessed forward jump from the volume's own anchor node instead of quarantining",
        %{path: path} do
     {_op_log, store} = start_pair(path)

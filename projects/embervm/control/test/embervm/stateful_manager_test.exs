@@ -316,7 +316,7 @@ defmodule Embervm.StatefulManagerTest do
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
   end
 
-  test "a node report that agrees with the last blessed generation (or reports generation_blessed=true) never quarantines" do
+  test "a report agreeing with the blessed watermark never quarantines, and an uncorroborated blessed claim does not clear one" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4")
@@ -330,12 +330,19 @@ defmodule Embervm.StatefulManagerTest do
     StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 1, generation_blessed: false})
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
 
-    # A report claiming the reported generation IS blessed clears any prior
-    # quarantine. Quarantine here is induced from a NON-anchor node (node-9); a
-    # forward jump from the node-4 anchor would be adopted, not quarantined.
+    # Quarantine induced from a NON-anchor node (node-9); a forward jump from
+    # the node-4 anchor would be adopted, not quarantined. The same node then
+    # claiming its forward generation IS blessed must NOT clear the flag: the
+    # CP never blessed generation 2, so the claim is uncorroborated (a blessing
+    # lease lets a node self-bless, #4188), and erasing the split-brain
+    # evidence on the suspect node's own say-so would defeat the fence.
     StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-9", generation: 2, generation_blessed: false})
     assert StatefulStore.quarantined?(ctx.store, "wl-a")
     StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-9", generation: 2, generation_blessed: true})
+    assert StatefulStore.quarantined?(ctx.store, "wl-a")
+
+    # A retreat to the blessed watermark withdraws the forward claim and clears.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-9", generation: 1, generation_blessed: false})
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
   end
 
