@@ -811,11 +811,8 @@ func (d *Driver) readAndVerifySessionMetadata(ref string) (BundleMetadata, error
 	if got != meta.RootfsDigest {
 		return BundleMetadata{}, fmt.Errorf("driver: session rootfs digest mismatch: got %q want %q", got, meta.RootfsDigest)
 	}
-	// The legacy vendor alias applies to base snapshots, never to v1 bundle metadata, where an absent stamp was never taken.
-	if meta.CpuVendor != "" {
-		if vmis, effective := vendorMismatch(meta.CpuVendor, d.cfg.Vendor); vmis {
-			return BundleMetadata{}, fmt.Errorf("driver: session vendor mismatch: ref %q != node %q", effective, d.cfg.Vendor)
-		}
+	if vmis, effective := vendorMismatch(meta.CpuVendor, d.cfg.Vendor); vmis {
+		return BundleMetadata{}, fmt.Errorf("driver: session vendor mismatch: ref %q != node %q", effective, d.cfg.Vendor)
 	}
 	if tmis, refTemplate := templateMismatch(meta.CpuTemplate, d.cfg.Template); tmis {
 		return BundleMetadata{}, fmt.Errorf("driver: session cpu_sku mismatch: template %q != node %q", refTemplate, d.cfg.Template)
