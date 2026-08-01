@@ -101,9 +101,8 @@ func (*fakeServer) SessionAssign(_ context.Context, req *nodev1.SessionAssignReq
 // request field crossed the wire, and returns a fixed size.
 func (*fakeServer) Bank(_ context.Context, req *nodev1.BankRequest) (*nodev1.BankResponse, error) {
 	return &nodev1.BankResponse{
-		SnapshotRef:  "sessions/" + req.GetSessionId(),
-		SizeBytes:    2048,
-		RootfsDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		SnapshotRef: "sessions/" + req.GetSessionId(),
+		SizeBytes:   2048,
 	}, nil
 }
 
@@ -405,7 +404,6 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 				Workload:        "sandbox-session",
 				SizeBytes:       4096,
 				CreatedAtUnixMs: 1_700_000_000_000,
-				RootfsDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			},
 		},
 		SnapshotDiskFreeBytes: 9_000_000_000,

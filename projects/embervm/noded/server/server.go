@@ -23,7 +23,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -956,12 +955,11 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		Arch:     s.cfg.Arch,
 		ThreadID: newID("vm"),
 		BaseSnapshotRef: substrate.SnapshotRef{
-			ID:         ref,
-			Node:       s.cfg.Node,
-			Arch:       s.cfg.Arch,
-			Vendor:     s.cfg.CpuVendor,
-			Base:       true,
-			RootfsPath: s.readBaseRootfsPath(ref),
+			ID:     ref,
+			Node:   s.cfg.Node,
+			Arch:   s.cfg.Arch,
+			Vendor: s.cfg.CpuVendor,
+			Base:   true,
 		},
 	}
 	h, err := s.driver.Claim(ctx, spec)
@@ -1315,13 +1313,12 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 		workload:        req.GetTrace().GetWorkload(),
 		sizeBytes:       ref.SizeBytes,
 		createdAtUnixMs: time.Now().UnixMilli(),
-		rootfsDigest:    ref.RootfsDigest,
 	})
 	// Async off-node write-back (R6): the banked bundle is now crash-consistent on
 	// disk, so enqueue its export fire-and-forget (never blocking this bank path).
 	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: req.GetTrace().GetWorkload(), Ref: ref.ID})
 	s.signalChange()
-	return &nodev1.BankResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes), RootfsDigest: ref.RootfsDigest}, nil
+	return &nodev1.BankResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
 }
 
 // Relight restores a VM from a banked session snapshot_ref (the deliver-without-
@@ -2119,7 +2116,6 @@ func (s *Server) sessionSnapshotsStatus() []*nodev1.SessionSnapshot {
 			Workload:        e.workload,
 			SizeBytes:       uint64(e.sizeBytes),
 			CreatedAtUnixMs: e.createdAtUnixMs,
-			RootfsDigest:    e.rootfsDigest,
 			Exported:        s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, e.workload, e.snapshotRef),
 		})
 	}
@@ -2694,20 +2690,10 @@ func (s *Server) ReconcileSessionsFromDisk() {
 		if mfi, err := os.Stat(memfile); err == nil {
 			size += mfi.Size()
 		}
-		rootfsDigest := ""
-		if b, rerr := os.ReadFile(filepath.Join(root, ref, "bundle.json")); rerr == nil {
-			var meta struct {
-				RootfsDigest string `json:"rootfs_digest"`
-			}
-			if json.Unmarshal(b, &meta) == nil {
-				rootfsDigest = meta.RootfsDigest
-			}
-		}
 		s.sessionSnap.add(sessionSnapshotEntry{
 			snapshotRef:     ref,
 			sizeBytes:       size,
 			createdAtUnixMs: createdMs,
-			rootfsDigest:    rootfsDigest,
 		})
 		n++
 	}

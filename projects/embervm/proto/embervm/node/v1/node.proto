@@ -722,9 +722,6 @@ message BankResponse {
   // EvictSnapshot. NOT a file path.
   string snapshot_ref = 1;
   uint64 size_bytes = 2;
-  // rootfs_digest is the content digest of the rootfs the banked VM was born
-  // on, formatted as sha256:<64 hex>. Empty means unknown.
-  string rootfs_digest = 3;
 }
 
 // RelightRequest restores a VM from a session snapshot. session_id is opaque to
@@ -1479,9 +1476,6 @@ message SessionSnapshot {
   // reads it to know a wake could restore-on-miss and that a roll that exits now
   // loses nothing (R6, additive; false on a pre-R6 daemon).
   bool exported = 6;
-  // rootfs_digest is the content digest of the rootfs the banked VM was born
-  // on, formatted as sha256:<64 hex>. Empty means a legacy v0 bundle.
-  string rootfs_digest = 7;
 }
 
 // ServingVm is one LIVE serving VM the node currently holds, reported so a
