@@ -83,16 +83,65 @@ def test_fake_cli_fixture_syntax_is_valid():
     ast.parse(FAKE_CLI)
 
 
+def _capture_spawn_kwargs(tmp_path, monkeypatch, geteuid, env=None):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = shim.ClaudeProcess.__new__(shim.ClaudeProcess)
+    manager.workspace = str(workspace)
+    manager.executable = "claude"
+    manager.fatal_error = None
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+    monkeypatch.setattr(shim.os, "geteuid", lambda: geteuid)
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
+    captured = {}
+
+    def fake_popen(*args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after capturing Popen kwargs")
+
+    monkeypatch.setattr(shim.subprocess, "Popen", fake_popen)
+    with pytest.raises(RuntimeError, match="stop after capturing"):
+        manager._spawn()
+    return captured
+
+
+def test_spawn_does_not_drop_privileges_when_shim_is_unprivileged(
+    tmp_path, monkeypatch
+):
+    kwargs = _capture_spawn_kwargs(tmp_path, monkeypatch, geteuid=1000)
+    assert "user" not in kwargs
+    assert "group" not in kwargs
+
+
+def test_spawn_drops_to_default_cli_identity_when_shim_is_root(tmp_path, monkeypatch):
+    kwargs = _capture_spawn_kwargs(tmp_path, monkeypatch, geteuid=0)
+    assert kwargs["user"] == 65532
+    assert kwargs["group"] == 65532
+
+
+def test_spawn_honors_cli_identity_environment_overrides(tmp_path, monkeypatch):
+    kwargs = _capture_spawn_kwargs(
+        tmp_path,
+        monkeypatch,
+        geteuid=0,
+        env={shim.CLI_UID_ENV: "1234", shim.CLI_GID_ENV: "2345"},
+    )
+    assert kwargs["user"] == 1234
+    assert kwargs["group"] == 2345
+
+
 def _manager(tmp_path, monkeypatch, api_key="none"):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     executable = tmp_path / "fake-cli"
     executable.write_text(FAKE_CLI)
-    os.chmod(executable, executable.stat().st_mode | 0o111)
+    os.chmod(executable, 0o755)
     monkeypatch.setenv("FAKE_API_KEY", api_key)
     monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
     monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
     manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(manager, "_configure_git", lambda: None)
     return manager
 
@@ -547,6 +596,7 @@ def test_unparseable_line_logged_to_stderr_and_retained(tmp_path, monkeypatch, c
 
 def test_init_failure_includes_ring_buffer_in_error_message(tmp_path, monkeypatch):
     """Verify init-failure errors include unparseable CLI output."""
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     executable = tmp_path / "fake-cli"
@@ -557,7 +607,7 @@ def test_init_failure_includes_ring_buffer_in_error_message(tmp_path, monkeypatc
         'print("unparseable line 2", flush=True)\n'
         "sys.exit(1)\n"
     )
-    os.chmod(executable, executable.stat().st_mode | 0o111)
+    os.chmod(executable, 0o755)
     monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
     monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
     manager = shim.ClaudeProcess(str(workspace), str(executable))
@@ -573,6 +623,7 @@ def test_init_failure_includes_ring_buffer_in_error_message(tmp_path, monkeypatc
 
 def test_unparseable_line_truncation(tmp_path, monkeypatch, capsys):
     """Verify CLI lines are capped at 2000 chars and errors at about 1500."""
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     executable = tmp_path / "fake-cli"
@@ -582,7 +633,7 @@ def test_unparseable_line_truncation(tmp_path, monkeypatch, capsys):
         'print("x" * 3000, flush=True)\n'
         "sys.exit(1)\n"
     )
-    os.chmod(executable, executable.stat().st_mode | 0o111)
+    os.chmod(executable, 0o755)
     monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
     monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
     manager = shim.ClaudeProcess(str(workspace), str(executable))
@@ -600,6 +651,7 @@ def test_unparseable_line_truncation(tmp_path, monkeypatch, capsys):
 
 def test_cli_startup_probe_logged(tmp_path, monkeypatch, capsys):
     """Verify CLI --version probe is logged at startup."""
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     manager = _manager(tmp_path, monkeypatch)
     captured = capsys.readouterr()
     # The probe should log something with "cli-probe:" prefix
@@ -609,6 +661,7 @@ def test_cli_startup_probe_logged(tmp_path, monkeypatch, capsys):
 
 def test_stderr_lines_captured_to_ring_and_console(tmp_path, monkeypatch, capsys):
     """Stderr lines land in the ring with a stderr prefix and on the console."""
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     executable = tmp_path / "fake-cli"
@@ -627,7 +680,7 @@ def test_stderr_lines_captured_to_ring_and_console(tmp_path, monkeypatch, capsys
         "                  'modelUsage': {}, 'duration_ms': 1}), flush=True)\n"
     )
     executable.write_text(fake_cli_code)
-    os.chmod(executable, executable.stat().st_mode | 0o111)
+    os.chmod(executable, 0o755)
     monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
     monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
     manager = shim.ClaudeProcess(str(workspace), str(executable))
@@ -656,6 +709,7 @@ def test_stderr_lines_captured_to_ring_and_console(tmp_path, monkeypatch, capsys
 
 def test_parsed_non_init_events_retained(tmp_path, monkeypatch):
     """Parseable non-init events emitted before init are retained in the ring."""
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     executable = tmp_path / "fake-cli"
@@ -672,7 +726,7 @@ def test_parsed_non_init_events_retained(tmp_path, monkeypatch):
         "                  'modelUsage': {}, 'duration_ms': 1}), flush=True)\n"
     )
     executable.write_text(fake_cli_code)
-    os.chmod(executable, executable.stat().st_mode | 0o111)
+    os.chmod(executable, 0o755)
     monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
     monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
     manager = shim.ClaudeProcess(str(workspace), str(executable))
@@ -687,6 +741,7 @@ def test_parsed_non_init_events_retained(tmp_path, monkeypatch):
 
 def test_parsed_event_in_init_failure_message(tmp_path, monkeypatch):
     """Verify parsed events appear in init-failure error messages."""
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     executable = tmp_path / "fake-cli"
@@ -697,7 +752,7 @@ print('{"type": "error", "message": "startup failed"}', flush=True)
 sys.exit(1)
 """
     executable.write_text(fake_cli_code)
-    os.chmod(executable, executable.stat().st_mode | 0o111)
+    os.chmod(executable, 0o755)
     monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
     monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
     manager = shim.ClaudeProcess(str(workspace), str(executable))
