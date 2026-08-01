@@ -1358,7 +1358,7 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	// throwaway source layout.
 	bundleRef := "state-xyz"
 	srcBundle := filepath.Join(s.cfg.SnapshotRoot, "stateful", bundleRef)
-	writeBundleFiles(t, srcBundle, map[string]string{"snapfile": "snapdata", "memfile": "memdata", "gen": "4"})
+	writeBundleFiles(t, srcBundle, map[string]string{"snapfile": "snapdata", "memfile": "memdata", "gen": "4", "bundle.json": `{"schema_version":1}`})
 	s.statefulBundles.add(statefulBundleEntry{snapshotRef: bundleRef, workload: "scratch-postgres", generation: 4})
 	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: bundleRef},
@@ -1401,6 +1401,9 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(srcBundle, "snapfile")); string(got) != "snapdata" {
 		t.Fatalf("restored snapfile = %q, want snapdata", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(srcBundle, "bundle.json")); string(got) != `{"schema_version":1}` {
+		t.Fatalf("restored bundle.json = %q, want sidecar", got)
 	}
 	// The reconcile re-registered the bundle so a rescan sees it.
 	if _, ok := s.statefulBundles.get(bundleRef); !ok {

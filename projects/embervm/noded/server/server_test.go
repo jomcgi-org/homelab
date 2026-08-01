@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -160,7 +161,7 @@ func (f *fakeDriver) SnapshotSession(_ context.Context, _ substrate.Handle, snap
 		f.sessionBundles = map[string]string{}
 	}
 	f.sessionBundles[snapshotRef] = f.nextBankMarker
-	return substrate.SnapshotRef{ID: snapshotRef, Node: "node-4", Arch: "amd64", SizeBytes: 8192}, nil
+	return substrate.SnapshotRef{ID: snapshotRef, Node: "node-4", Arch: "amd64", SizeBytes: 8192, RootfsDigest: "sha256:fake-session-rootfs"}, nil
 }
 
 // RestoreSession relights a fake VM from a banked bundle: the ref must have been
@@ -1611,6 +1612,9 @@ func TestBankRelightRoundTrip(t *testing.T) {
 	if bankResp.GetSnapshotRef() == "" || bankResp.GetSizeBytes() == 0 {
 		t.Fatalf("Bank resp = %+v, want a ref and non-zero size", bankResp)
 	}
+	if bankResp.GetRootfsDigest() != "sha256:fake-session-rootfs" {
+		t.Fatalf("Bank rootfs_digest = %q", bankResp.GetRootfsDigest())
+	}
 	// The VM was destroyed by the bank (live capacity released).
 	if _, releases, removeBundles, _ := drv.counts(); releases != 1 || removeBundles != 1 {
 		t.Errorf("Bank did not destroy the VM: releases=%d removeBundles=%d, want 1/1", releases, removeBundles)
@@ -1799,6 +1803,10 @@ func TestSessionInventoryRescanOnRestart(t *testing.T) {
 			t.Fatalf("write memfile: %v", err)
 		}
 	}
+	meta, _ := json.Marshal(map[string]any{"schema_version": 1, "rootfs_digest": "sha256:rescan-v1"})
+	if err := os.WriteFile(filepath.Join(sessRoot, "sref-a", "bundle.json"), meta, 0o600); err != nil {
+		t.Fatalf("write v1 metadata: %v", err)
+	}
 	// A half-written bundle (no snapfile) must NOT be reported as restorable.
 	if err := os.MkdirAll(filepath.Join(sessRoot, "sref-halfwritten"), 0o700); err != nil {
 		t.Fatalf("mkdir half-written: %v", err)
@@ -1820,6 +1828,14 @@ func TestSessionInventoryRescanOnRestart(t *testing.T) {
 	sort.Strings(refs)
 	if len(refs) != 2 || refs[0] != "sref-a" || refs[1] != "sref-b" {
 		t.Fatalf("rescanned session_snapshots = %v, want [sref-a sref-b] (half-written skipped)", refs)
+	}
+	for _, snap := range ns.GetSessionSnapshots() {
+		if snap.GetSnapshotRef() == "sref-a" && snap.GetRootfsDigest() != "sha256:rescan-v1" {
+			t.Fatalf("v1 rescan digest = %q", snap.GetRootfsDigest())
+		}
+		if snap.GetSnapshotRef() == "sref-b" && snap.GetRootfsDigest() != "" {
+			t.Fatalf("v0 rescan digest = %q", snap.GetRootfsDigest())
+		}
 	}
 	// No live session VMs survive a restart.
 	if ids := sessionVMIDs(ns); len(ids) != 0 {
