@@ -1,4 +1,4 @@
-{{- if and .Values.demoPostgres.enabled .Values.scratchPostgres.enabled }}
+{{- if .Values.demoPostgres.enabled }}
 # Demo-postgres: the private demos page's sleep/wake exhibit. A second stateful
 # Postgres alongside scratch-postgres, tuned so the lifecycle is watchable: it
 # banks ~a tick after the demo's connection closes and pays a visible relight on
@@ -8,6 +8,11 @@
 # the workload identity, port, and lifecycle economics differ. The volume is its
 # own (volumes are keyed by workload name), so demo rows never land in a real
 # tenant's database.
+#
+# Gated on demoPostgres.enabled ALONE: the scratch-postgres Workload CR can be
+# off (it is, since 2026-08 when its only consumer was decommissioned) while
+# this exhibit stays up. The scratchPostgres VALUES block must remain populated
+# either way, since the guest image pin, workloads entry, and Secret are shared.
 apiVersion: embervm.dev/v1alpha1
 kind: Workload
 metadata:

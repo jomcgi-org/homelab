@@ -183,13 +183,17 @@ bricks:
     - node: node-3
       class: 2gi
 
-# EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
-# enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
-# into this namespace's Secret. listenPort (5400) + embervmNamespace default from
-# the chart. Enabling renders the OnePasswordItem and (embervm) the Workload CR /
-# (monolith) the SCRATCH_POSTGRES_DSN env for run_python sessions.
+# EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1).
+# DISABLED 2026-08: its only real consumer was the loom deployment (now
+# decommissioned), whose connection pool re-dialed after every idle bank and
+# kept the workload in a perpetual ~2.6-minute wake/bank cycle; the monolith
+# run_python DSN wiring is off in the same change. The block stays because
+# demo-postgres shares the guest image pin (Bazel-injected guestImage), the
+# workloads rootfs entry, and the 1Password Secret below; only the Workload CR
+# itself is gone. Flip enabled back on to restore the tenant datastore (the
+# volume outlives the CR; see bankedTtlSeconds vs volume GC in the chart).
 scratchPostgres:
-  enabled: true
+  enabled: false
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
 
