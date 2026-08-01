@@ -46,6 +46,7 @@ INIT_READ_TIMEOUT = 15.0
 # and reports a specific error, rather than the caller timing out generically.
 TURN_READ_TIMEOUT = 600.0
 INTERRUPT_TIMEOUT = 30.0
+CLI_PROBE_TIMEOUT = 10.0
 PERMISSION_MODE_ENV = "EMBER_PERMISSION_MODE"
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 VOICE_PROMPT = (
@@ -63,6 +64,30 @@ def _truncate_ring_for_error(ring, max_len=1500):
     if len(content) > max_len:
         content = content[:max_len] + "... (truncated)"
     return content
+
+
+def _probe_cli_startup(executable):
+    """Run CLI --version as a startup probe, log result, never fail."""
+    try:
+        proc = subprocess.run(
+            [executable, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=CLI_PROBE_TIMEOUT,
+            text=True,
+        )
+        stdout = proc.stdout[:200] if proc.stdout else ""
+        stderr = proc.stderr[:200] if proc.stderr else ""
+        msg = "ember-claude-shim: cli-probe: exit=%d stdout=%r stderr=%r\n" % (
+            proc.returncode,
+            stdout,
+            stderr,
+        )
+        sys.stderr.write(msg)
+        sys.stderr.flush()
+    except Exception as exc:
+        sys.stderr.write("ember-claude-shim: cli-probe failed: %s\n" % exc)
+        sys.stderr.flush()
 
 
 class StartupError(Exception):
@@ -341,6 +366,7 @@ class ClaudeProcess:
             "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
         )
         self.executable = executable
+        _probe_cli_startup(executable)
         self.process = None
         self.init_event = None
         self.fatal_error = None
@@ -350,6 +376,7 @@ class ClaudeProcess:
         self.current_result = None
         self._stdout_queue = None
         self.unparseable_lines = collections.deque(maxlen=5)
+        self.parsed_events = collections.deque(maxlen=5)
 
     def ready(self):
         with self.process_lock:
@@ -418,7 +445,7 @@ class ClaudeProcess:
             cwd=self.workspace,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=None,
+            stderr=subprocess.PIPE,
             env=child_env,
         )
         with self.process_lock:
@@ -430,6 +457,11 @@ class ClaudeProcess:
         threading.Thread(
             target=self._pump_stdout,
             args=(process, self._stdout_queue),
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._pump_stderr,
+            args=(process,),
             daemon=True,
         ).start()
         # Note: unparseable-line stderr writes are synchronous on the read thread
@@ -444,11 +476,9 @@ class ClaudeProcess:
             if raw is None:
                 break
             event = self._parse_line(raw)
-            if (
-                event
-                and event.get("type") == "system"
-                and event.get("subtype") == "init"
-            ):
+            if event is None:
+                continue
+            if event.get("type") == "system" and event.get("subtype") == "init":
                 self.init_event = event
                 actual_session_id = event.get("session_id")
                 if isinstance(actual_session_id, str) and actual_session_id:
@@ -463,12 +493,23 @@ class ClaudeProcess:
                     self._close_process(kill=True)
                     raise StartupError(message)
                 return
+            else:
+                try:
+                    raw_str = raw.decode("utf-8", errors="replace").rstrip("\n")
+                except Exception:
+                    raw_str = repr(raw[:200])
+                if len(raw_str) > 200:
+                    raw_str = raw_str[:200]
+                self.parsed_events.append("event: " + raw_str)
         code = process.poll()
         self._close_process(kill=False)
         error_msg = "claude exited before init, exit code %s" % code
         ring_content = _truncate_ring_for_error(self.unparseable_lines)
         if ring_content:
             error_msg = error_msg + "\nCLI output:\n" + ring_content
+        events_content = _truncate_ring_for_error(self.parsed_events)
+        if events_content:
+            error_msg = error_msg + "\nParsed events:\n" + events_content
         raise RuntimeError(error_msg)
 
     @staticmethod
@@ -478,6 +519,25 @@ class ClaudeProcess:
                 output_queue.put(raw)
         finally:
             output_queue.put(None)
+
+    def _pump_stderr(self, process):
+        """Read stderr lines and add to unparseable ring with prefix."""
+        try:
+            # readline, not file iteration: iteration read-ahead buffers a pipe,
+            # delaying lines until the buffer fills or EOF; readline yields each
+            # line as the CLI writes it.
+            for raw in iter(process.stderr.readline, b""):
+                try:
+                    line_str = raw.decode("utf-8", errors="replace").rstrip("\n")
+                except Exception:
+                    line_str = repr(raw[:2000])
+                if len(line_str) > 2000:
+                    line_str = line_str[:2000]
+                sys.stderr.write("ember-claude-shim: cli-stderr: %s\n" % line_str)
+                sys.stderr.flush()
+                self.unparseable_lines.append("stderr: " + line_str)
+        except Exception:
+            pass
 
     def _read_output(self, process, timeout):
         with self.process_lock:
@@ -568,6 +628,9 @@ class ClaudeProcess:
                     ring_content = _truncate_ring_for_error(self.unparseable_lines)
                     if ring_content:
                         error_msg = error_msg + "\nCLI output:\n" + ring_content
+                    events_content = _truncate_ring_for_error(self.parsed_events)
+                    if events_content:
+                        error_msg = error_msg + "\nParsed events:\n" + events_content
                     raise RuntimeError(error_msg)
                 event = self._parse_line(raw)
                 if event is None:

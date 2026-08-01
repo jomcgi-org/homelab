@@ -596,3 +596,116 @@ def test_unparseable_line_truncation(tmp_path, monkeypatch, capsys):
     assert len(manager.unparseable_lines[-1]) == 2000
     assert len(error_msg) < 3500
     assert "truncated" in error_msg
+
+
+def test_cli_startup_probe_logged(tmp_path, monkeypatch, capsys):
+    """Verify CLI --version probe is logged at startup."""
+    manager = _manager(tmp_path, monkeypatch)
+    captured = capsys.readouterr()
+    # The probe should log something with "cli-probe:" prefix
+    assert "ember-claude-shim: cli-probe:" in captured.err
+    manager._close_process(kill=True)
+
+
+def test_stderr_lines_captured_to_ring_and_console(tmp_path, monkeypatch, capsys):
+    """Stderr lines land in the ring with a stderr prefix and on the console."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-cli"
+    fake_cli_code = (
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "sys.stderr.write('stderr line 1\\n')\n"
+        "sys.stderr.write('stderr line 2\\n')\n"
+        "sys.stderr.flush()\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
+        "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
+        "line = sys.stdin.readline()\n"
+        "print(json.dumps({'type': 'result', 'result': 'ok', 'terminal_reason': 'end_turn',\n"
+        "                  'stop_reason': 'end_turn', 'is_error': False, 'permission_denials': [],\n"
+        "                  'num_turns': 1, 'session_id': 's', 'usage': {}, 'total_cost_usd': 0,\n"
+        "                  'modelUsage': {}, 'duration_ms': 1}), flush=True)\n"
+    )
+    executable.write_text(fake_cli_code)
+    os.chmod(executable, executable.stat().st_mode | 0o111)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    manager.turn("test")
+    manager._close_process(kill=True)
+    # The pump drains asynchronously after process exit: each line hits the
+    # console before the ring, so once the ring holds both lines the console
+    # writes have happened too.
+    deadline = time.time() + 5
+    while (
+        time.time() < deadline
+        and sum(
+            1 for line in manager.unparseable_lines if "stderr: stderr line" in line
+        )
+        < 2
+    ):
+        time.sleep(0.05)
+    captured = capsys.readouterr()
+
+    assert "ember-claude-shim: cli-stderr: stderr line 1" in captured.err
+    assert "ember-claude-shim: cli-stderr: stderr line 2" in captured.err
+    assert any("stderr: stderr line" in line for line in manager.unparseable_lines)
+
+
+def test_parsed_non_init_events_retained(tmp_path, monkeypatch):
+    """Parseable non-init events emitted before init are retained in the ring."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-cli"
+    fake_cli_code = (
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "print(json.dumps({'type': 'error', 'message': 'pre-init error'}), flush=True)\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
+        "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
+        "line = sys.stdin.readline()\n"
+        "print(json.dumps({'type': 'result', 'result': 'ok', 'terminal_reason': 'end_turn',\n"
+        "                  'stop_reason': 'end_turn', 'is_error': False, 'permission_denials': [],\n"
+        "                  'num_turns': 1, 'session_id': 's', 'usage': {}, 'total_cost_usd': 0,\n"
+        "                  'modelUsage': {}, 'duration_ms': 1}), flush=True)\n"
+    )
+    executable.write_text(fake_cli_code)
+    os.chmod(executable, executable.stat().st_mode | 0o111)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    manager.turn("test")
+
+    assert len(manager.parsed_events) > 0
+    assert any("pre-init error" in event for event in manager.parsed_events)
+    manager._close_process(kill=True)
+
+
+def test_parsed_event_in_init_failure_message(tmp_path, monkeypatch):
+    """Verify parsed events appear in init-failure error messages."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-cli"
+    fake_cli_code = r"""#!/usr/bin/env python3
+import sys
+# Emit an error event then exit
+print('{"type": "error", "message": "startup failed"}', flush=True)
+sys.exit(1)
+"""
+    executable.write_text(fake_cli_code)
+    os.chmod(executable, executable.stat().st_mode | 0o111)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        manager.turn("test")
+
+    error_msg = str(exc_info.value)
+    assert "claude exited before init" in error_msg
+    assert "Parsed events:" in error_msg or "error" in error_msg
