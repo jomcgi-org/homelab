@@ -12,7 +12,12 @@ from sqlmodel import Session
 import agent.api as agent_api
 from agent_sessions import store, voice
 from agent_sessions.models import AgentSession, AgentTurn
-from agent_sessions.transport import EmberVmShimTransport, Turn
+from agent_sessions.transport import (
+    EmberSession,
+    EmberSessionGone,
+    EmberVmShimTransport,
+    Turn,
+)
 from core.db import get_engine
 from core.mcp_app import mcp
 from framework import log_task_exception
@@ -29,6 +34,27 @@ def _load_session(session_id: int) -> tuple[AgentSession | None, list[AgentTurn]
         return row, store.get_turns(db_session, session_id) if row else []
 
 
+def _ember_session(row: AgentSession) -> EmberSession | None:
+    if row.ember_session_id and row.ember_session_token:
+        return EmberSession(
+            row.ember_session_id,
+            row.ember_session_token,
+            row.ember_session_expires_at,
+        )
+    return None
+
+
+def _persist_ember_session(session_id: int, ember: EmberSession) -> None:
+    with Session(get_engine()) as db_session:
+        store.set_ember_session(
+            db_session,
+            session_id,
+            ember.session_id,
+            ember.session_token,
+            ember.expires_at,
+        )
+
+
 def _persist_pending_message(session_id: int, message_text: str) -> int:
     with Session(get_engine()) as db_session:
         row = store.create_pending_message(db_session, session_id, message_text)
@@ -42,6 +68,7 @@ def _persist_start(
     branch: str,
     prompt: str,
     turn: Turn,
+    ember: EmberSession,
 ) -> AgentSession:
     with Session(get_engine()) as db_session:
         row = store.create_session(db_session, local_session_id, workspace, branch)
@@ -66,8 +93,13 @@ def _persist_start(
         )
         # Store the CLI's session_id in the agent session for reuse
         row.cli_session_id = turn.session_id
-        db_session.add(row)
-        db_session.commit()
+        store.set_ember_session(
+            db_session,
+            row.id,
+            ember.session_id,
+            ember.session_token,
+            ember.expires_at,
+        )
         return store.update_session_status(db_session, row.id, status, summary)
 
 
@@ -130,6 +162,11 @@ def _delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
 
 def _mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None:
     store.mark_turn_error_sync(session_id, turn_seq, error_msg)
+
+
+def _clear_ember_session_sync(session_id: int) -> None:
+    with Session(get_engine()) as db_session:
+        store.clear_ember_session(db_session, session_id)
 
 
 def _get_all_pending_messages_sync():
@@ -240,7 +277,9 @@ async def _execute_pending_message(session_id: int) -> None:
         try:
             # Reuse the session_id from the database (from first turn), or None for new sessions
             cli_session_id = session_row.cli_session_id
-            turn = await _transport.deliver(
+            existing_ember = _ember_session(session_row)
+            turn, ember = await _transport.deliver(
+                existing_ember,
                 cli_session_id,
                 row.message_text,
             )
@@ -252,7 +291,17 @@ async def _execute_pending_message(session_id: int) -> None:
                     session_id,
                 )
                 return
-        except Exception as exc:  # noqa: BLE001 - retain the row for recovery
+            if ember != existing_ember:
+                await asyncio.to_thread(_persist_ember_session, session_id, ember)
+        except EmberSessionGone as exc:
+            # Session confirmed dead by CP; clear the binding and CLI id together.
+            await asyncio.to_thread(_clear_ember_session_sync, session_id)
+            await asyncio.to_thread(
+                _mark_turn_error_sync, session_id, claimed_seq, str(exc)
+            )
+            return
+        except Exception as exc:
+            # Terminal failure: row is deleted by mark_turn_error_sync (noqa: BLE001)
             await asyncio.to_thread(
                 _mark_turn_error_sync, session_id, claimed_seq, str(exc)
             )
@@ -377,10 +426,10 @@ def _activity_values(turns: list[AgentTurn]) -> tuple[list[str], list[str]]:
 async def monolith_agent_session_start(prompt: str) -> dict:
     """Start a voice-drivable Claude Code session and complete its first turn."""
     local_session_id = str(uuid4())
-    turn = await _transport.deliver(None, prompt)
+    turn, ember = await _transport.deliver(None, None, prompt)
     workspace = "<guest>"  # Workspace is in the guest, not the pod
     row = await asyncio.to_thread(
-        _persist_start, local_session_id, workspace, "main", prompt, turn
+        _persist_start, local_session_id, workspace, "main", prompt, turn, ember
     )
     summary = voice.extract_voice_summary(turn.result)
     await _notify_terminal(turn, summary, row.status)

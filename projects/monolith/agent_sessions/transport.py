@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 EMBERVM_URL = os.environ.get("EMBERVM_URL", "")
 
 
+class EmberSessionGone(EmberVMTransportError):
+    """Raised when a reused EmberVM session is confirmed dead by the CP (403/410)
+    and the retry also failed. The ORIGINAL binding is dead regardless of retry failure reason."""
+
+    pass
+
+
 class Turn(NamedTuple):
     result: str
     terminal_reason: str | None
@@ -47,8 +54,19 @@ class Turn(NamedTuple):
     activities: list[dict]
 
 
+class EmberSession(NamedTuple):
+    session_id: str
+    session_token: str
+    expires_at: int | None
+
+
 class ShimTransport(Protocol):
-    async def deliver(self, session_id: str | None, message: str) -> Turn: ...
+    async def deliver(
+        self,
+        ember: EmberSession | None,
+        cli_session_id: str | None,
+        message: str,
+    ) -> tuple[Turn, EmberSession]: ...
 
 
 # Read timeout for invoke calls: the OUTER (wall-clock) bound on turn duration.
@@ -90,11 +108,11 @@ class EmberVmShimTransport:
         self.workload = workload
         self.read_timeout = read_timeout
 
-    async def create_session(self) -> str:
+    async def create_session(self) -> EmberSession:
         """Create a new session on the guest and return the session ID.
 
         Returns:
-            The EmberVM session ID (string UUID from the guest).
+            The EmberVM session identity and bearer token.
 
         Raises:
             EmberVMTransportError: If session creation fails.
@@ -111,7 +129,21 @@ class EmberVmShimTransport:
                 response = await client.post(url, headers=headers)
                 response.raise_for_status()
                 data = response.json()
-                return data.get("id", "")
+                session_id = data.get("session_id")
+                if not session_id:
+                    raise EmberVMTransportError(
+                        "EmberVM session response missing session_id"
+                    )
+                session_token = data.get("session_token")
+                if not session_token:
+                    raise EmberVMTransportError(
+                        "EmberVM session response missing session_token"
+                    )
+                return EmberSession(
+                    session_id=session_id,
+                    session_token=session_token,
+                    expires_at=data.get("expires_at"),
+                )
         except httpx.TimeoutException as exc:
             logger.warning("embervm session creation timed out: %s", exc)
             raise EmberVMTimeout(str(exc)) from exc
@@ -122,15 +154,21 @@ class EmberVmShimTransport:
             logger.warning("embervm session creation transport error: %s", exc)
             raise EmberVMTransportError(str(exc)) from exc
 
-    async def deliver(self, session_id: str | None, message: str) -> Turn:
+    async def deliver(
+        self,
+        ember: EmberSession | None,
+        cli_session_id: str | None,
+        message: str,
+    ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
         Args:
-            session_id: Existing EmberVM session ID to reuse, or None to create new.
+            ember: Existing EmberVM session identity to reuse, or None to create new.
+            cli_session_id: Claude CLI session ID for transcript resumption.
             message: User message / prompt to send to Claude.
 
         Returns:
-            A Turn with the Claude CLI's response parsed from the guest.
+            The guest Turn and the EmberVM session identity actually used.
 
         Raises:
             EmberVMTransportError: If the invoke fails.
@@ -138,53 +176,73 @@ class EmberVmShimTransport:
         if not EMBERVM_URL:
             raise EmberVMTransportError("EMBERVM_URL is not configured")
 
-        # Create a new session if none supplied
-        if not session_id:
-            session_id = await self.create_session()
-
-        # Prepare the request body for /shim/turn
-        body = json.dumps({"message": message, "session_id": session_id})
-
-        # Invoke the guest shim
-        url = f"{EMBERVM_URL}/v1/sessions/{session_id}/invoke"
-        headers = {
-            **auth_headers(),
-            "X-Ember-Guest-Path": "/shim/turn",
-        }
         timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
 
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    url, content=body.encode(), headers=headers
-                )
-                response.raise_for_status()
+        created = ember is None
+        if ember is None:
+            ember = await self.create_session()
 
-                # Parse the guest's response into a Turn
-                guest_data = response.json()
-                return Turn(
-                    result=guest_data.get("result", ""),
-                    terminal_reason=guest_data.get("terminal_reason"),
-                    stop_reason=guest_data.get("stop_reason"),
-                    is_error=bool(guest_data.get("is_error", False)),
-                    permission_denials=guest_data.get("permission_denials", []),
-                    num_turns=int(guest_data.get("num_turns", 0)),
-                    session_id=guest_data.get("session_id") or session_id,
-                    usage=guest_data.get("usage", {}),
-                    total_cost_usd=guest_data.get("total_cost_usd"),
-                    duration_ms=guest_data.get("duration_ms"),
-                    activities=guest_data.get("activities", []),
+        async def invoke(
+            current: EmberSession, current_cli_session_id: str | None
+        ) -> Turn:
+            body = json.dumps(
+                {"message": message, "session_id": current_cli_session_id}
+            )
+            url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
+            headers = {
+                "Authorization": f"Bearer {current.session_token}",
+                "X-Ember-Guest-Path": "/shim/turn",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        url, content=body.encode(), headers=headers
+                    )
+                    response.raise_for_status()
+                    guest_data = response.json()
+                    return Turn(
+                        result=guest_data.get("result", ""),
+                        terminal_reason=guest_data.get("terminal_reason"),
+                        stop_reason=guest_data.get("stop_reason"),
+                        is_error=bool(guest_data.get("is_error", False)),
+                        permission_denials=guest_data.get("permission_denials", []),
+                        num_turns=int(guest_data.get("num_turns", 0)),
+                        session_id=guest_data.get("session_id")
+                        or current_cli_session_id,
+                        usage=guest_data.get("usage", {}),
+                        total_cost_usd=guest_data.get("total_cost_usd"),
+                        duration_ms=guest_data.get("duration_ms"),
+                        activities=guest_data.get("activities", []),
+                    )
+            except httpx.TimeoutException as exc:
+                logger.warning(
+                    "embervm invoke timed out for session %s: %s",
+                    current.session_id,
+                    exc,
                 )
-        except httpx.TimeoutException as exc:
-            logger.warning(
-                "embervm invoke timed out for session %s: %s", session_id, exc
-            )
-            raise EmberVMTimeout(str(exc)) from exc
+                raise EmberVMTimeout(str(exc)) from exc
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "embervm invoke failed for session %s: %s",
+                    current.session_id,
+                    exc,
+                )
+                raise
+            except httpx.TransportError as exc:
+                logger.warning(
+                    "embervm invoke transport error for session %s: %s",
+                    current.session_id,
+                    exc,
+                )
+                raise EmberVMTransportError(str(exc)) from exc
+
+        try:
+            return await invoke(ember, cli_session_id), ember
         except httpx.HTTPStatusError as exc:
-            logger.warning("embervm invoke failed for session %s: %s", session_id, exc)
-            raise EmberVMTransportError(str(exc)) from exc
-        except httpx.TransportError as exc:
-            logger.warning(
-                "embervm invoke transport error for session %s: %s", session_id, exc
-            )
-            raise EmberVMTransportError(str(exc)) from exc
+            if created or exc.response.status_code not in (403, 410):
+                raise EmberVMTransportError(str(exc)) from exc
+            ember = await self.create_session()
+            try:
+                return await invoke(ember, None), ember
+            except (httpx.HTTPStatusError, EmberVMTransportError) as retry_exc:
+                raise EmberSessionGone(str(retry_exc)) from retry_exc

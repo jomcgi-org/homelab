@@ -7019,6 +7019,17 @@ py_test(
     ],
 )
 
+py_test(
+    name = "agent_sessions_transport_test",
+    srcs = ["agent_sessions/transport_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
 semgrep_target_test(
     name = "add_visibility_field_semgrep_test",
     exclude_rules = [

@@ -9,7 +9,8 @@ from sqlmodel.pool import StaticPool
 from agent_sessions import mcp
 from agent_sessions import store
 from agent_sessions.models import AgentTurn
-from agent_sessions.transport import Turn
+from agent_sessions.transport import EmberSession, EmberSessionGone, Turn
+from faas.embervm_client import EmberVMTransportError
 
 
 @pytest.fixture
@@ -110,11 +111,15 @@ def _completed_turn(message: str) -> Turn:
     )
 
 
+def _completed_delivery(message: str) -> tuple[Turn, EmberSession]:
+    return _completed_turn(message), EmberSession("ember-1", "token-1", None)
+
+
 def test_pending_message_executed_in_background(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
 
-    async def mock_deliver(_session_id, message):
-        return _completed_turn(message)
+    async def mock_deliver(_ember, _cli_session_id, message):
+        return _completed_delivery(message)
 
     monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
 
@@ -137,6 +142,90 @@ def test_pending_message_executed_in_background(monkeypatch, session):
     assert store.get_pending_message(session, row.id, result["turn"]) is None
 
 
+def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
+    row = store.create_session(session, "sid-123", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-1", "token-1", 1754035200000)
+    row.cli_session_id = "cli-1"
+    session.add(row)
+    session.commit()
+    pending = store.create_pending_message(session, row.id, "hello")
+    pending_seq = pending.seq
+
+    async def failing_deliver(_ember, _cli_session_id, _message):
+        raise EmberSessionGone("terminal invoke failure")
+
+    monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    session.expire_all()
+    cleared = store.get_session(session, row.id)
+    assert cleared is not None
+    assert cleared.ember_session_id is None
+    assert cleared.ember_session_token is None
+    assert cleared.ember_session_expires_at is None
+    assert cleared.cli_session_id is None
+    assert store.get_turn(session, row.id, pending_seq) is not None
+    pending_after = store.get_pending_message(session, row.id, pending_seq)
+    assert pending_after is None
+
+
+def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, session):
+    row = store.create_session(session, "sid-123", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-1", "token-1", 1754035200000)
+    row.cli_session_id = "cli-1"
+    session.add(row)
+    session.commit()
+    store.create_pending_message(session, row.id, "hello")
+
+    async def failing_deliver(_ember, _cli_session_id, _message):
+        raise EmberVMTransportError("422 Unprocessable Entity")
+
+    monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    session.expire_all()
+    unchanged = store.get_session(session, row.id)
+    assert unchanged is not None
+    assert unchanged.ember_session_id == "ember-1"
+    assert unchanged.ember_session_token == "token-1"
+    assert unchanged.ember_session_expires_at == 1754035200000
+    assert unchanged.cli_session_id == "cli-1"
+
+
+def test_recreated_ember_session_adopts_new_cli_session_id(monkeypatch, session):
+    row = store.create_session(session, "sid-123", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-old", "token-old", 1754035200000)
+    row.cli_session_id = "cli-old"
+    session.add(row)
+    session.commit()
+    pending = store.create_pending_message(session, row.id, "hello")
+    pending_seq = pending.seq
+    new_ember = EmberSession("ember-new", "token-new", 1754035300000)
+
+    async def succeeding_delivery(_ember, _cli_session_id, _message):
+        return _completed_turn("hello")._replace(session_id="cli-new"), new_ember
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", succeeding_delivery)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    session.expire_all()
+    updated = store.get_session(session, row.id)
+    assert updated is not None
+    assert updated.ember_session_id == "ember-new"
+    assert updated.ember_session_token == "token-new"
+    assert updated.cli_session_id == "cli-new"
+    assert store.get_turn(session, row.id, pending_seq) is not None
+    pending_after = store.get_pending_message(session, row.id, pending_seq)
+    assert pending_after is None
+
+
 def test_startup_sweep_lists_orphaned_messages(session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
     store.create_pending_message(session, row.id, "orphaned message")
@@ -151,10 +240,10 @@ def test_two_sends_are_serialized(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
     execution_order = []
 
-    async def fake_deliver(_session_id, message):
+    async def fake_deliver(_ember, _cli_session_id, message):
         execution_order.append(message)
         await asyncio.sleep(0.01)
-        return _completed_turn(message)
+        return _completed_delivery(message)
 
     monkeypatch.setattr(mcp._transport, "deliver", fake_deliver)
 
@@ -189,10 +278,10 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     )  # capture before expire_all(); the row is deleted on completion
     executions: list[str] = []
 
-    async def fake_deliver(_session_id, message):
+    async def fake_deliver(_ember, _cli_session_id, message):
         executions.append(message)
         await asyncio.sleep(0.01)
-        return _completed_turn(message)
+        return _completed_delivery(message)
 
     async def notify(*args, **kwargs):
         return None
