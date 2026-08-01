@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
@@ -616,21 +617,95 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	}
 }
 
+func bundleMetadataForTest(t *testing.T, d *Driver, rootfs string) BundleMetadata {
+	t.Helper()
+	digest, err := d.rootfsDigest(rootfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return BundleMetadata{
+		SchemaVersion: 1,
+		RootfsDigest:  digest,
+		RootfsPath:    rootfs,
+		Presentation:  "ext4_path",
+		CpuVendor:     d.cfg.Vendor,
+		CpuTemplate:   d.cfg.Template,
+	}
+}
+
 func TestDriverSessionRestoreRejectsInvalidProvenance(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(t *testing.T, d *Driver, ref string, rootfs string)
+		name        string
+		newDriver   func(t *testing.T) *Driver
+		mutate      func(t *testing.T, d *Driver, ref string, rootfs string)
+		wantRestore bool
 	}{
 		{name: "wrong digest", mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
-			if err := writeBundleMetadata(d.sessionBundleJSON(ref), BundleMetadata{
-				SchemaVersion: 1, RootfsDigest: "sha256:bad", RootfsPath: rootfs,
-				Presentation: "ext4_path",
-			}); err != nil {
+			writeMetadata := bundleMetadataForTest(t, d, rootfs)
+			writeMetadata.RootfsDigest = "sha256:bad"
+			if err := writeBundleMetadata(d.sessionBundleJSON(ref), writeMetadata); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{name: "replaced rootfs", mutate: func(t *testing.T, _ *Driver, _ string, rootfs string) {
-			if err := os.WriteFile(rootfs, []byte("replacement"), 0o600); err != nil {
+			if err := os.WriteFile(rootfs, []byte("changed-rootfs"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(rootfs, time.Unix(123, 456), time.Unix(123, 456)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "schema version", mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
+			meta := bundleMetadataForTest(t, d, rootfs)
+			meta.SchemaVersion = 2
+			if err := writeBundleMetadata(d.sessionBundleJSON(ref), meta); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "wrong presentation", mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
+			meta := bundleMetadataForTest(t, d, rootfs)
+			meta.Presentation = "ublk_erofs"
+			if err := writeBundleMetadata(d.sessionBundleJSON(ref), meta); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "empty rootfs path", mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
+			meta := bundleMetadataForTest(t, d, rootfs)
+			meta.RootfsPath = ""
+			if err := writeBundleMetadata(d.sessionBundleJSON(ref), meta); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "empty rootfs digest", mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
+			meta := bundleMetadataForTest(t, d, rootfs)
+			meta.RootfsDigest = ""
+			if err := writeBundleMetadata(d.sessionBundleJSON(ref), meta); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "deleted rootfs", mutate: func(t *testing.T, _ *Driver, _ string, rootfs string) {
+			if err := os.Remove(rootfs); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "cpu vendor mismatch", newDriver: func(t *testing.T) *Driver { return testDriverWithSku(t, "amd", "skylake") }, mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
+			meta := bundleMetadataForTest(t, d, rootfs)
+			meta.CpuVendor = "intel"
+			if err := writeBundleMetadata(d.sessionBundleJSON(ref), meta); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "cpu template mismatch", newDriver: func(t *testing.T) *Driver { return testDriverWithSku(t, "amd", "skylake") }, mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
+			meta := bundleMetadataForTest(t, d, rootfs)
+			meta.CpuTemplate = "haswell"
+			if err := writeBundleMetadata(d.sessionBundleJSON(ref), meta); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "empty cpu vendor is compatible", newDriver: func(t *testing.T) *Driver { return testDriverWithVendor(t, "amd") }, wantRestore: true, mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
+			meta := bundleMetadataForTest(t, d, rootfs)
+			meta.CpuVendor = ""
+			if err := writeBundleMetadata(d.sessionBundleJSON(ref), meta); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -642,18 +717,37 @@ func TestDriverSessionRestoreRejectsInvalidProvenance(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			d := testDriver(t)
-			h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "invalid-provenance"})
+			d := testDriver
+			if tc.newDriver != nil {
+				d = tc.newDriver
+			}
+			driver := d(t)
+			h, err := driver.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "invalid-provenance"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := d.SnapshotSession(context.Background(), h, tc.name); err != nil {
+			if _, err := driver.SnapshotSession(context.Background(), h, tc.name); err != nil {
 				t.Fatal(err)
 			}
-			_ = d.Release(context.Background(), h)
-			tc.mutate(t, d, tc.name, h.RootfsPath)
-			if _, err := d.RestoreSession(context.Background(), tc.name); err == nil {
+			_ = driver.Release(context.Background(), h)
+			tc.mutate(t, driver, tc.name, h.RootfsPath)
+			h2, restoreErr := driver.RestoreSession(context.Background(), tc.name)
+			if tc.wantRestore {
+				if restoreErr != nil {
+					t.Fatalf("RestoreSession: %v", restoreErr)
+				}
+				if err := driver.Release(context.Background(), h2); err != nil {
+					t.Fatalf("Release restored VM: %v", err)
+				}
+				return
+			}
+			if restoreErr == nil {
 				t.Fatal("RestoreSession accepted invalid provenance")
+			}
+			for _, path := range []string{driver.sessionSnapfile(tc.name), driver.sessionMemfile(tc.name), driver.sessionBundleJSON(tc.name)} {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("refused restore removed bundle file %q: %v", path, err)
+				}
 			}
 		})
 	}
