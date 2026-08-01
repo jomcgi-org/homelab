@@ -1077,10 +1077,16 @@ egress:
   external: allow
   internal:
     default: deny
-    # Internal (cluster/private) destinations permitted under deny-by-default, as
-    # host[:port]. Empty: the claude runtime needs the public internet, not this
-    # cluster, and an agent that could reach in-cluster services is exactly the
-    # pivot this setting exists to prevent.
+    # Internal (cluster/private) destinations permitted under deny-by-default. Each
+    # entry is an exact host:port (e.g. vllm-qwen:8000): a deliberate hole in the
+    # split-horizon guardrail (ADR 023). The sidecar tries the entry against BOTH
+    # the requested host:port AND the resolved ip:port (classify.go internalAllows),
+    # so a name and its address are both accepted, and pinning the resolved IP is
+    # what defeats SSRF-by-name and DNS rebinding. Matching is an exact
+    # case-insensitive host compare (main.go allowed), so wildcards are NOT
+    # supported. Adding an entry is a security decision: an agent with internal
+    # reach can pivot to other cluster services. Empty list (the default) means
+    # deny-all-internal; the claude runtime needs only the public internet.
     allowlist: []
     # Extra CIDRs treated as internal beyond the baked private/loopback/link-local
     # ranges. This cluster's pod/service/node nets are already RFC1918.
