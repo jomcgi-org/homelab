@@ -120,6 +120,7 @@ defmodule Embervm.NodeRoundtripTest do
     {:ok, bank} = NodeService.Stub.bank(ch, %BankRequest{vm_id: "vm-s1", session_id: "s-abc"})
     assert bank.snapshot_ref == "sessions/s-abc"
     assert bank.size_bytes == 2048
+    assert bank.rootfs_digest == "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
     # Relight: derives the vm_id from the snapshot_ref.
     {:ok, relit} =
@@ -682,6 +683,7 @@ defmodule Embervm.NodeRoundtripTest do
     assert snap.session_id == "s-sess2"
     assert snap.size_bytes == 4096
     assert snap.created_at_unix_ms == 1_700_000_000_000
+    assert snap.rootfs_digest == "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
     assert ns.snapshot_disk_free_bytes == 9_000_000_000
     assert ns.snapshot_disk_used_bytes == 1_000_000_000
