@@ -49,11 +49,25 @@ INTERRUPT_TIMEOUT = 30.0
 CLI_PROBE_TIMEOUT = 10.0
 PERMISSION_MODE_ENV = "EMBER_PERMISSION_MODE"
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
+CLI_UID_ENV = "EMBER_CLI_UID"
+CLI_GID_ENV = "EMBER_CLI_GID"
+DEFAULT_CLI_UID = 65532
+DEFAULT_CLI_GID = 65532
 VOICE_PROMPT = (
     "End every response with a single line: <voice>One or two plain sentences, "
     "no markdown, that a person could hear read aloud: what you did and anything "
     "you need from them.</voice>"
 )
+
+
+def _cli_privilege_kwargs():
+    """Return uid/gid kwargs only when the shim itself is running as root."""
+    if os.geteuid() != 0:
+        return {}
+    return {
+        "user": int(os.environ.get(CLI_UID_ENV, str(DEFAULT_CLI_UID))),
+        "group": int(os.environ.get(CLI_GID_ENV, str(DEFAULT_CLI_GID))),
+    }
 
 
 def _truncate_ring_for_error(ring, max_len=1500):
@@ -75,6 +89,7 @@ def _probe_cli_startup(executable):
             stderr=subprocess.PIPE,
             timeout=CLI_PROBE_TIMEOUT,
             text=True,
+            **_cli_privilege_kwargs(),
         )
         stdout = proc.stdout[:200] if proc.stdout else ""
         stderr = proc.stderr[:200] if proc.stderr else ""
@@ -410,8 +425,9 @@ class ClaudeProcess:
         if not os.path.isdir(self.workspace):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         self._configure_git()
-        # The microVM is the security boundary. The shim and CLI run as root inside the guest
-        # (apko's run-as: 65532 is ignored on raw Firecracker boot, per review). In-guest
+        # The microVM is the security boundary. The shim may start as root inside the guest
+        # (apko's run-as: 65532 is ignored on raw Firecracker boot, per review), so drop the
+        # CLI to the runtime uid/gid only when the shim is root. In-guest
         # permission prompts add no containment that the VM boundary does not already provide.
         # There is no human on the other end of a prompt, by construction. So permission_mode
         # is bypassPermissions; future callers can override via EMBER_PERMISSION_MODE to tighten it.
@@ -447,6 +463,7 @@ class ClaudeProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=child_env,
+            **_cli_privilege_kwargs(),
         )
         with self.process_lock:
             self.process = process
