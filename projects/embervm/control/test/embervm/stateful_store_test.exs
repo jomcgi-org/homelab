@@ -682,6 +682,14 @@ defmodule Embervm.StatefulStoreTest do
     StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-9", generation: 5, generation_blessed: false})
     assert StatefulStore.quarantined?(store, "wl-a")
 
+    # Re-anchor the volume row to node-4 with a shielded (still-quarantined)
+    # blessed report BEFORE asserting the refusal: node-9's report above took
+    # over the row's node_id, and without this step the ensure below would be
+    # refused by the pre-existing anchor match rather than by the quarantine
+    # guard this test exists to pin.
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 6, generation_blessed: true})
+    assert StatefulStore.quarantined?(store, "wl-a")
+
     assert {:ok, []} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
     {:ok, ops} = SQLite.read_from(op_log, 0)
     assert 0 == Enum.count(ops, &(&1.kind == :blessing_lease_granted))
