@@ -442,8 +442,13 @@ defmodule Embervm.StatefulStore do
 
   @doc """
   Ensures the anchor node has a blessing lease when its existing lease is low or
-  absent. Quarantined workloads do not receive new or renewed leases, so fencing
-  by non-renewal can engage after any outstanding lease drains.
+  absent. Quarantined workloads do not receive new or renewed leases: once the
+  outstanding lease drains (bounded by one lease width), the workload's
+  node-local wakes degrade to unblessable self-bumps, which closes noded's
+  volume export gate for it. Note the CP-side flag itself is not sticky: the
+  anchor's first post-drain forward report still clears it through
+  fenced-writer adoption (ADR embervm/014), so non-renewal fences durability
+  (no export of unblessed state), not the flag.
   """
   @spec ensure_blessing_lease(GenServer.server(), String.t(), String.t()) ::
           {:ok, [map()]} | {:error, term()}
@@ -994,8 +999,11 @@ defmodule Embervm.StatefulStore do
     should_grant =
       case fetch_volume(state, workload) do
         %{node_id: ^node_id} ->
-          # A quarantined workload gets no new or renewed lease, so the split-brain
-          # fence engages once the outstanding lease drains, bounded by one lease width.
+          # A quarantined workload gets no new or renewed lease. Once the
+          # outstanding lease drains (bounded by one lease width) its wakes
+          # become unblessable self-bumps, closing noded's export gate for the
+          # volume; the flag itself may still clear later via fenced-writer
+          # adoption (ADR embervm/014), so this fences durability, not the flag.
           not Map.get(fetch_blessing(state, workload), :quarantined, false)
 
         _ ->

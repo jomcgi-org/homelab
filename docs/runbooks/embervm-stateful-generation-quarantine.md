@@ -66,6 +66,37 @@ below. **A quarantine that does not clear itself within a node-report interval i
 remainder** (for example the narrow window where the control plane died before durably
 recording the dispatch), and only then does the manual break-glass apply.
 
+## Cause 3 (lease era): suppressed clears while the anchor holds a blessing lease
+
+Since blessing leases (#4183, #4188), a node-local-wake workload's anchor can
+self-bless generations from a pre-issued range, so its reports say
+`generation_blessed:true` at generations the control plane never durably blessed.
+While a volume is quarantined, those reports do NOT clear the flag (the CP cannot
+corroborate them), logged once per episode as:
+
+```
+embervm stateful volume quarantine clear suppressed: blessed report past the last blessed one
+  event=:quarantine_clear_suppressed workload=<wl> generation=<G+k> blessed_generation=<G>
+```
+
+Seeing this line means the fence is holding by design, not that clearing is stuck:
+the split-brain evidence (some OTHER node reported an unblessed forward generation)
+is being retained across the anchor's leased reports. The control plane also stops
+granting or renewing leases for a quarantined workload, so within one lease width
+(50 wakes) the anchor's wakes degrade to unblessable self-bumps and noded refuses
+to export the volume (the ADR 011 export gate), protecting the durable copy.
+
+Two caveats for the operator:
+
+- The flag is not sticky forever: the anchor's first post-drain unblessed forward
+  report clears it through fenced-writer adoption (ADR embervm/014), and a
+  control-plane restart rebuilds it false (it is deliberately not durable). Treat
+  the `:generation_quarantined` and `:quarantine_clear_suppressed` log history as
+  the evidence trail, not the current flag value.
+- If the quarantine is genuine split brain, identify and stop the rogue writer
+  before blessing forward; the break-glass below records the anchor's state as
+  authoritative, which is only safe once there is exactly one writer again.
+
 ## Recovery (break-glass): bless the reported generation forward
 
 Blessing advances the CP's `blessed_generation` watermark to the generation the node is
