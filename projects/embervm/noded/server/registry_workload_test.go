@@ -75,9 +75,16 @@ func newLeaseTestServer(t *testing.T) (nodev1.NodeServiceClient, *Server) {
 	t.Helper()
 	c, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
 	s.volumes = volume.NewManager(filepath.Join(t.TempDir(), "volumes"))
+	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
 	return c, s
 }
 
+// syncBlessingLease mirrors the wire shape the control plane emits: it sets
+// WorkloadName and NodeLocalWake because the CP does, but neither is
+// load-bearing for delivery (SyncRegistry keys on entry.Workload and applies
+// leases regardless of the wake mode).
 func syncBlessingLease(t *testing.T, c nodev1.NodeServiceClient, nextGeneration, leaseEnd uint64) {
 	t.Helper()
 	_, err := c.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{
@@ -96,11 +103,14 @@ func syncBlessingLease(t *testing.T, c nodev1.NodeServiceClient, nextGeneration,
 	}
 }
 
+// TestSyncRegistryDeliversBlessingLeaseToVolumeManager pins the delivery hop
+// itself: a lease pushed through the real proto path (bufconn client ->
+// entryFromProto -> SyncRegistry -> ApplyBlessingLease) lands on disk, and an
+// activator attach consumes it as blessed with a cursor that persists across
+// attaches. If any link in that chain is cut, the first attach self-bumps from
+// a fresh ledger and every assertion here fails.
 func TestSyncRegistryDeliversBlessingLeaseToVolumeManager(t *testing.T) {
 	c, s := newLeaseTestServer(t)
-	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
-		t.Fatalf("Create volume: %v", err)
-	}
 
 	syncBlessingLease(t, c, 7, 12)
 	gen, err := s.attachGeneration("demo-pg", 0, true)
@@ -123,11 +133,19 @@ func TestSyncRegistryDeliversBlessingLeaseToVolumeManager(t *testing.T) {
 	}
 }
 
-func TestSyncRegistryLeaseReplayNeverRewindsCursor(t *testing.T) {
+// TestSyncRegistryLeaseReplayNeverRewindsIssuedGeneration pins the no-rewind
+// property END TO END, across the three lease shapes a brick can receive:
+// an identical replay and a stale narrower range leave the persisted cursor
+// alone (the ApplyBlessingLease guard), while the control plane's actual
+// re-grant shape (start BEHIND the brick's cursor with a larger lease_end,
+// since append_blessing_lease derives start from the lag-prone reported
+// generation) is accepted and DOES rewind the persisted cursor. What can
+// never rewind is the issued generation: the ledger clamp in
+// ConsumeGenerationFromLease is the only thing standing between a rewound
+// cursor and double-issuance, so the final leg here is the end-to-end pin of
+// that clamp.
+func TestSyncRegistryLeaseReplayNeverRewindsIssuedGeneration(t *testing.T) {
 	c, s := newLeaseTestServer(t)
-	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
-		t.Fatalf("Create volume: %v", err)
-	}
 
 	syncBlessingLease(t, c, 7, 12)
 	for want := uint64(7); want <= 8; want++ {
@@ -158,18 +176,40 @@ func TestSyncRegistryLeaseReplayNeverRewindsCursor(t *testing.T) {
 		t.Fatalf("stale lease rewound generation from %d to %d", gen, next)
 	}
 	if next != 10 {
-		t.Errorf("stale lease attach = %d, want 10 from the persisted [7, 12) range", next)
+		t.Errorf("stale lease attach = %d, want 10: the persisted range keeps the original end (the cursor sits at [10, 12) here), never adopting the stale one", next)
 	}
+	// The discriminating assertion: with the ApplyBlessingLease guard removed
+	// the stale leg still yields 10 via an unblessable self-bump, so only this
+	// blessed check separates a leased issuance from the fallback.
 	if !s.volumes.GenerationBlessed("demo-pg") {
 		t.Fatal("stale lease attach should remain blessed")
 	}
+
+	// The CP re-grant shape: start behind the brick's cursor, larger end. The
+	// guard accepts it (the LeaseEnd half fails on an extension) and the
+	// persisted cursor rewinds to 7, but the ledger clamp must advance past
+	// the local generation (10), so the attach issues 11 and stays blessed.
+	// Without the clamp, RecordBlessed(7) fails against the ledger and this
+	// exact leg degrades to an unblessable self-bump.
+	syncBlessingLease(t, c, 7, 62)
+	regrant, err := s.attachGeneration("demo-pg", 0, true)
+	if err != nil {
+		t.Fatalf("re-grant lease attach: %v", err)
+	}
+	if regrant != 11 {
+		t.Fatalf("re-grant lease attach = %d, want the clamp to advance past the ledger to 11", regrant)
+	}
+	if !s.volumes.GenerationBlessed("demo-pg") {
+		t.Fatal("re-grant lease attach should be blessed, not a clamp-bypassing self-bump")
+	}
 }
 
+// TestSyncRegistryLeaseRenewalExtendsRange pins renewal through the same
+// delivery hop: a fresh range past the consumed one applies (only the
+// NextGeneration half of the ApplyBlessingLease guard passes) and the next
+// activator attach issues from it, blessed.
 func TestSyncRegistryLeaseRenewalExtendsRange(t *testing.T) {
 	c, s := newLeaseTestServer(t)
-	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
-		t.Fatalf("Create volume: %v", err)
-	}
 
 	syncBlessingLease(t, c, 7, 12)
 	for want := uint64(7); want < 12; want++ {
@@ -195,11 +235,11 @@ func TestSyncRegistryLeaseRenewalExtendsRange(t *testing.T) {
 	}
 }
 
+// TestActivatorAttachFallsBackToSelfBumpOnExhaustedLease pins the noded half
+// of fencing by non-renewal: past lease_end the activator lane degrades to an
+// UNBLESSABLE self-bump, so an unrenewed lease stops blessing.
 func TestActivatorAttachFallsBackToSelfBumpOnExhaustedLease(t *testing.T) {
 	c, s := newLeaseTestServer(t)
-	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
-		t.Fatalf("Create volume: %v", err)
-	}
 
 	syncBlessingLease(t, c, 7, 9)
 	for want := uint64(7); want <= 8; want++ {
@@ -222,6 +262,9 @@ func TestActivatorAttachFallsBackToSelfBumpOnExhaustedLease(t *testing.T) {
 	if gen != 9 {
 		t.Fatalf("exhausted lease generation = %d, want self-bump 9", gen)
 	}
+	// The discriminating assertion: the self-bump also lands on 9 (the lease
+	// end), so the generation check alone cannot separate a leased issuance
+	// from the fallback; only this blessed check can.
 	if s.volumes.GenerationBlessed("demo-pg") {
 		t.Fatal("self-bump after lease exhaustion must be unblessable")
 	}
