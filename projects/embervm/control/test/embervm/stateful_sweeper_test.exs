@@ -431,6 +431,7 @@ defmodule Embervm.StatefulSweeperTest do
     assert banked.state == :banked
     assert banked.snapshot_ref == "snap-vm-1"
     assert banked.snapshot_generation == 1
+    assert banked.snapshot_size_bytes == 4_096
 
     assert [%{mode: :STOP_STATEFUL_MODE_BANK, vm_id: "vm-1"}] = stop_calls(ctx)
 
@@ -485,6 +486,8 @@ defmodule Embervm.StatefulSweeperTest do
     # Neither cleared nor re-armed.
     assert %{bank_backoff: backoff} = :sys.get_state(ctx.sweeper)
     assert backoff["wl-a"] == {1, 1_000}
+    assert %{bank_inflight: bank_inflight} = :sys.get_state(ctx.sweeper)
+    assert bank_inflight["node-4"] == 0
   end
 
   test "cx_active never zero: the instance NEVER banks even well past idleBankSeconds" do

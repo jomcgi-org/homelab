@@ -2219,16 +2219,13 @@ defmodule Embervm.StatefulManager do
   end
 
   defp index_stateful_bundles_by_workload(facts) do
-    # A workload can be reported by more than one brick during a scrape race;
-    # choose its highest generation, with stable tie-breakers for deterministic adoption.
+    # Keep all candidates so adoption can restrict selection to the volume anchor.
     facts
     |> Enum.flat_map(fn f ->
       for b <- Map.get(f, :stateful_bundles, []) || [], do: {b.workload, {f.configured_id, b}}
     end)
     |> Enum.reduce(%{}, fn {workload, candidate}, acc ->
-      Map.update(acc, workload, candidate, fn current ->
-        if bundle_sort_key(candidate) > bundle_sort_key(current), do: candidate, else: current
-      end)
+      Map.update(acc, workload, [candidate], &[candidate | &1])
     end)
   end
 
@@ -2237,6 +2234,9 @@ defmodule Embervm.StatefulManager do
   end
 
   defp adopt_one(state, instance, live_vms, bundles, bundles_by_workload) do
+    volume = StatefulStore.get_volume(state.store, instance.workload)
+    anchor = anchor_bundle(bundles_by_workload, volume)
+
     cond do
       # A destroying instance (ADR embervm/014 decision 5) is mid node-confirmed
       # teardown; adoption must NOT re-adopt it to live even though the node still
@@ -2249,7 +2249,8 @@ defmodule Embervm.StatefulManager do
       # A fresh atomic bank owns its row until the bank completion records the
       # bundle facts; adoption must not revert it to serving or terminalize it.
       instance.state == :banking and is_integer(instance.updated_at) and
-          state.clock.() - instance.updated_at < @bank_ownership_bound_ms ->
+          state.clock.() - instance.updated_at < @bank_ownership_bound_ms and
+          not checkpoint_pending?(live_vms, instance.vm_id) ->
         state
 
       # A wake stuck waking past 2 * wakeTimeoutSeconds (Task 10): the worker never
@@ -2297,8 +2298,8 @@ defmodule Embervm.StatefulManager do
       is_binary(instance.snapshot_ref) and Map.has_key?(bundles, instance.snapshot_ref) ->
         heal_to_banked(state, instance)
 
-      Map.has_key?(bundles_by_workload, instance.workload) ->
-        {node_id, bundle} = Map.fetch!(bundles_by_workload, instance.workload)
+      anchor != nil ->
+        {node_id, bundle} = anchor
         heal_to_banked_bundle(state, instance, node_id, bundle)
 
       node_reporting?(state, instance.node_id) ->
@@ -2318,6 +2319,15 @@ defmodule Embervm.StatefulManager do
       {_node_id, vm} -> Map.get(vm, :checkpoint_pending, false) == true
       _ -> false
     end
+  end
+
+  defp anchor_bundle(_bundles_by_workload, nil), do: nil
+
+  defp anchor_bundle(bundles_by_workload, volume) do
+    bundles_by_workload
+    |> Map.get(volume.workload, [])
+    |> Enum.filter(fn {node_id, _bundle} -> node_id == volume.node_id end)
+    |> Enum.max_by(&bundle_sort_key/1, fn -> nil end)
   end
 
   # Resolve a stranded checkpoint the SAFE way (ABORT): return the paused VM to
