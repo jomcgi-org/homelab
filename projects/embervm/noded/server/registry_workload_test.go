@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
@@ -63,6 +64,166 @@ func TestSyncRegistryStoresControlPlaneActivator(t *testing.T) {
 	}
 	if got := s.registry.controlPlaneActivator(); got != "" {
 		t.Errorf("control-plane activator after empty sync = %q, want empty", got)
+	}
+}
+
+// newLeaseTestServer is newTestServer plus a real volume manager: New only
+// wires s.volumes when a VolumeRoot is configured, and the plain harness
+// configures none, so lease delivery (SyncRegistry -> ApplyBlessingLease)
+// would dereference a nil manager.
+func newLeaseTestServer(t *testing.T) (nodev1.NodeServiceClient, *Server) {
+	t.Helper()
+	c, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	s.volumes = volume.NewManager(filepath.Join(t.TempDir(), "volumes"))
+	return c, s
+}
+
+func syncBlessingLease(t *testing.T, c nodev1.NodeServiceClient, nextGeneration, leaseEnd uint64) {
+	t.Helper()
+	_, err := c.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{
+		Entries: []*nodev1.RegistryEntry{{
+			Workload:      "demo-pg",
+			NodeLocalWake: true,
+			BlessingLeases: []*nodev1.BlessingLease{{
+				WorkloadName:   "demo-pg",
+				NextGeneration: nextGeneration,
+				LeaseEnd:       leaseEnd,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SyncRegistry lease [%d, %d): %v", nextGeneration, leaseEnd, err)
+	}
+}
+
+func TestSyncRegistryDeliversBlessingLeaseToVolumeManager(t *testing.T) {
+	c, s := newLeaseTestServer(t)
+	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
+
+	syncBlessingLease(t, c, 7, 12)
+	gen, err := s.attachGeneration("demo-pg", 0, true)
+	if err != nil {
+		t.Fatalf("first activator attach: %v", err)
+	}
+	if gen != 7 {
+		t.Fatalf("first activator generation = %d, want 7", gen)
+	}
+	if !s.volumes.GenerationBlessed("demo-pg") {
+		t.Fatal("first activator attach should be blessed")
+	}
+
+	gen, err = s.attachGeneration("demo-pg", 0, true)
+	if err != nil {
+		t.Fatalf("second activator attach: %v", err)
+	}
+	if gen != 8 {
+		t.Errorf("second activator generation = %d, want 8", gen)
+	}
+}
+
+func TestSyncRegistryLeaseReplayNeverRewindsCursor(t *testing.T) {
+	c, s := newLeaseTestServer(t)
+	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
+
+	syncBlessingLease(t, c, 7, 12)
+	for want := uint64(7); want <= 8; want++ {
+		gen, err := s.attachGeneration("demo-pg", 0, true)
+		if err != nil {
+			t.Fatalf("activator attach %d: %v", want, err)
+		}
+		if gen != want {
+			t.Fatalf("activator attach %d = %d, want %d", want, gen, want)
+		}
+	}
+
+	syncBlessingLease(t, c, 7, 12)
+	gen, err := s.attachGeneration("demo-pg", 0, true)
+	if err != nil {
+		t.Fatalf("replayed lease attach: %v", err)
+	}
+	if gen != 9 {
+		t.Fatalf("replayed lease attach = %d, want 9", gen)
+	}
+
+	syncBlessingLease(t, c, 5, 10)
+	next, err := s.attachGeneration("demo-pg", 0, true)
+	if err != nil {
+		t.Fatalf("stale lease attach: %v", err)
+	}
+	if next <= gen {
+		t.Fatalf("stale lease rewound generation from %d to %d", gen, next)
+	}
+	if next != 10 {
+		t.Errorf("stale lease attach = %d, want 10 from the persisted [7, 12) range", next)
+	}
+	if !s.volumes.GenerationBlessed("demo-pg") {
+		t.Fatal("stale lease attach should remain blessed")
+	}
+}
+
+func TestSyncRegistryLeaseRenewalExtendsRange(t *testing.T) {
+	c, s := newLeaseTestServer(t)
+	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
+
+	syncBlessingLease(t, c, 7, 12)
+	for want := uint64(7); want < 12; want++ {
+		gen, err := s.attachGeneration("demo-pg", 0, true)
+		if err != nil {
+			t.Fatalf("initial lease attach %d: %v", want, err)
+		}
+		if gen != want {
+			t.Fatalf("initial lease attach %d = %d, want %d", want, gen, want)
+		}
+	}
+
+	syncBlessingLease(t, c, 12, 62)
+	gen, err := s.attachGeneration("demo-pg", 0, true)
+	if err != nil {
+		t.Fatalf("renewed lease attach: %v", err)
+	}
+	if gen != 12 {
+		t.Fatalf("renewed lease generation = %d, want 12", gen)
+	}
+	if !s.volumes.GenerationBlessed("demo-pg") {
+		t.Fatal("renewed lease attach should be blessed")
+	}
+}
+
+func TestActivatorAttachFallsBackToSelfBumpOnExhaustedLease(t *testing.T) {
+	c, s := newLeaseTestServer(t)
+	if err := s.volumes.Create("demo-pg", 1<<20); err != nil {
+		t.Fatalf("Create volume: %v", err)
+	}
+
+	syncBlessingLease(t, c, 7, 9)
+	for want := uint64(7); want <= 8; want++ {
+		gen, err := s.attachGeneration("demo-pg", 0, true)
+		if err != nil {
+			t.Fatalf("leased activator attach %d: %v", want, err)
+		}
+		if gen != want {
+			t.Fatalf("leased activator attach %d = %d, want %d", want, gen, want)
+		}
+		if !s.volumes.GenerationBlessed("demo-pg") {
+			t.Fatalf("leased activator attach %d should be blessed", want)
+		}
+	}
+
+	gen, err := s.attachGeneration("demo-pg", 0, true)
+	if err != nil {
+		t.Fatalf("exhausted lease attach: %v", err)
+	}
+	if gen != 9 {
+		t.Fatalf("exhausted lease generation = %d, want self-bump 9", gen)
+	}
+	if s.volumes.GenerationBlessed("demo-pg") {
+		t.Fatal("self-bump after lease exhaustion must be unblessable")
 	}
 }
 
