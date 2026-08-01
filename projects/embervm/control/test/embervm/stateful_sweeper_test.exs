@@ -440,6 +440,44 @@ defmodule Embervm.StatefulSweeperTest do
     assert length(ops) == 1
   end
 
+  test "a completed bank whose row was reconciled to serving logs the transition error and keeps backoff" do
+    {:ok, store_ref} = Agent.start_link(fn -> nil end)
+
+    ctx =
+      start_stack(
+        stop_stateful_fun: fn _ch, _req ->
+          store = Agent.get(store_ref, & &1)
+          {:ok, _} = StatefulStore.mark(store, "sf-race", :bank_abort)
+          {:ok, %StopStatefulResponse{snapshot_ref: "snap-race", size_bytes: 2_000, generation: 1}}
+        end
+      )
+
+    Agent.update(store_ref, fn _ -> ctx.store end)
+    stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
+    stateful_node(ctx, "node-4")
+    serving_instance(ctx, "sf-race", "wl-a", "vm-race", "10.98.0.5")
+
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+    advance(ctx.clock_agent, 5_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+    StatefulSweeper.sweep(ctx.sweeper)
+    advance(ctx.clock_agent, 65_000)
+    set_scrape(ctx, reading("state-5400", 0, 3))
+
+    :sys.replace_state(ctx.sweeper, fn state -> %{state | bank_backoff: %{"wl-a" => {999_999, 1_000}}} end)
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        StatefulSweeper.sweep(ctx.sweeper)
+        wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-race")) end)
+      end)
+
+    assert log =~ "bank completed on the node but the store transition failed"
+    refute log =~ "embervm stateful banked"
+    assert %{bank_backoff: backoff} = :sys.get_state(ctx.sweeper)
+    assert Map.has_key?(backoff, "wl-a")
+  end
+
   test "cx_active never zero: the instance NEVER banks even well past idleBankSeconds" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})

@@ -166,6 +166,10 @@ defmodule Embervm.StatefulManager do
   @default_wake_max 10
   @default_wake_window_ms 60_000
 
+  # A 2x bound on the StopStateful checkpoint worst case: a fresh atomic bank
+  # owns its row until the bank completion records the bundle facts.
+  @bank_ownership_bound_ms 120_000
+
   # Parked-connection cap per workload: an order of magnitude below serving's
   # default (64) because a stateful sandbox has exactly one owner, so a deep
   # burst is already anomalous rather than ordinary multi-tenant fan-in.
@@ -1904,6 +1908,7 @@ defmodule Embervm.StatefulManager do
     facts = NodeCapacity.all(state.capacity_table)
     live_vms = index_stateful_vms(facts)
     bundles = index_stateful_bundles(facts)
+    bundles_by_workload = index_stateful_bundles_by_workload(facts)
 
     # ADR embervm/018 Phase 2: adopt node-woken (origin ACTIVATOR) stateful VMs
     # BEFORE the adopt_one reduce. The brick relit a scaled-to-zero workload during
@@ -1917,7 +1922,9 @@ defmodule Embervm.StatefulManager do
     state =
       StatefulStore.all(state.store)
       |> Enum.reject(&StatefulState.terminal?(&1.state))
-      |> Enum.reduce(state, fn instance, acc -> adopt_one(acc, instance, live_vms, bundles) end)
+      |> Enum.reduce(state, fn instance, acc ->
+        adopt_one(acc, instance, live_vms, bundles, bundles_by_workload)
+      end)
 
     state = refresh_volume_facts(state, facts)
 
@@ -2211,7 +2218,25 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  defp adopt_one(state, instance, live_vms, bundles) do
+  defp index_stateful_bundles_by_workload(facts) do
+    # A workload can be reported by more than one brick during a scrape race;
+    # choose its highest generation, with stable tie-breakers for deterministic adoption.
+    facts
+    |> Enum.flat_map(fn f ->
+      for b <- Map.get(f, :stateful_bundles, []) || [], do: {b.workload, {f.configured_id, b}}
+    end)
+    |> Enum.reduce(%{}, fn {workload, candidate}, acc ->
+      Map.update(acc, workload, candidate, fn current ->
+        if bundle_sort_key(candidate) > bundle_sort_key(current), do: candidate, else: current
+      end)
+    end)
+  end
+
+  defp bundle_sort_key({node_id, bundle}) do
+    {Map.get(bundle, :generation, 0) || 0, Map.get(bundle, :snapshot_ref, "") || "", node_id || ""}
+  end
+
+  defp adopt_one(state, instance, live_vms, bundles, bundles_by_workload) do
     cond do
       # A destroying instance (ADR embervm/014 decision 5) is mid node-confirmed
       # teardown; adoption must NOT re-adopt it to live even though the node still
@@ -2219,6 +2244,12 @@ defmodule Embervm.StatefulManager do
       # the node report, is the fix for the TLC NoDestroyBeforeConfirm violation
       # modeled in adoption.tla. redrive_destroying (gated) owns the transition.
       instance.state == :destroying ->
+        state
+
+      # A fresh atomic bank owns its row until the bank completion records the
+      # bundle facts; adoption must not revert it to serving or terminalize it.
+      instance.state == :banking and is_integer(instance.updated_at) and
+          state.clock.() - instance.updated_at < @bank_ownership_bound_ms ->
         state
 
       # A wake stuck waking past 2 * wakeTimeoutSeconds (Task 10): the worker never
@@ -2235,7 +2266,7 @@ defmodule Embervm.StatefulManager do
         )
 
         state = clear_stuck_wake(state, instance.workload)
-        adopt_one(state, instance, live_vms, bundles)
+        adopt_one(state, instance, live_vms, bundles, bundles_by_workload)
 
       # An in-flight wake (within the bound) for the workload owns its transition; a
       # periodic reconcile must not touch it (the wake's own finish_wake will land, and
@@ -2265,6 +2296,10 @@ defmodule Embervm.StatefulManager do
 
       is_binary(instance.snapshot_ref) and Map.has_key?(bundles, instance.snapshot_ref) ->
         heal_to_banked(state, instance)
+
+      Map.has_key?(bundles_by_workload, instance.workload) ->
+        {node_id, bundle} = Map.fetch!(bundles_by_workload, instance.workload)
+        heal_to_banked_bundle(state, instance, node_id, bundle)
 
       node_reporting?(state, instance.node_id) ->
         fail_instance(state, instance.instance_id, "vm_and_bundle_vanished")
@@ -2327,6 +2362,27 @@ defmodule Embervm.StatefulManager do
   defp heal_to_banked(state, instance) do
     StatefulStore.adopt_state(state.store, instance.instance_id, :banked)
     Logger.info("embervm stateful adopted (banked)", instance_id: instance.instance_id)
+    state
+  end
+
+  defp heal_to_banked_bundle(state, instance, node_id, bundle) do
+    snapshot_ref = Map.fetch!(bundle, :snapshot_ref)
+
+    StatefulStore.adopt_state(state.store, instance.instance_id, :banked, %{
+      snapshot_ref: snapshot_ref,
+      snapshot_generation: Map.get(bundle, :generation),
+      snapshot_size_bytes: Map.get(bundle, :size_bytes),
+      generation: Map.get(bundle, :generation),
+      node_id: node_id,
+      vm_id: nil
+    })
+
+    Logger.info("embervm stateful adopted (banked, node bundle)",
+      instance_id: instance.instance_id,
+      workload: instance.workload,
+      snapshot_ref: snapshot_ref
+    )
+
     state
   end
 

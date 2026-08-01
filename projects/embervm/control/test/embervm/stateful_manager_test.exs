@@ -841,6 +841,66 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(ctx.starts, & &1) == 0
   end
 
+  test "adoption leaves a fresh :banking instance untouched when its VM is still live" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-fresh-bank", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: "vm-bank", generation: 1})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-fresh-bank", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-fresh-bank", :bank)
+    stateful_node(ctx, "node-4", stateful_vms: [%{vm_id: "vm-bank", workload: "wl-a", ip: "10.88.0.9", port: 5432, healthy: true}])
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, instance} = StatefulStore.get(ctx.store, "stf-fresh-bank")
+    assert instance.state == :banking
+  end
+
+  test "adoption leaves a fresh :banking instance untouched when VM and bundle are absent" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-fresh-miss", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: "vm-miss", generation: 1})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-fresh-miss", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-fresh-miss", :bank)
+    stateful_node(ctx, "node-4")
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, instance} = StatefulStore.get(ctx.store, "stf-fresh-miss")
+    assert instance.state == :banking
+  end
+
+  test "adoption heals an old :banking instance from its live VM" do
+    ctx = start_stack(clock: fn -> 123_001 end)
+    stateful_workload(ctx, "wl-a")
+
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-old-bank", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: "vm-old", generation: 1})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-old-bank", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-old-bank", :bank)
+    stateful_node(ctx, "node-4", stateful_vms: [%{vm_id: "vm-old", workload: "wl-a", ip: "10.88.0.9", port: 5432, healthy: true}])
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, instance} = StatefulStore.get(ctx.store, "stf-old-bank")
+    assert instance.state == :serving
+  end
+
+  test "adoption heals a serving instance from a workload bundle when its VM vanished" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-bundle-recover", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: "vm-gone", generation: 1})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-bundle-recover", "10.88.0.9", 5432, :started)
+    stateful_node(ctx, "node-4", stateful_bundles: [%{snapshot_ref: "stateful/recovered", workload: "wl-a", generation: 7, size_bytes: 10, created_at_unix_ms: 1}])
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, instance} = StatefulStore.get(ctx.store, "stf-bundle-recover")
+    assert instance.state == :banked
+    assert instance.snapshot_ref == "stateful/recovered"
+    assert instance.snapshot_generation == 7
+    assert instance.generation == 7
+    assert instance.node_id == "node-4"
+    assert instance.vm_id == nil
+  end
+
   test "adoption SKIPS a :destroying instance even though the node still reports its live VM" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a")
