@@ -1736,29 +1736,200 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(build_calls, &length(&1)) == 1
   end
 
-  test "restore-first falls back to BuildBase on an S3 miss (FAILED_PRECONDITION)" do
+  test "hydrate fallback disproves the ledger and forces a rebuild" do
     test_pid = self()
-
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
     # noded reports the ref is not in the store: a fast, distinguishable miss.
     restore_fun = fn :fake_channel, _req ->
       {:error, %GRPC.RPCError{status: 9, message: "not present in store"}}
     end
 
-    {builder, _agent, _table} =
+    {builder, agent, _table} =
       build_then_report_base_absent(
         restore_fun: restore_fun,
         hydrate_poll_interval_ms: 5,
         hydrate_poll_max: 50,
         build_fun: fn :fake_channel, _req ->
-          send(test_pid, :rebuilt)
-          {:ok, resp("snap1")}
+          call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
+
+          if call == 2 do
+            send(test_pid, {:rebuilt, self()})
+
+            receive do
+              :release_rebuild -> {:ok, resp("snap1")}
+            end
+          else
+            {:ok, resp("snap1")}
+          end
         end
       )
 
     # Re-reconcile: restore-first tries, gets FAILED_PRECONDITION, falls back to a
     # rebuild AT ONCE (no poll wait).
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
-    assert_receive :rebuilt, 1_000
+    assert_receive {:rebuilt, rebuild_worker}, 1_000
+    assert_eventually(fn ->
+      case latest(agent, "w") do
+        nil -> false
+        status ->
+          base_built = condition(status, "BaseBuilt")
+          base_built["status"] == "False" and base_built["reason"] == "BaseBuilding"
+      end
+    end)
+    refute Map.has_key?(latest(agent, "w"), "snapshotRef")
+    send(rebuild_worker, :release_rebuild)
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap1"}, latest(agent, "w")) end)
+    assert Agent.get(calls, & &1) == 2
+  end
+
+  test "hydrate fallback with a changed signature uses plain reconcile semantics" do
+    test_pid = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    restore_fun = fn :fake_channel, _req ->
+      send(test_pid, {:restore_started, self()})
+
+      receive do
+        :release_restore ->
+          {:error, %GRPC.RPCError{status: 9, message: "not present in store"}}
+      end
+    end
+
+    build_fun = fn :fake_channel, req ->
+      call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
+
+      case call do
+        1 -> {:ok, resp("snap1")}
+        2 ->
+          send(test_pid, {:rebuild_started, req.image_ref, self()})
+
+          receive do
+            {:release_rebuild, result} -> result
+          end
+      end
+    end
+
+    {builder, agent, _table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 2,
+        hydrate_poll_max: 2,
+        build_fun: build_fun
+      )
+
+    desc_arg = desc(%{mem_mib: 4_000})
+    :ok = BaseBuilder.reconcile(builder, desc_arg)
+    assert_receive {:restore_started, restore_worker}, 1_000
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000, image_ref: "imgB"}))
+    assert_receive {:rebuild_started, "imgB", rebuild_worker}, 1_000
+    send(restore_worker, :release_restore)
+    Process.sleep(50)
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    send(rebuild_worker, {:release_rebuild, {:ok, resp("snap2")}})
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap2"}, latest(agent, "w")) end)
+
+    # The fallback's start signature is stale. It must not clear the newer ledger
+    # or enqueue a duplicate build for the already-recorded current signature.
+    assert Agent.get(calls, & &1) == 2
+  end
+
+  test "hydrate fallback does not duplicate a build already targeting the signature" do
+    test_pid = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
+
+      case call do
+        1 -> {:ok, resp("snap1")}
+        2 ->
+          send(test_pid, {:other_started, self()})
+
+          receive do
+            {:release_other, result} -> result
+          end
+
+        3 ->
+          send(test_pid, {:rebuild_started, self()})
+
+          receive do
+            {:release_rebuild, result} -> result
+          end
+      end
+    end
+
+    {builder, _agent, _table} =
+      build_then_report_base_absent(build_fun: build_fun)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "other", mem_mib: 4_000}))
+    assert_receive {:other_started, other_worker}, 1_000
+
+    # Derive the signature tuple from the same desc the builder reconciled, in
+    # signature/1's field order, so a future field addition fails loudly here
+    # rather than silently flipping this test into the mismatch branch.
+    d = desc(%{mem_mib: 4_000})
+    signature_at_start = {d.image_ref, nil, d.vcpus, d.mem_mib, d.guest_port, d.ready_path, d.init_env}
+    GenServer.cast(builder, {:reconcile_force_rebuild, "w", signature_at_start})
+
+    # A second force message while the first build is queued must honor the
+    # already_targeting? guard and leave the build count unchanged.
+    GenServer.cast(builder, {:reconcile_force_rebuild, "w", signature_at_start})
+    Process.sleep(50)
+    assert Agent.get(calls, & &1) == 2
+
+    send(other_worker, {:release_other, {:ok, resp("snap-other")}})
+    assert_receive {:rebuild_started, rebuild_worker}, 1_000
+    send(rebuild_worker, {:release_rebuild, {:ok, resp("snap2")}})
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
+    assert Agent.get(calls, & &1) == 3
+  end
+
+  test "hydrate fallback clears ledger fields before the building status write" do
+    test_pid = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    restore_fun = fn :fake_channel, _req ->
+      {:error, %GRPC.RPCError{status: 9, message: "not present in store"}}
+    end
+
+    build_fun = fn :fake_channel, _req ->
+      call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
+
+      if call == 2 do
+        send(test_pid, {:rebuild_started, self()})
+
+        receive do
+          {:release_rebuild, result} -> result
+        end
+      else
+        {:ok, resp("snap1")}
+      end
+    end
+
+    {builder, agent, _table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 2,
+        hydrate_poll_max: 2,
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive {:rebuild_started, rebuild_worker}, 1_000
+
+    assert_eventually(fn ->
+      case latest(agent, "w") do
+        nil -> false
+        status ->
+          base_built = condition(status, "BaseBuilt")
+
+          not Map.has_key?(status, "snapshotRef") and base_built["status"] == "False" and
+            base_built["reason"] == "BaseBuilding"
+      end
+    end)
+
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == nil
+    send(rebuild_worker, {:release_rebuild, {:ok, resp("snap2")}})
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
   end
 
   test "restore-first falls back to BuildBase when the hydrate never lands (poll timeout)" do

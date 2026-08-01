@@ -505,6 +505,28 @@ defmodule Embervm.BaseBuilder do
     {:noreply, reconcile_desc(state, desc)}
   end
 
+  def handle_cast({:reconcile_force_rebuild, workload_name, signature_at_start}, state) do
+    case Map.get(state.workloads, workload_name) do
+      nil ->
+        {:noreply, state}
+
+      w ->
+        if signature(w) != signature_at_start do
+          {:noreply, reconcile_desc(state, hydrate_fallback_desc(w))}
+        else
+          cleared_ref = w.snapshot_ref
+
+          Logger.warning(
+            "embervm base builder: forcing rebuild for #{workload_name}, cleared snapshot ref #{inspect(cleared_ref)}"
+          )
+
+          w = %{w | built_signature: nil, snapshot_ref: nil}
+          state = put_in(state.workloads[workload_name], w)
+          {:noreply, reconcile_desc(state, hydrate_fallback_desc(w))}
+        end
+    end
+  end
+
   def handle_cast({:base_missing, workload, node_id}, state) do
     {:noreply, hydrate_for_anchor(state, workload, node_id)}
   end
@@ -589,7 +611,7 @@ defmodule Embervm.BaseBuilder do
 
   # Base-durability PR-2: a hydrate worker finished (hydrated, fell back, or
   # crashed in `after`). Clear the in-flight guard so a later reconcile can hydrate
-  # (or build) again; the fallback path already re-drove a build via :reconcile.
+  # (or build) again; the fallback path already sent the force-rebuild cast.
   def handle_info({:hydrate_done, name}, state) do
     {:noreply, update_in(state.hydrating, &MapSet.delete(&1, name))}
   end
@@ -818,6 +840,7 @@ defmodule Embervm.BaseBuilder do
   defp spawn_hydrate(state, w) do
     owner = self()
     name = w.name
+    signature_at_start = signature(w)
     node_id = w.node_id
     ref = w.snapshot_ref
     address = state.node_addr[node_id]
@@ -854,14 +877,11 @@ defmodule Embervm.BaseBuilder do
             record_base_restored(op_log_mod, op_log, tenant, clock, name, ref)
 
           {:fallback, reason} ->
-            Logger.info(
-              "embervm base builder: hydrate #{name}/#{ref} fell back to build (#{inspect(reason)})"
+            Logger.warning(
+              "embervm base builder: hydrate #{name}/#{ref} fell back, forcing a rebuild (#{inspect(reason)})"
             )
 
-            # Re-drive a build for the workload. The reconcile is idempotent and
-            # re-reads current desc/placement, so a spec that changed under the
-            # hydrate is handled correctly.
-            reconcile(owner, hydrate_fallback_desc(w))
+            GenServer.cast(owner, {:reconcile_force_rebuild, name, signature_at_start})
         end
       after
         send(owner, {:hydrate_done, name})
