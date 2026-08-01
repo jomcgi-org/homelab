@@ -92,6 +92,10 @@ defmodule Embervm.StatefulStore do
   forward jump from a non-anchor node stays fail-closed. This is ADR embervm/014's
   node-authoritative reconciliation applied to the R7 blessing watermark. A node
   reporting `generation_blessed: true` at or below the blessed watermark clears it.
+  A blessed-on-wire report past the watermark is either lease-derived or a
+  self-claimed generation that the control plane cannot corroborate. While the
+  workload is quarantined, that report is not counter-evidence and does not
+  clear the quarantine flag.
   Once quarantined, `Embervm.StatefulManager.plan_wake/2` parks the wake rather than
   placing it (fail closed: resolution is either the anchor-node adoption above or a
   runbook decision). A workload that has NEVER been blessed (no CP generation-blessing
@@ -436,6 +440,11 @@ defmodule Embervm.StatefulStore do
     GenServer.call(store, {:grant_blessing_lease, workload, node_id, size})
   end
 
+  @doc """
+  Ensures the anchor node has a blessing lease when its existing lease is low or
+  absent. Quarantined workloads do not receive new or renewed leases, so fencing
+  by non-renewal can engage after any outstanding lease drains.
+  """
   @spec ensure_blessing_lease(GenServer.server(), String.t(), String.t()) ::
           {:ok, [map()]} | {:error, term()}
   def ensure_blessing_lease(store \\ __MODULE__, workload, node_id) do
@@ -984,8 +993,13 @@ defmodule Embervm.StatefulStore do
   def handle_call({:ensure_blessing_lease, workload, node_id}, _from, state) do
     should_grant =
       case fetch_volume(state, workload) do
-        %{node_id: ^node_id} -> true
-        _ -> false
+        %{node_id: ^node_id} ->
+          # A quarantined workload gets no new or renewed lease, so the split-brain
+          # fence engages once the outstanding lease drains, bounded by one lease width.
+          not Map.get(fetch_blessing(state, workload), :quarantined, false)
+
+        _ ->
+          false
       end
 
     if should_grant and lease_low_or_absent?(state, workload, node_id) do
@@ -1056,7 +1070,10 @@ defmodule Embervm.StatefulStore do
         # never @volumes_table (see that table's comment): a volume row for
         # this workload may not exist yet (the very first wake blesses before
         # a FRESH boot's volume_created lands).
-        :ets.insert(state.blessing, {workload, %{blessed_generation: generation, quarantined: false}})
+        :ets.insert(
+          state.blessing,
+          {workload, %{blessed_generation: generation, quarantined: false, clear_suppressed: false}}
+        )
         {:ok, state}
 
       {:error, _reason} = error ->
@@ -1744,6 +1761,10 @@ defmodule Embervm.StatefulStore do
   #     only shape that is genuine split-brain evidence, so it stays FAIL-CLOSED
   #     (quarantine). A legitimate RWO handoff whose new anchor reports an unblessed
   #     generation is the remaining fail-closed case, rare and manually recoverable.
+  #
+  # A blessed-on-wire report past the blessed watermark is either derived from a
+  # blessing lease or is a self-claim the control plane cannot corroborate. While
+  # already quarantined, it is not counter-evidence, so it does not clear the flag.
   defp update_quarantine(state, workload, reported_gen, blessed_on_wire, reporting_node, anchor_node) do
     fact = fetch_blessing(state, workload)
     blessed_gen = Map.get(fact, :blessed_generation)
@@ -1784,6 +1805,10 @@ defmodule Embervm.StatefulStore do
           )
         end
 
+        # Plain Map.put: the clear_suppressed marker is left alone here. Every
+        # path that clears `quarantined` resets it, so a fresh episode always
+        # starts with the marker down, and resetting it on every re-quarantining
+        # report would re-arm the suppression warning once per report interleave.
         :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, true)})
         state
 
@@ -1804,7 +1829,12 @@ defmodule Embervm.StatefulStore do
 
         :ets.insert(
           state.blessing,
-          {workload, Map.merge(fact, %{blessed_generation: reported_gen, quarantined: false})}
+          {workload,
+           Map.merge(fact, %{
+             blessed_generation: reported_gen,
+             quarantined: false,
+             clear_suppressed: false
+           })}
         )
 
         state
@@ -1822,11 +1852,42 @@ defmodule Embervm.StatefulStore do
           )
         end
 
+        # Marker deliberately untouched, same reasoning as the checkpoint
+        # fail-closed arm above.
         :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, true)})
         state
 
       true ->
-        :ets.insert(state.blessing, {workload, Map.put(fact, :quarantined, false)})
+        lease_shielded? =
+          Map.get(fact, :quarantined, false) and
+            blessed_on_wire and
+            is_integer(blessed_gen) and
+            reported_gen > blessed_gen
+
+        if lease_shielded? do
+          unless Map.get(fact, :clear_suppressed, false) do
+            Logger.warning(
+              "embervm stateful volume quarantine clear suppressed: blessed report past the last blessed one",
+              event: :quarantine_clear_suppressed,
+              workload: workload,
+              generation: reported_gen,
+              blessed_generation: blessed_gen,
+              node_id: reporting_node,
+              anchor_node: anchor_node
+            )
+          end
+
+          :ets.insert(
+            state.blessing,
+            {workload, fact |> Map.put(:quarantined, true) |> Map.put(:clear_suppressed, true)}
+          )
+        else
+          :ets.insert(
+            state.blessing,
+            {workload, fact |> Map.put(:quarantined, false) |> Map.put(:clear_suppressed, false)}
+          )
+        end
+
         state
     end
   end
