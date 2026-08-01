@@ -399,7 +399,7 @@ func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 		KernelImagePath:   cfg.KernelImagePath,
 		KernelBootArgs:    cfg.KernelBootArgs,
 		RootfsPath:        x.rootfsPath,
-		RootfsReadOnly:    true, // Relight digest verification depends on the rootfs remaining immutable, so flipping this to writable would fail every post-bank relight.
+		RootfsReadOnly:    true,
 		CanonicalVsockDir: cfg.CanonicalVsockDir,
 		HarnessInit:       x.harnessInit,
 		VCPUs:             x.vcpus,
