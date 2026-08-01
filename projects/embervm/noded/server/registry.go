@@ -310,7 +310,6 @@ type sessionSnapshotEntry struct {
 	workload        string
 	sizeBytes       int64
 	createdAtUnixMs int64
-	rootfsDigest    string
 }
 
 // sessionSnapshotRegistry is the in-memory banked-snapshot inventory, keyed by
@@ -338,7 +337,6 @@ func (r *sessionSnapshotRegistry) add(e sessionSnapshotEntry) {
 		workload:        e.workload,
 		sizeBytes:       e.sizeBytes,
 		createdAtUnixMs: e.createdAtUnixMs,
-		rootfsDigest:    e.rootfsDigest,
 	}
 }
 

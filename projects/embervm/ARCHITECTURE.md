@@ -169,19 +169,6 @@ are fetched and unpacked inside the disposable guest).
 | **stateful** | Scale-to-zero singleton datastore; L4 wake-on-connect; volume owns data, snapshot owns warmth | L4 via node Envoy | `vol.img` on node NVMe (authoritative) | demo-postgres (scratch-postgres retired 2026-08) |
 | **composite** | Multi-VM group, private per-group /24, all-or-none bundle-set bank/relight; warmth only, no member volumes | per-group bridge | group snapshot set | no live consumer |
 
-### Session bank and relight identity
-
-The authoritative `rootfs_digest` is the SHA-256 content digest of the baked
-ext4 file the banked VM booted from, formatted as `sha256:<64 hex>`. The OCI
-manifest digest is a registration-time alias, not the VM identity. A
-`snapshot_ref` remains an opaque handle.
-
-A v1 session bundle contains `bundle.json` with schema version 1, the rootfs
-digest and absolute rootfs path, the `ext4_path` presentation, CPU stamps, arch,
-and creation time. The snapfile is the completeness marker and is published
-after the sidecar. A bundle with a snapfile and no `bundle.json` is a legacy v0
-bundle and is grandfathered through the prior restore behavior.
-
 **Decided direction, not yet built:**
 
 - **Isolated high-throughput lane** (ADR 015): Envoy routes straight to

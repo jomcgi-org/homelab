@@ -83,15 +83,10 @@ func shortTempDir(t *testing.T) string {
 
 func testDriver(t *testing.T) *Driver {
 	t.Helper()
-	dir := shortTempDir(t)
-	rootfs := filepath.Join(dir, "rootfs.ext4")
-	if err := os.WriteFile(rootfs, []byte("fixture-rootfs"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return New(Config{
 		KernelImagePath: "/opt/kata/vmlinux",
-		RootfsPath:      rootfs,
-		SnapshotRoot:    dir,
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
 		Node:            "node-4",
 		Arch:            "amd64",
 	}, &fakeLauncher{}, nil)
@@ -101,15 +96,10 @@ func testDriver(t *testing.T) *Driver {
 // vendor-mismatch tests (mirroring the arch-mismatch tests above).
 func testDriverWithVendor(t *testing.T, vendor string) *Driver {
 	t.Helper()
-	dir := shortTempDir(t)
-	rootfs := filepath.Join(dir, "rootfs.ext4")
-	if err := os.WriteFile(rootfs, []byte("fixture-rootfs"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return New(Config{
 		KernelImagePath: "/opt/kata/vmlinux",
-		RootfsPath:      rootfs,
-		SnapshotRoot:    dir,
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
 		Node:            "node-4",
 		Arch:            "amd64",
 		Vendor:          vendor,
@@ -120,15 +110,10 @@ func testDriverWithVendor(t *testing.T, vendor string) *Driver {
 // (vendor, template), for the PR-E cpu_sku mismatch/grandfather tests.
 func testDriverWithSku(t *testing.T, vendor, template string) *Driver {
 	t.Helper()
-	dir := shortTempDir(t)
-	rootfs := filepath.Join(dir, "rootfs.ext4")
-	if err := os.WriteFile(rootfs, []byte("fixture-rootfs"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return New(Config{
 		KernelImagePath: "/opt/kata/vmlinux",
-		RootfsPath:      rootfs,
-		SnapshotRoot:    dir,
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
 		Node:            "node-4",
 		Arch:            "amd64",
 		Vendor:          vendor,
@@ -561,17 +546,6 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	if ref.Base {
 		t.Fatalf("a session snapshot must not be flagged Base")
 	}
-	var meta BundleMetadata
-	b, err := os.ReadFile(d.sessionBundleJSON("sref-abc123"))
-	if err != nil {
-		t.Fatalf("session bundle metadata missing: %v", err)
-	}
-	if err := json.Unmarshal(b, &meta); err != nil {
-		t.Fatalf("parse session bundle metadata: %v", err)
-	}
-	if meta.SchemaVersion != 1 || meta.RootfsDigest != ref.RootfsDigest || meta.RootfsPath != h.RootfsPath || meta.Presentation != "ext4_path" {
-		t.Fatalf("session bundle metadata = %+v, ref=%+v, handle=%+v", meta, ref, h)
-	}
 	// The bundle lives under sessions/<ref>, never bases/ or a per-thread dir.
 	snap := d.sessionSnapfile("sref-abc123")
 	if _, err := os.Stat(snap); err != nil {
@@ -613,107 +587,6 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	// Idempotent evict: removing an already-gone bundle is not an error.
 	if err := d.RemoveSessionBundle("sref-abc123"); err != nil {
 		t.Fatalf("idempotent RemoveSessionBundle: %v", err)
-	}
-}
-
-func TestDriverSessionRestoreRejectsInvalidProvenance(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(t *testing.T, d *Driver, ref string, rootfs string)
-	}{
-		{name: "wrong digest", mutate: func(t *testing.T, d *Driver, ref, rootfs string) {
-			if err := writeBundleMetadata(d.sessionBundleJSON(ref), BundleMetadata{
-				SchemaVersion: 1, RootfsDigest: "sha256:bad", RootfsPath: rootfs,
-				Presentation: "ext4_path",
-			}); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "replaced rootfs", mutate: func(t *testing.T, _ *Driver, _ string, rootfs string) {
-			if err := os.WriteFile(rootfs, []byte("replacement"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "corrupt metadata", mutate: func(t *testing.T, d *Driver, ref, _ string) {
-			if err := os.WriteFile(d.sessionBundleJSON(ref), []byte("{"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			d := testDriver(t)
-			h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "invalid-provenance"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := d.SnapshotSession(context.Background(), h, tc.name); err != nil {
-				t.Fatal(err)
-			}
-			_ = d.Release(context.Background(), h)
-			tc.mutate(t, d, tc.name, h.RootfsPath)
-			if _, err := d.RestoreSession(context.Background(), tc.name); err == nil {
-				t.Fatal("RestoreSession accepted invalid provenance")
-			}
-		})
-	}
-
-	t.Run("legacy v0", func(t *testing.T) {
-		d := testDriver(t)
-		h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "legacy-provenance"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := d.SnapshotSession(context.Background(), h, "legacy-v0"); err != nil {
-			t.Fatal(err)
-		}
-		_ = d.Release(context.Background(), h)
-		if err := os.Remove(d.sessionBundleJSON("legacy-v0")); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := d.RestoreSession(context.Background(), "legacy-v0"); err != nil {
-			t.Fatalf("legacy RestoreSession: %v", err)
-		}
-	})
-}
-
-func TestDriverSessionBankWithoutRootfsPath(t *testing.T) {
-	ctx := context.Background()
-	d := testDriver(t)
-	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "legacy-bank"})
-	if err != nil {
-		t.Fatalf("Claim: %v", err)
-	}
-	inst := d.get(h.ID)
-	if inst == nil {
-		t.Fatal("claimed instance not tracked")
-	}
-	inst.rootfsPath = ""
-	h.RootfsPath = ""
-
-	ref, err := d.SnapshotSession(ctx, h, "legacy-bank-ref")
-	if err != nil {
-		t.Fatalf("SnapshotSession: %v", err)
-	}
-	if ref.RootfsPath != "" || ref.RootfsDigest != "" {
-		t.Fatalf("rootfs provenance = (%q, %q), want empty", ref.RootfsPath, ref.RootfsDigest)
-	}
-	if _, err := os.Stat(d.sessionBundleJSON("legacy-bank-ref")); !os.IsNotExist(err) {
-		t.Fatalf("bundle.json should not be written, stat err=%v", err)
-	}
-	if err := d.Release(ctx, h); err != nil {
-		t.Fatalf("Release banked VM: %v", err)
-	}
-
-	h2, err := d.RestoreSession(ctx, "legacy-bank-ref")
-	if err != nil {
-		t.Fatalf("legacy RestoreSession: %v", err)
-	}
-	if h2.RootfsPath != "" {
-		t.Fatalf("legacy restore rootfs path = %q, want empty", h2.RootfsPath)
-	}
-	if err := d.Release(ctx, h2); err != nil {
-		t.Fatalf("Release restored VM: %v", err)
 	}
 }
 

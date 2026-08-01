@@ -12,14 +12,11 @@ package driver
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -27,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
@@ -171,10 +167,6 @@ type Driver struct {
 	// keyed by the opaque token CheckpointStateful returns: a PAUSED-but-not-
 	// destroyed VM plus its temp snapshot, awaiting a commit or abort. Guarded by mu.
 	checkpoints map[string]*statefulCheckpoint
-	digestMu    sync.Mutex
-	digests     map[string]rootfsDigestCacheEntry
-	legacyMu    sync.Mutex
-	legacySeen  map[string]struct{}
 }
 
 // statefulCheckpoint is one paused-awaiting-resolve stateful VM (ADR embervm/008):
@@ -192,33 +184,12 @@ type statefulCheckpoint struct {
 }
 
 type instance struct {
-	handle     substrate.Handle
-	proc       Process
-	client     fcAPI
-	dir        string
-	sock       string
-	memMib     int
-	rootfsPath string
-}
-
-// BundleMetadata is the versioned provenance sidecar for a banked session.
-// Evolution is additive, with omitempty for fields added after v1. served_chunks
-// is reserved for a future schema extension.
-type BundleMetadata struct {
-	SchemaVersion   int    `json:"schema_version"`
-	RootfsDigest    string `json:"rootfs_digest"`
-	RootfsPath      string `json:"rootfs_path"`
-	Presentation    string `json:"presentation"`
-	CpuVendor       string `json:"cpu_vendor,omitempty"`
-	CpuTemplate     string `json:"cpu_template,omitempty"`
-	Arch            string `json:"arch,omitempty"`
-	CreatedAtUnixMs int64  `json:"created_at_unix_ms"`
-	ServedChunks    any    `json:"served_chunks,omitempty"`
-}
-
-type rootfsDigestCacheEntry struct {
-	size, mtime int64
-	digest      string
+	handle substrate.Handle
+	proc   Process
+	client fcAPI
+	dir    string
+	sock   string
+	memMib int
 }
 
 var (
@@ -238,8 +209,6 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI)
 		newClient:   newClient,
 		live:        make(map[string]*instance),
 		checkpoints: make(map[string]*statefulCheckpoint),
-		digests:     make(map[string]rootfsDigestCacheEntry),
-		legacySeen:  make(map[string]struct{}),
 	}
 	if cfg.BaseRootfsPath != "" {
 		if cfg.Provisioner == "devmapper" {
@@ -730,96 +699,6 @@ func (d *Driver) sessionMemfile(ref string) string {
 	return filepath.Join(d.sessionDir(ref), "memfile")
 }
 
-func (d *Driver) sessionBundleJSON(ref string) string {
-	return filepath.Join(d.sessionDir(ref), "bundle.json")
-}
-
-func (d *Driver) rootfsDigest(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("driver: absolute rootfs path: %w", err)
-	}
-	fi, err := os.Stat(abs)
-	if err != nil {
-		return "", fmt.Errorf("driver: stat rootfs %q: %w", abs, err)
-	}
-	d.digestMu.Lock()
-	if e, ok := d.digests[abs]; ok && e.size == fi.Size() && e.mtime == fi.ModTime().UnixNano() {
-		d.digestMu.Unlock()
-		return e.digest, nil
-	}
-	d.digestMu.Unlock()
-	f, err := os.Open(abs)
-	if err != nil {
-		return "", fmt.Errorf("driver: open rootfs %q: %w", abs, err)
-	}
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		_ = f.Close()
-		return "", fmt.Errorf("driver: hash rootfs %q: %w", abs, err)
-	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("driver: close rootfs %q: %w", abs, err)
-	}
-	digest := "sha256:" + hex.EncodeToString(h.Sum(nil))
-	d.digestMu.Lock()
-	d.digests[abs] = rootfsDigestCacheEntry{size: fi.Size(), mtime: fi.ModTime().UnixNano(), digest: digest}
-	d.digestMu.Unlock()
-	return digest, nil
-}
-
-func writeBundleMetadata(path string, meta BundleMetadata) error {
-	b, err := json.Marshal(meta)
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o640); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func (d *Driver) readAndVerifySessionMetadata(ref string) (BundleMetadata, error) {
-	b, err := os.ReadFile(d.sessionBundleJSON(ref))
-	if err != nil {
-		if os.IsNotExist(err) {
-			d.legacyMu.Lock()
-			_, seen := d.legacySeen[ref]
-			if !seen {
-				d.legacySeen[ref] = struct{}{}
-			}
-			d.legacyMu.Unlock()
-			if !seen {
-				slog.Info("driver: restoring legacy v0 session bundle", "snapshot_ref", ref)
-			}
-			return BundleMetadata{}, nil
-		}
-		return BundleMetadata{}, fmt.Errorf("driver: read session bundle metadata: %w", err)
-	}
-	var meta BundleMetadata
-	if err := json.Unmarshal(b, &meta); err != nil {
-		return BundleMetadata{}, fmt.Errorf("driver: parse session bundle metadata: %w", err)
-	}
-	if meta.SchemaVersion != 1 || meta.Presentation != "ext4_path" || meta.RootfsPath == "" || meta.RootfsDigest == "" {
-		return BundleMetadata{}, fmt.Errorf("driver: invalid session bundle metadata")
-	}
-	got, err := d.rootfsDigest(meta.RootfsPath)
-	if err != nil {
-		return BundleMetadata{}, fmt.Errorf("driver: session rootfs unavailable: %w", err)
-	}
-	if got != meta.RootfsDigest {
-		return BundleMetadata{}, fmt.Errorf("driver: session rootfs digest mismatch: got %q want %q", got, meta.RootfsDigest)
-	}
-	if vmis, effective := vendorMismatch(meta.CpuVendor, d.cfg.Vendor); vmis {
-		return BundleMetadata{}, fmt.Errorf("driver: session vendor mismatch: ref %q != node %q", effective, d.cfg.Vendor)
-	}
-	if tmis, refTemplate := templateMismatch(meta.CpuTemplate, d.cfg.Template); tmis {
-		return BundleMetadata{}, fmt.Errorf("driver: session cpu_sku mismatch: template %q != node %q", refTemplate, d.cfg.Template)
-	}
-	return meta, nil
-}
-
 // ServingDir is the parent directory holding all banked SERVING snapshot bundles,
 // under the serving/ prefix of the snapshot root (a sibling of bases/ and sessions/).
 // The daemon rescans exactly this dir on start to report its banked-serving
@@ -851,7 +730,7 @@ func (d *Driver) servingMetafile(ref string) string {
 // loadInto launches a fresh Firecracker process for threadID and restores it
 // from the given snapfile + memfile (File backend, resume). Used by both
 // thread-snapshot restore and warm-base restore.
-func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sockName, rootfsPath string) (substrate.Handle, error) {
+func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -875,8 +754,8 @@ func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sock
 	}); err != nil {
 		return d.abort(proc, err)
 	}
-	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node, RootfsPath: rootfsPath}
-	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: d.cfg.MemMib, rootfsPath: rootfsPath})
+	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
+	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: d.cfg.MemMib})
 	return h, nil
 }
 
@@ -908,7 +787,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		if _, err := os.Stat(snap); err != nil {
 			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
 		}
-		return d.loadInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock", ref.RootfsPath)
+		return d.loadInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
 	}
 
 	return d.coldBoot(ctx, threadID, coldBootSpec{
@@ -1004,10 +883,6 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 			return d.abort(proc, err)
 		}
 	}
-	rootfsPath, err = filepath.Abs(rootfsPath)
-	if err != nil {
-		return d.abort(proc, fmt.Errorf("driver: absolute rootfs path: %w", err))
-	}
 
 	// firecracker_boot: configure the microVM and Start it (the kernel boot + the
 	// guest fc-agent-init handshake complete asynchronously after Start returns,
@@ -1078,8 +953,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	}
 
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
-	h.RootfsPath = rootfsPath
-	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: cb.memMib, rootfsPath: rootfsPath})
+	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: cb.memMib})
 	return h, nil
 }
 
@@ -1225,7 +1099,7 @@ func (d *Driver) Restore(ctx context.Context, ref substrate.SnapshotRef) (substr
 	if _, err := os.Stat(snapPath); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: snapshot bundle missing for thread %q: %w", threadID, err)
 	}
-	return d.loadInto(ctx, threadID, snapPath, d.memfilePath(threadID), "restore.sock", "")
+	return d.loadInto(ctx, threadID, snapPath, d.memfilePath(threadID), "restore.sock")
 }
 
 // SnapshotBase captures a warmed microVM into a shared base bundle keyed by
@@ -1353,40 +1227,17 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 	if err := os.Rename(memTmp, memPath); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish session memfile: %w", err)
 	}
-	var rootfsPath, rootfsDigest string
-	var err error
-	if inst.rootfsPath == "" {
-		slog.Warn("driver: session banked without rootfs provenance", "snapshot_ref", snapshotRef)
-	} else {
-		rootfsPath, err = filepath.Abs(inst.rootfsPath)
-		if err != nil || rootfsPath == "." {
-			return substrate.SnapshotRef{}, fmt.Errorf("driver: session rootfs path unavailable")
-		}
-		rootfsDigest, err = d.rootfsDigest(rootfsPath)
-		if err != nil {
-			return substrate.SnapshotRef{}, err
-		}
-		if err := writeBundleMetadata(d.sessionBundleJSON(snapshotRef), BundleMetadata{
-			SchemaVersion: 1, RootfsDigest: rootfsDigest, RootfsPath: rootfsPath,
-			Presentation: "ext4_path", CpuVendor: d.cfg.Vendor, CpuTemplate: d.cfg.Template,
-			Arch: d.cfg.Arch, CreatedAtUnixMs: time.Now().UnixMilli(),
-		}); err != nil {
-			return substrate.SnapshotRef{}, fmt.Errorf("driver: publish session bundle metadata: %w", err)
-		}
-	}
 	if err := os.Rename(snapTmp, snapPath); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish session snapfile: %w", err)
 	}
 	banked = true
 	return substrate.SnapshotRef{
-		ID:           snapshotRef,
-		Node:         d.cfg.Node,
-		Arch:         d.cfg.Arch,
-		Vendor:       d.cfg.Vendor,
-		Template:     d.cfg.Template,
-		RootfsPath:   rootfsPath,
-		RootfsDigest: rootfsDigest,
-		SizeBytes:    bundleSize(snapPath, memPath),
+		ID:        snapshotRef,
+		Node:      d.cfg.Node,
+		Arch:      d.cfg.Arch,
+		Vendor:    d.cfg.Vendor,
+		Template:  d.cfg.Template,
+		SizeBytes: bundleSize(snapPath, memPath),
 	}, nil
 }
 
@@ -1406,15 +1257,10 @@ func (d *Driver) RestoreSession(ctx context.Context, snapshotRef string) (substr
 	if _, err := os.Stat(snapPath); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: session bundle missing for %q: %w", snapshotRef, err)
 	}
-	meta, err := d.readAndVerifySessionMetadata(snapshotRef)
-	if err != nil {
-		slog.Warn("driver: refusing session restore", "snapshot_ref", snapshotRef, "err", err)
-		return substrate.Handle{}, err
-	}
 	// A restored session gets its own fresh thread (host bundle dir + vsock socket);
 	// the bundle's embedded config is re-bound into it by loadInto.
 	threadID := newID("sess")
-	return d.loadInto(ctx, threadID, snapPath, d.sessionMemfile(snapshotRef), "restore.sock", meta.RootfsPath)
+	return d.loadInto(ctx, threadID, snapPath, d.sessionMemfile(snapshotRef), "restore.sock")
 }
 
 // RemoveSessionBundle deletes a banked session snapshot's on-disk bundle
@@ -1516,7 +1362,7 @@ func (d *Driver) RestoreServing(ctx context.Context, snapshotRef string) (substr
 		return substrate.Handle{}, fmt.Errorf("driver: serving bundle missing for %q: %w", snapshotRef, err)
 	}
 	threadID := newID("serv")
-	return d.loadInto(ctx, threadID, snapPath, d.servingMemfile(snapshotRef), "restore.sock", "")
+	return d.loadInto(ctx, threadID, snapPath, d.servingMemfile(snapshotRef), "restore.sock")
 }
 
 // ServingPinnedIP reads the pinned tap IP a serving snapshot was banked with, for a
@@ -1884,7 +1730,7 @@ func (d *Driver) RestoreStateful(ctx context.Context, snapshotRef, _ string) (su
 		return substrate.Handle{}, fmt.Errorf("driver: stateful bundle missing for %q: %w", snapshotRef, err)
 	}
 	threadID := newID("state")
-	return d.loadInto(ctx, threadID, snapPath, d.statefulMemfile(snapshotRef), "restore.sock", "")
+	return d.loadInto(ctx, threadID, snapPath, d.statefulMemfile(snapshotRef), "restore.sock")
 }
 
 // RemoveStatefulBundle deletes a banked stateful snapshot's on-disk bundle
@@ -2187,7 +2033,7 @@ func (d *Driver) RestoreGroupMember(ctx context.Context, setID, memberName strin
 		return substrate.Handle{}, fmt.Errorf("driver: group member bundle missing for group/%s/%s: %w", setID, memberName, err)
 	}
 	threadID := newID("grpm")
-	return d.loadInto(ctx, threadID, snapPath, d.groupMemberMemfile(setID, memberName), "restore.sock", "")
+	return d.loadInto(ctx, threadID, snapPath, d.groupMemberMemfile(setID, memberName), "restore.sock")
 }
 
 // RemoveGroupMemberBundle deletes a banked member snapshot's on-disk bundle
