@@ -441,41 +441,50 @@ defmodule Embervm.StatefulSweeperTest do
   end
 
   test "a completed bank whose row was reconciled to serving logs the transition error and keeps backoff" do
-    {:ok, store_ref} = Agent.start_link(fn -> nil end)
-
-    ctx =
-      start_stack(
-        stop_stateful_fun: fn _ch, _req ->
-          store = Agent.get(store_ref, & &1)
-          {:ok, _} = StatefulStore.mark(store, "sf-race", :bank_abort)
-          {:ok, %StopStatefulResponse{snapshot_ref: "snap-race", size_bytes: 2_000, generation: 1}}
-        end
-      )
-
-    Agent.update(store_ref, fn _ -> ctx.store end)
+    ctx = start_stack()
     stateful_workload(ctx, "wl-a", 5400, %{idle_bank_seconds: 60})
     stateful_node(ctx, "node-4")
     serving_instance(ctx, "sf-race", "wl-a", "vm-race", "10.98.0.5")
 
-    set_scrape(ctx, reading("state-5400", 0, 3))
-    StatefulSweeper.sweep(ctx.sweeper)
-    advance(ctx.clock_agent, 5_000)
-    set_scrape(ctx, reading("state-5400", 0, 3))
-    StatefulSweeper.sweep(ctx.sweeper)
-    advance(ctx.clock_agent, 65_000)
-    set_scrape(ctx, reading("state-5400", 0, 3))
+    # The #4197 interleaving, injected deterministically: a bank is in flight
+    # (in-flight bookkeeping present) but the adoption reconcile has already
+    # reverted the row to :serving, so the arriving {:bank_done, {:ok, ...}}
+    # hits the illegal {:serving, :bank_ready} edge. Delivering the worker's
+    # outcome message directly avoids racing the begin path's async phases.
+    # The backoff key is pre-armed with an EXPIRED window and a retained prev:
+    # a clean bank would clear the key, so keeping it byte-identical is what
+    # distinguishes the error branch (neither clears nor re-arms) from success.
+    :sys.replace_state(ctx.sweeper, fn state ->
+      %{
+        state
+        | banking: Map.put(state.banking, "sf-race", "wl-a"),
+          bank_inflight: Map.put(state.bank_inflight, "node-4", 1),
+          bank_backoff: %{"wl-a" => {1, 1_000}}
+      }
+    end)
 
-    :sys.replace_state(ctx.sweeper, fn state -> %{state | bank_backoff: %{"wl-a" => {999_999, 1_000}}} end)
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        StatefulSweeper.sweep(ctx.sweeper)
-        wait_until(ctx, fn -> match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-race")) end)
+        send(
+          ctx.sweeper,
+          {:bank_done, "sf-race", "node-4", "vm-race", "10.98.0.5", 5432, "wl-a", true,
+           {:ok, "snap-race", 2_000, 1}}
+        )
+
+        # finish_bank clears the in-flight banking map first, so draining it
+        # means the outcome (and its log line) landed inside the capture window.
+        wait_until(ctx, fn -> :sys.get_state(ctx.sweeper).banking == %{} end)
       end)
 
     assert log =~ "bank completed on the node but the store transition failed"
     refute log =~ "embervm stateful banked"
+    # The winner (the reconcile revert) left the row serving; the snapshot
+    # facts were NOT durably recorded.
+    assert {:ok, %{state: :serving}} = StatefulStore.get(ctx.store, "sf-race")
+    assert load_ops(ctx, "stateful_banked") == []
+    # Neither cleared nor re-armed.
     assert %{bank_backoff: backoff} = :sys.get_state(ctx.sweeper)
-    assert Map.has_key?(backoff, "wl-a")
+    assert backoff["wl-a"] == {1, 1_000}
   end
 
   test "cx_active never zero: the instance NEVER banks even well past idleBankSeconds" do
