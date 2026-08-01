@@ -422,13 +422,15 @@ agent:
   signoz:
     url: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"
 
-# EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1):
-# enabled with the k8s-homelab 1Password item whose POSTGRES_PASSWORD field syncs
-# into this namespace's Secret. listenPort (5400) + embervmNamespace default from
-# the chart. Enabling renders the OnePasswordItem and (embervm) the Workload CR /
-# (monolith) the SCRATCH_POSTGRES_DSN env for run_python sessions.
+# EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1).
+# DISABLED 2026-08 alongside the embervm Workload CR (its only real consumer,
+# the loom deployment, is decommissioned): SCRATCH_POSTGRES_DSN is unrendered,
+# so run_python sessions get no scratch DB env and the sandbox client leaves
+# the feature off. demoListenPort keeps DEMO_POSTGRES_DSN and the password
+# Secret alive for the demos page exhibit. Flip enabled back on (with the
+# embervm side) to restore the tenant datastore.
 scratchPostgres:
-  enabled: true
+  enabled: false
   # Renders DEMO_POSTGRES_DSN for the firecracker demos page's sleep/wake
   # exhibit (matches the embervm chart's demoPostgres.listenPort).
   demoListenPort: 5401
