@@ -268,6 +268,56 @@ func (t *Transport) Hydrate(ctx context.Context, udsPath string, archive []byte)
 	return nil
 }
 
+// SetClock POSTs the current epoch-ms to the guest shim's /shim/clock endpoint
+// over the vsock transport, so a restored guest runs with the correct wall
+// clock instead of stale time from before the restore. A 404 is treated as a
+// guest without the endpoint and is not an error. SetClock retries on transient
+// failures until ctx expires, similar to WaitReady.
+func (t *Transport) SetClock(ctx context.Context, udsPath string, epochMs int64) error {
+	for {
+		if err := t.setClockAttempt(ctx, udsPath, epochMs); err == nil {
+			return nil
+		}
+		// Retriable: back off briefly, stop only when the outer ctx fires.
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("vsockhttp: timed out setting guest clock: %w", ctx.Err())
+		case <-time.After(waitReadyBackoff):
+		}
+	}
+}
+
+// setClockAttempt performs one clock-sync POST bounded by waitReadyAttempt (capped
+// by the outer ctx). It returns nil only on a 2xx response or 404 (guest without
+// the endpoint).
+func (t *Transport) setClockAttempt(ctx context.Context, udsPath string, epochMs int64) error {
+	attemptCtx, cancel := context.WithTimeout(ctx, waitReadyAttempt)
+	defer cancel()
+
+	body := []byte(fmt.Sprintf(`{"epoch_ms":%d}`, epochMs))
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, "http://vsock/shim/clock", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("vsockhttp: build clock request: %w", err)
+	}
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.RoundTrip(attemptCtx, udsPath, req)
+	if err != nil {
+		return err // nosemgrep: no-bare-error-return
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("vsockhttp: clock rejected, status %d", resp.StatusCode)
+}
+
 // dialConn opens a raw connection to the guest shim at udsPath. In production
 // mode it performs the Firecracker host-initiated vsock CONNECT handshake. With
 // directDial (test mode) it returns the raw UDS connection directly.

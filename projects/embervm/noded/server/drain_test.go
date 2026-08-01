@@ -32,6 +32,7 @@ func (b *blockingTransport) WaitReady(ctx context.Context, _, _ string) error {
 }
 func (b *blockingTransport) Prime(context.Context, string) error           { return nil }
 func (b *blockingTransport) Hydrate(context.Context, string, []byte) error { return nil }
+func (b *blockingTransport) SetClock(context.Context, string, int64) error { return nil }
 func (b *blockingTransport) RoundTrip(context.Context, string, *http.Request) (*http.Response, error) {
 	return nil, nil
 }

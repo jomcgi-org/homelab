@@ -120,6 +120,79 @@ func TestWaitReadyTimeout(t *testing.T) {
 	}
 }
 
+func TestSetClockSucceeds(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/shim/clock", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	udsPath := t.TempDir() + "/shim.sock"
+	ln, err := net.Listen("unix", udsPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	tr := NewTransport(WithDirectDial())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := tr.SetClock(ctx, udsPath, 1600000000000); err != nil {
+		t.Errorf("SetClock: %v", err)
+	}
+}
+
+func TestSetClockTreats404AsSuccess(t *testing.T) {
+	udsPath := startShimOnUDS(t, nil)
+	tr := NewTransport(WithDirectDial())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := tr.SetClock(ctx, udsPath, 1600000000000); err != nil {
+		t.Errorf("SetClock on 404: want nil, got %v", err)
+	}
+}
+
+func TestSetClockErrorOnConnectionFailure(t *testing.T) {
+	tr := NewTransport(WithDirectDial())
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := tr.SetClock(ctx, "/nonexistent/shim.sock", 1600000000000); err == nil {
+		t.Error("SetClock on bad path: want error, got nil")
+	}
+}
+
+func TestSetClockReturnsErrorOn500(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/shim/clock", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	udsPath := t.TempDir() + "/shim.sock"
+	ln, err := net.Listen("unix", udsPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	tr := NewTransport(WithDirectDial())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := tr.SetClock(ctx, udsPath, 1600000000000); err == nil {
+		t.Error("SetClock on 500: want error, got nil")
+	}
+}
+
 // hangFirstListener makes the FIRST accepted connection wedge (never serviced),
 // simulating the Firecracker post-restore vsock RX-queue race; every subsequent
 // connection is passed through to the real server.

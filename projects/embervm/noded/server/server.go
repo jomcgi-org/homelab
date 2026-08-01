@@ -32,7 +32,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -112,6 +111,7 @@ type transport interface {
 	WaitReady(ctx context.Context, udsPath, readyPath string) error
 	Prime(ctx context.Context, udsPath string) error
 	Hydrate(ctx context.Context, udsPath string, archive []byte) error
+	SetClock(ctx context.Context, udsPath string, epochMs int64) error
 	RoundTrip(ctx context.Context, udsPath string, req *http.Request) (*http.Response, error)
 }
 
@@ -986,6 +986,12 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restored guest not ready: %v", readyErr)
 	}
 
+	rtCtx, rtCancel := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	if err := s.transport.SetClock(rtCtx, uds, time.Now().UnixMilli()); err != nil {
+		s.logger.Warn("noded: guest clock sync failed (best-effort, ignored)", "vm", h.ID, "err", err)
+	}
+	rtCancel()
+
 	s.vms.add(&vmEntry{
 		id:           h.ID,
 		workload:     base.workload,
@@ -1379,10 +1385,11 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relit guest not ready: %v", readyErr)
 	}
 
-	// Best-effort guest clock resync: a restored guest's wall clock is frozen at the
-	// bank instant, so POST the current epoch-ms to /shim/clock. A 404 (a guest
-	// without the endpoint) is skipped and logged, NEVER an error.
-	s.resyncGuestClock(ctx, uds, h.ID)
+	rtCtx, rtCancel := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	if err := s.transport.SetClock(rtCtx, uds, time.Now().UnixMilli()); err != nil {
+		s.logger.Warn("noded: guest clock sync failed (best-effort, ignored)", "vm", h.ID, "err", err)
+	}
+	rtCancel()
 
 	s.sessionVMs.add(&sessionEntry{
 		vmID:         h.ID,
@@ -1394,37 +1401,6 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	})
 	s.signalChange()
 	return &nodev1.RelightResponse{VmId: h.ID}, nil
-}
-
-// resyncGuestClock POSTs the current wall-clock epoch-ms to the guest /shim/clock
-// endpoint over vsock so a relit guest resumes with a correct clock. It is
-// strictly best-effort: any transport error, a non-2xx, or a 404 (a guest build
-// without the endpoint) is logged and swallowed, never surfaced. The daemon does
-// not fail a relight on a clock-resync miss.
-func (s *Server) resyncGuestClock(ctx context.Context, uds, vmID string) {
-	rtCtx, cancel := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
-	defer cancel()
-	body := []byte(strconv.FormatInt(time.Now().UnixMilli(), 10))
-	httpReq, err := http.NewRequestWithContext(rtCtx, http.MethodPost, "http://vsock/shim/clock", bytes.NewReader(body))
-	if err != nil {
-		s.logger.Debug("noded: build clock resync request failed", "vm", vmID, "err", err)
-		return
-	}
-	httpReq.Header.Set("Content-Type", "text/plain")
-	resp, err := s.transport.RoundTrip(rtCtx, uds, httpReq)
-	if err != nil {
-		s.logger.Debug("noded: clock resync round-trip failed (best-effort)", "vm", vmID, "err", err)
-		return
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-	if resp.StatusCode == http.StatusNotFound {
-		s.logger.Info("noded: guest has no /shim/clock endpoint; skipping clock resync", "vm", vmID)
-		return
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		s.logger.Warn("noded: clock resync rejected (best-effort, ignored)", "vm", vmID, "status", resp.StatusCode)
-	}
 }
 
 // EvictSnapshot deletes a banked session snapshot bundle from node disk. It is
