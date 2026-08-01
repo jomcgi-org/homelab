@@ -950,6 +950,16 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if readyPath == "" {
 		readyPath = defaultReadyPath
 	}
+	volumeDiskPath := req.GetVolumeDiskPath()
+	if req.GetLineageId() != "" {
+		if req.GetVolumeMount() == "" || req.GetVolumeSizeBytes() == 0 {
+			return nil, status.Error(codes.InvalidArgument, "noded: complete session volume fields required")
+		}
+		volumeDiskPath = s.volumes.SessionVolumePath(base.workload, req.GetLineageId())
+		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)
+		}
+	}
 
 	spec := substrate.ClaimSpec{
 		Arch:     s.cfg.Arch,
@@ -961,6 +971,8 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 			Vendor: s.cfg.CpuVendor,
 			Base:   true,
 		},
+		VolumeDiskPath: volumeDiskPath,
+		VolumeMount:    req.GetVolumeMount(),
 	}
 	h, err := s.driver.Claim(ctx, spec)
 	if err != nil {

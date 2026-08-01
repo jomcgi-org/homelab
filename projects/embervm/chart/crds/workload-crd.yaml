@@ -319,6 +319,11 @@ spec:
                             precisely so state does NOT have to fit in memMib.
                           minimum: 1
                           default: 8
+                        sizeBytes:
+                          type: integer
+                          format: int64
+                          description: Sparse per-lineage size cap in bytes.
+                          minimum: 1
                 session:
                   type: object
                   description: >-

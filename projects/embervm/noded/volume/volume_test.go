@@ -7,6 +7,32 @@ import (
 	"time"
 )
 
+func TestSessionVolumePathsArePerLineageAndProvisioned(t *testing.T) {
+	m := NewManager(t.TempDir())
+	a := m.SessionVolumePath("claude-runtime", "session-abc123")
+	b := m.SessionVolumePath("claude-runtime", "session-def456")
+	if a == b {
+		t.Fatalf("session volume paths collide: %q", a)
+	}
+	want := filepath.Join(m.root, "session", "claude-runtime", "session-abc123", "workspace.img")
+	if a != want {
+		t.Fatalf("SessionVolumePath = %q, want %q", a, want)
+	}
+	if err := m.CreateSession("claude-runtime", "session-abc123", 1<<20); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	info, err := os.Stat(a)
+	if err != nil {
+		t.Fatalf("stat session image: %v", err)
+	}
+	if info.Size() != 1<<20 {
+		t.Fatalf("session image size = %d, want %d", info.Size(), 1<<20)
+	}
+	if err := m.CreateSession("claude-runtime", "session-abc123", 2<<20); err != nil {
+		t.Fatalf("idempotent CreateSession: %v", err)
+	}
+}
+
 func TestCreateSparseAndGenerationInit(t *testing.T) {
 	dir := t.TempDir()
 	m := NewManager(dir)

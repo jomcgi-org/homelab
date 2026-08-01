@@ -405,16 +405,17 @@ defmodule Embervm.SessionManager do
                          "ember.principal" => principal
                        }
                      } do
+      lineage_id = Embervm.SessionId.new(state.clock.())
       result =
         with {:ok, entry} <- fetch_session_workload(state, workload),
              :ok <- check_session_cap(state, workload, entry),
              :ok <- check_workload_cap(state, workload, entry),
              :ok <- check_quota(state, principal),
              {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry),
-             {:ok, vm_id} <- claim_or_prime(state, dial_id, workload, snapshot_ref) do
+             {:ok, vm_id} <- claim_or_prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
           # Store the brick's configured_id in the session row and use its instance_id
           # only as the dial key. These fields have different registration provenance.
-          register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id)
+          register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id)
         else
           {:error, reason} ->
             audit_denial(state, principal, workload, reason)
@@ -507,32 +508,46 @@ defmodule Embervm.SessionManager do
   # Claim a primed VM from the dispatcher's inventory, or Prime one on a miss (the
   # dispatcher's own miss path, run inline here since create latency is not the
   # per-invoke hot path). A Prime failure is a create denial, not a crash.
-  defp claim_or_prime(state, node_id, workload, snapshot_ref) do
-    case state.claim_fun.(state.dispatcher, node_id, workload) do
-      {:ok, vm_id} ->
+  defp claim_or_prime(state, node_id, workload, snapshot_ref, entry, lineage_id) do
+    if disk_persistence_only_entry?(entry) do
+      Tracer.set_attributes(%{"ember.pool_hit" => false})
+      prime(state, node_id, snapshot_ref, entry, lineage_id)
+    else
+      case state.claim_fun.(state.dispatcher, node_id, workload) do
+        {:ok, vm_id} ->
         # A warm claim from the primed pool: pool_hit=true (parity with the
         # dispatcher's warm-dispatch marking).
         Tracer.set_attributes(%{"ember.pool_hit" => true})
         {:ok, vm_id}
 
-      :miss ->
-        Tracer.set_attributes(%{"ember.pool_hit" => false})
-        prime(state, node_id, snapshot_ref)
+        :miss ->
+          Tracer.set_attributes(%{"ember.pool_hit" => false})
+          prime(state, node_id, snapshot_ref, entry, lineage_id)
+      end
     end
   end
 
-  defp prime(state, node_id, snapshot_ref) do
+  defp disk_persistence_only_entry?(%{persistence: %{memory: false, filesystem: %{enabled: true}}}), do: true
+  defp disk_persistence_only_entry?(_), do: false
+
+  defp prime(state, node_id, snapshot_ref, entry, lineage_id) do
     with {:ok, channel} <- state.channel_fun.(node_id),
          {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
-           safe_prime(state, channel, snapshot_ref) do
+           safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
       {:ok, vm_id}
     else
       _ -> {:error, :no_capacity}
     end
   end
 
-  defp safe_prime(state, channel, snapshot_ref) do
-    req = %PrimeRequest{trace: %Trace{}, snapshot_ref: snapshot_ref || ""}
+  defp safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
+    p = Map.get(entry, :persistence) || %{}
+    fs = Map.get(p, :filesystem) || %{}
+    enabled = Map.get(fs, :enabled, false) and Map.get(p, :memory, true) == false
+    req = %PrimeRequest{trace: %Trace{}, snapshot_ref: snapshot_ref || "",
+      volume_mount: if(enabled, do: "/workspace-persistent", else: ""),
+      volume_size_bytes: if(enabled, do: Map.get(fs, :size_bytes, 0), else: 0),
+      lineage_id: if(enabled, do: lineage_id, else: "")}
     state.prime_fun.(channel, req)
   rescue
     _ -> {:error, :prime_crashed}
@@ -546,13 +561,14 @@ defmodule Embervm.SessionManager do
   # PR-4 rebinds). If the process fails to start, the durable session is orphaned as
   # a live-but-unrouted row; PR-4 adoption rebinds it from NodeStatus, so we surface
   # the create as failed rather than leave the caller a token to a dead process.
-  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id) do
+  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id) do
     attrs = %{
       tenant: state.tenant,
       principal: principal,
       workload: workload,
       node_id: node_id,
       vm_id: vm_id,
+      session_id: lineage_id,
       base_snapshot_ref: Map.get(entry, :image_ref),
       base_digest: base_digest(entry),
       expires_at: state.clock.() + entry.session.max_lifetime_seconds * 1000
@@ -779,17 +795,25 @@ defmodule Embervm.SessionManager do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
       when is_binary(node_id) and is_binary(vm_id) ->
-        cond do
-          bank_at_cap?(state, node_id) ->
-            {{:error, :bank_busy}, state}
+        if disk_persistence_only?(state, session.workload) do
+          {reply, state} = do_destroy(state, session_id)
+          case reply do
+            {:ok, _} -> {:ok, state}
+            other -> {other, state}
+          end
+        else
+          cond do
+            bank_at_cap?(state, node_id) ->
+              {{:error, :bank_busy}, state}
 
-          not disk_ok_for_bank?(state, node_id) ->
+            not disk_ok_for_bank?(state, node_id) ->
             # Fail-closed: with missing/over-watermark disk facts, do NOT bank onto a
             # possibly-full disk. The session stays live and re-arms its timer.
             {{:error, :disk_unknown}, state}
 
-          true ->
-            admit_bank(state, session, node_id, vm_id)
+            true ->
+              admit_bank(state, session, node_id, vm_id)
+          end
         end
 
       {:ok, _session} ->
@@ -801,6 +825,13 @@ defmodule Embervm.SessionManager do
 
       :error ->
         {{:error, :not_found}, state}
+    end
+  end
+
+  defp disk_persistence_only?(state, workload) do
+    case WorkloadCatalog.fetch(state.catalog_table, workload) do
+      {:ok, %{persistence: %{memory: false}}} -> true
+      _ -> false
     end
   end
 

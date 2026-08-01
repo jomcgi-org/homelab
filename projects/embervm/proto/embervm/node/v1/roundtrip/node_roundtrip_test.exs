@@ -106,7 +106,11 @@ defmodule Embervm.NodeRoundtripTest do
         vm_id: "vm-s1",
         request: %GuestRequest{method: "POST", path: "/invoke", body: "state"},
         timeout_ms: 1_000,
-        session_id: "s-abc"
+        session_id: "s-abc",
+        volume_disk_path: "/var/lib/ember/volumes/session/claude-runtime/s-abc/workspace.img",
+        volume_mount: "/workspace-persistent",
+        volume_size_bytes: 10_737_418_240,
+        lineage_id: "s-abc"
       })
 
     assert sa.response.status_code == 200

@@ -820,6 +820,23 @@ defmodule Embervm.WorkloadWatcher do
     }
   end
 
+  defp parse_persistence(spec, "session") do
+    case Map.get(spec, "persistence") do
+      nil -> %{memory: true, filesystem: %{enabled: false, scope: "solo", retention: 0, size_bytes: 0}}
+      p when is_map(p) ->
+        fs = Map.get(p, "filesystem") || %{}
+        size_bytes = Map.get(fs, "sizeBytes") ||
+          (Map.get(fs, "sizeGi") && Map.get(fs, "sizeGi") * 1_073_741_824) || 0
+        %{memory: Map.get(p, "memory", true), filesystem: %{
+          enabled: Map.get(fs, "enabled", false), scope: Map.get(fs, "scope", "solo"),
+          retention: Map.get(fs, "retention", 0), size_bytes: size_bytes
+        }}
+      _ -> %{memory: true, filesystem: %{enabled: false, scope: "solo", retention: 0, size_bytes: 0}}
+    end
+  end
+
+  defp parse_persistence(_spec, _class), do: nil
+
   # The serving block is REQUIRED for the serving class and FORBIDDEN for task
   # and session (the class-conditional requiredness the OpenAPI schema cannot
   # express), mirroring validate_session/2 exactly. Two additional serving-only
@@ -1446,6 +1463,7 @@ defmodule Embervm.WorkloadWatcher do
     resources = Map.get(spec, "resources") || %{}
     invocation = Map.get(spec, "invocation") || %{}
     source = parse_source(spec)
+    persistence = parse_persistence(spec, class)
 
     # The guest's baked env. The image lane reads source.image.initEnv; the zip
     # lane passes the handler symbol as EMBER_HANDLER (the runtime shim reads it
@@ -1482,6 +1500,7 @@ defmodule Embervm.WorkloadWatcher do
       # SessionManager/SessionStore (later PRs) read idle-bank/lifetime/caps from
       # the catalog exactly as the dispatcher reads task caps.
       session: session_cfg,
+      persistence: persistence,
       # Serving-class endpoint + elasticity config (nil except for the serving
       # class), carried so the future EndpointPublisher/Activator (Tasks 7/8)
       # read host/port/healthPath and the instance-count knobs from the

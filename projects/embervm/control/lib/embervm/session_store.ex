@@ -495,7 +495,7 @@ defmodule Embervm.SessionStore do
 
   defp do_create(attrs, state) do
     ts = state.clock.()
-    session_id = mint_id(state, ts)
+    session_id = Map.get(attrs, :session_id) || mint_id(state, ts)
     {token, token_sha256} = SessionId.mint_token()
 
     payload = %{
