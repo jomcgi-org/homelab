@@ -1228,7 +1228,7 @@ defmodule Embervm.StatefulStore do
         {:reply, :ok, state}
 
       {:ok, instance} ->
-        if instance.state == new_state do
+        if instance.state == new_state and updates == %{} do
           {:reply, :ok, state}
         else
           ts = state.clock.()
@@ -1245,7 +1245,13 @@ defmodule Embervm.StatefulStore do
             end
 
           :ets.insert(state.instances, {instance_id, updated})
-          state = bump_counts(state, instance.state, new_state, instance.workload)
+          state =
+            if instance.state == new_state do
+              state
+            else
+              bump_counts(state, instance.state, new_state, instance.workload)
+            end
+
           {:reply, :ok, state}
         end
 

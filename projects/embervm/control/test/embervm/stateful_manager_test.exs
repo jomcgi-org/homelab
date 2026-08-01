@@ -901,6 +901,70 @@ defmodule Embervm.StatefulManagerTest do
     assert instance.vm_id == nil
   end
 
+  test "a :banked row with dangling snapshot_ref is repaired from anchor node's new bundle" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2})
+
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-dangling", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: "vm-gone", generation: 2})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-dangling", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-dangling", :bank)
+    {:ok, _} = StatefulStore.transition(ctx.store, "stf-dangling", :bank_ready, :stateful_banked, %{snapshot_ref: "snap-gone", size_bytes: 1, snapshot_generation: 2}, %{snapshot_ref: "snap-gone", snapshot_generation: 2, snapshot_size_bytes: 1, vm_id: nil})
+
+    stateful_node(ctx, "node-4", stateful_bundles: [%{snapshot_ref: "snap-new", workload: "wl-a", generation: 3, size_bytes: 512, created_at_unix_ms: 1}])
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, instance} = StatefulStore.get(ctx.store, "stf-dangling")
+    assert instance.state == :banked
+    assert instance.snapshot_ref == "snap-new"
+    assert instance.snapshot_generation == 3
+    assert instance.snapshot_size_bytes == 512
+  end
+
+  test "a :banked row does NOT adopt from a foreign node's bundle (not anchor)" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-4", generation: 2})
+
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-foreign", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: nil, generation: 2})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-foreign", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-foreign", :bank)
+    {:ok, _} = StatefulStore.transition(ctx.store, "stf-foreign", :bank_ready, :stateful_banked, %{snapshot_ref: "snap-old", size_bytes: 1, snapshot_generation: 2}, %{snapshot_ref: "snap-old", snapshot_generation: 2, snapshot_size_bytes: 1, vm_id: nil})
+
+    # Foreign bundles are rejected because only the volume anchor can serve them.
+    stateful_node(ctx, "node-2", stateful_bundles: [%{snapshot_ref: "snap-foreign", workload: "wl-a", generation: 3, size_bytes: 512, created_at_unix_ms: 1}])
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, instance} = StatefulStore.get(ctx.store, "stf-foreign")
+    assert instance.state == :banked
+    assert instance.snapshot_ref == "snap-old"
+  end
+
+  test "a :banking row aged at the boundary is still eligible; one at -1ms is skipped" do
+    {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+    ctx = start_stack(clock: fn -> Agent.get(manager_clock, & &1) end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", stateful_bundles: [%{snapshot_ref: "snap-boundary", workload: "wl-a", generation: 3, size_bytes: 512, created_at_unix_ms: 1}])
+
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-boundary", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: "vm-boundary", generation: 2})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-boundary", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-boundary", :bank)
+
+    Agent.update(manager_clock, &(&1 + 120_000))
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, healed} = StatefulStore.get(ctx.store, "stf-boundary")
+    assert healed.state == :banked
+
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-before-boundary", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: "vm-before-boundary", generation: 2})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-before-boundary", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-before-boundary", :bank)
+    Agent.update(manager_clock, &(&1 - 1))
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, skipped} = StatefulStore.get(ctx.store, "stf-before-boundary")
+    assert skipped.state == :banking
+  end
+
   test "adoption SKIPS a :destroying instance even though the node still reports its live VM" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a")
