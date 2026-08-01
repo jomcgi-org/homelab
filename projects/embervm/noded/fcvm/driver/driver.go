@@ -792,8 +792,8 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 
 	return d.coldBoot(ctx, threadID, coldBootSpec{
 		rootfsPath: func() string {
-			if spec.BaseSnapshotRef.RootfsPath != "" {
-				return spec.BaseSnapshotRef.RootfsPath
+			if spec.ColdBootRootfsPath != "" {
+				return spec.ColdBootRootfsPath
 			}
 			return d.cfg.RootfsPath
 		}(),

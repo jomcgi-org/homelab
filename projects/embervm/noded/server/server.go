@@ -973,6 +973,12 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		},
 		VolumeDiskPath: volumeDiskPath,
 		VolumeMount:    req.GetVolumeMount(),
+		ColdBootRootfsPath: func() string {
+			if req.GetLineageId() != "" {
+				return s.readBaseRootfsPath(ref)
+			}
+			return ""
+		}(),
 	}
 	h, err := s.driver.Claim(ctx, spec)
 	if err != nil {

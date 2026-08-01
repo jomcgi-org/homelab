@@ -201,6 +201,7 @@ defmodule Embervm.OpLog.SQLite do
       workload TEXT,
       state TEXT NOT NULL,
       node_id TEXT,
+      volume_node_id TEXT,
       base_snapshot_ref TEXT,
       base_digest TEXT,
       generation INTEGER NOT NULL DEFAULT 0,
@@ -847,10 +848,10 @@ defmodule Embervm.OpLog.SQLite do
     # the race) is authoritative and left untouched.
     sql = """
     INSERT OR IGNORE INTO sessions
-      (session_id, tenant, principal, workload, state, node_id,
+      (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -912,6 +913,17 @@ defmodule Embervm.OpLog.SQLite do
              op.ts,
              op.session_id
            ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  defp project(conn, %Op{kind: :session_parked} = op, _seq) do
+    sql = "UPDATE sessions SET state='parked', volume_node_id=?, node_id=NULL, updated_at=? WHERE session_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [Map.get(op.payload, :volume_node_id), op.ts, op.session_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -2291,7 +2303,7 @@ defmodule Embervm.OpLog.SQLite do
 
   defp do_load_sessions(conn) do
     sql = """
-    SELECT session_id, tenant, principal, workload, state, node_id,
+    SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason
     FROM sessions
@@ -2314,6 +2326,7 @@ defmodule Embervm.OpLog.SQLite do
          workload,
          state,
          node_id,
+         volume_node_id,
          base_snapshot_ref,
          base_digest,
          generation,
@@ -2333,6 +2346,7 @@ defmodule Embervm.OpLog.SQLite do
           workload: workload,
           state: state,
           node_id: node_id,
+          volume_node_id: volume_node_id,
           base_snapshot_ref: base_snapshot_ref,
           base_digest: base_digest,
           generation: generation,
@@ -3228,12 +3242,23 @@ defmodule Embervm.OpLog.SQLite do
   # end with the same shape; old result rows keep headers NULL, read back as %{}.
   defp apply_migrations(conn) do
     with :ok <- migrate_results_headers(conn),
+         :ok <- migrate_sessions_volume_node_id(conn),
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
          :ok <- migrate_ops_stateful_instance_id(conn),
          :ok <- migrate_ops_group_instance_id(conn) do
       :ok
+    end
+  end
+
+  defp migrate_sessions_volume_node_id(conn) do
+    with {:ok, cols} <- table_columns(conn, "sessions") do
+      if "volume_node_id" in cols do
+        :ok
+      else
+        Sqlite3.execute(conn, "ALTER TABLE sessions ADD COLUMN volume_node_id TEXT")
+      end
     end
   end
 

@@ -49,7 +49,7 @@ defmodule Embervm.SessionStore do
   # `destroying` still holds a live VM (teardown RPC in flight, ADR embervm/014
   # decision 5): it stays routable/dialable and counts against capacity until the
   # node confirms teardown and the terminal destroyed op fires.
-  @live_states [:creating, :running, :banking, :relighting, :destroying]
+  @live_states [:creating, :running, :banking, :relighting, :destroying, :parked]
 
   # -- Client API ------------------------------------------------------------
 
@@ -312,6 +312,7 @@ defmodule Embervm.SessionStore do
       workload: row.workload,
       state: state_from_string(row.state),
       node_id: row.node_id,
+      volume_node_id: row.volume_node_id,
       vm_id: nil,
       base_snapshot_ref: row.base_snapshot_ref,
       base_digest: row.base_digest,
@@ -334,6 +335,7 @@ defmodule Embervm.SessionStore do
     "running" => :running,
     "banking" => :banking,
     "banked" => :banked,
+    "parked" => :parked,
     "relighting" => :relighting,
     "destroying" => :destroying,
     "expired" => :expired,
@@ -527,6 +529,7 @@ defmodule Embervm.SessionStore do
       state: :running,
       node_id: Map.get(attrs, :node_id),
       vm_id: Map.get(attrs, :vm_id),
+      volume_node_id: nil,
       base_snapshot_ref: Map.get(attrs, :base_snapshot_ref),
       base_digest: Map.get(attrs, :base_digest),
       generation: 0,
