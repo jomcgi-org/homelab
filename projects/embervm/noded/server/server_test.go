@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -247,6 +248,16 @@ func (f *fakeTransport) WaitReady(_ context.Context, _, _ string) error {
 }
 func (f *fakeTransport) Prime(_ context.Context, _ string) error { return nil }
 
+func (f *fakeTransport) SetClock(_ context.Context, _ string, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clockPosts++
+	if f.clockStatus == 0 || f.clockStatus == http.StatusNotFound {
+		return nil
+	}
+	return fmt.Errorf("clock sync failed with status %d", f.clockStatus)
+}
+
 func (f *fakeTransport) Hydrate(_ context.Context, _ string, archive []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -273,19 +284,6 @@ func (f *fakeTransport) hydratedBytes() []byte {
 }
 
 func (f *fakeTransport) RoundTrip(ctx context.Context, udsPath string, req *http.Request) (*http.Response, error) {
-	// Best-effort guest clock resync (Relight): count it and return the configured
-	// status (default 200); a 404 exercises the skip-and-log path.
-	if req.URL.Path == "/shim/clock" {
-		f.mu.Lock()
-		f.clockPosts++
-		st := f.clockStatus
-		f.mu.Unlock()
-		if st == 0 {
-			st = http.StatusOK
-		}
-		return &http.Response{StatusCode: st, Body: io.NopCloser(bytes.NewReader(nil))}, nil
-	}
-
 	f.mu.Lock()
 	f.roundTrips++
 	rtErr := f.roundTripErr
@@ -529,8 +527,94 @@ func TestPrimeAssignAutoDestroy(t *testing.T) {
 	}
 }
 
+// TestPrimeCallsSetClock verifies that Prime syncs the guest clock after the
+// restored guest passes its readiness gate.
+func TestPrimeCallsSetClock(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newTestServer(t, drv, tr, 8)
+	seedBase(srv, "echo__clock01", "echo")
+
+	pr, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__clock01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if pr.GetVmId() == "" {
+		t.Fatal("Prime returned empty vm_id")
+	}
+	if got := tr.clockPostCount(); got != 1 {
+		t.Errorf("after Prime, clockPosts = %d, want 1", got)
+	}
+}
+
+// TestRelightCallsSetClock verifies that Relight syncs the guest clock after the
+// restored guest passes its readiness gate.
+func TestRelightCallsSetClock(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	// Bank a ref into inventory to relight.
+	_ = primeSessionVM(t, srv, drv, "s-clock", "echo", "sref-clock", "m")
+
+	rl, err := client.Relight(context.Background(), &nodev1.RelightRequest{SnapshotRef: "sref-clock", SessionId: "s-clock"})
+	if err != nil {
+		t.Fatalf("Relight: %v", err)
+	}
+	if rl.GetVmId() == "" {
+		t.Fatal("Relight returned empty vm_id")
+	}
+	// primeSessionVM calls Relight once (1), test calls Relight again (1), total = 2
+	if got := tr.clockPostCount(); got != 2 {
+		t.Errorf("after two Relight calls, clockPosts = %d, want 2", got)
+	}
+}
+
 // TestAssignUnknownVM rejects an Assign for a vm_id that was never primed, with
 // no driver interaction at all.
+// TestPrimeSucceedsWhenSetClockFails verifies that a failing SetClock call does
+// not fail the Prime restore.
+func TestPrimeSucceedsWhenSetClockFails(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{clockStatus: http.StatusInternalServerError}
+	client, srv := newTestServer(t, drv, tr, 8)
+	seedBase(srv, "echo__clockfail01", "echo")
+
+	pr, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__clockfail01"})
+	if err != nil {
+		t.Fatalf("Prime should succeed even if SetClock fails: %v", err)
+	}
+	if pr.GetVmId() == "" {
+		t.Fatal("Prime returned empty vm_id")
+	}
+	// SetClock was called (attempted) even though it failed
+	if got := tr.clockPostCount(); got != 1 {
+		t.Errorf("after Prime with failing SetClock, clockPosts = %d, want 1", got)
+	}
+}
+
+// TestRelightSucceedsWhenSetClockFails verifies that a failing SetClock call does
+// not fail the Relight restore.
+func TestRelightSucceedsWhenSetClockFails(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{clockStatus: http.StatusInternalServerError}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	// Bank a ref into inventory to relight.
+	_ = primeSessionVM(t, srv, drv, "s-clockfail", "echo", "sref-clockfail", "m")
+
+	rl, err := client.Relight(context.Background(), &nodev1.RelightRequest{SnapshotRef: "sref-clockfail", SessionId: "s-clockfail"})
+	if err != nil {
+		t.Fatalf("Relight should succeed even if SetClock fails: %v", err)
+	}
+	if rl.GetVmId() == "" {
+		t.Fatal("Relight returned empty vm_id")
+	}
+	// primeSessionVM calls Relight once (1), test calls Relight again (1), total = 2
+	// SetClock was attempted both times even though it failed
+	if got := tr.clockPostCount(); got != 2 {
+		t.Errorf("after two Relight calls with failing SetClock, clockPosts = %d, want 2", got)
+	}
+}
+
 func TestAssignUnknownVM(t *testing.T) {
 	drv := &fakeDriver{}
 	tr := &fakeTransport{}
@@ -1731,8 +1815,8 @@ func TestRelightClock404Skipped(t *testing.T) {
 	tr := &fakeTransport{clockStatus: http.StatusNotFound}
 	client, srv := newSessionTestServer(t, drv, tr, 8)
 	// Bank a ref into inventory to relight.
-	vmID := primeSessionVM(t, srv, drv, "s-5", "echo", "sref-5", "m")
-	_ = vmID
+	_ = primeSessionVM(t, srv, drv, "s-5", "echo", "sref-5", "m")
+
 	rl, err := client.Relight(context.Background(), &nodev1.RelightRequest{SnapshotRef: "sref-5", SessionId: "s-5"})
 	if err != nil {
 		t.Fatalf("Relight with a 404 clock endpoint should still succeed: %v", err)

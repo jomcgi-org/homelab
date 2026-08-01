@@ -2,6 +2,7 @@
 """HTTP over vsock shim for a long-lived Claude Code CLI session."""
 
 import http.server
+import collections
 import json
 import os
 import queue
@@ -52,6 +53,16 @@ VOICE_PROMPT = (
     "no markdown, that a person could hear read aloud: what you did and anything "
     "you need from them.</voice>"
 )
+
+
+def _truncate_ring_for_error(ring, max_len=1500):
+    """Truncate the ring buffer for inclusion in an error message."""
+    if not ring:
+        return ""
+    content = "\n".join(ring)
+    if len(content) > max_len:
+        content = content[:max_len] + "... (truncated)"
+    return content
 
 
 class StartupError(Exception):
@@ -338,6 +349,7 @@ class ClaudeProcess:
         self.process_lock = threading.Lock()
         self.current_result = None
         self._stdout_queue = None
+        self.unparseable_lines = collections.deque(maxlen=5)
 
     def ready(self):
         with self.process_lock:
@@ -413,12 +425,16 @@ class ClaudeProcess:
             self.process = process
             self.init_event = None
             self._stdout_queue = queue.Queue()
+            self.unparseable_lines.clear()
             _managed_child_pids.add(process.pid)
         threading.Thread(
             target=self._pump_stdout,
             args=(process, self._stdout_queue),
             daemon=True,
         ).start()
+        # Note: unparseable-line stderr writes are synchronous on the read thread
+        # and race INIT_READ_TIMEOUT. This is fine for tens-of-lines Bun panics
+        # but could turn thousands-of-lines dumps into a generic init timeout.
         while True:
             try:
                 raw = self._read_output(process, INIT_READ_TIMEOUT)
@@ -449,7 +465,11 @@ class ClaudeProcess:
                 return
         code = process.poll()
         self._close_process(kill=False)
-        raise RuntimeError("claude exited before init, exit code %s" % code)
+        error_msg = "claude exited before init, exit code %s" % code
+        ring_content = _truncate_ring_for_error(self.unparseable_lines)
+        if ring_content:
+            error_msg = error_msg + "\nCLI output:\n" + ring_content
+        raise RuntimeError(error_msg)
 
     @staticmethod
     def _pump_stdout(process, output_queue):
@@ -469,11 +489,17 @@ class ClaudeProcess:
         except queue.Empty as exc:
             raise TimeoutError from exc
 
-    @staticmethod
-    def _parse_line(raw):
+    def _parse_line(self, raw):
         try:
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
+            try:
+                line_str = raw[:2000].decode("utf-8", errors="replace").rstrip("\n")
+            except Exception:
+                line_str = repr(raw[:2000])
+            sys.stderr.write("ember-claude-shim: cli-stdout: %s\n" % line_str)
+            sys.stderr.flush()
+            self.unparseable_lines.append(line_str)
             return None
 
     def _close_process(self, kill=False):
@@ -538,9 +564,11 @@ class ClaudeProcess:
                 if raw is None:
                     code = process.poll()
                     self._close_process(kill=False)
-                    raise RuntimeError(
-                        "claude crashed during turn, exit code %s" % code
-                    )
+                    error_msg = "claude crashed during turn, exit code %s" % code
+                    ring_content = _truncate_ring_for_error(self.unparseable_lines)
+                    if ring_content:
+                        error_msg = error_msg + "\nCLI output:\n" + ring_content
+                    raise RuntimeError(error_msg)
                 event = self._parse_line(raw)
                 if event is None:
                     continue

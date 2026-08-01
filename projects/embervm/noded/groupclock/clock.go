@@ -10,8 +10,8 @@
 // response is {"clock_realtime_ns":<int64>}: the guest sets CLOCK_REALTIME to the
 // host's epoch_ns and reads it straight back so the host can verify the set landed.
 //
-// This is a DELIBERATELY separate lane from the old task/session HTTP clock resync
-// (server.resyncGuestClock, which POSTs epoch-MILLIS to http://vsock/shim/clock):
+// This is a DELIBERATELY separate lane from the task/session HTTP clock resync
+// (vsockhttp.Transport.SetClock, which POSTs epoch-MILLIS to http://vsock/shim/clock):
 // that path is best-effort and never fails a relight, whereas a member relight FAILS
 // (FAILED_PRECONDITION) when the read-back clock is more than one second off the
 // host's, because a group member with a bad clock is not safe to serve.

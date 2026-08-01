@@ -533,3 +533,66 @@ def test_cli_crash_is_422(tmp_path, monkeypatch):
         manager._spawn = original
         server.shutdown()
         server.server_close()
+
+
+def test_unparseable_line_logged_to_stderr_and_retained(tmp_path, monkeypatch, capsys):
+    """Verify unparseable lines go to stderr and are retained in the ring."""
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes")
+    captured = capsys.readouterr()
+    assert "ember-claude-shim: cli-stdout: not json" in captured.err
+    assert "not json" in manager.unparseable_lines
+    manager._close_process(kill=True)
+
+
+def test_init_failure_includes_ring_buffer_in_error_message(tmp_path, monkeypatch):
+    """Verify init-failure errors include unparseable CLI output."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-cli"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        'print("unparseable line 1", flush=True)\n'
+        'print("unparseable line 2", flush=True)\n'
+        "sys.exit(1)\n"
+    )
+    os.chmod(executable, executable.stat().st_mode | 0o111)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        manager.turn("hello")
+
+    error_msg = str(exc_info.value)
+    assert "claude exited before init" in error_msg
+    assert "unparseable line" in error_msg
+
+
+def test_unparseable_line_truncation(tmp_path, monkeypatch, capsys):
+    """Verify CLI lines are capped at 2000 chars and errors at about 1500."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-cli"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        'print("x" * 3000, flush=True)\n'
+        "sys.exit(1)\n"
+    )
+    os.chmod(executable, executable.stat().st_mode | 0o111)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        manager.turn("test")
+    capsys.readouterr()
+
+    error_msg = str(exc_info.value)
+    assert len(manager.unparseable_lines[-1]) == 2000
+    assert len(error_msg) < 3500
+    assert "truncated" in error_msg
