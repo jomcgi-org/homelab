@@ -17,6 +17,9 @@ class AgentSession(SQLModel, table=True):
     cli_session_id: str | None = Field(
         default=None
     )  # Claude CLI session_id for resumption
+    ember_session_id: str | None = Field(default=None)
+    ember_session_token: str | None = Field(default=None)
+    ember_session_expires_at: int | None = Field(default=None)
     status: str = Field(default="running")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_turn_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -37,6 +37,44 @@ def get_session_by_local_id(session: Session, local_id: str) -> AgentSession | N
     ).first()
 
 
+def set_ember_session(
+    session: Session,
+    session_id: int,
+    ember_id: str,
+    ember_token: str,
+    ember_expires_at: int | None,
+) -> AgentSession:
+    row = session.get(AgentSession, session_id)
+    if row is None:
+        raise ValueError(f"Unknown agent session {session_id}")
+    row.ember_session_id = ember_id
+    row.ember_session_token = ember_token
+    row.ember_session_expires_at = ember_expires_at
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def clear_ember_session(session: Session, session_id: int) -> AgentSession:
+    """Clear EmberVM session identity and CLI session id together.
+
+    The VM and its CLI transcript are one unit of state; both must be cleared
+    or neither, else the next turn attempts --resume on a fresh VM (503).
+    """
+    row = session.get(AgentSession, session_id)
+    if row is None:
+        raise ValueError(f"Unknown agent session {session_id}")
+    row.ember_session_id = None
+    row.ember_session_token = None
+    row.ember_session_expires_at = None
+    row.cli_session_id = None
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 def create_turn(
     session: Session,
     session_id: int,
@@ -261,8 +299,8 @@ def persist_turn_from_pending_sync(
             turn.total_cost_usd,
             cli_session_id,
         )
-        # Store CLI session_id if this is the first turn
-        if cli_session_id and not sess_row.cli_session_id:
+        # The guest-reported CLI session_id is authoritative for this VM.
+        if cli_session_id:
             sess_row.cli_session_id = cli_session_id
             session.add(sess_row)
             session.commit()
