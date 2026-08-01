@@ -17,8 +17,13 @@ defmodule Embervm.SessionStateTest do
     {:banking, :bank_ready} => :banked,
     {:banking, :bank_abort} => :running,
     {:banked, :relight} => :relighting,
+    {:parked, :relight} => :relighting,
+    {:parked, :expire} => :expired,
+    {:parked, :destroy} => :destroyed,
     {:relighting, :relight_ready} => :running,
     {:relighting, :relight_abort} => :banked,
+    {:relighting, :parked_abort} => :parked,
+    {:running, :park} => :parked,
     {:running, :expire} => :expired,
     {:banked, :expire} => :expired,
     {:banked, :evict} => :evicted,
@@ -42,9 +47,9 @@ defmodule Embervm.SessionStateTest do
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 25
-    assert length(SessionState.events()) == 12
-    assert length(SessionState.states()) == 10
+    assert map_size(@legal) == 31
+    assert length(SessionState.events()) == 15
+    assert length(SessionState.states()) == 11
 
     for state <- SessionState.states(), event <- SessionState.events() do
       case Map.fetch(@legal, {state, event}) do
@@ -64,6 +69,28 @@ defmodule Embervm.SessionStateTest do
           end
       end
     end
+  end
+
+  test "parked transitions to relighting, expired, and destroyed" do
+    assert SessionState.transition(:parked, :relight) == {:ok, :relighting}
+    assert SessionState.transition(:parked, :expire) == {:ok, :expired}
+    assert SessionState.transition(:parked, :destroy) == {:ok, :destroyed}
+  end
+
+  test "only running can park" do
+    assert SessionState.transition(:running, :park) == {:ok, :parked}
+    assert SessionState.transition(:banked, :park) == {:error, {:illegal_transition, :banked, :park}}
+    assert SessionState.transition(:relighting, :park) == {:error, {:illegal_transition, :relighting, :park}}
+  end
+
+  test "parked_abort recovers a failed parked relight" do
+    assert SessionState.transition(:relighting, :parked_abort) == {:ok, :parked}
+  end
+
+  test "parked is not terminal and does not accept terminal operations" do
+    refute SessionState.terminal?(:parked)
+    refute :parked in SessionState.terminal_states()
+    assert_raise FunctionClauseError, fn -> SessionState.terminal_op_kind(:parked) end
   end
 
   test "no event leaves a terminal state (terminals are absorbing)" do

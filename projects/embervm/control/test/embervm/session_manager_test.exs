@@ -15,7 +15,7 @@ defmodule Embervm.SessionManagerTest do
 
   alias Embervm.{NodeCapacity, SessionManager, SessionStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{GuestResponse, SessionAssignResponse, UsageStats}
+  alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, UsageStats}
 
   # A stub op-log whose append/2 blocks until the test sends :go, so a test can hold
   # one async write "in flight" (pending) while it runs a reconcile pass, modelling
@@ -97,9 +97,11 @@ defmodule Embervm.SessionManagerTest do
         capacity_table: cap_table,
         catalog_table: cat_table,
         clock: fn -> 5_000_000 end,
-        channel_fun: fn _node -> {:ok, :ch} end,
+        channel_fun: Keyword.get(opts, :channel_fun, fake_channel_fun()),
         claim_fun: Keyword.get(opts, :claim_fun, fn _d, _n, _w -> {:ok, "vm-primed-#{suffix}"} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
+        bank_fun: Keyword.get(opts, :bank_fun, fn _ch, req -> {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}} end),
+        relight_fun: Keyword.get(opts, :relight_fun, fn _ch, _req -> {:ok, %RelightResponse{vm_id: "vm-relit"}} end),
         session_opts: session_opts,
         async_writer: writer,
         async_lifecycle_writes: async
@@ -169,12 +171,59 @@ defmodule Embervm.SessionManagerTest do
       session:
         Keyword.get(opts, :session, %{
           idle_bank_seconds: 300,
-          max_lifetime_seconds: 3600,
+          max_lifetime_seconds: Keyword.get(opts, :max_lifetime_seconds, 3600),
           banked_ttl_seconds: 3600,
           max_sessions: Keyword.get(opts, :max_sessions, 16),
           invoke_queue_cap: Keyword.get(opts, :queue_cap, 4)
-        })
+        }),
+      persistence: Keyword.get(opts, :persistence)
     })
+  end
+
+  defp fake_channel_fun, do: fn _node -> {:ok, :fake_channel} end
+
+  defp fake_claim_fun(vm_id), do: fn _dispatcher, _node, _workload -> {:ok, vm_id} end
+
+  defp fake_prime_fun(vm_id), do: fn _channel, _req -> {:ok, %PrimeResponse{vm_id: vm_id}} end
+
+  defp persistence_workload_opts(opts \\ []) do
+    Keyword.merge(
+      [persistence: %{memory: false, filesystem: %{enabled: true, size_bytes: 1_000_000}}],
+      opts
+    )
+  end
+
+  defp create_persistence_session(ctx, opts \\ []) do
+    workload = Keyword.get(opts, :workload, "wl-persist")
+    put_session_workload(ctx, workload, persistence_workload_opts(opts))
+
+    {:ok, created} =
+      SessionManager.create(
+        ctx.mgr,
+        workload,
+        Keyword.get(opts, :principal, "p1")
+      )
+
+    created
+  end
+
+  defp park_session(ctx, created) do
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    {:ok, parked} = SessionStore.get(ctx.store, created.session_id)
+    assert parked.state == :parked
+    parked
+  end
+
+  defp wait_for_state(ctx, session_id, expected, attempts \\ 100)
+  defp wait_for_state(_ctx, _session_id, _expected, 0), do: flunk("session did not reach expected state")
+
+  defp wait_for_state(ctx, session_id, expected, attempts) do
+    case SessionStore.get(ctx.store, session_id) do
+      {:ok, %{state: ^expected} = session} -> session
+      _ ->
+        Process.sleep(10)
+        wait_for_state(ctx, session_id, expected, attempts - 1)
+    end
   end
 
   # A per-INSTANCE capacity fact on a node (Step 5 size-aware create). Two co-located
@@ -455,6 +504,117 @@ defmodule Embervm.SessionManagerTest do
     {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
 
     assert {:error, {:gone, "destroyed"}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+  end
+
+  test "persistence_only_session_parks_on_idle" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-persist"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx)
+
+    parked = park_session(ctx, created)
+
+    assert parked.volume_node_id == "node-4"
+    assert parked.node_id == nil
+    assert parked.vm_id == nil
+    assert {:ok, _} = SessionStore.verify_token(ctx.store, created.session_id, created.token)
+  end
+
+  test "invoke_on_parked_reprimes_on_volume_node" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoined"),
+        channel_fun: fake_channel_fun(),
+        relight_fun: fn _channel, _req -> {:ok, %RelightResponse{vm_id: "vm-rejoined"}} end
+      )
+
+    created = create_persistence_session(ctx)
+    parked = park_session(ctx, created)
+    req = %{method: "POST", path: "/", headers: %{}, body: "hello"}
+
+    assert {:ok, response} = SessionManager.invoke(ctx.mgr, created.session_id, req)
+    assert response.status_code == 200
+    assert response.body == "hello"
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :running
+    assert session.volume_node_id == parked.volume_node_id
+    assert session.node_id == parked.volume_node_id
+    assert session.vm_id == "vm-rejoined"
+  end
+
+  test "rejoin_prime_failure_leaves_parked" do
+    ctx = start_stack(prime_fun: fn _channel, _req -> {:error, :no_capacity} end, channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:error, {:relight_failed, :no_capacity}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "retry"})
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :parked
+    assert {:ok, _} = SessionStore.verify_token(ctx.store, created.session_id, created.token)
+  end
+
+  test "volume_node_gone_prevents_rejoin" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-rejoined"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    assert {:error, {:relight_failed, :no_capacity}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "retry"})
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :parked
+    assert NodeCapacity.fetch(ctx.cap_table, "node-4") == :error
+  end
+
+  test "parked_session_expires_on_ttl" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-expire"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx, max_lifetime_seconds: -1)
+    park_session(ctx, created)
+
+    assert :ok = SessionManager.sweep(ctx.mgr)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :expired
+    assert :session_expired in op_kinds_for(ctx, created.session_id)
+  end
+
+  test "parked_session_can_be_destroyed" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-destroy"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+    assert :session_destroyed in op_kinds_for(ctx, created.session_id)
+  end
+
+  test "non_persistence_sessions_unaffected" do
+    ctx =
+      start_stack(
+        claim_fun: fake_claim_fun("vm-regular"),
+        channel_fun: fake_channel_fun(),
+        bank_fun: fn _channel, req -> {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}},
+        relight_fun: fn _channel, _req -> {:ok, %RelightResponse{vm_id: "vm-regular-relit"}} end
+      )
+
+    put_session_workload(ctx, "wl-regular")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-regular", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+
+    banked = wait_for_state(ctx, created.session_id, :banked)
+    assert banked.volume_node_id == nil
+
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+    NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :session_snapshots, [
+      %{session_id: created.session_id, snapshot_ref: banked.snapshot_ref, workload: "wl-regular"}
+    ]))
+
+    assert {:ok, _response} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "relight"})
+    running = wait_for_state(ctx, created.session_id, :running)
+    assert running.state == :running
+    assert running.volume_node_id == nil
   end
 
   test "the queue cap rejects pile-ups past invokeQueueCap with :queue_full" do

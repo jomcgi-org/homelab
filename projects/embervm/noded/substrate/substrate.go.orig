@@ -47,9 +47,6 @@ type ClaimSpec struct {
 	// task, serving, and stateful claim path.
 	VolumeDiskPath string
 	VolumeMount    string
-	// ColdBootRootfsPath, when non-empty, is the per-workload base rootfs a
-	// volume-forced cold boot uses instead of the node default; empty for every other path.
-	ColdBootRootfsPath string
 }
 
 // NICSpec describes the tap network interface a serving-class microVM cold-boots

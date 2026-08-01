@@ -97,6 +97,7 @@ defmodule Embervm.OpLog do
     :session_created,
     :session_invoked,
     :session_banked,
+    :session_parked,
     :session_relit,
     :session_expired,
     :session_evicted,

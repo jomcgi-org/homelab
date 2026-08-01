@@ -51,6 +51,7 @@ defmodule Embervm.SessionState do
     :running,
     :banking,
     :banked,
+    :parked,
     :relighting,
     :destroying,
     :expired,
@@ -66,6 +67,8 @@ defmodule Embervm.SessionState do
     :bank,
     :bank_ready,
     :bank_abort,
+    :park,
+    :parked_abort,
     :relight,
     :relight_ready,
     :relight_abort,
@@ -93,8 +96,13 @@ defmodule Embervm.SessionState do
     # transient (non-precondition) relight failure leaves the snapshot intact: the
     # session returns to banked and a later invoke re-relights.
     {:banked, :relight} => :relighting,
+    {:running, :park} => :parked,
+    {:parked, :relight} => :relighting,
+    {:parked, :expire} => :expired,
+    {:parked, :destroy} => :destroyed,
     {:relighting, :relight_ready} => :running,
     {:relighting, :relight_abort} => :banked,
+    {:relighting, :parked_abort} => :parked,
     # Max-lifetime expiry: a live or banked session past its deadline.
     {:running, :expire} => :expired,
     {:banked, :expire} => :expired,
@@ -132,6 +140,7 @@ defmodule Embervm.SessionState do
           | :running
           | :banking
           | :banked
+          | :parked
           | :relighting
           | :destroying
           | :expired
@@ -144,6 +153,8 @@ defmodule Embervm.SessionState do
           | :bank
           | :bank_ready
           | :relight
+          | :park
+          | :parked_abort
           | :relight_ready
           | :expire
           | :evict

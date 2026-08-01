@@ -545,7 +545,7 @@ defmodule Embervm.SessionManager do
     fs = Map.get(p, :filesystem) || %{}
     enabled = Map.get(fs, :enabled, false) and Map.get(p, :memory, true) == false
     req = %PrimeRequest{trace: %Trace{}, snapshot_ref: snapshot_ref || "",
-      volume_mount: if(enabled, do: "/workspace-persistent", else: ""),
+      volume_mount: if(enabled, do: "/session", else: ""),
       volume_size_bytes: if(enabled, do: Map.get(fs, :size_bytes, 0), else: 0),
       lineage_id: if(enabled, do: lineage_id, else: "")}
     state.prime_fun.(channel, req)
@@ -658,7 +658,7 @@ defmodule Embervm.SessionManager do
       # HERE (destroy VM / evict snapshot) and 410s the caller, so a session never
       # serves an invoke past expires_at even between sweeps.
       {:ok, %{state: st, expires_at: exp} = session}
-      when st in [:running, :banked] and is_integer(exp) ->
+      when st in [:running, :banked, :parked] and is_integer(exp) ->
         if exp <= state.clock.() do
           _ = expire_session(state, session)
           {:error, {:gone, "expired"}}
@@ -683,6 +683,13 @@ defmodule Embervm.SessionManager do
           # adoption sweep rebinds. Surface a transient error rather than pretend the
           # VM is reachable; the boot reconcile heals it to a live process shortly.
           [] -> {:error, {:not_ready, :running}}
+        end
+
+      {:ok, %{state: :parked} = session} ->
+        if Map.has_key?(state.relighting, session_id) do
+          {:relighting, session}
+        else
+          {:relight, session}
         end
 
       # Banked: an invoke is a relight MISS. If a relight is already in flight
@@ -796,7 +803,7 @@ defmodule Embervm.SessionManager do
       {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
       when is_binary(node_id) and is_binary(vm_id) ->
         if disk_persistence_only?(state, session.workload) do
-          {reply, state} = do_destroy(state, session_id)
+          {reply, state} = park_session(state, session_id)
           case reply do
             {:ok, _} -> {:ok, state}
             other -> {other, state}
@@ -825,6 +832,27 @@ defmodule Embervm.SessionManager do
 
       :error ->
         {{:error, :not_found}, state}
+    end
+  end
+
+  defp park_session(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
+      when is_binary(node_id) and is_binary(vm_id) ->
+        _ = stop_session_process(state, session_id, session)
+        result = SessionStore.transition(
+          state.session_store,
+          session_id,
+          :park,
+          :session_parked,
+          %{reason: "idled", volume_node_id: node_id},
+          %{volume_node_id: node_id, node_id: nil, vm_id: nil}
+        )
+        Logger.info("embervm session parked", session_id: session_id, workload: session.workload, node_id: node_id)
+        {result, state}
+
+      {:ok, _session} -> {{:ok, :not_parked}, state}
+      :error -> {{:error, :not_found}, state}
     end
   end
 
@@ -1087,14 +1115,89 @@ defmodule Embervm.SessionManager do
   defp park_and_relight(state, session, from, req) do
     principal = session.principal
 
+    cond do
+      session.state == :parked and is_binary(session.volume_node_id) ->
+        rejoin_parked(state, session, from, req)
+
+      wake_allowed?(state, principal) ->
+        state = record_wake(state, principal)
+        state = park_relighting(state, session.session_id, from, req)
+        start_relight(state, session)
+
+      true ->
+        audit_denial(state, principal, session.workload, :wake_rate)
+        GenServer.reply(from, {:error, :wake_rate_limited})
+        state
+    end
+  end
+
+  defp rejoin_parked(state, session, from, req) do
+    principal = session.principal
+
     if wake_allowed?(state, principal) do
       state = record_wake(state, principal)
       state = park_relighting(state, session.session_id, from, req)
-      start_relight(state, session)
+      start_rejoin_worker(state, session)
     else
       audit_denial(state, principal, session.workload, :wake_rate)
       GenServer.reply(from, {:error, :wake_rate_limited})
       state
+    end
+  end
+
+  defp start_rejoin_worker(state, session) do
+    case SessionStore.mark(state.session_store, session.session_id, :relight) do
+      {:ok, _} ->
+        owner = self()
+        capacity_table = state.capacity_table
+        channel_fun = state.channel_fun
+        relight_fun = state.relight_fun
+        volume_node_id = session.volume_node_id
+        session_id = session.session_id
+
+        spawn(fn ->
+          outcome =
+            Tracer.with_span "embervm.session.rejoin",
+                             %{attributes: %{
+                               "ember.session_id" => session_id,
+                               "ember.workload" => session.workload,
+                               "ember.principal" => session.principal,
+                               "ember.volume_node_id" => volume_node_id
+                             }} do
+              with {:ok, _primed_vm_id} <- perform_rejoin_prime(state, volume_node_id, session.workload, session_id),
+                   {:ok, channel} <- safe_channel(channel_fun, volume_node_id),
+                   {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
+                     safe_relight(relight_fun, channel, session) do
+                {:ok, volume_node_id, vm_id, 0, volume_node_id}
+              else
+                {:error, reason} -> {:error, reason}
+                other -> {:error, other}
+              end
+            end
+
+          send(owner, {:relight_done, session_id, outcome})
+        end)
+
+        state
+
+      {:error, _} ->
+        drain_relight_waiters(state, session.session_id, {:error, {:not_ready, :parked}})
+    end
+  end
+
+  defp perform_rejoin_prime(state, volume_node_id, workload, lineage_id) do
+    with {:ok, fact} <- NodeCapacity.fetch(state.capacity_table, volume_node_id),
+         {:ok, entry} <- fetch_session_workload(state, workload),
+         true <- Map.get(fact, :draining, false) == false,
+         need_mib <- Map.get(entry, :mem_mib) || 512,
+         headroom <- Map.get(fact, :mem_headroom_mib),
+         true <- is_nil(headroom) or headroom >= need_mib,
+         workload_entry when is_map(workload_entry) <- Map.get(Map.get(fact, :workloads, %{}), workload),
+         snapshot_ref <- Map.get(workload_entry, :snapshot_ref),
+         {:ok, vm_id} <- prime(state, volume_node_id, snapshot_ref, entry, lineage_id) do
+      {:ok, vm_id}
+    else
+      _ -> {:error, :no_capacity}
     end
   end
 
@@ -1504,7 +1607,13 @@ defmodule Embervm.SessionManager do
         # never deletes it on a failed restore), so return ETS relighting -> banked
         # (ETS-only, no op) and reply the error. A later invoke re-relights.
         Logger.warning("embervm session relight failed", session_id: session_id, reason: inspect(reason))
-        _ = SessionStore.mark(state.session_store, session_id, :relight_abort)
+        abort_event =
+          case SessionStore.get(state.session_store, session_id) do
+            {:ok, %{volume_node_id: volume_node_id}} when is_binary(volume_node_id) -> :parked_abort
+            _ -> :relight_abort
+          end
+
+        _ = SessionStore.mark(state.session_store, session_id, abort_event)
         drain_relight_waiters(state, session_id, {:error, {:relight_failed, reason}})
     end
   end
@@ -1840,6 +1949,9 @@ defmodule Embervm.SessionManager do
       session.state == :destroying ->
         state
 
+      session.state == :parked ->
+        state
+
       # This manager has an in-flight bank/relight for the session: it owns the
       # transition, so a periodic reconcile must NOT touch it. During a bank the node
       # still reports the live VM, and forcing ETS to running here would make the
@@ -2080,13 +2192,13 @@ defmodule Embervm.SessionManager do
     SessionStore.all(state.session_store)
     # Only running/banked have an :expire FSM edge; a transient banking/relighting/
     # creating session settles within a sweep and is expired on the next pass.
-    |> Enum.filter(fn s -> s.state in [:running, :banked] end)
+    |> Enum.filter(fn s -> s.state in [:running, :banked, :parked] end)
     |> Enum.filter(fn s -> is_integer(s.expires_at) and s.expires_at <= now end)
     |> Enum.reduce(state, fn session, acc -> expire_session(acc, session) end)
   end
 
   defp expire_session(state, session) do
-    if session.state == :banked do
+    if session.state in [:banked, :parked] do
       _ = evict_snapshot(state, session)
     else
       _ = stop_session_process(state, session.session_id, session)
@@ -2355,7 +2467,7 @@ defmodule Embervm.SessionManager do
   #     unconfirmed teardown (RPC failure or teardown_confirmed=false) leaves the
   #     session in destroying for the reconcile loop to re-drive.
   defp destroy_live(state, session) do
-    if state.node_confirmed_destroy and session.state != :banked do
+    if state.node_confirmed_destroy and session.state not in [:banked, :parked] do
       destroy_live_node_confirmed(state, session)
     else
       destroy_live_legacy(state, session)
@@ -2364,7 +2476,7 @@ defmodule Embervm.SessionManager do
 
   # Gate-off (and banked) path: record destroyed first, tear down after.
   defp destroy_live_legacy(state, session) do
-    if session.state == :banked do
+    if session.state in [:banked, :parked] do
       _ = evict_snapshot(state, session)
     else
       _ = stop_session_process(state, session.session_id, session)

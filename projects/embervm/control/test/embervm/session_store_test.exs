@@ -143,6 +143,53 @@ defmodule Embervm.SessionStoreTest do
     assert kinds == [:session_created]
   end
 
+  test "mark park is a legal transition from running", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, session} = create(store)
+
+    assert {:ok, parked} = SessionStore.mark(store, session.session_id, :park)
+    assert parked.state == :parked
+  end
+
+  test "parked sessions count as live", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, session} = create(store, workload: "wl-parked")
+
+    assert {:ok, _} = SessionStore.mark(store, session.session_id, :park)
+    assert SessionStore.counts(store, "wl-parked") == %{live: 1, banked: 0}
+  end
+
+  test "park transition persists the volume node id", %{path: path} do
+    {op_log, store} = start_pair(path)
+    {:ok, session} = create(store, node_id: "node-4", vm_id: "vm-1")
+
+    assert {:ok, parked} =
+             SessionStore.transition(
+               store,
+               session.session_id,
+               :park,
+               :session_parked,
+               %{reason: "idled", volume_node_id: "node-4"},
+               %{volume_node_id: "node-4", node_id: nil, vm_id: nil}
+             )
+
+    assert parked.state == :parked
+    assert parked.volume_node_id == "node-4"
+    assert parked.node_id == nil
+    assert parked.vm_id == nil
+    {:ok, [row]} = SQLite.load_sessions(op_log)
+    assert row.volume_node_id == "node-4"
+  end
+
+  test "parked_abort is a legal transient mark", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, session} = create(store)
+    assert {:ok, _} = SessionStore.mark(store, session.session_id, :park)
+    assert {:ok, _} = SessionStore.mark(store, session.session_id, :relight)
+    assert {:ok, recovered} = SessionStore.mark(store, session.session_id, :parked_abort)
+    assert recovered.state == :parked
+  end
+
   test "a terminal transition records the reason and drops residency", %{path: path} do
     {_op_log, store} = start_pair(path)
 
