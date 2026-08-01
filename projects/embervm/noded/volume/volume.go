@@ -509,6 +509,43 @@ func (m *Manager) VolumePath(workload string) string {
 	return m.volPath(workload)
 }
 
+// SessionVolumePath returns the node-local workspace image for one session
+// lineage. Session volumes intentionally live in a separate keyspace from the
+// singleton stateful volume so two sessions of one workload cannot share data.
+func (m *Manager) SessionVolumePath(workload, lineageID string) string {
+	return filepath.Join(m.root, "session", workload, lineageID, "workspace.img")
+}
+
+// CreateSession provisions a sparse per-lineage workspace image idempotently.
+func (m *Manager) CreateSession(workload, lineageID string, sizeBytes uint64) error {
+	if workload == "" || lineageID == "" {
+		return fmt.Errorf("volume: workload and lineage required")
+	}
+	path := m.SessionVolumePath(workload, lineageID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("volume: mkdir session dir: %w", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return fmt.Errorf("volume: create session image: %w", err)
+	}
+	if err := f.Truncate(int64(sizeBytes)); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("volume: size session image: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("volume: close session image: %w", err)
+	}
+	return nil
+}
+
 // Delete removes a workload's volume directory (vol.img plus the generation
 // ledger). It refuses (an error the caller maps to FAILED_PRECONDITION) while
 // the volume is attached: deletion is the ONLY destructive data verb and must

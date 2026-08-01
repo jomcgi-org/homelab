@@ -1168,6 +1168,7 @@ egress:
 # permanently resident 4 GiB.
 claudeRuntimeWorkload:
   enabled: false
+  persistenceEnabled: false
   name: claude-runtime
   port: 1027
   readyPath: /shim/ready
@@ -1179,6 +1180,9 @@ claudeRuntimeWorkload:
   # repository and builds it is spending this budget on RAM with no disk to fall
   # back to (a session-class guest has no writable volume).
   memMib: 4096
+  # 10 GiB per lineage. ADR 002 rule-4: disk = max(workspace on tmpfs,
+  # anticipated session traffic). Tune after observing real sessions.
+  workspaceSizeBytes: 10737418240
   floor: 0
   cap: 2
   session:

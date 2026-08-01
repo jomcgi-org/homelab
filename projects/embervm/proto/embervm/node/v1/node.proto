@@ -602,6 +602,12 @@ message BuildBaseResponse {
 message PrimeRequest {
   Trace trace = 1;
   string snapshot_ref = 2;
+  // Optional node-local writable session volume. When set, the node cold-boots
+  // the base rootfs with this per-lineage drive instead of restoring memory.
+  string volume_disk_path = 3;
+  string volume_mount = 4;
+  uint64 volume_size_bytes = 5;
+  string lineage_id = 6;
 }
 
 message PrimeResponse {
@@ -695,6 +701,12 @@ message SessionAssignRequest {
   // NodeStatus.session_vms so a restarted control plane adopts rather than
   // orphans. The daemon never interprets it.
   string session_id = 5;
+  // Carried for wire compatibility and observability. Session boot provisioning
+  // happens on Prime, before this invoke RPC is possible.
+  string volume_disk_path = 6;
+  string volume_mount = 7;
+  uint64 volume_size_bytes = 8;
+  string lineage_id = 9;
 }
 
 message SessionAssignResponse {

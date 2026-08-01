@@ -772,7 +772,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 
 	// Warm-base start: restore the new thread from a base bundle for an instant
 	// ready start, skipping boot + harness init.
-	if spec.BaseSnapshotRef.ID != "" {
+	if spec.BaseSnapshotRef.ID != "" && spec.VolumeDiskPath == "" {
 		ref := spec.BaseSnapshotRef
 		if ref.Arch != "" && d.cfg.Arch != "" && ref.Arch != d.cfg.Arch {
 			return substrate.Handle{}, fmt.Errorf("driver: base arch mismatch: ref %q != node %q", ref.Arch, d.cfg.Arch)
@@ -791,10 +791,17 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	}
 
 	return d.coldBoot(ctx, threadID, coldBootSpec{
-		rootfsPath: d.cfg.RootfsPath,
-		vcpus:      d.cfg.VCPUs,
-		memMib:     d.cfg.MemMib,
-		nic:        spec.NIC,
+		rootfsPath: func() string {
+			if spec.BaseSnapshotRef.RootfsPath != "" {
+				return spec.BaseSnapshotRef.RootfsPath
+			}
+			return d.cfg.RootfsPath
+		}(),
+		vcpus:          d.cfg.VCPUs,
+		memMib:         d.cfg.MemMib,
+		nic:            spec.NIC,
+		volumeDiskPath: spec.VolumeDiskPath,
+		volumeMount:    spec.VolumeMount,
 	})
 }
 

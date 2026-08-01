@@ -43,6 +43,10 @@ type ClaimSpec struct {
 	// meaningful on a COLD boot (BaseSnapshotRef unset); the serving relight path
 	// restores a snapshot that already captured its NIC and never sets this.
 	NIC *NICSpec
+	// Writable session volume fields. These are empty/zero for every existing
+	// task, serving, and stateful claim path.
+	VolumeDiskPath string
+	VolumeMount    string
 }
 
 // NICSpec describes the tap network interface a serving-class microVM cold-boots
