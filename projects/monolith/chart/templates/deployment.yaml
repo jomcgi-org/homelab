@@ -117,22 +117,30 @@ spec:
             - name: SANDBOX_SESSION_WORKLOAD
               value: {{ .Values.sandbox.sessionWorkload | quote }}
             {{- end }}
-            {{- if and .Values.scratchPostgres.enabled .Values.scratchPostgres.onepassword.itemPath }}
-            # EmberVM R4 scratch-postgres DSN (D-R4.PR-11.1). Agent run_python
-            # sessions psycopg-connect to the scale-to-zero scratch Postgres via
-            # this DSN. The password comes from the monolith-namespace Secret the
-            # OnePasswordItem syncs (the SAME 1Password item embervm uses); the
-            # host is the embervm serving Service, which routes the listenPort to
-            # the workload's VM (waking it on the first connection). SCRATCH_PG_
-            # PASSWORD is a separate env var so the secret never appears inline;
-            # $(SCRATCH_PG_PASSWORD) is expanded by the kubelet at container start.
+            {{- if and .Values.scratchPostgres.onepassword.itemPath (or .Values.scratchPostgres.enabled .Values.scratchPostgres.demoListenPort) }}
+            # Shared postgres password for the EmberVM stateful DSNs below. Comes
+            # from the monolith-namespace Secret the OnePasswordItem syncs (the
+            # SAME 1Password item embervm uses). Rendered whenever EITHER DSN is:
+            # demo-postgres reuses the scratch-postgres Secret on the embervm
+            # side, so the demo DSN needs this even with the scratch workload
+            # disabled. SCRATCH_PG_PASSWORD is a separate env var so the secret
+            # never appears inline; $(SCRATCH_PG_PASSWORD) is expanded by the
+            # kubelet at container start.
             - name: SCRATCH_PG_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-scratch-postgres
                   key: POSTGRES_PASSWORD
+            {{- if .Values.scratchPostgres.enabled }}
+            # EmberVM R4 scratch-postgres DSN (D-R4.PR-11.1). Agent run_python
+            # sessions psycopg-connect to the scale-to-zero scratch Postgres via
+            # this DSN; the host is the embervm serving Service, which routes the
+            # listenPort to the workload's VM (waking it on the first connection).
+            # Unset (enabled: false) the sandbox client leaves the guest env
+            # untouched and the feature is off.
             - name: SCRATCH_POSTGRES_DSN
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
+            {{- end }}
             {{- if .Values.scratchPostgres.demoListenPort }}
             # Demo-postgres DSN (the demos page's sleep/wake exhibit): the SAME
             # serving Service and password (the demo workload reuses the scratch-
