@@ -1080,27 +1080,38 @@ defmodule Embervm.StatefulSweeper do
   end
 
   defp finish_bank_active(state, instance, node_id, _vm_id, _ip, _port, workload, _owner_resolved, {:ok, ref, size, generation}) do
-    _ =
-      StatefulStore.transition(
-        state.store,
-        instance.instance_id,
-        :bank_ready,
-        :stateful_banked,
-        %{snapshot_ref: ref, size_bytes: size, generation: generation},
-        %{snapshot_ref: ref, snapshot_size_bytes: size, snapshot_generation: generation, node_id: node_id, vm_id: nil}
-      )
+    case StatefulStore.transition(
+           state.store,
+           instance.instance_id,
+           :bank_ready,
+           :stateful_banked,
+           %{snapshot_ref: ref, size_bytes: size, generation: generation},
+           %{snapshot_ref: ref, snapshot_size_bytes: size, snapshot_generation: generation, node_id: node_id, vm_id: nil}
+         ) do
+      {:ok, _} ->
+        Embervm.EndpointPublisher.publish(state.publisher)
 
-    Embervm.EndpointPublisher.publish(state.publisher)
+        Logger.info("embervm stateful banked",
+          instance_id: instance.instance_id,
+          workload: workload,
+          node_id: node_id,
+          snapshot_bytes: size
+        )
 
-    Logger.info("embervm stateful banked",
-      instance_id: instance.instance_id,
-      workload: workload,
-      node_id: node_id,
-      snapshot_bytes: size
-    )
+        # A clean bank clears any backoff armed by a prior failure for this workload.
+        clear_bank_backoff(state, workload)
 
-    # A clean bank clears any backoff armed by a prior failure for this workload.
-    clear_bank_backoff(state, workload)
+      {:error, reason} ->
+        Logger.error("embervm stateful: bank completed on the node but the store transition failed; snapshot facts not recorded",
+          instance_id: instance.instance_id,
+          workload: workload,
+          node_id: node_id,
+          snapshot_ref: ref,
+          reason: inspect(reason)
+        )
+
+        state
+    end
   end
 
   # UNKNOWN-VM FAILED_PRECONDITION (gRPC status 9): the daemon we dialled does not

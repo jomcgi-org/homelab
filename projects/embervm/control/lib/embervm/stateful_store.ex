@@ -586,7 +586,12 @@ defmodule Embervm.StatefulStore do
   """
   @spec adopt_state(GenServer.server(), String.t(), :serving | :starting | :banked) :: :ok
   def adopt_state(store \\ __MODULE__, instance_id, new_state) do
-    GenServer.call(store, {:adopt_state, instance_id, new_state})
+    adopt_state(store, instance_id, new_state, %{})
+  end
+
+  @spec adopt_state(GenServer.server(), String.t(), :serving | :starting | :banked, map()) :: :ok
+  def adopt_state(store, instance_id, new_state, updates) when is_map(updates) do
+    GenServer.call(store, {:adopt_state, instance_id, new_state, updates})
   end
 
   @doc """
@@ -1211,7 +1216,11 @@ defmodule Embervm.StatefulStore do
     do_eager_evict_broken_pairs(state)
   end
 
-  def handle_call({:adopt_state, instance_id, new_state}, _from, state)
+  def handle_call({:adopt_state, instance_id, new_state}, from, state) do
+    handle_call({:adopt_state, instance_id, new_state, %{}}, from, state)
+  end
+
+  def handle_call({:adopt_state, instance_id, new_state, updates}, _from, state)
       when new_state in [:serving, :starting, :banked] do
     case fetch(state, instance_id) do
       {:ok, %{state: cur}} when cur in [:evicted, :destroyed, :failed] ->
@@ -1228,9 +1237,11 @@ defmodule Embervm.StatefulStore do
           # adopt_endpoint. A banked instance is never in the fan-out, so healthy=false.
           updated =
             if new_state == :banked do
-              %{instance | state: :banked, healthy: false, ip: nil, port: nil, vm_id: nil, updated_at: ts}
+              instance
+              |> Map.merge(updates)
+              |> Map.merge(%{state: :banked, healthy: false, ip: nil, port: nil, vm_id: nil, updated_at: ts})
             else
-              %{instance | state: new_state, updated_at: ts}
+              instance |> Map.merge(updates) |> Map.merge(%{state: new_state, updated_at: ts})
             end
 
           :ets.insert(state.instances, {instance_id, updated})
