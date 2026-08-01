@@ -6,7 +6,6 @@ resources:
   - ../../projects/embervm/deploy
   - ../../projects/firecracker/git-mirror/deploy
   - ../../projects/inference/deploy
-  - ../../projects/loom/deploy
   - ../../projects/mcp/context-forge-gateway/deploy
   - ../../projects/monolith-public/deploy
   - ../../projects/monolith/deploy
