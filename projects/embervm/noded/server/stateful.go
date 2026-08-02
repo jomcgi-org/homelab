@@ -803,10 +803,10 @@ func (s *Server) ArchiveVolume(ctx context.Context, req *nodev1.ArchiveVolumeReq
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: session workspace unavailable: %v", err)
 	}
 	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: req.GetWorkload(), Ref: req.GetLineageId()}
-	key := artifactPrefix(ref, s.cfg.CpuVendor)
-	if s.alreadyDurable(ctx, ref, key) {
-		return &nodev1.ArchiveVolumeResponse{Skipped: true}, nil
-	}
+	// Always enqueue: the workspace key is stable but its content mutates, so a
+	// presence probe cannot prove the store copy is current. Export's checksum
+	// compare in the worker skips the upload when nothing changed, which keeps
+	// repeat drains cheap without freezing the durable copy at its first archive.
 	s.enqueueExport(ref)
 	return &nodev1.ArchiveVolumeResponse{}, nil
 }

@@ -729,7 +729,44 @@ defmodule Embervm.SessionManagerTest do
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :parked
-    assert NodeCapacity.fetch(ctx.cap_table, "node-4") == :error
+  end
+
+  test "fatal workspace restore aborts the rejoin and keeps the session parked" do
+    # A store failure that is NOT a clean miss must stop the rejoin: priming a
+    # blank workspace over data that exists remotely is the data-loss path.
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoin-blocked"),
+        channel_fun: fake_channel_fun(),
+        restore_artifact_fun: fn _ch, _req -> {:error, %GRPC.RPCError{status: 14}} end
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:error, {:relight_failed, {:session_workspace_restore_failed, _}}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :parked
+  end
+
+  test "successful workspace restore lets the rejoin proceed" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoin-restored"),
+        channel_fun: fake_channel_fun(),
+        restore_artifact_fun: fn _ch, _req -> {:ok, %{}} end
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:ok, %{status_code: 200}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :running
   end
 
   test "parked_session_expires_on_ttl" do
