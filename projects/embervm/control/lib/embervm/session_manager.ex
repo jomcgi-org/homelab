@@ -1775,6 +1775,7 @@ defmodule Embervm.SessionManager do
     live_vms = index_session_vms(facts)
     snapshots = index_session_snapshots(facts)
     nodes_reporting_snaps = nodes_reporting_snapshots(facts)
+    nodes_facts = index_node_facts(facts)
 
     state = clear_changed_unapplicable(state)
 
@@ -1782,7 +1783,7 @@ defmodule Embervm.SessionManager do
       SessionStore.all(state.session_store)
       |> Enum.reject(&SessionState.terminal?(&1.state))
       |> Enum.reduce(state, fn session, acc ->
-        adopt_one(acc, session, live_vms, snapshots, nodes_reporting_snaps)
+        adopt_one(acc, session, live_vms, snapshots, nodes_reporting_snaps, nodes_facts)
       end)
 
     state = evict_orphan_snapshots(state, facts)
@@ -2039,7 +2040,16 @@ defmodule Embervm.SessionManager do
     result
   end
 
-  defp adopt_one(state, session, live_vms, snapshots, nodes_reporting_snaps) do
+  # Map of node_id -> node fact, keyed by configured_id (the node name). Used by
+  # adoption to check whether a node's snapshot report was generated after a session
+  # was banked (evidence ordering for vanished detection).
+  defp index_node_facts(facts) do
+    for f <- facts, into: %{} do
+      {f.configured_id, f}
+    end
+  end
+
+  defp adopt_one(state, session, live_vms, snapshots, nodes_reporting_snaps, nodes_facts) do
     sid = session.session_id
 
     cond do
@@ -2087,7 +2097,12 @@ defmodule Embervm.SessionManager do
       # Under the node-confirmed-destroy gate a grace window (orphan_grace_ms since
       # the row was last updated) is honoured first, so an owner-resolved dial that
       # momentarily omits a just-created VM does not terminalize it (ADR embervm/014).
-      node_reporting?(state, session.node_id) and MapSet.member?(nodes_reporting_snaps, session.node_id) and orphan_grace_elapsed?(state, session) ->
+      node_reporting?(state, session.node_id) and MapSet.member?(nodes_reporting_snaps, session.node_id) and
+        orphan_grace_elapsed?(state, session) and
+        # The snapshot report must also be AUTHORITATIVE in time: the node's fact must
+        # postdate the session's bank. A fact older than the session update is a stale
+        # report, not evidence the snapshot vanished.
+        node_fact_authoritative?(nodes_facts, session.node_id, session.updated_at) ->
         case session.state do
           :banked ->
             evict_banked(state, session, :snapshot_vanished)
@@ -2206,6 +2221,16 @@ defmodule Embervm.SessionManager do
 
   defp orphan_grace_elapsed?(state, session) do
     state.clock.() - session.updated_at >= state.orphan_grace_ms
+  end
+
+  # Check if the node's snapshot report is authoritative (current): the fact's
+  # updated_at must be greater than or equal to the session's updated_at (when it
+  # was banked), meaning the node has had a chance to report the snapshot.
+  defp node_fact_authoritative?(nodes_facts, node_id, session_updated_at) do
+    case Map.get(nodes_facts, node_id) do
+      %{updated_at: fact_updated_at} when fact_updated_at >= session_updated_at -> true
+      _ -> false
+    end
   end
 
   # Evict snapshots a node reports whose session row is terminal or absent: the
