@@ -95,6 +95,118 @@ def test_send_persists_and_returns_immediately(session):
     assert pending.seq == result["turn"]
 
 
+def test_session_start_returns_immediately(monkeypatch, session):
+    started = asyncio.Event()
+
+    async def blocking_deliver(_ember, _cli_session_id, _message):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(mcp._transport, "deliver", blocking_deliver)
+
+    async def run():
+        result = await asyncio.wait_for(
+            mcp.monolith_agent_session_start("hello"), timeout=0.1
+        )
+        pending = store.get_pending_message(session, result["session_id"], 1)
+        return result, pending
+
+    result, pending = asyncio.run(run())
+
+    assert result["accepted"] is True
+    assert result["session_id"] > 0
+    assert result["turn"] == 1
+    assert pending is not None
+    assert pending.claimed_by_replica is None
+    assert not started.is_set()
+
+
+def test_session_start_happy_path_persists_result(monkeypatch, session):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    async def mock_deliver(_ember, _cli_session_id, message):
+        return _completed_delivery(message)
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    async def start():
+        return await mcp.monolith_agent_session_start("hello")
+
+    result = asyncio.run(start())
+    row = store.get_session(session, result["session_id"])
+    assert row is not None
+    assert row.status == "running"
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    session.expire_all()
+    turn = store.get_turn(session, row.id, 1)
+    assert turn is not None
+    assert turn.result_text == "Done: hello"
+    assert turn.terminal_reason == "completed"
+    assert turn.stop_reason == "end_turn"
+    assert turn.cost_usd == 0.01
+    assert store.get_pending_message(session, row.id, 1) is None
+    assert store.get_session(session, row.id).status == "completed"
+
+
+def test_failed_first_turn_does_not_wedge_session(monkeypatch, session):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    async def failing_deliver(_ember, _cli_session_id, _message):
+        raise RuntimeError("first turn failed")
+
+    monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
+
+    result = asyncio.run(mcp.monolith_agent_session_start("hello"))
+    asyncio.run(mcp._execute_pending_message(result["session_id"]))
+
+    session.expire_all()
+    row = store.get_session(session, result["session_id"])
+    assert row is not None
+    assert row.status == "warn"
+    assert store.get_turn(session, row.id, 1) is not None
+    assert store.get_pending_message(session, row.id, 1) is None
+
+    follow_up = asyncio.run(mcp.monolith_agent_session_send(row.id, "follow up"))
+    assert follow_up["turn"] == 2
+
+
+def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+    executions: list[str] = []
+
+    async def mock_deliver(_ember, _cli_session_id, message):
+        executions.append(message)
+        await asyncio.sleep(0.01)
+        return _completed_delivery(message)
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    result = asyncio.run(mcp.monolith_agent_session_start("hello"))
+
+    async def run_executors():
+        await asyncio.gather(
+            mcp._execute_pending_message(result["session_id"]),
+            mcp._execute_pending_message(result["session_id"]),
+        )
+
+    asyncio.run(run_executors())
+
+    session.expire_all()
+    assert executions == ["hello"]
+    assert store.get_turn(session, result["session_id"], 1) is not None
+    assert store.get_pending_message(session, result["session_id"], 1) is None
+
+
 def _completed_turn(message: str) -> Turn:
     return Turn(
         result=f"Done: {message}",
