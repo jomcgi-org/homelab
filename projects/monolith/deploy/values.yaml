@@ -297,6 +297,10 @@ agent:
   discord:
     defaultServerId: "1501965852042330302"
     defaultChannelId: "1501965852969402517"
+    # Agent-session turn notifications land here instead of the default channel.
+    # Sessions notify on every terminal turn (they are voice-driven), so probing
+    # the lane would otherwise ring the same bell as real alerts.
+    agentSessionsChannelId: "1533337680463663254"
     # Owner allowlist for /goosecracker (ADR 024 Task 4) is OWNER_DISCORD_USER_ID,
     # synced from the discord-bot 1Password item into monolith-chat-secrets and
     # sourced via secretKeyRef in the deployment (not a plain value here).

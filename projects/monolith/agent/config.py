@@ -28,3 +28,15 @@ def load_settings() -> AgentSettings:
             "MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID"
         ],
     )
+
+
+def agent_sessions_channel_id() -> str | None:
+    """Channel for agent-session turn notifications, or None for the default.
+
+    Read on its own rather than through AgentSettings: notifying a turn must not
+    depend on the unrelated required Discord settings, and a session that cannot
+    resolve an optional channel should fall back, never fail. Sessions notify on
+    EVERY terminal turn by design (they are voice-driven), so routing them apart
+    keeps validation noise off the channel real alerts use.
+    """
+    return os.environ.get("MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID") or None
