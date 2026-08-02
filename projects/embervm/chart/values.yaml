@@ -1152,11 +1152,13 @@ egress:
 #
 # Node disk arithmetic, documented so it is bounded rather than discovered (ADR
 # embervm/002 rule 4). memMib is 4096, so a banked session's memory snapshot is
-# worst-case ~4 GiB. maxSessions 2 (live + banked combined) caps the snapshot dir
-# at 2 x 4 GiB = 8 GiB, and cap 1 caps live RAM at 4 GiB. Deliberately small: this
-# is a single-operator feature sharing node-4 scratch with the task pools and the
-# 8-session sandbox tier, and it is the values knob to raise once the lane has
-# earned its keep.
+# worst-case ~4 GiB. maxSessions 4 (live + banked combined) caps the snapshot dir
+# at 4 x 4 GiB = 16 GiB, and cap 2 caps live RAM at 8 GiB, inside the 16gi brick's
+# ~15.8 GiB budget with room for the task pools it shares node-4 scratch with.
+# Raised from cap 1 / maxSessions 2 once the lane earned its keep (a turn reached
+# the API end to end, #4071): one concurrent sandbox and two total sessions meant
+# a single abandoned session locked the workload out, which is how the 429s during
+# that validation happened.
 #
 # floor is 0, unlike the sandbox tier: a pristine 4 GiB VM held warm is expensive,
 # and the runtime does not need warmth. A cold spawn to first request is ~250ms
@@ -1176,7 +1178,7 @@ claudeRuntimeWorkload:
   # back to (a session-class guest has no writable volume).
   memMib: 4096
   floor: 0
-  cap: 1
+  cap: 2
   session:
     # Bank an idle session after 5 minutes. Longer than the sandbox tier's 2: a
     # voice-driven conversation has human-length gaps between turns, and a bank
@@ -1186,7 +1188,7 @@ claudeRuntimeWorkload:
     # 410s onto the current base.
     maxLifetimeSeconds: 21600
     bankedTtlSeconds: 21600
-    maxSessions: 2
+    maxSessions: 4
     invokeQueueCap: 4
   invocation:
     # Total duration for a session invoke. CRD maximum is 900s (workload-crd.yaml:868).
