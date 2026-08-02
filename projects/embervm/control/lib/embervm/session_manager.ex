@@ -307,6 +307,13 @@ defmodule Embervm.SessionManager do
     {:noreply, state}
   end
 
+  # Runs after the {:bank, _} reply has been sent (so the idle-path caller, which
+  # blocks on that call before stopping itself, is never killed mid-call).
+  def handle_continue({:reap_banked_process, session_id}, state) do
+    terminate_session_process(state, session_id)
+    {:noreply, state}
+  end
+
   @impl true
   def handle_call({:create, workload, principal}, _from, state) do
     {:reply, do_create(state, workload, principal), state}
@@ -348,7 +355,16 @@ defmodule Embervm.SessionManager do
 
   def handle_call({:bank, session_id}, _from, state) do
     {reply, state} = do_bank(state, session_id)
-    {:reply, reply, state}
+
+    case reply do
+      # "A banked session has no process" (see Embervm.Session): the idle-bank
+      # path stops itself on admission, but an API/drain-driven bank left the
+      # process alive holding the Registry key, so the eventual relight's process
+      # start collided with it and failed the session. Reap it AFTER the reply
+      # (handle_continue) so the idle-path caller is not killed mid-call.
+      :ok -> {:reply, reply, state, {:continue, {:reap_banked_process, session_id}}}
+      _ -> {:reply, reply, state}
+    end
   end
 
   def handle_call({:drain_node, node_id}, _from, state) do
@@ -2743,6 +2759,18 @@ defmodule Embervm.SessionManager do
         # the VM from the durable residency, so a destroy of a limbo session frees it.
         destroy_vm(state, session)
     end
+  end
+
+  # Stop only the session PROCESS (the invoke router), leaving the VM alone: the
+  # bank path needs the VM alive for the node-side snapshot RPC. Idempotent; the
+  # idle-bank path's self-stop may already have emptied the Registry.
+  defp terminate_session_process(state, session_id) do
+    case Registry.lookup(state.registry, session_id) do
+      [{pid, _}] -> _ = DynamicSupervisor.terminate_child(state.supervisor, pid)
+      [] -> :ok
+    end
+
+    :ok
   end
 
   # Issue the Destroy RPC to the owning node and report whether teardown was
