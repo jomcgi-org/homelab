@@ -519,6 +519,76 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, _} = SessionStore.verify_token(ctx.store, created.session_id, created.token)
   end
 
+  test "persistence session destroyed before parking deletes its volume" do
+    parent = self()
+    ctx = start_stack(
+      prime_fun: fake_prime_fun("vm-persist-destroy"),
+      channel_fun: fake_channel_fun(),
+      delete_session_volume_fun: fn _ch, req ->
+        send(parent, {:volume_deleted, req.lineage_id})
+        {:ok, %{}}
+      end
+    )
+    created = create_persistence_session(ctx)
+    session_id = created.session_id
+
+    {:ok, created_row} = SessionStore.get(ctx.store, created.session_id)
+    assert created_row.volume_node_id == "node-4"
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert_receive {:volume_deleted, ^session_id}, 1_000
+  end
+
+  test "node-confirmed destroy deletes a persistence volume after confirmation" do
+    parent = self()
+    ctx = start_stack(
+      node_confirmed_destroy: true,
+      prime_fun: fake_prime_fun("vm-persist-confirmed-destroy"),
+      channel_fun: fake_channel_fun(),
+      delete_session_volume_fun: fn _ch, req ->
+        send(parent, {:volume_deleted, req.lineage_id})
+        {:ok, %{}}
+      end
+    )
+    created = create_persistence_session(ctx)
+    session_id = created.session_id
+
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert_receive {:volume_deleted, ^session_id}, 1_000
+  end
+
+  test "invoke on a parking session is transiently not ready" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-parking"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx)
+    {:ok, _} = SessionStore.transition(ctx.store, created.session_id, :park, :session_parking,
+      %{reason: "idled", volume_node_id: "node-4"}, %{volume_node_id: "node-4"})
+
+    assert {:error, {:not_ready, :parking}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "retry"})
+  end
+
+  test "successful rejoin disarms the park-once failure handler" do
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+    ctx = start_stack(
+      prime_fun: fake_prime_fun("vm-rejoin-once"),
+      channel_fun: fake_channel_fun(),
+      relight_fun: fn _channel, _req -> {:ok, %RelightResponse{vm_id: "vm-rejoin-once"}} end,
+      assign_fun: fn _ch, req ->
+        case Agent.get_and_update(attempts, fn n -> {n, n + 1} end) do
+          0 -> default_assign(:ch, req)
+          _ -> {:error, :delivery_failed}
+        end
+      end
+    )
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "rejoin"})
+    assert {:error, :delivery_failed} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "fail"})
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :failed
+    assert :session_failed in op_kinds_for(ctx, created.session_id)
+  end
+
   test "crash-window park completes to parked on restart adoption" do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-crash-window"), channel_fun: fake_channel_fun())
     created = create_persistence_session(ctx)
@@ -935,6 +1005,32 @@ defmodule Embervm.SessionManagerTest do
 
     :ok = SessionManager.reconcile(ctx.mgr)
 
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :evicted
+  end
+
+  test "co-located node facts use the freshest timestamp for vanished snapshot reaping" do
+    ctx = start_stack(evict_fun: fn _ch, _req -> {:ok, %{}} end, store_clock: fn -> 4_500_000 end)
+    put_session_workload(ctx, "wl-fresh-fact")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-fresh-fact", "p1")
+    bank_session(ctx, created.session_id)
+
+    for {pod_uid, updated_at} <- [{"old", 4_000_000}, {"fresh", 5_000_000}] do
+      NodeCapacity.put(ctx.cap_table, {"node-4", pod_uid}, %{
+        node_id: "node-4",
+        configured_id: "node-4",
+        instance_id: "node-4/#{pod_uid}",
+        workloads: %{},
+        session_vms: [],
+        session_snapshots: [],
+        live_vms: 0,
+        max_live_vms: 8,
+        draining: false,
+        updated_at: updated_at
+      })
+    end
+
+    :ok = SessionManager.reconcile(ctx.mgr)
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :evicted
   end

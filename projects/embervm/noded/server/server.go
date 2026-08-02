@@ -963,6 +963,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)
 		}
 	}
+	readyTimeout := primeReadyTimeout(s.cfg, volumeDiskPath)
 
 	spec := substrate.ClaimSpec{
 		Arch:     s.cfg.Arch,
@@ -990,14 +991,15 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	uds := s.driver.VsockUDSPath(h.ThreadID)
 
 	// Shake out Firecracker's post-restore vsock RX-queue race off the readiness
-	// path (best-effort), then health-gate on the short restore budget.
-	primeCtx, cancelPrime := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	// path (best-effort), then health-gate on the boot or restore budget selected
+	// by the claim shape.
+	primeCtx, cancelPrime := context.WithTimeout(ctx, readyTimeout)
 	if perr := s.transport.Prime(primeCtx, uds); perr != nil {
 		s.logger.Warn("noded: vsock prime did not complete; readiness poll will retry past the race", "vm", h.ID, "err", perr)
 	}
 	cancelPrime()
 
-	readyCtx, cancelReady := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	readyCtx, cancelReady := context.WithTimeout(ctx, readyTimeout)
 	readyErr := s.transport.WaitReady(readyCtx, uds, readyPath)
 	cancelReady()
 	if readyErr != nil {
@@ -1007,7 +1009,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restored guest not ready: %v", readyErr)
 	}
 
-	rtCtx, rtCancel := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
+	rtCtx, rtCancel := context.WithTimeout(ctx, readyTimeout)
 	if err := s.transport.SetClock(rtCtx, uds, time.Now().UnixMilli()); err != nil {
 		s.logger.Warn("noded: guest clock sync failed (best-effort, ignored)", "vm", h.ID, "err", err)
 	}
@@ -1023,6 +1025,13 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	})
 	s.signalChange()
 	return &nodev1.PrimeResponse{VmId: h.ID}, nil
+}
+
+func primeReadyTimeout(cfg config.Config, volumeDiskPath string) time.Duration {
+	if volumeDiskPath != "" {
+		return cfg.BootReadyTimeout
+	}
+	return cfg.RestoreReadyTimeout
 }
 
 // ---- Assign ----------------------------------------------------------------

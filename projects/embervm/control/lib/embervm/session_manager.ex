@@ -615,6 +615,7 @@ defmodule Embervm.SessionManager do
       node_id: node_id,
       vm_id: vm_id,
       session_id: lineage_id,
+      volume_node_id: if(persistence_enabled_workload?(entry), do: node_id, else: nil),
       base_snapshot_ref: Map.get(entry, :image_ref),
       base_digest: base_digest(entry),
       expires_at: state.clock.() + entry.session.max_lifetime_seconds * 1000
@@ -796,6 +797,7 @@ defmodule Embervm.SessionManager do
       {:ok, %{state: session_state}} ->
         cond do
           session_state == :creating -> {:error, {:not_ready, :creating}}
+          session_state == :parking -> {:error, {:not_ready, :parking}}
           # terminal: 410 with the recorded reason.
           true -> {:error, {:gone, terminal_reason(state, session_id, session_state)}}
         end
@@ -2061,8 +2063,7 @@ defmodule Embervm.SessionManager do
   end
 
 
-  # Determine which nodes CARRY a snapshot report field (authoritative), versus nodes
-  # that have not reported snapshot facts yet (nil/absent). This guards eviction:
+  # The authoritative-timestamp guard below is the real protection for eviction:
   # a banked session is only evicted on positive evidence that its snapshot is gone,
   # never on a missing or lagging report.
   defp nodes_reporting_snapshots(facts) do
@@ -2080,9 +2081,11 @@ defmodule Embervm.SessionManager do
   # adoption to check whether a node's snapshot report was generated after a session
   # was banked (evidence ordering for vanished detection).
   defp index_node_facts(facts) do
-    for f <- facts, into: %{} do
-      {f.configured_id, f}
-    end
+    facts
+    |> Enum.group_by(& &1.configured_id)
+    |> Map.new(fn {configured_id, siblings} ->
+      {configured_id, Enum.max_by(siblings, &Map.get(&1, :updated_at, 0))}
+    end)
   end
 
   defp adopt_one(state, session, live_vms, snapshots, nodes_reporting_snaps, nodes_facts) do
@@ -2708,7 +2711,9 @@ defmodule Embervm.SessionManager do
           end
 
         if confirmed do
-          # 3a. Node confirmed teardown: record the terminal destroyed op.
+          # 3a. Node confirmed teardown: reclaim the workspace before recording
+          # the terminal destroyed op.
+          delete_session_volume(state, session)
           reply =
             SessionStore.transition(
               state.session_store,

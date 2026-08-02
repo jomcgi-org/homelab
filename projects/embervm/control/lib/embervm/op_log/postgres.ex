@@ -692,7 +692,7 @@ defmodule Embervm.OpLog.Postgres do
       (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason)
-    VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, 0, NULL, NULL, $9, $10, NULL, $11, $12, NULL)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, $10, $11, NULL, $12, $13, NULL)
     ON CONFLICT (session_id) DO NOTHING
     """
 
@@ -703,6 +703,7 @@ defmodule Embervm.OpLog.Postgres do
       op.workload,
       Map.get(payload, :state, "running"),
       Map.get(payload, :node_id),
+      Map.get(payload, :volume_node_id),
       Map.get(payload, :base_snapshot_ref),
       Map.get(payload, :base_digest),
       Map.get(payload, :token_sha256),

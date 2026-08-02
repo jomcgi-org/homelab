@@ -184,7 +184,7 @@ defmodule Embervm.Session do
         # it is logged and the response still goes back.
         _ = record_invoke(state, usage)
         GenServer.reply(from, {:ok, result})
-        {:noreply, maybe_start_next(state)}
+        {:noreply, maybe_start_next(disarm_rejoin_failure(state))}
 
       {:error, reason} ->
         # A daemon transport/timeout/suspect failure: the session is failed and its
@@ -442,7 +442,9 @@ defmodule Embervm.Session do
   # as :failed, and stop this process. Called on any daemon-level invoke failure.
   defp fail_and_stop(state, reason) do
     if is_function(state.rejoin_failure_fun, 1) do
-      _ = state.rejoin_failure_fun.(reason)
+      failure_fun = state.rejoin_failure_fun
+      state = disarm_rejoin_failure(state)
+      _ = failure_fun.(reason)
       drain_queue_as_failed(state)
       {:stop, :normal, %{state | queue: :queue.new()}}
     else
@@ -462,6 +464,8 @@ defmodule Embervm.Session do
       {:stop, :normal, %{state | queue: :queue.new()}}
     end
   end
+
+  defp disarm_rejoin_failure(state), do: %{state | rejoin_failure_fun: nil}
 
   defp drain_queue_as_failed(state) do
     for {from, _req, _enqueued_at} <- :queue.to_list(state.queue) do
