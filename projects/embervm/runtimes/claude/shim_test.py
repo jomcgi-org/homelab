@@ -208,9 +208,7 @@ def test_codex_returns_at_turn_completed_without_waiting_for_exit(
 
 def test_manager_routes_only_known_models_to_codex(tmp_path, monkeypatch):
     codex = _codex_manager(tmp_path, monkeypatch)
-    manager = shim.ProcessManager(
-        codex.workspace, codex.executable, codex.executable
-    )
+    manager = shim.ProcessManager(codex.workspace, codex.executable, codex.executable)
     claude = object()
     codex_adapter = object()
     manager.claude = claude
