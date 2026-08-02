@@ -198,6 +198,24 @@ tracing:
 service:
   port: 8080
 
+tokenBroker:
+  enabled: true
+  replicas: 1
+  grants:
+    - name: codex-cluster
+      provider: codex-chatgpt
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 64Mi
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/tokenbroker
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    pullPolicy: IfNotPresent
+
 # xDS sidecar (R3, PR-3): a go-control-plane ADS server that runs as a SECOND
 # container in the control-plane pod. The control plane (PR-4) PUTs a desired-state
 # snapshot to it over localhost; it serves CDS/RDS/EDS to the per-node serving

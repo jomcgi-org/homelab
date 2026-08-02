@@ -1,0 +1,17 @@
+{{- if .Values.tokenBroker.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "embervm.tokenBroker.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    # Explicit grant names keep this Role narrowly scoped. Add a name here when
+    # adding a tokenBroker.grants entry.
+    resourceNames:
+      {{- range .Values.tokenBroker.grants }}
+      - embervm-oauth-grant-{{ .name }}
+      {{- end }}
+    verbs: [get, update, patch]
+{{- end }}

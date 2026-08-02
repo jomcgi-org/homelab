@@ -21,6 +21,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- include "embervm.fullname" . -}}
 {{- end -}}
 
+{{- define "embervm.tokenBroker.name" -}}{{ printf "%s-tokenbroker" (include "embervm.name" .) | trunc 63 | trimSuffix "-" }}{{- end -}}
+{{- define "embervm.tokenBroker.fullname" -}}{{ printf "%s-tokenbroker" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" }}{{- end -}}
+{{- define "embervm.tokenBroker.selectorLabels" -}}app.kubernetes.io/name: {{ include "embervm.tokenBroker.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: tokenbroker{{- end -}}
+{{- define "embervm.tokenBroker.labels" -}}{{ include "embervm.tokenBroker.selectorLabels" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}{{- end -}}
+{{- define "embervm.tokenBroker.serviceAccountName" -}}{{ include "embervm.tokenBroker.fullname" . }}{{- end -}}
+
 {{/*
 The node daemon (embervm-noded) is a SECOND Deployment in this one chart/release.
 It uses a DISTINCT app.kubernetes.io/name ("<name>-noded") so its selector is
