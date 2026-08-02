@@ -694,6 +694,13 @@ multiarch_http_file(
     arm64_url = "https://github.com/earendil-works/pi/releases/download/v0.83.0/pi-linux-arm64.tar.gz",
     binary_name = "pi",
     extract_path = "pi/pi",
+    # The Bun-compiled binary loads its theme JSONs and wasm sidecar relative
+    # to argv0 (observed live: ENOENT /usr/local/bin/theme/dark.json killed
+    # every guest turn), so ship them beside it.
+    extract_extra_paths = [
+        "pi/theme",
+        "pi/photon_rs_bg.wasm",
+    ],
     package_dir = "/usr/local/bin",
 )
 
