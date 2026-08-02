@@ -666,7 +666,7 @@ class ClaudeProcess:
         _managed_child_pids.discard(process.pid)
         _reap_orphans()
 
-    def turn(self, message, session_id=None):
+    def turn(self, message, session_id=None, model=None):
         with self.turn_lock:
             with self.process_lock:
                 process = self.process
@@ -795,7 +795,15 @@ class CodexProcess:
             command = [self.executable, "exec", "resume", session_id, message]
         else:
             command = [self.executable, "exec"]
-        command.extend(["--json", "--model", model_name, "--config", "model_reasoning_effort=%s" % effort])
+        command.extend(
+            [
+                "--json",
+                "--model",
+                model_name,
+                "--config",
+                "model_reasoning_effort=%s" % effort,
+            ]
+        )
         if not session_id:
             command.extend(["--sandbox", "workspace-write"])
         command.extend(["--skip-git-repo-check", "-C", self.workspace])
@@ -838,7 +846,9 @@ class CodexProcess:
                     "session_id %r does not match active session %r"
                     % (session_id, self.session_id)
                 )
-            process, output_queue = self._spawn(message, session_id or self.session_id, model)
+            process, output_queue = self._spawn(
+                message, session_id or self.session_id, model
+            )
             result_text = ""
             usage = {}
             events = []
@@ -900,12 +910,16 @@ class CodexProcess:
 class ProcessManager:
     """Route Claude-compatible turns to the selected CLI adapter."""
 
-    def __init__(self, workspace=None, claude_executable="claude", codex_executable="codex"):
+    def __init__(
+        self, workspace=None, claude_executable="claude", codex_executable="codex"
+    ):
         self.claude = ClaudeProcess(workspace, claude_executable)
         self.codex = CodexProcess(workspace, codex_executable)
 
     def _adapter(self, model):
-        return self.codex if model in CODEX_MODELS else self.claude
+        if isinstance(model, str) and model in CODEX_MODELS:
+            return self.codex
+        return self.claude
 
     def ready(self):
         return self.claude.ready() and self.codex.ready()

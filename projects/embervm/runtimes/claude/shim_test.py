@@ -181,7 +181,10 @@ def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypat
     manager = _codex_manager(tmp_path, monkeypatch)
     manager.turn("first", model="terra")
     manager.turn("second", session_id="codex-thread", model="terra")
-    calls = [json.loads(line) for line in (tmp_path / "codex-args.jsonl").read_text().splitlines()]
+    calls = [
+        json.loads(line)
+        for line in (tmp_path / "codex-args.jsonl").read_text().splitlines()
+    ]
     resume = calls[1]
     assert resume[:4] == ["exec", "resume", "codex-thread", "second"]
     assert "--sandbox" not in resume
@@ -190,7 +193,9 @@ def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypat
     manager._close_process()
 
 
-def test_codex_returns_at_turn_completed_without_waiting_for_exit(tmp_path, monkeypatch):
+def test_codex_returns_at_turn_completed_without_waiting_for_exit(
+    tmp_path, monkeypatch
+):
     manager = _codex_manager(tmp_path, monkeypatch)
     monkeypatch.setenv("FAKE_CODEX_SLEEP", "2")
     started = time.monotonic()
@@ -202,14 +207,17 @@ def test_codex_returns_at_turn_completed_without_waiting_for_exit(tmp_path, monk
 
 
 def test_manager_routes_only_known_models_to_codex(tmp_path, monkeypatch):
-    manager = _codex_manager(tmp_path, monkeypatch)
+    codex = _codex_manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(
+        codex.workspace, codex.executable, codex.executable
+    )
     claude = object()
-    codex = object()
+    codex_adapter = object()
     manager.claude = claude
-    manager.codex = codex
-    assert manager._adapter("luna") is codex
-    assert manager._adapter("terra") is codex
-    assert manager._adapter("sol") is codex
+    manager.codex = codex_adapter
+    assert manager._adapter("luna") is codex_adapter
+    assert manager._adapter("terra") is codex_adapter
+    assert manager._adapter("sol") is codex_adapter
     assert manager._adapter(None) is claude
     assert manager._adapter("claude") is claude
     assert manager._adapter("unknown") is claude
