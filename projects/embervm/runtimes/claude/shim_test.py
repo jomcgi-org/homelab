@@ -124,6 +124,12 @@ if args_path:
 # when the dir does not exist.
 assert os.environ.get("CODEX_HOME", "") == os.path.join(os.getcwd(), ".codex")
 assert os.path.isdir(os.environ["CODEX_HOME"])
+assert os.environ.get("OPENAI_API_KEY", "")
+config_path = os.path.join(os.environ["CODEX_HOME"], "config.toml")
+assert os.path.isfile(config_path)
+config = open(config_path).read()
+assert 'model_provider = "ember-openai"' in config
+assert 'base_url = "http://api.openai.com/v1"' in config
 assert "--skip-git-repo-check" in sys.argv
 assert "--model" in sys.argv
 assert "--config" in sys.argv

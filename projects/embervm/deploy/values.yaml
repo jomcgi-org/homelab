@@ -258,8 +258,8 @@ warmthS3Gc:
 # claude runtime is the only guest that dials it; every other guest ignores the
 # listener, so this is a lane opening rather than a posture change for the fleet.
 #
-# Phase 6a only: plain allowlist-forward with the split-horizon guardrail. No
-# `secrets` catalog, so no CA is minted and the sidecar never terminates TLS. The
+# Phase 6b: allowlist-forward with the split-horizon guardrail and a
+# credential catalog. No CA is minted and the sidecar never terminates TLS. The
 # public internet is reachable (external: allow) and the cluster is not
 # (internal.default: deny), which is what stops an agent in a guest from reaching
 # in-cluster services.
@@ -300,6 +300,19 @@ egress:
       secretRef:
         name: embervm-embervm-egress
         key: CLAUDE_AUTH_TOKEN
+    # Note: credential field absent (deferred); fails closed until 1Password
+    # operator fills vaults/k8s-homelab/items/litellm-claude-auth. Co-location
+    # caveat: this item is also read by monolith gardener; adding a field is
+    # values-only; separate item would require onepassworditem-egress.yaml
+    # loop (deferred).
+    - header: "Authorization"
+      valuePrefix: "Bearer "
+      env: "EMBER_OPENAI_API_KEY"
+      egressTo:
+        - "api.openai.com"
+      secretRef:
+        name: "embervm-embervm-egress"
+        key: "OPENAI_API_KEY"
   # Shared with the monolith gardener, which reads the same item. Read-only sync,
   # so two consumers is fine; the field label CLAUDE_AUTH_TOKEN becomes the key.
   onepassword:
