@@ -99,7 +99,7 @@ knowledge they are `external`:
   bpftrace).
 - Kubernetes at scale (multi-cluster, control-plane internals, operators in Go,
   CRDs, admission webhooks).
-- Service mesh (Linkerd primarily, Envoy, Gateway API, Cloudflare ZeroTrust).
+- Service mesh (Cilium primarily, Envoy, Gateway API, Cloudflare ZeroTrust).
 - Observability and SLO (OTel internals, SigNoz, Honeycomb, Prometheus, RCA,
   STAMP/STPA).
 - FinOps and cost attribution (eBPF cost meters, AWS CUR, Orb, Iceberg/Snowflake

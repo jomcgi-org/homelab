@@ -38,8 +38,8 @@ description matching. Open only when:
 | Runbook | When |
 |---------|------|
 | [improve-ambient/runbook.md](improve-ambient/runbook.md) | `/improve-ambient` |
-| [improve-artifacts/runbook.md](improve-artifacts/runbook.md) | `/improve-artifacts` |
-| [improve-recipes/runbook.md](improve-recipes/runbook.md) | `/improve-recipes` |
+| [improve-artifacts/runbook.md](improve-artifacts/runbook.md) | Retired (goosecracker decommissioned 2026-07-28) |
+| [improve-recipes/runbook.md](improve-recipes/runbook.md) | Retired (goosecracker decommissioned 2026-07-28) |
 | [improve-safeguards/runbook.md](improve-safeguards/runbook.md) | `/improve-safeguards` |
 
 ### Repo / agents

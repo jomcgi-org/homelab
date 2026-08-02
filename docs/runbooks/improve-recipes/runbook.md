@@ -9,6 +9,10 @@ summary: Explicit improve loop for recipes
 
 # improve-recipes
 
+> **Retired.** goosecracker, the Discord agent whose sessions feed this loop,
+> was decommissioned on 2026-07-28 (ADR 024 records the rationale). There are
+> no new sessions to analyze; this runbook is retained for reference only.
+
 On-demand feedback loop for goosecracker recipes. Gathers session outcomes from
 Postgres and S3, classifies the worst ones against a fixed taxonomy, and drafts
 a PR editing the responsible lever with evidence tied to specific sessions.
@@ -64,8 +68,8 @@ Optional argument: a lookback window, or one session_id for a targeted
 "that just went badly" analysis.
 
 Find the monolith pod. There is no pod named "backend": the API lives in the
-`backend` CONTAINER of the `monolith-*` pod (alongside linkerd-proxy and
-frontend). Verified live 2026-07-02; correct here if it drifts:
+`backend` CONTAINER of the `monolith-*` pod (alongside frontend; the mesh is
+Cilium now, so there is no linkerd-proxy sidecar):
 
 ```bash
 kubectl get pods -n monolith -o name | grep '^pod/monolith-' | grep -v pg | grep -v atlas | grep -v searxng | head -1

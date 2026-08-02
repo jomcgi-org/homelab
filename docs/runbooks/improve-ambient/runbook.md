@@ -220,8 +220,8 @@ Optional argument: a lookback window, or one `episode_id` for a targeted "that
 just went badly" analysis.
 
 Find the monolith pod. There is no pod named "backend": the API lives in the
-`backend` CONTAINER of the `monolith-*` pod (alongside linkerd-proxy and
-frontend):
+`backend` CONTAINER of the `monolith-*` pod (alongside frontend; the mesh is
+Cilium now, so there is no linkerd-proxy sidecar):
 
 ```bash
 kubectl get pods -n monolith -o name | grep '^pod/monolith-' | grep -v pg | grep -v atlas | grep -v searxng | head -1
