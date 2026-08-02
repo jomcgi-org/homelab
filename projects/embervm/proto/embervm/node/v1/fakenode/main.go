@@ -243,6 +243,10 @@ func (*fakeServer) ArchiveVolume(_ context.Context, _ *nodev1.ArchiveVolumeReque
 	return &nodev1.ArchiveVolumeResponse{}, nil
 }
 
+func (*fakeServer) RetireVolume(_ context.Context, _ *nodev1.RetireVolumeRequest) (*nodev1.RetireVolumeResponse, error) {
+	return &nodev1.RetireVolumeResponse{}, nil
+}
+
 // CreateGroupNetwork derives the bridge_name and gateway_ip from the request so
 // the client can prove the fields crossed the wire, and scripts the CIDR-overlap
 // refusal off the cidr content ("overlap" -> FAILED_PRECONDITION), which is how

@@ -36,10 +36,11 @@ import (
 // CP-issued blessed_generation (the unblessed case a fresh control plane
 // quarantines on adoption).
 const (
-	volFile     = "vol.img"
-	genFile     = "gen"
-	blessedFile = "genblessed"
-	leaseFile   = ".blessing-lease"
+	volFile              = "vol.img"
+	genFile              = "gen"
+	blessedFile          = "genblessed"
+	leaseFile            = ".blessing-lease"
+	retirementIntentFile = ".retirement-intent"
 )
 
 // BlessingLease is the durable, exclusive generation range a brick may use
@@ -516,6 +517,40 @@ func (m *Manager) SessionVolumePath(workload, lineageID string) string {
 	return filepath.Join(m.root, "session", workload, lineageID, "workspace.img")
 }
 
+// SessionLineageDir returns the durable directory for one session lineage.
+func (m *Manager) SessionLineageDir(workload, lineageID string) string {
+	return filepath.Dir(m.SessionVolumePath(workload, lineageID))
+}
+
+// WriteRetirementIntent atomically records a node-owned session retirement.
+// The marker is deliberately tiny and lives beside the workspace so a crash
+// between export and deletion is resumable without CP state.
+func (m *Manager) WriteRetirementIntent(workload, lineageID string) error {
+	if workload == "" || lineageID == "" {
+		return fmt.Errorf("volume: workload and lineage required")
+	}
+	dir := m.SessionLineageDir(workload, lineageID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, retirementIntentFile), []byte("retire\n"), 0o600)
+}
+
+// HasRetirementIntent reports whether a lineage is pending node-owned retirement.
+func (m *Manager) HasRetirementIntent(workload, lineageID string) bool {
+	_, err := os.Stat(filepath.Join(m.SessionLineageDir(workload, lineageID), retirementIntentFile))
+	return err == nil
+}
+
+// ClearRetirementIntent removes a completed retirement marker.
+func (m *Manager) ClearRetirementIntent(workload, lineageID string) error {
+	err := os.Remove(filepath.Join(m.SessionLineageDir(workload, lineageID), retirementIntentFile))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 // CreateSession provisions a sparse per-lineage workspace image idempotently.
 // Existing images are never resized. A changed workspace size applies only to
 // new lineages, and atomic publication ensures Prime never sees a partial image.
@@ -530,7 +565,7 @@ func (m *Manager) CreateSession(workload, lineageID string, sizeBytes uint64) er
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), "workspace.img.tmp-")
+	f, err := os.CreateTemp(filepath.Dir(path), "workspace-img-*.tmp")
 	if err != nil {
 		if os.IsExist(err) {
 			return nil

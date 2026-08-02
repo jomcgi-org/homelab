@@ -782,11 +782,9 @@ func (s *Server) DeleteVolume(_ context.Context, req *nodev1.DeleteVolumeRequest
 	return &nodev1.DeleteVolumeResponse{}, nil
 }
 
-// ArchiveVolume exports a single-writer session workspace inline so callers
-// receive the object-store durability acknowledgement before deleting or
-// draining it. Workspaces have no generation ledger, so Meta.generation stays
-// 0 and ErrStaleGeneration cannot fire; the lineage is single-writer by design,
-// making last-writer-wins sound.
+// ArchiveVolume schedules a session workspace export and fast-ACKs. Workspaces
+// have no generation ledger, so the lineage's single-writer invariant makes the
+// store's checksum comparison the durability gate in the worker.
 func (s *Server) ArchiveVolume(ctx context.Context, req *nodev1.ArchiveVolumeRequest) (*nodev1.ArchiveVolumeResponse, error) {
 	if req.GetWorkload() == "" || req.GetLineageId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: workload and lineage_id required")
@@ -805,9 +803,10 @@ func (s *Server) ArchiveVolume(ctx context.Context, req *nodev1.ArchiveVolumeReq
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: session workspace unavailable: %v", err)
 	}
 	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: req.GetWorkload(), Ref: req.GetLineageId()}
-	resp, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref, Trace: req.GetTrace()})
-	if err != nil {
-		return nil, err
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	if s.alreadyDurable(ctx, ref, key) {
+		return &nodev1.ArchiveVolumeResponse{Skipped: true}, nil
 	}
-	return &nodev1.ArchiveVolumeResponse{Skipped: resp.GetSkipped()}, nil
+	s.enqueueExport(ref)
+	return &nodev1.ArchiveVolumeResponse{}, nil
 }

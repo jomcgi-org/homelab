@@ -404,9 +404,38 @@ func (s *Server) StartStoreLoops(ctx context.Context) {
 	s.startExportQueue(ctx)
 	s.startStoreProbe(ctx)
 	s.enqueueReconcileExports(ctx)
+	s.enqueueRetirementSweep(ctx)
 	// Local rootfs reclaim (#4088). Not a store loop strictly speaking, but it is
 	// the same "reclaim what nothing references" family and shares this lifecycle.
 	s.startRootfsGC(ctx)
+}
+
+// RetireVolume records a crash-safe retirement intent and schedules the
+// workspace export. The response is intentionally independent of transfer
+// duration: the marker is the durable acknowledgement of ownership, while
+// deletion is performed only after the export worker observes durable success.
+func (s *Server) RetireVolume(_ context.Context, req *nodev1.RetireVolumeRequest) (*nodev1.RetireVolumeResponse, error) {
+	if req.GetWorkload() == "" || req.GetLineageId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "noded: workload and lineage_id required")
+	}
+	if s.store == nil {
+		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; retirement unavailable")
+	}
+	if s.volumes == nil {
+		return nil, status.Error(codes.FailedPrecondition, "noded: volume manager not configured")
+	}
+	path := s.volumes.SessionVolumePath(req.GetWorkload(), req.GetLineageId())
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, status.Error(codes.NotFound, "noded: session workspace not found")
+		}
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: session workspace unavailable: %v", err)
+	}
+	if err := s.volumes.WriteRetirementIntent(req.GetWorkload(), req.GetLineageId()); err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: write retirement intent: %v", err)
+	}
+	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: req.GetWorkload(), Ref: req.GetLineageId()})
+	return &nodev1.RetireVolumeResponse{}, nil
 }
 
 // ---- Continuity verbs (R6) -------------------------------------------------
@@ -521,8 +550,9 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 // the correct per-kind dir, verifying every file's checksum, then re-registers
 // it via the same reconcile helpers a rescan uses so a later wake sees it.
 // Idempotent: an artifact already present locally with a matching checksum is a
-// skipped no-op. FAILED_PRECONDITION when the store is disabled, or the store
-// copy is absent/incomplete/mismatched.
+// skipped no-op. Store-not-configured/vendor failures are FAILED_PRECONDITION;
+// a missing SESSION_WORKSPACE copy is NotFound, while download corruption or
+// transport failures are Unavailable/Internal-class errors.
 //
 // BASE restores are ASYNC (base-durability PR-2): a base is a multi-GB S3
 // download, and holding this RPC open for the minutes it takes lets the
@@ -583,6 +613,9 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: store presence probe failed: %v", prefix, perr)
 	}
 	if !present {
+		if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+			return nil, status.Errorf(codes.NotFound, "noded: restore artifact %q: not present in store", prefix)
+		}
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: not present in store", prefix)
 	}
 
@@ -597,7 +630,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// restore-on-miss semantics are unchanged.
 	moved, generation, err := s.store.Restore(ctx, prefix, localDir)
 	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: %v", prefix, err)
+		return nil, status.Errorf(codes.Unavailable, "noded: restore artifact %q download failed: %v", prefix, err)
 	}
 	s.reregisterRestored(ref)
 	s.exported.mark(prefix, generation)
@@ -1122,6 +1155,7 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 		s.logger.Info("noded: export skipped, artifact already durable in store",
 			"artifact", job.key, "kind", job.ref.GetKind().String())
 		s.signalChange()
+		s.completeRetirement(job.ref)
 		return
 	}
 	_, skipped, err := s.store.Export(ctx, job.key, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
@@ -1144,6 +1178,54 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 		s.logger.Info("noded: exported artifact off node", "artifact", job.key, "generation", generation)
 	}
 	s.signalChange()
+	s.completeRetirement(job.ref)
+}
+
+func (s *Server) completeRetirement(ref *nodev1.ArtifactRef) {
+	if ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE || s.volumes == nil || !s.volumes.HasRetirementIntent(ref.GetWorkload(), ref.GetRef()) {
+		return
+	}
+	if err := s.volumes.DeleteSession(ref.GetWorkload(), ref.GetRef()); err != nil {
+		s.logger.Warn("noded: retired workspace delete failed; intent retained", "workload", ref.GetWorkload(), "lineage_id", ref.GetRef(), "err", err)
+		return
+	}
+	if err := s.volumes.ClearRetirementIntent(ref.GetWorkload(), ref.GetRef()); err != nil {
+		s.logger.Warn("noded: clear retirement intent failed", "workload", ref.GetWorkload(), "lineage_id", ref.GetRef(), "err", err)
+	}
+}
+
+// enqueueRetirementSweep resumes every durable intent after a crash and keeps
+// failed exports retryable on the same cadence as the ordinary export sweep.
+func (s *Server) enqueueRetirementSweep(ctx context.Context) {
+	if s.store == nil || s.volumes == nil {
+		return
+	}
+	sweep := func() {
+		root := filepath.Join(s.cfg.VolumeRoot, "session")
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || d.Name() != ".retirement-intent" {
+				return nil
+			}
+			lineageDir := filepath.Dir(path)
+			lineageID := filepath.Base(lineageDir)
+			workload := filepath.Base(filepath.Dir(lineageDir))
+			s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID})
+			return nil
+		})
+	}
+	go func() {
+		sweep()
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sweep()
+			}
+		}
+	}()
 }
 
 // enqueueReconcileExports sweeps the local banked inventory on startup and

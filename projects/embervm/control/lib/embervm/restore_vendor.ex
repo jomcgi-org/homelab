@@ -17,10 +17,10 @@ defmodule Embervm.RestoreVendor do
 
   ## which kinds are vendor-bound
 
-  Every artifact kind EXCEPT `VOLUME` is vendor-bound (volume data is
-  vendor-portable, standing decision 1; noded's `artifactVendorSegment` mirrors
-  this). A VOLUME restore leaves `vendor` empty; every other kind gets the anchor
-  node's reported vendor.
+  Every artifact kind EXCEPT `VOLUME` and `SESSION_WORKSPACE` is vendor-bound
+  (volume and workspace data are vendor-portable; noded's
+  `artifactVendorSegment` mirrors this). These two restores leave `vendor`
+  empty; every other kind gets the anchor node's reported vendor.
 
   ## empty vendor is safe, not fatal
 
@@ -52,7 +52,7 @@ defmodule Embervm.RestoreVendor do
     end
   end
 
-  @doc "Whether an artifact kind is vendor-bound (every kind except VOLUME)."
+  @doc "Whether an artifact kind is vendor-bound (except VOLUME and SESSION_WORKSPACE)."
   @spec vendor_bound?(atom()) :: boolean()
   def vendor_bound?(:ARTIFACT_KIND_VOLUME), do: false
   def vendor_bound?(:ARTIFACT_KIND_SESSION_WORKSPACE), do: false

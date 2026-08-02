@@ -37,14 +37,14 @@
         # R3 serving: long-lived HTTP-over-tap VMs, out of scope.
         ~w(StartServing StopServing)a ++
         # R4 stateful: singleton volume-owning VMs + generation pairing, out of scope.
-        ~w(StartStateful StopStateful ResolveStateful DeleteVolume ArchiveVolume)a ++
+        ~w(StartStateful StopStateful ResolveStateful DeleteVolume)a ++
         # R5 groups: composite multi-member workloads, out of scope.
         ~w(CreateGroupNetwork DeleteGroupNetwork StartGroupMember StopGroupMember)a ++
         # R6 continuity: off-node artifact durability, out of scope. ListArtifacts
         # is the remote (store) inventory read that remote base retention computes
         # its keep-set from; like its siblings it is durability plumbing, not VM
         # lifecycle or adoption.
-        ~w(ExportArtifact RestoreArtifact EvictArtifact ListArtifacts)a ++
+        ~w(ExportArtifact RestoreArtifact EvictArtifact ListArtifacts ArchiveVolume RetireVolume)a ++
         # Artifact-decoupling Phase 2: control-plane -> daemon workload-registry
         # push verbs (SyncRegistry converges the pushed set; Register/Deregister
         # are the incremental forms). They deliver node-side image identity, not

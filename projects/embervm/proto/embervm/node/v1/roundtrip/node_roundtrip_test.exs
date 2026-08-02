@@ -35,6 +35,7 @@ defmodule Embervm.NodeRoundtripTest do
     PrimeRequest,
     RelightRequest,
     RelightSource,
+    RetireVolumeRequest,
     ResolveStatefulRequest,
     ResourceSpec,
     RestoreArtifactRequest,
@@ -143,6 +144,12 @@ defmodule Embervm.NodeRoundtripTest do
 
     assert {:ok, %Embervm.Node.V1.ArchiveVolumeResponse{skipped: false}} =
              NodeService.Stub.archive_volume(ch, %ArchiveVolumeRequest{
+               workload: "claude-runtime",
+               lineage_id: "s-abc"
+             })
+
+    assert {:ok, %Embervm.Node.V1.RetireVolumeResponse{}} =
+             NodeService.Stub.retire_volume(ch, %RetireVolumeRequest{
                workload: "claude-runtime",
                lineage_id: "s-abc"
              })

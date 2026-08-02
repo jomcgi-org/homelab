@@ -324,9 +324,14 @@ service NodeService {
   // Stateful bundles reuse EvictSnapshot (R2) unchanged; bundle refs are opaque.
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
 
-  // ArchiveVolume synchronously exports one session workspace to the object
-  // store. It is the durability acknowledgement used before a close/destroy
-  // delete and during a planned drain.
+  // RetireVolume durably records that a session workspace may be exported and
+  // removed. The RPC only writes the intent and enqueues the work; export,
+  // durable acknowledgement, and local deletion happen asynchronously. An
+  // intent survives daemon crashes and is retried during startup reconcile.
+  rpc RetireVolume(RetireVolumeRequest) returns (RetireVolumeResponse);
+
+  // ArchiveVolume enqueues one session workspace export and fast-ACKs. It is
+  // used during a planned drain; retirement uses RetireVolume instead.
   rpc ArchiveVolume(ArchiveVolumeRequest) returns (ArchiveVolumeResponse);
 
   // -- Group verbs (R5) -------------------------------------------------------
@@ -1026,6 +1031,14 @@ message ArchiveVolumeRequest {
 message ArchiveVolumeResponse {
   bool skipped = 1;
 }
+
+message RetireVolumeRequest {
+  Trace trace = 1;
+  string workload = 2;
+  string lineage_id = 3;
+}
+
+message RetireVolumeResponse {}
 
 // ---- Group verbs (R5) ------------------------------------------------------
 

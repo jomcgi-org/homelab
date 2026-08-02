@@ -1436,6 +1436,16 @@ func TestRestoreArtifactAbsentFails(t *testing.T) {
 	}
 }
 
+func TestRestoreSessionWorkspaceAbsentIsNotFound(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "w", Ref: "missing"},
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("workspace restore code = %v, want NotFound", status.Code(err))
+	}
+}
+
 // TestRestoreArtifactUnstampedSkuGrandfathered proves the PR-E grandfather
 // rule at the RestoreArtifact seam: an artifact stamped with NO cpu_sku at all
 // (exported before PR-E landed) restores successfully regardless of the
@@ -1719,7 +1729,7 @@ func TestSessionWorkspaceArtifactLocalDir(t *testing.T) {
 }
 
 func TestArchiveVolume(t *testing.T) {
-	t.Run("happy path and skipped", func(t *testing.T) {
+	t.Run("fast ACK and skipped when already durable", func(t *testing.T) {
 		fs := newFakeStore()
 		s := newStoreTestServer(t, fs)
 		if err := s.volumes.CreateSession("sbx", "lineage-1", 1<<20); err != nil {
@@ -1729,6 +1739,9 @@ func TestArchiveVolume(t *testing.T) {
 		if err != nil || resp.GetSkipped() {
 			t.Fatalf("ArchiveVolume first call = %#v, %v", resp, err)
 		}
+		s.startExportQueue(context.Background())
+		s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-1"})
+		waitForExport(t, fs, "session-workspace/sbx/lineage-1")
 		resp, err = s.ArchiveVolume(context.Background(), &nodev1.ArchiveVolumeRequest{Workload: "sbx", LineageId: "lineage-1"})
 		if err != nil || !resp.GetSkipped() {
 			t.Fatalf("ArchiveVolume repeat = %#v, %v", resp, err)
@@ -1751,6 +1764,30 @@ func TestArchiveVolume(t *testing.T) {
 			t.Fatalf("ArchiveVolume nil store = %v, want FailedPrecondition", err)
 		}
 	})
+}
+
+func TestRetireVolumeFastACKDeletesOnlyAfterDurableExport(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	if err := s.volumes.CreateSession("sbx", "lineage-retire", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	s.startExportQueue(context.Background())
+	resp, err := s.RetireVolume(context.Background(), &nodev1.RetireVolumeRequest{Workload: "sbx", LineageId: "lineage-retire"})
+	if err != nil || resp == nil {
+		t.Fatalf("RetireVolume = %#v, %v", resp, err)
+	}
+	if !s.volumes.HasRetirementIntent("sbx", "lineage-retire") {
+		t.Fatal("retirement intent was not persisted")
+	}
+	waitForExport(t, fs, "session-workspace/sbx/lineage-retire")
+	deadline := time.Now().Add(2 * time.Second)
+	for s.volumes.HasRetirementIntent("sbx", "lineage-retire") && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s.volumes.HasRetirementIntent("sbx", "lineage-retire") {
+		t.Fatal("retirement intent remained after durable export")
+	}
 }
 
 // TestArtifactPrefixRefusesEmptyVendorForVendorBoundKind proves a vendor-bound
