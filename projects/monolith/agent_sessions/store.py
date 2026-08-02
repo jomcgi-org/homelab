@@ -329,12 +329,13 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
         row = get_pending_message(session, session_id, turn_seq)
         if row is None or get_turn(session, session_id, turn_seq) is not None:
             return
+        error_summary = "Error: " + error_msg[:100]
         create_turn(
             session,
             session_id,
             turn_seq,
             row.message_text,
-            "Error: " + error_msg[:100],
+            error_summary,
             f"Error executing turn: {error_msg}",
             terminal_reason="error",
             stop_reason=None,
@@ -343,6 +344,7 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
             usage={},
             cost_usd=0.0,
         )
+        update_session_status(session, session_id, "warn", error_summary)
         # Delete the pending row to stop infinite retries
         session.delete(row)
         session.commit()

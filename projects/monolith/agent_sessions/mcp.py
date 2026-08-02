@@ -62,45 +62,11 @@ def _persist_pending_message(session_id: int, message_text: str) -> int:
         return row.seq
 
 
-def _persist_start(
-    local_session_id: str,
-    workspace: str,
-    branch: str,
-    prompt: str,
-    turn: Turn,
-    ember: EmberSession,
+def _persist_session(
+    local_session_id: str, workspace: str, branch: str
 ) -> AgentSession:
     with Session(get_engine()) as db_session:
-        row = store.create_session(db_session, local_session_id, workspace, branch)
-        assert row.id is not None
-        summary = voice.extract_voice_summary(turn.result)
-        usage = {**turn.usage, "activities": turn.activities}
-        status = _turn_status(turn)
-        store.create_turn(
-            db_session,
-            row.id,
-            1,
-            prompt,
-            summary,
-            turn.result,
-            turn.terminal_reason,
-            turn.stop_reason,
-            turn.permission_denials,
-            None,  # commit_sha now from guest, not pod
-            usage,
-            turn.total_cost_usd,
-            turn.session_id,  # Store CLI session_id for resumption
-        )
-        # Store the CLI's session_id in the agent session for reuse
-        row.cli_session_id = turn.session_id
-        store.set_ember_session(
-            db_session,
-            row.id,
-            ember.session_id,
-            ember.session_token,
-            ember.expires_at,
-        )
-        return store.update_session_status(db_session, row.id, status, summary)
+        return store.create_session(db_session, local_session_id, workspace, branch)
 
 
 def _turn_status(turn: Turn) -> str:
@@ -424,16 +390,13 @@ def _activity_values(turns: list[AgentTurn]) -> tuple[list[str], list[str]]:
 
 @mcp.tool
 async def monolith_agent_session_start(prompt: str) -> dict:
-    """Start a voice-drivable Claude Code session and complete its first turn."""
+    """Start a voice-drivable Claude Code session and queue its first turn."""
     local_session_id = str(uuid4())
-    turn, ember = await _transport.deliver(None, None, prompt)
     workspace = "<guest>"  # Workspace is in the guest, not the pod
-    row = await asyncio.to_thread(
-        _persist_start, local_session_id, workspace, "main", prompt, turn, ember
-    )
-    summary = voice.extract_voice_summary(turn.result)
-    await _notify_terminal(turn, summary, row.status)
-    return {"session_id": row.id, "voice": summary}
+    row = await asyncio.to_thread(_persist_session, local_session_id, workspace, "main")
+    turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt)
+    _schedule_next_message(row.id)
+    return {"accepted": True, "session_id": row.id, "turn": turn}
 
 
 @mcp.tool
