@@ -1193,8 +1193,15 @@ claudeRuntimeWorkload:
     # A session rides its birth base until this expires, then the next invoke
     # 410s onto the current base.
     maxLifetimeSeconds: 21600
-    bankedTtlSeconds: 21600
-    maxSessions: 4
+    # One hour, deliberately far below maxLifetime: a failed or abandoned turn
+    # leaves a banked zombie counting against maxSessions, and at the old 6h
+    # TTL a handful of validation retries saturated the cap (live :session_cap
+    # denials, 2026-08-02). An hour keeps resume convenient without letting
+    # dead sessions squat 4 GiB snapshots and cap slots all day.
+    bankedTtlSeconds: 3600
+    # Live + banked. 8 x ~4 GiB snapshots = 32 GiB worst case on the snapshot
+    # dir, but the 1h banked TTL keeps the steady state far below it.
+    maxSessions: 8
     invokeQueueCap: 4
   invocation:
     # Total duration for a session invoke. CRD maximum is 900s (workload-crd.yaml:868).
