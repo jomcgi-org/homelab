@@ -4,6 +4,7 @@
 import http.server
 import collections
 import json
+import math
 import os
 import queue
 import re
@@ -34,7 +35,27 @@ MAX_TOOL_INPUT_BYTES = 4096
 # destination. Generous for real headers, bounded so a client that never sends
 # the terminating blank line cannot grow this buffer without limit.
 MAX_PROXY_HEAD_BYTES = 64 << 10
-INIT_READ_TIMEOUT = 15.0
+INIT_READ_TIMEOUT_ENV = "EMBER_INIT_READ_TIMEOUT"
+DEFAULT_INIT_READ_TIMEOUT = 90.0
+# Initialization waits inside a turn, so this must stay below the CP per-invoke
+# budget (spec.invocation.timeoutSeconds, currently 900 for claude-runtime),
+# below TURN_READ_TIMEOUT's 600 second role, and generous enough for the cold
+# first init of the 262MB Bun binary in a microVM. BuildBase also uses this
+# through /shim/ready and has its own generous budget.
+
+
+def _read_init_timeout():
+    """Return the positive finite init timeout from the environment."""
+    try:
+        value = float(os.environ.get(INIT_READ_TIMEOUT_ENV, DEFAULT_INIT_READ_TIMEOUT))
+    except (TypeError, ValueError):
+        return DEFAULT_INIT_READ_TIMEOUT
+    if not math.isfinite(value) or value <= 0:
+        return DEFAULT_INIT_READ_TIMEOUT
+    return value
+
+
+INIT_READ_TIMEOUT = _read_init_timeout()
 # Per-event inactivity timeout for the read loop in turn(). Resets on every
 # stream event, so a turn emitting steady output can run far longer than this.
 # Sized to span a single silent tool call: the CLI emits nothing while a Bash
@@ -391,6 +412,7 @@ class ClaudeProcess:
         self.current_result = None
         self._stdout_queue = None
         self.unparseable_lines = collections.deque(maxlen=5)
+        self.stderr_lines = collections.deque(maxlen=5)
         self.parsed_events = collections.deque(maxlen=5)
 
     def ready(self):
@@ -469,7 +491,15 @@ class ClaudeProcess:
             self.process = process
             self.init_event = None
             self._stdout_queue = queue.Queue()
-            self.unparseable_lines.clear()
+            # REPLACE the rings rather than clearing them: a stale pump thread from
+            # a previous process holds the old deque and would keep appending to a
+            # shared one, reporting a dead process's output as this one's last words.
+            # stderr gets its OWN ring because SIGINT on the timeout path always
+            # emits a multi-line traceback, which in a shared maxlen deque evicts the
+            # stdout dying words exactly when they matter most.
+            self.unparseable_lines = collections.deque(maxlen=5)
+            self.stderr_lines = collections.deque(maxlen=5)
+            self.parsed_events = collections.deque(maxlen=5)
             _managed_child_pids.add(process.pid)
         threading.Thread(
             target=self._pump_stdout,
@@ -478,18 +508,24 @@ class ClaudeProcess:
         ).start()
         threading.Thread(
             target=self._pump_stderr,
-            args=(process,),
+            args=(process, self.stderr_lines),
             daemon=True,
         ).start()
         # Note: unparseable-line stderr writes are synchronous on the read thread
-        # and race INIT_READ_TIMEOUT. This is fine for tens-of-lines Bun panics
+        # and race the init timeout. This is fine for tens-of-lines Bun panics
         # but could turn thousands-of-lines dumps into a generic init timeout.
+        init_read_timeout = _read_init_timeout()
         while True:
             try:
-                raw = self._read_output(process, INIT_READ_TIMEOUT)
+                raw = self._read_output(process, init_read_timeout)
             except TimeoutError:
-                self._timeout_interrupt(process, INIT_READ_TIMEOUT, "initialization")
-                raise StartupError("timed out waiting for Claude initialization")
+                self._timeout_interrupt(process, init_read_timeout, "initialization")
+                raise StartupError(
+                    self._assemble_error_with_rings(
+                        "timed out waiting for Claude initialization after %s seconds"
+                        % init_read_timeout
+                    )
+                )
             if raw is None:
                 break
             event = self._parse_line(raw)
@@ -521,13 +557,7 @@ class ClaudeProcess:
         code = process.poll()
         self._close_process(kill=False)
         error_msg = "claude exited before init, exit code %s" % code
-        ring_content = _truncate_ring_for_error(self.unparseable_lines)
-        if ring_content:
-            error_msg = error_msg + "\nCLI output:\n" + ring_content
-        events_content = _truncate_ring_for_error(self.parsed_events)
-        if events_content:
-            error_msg = error_msg + "\nParsed events:\n" + events_content
-        raise RuntimeError(error_msg)
+        raise RuntimeError(self._assemble_error_with_rings(error_msg))
 
     @staticmethod
     def _pump_stdout(process, output_queue):
@@ -537,8 +567,12 @@ class ClaudeProcess:
         finally:
             output_queue.put(None)
 
-    def _pump_stderr(self, process):
-        """Read stderr lines and add to unparseable ring with prefix."""
+    def _pump_stderr(self, process, ring):
+        """Read stderr lines onto the console and into the given ring.
+
+        The ring is passed in rather than read off self, so a pump left running
+        for a previous process cannot append into the current process's ring.
+        """
         try:
             # readline, not file iteration: iteration read-ahead buffers a pipe,
             # delaying lines until the buffer fills or EOF; readline yields each
@@ -552,7 +586,7 @@ class ClaudeProcess:
                     line_str = line_str[:2000]
                 sys.stderr.write("ember-claude-shim: cli-stderr: %s\n" % line_str)
                 sys.stderr.flush()
-                self.unparseable_lines.append("stderr: " + line_str)
+                ring.append(line_str)
         except Exception:
             pass
 
@@ -578,6 +612,20 @@ class ClaudeProcess:
             sys.stderr.flush()
             self.unparseable_lines.append(line_str)
             return None
+
+    def _assemble_error_with_rings(self, base_msg):
+        """Append truncated CLI output, stderr, and parsed events to an error."""
+        sections = [
+            ("CLI output:", self.unparseable_lines),
+            ("CLI stderr:", self.stderr_lines),
+            ("Parsed events:", self.parsed_events),
+        ]
+        error_msg = base_msg
+        for label, ring in sections:
+            content = _truncate_ring_for_error(ring)
+            if content:
+                error_msg += "\n%s\n%s" % (label, content)
+        return error_msg
 
     def _close_process(self, kill=False):
         with self.process_lock:
@@ -631,24 +679,19 @@ class ClaudeProcess:
             events = []
             while True:
                 try:
-                    raw = self._read_output(process, TURN_READ_TIMEOUT)
+                    turn_read_timeout = TURN_READ_TIMEOUT
+                    raw = self._read_output(process, turn_read_timeout)
                 except TimeoutError:
-                    self._timeout_interrupt(process, TURN_READ_TIMEOUT, "turn output")
+                    self._timeout_interrupt(process, turn_read_timeout, "turn output")
                     raise RuntimeError(
                         "timed out waiting for Claude output after %s seconds"
-                        % TURN_READ_TIMEOUT
+                        % turn_read_timeout
                     )
                 if raw is None:
                     code = process.poll()
                     self._close_process(kill=False)
                     error_msg = "claude crashed during turn, exit code %s" % code
-                    ring_content = _truncate_ring_for_error(self.unparseable_lines)
-                    if ring_content:
-                        error_msg = error_msg + "\nCLI output:\n" + ring_content
-                    events_content = _truncate_ring_for_error(self.parsed_events)
-                    if events_content:
-                        error_msg = error_msg + "\nParsed events:\n" + events_content
-                    raise RuntimeError(error_msg)
+                    raise RuntimeError(self._assemble_error_with_rings(error_msg))
                 event = self._parse_line(raw)
                 if event is None:
                     continue
