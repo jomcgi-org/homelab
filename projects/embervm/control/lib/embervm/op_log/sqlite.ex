@@ -851,7 +851,7 @@ defmodule Embervm.OpLog.SQLite do
       (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason)
-    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -866,6 +866,7 @@ defmodule Embervm.OpLog.SQLite do
              # durable projected state defaults to "running" unless scripted.
              Map.get(payload, :state, "running"),
              Map.get(payload, :node_id),
+             Map.get(payload, :volume_node_id),
              Map.get(payload, :base_snapshot_ref),
              Map.get(payload, :base_digest),
              Map.get(payload, :token_sha256),

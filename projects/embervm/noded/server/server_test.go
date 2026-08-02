@@ -2175,6 +2175,16 @@ func TestStaleRegistryRefusesColdPrimeButServesWarm(t *testing.T) {
 	}
 }
 
+func TestPrimeReadyTimeoutUsesBootBudgetForSessionVolume(t *testing.T) {
+	cfg := config.Config{BootReadyTimeout: 60 * time.Second, RestoreReadyTimeout: 2 * time.Second}
+	if got := primeReadyTimeout(cfg, "/var/lib/embervm/session.img"); got != cfg.BootReadyTimeout {
+		t.Fatalf("volume-backed Prime timeout = %v, want boot timeout %v", got, cfg.BootReadyTimeout)
+	}
+	if got := primeReadyTimeout(cfg, ""); got != cfg.RestoreReadyTimeout {
+		t.Fatalf("warm Prime timeout = %v, want restore timeout %v", got, cfg.RestoreReadyTimeout)
+	}
+}
+
 // TestBaseKeyForDiffersAcrossVendor proves the same (workload, image_ref,
 // revision) keys a DIFFERENT base on each CPU vendor (R7, standing decision 1):
 // a Firecracker base built on Intel must never collide with (or be reported
