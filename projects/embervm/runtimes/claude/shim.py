@@ -29,6 +29,12 @@ TURN_PATH = "/shim/turn"
 INTERRUPT_PATH = "/shim/interrupt"
 CLOCK_PATH = "/shim/clock"
 DEFAULT_WORKSPACE = "/workspace"
+CODEX_MODELS = {
+    "luna": ("gpt-5.6-luna", "medium"),
+    "terra": ("gpt-5.6-terra", "high"),
+    "sol": ("gpt-5.6-sol", "high"),
+}
+DEFAULT_CODEX_MODEL = "luna"
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096
 # Cap on the proxy request head the egress forwarder reads before it knows the
@@ -749,6 +755,181 @@ class ClaudeProcess:
         return {"terminal_reason": reason, "killed": timed_out, "timeout": timed_out}
 
 
+class CodexProcess:
+    """Run one Codex JSONL process per turn while retaining its thread id."""
+
+    def __init__(self, workspace=None, executable="codex"):
+        self.workspace = workspace or os.environ.get(
+            "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
+        )
+        self.executable = executable
+        self.process = None
+        self.session_id = None
+        self.turn_lock = threading.Lock()
+        self.process_lock = threading.Lock()
+
+    def ready(self):
+        with self.process_lock:
+            return os.path.isdir(self.workspace)
+
+    def _child_env(self):
+        egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
+        proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
+        home = os.environ.get("HOME", "/root")
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "CODEX_HOME": os.path.join(home, ".codex"),
+                "HTTPS_PROXY": proxy_url,
+                "HTTP_PROXY": proxy_url,
+                "NO_PROXY": "127.0.0.1,localhost",
+            }
+        )
+        return child_env
+
+    def _spawn(self, message, session_id, model):
+        if not os.path.isdir(self.workspace):
+            raise StartupError("workspace does not exist: %s" % self.workspace)
+        model_name, effort = CODEX_MODELS.get(model, CODEX_MODELS[DEFAULT_CODEX_MODEL])
+        if session_id:
+            command = [self.executable, "exec", "resume", session_id, message]
+        else:
+            command = [self.executable, "exec"]
+        command.extend(["--json", "--model", model_name, "--config", "model_reasoning_effort=%s" % effort])
+        if not session_id:
+            command.extend(["--sandbox", "workspace-write"])
+        command.extend(["--skip-git-repo-check", "-C", self.workspace])
+        if not session_id:
+            command.append(message)
+        process = subprocess.Popen(
+            command,
+            cwd=self.workspace,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._child_env(),
+            **_cli_privilege_kwargs(),
+        )
+        output_queue = queue.Queue()
+        with self.process_lock:
+            self.process = process
+            _managed_child_pids.add(process.pid)
+        threading.Thread(
+            target=self._pump_codex_stdout, args=(process, output_queue), daemon=True
+        ).start()
+        threading.Thread(
+            target=ClaudeProcess._pump_stderr,
+            args=(self, process, collections.deque(maxlen=5)),
+            daemon=True,
+        ).start()
+        return process, output_queue
+
+    @staticmethod
+    def _pump_codex_stdout(process, output_queue):
+        try:
+            for raw in process.stdout:
+                output_queue.put(raw)
+        finally:
+            output_queue.put(None)
+
+    def turn(self, message, session_id=None, model=DEFAULT_CODEX_MODEL):
+        with self.turn_lock:
+            if self.session_id and session_id and session_id != self.session_id:
+                raise SessionConflictError(
+                    "session_id %r does not match active session %r"
+                    % (session_id, self.session_id)
+                )
+            process, output_queue = self._spawn(message, session_id or self.session_id, model)
+            result_text = ""
+            usage = {}
+            events = []
+            while True:
+                try:
+                    raw = output_queue.get(timeout=TURN_READ_TIMEOUT)
+                except queue.Empty as exc:
+                    raise RuntimeError(
+                        "timed out waiting for Codex output after %s seconds"
+                        % TURN_READ_TIMEOUT
+                    ) from exc
+                if raw is None:
+                    code = process.poll()
+                    raise RuntimeError("codex crashed during turn, exit code %s" % code)
+                try:
+                    event = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("codex emitted invalid JSON: %s" % exc) from exc
+                events.append(event)
+                if event.get("type") == "thread.started":
+                    thread_id = event.get("thread_id")
+                    if isinstance(thread_id, str) and thread_id:
+                        self.session_id = thread_id
+                elif event.get("type") == "item.completed":
+                    item = event.get("item")
+                    if isinstance(item, dict) and item.get("type") == "agent_message":
+                        result_text = item.get("text", "")
+                elif event.get("type") == "turn.completed":
+                    usage = event.get("usage", {})
+                    record = {
+                        "result": result_text,
+                        "terminal_reason": "completed",
+                        "session_id": self.session_id,
+                        "usage": usage,
+                        "voice": voice_summary(result_text),
+                        "activity": activity_from_events(events),
+                    }
+                    # The CLI exits shortly after turn.completed. Do not wait for
+                    # it here, because the HTTP turn must return at this event.
+                    threading.Thread(
+                        target=self._reap_process, args=(process,), daemon=True
+                    ).start()
+                    return record
+
+    @staticmethod
+    def _reap_process(process):
+        try:
+            process.wait()
+        finally:
+            _managed_child_pids.discard(process.pid)
+
+    def interrupt(self, timeout=INTERRUPT_TIMEOUT):
+        return {"terminal_reason": "user_interrupt", "killed": False, "timeout": False}
+
+    def _close_process(self, kill=False):
+        return None
+
+
+class ProcessManager:
+    """Route Claude-compatible turns to the selected CLI adapter."""
+
+    def __init__(self, workspace=None, claude_executable="claude", codex_executable="codex"):
+        self.claude = ClaudeProcess(workspace, claude_executable)
+        self.codex = CodexProcess(workspace, codex_executable)
+
+    def _adapter(self, model):
+        return self.codex if model in CODEX_MODELS else self.claude
+
+    def ready(self):
+        return self.claude.ready() and self.codex.ready()
+
+    def turn(self, message, session_id=None, model=None):
+        adapter = self._adapter(model)
+        if adapter is self.codex:
+            return adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
+        return adapter.turn(message, session_id)
+
+    def interrupt(self):
+        # An interrupt has no model in its request, so interrupt both adapters.
+        codex_result = self.codex.interrupt()
+        claude_result = self.claude.interrupt()
+        return claude_result if claude_result.get("killed") else codex_result
+
+    def _close_process(self, kill=False):
+        self.claude._close_process(kill=kill)
+        self.codex._close_process(kill=kill)
+
+
+Manager = ProcessManager
+
+
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     manager = None
 
@@ -803,7 +984,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send(400, {"error": "message must not be empty"})
             return
         try:
-            record = self.manager.turn(message, payload.get("session_id"))
+            record = self.manager.turn(
+                message, payload.get("session_id"), payload.get("model")
+            )
         except SessionConflictError as exc:
             self._send(409, {"error": str(exc)})
         except StartupError as exc:
@@ -864,7 +1047,7 @@ def build_server(manager):
 
 def main():
     install_child_reaper()
-    manager = ClaudeProcess()
+    manager = ProcessManager()
     egress_port = int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT)))
     egress = VsockEgressForwarder(egress_port)
     server = None

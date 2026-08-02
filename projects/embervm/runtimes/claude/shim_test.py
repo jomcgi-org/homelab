@@ -108,9 +108,111 @@ for line in sys.stdin:
 """
 
 
+FAKE_CODEX_CLI = r"""#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+args_path = os.environ.get("FAKE_CODEX_ARGS")
+if args_path:
+    with open(args_path, "a") as stream:
+        json.dump(sys.argv[1:], stream)
+        stream.write("\n")
+assert os.environ.get("CODEX_HOME", "").startswith(os.environ.get("HOME", ""))
+assert "--skip-git-repo-check" in sys.argv
+assert "--model" in sys.argv
+assert "--config" in sys.argv
+model = sys.argv[sys.argv.index("--model") + 1]
+effort = sys.argv[sys.argv.index("--config") + 1]
+assert model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
+assert effort in ("model_reasoning_effort=medium", "model_reasoning_effort=high")
+print(json.dumps({"type": "thread.started", "thread_id": "codex-thread"}), flush=True)
+print(json.dumps({"type": "item.completed", "item": {
+    "type": "agent_message",
+    "text": "Done <voice>Codex completed the work.</voice>"
+}}), flush=True)
+print(json.dumps({"type": "turn.completed", "usage": {
+    "input_tokens": 3, "output_tokens": 4
+}}), flush=True)
+if os.environ.get("FAKE_CODEX_SLEEP"):
+    time.sleep(float(os.environ["FAKE_CODEX_SLEEP"]))
+"""
+
+
 def test_fake_cli_fixture_syntax_is_valid():
     """Verify the FAKE_CLI embedded script is valid Python."""
     ast.parse(FAKE_CLI)
+
+
+def test_fake_codex_cli_fixture_syntax_is_valid():
+    ast.parse(FAKE_CODEX_CLI)
+
+
+def _codex_manager(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-codex"
+    executable.write_text(FAKE_CODEX_CLI)
+    os.chmod(executable, 0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("FAKE_CODEX_ARGS", str(tmp_path / "codex-args.jsonl"))
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    return shim.CodexProcess(str(workspace), str(executable))
+
+
+def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    record = manager.turn("first", model="luna")
+    assert record == {
+        "result": "Done <voice>Codex completed the work.</voice>",
+        "terminal_reason": "completed",
+        "session_id": "codex-thread",
+        "usage": {"input_tokens": 3, "output_tokens": 4},
+        "voice": "Codex completed the work.",
+        "activity": [],
+    }
+    manager._close_process()
+
+
+def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="terra")
+    manager.turn("second", session_id="codex-thread", model="terra")
+    calls = [json.loads(line) for line in (tmp_path / "codex-args.jsonl").read_text().splitlines()]
+    resume = calls[1]
+    assert resume[:4] == ["exec", "resume", "codex-thread", "second"]
+    assert "--sandbox" not in resume
+    assert resume[resume.index("--model") + 1] == "gpt-5.6-terra"
+    assert resume[resume.index("--config") + 1] == "model_reasoning_effort=high"
+    manager._close_process()
+
+
+def test_codex_returns_at_turn_completed_without_waiting_for_exit(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_CODEX_SLEEP", "2")
+    started = time.monotonic()
+    manager.turn("fast", model="sol")
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.1
+    assert manager.process.poll() is None
+    manager._close_process()
+
+
+def test_manager_routes_only_known_models_to_codex(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    claude = object()
+    codex = object()
+    manager.claude = claude
+    manager.codex = codex
+    assert manager._adapter("luna") is codex
+    assert manager._adapter("terra") is codex
+    assert manager._adapter("sol") is codex
+    assert manager._adapter(None) is claude
+    assert manager._adapter("claude") is claude
+    assert manager._adapter("unknown") is claude
 
 
 def _capture_spawn_kwargs(tmp_path, monkeypatch, geteuid, env=None):

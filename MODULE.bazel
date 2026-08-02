@@ -671,6 +671,32 @@ multiarch_http_file(
 # The version is pinned rather than floating: the guest contract depends on
 # observed CLI behaviour (stream-json event shapes, the synthetic interrupt turn,
 # result field names), so a silent upgrade could change the shim's inputs.
+# pi coding agent for the EmberVM claude runtime guest, the Qwen adapter
+# (issue #4234). Qwen serves a 32768-token window, and the claude CLI ships 26
+# tools plus 41 slash commands into every request (codex measured 13692 input
+# tokens on a trivial prompt), so roughly 40% of the window would go to
+# scaffolding written for frontier models before reading a file. pi ships 4
+# tools and lets --system-prompt REPLACE the prompt, so the budget is ours.
+#
+# Vendored from the GitHub release, NOT npm: the npm package is a node entry
+# point (#!/usr/bin/env node) with a dependency tree, while the release tarball
+# carries a self-contained ELF at pi/pi. That is the difference between needing
+# a node runtime plus vendored deps in the guest and adding one binary.
+#
+# Dual-arch, unlike codex_cli: pi's payload sits at the arch-INDEPENDENT path
+# pi/pi inside both tarballs, so one extract_path serves both. Checksums are
+# upstream's published SHA256SUMS, verified against the downloaded artifacts.
+multiarch_http_file(
+    name = "pi_coding_agent",
+    amd64_sha256 = "b0625eb623197b0afe20c870d21ef2f34481f1504e5777df3f698a66c7636f5f",
+    amd64_url = "https://github.com/earendil-works/pi/releases/download/v0.83.0/pi-linux-x64.tar.gz",
+    arm64_sha256 = "b84f9016610c738dd9440df62f649880dbe9951db97a7ae936cbf292850e9802",
+    arm64_url = "https://github.com/earendil-works/pi/releases/download/v0.83.0/pi-linux-arm64.tar.gz",
+    binary_name = "pi",
+    extract_path = "pi/pi",
+    package_dir = "/usr/local/bin",
+)
+
 # Codex CLI for the EmberVM claude runtime guest, the Luna/Terra/Sol adapter
 # (issue #4234). Vendored from the GitHub release rather than npm: the npm
 # @openai/codex package is a thin JS launcher that resolves a per-platform
