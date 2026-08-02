@@ -916,8 +916,12 @@ defmodule Embervm.SessionManagerTest do
     assert MapSet.member?(:sys.get_state(ctx.mgr).destroying_alarmed, created.session_id)
   end
 
+  # Both vanished tests pin the store clock BELOW the node facts' 5_000_000 so the
+  # session row predates the fact: the vanish branch requires the node's report to
+  # postdate the row (node_fact_authoritative?), and the store's default wall clock
+  # would leave the fact permanently stale and the branch unreachable.
   test "test_banked_session_with_vanished_vm_and_snapshot_evicts_not_loops" do
-    ctx = start_stack(evict_fun: fn _ch, _req -> {:ok, %{}} end)
+    ctx = start_stack(evict_fun: fn _ch, _req -> {:ok, %{}} end, store_clock: fn -> 4_000_000 end)
     put_session_workload(ctx, "wl-vanished-banked")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-vanished-banked", "p1")
     bank_session(ctx, created.session_id)
@@ -930,7 +934,7 @@ defmodule Embervm.SessionManagerTest do
   end
 
   test "test_running_session_with_vanished_vm_and_snapshot_fails" do
-    ctx = start_stack()
+    ctx = start_stack(store_clock: fn -> 4_000_000 end)
     put_session_workload(ctx, "wl-vanished-running")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-vanished-running", "p1")
     report_empty_node(ctx)

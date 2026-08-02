@@ -190,7 +190,7 @@ defmodule Embervm.SessionBankRelightTest do
       snapshot_disk_used_bytes: 0,
       draining: false,
       store_reachable: Keyword.get(opts, :store_reachable, false),
-      updated_at: 0
+      updated_at: Keyword.get(opts, :updated_at, 1_000_000_000)
     }
   end
 
