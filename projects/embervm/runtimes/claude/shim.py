@@ -35,6 +35,10 @@ CODEX_MODELS = {
     "sol": ("gpt-5.6-sol", "high"),
 }
 DEFAULT_CODEX_MODEL = "luna"
+PI_MODELS = {
+    "qwen": "qwen-plus",  # vLLM endpoint serves OpenAI Chat Completions API
+}
+DEFAULT_PI_MODEL = "qwen"
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096
 # Cap on the proxy request head the egress forwarder reads before it knows the
@@ -211,6 +215,30 @@ def activity_from_events(events):
     activity = []
     for event in events:
         if not isinstance(event, dict):
+            continue
+        if event.get("type") == "tool_execution_start":
+            name = event.get("toolName")
+            value = event.get("args")
+            if name == "edit":
+                activity.append(
+                    {"type": "edit", "file_path": _input_value(value, "path")}
+                )
+            elif name == "write":
+                activity.append(
+                    {"type": "write", "file_path": _input_value(value, "path")}
+                )
+            elif name == "bash":
+                activity.append(
+                    {"type": "bash", "command": _input_value(value, "command")}
+                )
+            else:
+                activity.append(
+                    {
+                        "type": "tool_use",
+                        "name": name,
+                        "input": _bounded_tool_input(value),
+                    }
+                )
             continue
         if event.get("type") != "assistant":
             continue
@@ -907,38 +935,245 @@ class CodexProcess:
         return None
 
 
+class PiProcess:
+    """Run one Pi JSON event-stream process per turn."""
+
+    INFERENCE_BASE_URL = "http://inference.inference.svc.cluster.local:8080/v1"
+
+    def __init__(self, workspace=None, executable="pi"):
+        self.workspace = workspace or os.environ.get(
+            "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
+        )
+        self.executable = executable
+        self.process = None
+        self.session_id = None
+        self.turn_lock = threading.Lock()
+        self.process_lock = threading.Lock()
+
+    def ready(self):
+        with self.process_lock:
+            return os.path.isdir(self.workspace)
+
+    def _child_env(self):
+        egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
+        proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
+        home = os.environ.get("HOME", "/root")
+        pi_home = os.path.join(home, ".pi")
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "PI_HOME": pi_home,
+                "PI_CODING_AGENT_DIR": os.path.join(pi_home, "agent"),
+                "HTTPS_PROXY": proxy_url,
+                "HTTP_PROXY": proxy_url,
+                "NO_PROXY": "127.0.0.1,localhost",
+            }
+        )
+        return child_env
+
+    def _write_model_config(self, pi_home):
+        agent_dir = os.path.join(pi_home, "agent")
+        os.makedirs(agent_dir, exist_ok=True)
+        config = {
+            "providers": {
+                "openai-completions": {
+                    "baseUrl": self.INFERENCE_BASE_URL,
+                    "api": "openai-completions",
+                    "apiKey": "sk-noauth",
+                    "compat": {
+                        "supportsDeveloperRole": False,
+                        "supportsReasoningEffort": False,
+                    },
+                    "models": [{"id": PI_MODELS[DEFAULT_PI_MODEL]}],
+                }
+            }
+        }
+        with open(os.path.join(agent_dir, "models.json"), "w") as stream:
+            json.dump(config, stream)
+
+    def _spawn(self, message, session_id, model):
+        if not os.path.isdir(self.workspace):
+            raise StartupError("workspace does not exist: %s" % self.workspace)
+        model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
+        child_env = self._child_env()
+        pi_home = child_env["PI_HOME"]
+        self._write_model_config(pi_home)
+        command = [
+            self.executable,
+            "-p",
+            "--mode",
+            "json",
+            "--provider",
+            "openai-completions",
+            "--model",
+            model_name,
+            "--system-prompt",
+            "You are a focused coding agent. " + VOICE_PROMPT,
+            "--no-context-files",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--tools",
+            "read,bash,edit,write",
+            "--session-dir",
+            os.path.join(pi_home, "sessions"),
+        ]
+        if session_id:
+            command.extend(["--session", session_id])
+        command.append(message)
+        process = subprocess.Popen(
+            command,
+            cwd=self.workspace,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=child_env,
+            **_cli_privilege_kwargs(),
+        )
+        output_queue = queue.Queue()
+        with self.process_lock:
+            self.process = process
+            _managed_child_pids.add(process.pid)
+        threading.Thread(
+            target=CodexProcess._pump_codex_stdout,
+            args=(process, output_queue),
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=ClaudeProcess._pump_stderr,
+            args=(self, process, collections.deque(maxlen=5)),
+            daemon=True,
+        ).start()
+        return process, output_queue
+
+    def turn(self, message, session_id=None, model=DEFAULT_PI_MODEL):
+        with self.turn_lock:
+            if self.session_id and session_id and session_id != self.session_id:
+                raise SessionConflictError(
+                    "session_id %r does not match active session %r"
+                    % (session_id, self.session_id)
+                )
+            process, output_queue = self._spawn(
+                message, session_id or self.session_id, model
+            )
+            result_text = ""
+            usage = {}
+            events = []
+            terminal_reason = "completed"
+            while True:
+                try:
+                    raw = output_queue.get(timeout=TURN_READ_TIMEOUT)
+                except queue.Empty as exc:
+                    raise RuntimeError(
+                        "timed out waiting for Pi output after %s seconds"
+                        % TURN_READ_TIMEOUT
+                    ) from exc
+                if raw is None:
+                    code = process.poll()
+                    raise RuntimeError("pi crashed during turn, exit code %s" % code)
+                try:
+                    event = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("pi emitted invalid JSON: %s" % exc) from exc
+                events.append(event)
+                if event.get("type") == "session":
+                    candidate = event.get("id")
+                    if isinstance(candidate, str) and candidate:
+                        self.session_id = candidate
+                elif event.get("type") == "message_end":
+                    message_event = event.get("message", {})
+                    if message_event.get("role") == "assistant":
+                        result_text = "".join(
+                            item.get("text", "")
+                            for item in message_event.get("content", [])
+                            if item.get("type") == "text"
+                        )
+                        raw_usage = message_event.get("usage", {})
+                        usage = {
+                            "input_tokens": raw_usage.get("input", 0),
+                            "output_tokens": raw_usage.get("output", 0),
+                            "cache_read_tokens": raw_usage.get("cacheRead", 0),
+                            "cache_write_tokens": raw_usage.get("cacheWrite", 0),
+                        }
+                        terminal_reason = message_event.get("stopReason", "completed")
+                elif event.get("type") == "agent_end":
+                    if not result_text:
+                        for message_event in reversed(event.get("messages", [])):
+                            if message_event.get("role") == "assistant":
+                                result_text = "".join(
+                                    item.get("text", "")
+                                    for item in message_event.get("content", [])
+                                    if item.get("type") == "text"
+                                )
+                                break
+                    record = {
+                        "result": result_text,
+                        "terminal_reason": terminal_reason,
+                        "session_id": self.session_id,
+                        "usage": usage,
+                        "voice": voice_summary(result_text),
+                        "activity": activity_from_events(events),
+                    }
+                    threading.Thread(
+                        target=CodexProcess._reap_process,
+                        args=(process,),
+                        daemon=True,
+                    ).start()
+                    return record
+
+    def interrupt(self, timeout=INTERRUPT_TIMEOUT):
+        return {"terminal_reason": "user_interrupt", "killed": False, "timeout": False}
+
+    def _close_process(self, kill=False):
+        return None
+
+
 class ProcessManager:
     """Route Claude-compatible turns to the selected CLI adapter."""
 
     def __init__(
-        self, workspace=None, claude_executable="claude", codex_executable="codex"
+        self,
+        workspace=None,
+        claude_executable="claude",
+        codex_executable="codex",
+        pi_executable="pi",
     ):
         self.claude = ClaudeProcess(workspace, claude_executable)
         self.codex = CodexProcess(workspace, codex_executable)
+        self.pi = PiProcess(workspace, pi_executable)
 
     def _adapter(self, model):
+        if model == "qwen":
+            return self.pi
         if isinstance(model, str) and model in CODEX_MODELS:
             return self.codex
         return self.claude
 
     def ready(self):
-        return self.claude.ready() and self.codex.ready()
+        return self.claude.ready() and self.codex.ready() and self.pi.ready()
 
     def turn(self, message, session_id=None, model=None):
         adapter = self._adapter(model)
+        if adapter is self.pi:
+            return adapter.turn(message, session_id, model or DEFAULT_PI_MODEL)
         if adapter is self.codex:
             return adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
         return adapter.turn(message, session_id)
 
     def interrupt(self):
         # An interrupt has no model in its request, so interrupt both adapters.
+        pi_result = self.pi.interrupt()
         codex_result = self.codex.interrupt()
         claude_result = self.claude.interrupt()
-        return claude_result if claude_result.get("killed") else codex_result
+        if claude_result.get("killed"):
+            return claude_result
+        if codex_result.get("killed"):
+            return codex_result
+        return pi_result
 
     def _close_process(self, kill=False):
         self.claude._close_process(kill=kill)
         self.codex._close_process(kill=kill)
+        self.pi._close_process(kill=kill)
 
 
 Manager = ProcessManager
@@ -1061,7 +1296,9 @@ def build_server(manager):
 
 def main():
     install_child_reaper()
-    manager = ProcessManager()
+    manager = ProcessManager(
+        claude_executable="claude", codex_executable="codex", pi_executable="pi"
+    )
     egress_port = int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT)))
     egress = VsockEgressForwarder(egress_port)
     server = None
