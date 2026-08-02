@@ -140,6 +140,34 @@ if os.environ.get("FAKE_CODEX_SLEEP"):
 """
 
 
+FAKE_PI_CLI = r"""#!/usr/bin/env python3
+import json
+import os
+import sys
+
+args_path = os.environ.get("FAKE_PI_ARGS")
+if args_path:
+    with open(args_path, "a") as stream:
+        json.dump(sys.argv[1:], stream)
+        stream.write("\n")
+assert "--provider" in sys.argv
+assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
+assert sys.argv[sys.argv.index("--model") + 1] == "qwen-plus"
+for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
+    assert flag in sys.argv
+assert sys.argv[sys.argv.index("--tools") + 1] == "read,bash,edit,write"
+assert "End every response with a single line" in sys.argv[sys.argv.index("--system-prompt") + 1]
+print(json.dumps({"type": "session", "id": "pi-session", "version": 3}), flush=True)
+print(json.dumps({"type": "message_end", "message": {
+    "role": "assistant",
+    "content": [{"type": "text", "text": "Done <voice>Pi completed the work.</voice>"}],
+    "stopReason": "stop",
+    "usage": {"input": 5, "output": 7}
+}}), flush=True)
+print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
+"""
+
+
 def test_fake_cli_fixture_syntax_is_valid():
     """Verify the FAKE_CLI embedded script is valid Python."""
     ast.parse(FAKE_CLI)
@@ -147,6 +175,10 @@ def test_fake_cli_fixture_syntax_is_valid():
 
 def test_fake_codex_cli_fixture_syntax_is_valid():
     ast.parse(FAKE_CODEX_CLI)
+
+
+def test_fake_pi_cli_fixture_syntax_is_valid():
+    ast.parse(FAKE_PI_CLI)
 
 
 def _codex_manager(tmp_path, monkeypatch):
@@ -161,6 +193,53 @@ def _codex_manager(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CODEX_ARGS", str(tmp_path / "codex-args.jsonl"))
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     return shim.CodexProcess(str(workspace), str(executable))
+
+
+def _pi_manager(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-pi"
+    executable.write_text(FAKE_PI_CLI)
+    os.chmod(executable, 0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("FAKE_PI_ARGS", str(tmp_path / "pi-args.jsonl"))
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    return shim.PiProcess(str(workspace), str(executable))
+
+
+def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="qwen")
+    assert record["result"] == "Done <voice>Pi completed the work.</voice>"
+    assert record["session_id"] == "pi-session"
+    assert "input_tokens" in record["usage"]
+    manager._close_process()
+
+
+def test_pi_resume_uses_session_flag(tmp_path, monkeypatch):
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="qwen")
+    manager.turn("second", session_id="pi-session", model="qwen")
+    args = [
+        json.loads(line)
+        for line in (tmp_path / "pi-args.jsonl").read_text().splitlines()
+    ]
+    assert "--session" in args[1] and "pi-session" in args[1]
+    manager._close_process()
+
+
+def test_manager_routes_qwen_to_pi(tmp_path, monkeypatch):
+    manager = shim.ProcessManager(
+        tmp_path / "workspace",
+        tmp_path / "fake-claude",
+        tmp_path / "fake-codex",
+        tmp_path / "fake-pi",
+    )
+    assert manager._adapter("qwen") is manager.pi
+    assert manager._adapter("luna") is manager.codex
+    assert manager._adapter(None) is manager.claude
 
 
 def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
@@ -1016,3 +1095,38 @@ sys.exit(1)
     error_msg = str(exc_info.value)
     assert "claude exited before init" in error_msg
     assert "Parsed events:" in error_msg or "error" in error_msg
+
+
+def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
+    """pi must be launched with the context budget pinned down.
+
+    Qwen serves a 32768-token window. These flags are the entire reason pi was
+    chosen over the claude CLI, and losing any of them fails SILENTLY: the turn
+    still succeeds, it just spends the window on discovered context or a default
+    prompt instead of the task, and the answers quietly get worse.
+    """
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="qwen")
+    argv = json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
+
+    # --system-prompt REPLACES pi's default coding prompt (it does not append),
+    # which is what keeps the scaffolding down to a couple of hundred tokens.
+    assert "--system-prompt" in argv
+    assert shim.VOICE_PROMPT in argv[argv.index("--system-prompt") + 1]
+
+    # Discovery of every kind is off: context files (AGENTS.md/CLAUDE.md),
+    # extensions, skills and prompt templates all inject tokens we did not
+    # choose, and AGENTS.md discovery alone can dwarf the prompt.
+    for flag in (
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+    ):
+        assert flag in argv, "missing %s: Qwen's context budget is unguarded" % flag
+
+    # A small explicit tool set: every tool schema is tokens, and a 27B model
+    # handles four tools better than the claude CLI's twenty six.
+    assert "--tools" in argv
+    assert argv[argv.index("--tools") + 1] == "read,bash,edit,write"
+    manager._close_process()

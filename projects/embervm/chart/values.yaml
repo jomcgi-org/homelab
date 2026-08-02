@@ -1087,7 +1087,9 @@ egress:
     # supported. Adding an entry is a security decision: an agent with internal
     # reach can pivot to other cluster services. Empty list (the default) means
     # deny-all-internal; the claude runtime needs only the public internet.
-    allowlist: []
+    allowlist:
+      # Qwen adapter needs in-cluster vLLM endpoint for model inference
+      - inference.inference.svc.cluster.local:8080
     # Extra CIDRs treated as internal beyond the baked private/loopback/link-local
     # ranges. This cluster's pod/service/node nets are already RFC1918.
     cidrs: []
