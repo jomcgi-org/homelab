@@ -119,7 +119,11 @@ if args_path:
     with open(args_path, "a") as stream:
         json.dump(sys.argv[1:], stream)
         stream.write("\n")
-assert os.environ.get("CODEX_HOME", "").startswith(os.environ.get("HOME", ""))
+# CODEX_HOME must be a writable dir under the WORKSPACE (the child's cwd), not
+# $HOME: the guest's $HOME is read-only rootfs and the real CLI refuses to start
+# when the dir does not exist.
+assert os.environ.get("CODEX_HOME", "") == os.path.join(os.getcwd(), ".codex")
+assert os.path.isdir(os.environ["CODEX_HOME"])
 assert "--skip-git-repo-check" in sys.argv
 assert "--model" in sys.argv
 assert "--config" in sys.argv

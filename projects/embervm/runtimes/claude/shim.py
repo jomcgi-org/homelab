@@ -838,11 +838,17 @@ class CodexProcess:
     def _child_env(self):
         egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
         proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
-        home = os.environ.get("HOME", "/root")
+        # The CLI state dir must live under the WORKSPACE, not $HOME: the guest's
+        # $HOME is on the read-only rootfs and the codex CLI refuses to start when
+        # CODEX_HOME does not exist (observed live as a 422 on every codex turn).
+        # The workspace is also where session files must sit for thread resume to
+        # survive bank/relight once workspaces ride the durable volume.
+        codex_home = os.path.join(self.workspace, ".codex")
+        os.makedirs(codex_home, exist_ok=True)
         child_env = os.environ.copy()
         child_env.update(
             {
-                "CODEX_HOME": os.path.join(home, ".codex"),
+                "CODEX_HOME": codex_home,
                 "HTTPS_PROXY": proxy_url,
                 "HTTP_PROXY": proxy_url,
                 "NO_PROXY": "127.0.0.1,localhost",
@@ -992,8 +998,11 @@ class PiProcess:
     def _child_env(self):
         egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
         proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
-        home = os.environ.get("HOME", "/root")
-        pi_home = os.path.join(home, ".pi")
+        # Same constraint as the codex adapter: $HOME is read-only rootfs in the
+        # guest, so pi's state dir lives under the writable workspace, which is
+        # also where session files must sit to survive bank/relight.
+        pi_home = os.path.join(self.workspace, ".pi")
+        os.makedirs(os.path.join(pi_home, "agent"), exist_ok=True)
         child_env = os.environ.copy()
         child_env.update(
             {
