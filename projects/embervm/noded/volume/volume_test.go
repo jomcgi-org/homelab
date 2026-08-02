@@ -33,6 +33,25 @@ func TestSessionVolumePathsArePerLineageAndProvisioned(t *testing.T) {
 	}
 }
 
+func TestRetirementIntentIsDurableAndSeparateFromWorkspace(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.CreateSession("wl", "lineage", 4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WriteRetirementIntent("wl", "lineage"); err != nil {
+		t.Fatal(err)
+	}
+	if !m.HasRetirementIntent("wl", "lineage") {
+		t.Fatal("retirement intent should be visible")
+	}
+	if err := m.ClearRetirementIntent("wl", "lineage"); err != nil {
+		t.Fatal(err)
+	}
+	if m.HasRetirementIntent("wl", "lineage") {
+		t.Fatal("retirement intent should be removable")
+	}
+}
+
 func TestCreateSparseAndGenerationInit(t *testing.T) {
 	dir := t.TempDir()
 	m := NewManager(dir)
