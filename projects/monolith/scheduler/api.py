@@ -1,23 +1,22 @@
-"""Scheduler domain API: Postgres-backed job scheduler with distributed locking."""
+"""Scheduler domain API: job registry + ScheduledJob rows (views + agent checks).
 
-import asyncio
+The in-process dispatch loop that used to claim and run these jobs was deleted
+when the jobs moved to Argo CronWorkflows (see app/jobs_main.py); what remains
+is the registry that feeds the scheduler views and the agent orphan-job check.
+"""
+
 import logging
 import os
-import platform
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlmodel import Field, Session, SQLModel, select, text
-
-from core.db import get_engine
+from sqlmodel import Field, Session, SQLModel
 
 if TYPE_CHECKING:
     from scheduler.views import SchedulerJobView
 
 logger = logging.getLogger("monolith.scheduler")
-
-_HOSTNAME = platform.node()
 
 
 def argo_handled(job_name: str) -> bool:
@@ -145,165 +144,3 @@ def register_job(
     logger.info(
         "Registered job %s (interval=%ds, ttl=%ds)", name, interval_secs, ttl_secs
     )
-
-
-def purge_stale_jobs(session: Session) -> None:
-    """Delete DB rows for jobs that have no registered handler.
-
-    Call after all register_job() calls are complete to clean up jobs
-    from previous configs (e.g. removed changelog channels).
-    """
-    all_jobs = session.exec(select(ScheduledJob)).all()
-    for job in all_jobs:
-        if job.name not in _registry:
-            logger.info("Purging stale job %s (no handler registered)", job.name)
-            session.delete(job)
-    session.commit()
-
-
-async def run_scheduler_loop(
-    poll_interval: int = 30, max_concurrent: int = 5, max_heavy: int = 1
-) -> None:
-    """Poll for due jobs and run them with bounded concurrency. Runs forever."""
-    logger.info(
-        "Scheduler loop started (poll=%ds, max_concurrent=%d, max_heavy=%d)",
-        poll_interval,
-        max_concurrent,
-        max_heavy,
-    )
-    while True:
-        try:
-            await dispatch_due_jobs(max_concurrent=max_concurrent, max_heavy=max_heavy)
-        except Exception:
-            logger.exception("Scheduler tick failed")
-        await asyncio.sleep(poll_interval)
-
-
-async def dispatch_due_jobs(max_concurrent: int = 5, max_heavy: int = 1) -> int:
-    """Claim every currently-due job and run it, up to ``max_concurrent`` in
-    parallel. Awaits all spawned handlers before returning.
-
-    Concurrency is bounded two ways. ``max_concurrent`` caps total simultaneous
-    handlers; ``max_heavy`` additionally caps how many memory-heavy jobs (those
-    registered ``heavy=True``) run at once. A heavy job holds BOTH a heavy slot
-    and a regular slot, so it still counts toward the total while guaranteeing no
-    two big jobs (e.g. graph layout + a large rollup) overlap and OOMKill the
-    shared pod. Light jobs are unaffected and stay fully parallel.
-
-    Each handler runs on its own ``Session`` because SQLAlchemy sessions are
-    not safe to share across concurrently awaiting coroutines.
-    """
-    if max_concurrent < 1:
-        raise ValueError(f"max_concurrent must be >= 1, got {max_concurrent}")
-    if max_heavy < 1:
-        raise ValueError(f"max_heavy must be >= 1, got {max_heavy}")
-
-    job_names: list[str] = []
-    with Session(get_engine()) as session:
-        while True:
-            name = _claim_next_job(session)
-            if name is None:
-                break
-            job_names.append(name)
-
-    if not job_names:
-        return 0
-
-    slots = asyncio.Semaphore(max_concurrent)
-    heavy_slots = asyncio.Semaphore(max_heavy)
-
-    async def _run(name: str) -> None:
-        if name in _heavy:
-            # A heavy job takes a heavy slot first, then a regular slot, so it is
-            # serialized against other heavies AND counts toward the total cap.
-            async with heavy_slots, slots:
-                await _run_claimed_job(name)
-        else:
-            async with slots:
-                await _run_claimed_job(name)
-
-    await asyncio.gather(*(_run(name) for name in job_names))
-    return len(job_names)
-
-
-async def _run_claimed_job(job_name: str) -> None:
-    """Execute a single already-claimed job in its own DB session."""
-    with Session(get_engine()) as session:
-        job = session.get(ScheduledJob, job_name)
-        if job is None:
-            return
-
-        handler = _registry.get(job_name)
-        if handler is None:
-            logger.warning("No handler registered for job %s", job_name)
-            _release_lock(session, job)
-            return
-
-        try:
-            override = await handler(session)
-            _complete_job(session, job, override)
-        except Exception as exc:
-            logger.exception("Job %s failed", job_name)
-            _fail_job(session, job, str(exc))
-
-
-def _claim_next_job(session: Session) -> str | None:
-    """Claim the next due job using SELECT FOR UPDATE SKIP LOCKED."""
-    now = datetime.now(timezone.utc)
-    result = session.execute(
-        text("""
-            UPDATE scheduler.scheduled_jobs
-            SET locked_by = :hostname, locked_at = :now
-            WHERE name = (
-                SELECT name FROM scheduler.scheduled_jobs
-                WHERE next_run_at <= :now
-                  AND (locked_by IS NULL
-                       OR locked_at < :now - make_interval(secs => ttl_secs))
-                ORDER BY next_run_at
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-            )
-            RETURNING name
-        """),
-        {"hostname": _HOSTNAME, "now": now},
-    )
-    row = result.fetchone()
-    session.commit()
-    return row[0] if row else None
-
-
-def _complete_job(
-    session: Session, job: ScheduledJob, override: datetime | None
-) -> None:
-    """Mark a job as succeeded and advance next_run_at."""
-    now = datetime.now(timezone.utc)
-    job.locked_by = None
-    job.locked_at = None
-    job.last_run_at = now
-    job.last_status = "ok"
-    job.next_run_at = override or (now + timedelta(seconds=job.interval_secs))
-    session.add(job)
-    session.commit()
-    logger.info(
-        "Job %s completed, next run at %s", job.name, job.next_run_at.isoformat()
-    )
-
-
-def _fail_job(session: Session, job: ScheduledJob, error: str) -> None:
-    """Mark a job as failed, still advance next_run_at to avoid blocking."""
-    now = datetime.now(timezone.utc)
-    job.locked_by = None
-    job.locked_at = None
-    job.last_run_at = now
-    job.last_status = f"error: {error[:200]}"
-    job.next_run_at = now + timedelta(seconds=job.interval_secs)
-    session.add(job)
-    session.commit()
-
-
-def _release_lock(session: Session, job: ScheduledJob) -> None:
-    """Release a lock without advancing the schedule (for missing handler)."""
-    job.locked_by = None
-    job.locked_at = None
-    session.add(job)
-    session.commit()
