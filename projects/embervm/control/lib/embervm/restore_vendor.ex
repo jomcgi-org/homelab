@@ -55,5 +55,6 @@ defmodule Embervm.RestoreVendor do
   @doc "Whether an artifact kind is vendor-bound (every kind except VOLUME)."
   @spec vendor_bound?(atom()) :: boolean()
   def vendor_bound?(:ARTIFACT_KIND_VOLUME), do: false
+  def vendor_bound?(:ARTIFACT_KIND_SESSION_WORKSPACE), do: false
   def vendor_bound?(_kind), do: true
 end

@@ -58,6 +58,7 @@ defmodule Embervm.SessionManager do
 
   alias Embervm.Node.V1.{
     ArtifactRef,
+    ArchiveVolumeRequest,
     BankRequest,
     BankResponse,
     DeleteVolumeRequest,
@@ -203,6 +204,7 @@ defmodule Embervm.SessionManager do
       # bundle is exported but no longer locally reported. Injected for tests;
       # production dials the real NodeService stub.
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
+      archive_volume_fun: Keyword.get(opts, :archive_volume_fun, &default_archive_volume/2),
       # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
       # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside every local
       # EvictSnapshot so the store copy of a session's bundle follows on the same
@@ -854,6 +856,15 @@ defmodule Embervm.SessionManager do
   end
 
   defp drain_bank_node(state, node_id) do
+    parked =
+      SessionStore.all(state.session_store)
+      |> Enum.filter(&(&1.state == :parked and &1.volume_node_id == node_id))
+      |> Enum.filter(&(persistence_enabled_workload?(session_workload_entry(state, &1.workload))))
+
+    Enum.each(parked, fn session ->
+      _ = archive_session_volume(state, session)
+    end)
+
     sessions =
       SessionStore.all(state.session_store)
       |> Enum.filter(&(&1.state == :running and &1.node_id == node_id))
@@ -1282,7 +1293,8 @@ defmodule Embervm.SessionManager do
   end
 
   defp perform_rejoin_prime(state, volume_node_id, workload, lineage_id) do
-    with {:ok, entry} <- fetch_session_workload(state, workload),
+    with :ok <- restore_session_workspace(state, volume_node_id, workload, lineage_id),
+         {:ok, entry} <- fetch_session_workload(state, workload),
          {:ok, [brick | _]} <- Scheduler.place_with_demand(%Request{
            table: state.capacity_table, node_id: volume_node_id, workload: workload,
            key: workload, need_mib: Map.get(entry, :mem_mib) || 512,
@@ -1293,6 +1305,33 @@ defmodule Embervm.SessionManager do
       {:ok, vm_id}
     else
       _ -> {:error, :no_capacity}
+    end
+  end
+
+  # A node-local workspace is restored as a skipped no-op by noded. When the
+  # store is unreachable we deliberately do not consult it. An absent store
+  # artifact is the documented first-boot case; any other restore failure must
+  # stop rejoin rather than prime a blank image over data that exists remotely.
+  defp restore_session_workspace(state, node_id, workload, lineage_id) do
+    if store_reachable?(state, node_id) do
+      ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION_WORKSPACE, workload: workload, ref: lineage_id}
+
+      case safe_restore_artifact(state, node_id, node_id, ref) do
+        {:ok, resp} ->
+          record_restore(state, workload, :ARTIFACT_KIND_SESSION_WORKSPACE, lineage_id, resp)
+          :ok
+
+        {:error, %GRPC.RPCError{status: 9}} ->
+          :ok
+
+        {:error, reason} ->
+          {:error, {:session_workspace_restore_failed, reason}}
+
+        other ->
+          {:error, {:session_workspace_restore_failed, other}}
+      end
+    else
+      :ok
     end
   end
 
@@ -1620,6 +1659,7 @@ defmodule Embervm.SessionManager do
   end
 
   defp artifact_kind_string(:ARTIFACT_KIND_SESSION), do: "session"
+  defp artifact_kind_string(:ARTIFACT_KIND_SESSION_WORKSPACE), do: "session-workspace"
   defp artifact_kind_string(other), do: to_string(other)
 
   # The op-log principal attribution for a workload-scoped audit row (the restore/
@@ -2376,7 +2416,7 @@ defmodule Embervm.SessionManager do
       _ = stop_session_process(state, session.session_id, session)
     end
 
-    delete_session_volume(state, session)
+    archive_then_delete(state, session)
 
     _ =
       SessionStore.transition(
@@ -2656,7 +2696,7 @@ defmodule Embervm.SessionManager do
       _ = stop_session_process(state, session.session_id, session)
     end
 
-    delete_session_volume(state, session)
+    archive_then_delete(state, session)
 
     state = drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
 
@@ -2862,6 +2902,10 @@ defmodule Embervm.SessionManager do
     Embervm.Node.V1.NodeService.Stub.restore_artifact(channel, req)
   end
 
+  defp default_archive_volume(channel, %ArchiveVolumeRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.archive_volume(channel, req)
+  end
+
   defp default_evict_artifact(channel, %EvictArtifactRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
   end
@@ -2892,6 +2936,51 @@ defmodule Embervm.SessionManager do
   end
 
   defp delete_session_volume(_state, _session), do: :ok
+
+  defp archive_session_volume(state, %{volume_node_id: node_id, workload: workload, session_id: lineage_id})
+       when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
+    if persistence_enabled_workload?(session_workload_entry(state, workload)) do
+      req = %ArchiveVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
+
+      result =
+        with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+          try do
+            state.archive_volume_fun.(channel, req)
+          rescue
+            error -> {:error, error}
+          catch
+            kind, reason -> {:error, {kind, reason}}
+          end
+        end
+
+      case result do
+        {:ok, _} -> :ok
+        other ->
+          Logger.warning("embervm session workspace archive failed; keeping volume",
+            workload: workload,
+            lineage_id: lineage_id,
+            node_id: node_id,
+            reason: inspect(other)
+          )
+
+          {:error, other}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp archive_session_volume(_state, _session), do: :ok
+
+  # Archive failure intentionally leaves the volume in place. This v1 path has
+  # no durable retry ledger, so the next sweep cannot retry the missed trigger;
+  # durability beats disk reclamation and the session lifecycle still advances.
+  defp archive_then_delete(state, session) do
+    case archive_session_volume(state, session) do
+      :ok -> delete_session_volume(state, session)
+      {:error, _} -> :ok
+    end
+  end
 
   defp default_clock, do: System.system_time(:millisecond)
 end

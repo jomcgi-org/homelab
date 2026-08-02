@@ -72,6 +72,8 @@ func artifactKindStr(kind nodev1.ArtifactKind) string {
 		return "group_set"
 	case nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME:
 		return "volume"
+	case nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE:
+		return "session-workspace"
 	default:
 		return ""
 	}
@@ -127,12 +129,11 @@ func cpuSkuMismatch(stampedVendor, stampedTemplate, nodeVendor, nodeTemplate str
 
 // artifactVendorSegment reports whether kind is one of the vendor-bound kinds
 // (BASE, SESSION, SERVING, STATEFUL, GROUP_SET) that carries a vendor segment in
-// its store key (R7 standing decision 11). VOLUME data is fully portable across
-// vendors (standing decision 1) and is deliberately excluded: its key never
-// gains a vendor segment, so a volume exported from one node restores cleanly
-// onto any other regardless of CPU vendor.
+// its store key (R7 standing decision 11). VOLUME and SESSION_WORKSPACE data are
+// fully portable across vendors and deliberately excluded: their keys never gain
+// a vendor segment, so filesystem artifacts restore cleanly onto any node.
 func artifactVendorSegment(kind nodev1.ArtifactKind) bool {
-	return kind != nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME
+	return kind != nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME && kind != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE
 }
 
 // artifactPrefix composes the store key prefix for a ref. VOLUME collapses to
@@ -343,6 +344,11 @@ func (s *Server) artifactLocalDir(ref *nodev1.ArtifactRef) string {
 		// The volume manager owns VolumeRoot/<workload> (vol.img + gen). VolumePath
 		// names the vol.img inside it; its parent is the artifact dir.
 		return filepath.Dir(s.volumes.VolumePath(ref.GetWorkload()))
+	case nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE:
+		if s.volumes == nil || ref.GetRef() == "" {
+			return ""
+		}
+		return filepath.Dir(s.volumes.SessionVolumePath(ref.GetWorkload(), ref.GetRef()))
 	default:
 		return ""
 	}

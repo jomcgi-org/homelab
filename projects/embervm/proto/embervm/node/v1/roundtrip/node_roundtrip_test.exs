@@ -16,6 +16,7 @@ defmodule Embervm.NodeRoundtripTest do
 
   alias Embervm.Node.V1.{
     ArtifactRef,
+    ArchiveVolumeRequest,
     AssignRequest,
     BankRequest,
     BuildBaseRequest,
@@ -138,6 +139,12 @@ defmodule Embervm.NodeRoundtripTest do
     assert {:ok, _} =
              NodeService.Stub.evict_snapshot(ch, %EvictSnapshotRequest{
                snapshot_ref: "sessions/s-abc"
+             })
+
+    assert {:ok, %Embervm.Node.V1.ArchiveVolumeResponse{skipped: false}} =
+             NodeService.Stub.archive_volume(ch, %ArchiveVolumeRequest{
+               workload: "claude-runtime",
+               lineage_id: "s-abc"
              })
   end
 
