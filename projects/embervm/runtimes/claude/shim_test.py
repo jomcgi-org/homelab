@@ -621,6 +621,85 @@ def test_init_failure_includes_ring_buffer_in_error_message(tmp_path, monkeypatc
     assert "unparseable line" in error_msg
 
 
+def _write_delayed_init_cli(tmp_path, delay):
+    executable = tmp_path / "delayed-init-cli"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys, time\n"
+        "if '--version' in sys.argv:\n"
+        "    sys.exit(0)\n"
+        "print('init output before timeout', flush=True)\n"
+        "print('init stderr before timeout', file=sys.stderr, flush=True)\n"
+        "print(json.dumps({'type': 'error', 'message': 'init still starting'}), flush=True)\n"
+        "time.sleep(%s)\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
+        "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
+        "sys.stdin.readline()\n"
+        "print(json.dumps({'type': 'result', 'result': 'ok', 'terminal_reason': 'end_turn',\n"
+        "                  'stop_reason': 'end_turn', 'is_error': False,\n"
+        "                  'permission_denials': [], 'num_turns': 1, 'session_id': 's',\n"
+        "                  'usage': {}, 'total_cost_usd': 0, 'modelUsage': {},\n"
+        "                  'duration_ms': 1}), flush=True)\n" % delay
+    )
+    os.chmod(executable, 0o755)
+    return executable
+
+
+def test_init_timeout_includes_diagnostics_and_honors_env_override(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("EMBER_INIT_READ_TIMEOUT", "0.2")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = _write_delayed_init_cli(tmp_path, 1)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    with pytest.raises(shim.StartupError) as exc_info:
+        manager.turn("test")
+
+    error_msg = str(exc_info.value)
+    assert "after 0.2 seconds" in error_msg
+    assert "CLI output:" in error_msg
+    assert "CLI stderr:" in error_msg
+    assert "Parsed events:" in error_msg
+
+
+def test_init_timeout_env_override_honored(tmp_path, monkeypatch):
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("EMBER_INIT_READ_TIMEOUT", "5.0")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = _write_delayed_init_cli(tmp_path, 6)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    with pytest.raises(shim.StartupError, match="after 5.0 seconds"):
+        manager.turn("test")
+
+
+def test_init_timeout_env_override_falls_back_to_default_on_garbage(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("EMBER_INIT_READ_TIMEOUT", "not a number")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = _write_delayed_init_cli(tmp_path, 15)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    assert manager.turn("test")["terminal_reason"] == "end_turn"
+    manager._close_process(kill=True)
+
+
 def test_unparseable_line_truncation(tmp_path, monkeypatch, capsys):
     """Verify CLI lines are capped at 2000 chars and errors at about 1500."""
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
@@ -694,17 +773,14 @@ def test_stderr_lines_captured_to_ring_and_console(tmp_path, monkeypatch, capsys
     deadline = time.time() + 5
     while (
         time.time() < deadline
-        and sum(
-            1 for line in manager.unparseable_lines if "stderr: stderr line" in line
-        )
-        < 2
+        and sum(1 for line in manager.stderr_lines if "stderr line" in line) < 2
     ):
         time.sleep(0.05)
     captured = capsys.readouterr()
 
     assert "ember-claude-shim: cli-stderr: stderr line 1" in captured.err
     assert "ember-claude-shim: cli-stderr: stderr line 2" in captured.err
-    assert any("stderr: stderr line" in line for line in manager.unparseable_lines)
+    assert any("stderr line" in line for line in manager.stderr_lines)
 
 
 def test_parsed_non_init_events_retained(tmp_path, monkeypatch):
