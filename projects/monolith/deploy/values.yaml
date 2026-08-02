@@ -439,6 +439,11 @@ scratchPostgres:
   enabled: false
   # Renders DEMO_POSTGRES_DSN for the firecracker demos page's sleep/wake
   # exhibit (matches the embervm chart's demoPostgres.listenPort).
+  # COUPLING (#4198): the demo workload itself is gated on demoPostgres.enabled
+  # in projects/embervm/deploy/values.yaml and nothing cross-checks the two. If
+  # the embervm side disables the demo, clear this to "" in the same change, or
+  # the DSN points at a nonexistent workload and the synthetic probe latches
+  # red (503 /api/health).
   demoListenPort: 5401
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
