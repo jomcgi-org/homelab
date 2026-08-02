@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import BigInteger, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -19,7 +19,11 @@ class AgentSession(SQLModel, table=True):
     )  # Claude CLI session_id for resumption
     ember_session_id: str | None = Field(default=None)
     ember_session_token: str | None = Field(default=None)
-    ember_session_expires_at: int | None = Field(default=None)
+    # BigInteger, not the default Integer: this is epoch MILLISECONDS from the
+    # control plane, which overflows int4. The migration already declares BIGINT,
+    # but SQLModel maps a plain int to sqlalchemy Integer and emits an explicit
+    # ::INTEGER cast in the UPDATE, so the write failed against a bigint column.
+    ember_session_expires_at: int | None = Field(default=None, sa_type=BigInteger)
     status: str = Field(default="running")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_turn_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
