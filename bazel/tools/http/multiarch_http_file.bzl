@@ -37,41 +37,59 @@ filegroup(
     package_dir = repository_ctx.attr.package_dir
     repo_name = repository_ctx.name
 
+    # Extra archive paths (dirs or files) shipped beside the binary. Each is
+    # symlinked into the repo as <arch>_extra_<i> and copied into package_dir
+    # under its basename, so a release whose binary loads assets relative to
+    # argv0 (e.g. pi's theme/ JSONs) works from the image.
+    extras = repository_ctx.attr.extract_extra_paths
+
+    def _extra_srcs(arch):
+        return "".join([', "%s_extra_%d"' % (arch, i) for i in range(len(extras))])
+
+    def _extra_cmds(arch):
+        lines = []
+        for i, path in enumerate(extras):
+            base = path.rstrip("/").split("/")[-1]
+            lines.append("        cp -LR $(location :%s_extra_%d) tmp/%s/%s" % (arch, i, package_dir, base))
+        return "\n".join(lines)
+
     if repository_ctx.attr.amd64_url:
         build_content += """
 # Create tar directly with genrule to control the exact structure
 genrule(
     name = "tar_amd64",
-    srcs = ["amd64_binary"],
+    srcs = ["amd64_binary"{extra_srcs}],
     outs = ["tar_amd64.tar"],
     cmd = '''
         mkdir -p tmp/{package_dir}
-        cp $< tmp/{package_dir}/{binary_name}
+        cp $(location :amd64_binary) tmp/{package_dir}/{binary_name}
         chmod 0755 tmp/{package_dir}/{binary_name}
+{extra_cmds}
         tar -C tmp -czf $@ .
     ''',
     visibility = ["//visibility:public"],
 )
 
-""".format(package_dir = package_dir, binary_name = binary_name)
+""".format(package_dir = package_dir, binary_name = binary_name, extra_srcs = _extra_srcs("amd64"), extra_cmds = _extra_cmds("amd64"))
 
     if repository_ctx.attr.arm64_url:
         build_content += """
 # Create tar directly with genrule to control the exact structure
 genrule(
     name = "tar_arm64",
-    srcs = ["arm64_binary"],
+    srcs = ["arm64_binary"{extra_srcs}],
     outs = ["tar_arm64.tar"],
     cmd = '''
         mkdir -p tmp/{package_dir}
-        cp $< tmp/{package_dir}/{binary_name}
+        cp $(location :arm64_binary) tmp/{package_dir}/{binary_name}
         chmod 0755 tmp/{package_dir}/{binary_name}
+{extra_cmds}
         tar -C tmp -czf $@ .
     ''',
     visibility = ["//visibility:public"],
 )
 
-""".format(package_dir = package_dir, binary_name = binary_name)
+""".format(package_dir = package_dir, binary_name = binary_name, extra_srcs = _extra_srcs("arm64"), extra_cmds = _extra_cmds("arm64"))
 
     # Add alias for the main target
     if repository_ctx.attr.amd64_url:
@@ -112,6 +130,8 @@ alias(
                 sha256 = repository_ctx.attr.amd64_sha256,
             )
             repository_ctx.symlink("amd64_extract/" + extract_path, "amd64_binary")
+            for i, extra in enumerate(repository_ctx.attr.extract_extra_paths):
+                repository_ctx.symlink("amd64_extract/" + extra.rstrip("/"), "amd64_extra_%d" % i)
         else:
             repository_ctx.download(
                 url = repository_ctx.attr.amd64_url,
@@ -128,6 +148,8 @@ alias(
                 sha256 = repository_ctx.attr.arm64_sha256,
             )
             repository_ctx.symlink("arm64_extract/" + extract_path, "arm64_binary")
+            for i, extra in enumerate(repository_ctx.attr.extract_extra_paths):
+                repository_ctx.symlink("arm64_extract/" + extra.rstrip("/"), "arm64_extra_%d" % i)
         else:
             repository_ctx.download(
                 url = repository_ctx.attr.arm64_url,
@@ -158,6 +180,11 @@ multiarch_http_file = repository_rule(
         "package_dir": attr.string(
             default = "/usr/local/bin",
             doc = "Directory to place the binary in the image",
+        ),
+        "extract_extra_paths": attr.string_list(
+            doc = "Archive-relative paths (dirs or files) copied into " +
+                  "package_dir beside the binary, each under its basename. " +
+                  "Only meaningful with extract_path.",
         ),
         "extract_path": attr.string(
             doc = "When set, the URLs are archives; extract and use the file at " +
