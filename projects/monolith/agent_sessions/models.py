@@ -14,6 +14,7 @@ class AgentSession(SQLModel, table=True):
     local_session_id: str = Field(unique=True)
     workspace: str
     branch: str
+    model: str | None = Field(default=None)
     cli_session_id: str | None = Field(
         default=None
     )  # Claude CLI session_id for resumption
@@ -41,6 +42,7 @@ class AgentTurn(SQLModel, table=True):
     session_id: int = Field(foreign_key="agent_sessions.agent_sessions.id", index=True)
     seq: int = Field(index=True)
     prompt: str
+    model: str | None = Field(default=None)
     voice_summary: str | None = Field(default=None)
     result_text: str
     terminal_reason: str | None = Field(default=None)
@@ -63,6 +65,7 @@ class PendingMessage(SQLModel, table=True):
     session_id: int = Field(foreign_key="agent_sessions.agent_sessions.id", index=True)
     seq: int
     message_text: str
+    model: str | None = Field(default=None)
     claimed_by_replica: str | None = Field(default=None)
     claimed_at: datetime | None = Field(default=None)  # For lease expiry detection
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

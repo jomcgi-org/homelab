@@ -3,14 +3,47 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from agent_sessions import mcp
-from agent_sessions import store
-from agent_sessions.models import AgentTurn
+from agent_sessions import mcp, model_family, store
+from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.transport import EmberSession, EmberSessionGone, Turn
 from faas.embervm_client import EmberVMTransportError
+
+
+@pytest.mark.parametrize(
+    ("model", "family"),
+    [
+        (None, "claude"),
+        ("opus", "claude"),
+        ("sonnet", "claude"),
+        ("fable", "claude"),
+        ("luna", "codex"),
+        ("terra", "codex"),
+        ("sol", "codex"),
+        ("qwen", "pi"),
+    ],
+)
+def test_model_family(model, family):
+    assert model_family(model) == family
+
+
+def test_unknown_model_is_rejected_without_creating_session(session):
+    result = asyncio.run(mcp.monolith_agent_session_start("hello", model="unknown"))
+    assert result["accepted"] is False
+    assert "valid models" in result["error"]
+    assert session.exec(select(AgentSession)).first() is None
+
+
+@pytest.mark.parametrize("model", [None, "opus", "luna", "qwen"])
+def test_session_start_stores_model_on_session_and_pending(monkeypatch, session, model):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+    result = asyncio.run(mcp.monolith_agent_session_start("hello", model=model))
+    row = store.get_session(session, result["session_id"])
+    pending = store.get_pending_message(session, row.id, result["turn"])
+    assert row.model == model
+    assert pending.model == model
 
 
 @pytest.fixture
@@ -95,10 +128,48 @@ def test_send_persists_and_returns_immediately(session):
     assert pending.seq == result["turn"]
 
 
+def test_cross_family_send_is_rejected_without_pending_row(session):
+    row = store.create_session(session, "sid-123", "/workspace", "main", model="luna")
+    result = asyncio.run(mcp.monolith_agent_session_send(row.id, "hello", model="qwen"))
+    assert result["accepted"] is False
+    assert "codex" in result["error"] and "pi" in result["error"]
+    assert store.get_pending_message(session, row.id, 1) is None
+
+
+def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+    delivered_models = []
+
+    async def mock_deliver(_ember, _cli_session_id, message, model=None):
+        delivered_models.append(model)
+        return _completed_delivery(message)
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    row = store.create_session(session, "sid-123", "/workspace", "main", model="luna")
+    row.status = "completed"
+    session.add(row)
+    session.commit()
+    result = asyncio.run(
+        mcp.monolith_agent_session_send(row.id, "hello", model="terra")
+    )
+    assert result["accepted"] is True
+    # The send wrote status through its own Session; expire this one's identity
+    # map or get() returns the stale cached row instead of re-reading.
+    session.expire_all()
+    assert store.get_session(session, row.id).status == "running"
+    asyncio.run(mcp._execute_pending_message(row.id))
+    assert delivered_models == ["terra"]
+    assert store.get_turn(session, row.id, result["turn"]).model == "terra"
+
+
 def test_session_start_returns_immediately(monkeypatch, session):
     started = asyncio.Event()
 
-    async def blocking_deliver(_ember, _cli_session_id, _message):
+    async def blocking_deliver(_ember, _cli_session_id, _message, _model=None):
         started.set()
         await asyncio.Event().wait()
 
@@ -124,7 +195,7 @@ def test_session_start_returns_immediately(monkeypatch, session):
 def test_session_start_happy_path_persists_result(monkeypatch, session):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
 
-    async def mock_deliver(_ember, _cli_session_id, message):
+    async def mock_deliver(_ember, _cli_session_id, message, _model=None):
         return _completed_delivery(message)
 
     async def notify(*args, **kwargs):
@@ -157,7 +228,7 @@ def test_session_start_happy_path_persists_result(monkeypatch, session):
 def test_failed_first_turn_does_not_wedge_session(monkeypatch, session):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
 
-    async def failing_deliver(_ember, _cli_session_id, _message):
+    async def failing_deliver(_ember, _cli_session_id, _message, _model=None):
         raise RuntimeError("first turn failed")
 
     monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
@@ -180,7 +251,7 @@ def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
     executions: list[str] = []
 
-    async def mock_deliver(_ember, _cli_session_id, message):
+    async def mock_deliver(_ember, _cli_session_id, message, _model=None):
         executions.append(message)
         await asyncio.sleep(0.01)
         return _completed_delivery(message)
@@ -230,7 +301,7 @@ def _completed_delivery(message: str) -> tuple[Turn, EmberSession]:
 def test_pending_message_executed_in_background(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
 
-    async def mock_deliver(_ember, _cli_session_id, message):
+    async def mock_deliver(_ember, _cli_session_id, message, _model=None):
         return _completed_delivery(message)
 
     monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
@@ -263,7 +334,7 @@ def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
     pending = store.create_pending_message(session, row.id, "hello")
     pending_seq = pending.seq
 
-    async def failing_deliver(_ember, _cli_session_id, _message):
+    async def failing_deliver(_ember, _cli_session_id, _message, _model=None):
         raise EmberSessionGone("terminal invoke failure")
 
     monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
@@ -290,7 +361,7 @@ def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, sessio
     session.commit()
     store.create_pending_message(session, row.id, "hello")
 
-    async def failing_deliver(_ember, _cli_session_id, _message):
+    async def failing_deliver(_ember, _cli_session_id, _message, _model=None):
         raise EmberVMTransportError("422 Unprocessable Entity")
 
     monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
@@ -316,7 +387,7 @@ def test_recreated_ember_session_adopts_new_cli_session_id(monkeypatch, session)
     pending_seq = pending.seq
     new_ember = EmberSession("ember-new", "token-new", 1754035300000)
 
-    async def succeeding_delivery(_ember, _cli_session_id, _message):
+    async def succeeding_delivery(_ember, _cli_session_id, _message, _model=None):
         return _completed_turn("hello")._replace(session_id="cli-new"), new_ember
 
     async def notify(*args, **kwargs):
@@ -352,7 +423,7 @@ def test_two_sends_are_serialized(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
     execution_order = []
 
-    async def fake_deliver(_ember, _cli_session_id, message):
+    async def fake_deliver(_ember, _cli_session_id, message, _model=None):
         execution_order.append(message)
         await asyncio.sleep(0.01)
         return _completed_delivery(message)
@@ -390,7 +461,7 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     )  # capture before expire_all(); the row is deleted on completion
     executions: list[str] = []
 
-    async def fake_deliver(_ember, _cli_session_id, message):
+    async def fake_deliver(_ember, _cli_session_id, message, _model=None):
         executions.append(message)
         await asyncio.sleep(0.01)
         return _completed_delivery(message)

@@ -34,6 +34,11 @@ CODEX_MODELS = {
     "terra": ("gpt-5.6-terra", "high"),
     "sol": ("gpt-5.6-sol", "high"),
 }
+CLAUDE_MODELS = {
+    "opus": "opus",
+    "sonnet": "sonnet",
+    "fable": "claude-fable-5",
+}
 DEFAULT_CODEX_MODEL = "luna"
 PI_MODELS = {
     "qwen": "qwen-plus",  # vLLM endpoint serves OpenAI Chat Completions API
@@ -453,6 +458,7 @@ class ClaudeProcess:
         self.init_event = None
         self.fatal_error = None
         self.session_id = None
+        self.model = None
         self.turn_lock = threading.Lock()
         self.process_lock = threading.Lock()
         self.current_result = None
@@ -487,7 +493,7 @@ class ClaudeProcess:
                 detail = completed.stderr.decode("utf-8", "replace").strip()
                 raise StartupError("git config failed for %s: %s" % (key, detail))
 
-    def _spawn(self, session_id=None, first_message=None):
+    def _spawn(self, session_id=None, first_message=None, model=None):
         if self.fatal_error is not None:
             raise StartupError(self.fatal_error)
         if not os.path.isdir(self.workspace):
@@ -511,6 +517,8 @@ class ClaudeProcess:
             "--permission-mode",
             permission_mode,
         ]
+        if model is not None:
+            command.extend(["--model", CLAUDE_MODELS.get(model, model)])
         if session_id:
             command.extend(["--resume", session_id])
         command.extend(["--append-system-prompt", VOICE_PROMPT])
@@ -587,6 +595,7 @@ class ClaudeProcess:
                     self.session_id = actual_session_id
                 elif session_id:
                     self.session_id = session_id
+                self.model = model
                 if event.get("apiKeySource") != "none":
                     message = "apiKeySource must be none, got %r" % event.get(
                         "apiKeySource"
@@ -703,16 +712,30 @@ class ClaudeProcess:
                     "session_id %r does not match active session %r"
                     % (session_id, self.session_id)
                 )
+            model_changed = model is not None and model != self.model
+            if process is not None and process.poll() is None and model_changed:
+                self._close_process(kill=False)
+                self._spawn(
+                    self.session_id or session_id,
+                    first_message=message,
+                    model=model,
+                )
+                process = self.process
+                message_sent = True
+            else:
+                message_sent = False
             if process is None or process.poll() is not None:
                 if process is not None:
                     self._close_process(kill=False)
                 # A request without an id resumes the last session after an
                 # interrupt or relight instead of silently creating a new one.
-                self._spawn(session_id or self.session_id, first_message=message)
+                self._spawn(
+                    session_id or self.session_id,
+                    first_message=message,
+                    model=model,
+                )
                 process = self.process
                 message_sent = True
-            else:
-                message_sent = False
             if not self.ready():
                 raise StartupError(self.fatal_error or "shim not ready")
             self.current_result = None
@@ -1157,7 +1180,7 @@ class ProcessManager:
             return adapter.turn(message, session_id, model or DEFAULT_PI_MODEL)
         if adapter is self.codex:
             return adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
-        return adapter.turn(message, session_id)
+        return adapter.turn(message, session_id, model)
 
     def interrupt(self):
         # An interrupt has no model in its request, so interrupt both adapters.

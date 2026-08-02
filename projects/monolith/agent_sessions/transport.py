@@ -66,6 +66,7 @@ class ShimTransport(Protocol):
         ember: EmberSession | None,
         cli_session_id: str | None,
         message: str,
+        model: str | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -159,6 +160,7 @@ class EmberVmShimTransport:
         ember: EmberSession | None,
         cli_session_id: str | None,
         message: str,
+        model: str | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -185,9 +187,10 @@ class EmberVmShimTransport:
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None
         ) -> Turn:
-            body = json.dumps(
-                {"message": message, "session_id": current_cli_session_id}
-            )
+            payload = {"message": message, "session_id": current_cli_session_id}
+            if model is not None:
+                payload["model"] = model
+            body = json.dumps(payload)
             url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
             headers = {
                 "Authorization": f"Bearer {current.session_token}",
