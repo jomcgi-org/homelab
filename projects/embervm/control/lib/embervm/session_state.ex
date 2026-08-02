@@ -50,6 +50,7 @@ defmodule Embervm.SessionState do
     :creating,
     :running,
     :banking,
+    :parking,
     :banked,
     :parked,
     :relighting,
@@ -68,6 +69,8 @@ defmodule Embervm.SessionState do
     :bank_ready,
     :bank_abort,
     :park,
+    :park_complete,
+    :rejoin_ready,
     :parked_abort,
     :relight,
     :relight_ready,
@@ -96,7 +99,10 @@ defmodule Embervm.SessionState do
     # transient (non-precondition) relight failure leaves the snapshot intact: the
     # session returns to banked and a later invoke re-relights.
     {:banked, :relight} => :relighting,
-    {:running, :park} => :parked,
+    {:running, :park} => :parking,
+    {:parking, :park_complete} => :parked,
+    {:parking, :expire} => :expired,
+    {:relighting, :rejoin_ready} => :running,
     {:parked, :relight} => :relighting,
     {:parked, :expire} => :expired,
     {:parked, :destroy} => :destroyed,
@@ -139,6 +145,7 @@ defmodule Embervm.SessionState do
           :creating
           | :running
           | :banking
+          | :parking
           | :banked
           | :parked
           | :relighting
@@ -154,6 +161,8 @@ defmodule Embervm.SessionState do
           | :bank_ready
           | :relight
           | :park
+          | :park_complete
+          | :rejoin_ready
           | :parked_abort
           | :relight_ready
           | :expire

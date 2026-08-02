@@ -23,7 +23,10 @@ defmodule Embervm.SessionStateTest do
     {:relighting, :relight_ready} => :running,
     {:relighting, :relight_abort} => :banked,
     {:relighting, :parked_abort} => :parked,
-    {:running, :park} => :parked,
+    {:running, :park} => :parking,
+    {:parking, :park_complete} => :parked,
+    {:parking, :expire} => :expired,
+    {:relighting, :rejoin_ready} => :running,
     {:running, :expire} => :expired,
     {:banked, :expire} => :expired,
     {:banked, :evict} => :evicted,
@@ -47,9 +50,9 @@ defmodule Embervm.SessionStateTest do
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 31
-    assert length(SessionState.events()) == 15
-    assert length(SessionState.states()) == 11
+    assert map_size(@legal) == 33
+    assert length(SessionState.events()) == 16
+    assert length(SessionState.states()) == 12
 
     for state <- SessionState.states(), event <- SessionState.events() do
       case Map.fetch(@legal, {state, event}) do
@@ -78,9 +81,12 @@ defmodule Embervm.SessionStateTest do
   end
 
   test "only running can park" do
-    assert SessionState.transition(:running, :park) == {:ok, :parked}
+    assert SessionState.transition(:running, :park) == {:ok, :parking}
+    assert SessionState.transition(:parking, :park_complete) == {:ok, :parked}
+    assert SessionState.transition(:parking, :expire) == {:ok, :expired}
     assert SessionState.transition(:banked, :park) == {:error, {:illegal_transition, :banked, :park}}
     assert SessionState.transition(:relighting, :park) == {:error, {:illegal_transition, :relighting, :park}}
+    assert SessionState.transition(:banked, :park) == {:error, {:illegal_transition, :banked, :park}}
   end
 
   test "parked_abort recovers a failed parked relight" do

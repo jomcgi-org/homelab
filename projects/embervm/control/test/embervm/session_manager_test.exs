@@ -84,7 +84,7 @@ defmodule Embervm.SessionManagerTest do
     session_opts = [
       channel_fun: Keyword.get(opts, :session_channel_fun, fn _node -> {:ok, :ch} end),
       assign_fun: assign_fun,
-      destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{}} end),
+      destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end),
       invalidate_fun: fn _node, _ch -> :ok end
     ]
 
@@ -102,6 +102,7 @@ defmodule Embervm.SessionManagerTest do
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
         bank_fun: Keyword.get(opts, :bank_fun, fn _ch, req -> {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}} end),
         relight_fun: Keyword.get(opts, :relight_fun, fn _ch, _req -> {:ok, %RelightResponse{vm_id: "vm-relit"}} end),
+        delete_session_volume_fun: Keyword.get(opts, :delete_session_volume_fun, fn _ch, _req -> {:ok, %{}} end),
         session_opts: session_opts,
         async_writer: writer,
         async_lifecycle_writes: async
@@ -518,6 +519,30 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, _} = SessionStore.verify_token(ctx.store, created.session_id, created.token)
   end
 
+  test "crash-window park completes to parked on restart adoption" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-crash-window"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx)
+    {:ok, _} = SessionStore.transition(ctx.store, created.session_id, :park, :session_parking,
+      %{reason: "idled", volume_node_id: "node-4"}, %{volume_node_id: "node-4"})
+
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :parked
+    assert :session_parking in op_kinds_for(ctx, created.session_id)
+    assert :session_parked in op_kinds_for(ctx, created.session_id)
+  end
+
+  test "memory false with filesystem disabled destroys on idle, not parks" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-no-fs", persistence: %{memory: false, filesystem: %{enabled: false}})
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-no-fs", "p1")
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+    assert :session_destroyed in op_kinds_for(ctx, created.session_id)
+  end
+
   test "invoke_on_parked_reprimes_on_volume_node" do
     ctx =
       start_stack(
@@ -541,8 +566,70 @@ defmodule Embervm.SessionManagerTest do
     assert session.vm_id == "vm-rejoined"
   end
 
+  test "rejoin delivery failure destroys the primed VM and leaves session parked" do
+    parent = self()
+    ctx = start_stack(
+      prime_fun: fake_prime_fun("vm-rejoin-failed"),
+      channel_fun: fake_channel_fun(),
+      assign_fun: fn _ch, _req -> {:error, :delivery_failed} end,
+      destroy_fun: fn _ch, vm -> send(parent, {:destroyed, vm}); {:ok, %{teardown_confirmed: true}} end
+    )
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:error, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "retry"})
+    assert_receive {:destroyed, "vm-rejoin-failed"}, 1_000
+    # Wait for the rejoin_assign_failed handler to complete the two-phase park
+    parked = wait_for_state(ctx, created.session_id, :parked)
+    assert parked.state == :parked
+    assert {:ok, _} = SessionStore.verify_token(ctx.store, created.session_id, created.token)
+  end
+
+  test "parked session with filesystem disabled cannot rejoin an empty workspace" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-fs-disabled"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+    {:ok, entry} = WorkloadCatalog.fetch(ctx.cat_table, "wl-persist")
+    WorkloadCatalog.upsert(ctx.cat_table, "wl-persist", %{entry | persistence: %{memory: false, filesystem: %{enabled: false}}})
+
+    assert {:error, {:gone, "persistence_disabled"}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "must not rejoin"})
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+  end
+
+  test "volume delete is best effort when destroying parked session" do
+    parent = self()
+    ctx = start_stack(
+      prime_fun: fake_prime_fun("vm-volume-delete"),
+      channel_fun: fake_channel_fun(),
+      delete_session_volume_fun: fn _ch, req -> send(parent, {:volume_deleted, req.lineage_id}); {:error, :node_gone} end
+    )
+    created = create_persistence_session(ctx)
+    session_id = created.session_id
+    park_session(ctx, created)
+
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert_receive {:volume_deleted, ^session_id}, 1_000
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+  end
+
   test "rejoin_prime_failure_leaves_parked" do
-    ctx = start_stack(prime_fun: fn _channel, _req -> {:error, :no_capacity} end, channel_fun: fake_channel_fun())
+    # Use a counter to make prime_fun work for create but fail for rejoin
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    prime_fun = fn _channel, _req ->
+      n = Agent.get_and_update(counter, fn c -> {c, c + 1} end)
+      if n == 0 do
+        # First call (create) succeeds
+        {:ok, %PrimeResponse{vm_id: "vm-rejoin-prime-fail"}}
+      else
+        # Subsequent calls (rejoin) fail
+        {:error, :no_capacity}
+      end
+    end
+    
+    ctx = start_stack(prime_fun: prime_fun, channel_fun: fake_channel_fun())
     created = create_persistence_session(ctx)
     park_session(ctx, created)
 
@@ -595,7 +682,9 @@ defmodule Embervm.SessionManagerTest do
       start_stack(
         claim_fun: fake_claim_fun("vm-regular"),
         channel_fun: fake_channel_fun(),
-        bank_fun: fn _channel, req -> {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}},
+        bank_fun: fn _channel, req ->
+          {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}}
+        end,
         relight_fun: fn _channel, _req -> {:ok, %RelightResponse{vm_id: "vm-regular-relit"}} end
       )
 

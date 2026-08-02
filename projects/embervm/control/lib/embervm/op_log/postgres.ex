@@ -749,6 +749,12 @@ defmodule Embervm.OpLog.Postgres do
     ])
   end
 
+  defp project(conn, %Op{kind: :session_parking} = op, _seq) do
+    exec(conn, "UPDATE sessions SET state='parking', volume_node_id=$1, updated_at=$2 WHERE session_id=$3", [
+      Map.get(op.payload, :volume_node_id), op.ts, op.session_id
+    ])
+  end
+
   # Guarded against terminal states so a deferred async relit append cannot
   # resurrect a since-destroyed session (mirrors the SQLite backend), ADR
   # embervm/014 decision 2. Inert under the gate off.

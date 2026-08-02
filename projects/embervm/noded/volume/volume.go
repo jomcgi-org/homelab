@@ -517,6 +517,8 @@ func (m *Manager) SessionVolumePath(workload, lineageID string) string {
 }
 
 // CreateSession provisions a sparse per-lineage workspace image idempotently.
+// Existing images are never resized. A changed workspace size applies only to
+// new lineages, and atomic publication ensures Prime never sees a partial image.
 func (m *Manager) CreateSession(workload, lineageID string, sizeBytes uint64) error {
 	if workload == "" || lineageID == "" {
 		return fmt.Errorf("volume: workload and lineage required")
@@ -528,22 +530,49 @@ func (m *Manager) CreateSession(workload, lineageID string, sizeBytes uint64) er
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), "workspace.img.tmp-")
 	if err != nil {
 		if os.IsExist(err) {
 			return nil
 		}
 		return fmt.Errorf("volume: create session image: %w", err)
 	}
+	tmp := f.Name()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("volume: chmod session image: %w", err)
+	}
 	if err := f.Truncate(int64(sizeBytes)); err != nil {
 		_ = f.Close()
-		_ = os.Remove(path)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("volume: size session image: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("volume: close session image: %w", err)
 	}
+	// Link is atomic and refuses to replace a concurrently published image.
+	if err := os.Link(tmp, path); err != nil {
+		if os.IsExist(err) {
+			_ = os.Remove(tmp)
+			return nil
+		}
+		_ = os.Remove(tmp)
+		return fmt.Errorf("volume: publish session image: %w", err)
+	}
+	_ = os.Remove(tmp)
 	return nil
+}
+
+// DeleteSession removes one lineage workspace. Existing images are never resized.
+func (m *Manager) DeleteSession(workload, lineageID string) error {
+	if workload == "" || lineageID == "" {
+		return fmt.Errorf("volume: workload and lineage required")
+	}
+	if m.IsAttached(workload) {
+		return fmt.Errorf("volume: workload %q volume is attached; detach before deleting", workload)
+	}
+	return os.RemoveAll(filepath.Join(m.root, "session", workload, lineageID))
 }
 
 // Delete removes a workload's volume directory (vol.img plus the generation
