@@ -380,6 +380,46 @@ def test_turn_extracts_voice_activity_and_tolerates_malformed_json(
     manager._close_process(kill=True)
 
 
+def test_claude_model_argv_and_mid_session_switch_resumes(tmp_path, monkeypatch):
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("first", model="opus")
+    assert (
+        json.loads(args_path.read_text())[
+            json.loads(args_path.read_text()).index("--model") + 1
+        ]
+        == "opus"
+    )
+    manager.turn("second", session_id="init-sid", model="fable")
+    args = json.loads(args_path.read_text())
+    assert args[args.index("--resume") + 1] == "init-sid"
+    assert args[args.index("--model") + 1] == "claude-fable-5"
+    manager._close_process(kill=True)
+
+
+def test_claude_model_none_keeps_legacy_argv(tmp_path, monkeypatch):
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("first")
+    assert "--model" not in json.loads(args_path.read_text())
+    manager._close_process(kill=True)
+
+
+def test_manager_passes_claude_model_to_adapter():
+    manager = object.__new__(shim.ProcessManager)
+
+    class Claude:
+        def turn(self, *args):
+            return args
+
+    manager.claude = Claude()
+    manager.codex = object()
+    manager.pi = object()
+    assert manager.turn("hello", "sid", "fable") == ("hello", "sid", "fable")
+
+
 def test_first_turn_is_sent_before_delayed_cli_init_and_only_once(
     tmp_path, monkeypatch
 ):
@@ -823,7 +863,7 @@ def test_cli_crash_is_422(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch)
     original = manager._spawn
 
-    def crash_spawn(session_id=None, first_message=None):
+    def crash_spawn(session_id=None, first_message=None, model=None):
         raise RuntimeError("claude crashed during turn, exit code 7")
 
     manager._spawn = crash_spawn

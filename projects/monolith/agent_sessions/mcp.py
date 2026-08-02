@@ -11,6 +11,7 @@ from sqlmodel import Session
 
 import agent.api as agent_api
 from agent_sessions import store, voice
+from agent_sessions import model_family
 from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.transport import (
     EmberSession,
@@ -55,18 +56,22 @@ def _persist_ember_session(session_id: int, ember: EmberSession) -> None:
         )
 
 
-def _persist_pending_message(session_id: int, message_text: str) -> int:
+def _persist_pending_message(
+    session_id: int, message_text: str, model: str | None
+) -> int:
     with Session(get_engine()) as db_session:
-        row = store.create_pending_message(db_session, session_id, message_text)
+        row = store.create_pending_message(db_session, session_id, message_text, model)
         assert row.seq is not None
         return row.seq
 
 
 def _persist_session(
-    local_session_id: str, workspace: str, branch: str
+    local_session_id: str, workspace: str, branch: str, model: str | None
 ) -> AgentSession:
     with Session(get_engine()) as db_session:
-        return store.create_session(db_session, local_session_id, workspace, branch)
+        return store.create_session(
+            db_session, local_session_id, workspace, branch, model
+        )
 
 
 def _turn_status(turn: Turn) -> str:
@@ -116,9 +121,17 @@ def _persist_turn_from_pending_sync(
     voice_summary: str,
     status: str,
     cli_session_id: str | None = None,
+    model: str | None = None,
 ) -> AgentTurn:
     return store.persist_turn_from_pending_sync(
-        session_id, turn_seq, prompt, turn, voice_summary, status, cli_session_id
+        session_id,
+        turn_seq,
+        prompt,
+        turn,
+        voice_summary,
+        status,
+        cli_session_id,
+        model,
     )
 
 
@@ -248,6 +261,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 existing_ember,
                 cli_session_id,
                 row.message_text,
+                row.model,
             )
             # Check if claim was stolen while deliver was running
             if claim_stolen:
@@ -286,6 +300,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 summary,
                 status,
                 turn.session_id,  # Store for resumption
+                row.model,
             )
         except IntegrityError as e:
             # Turn already exists (duplicate seq), likely from a retry of a completed turn.
@@ -389,20 +404,51 @@ def _activity_values(turns: list[AgentTurn]) -> tuple[list[str], list[str]]:
 
 
 @mcp.tool
-async def monolith_agent_session_start(prompt: str) -> dict:
+async def monolith_agent_session_start(prompt: str, model: str | None = None) -> dict:
     """Start a voice-drivable Claude Code session and queue its first turn."""
+    try:
+        model_family(model)
+    except ValueError as exc:
+        return {"accepted": False, "error": str(exc)}
     local_session_id = str(uuid4())
     workspace = "<guest>"  # Workspace is in the guest, not the pod
-    row = await asyncio.to_thread(_persist_session, local_session_id, workspace, "main")
-    turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt)
+    row = await asyncio.to_thread(
+        _persist_session, local_session_id, workspace, "main", model
+    )
+    turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     _schedule_next_message(row.id)
     return {"accepted": True, "session_id": row.id, "turn": turn}
 
 
 @mcp.tool
-async def monolith_agent_session_send(session_id: int, message: str) -> dict:
+async def monolith_agent_session_send(
+    session_id: int, message: str, model: str | None = None
+) -> dict:
     """Enqueue a message for a session, returning once accepted rather than once complete."""
-    turn = await asyncio.to_thread(_persist_pending_message, session_id, message)
+    row, _ = await asyncio.to_thread(_load_session, session_id)
+    if row is None:
+        return {"accepted": False, "error": f"Unknown agent session {session_id}"}
+    try:
+        requested_family = (
+            model_family(model) if model is not None else model_family(row.model)
+        )
+    except ValueError as exc:
+        return {"accepted": False, "error": str(exc)}
+    session_family = model_family(row.model)
+    if requested_family != session_family:
+        return {
+            "accepted": False,
+            "error": (
+                f"Model family mismatch: session family is {session_family}, "
+                f"requested model family is {requested_family}"
+            ),
+        }
+    effective_model = model or row.model
+    turn = await asyncio.to_thread(
+        _persist_pending_message, session_id, message, effective_model
+    )
+    with Session(get_engine()) as db_session:
+        store.update_session_status(db_session, session_id, "running")
     _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}
 
@@ -418,6 +464,7 @@ async def monolith_agent_session_status(session_id: int) -> dict:
     denials = _decode_json(last.permission_denials, []) if last else []
     return {
         "status": row.status,
+        "model": row.model,
         "voice": row.voice_summary,
         "files_touched": files,
         "commands_run": commands,
@@ -442,4 +489,8 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
     """Return the verbatim result and tool activities for one session turn."""
     _, turns = await asyncio.to_thread(_load_session, session_id)
     selected = _select_turn(turns, turn)
-    return {"result_text": selected.result_text, "activities": _activities(selected)}
+    return {
+        "result_text": selected.result_text,
+        "model": selected.model,
+        "activities": _activities(selected),
+    }

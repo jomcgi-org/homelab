@@ -16,10 +16,17 @@ logger = logging.getLogger(__name__)
 
 
 def create_session(
-    session: Session, local_session_id: str, workspace: str, branch: str
+    session: Session,
+    local_session_id: str,
+    workspace: str,
+    branch: str,
+    model: str | None = None,
 ) -> AgentSession:
     row = AgentSession(
-        local_session_id=local_session_id, workspace=workspace, branch=branch
+        local_session_id=local_session_id,
+        workspace=workspace,
+        branch=branch,
+        model=model,
     )
     session.add(row)
     session.commit()
@@ -89,10 +96,12 @@ def create_turn(
     usage: dict | None,
     cost_usd: float | None,
     cli_session_id: str | None = None,
+    model: str | None = None,
 ) -> AgentTurn:
     row = AgentTurn(
         session_id=session_id,
         seq=seq,
+        model=model,
         prompt=prompt,
         voice_summary=voice_summary,
         result_text=result_text,
@@ -144,7 +153,7 @@ def get_turn(session: Session, session_id: int, turn_seq: int) -> AgentTurn | No
 
 
 def create_pending_message(
-    session: Session, session_id: int, message_text: str
+    session: Session, session_id: int, message_text: str, model: str | None = None
 ) -> PendingMessage:
     """Enqueue a message durably and return its per-session turn sequence.
 
@@ -175,6 +184,7 @@ def create_pending_message(
             row = PendingMessage(
                 session_id=session_id,
                 seq=seq,
+                model=model,
                 message_text=message_text,
             )
             session.add(row)
@@ -277,6 +287,7 @@ def persist_turn_from_pending_sync(
     voice_summary: str,
     status: str,
     cli_session_id: str | None = None,
+    model: str | None = None,
 ) -> AgentTurn:
     """Persist the result of a queued message using a fresh database session."""
     with Session(get_engine()) as session:
@@ -298,6 +309,7 @@ def persist_turn_from_pending_sync(
             usage,
             turn.total_cost_usd,
             cli_session_id,
+            model,
         )
         # The guest-reported CLI session_id is authoritative for this VM.
         if cli_session_id:
@@ -343,6 +355,7 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
             commit_sha=None,
             usage={},
             cost_usd=0.0,
+            model=row.model,
         )
         update_session_status(session, session_id, "warn", error_summary)
         # Delete the pending row to stop infinite retries
