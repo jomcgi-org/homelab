@@ -69,6 +69,11 @@ apko_image(
         # registry tarball (see claude_code_cli in MODULE.bazel). amd64 only, so
         # this is the concrete per-arch tar rather than a multiarch_tars entry.
         "@claude_code_cli//:tar_amd64",
+        # The Codex CLI, a statically linked musl binary from the GitHub release
+        # (see codex_cli in MODULE.bazel). It drives the Luna/Terra/Sol models
+        # through the same shim, spawn-per-turn with `exec resume` rather than
+        # the claude CLI's long-lived stream-json REPL (#4234).
+        "@codex_cli//:tar_amd64",
     ],
 )
 

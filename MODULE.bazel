@@ -671,6 +671,33 @@ multiarch_http_file(
 # The version is pinned rather than floating: the guest contract depends on
 # observed CLI behaviour (stream-json event shapes, the synthetic interrupt turn,
 # result field names), so a silent upgrade could change the shim's inputs.
+# Codex CLI for the EmberVM claude runtime guest, the Luna/Terra/Sol adapter
+# (issue #4234). Vendored from the GitHub release rather than npm: the npm
+# @openai/codex package is a thin JS launcher that resolves a per-platform
+# package at runtime, and those platform packages are not on the public
+# registry. The release tarball holds a single statically linked musl binary,
+# so unlike the claude CLI it needs no glibc from the base image.
+#
+# amd64 only, matching claude_code_cli and the guest image (runtimes/claude
+# apko.yaml declares archs: [x86_64]): every cluster node and the RBE executor
+# are amd64. It is also forced here, because each release tarball holds a single
+# ARCH-NAMED file (codex-x86_64-unknown-linux-musl) and multiarch_http_file
+# takes ONE extract_path for both arches. Adding arm64 means teaching the rule
+# per-arch extract paths, not just adding a URL.
+#
+# Pinned, not floating: the shim's adapter depends on observed behaviour
+# (thread.started/thread_id, item.completed agent_message, turn.completed usage,
+# and the `exec resume <id> <prompt>` argument order, which differs from plain
+# `exec` in that it rejects --sandbox). A silent upgrade could change those.
+multiarch_http_file(
+    name = "codex_cli",
+    amd64_sha256 = "5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a",
+    amd64_url = "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz",
+    binary_name = "codex",
+    extract_path = "codex-x86_64-unknown-linux-musl",
+    package_dir = "/usr/local/bin",
+)
+
 multiarch_http_file(
     name = "claude_code_cli",
     amd64_sha256 = "25d2e2cae6d3d1d5ceeaf0da02e83c45c16455e45efa1ab305395dc05227ad0d",
