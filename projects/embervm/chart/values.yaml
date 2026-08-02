@@ -1188,3 +1188,7 @@ claudeRuntimeWorkload:
     bankedTtlSeconds: 21600
     maxSessions: 2
     invokeQueueCap: 4
+  invocation:
+    # Total duration for a session invoke. CRD maximum is 900s (workload-crd.yaml:868).
+    # Ordering: shim per-event 600s < CP total 900s < monolith outer 1800s.
+    timeoutSeconds: 900

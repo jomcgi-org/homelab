@@ -105,7 +105,7 @@ defmodule Embervm.DispatcherTest do
       floor: Keyword.get(opts, :floor, 0),
       mem_mib: Keyword.get(opts, :mem_mib, 0),
       invoke_path: "/",
-      timeout_ms: 5_000,
+      timeout_ms: Keyword.get(opts, :timeout_ms, 5_000),
       result_ttl_ms: 60_000,
       result_max_bytes: Keyword.get(opts, :result_max_bytes, 1_048_576),
       retry: Keyword.get(opts, :retry, %{max_attempts: 3, backoff_ms: 1, backoff_cap_ms: 1, retry_on: [:transport, :timeout, :guest5xx]}),
@@ -1027,6 +1027,32 @@ defmodule Embervm.DispatcherTest do
     else
       Process.sleep(5)
       wait_open(gate)
+    end
+  end
+
+  # Direct unit tests for transport deadline arithmetic (see session_manager_test.exs).
+  describe "transport_timeout/1" do
+    test "non-default positive timeout_ms adds headroom" do
+      assert Embervm.Dispatcher.transport_timeout(45_000) == 50_000
+    end
+
+    test "default timeout_ms (90s) adds headroom" do
+      assert Embervm.Dispatcher.transport_timeout(90_000) == 95_000
+    end
+
+    test "nil timeout_ms falls back to 95s" do
+      assert Embervm.Dispatcher.transport_timeout(nil) == 95_000
+    end
+
+    test "zero timeout_ms falls back to 95s" do
+      assert Embervm.Dispatcher.transport_timeout(0) == 95_000
+    end
+
+    test "transport timeout ALWAYS exceeds application deadline (invariant)" do
+      for timeout_ms <- [1, 10, 100, 1_000, 50_000, 90_000] do
+        result = Embervm.Dispatcher.transport_timeout(timeout_ms)
+        assert result > timeout_ms, "transport timeout #{result} must exceed deadline #{timeout_ms}"
+      end
     end
   end
 end

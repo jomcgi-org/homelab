@@ -2739,8 +2739,9 @@ defmodule Embervm.BaseBuilder do
   # frame, swallowing the error so BaseBuilder never logged a failure and the
   # Workload wedged in BaseBuilding. An explicit generous per-call timeout (10 min
   # in ms) covers any realistic base build; BuildBase's own BootReadyTimeout is the
-  # real inner bound. This is the SLOW-path build only; the hot-path Prime/Assign
-  # calls keep the short default deliberately.
+  # real inner bound. This is the SLOW-path build only; Prime keeps the short default
+  # deliberately (fast allocation); Assign and SessionAssign now pass explicit
+  # deadlines to match their application budgets.
   defp default_build(channel, %BuildBaseRequest{} = request) do
     NodeService.Stub.build_base(channel, request, timeout: 600_000)
   end

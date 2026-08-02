@@ -163,7 +163,7 @@ defmodule Embervm.SessionManagerTest do
       class: Keyword.get(opts, :class, "session"),
       image_ref: "img@sha256:abc",
       invoke_path: "/",
-      timeout_ms: 90_000,
+      timeout_ms: Keyword.get(opts, :timeout_ms, 90_000),
       cap: Keyword.get(opts, :cap, 8),
       floor: 1,
       session:
@@ -862,5 +862,35 @@ defmodule Embervm.SessionManagerTest do
       draining: false,
       updated_at: 5_000_000
     })
+  end
+
+  # Direct unit tests for transport deadline arithmetic, ensuring the fix
+  # (transport timeout EXCEEDS application deadline) cannot be reverted unnoticed.
+  describe "transport_timeout/1" do
+    test "non-default positive timeout_ms adds headroom" do
+      # Use 45s (non-default) so a hardcoded constant cannot pass by luck.
+      assert Embervm.Session.transport_timeout(45_000) == 50_000
+    end
+
+    test "default timeout_ms (90s) adds headroom" do
+      assert Embervm.Session.transport_timeout(90_000) == 95_000
+    end
+
+    test "nil timeout_ms falls back to 95s" do
+      assert Embervm.Session.transport_timeout(nil) == 95_000
+    end
+
+    test "zero timeout_ms falls back to 95s" do
+      assert Embervm.Session.transport_timeout(0) == 95_000
+    end
+
+    test "transport timeout ALWAYS exceeds application deadline (invariant)" do
+      # Property: for any positive timeout_ms, result > timeout_ms.
+      # This is the bug that was fixed: the old code defaulted to 10s < 90s.
+      for timeout_ms <- [1, 10, 100, 1_000, 50_000, 90_000] do
+        result = Embervm.Session.transport_timeout(timeout_ms)
+        assert result > timeout_ms, "transport timeout #{result} must exceed deadline #{timeout_ms}"
+      end
+    end
   end
 end

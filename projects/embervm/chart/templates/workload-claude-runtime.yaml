@@ -55,4 +55,14 @@ spec:
     bankedTtlSeconds: {{ .Values.claudeRuntimeWorkload.session.bankedTtlSeconds }}
     maxSessions: {{ .Values.claudeRuntimeWorkload.session.maxSessions }}
     invokeQueueCap: {{ .Values.claudeRuntimeWorkload.session.invokeQueueCap }}
+  invocation:
+    # Total duration bound for a session invoke (CP transport plus guest execution).
+    # Maximum of 900s per CRD schema (workload-crd.yaml:868); increase this only
+    # if CRD maximum is raised. The shim's per-event watchdog (TURN_READ_TIMEOUT)
+    # is 600s, and the monolith's outer bound (agent_sessions/transport.py) is 1800s,
+    # so the ordering is: shim inactivity 600s < CP total {{ .Values.claudeRuntimeWorkload.invocation.timeoutSeconds }}s < monolith outer 1800s.
+    # The innermost timeout always fires first, giving the caller a specific error
+    # rather than a generic transport cancel. A real agent turn (model round trip
+    # plus tool calls plus any VM build on cache miss) needs substantial headroom.
+    timeoutSeconds: {{ .Values.claudeRuntimeWorkload.invocation.timeoutSeconds }}
 {{- end }}
