@@ -480,11 +480,29 @@ defmodule Embervm.Session do
 
   # -- defaults --------------------------------------------------------------
 
-  defp default_session_assign(channel, %SessionAssignRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.session_assign(channel, req)
+  defp default_session_assign(channel, %SessionAssignRequest{timeout_ms: timeout_ms} = req) do
+    Embervm.Node.V1.NodeService.Stub.session_assign(channel, req, timeout: transport_timeout(timeout_ms))
   end
 
   defp default_destroy(channel, vm_id) do
     Embervm.Node.V1.NodeService.Stub.destroy(channel, %Embervm.Node.V1.DestroyRequest{vm_id: vm_id})
+  end
+
+  # Transport timeout must exceed the application deadline (timeout_ms) the guest is
+  # told it has, plus headroom so the guest-side timeout fires first and noded can
+  # respond with a structured deadline-exceeded error before the transport deadline
+  # hits. Without this, the caller gets {:server_closed_request, :cancel} (grpc-elixir
+  # 1.0.2 cancel-frame bug #4144) instead of noded's real status.
+  # Headroom is 5s: conservative, as a well-behaved guest should not approach its own
+  # timeout, and noded's error response is O(1ms). The misnamed default gRPC timeout
+  # is 10s; our guest default is 90s, so an explicit transport timeout is needed.
+  # MUST stay in sync with dispatcher.ex transport_timeout/1 (see there for motivation).
+  @default_timeout_ms 90_000
+  @headroom_ms 5_000
+  @doc false
+  def transport_timeout(nil), do: @default_timeout_ms + @headroom_ms
+  def transport_timeout(0), do: @default_timeout_ms + @headroom_ms
+  def transport_timeout(timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0 do
+    timeout_ms + @headroom_ms
   end
 end
