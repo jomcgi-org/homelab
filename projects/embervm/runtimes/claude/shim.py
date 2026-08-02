@@ -106,6 +106,21 @@ def _cli_privilege_kwargs():
     }
 
 
+def _ensure_cli_dir(path):
+    """Create a CLI state dir the CLI PROCESS can write into.
+
+    The shim may run as root while the CLI is dropped to the runtime uid, so a
+    bare makedirs here leaves a root-owned dir the CLI cannot create subdirs
+    in (observed live: pi dying with EACCES on mkdir /workspace/.pi/sessions).
+    Chown to the same uid/gid the CLI is spawned with whenever the shim is
+    root; a non-root shim already creates dirs the CLI owns.
+    """
+    os.makedirs(path, exist_ok=True)
+    kwargs = _cli_privilege_kwargs()
+    if kwargs:
+        os.chown(path, kwargs["user"], kwargs["group"])
+
+
 def _truncate_ring_for_error(ring, max_len=1500):
     """Truncate the ring buffer for inclusion in an error message."""
     if not ring:
@@ -846,7 +861,7 @@ class CodexProcess:
         # The workspace is also where session files must sit for thread resume to
         # survive bank/relight once workspaces ride the durable volume.
         codex_home = os.path.join(self.workspace, ".codex")
-        os.makedirs(codex_home, exist_ok=True)
+        _ensure_cli_dir(codex_home)
         child_env = os.environ.copy()
         child_env.update(
             {
@@ -1020,7 +1035,8 @@ class PiProcess:
         # guest, so pi's state dir lives under the writable workspace, which is
         # also where session files must sit to survive bank/relight.
         pi_home = os.path.join(self.workspace, ".pi")
-        os.makedirs(os.path.join(pi_home, "agent"), exist_ok=True)
+        _ensure_cli_dir(pi_home)
+        _ensure_cli_dir(os.path.join(pi_home, "agent"))
         child_env = os.environ.copy()
         child_env.update(
             {
@@ -1035,7 +1051,7 @@ class PiProcess:
 
     def _write_model_config(self, pi_home):
         agent_dir = os.path.join(pi_home, "agent")
-        os.makedirs(agent_dir, exist_ok=True)
+        _ensure_cli_dir(agent_dir)
         config = {
             "providers": {
                 "openai-completions": {
