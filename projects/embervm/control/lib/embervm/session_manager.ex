@@ -653,7 +653,27 @@ defmodule Embervm.SessionManager do
       type: :worker
     }
 
-    DynamicSupervisor.start_child(state.supervisor, spec)
+    start_child_over_registry_sweep(state.supervisor, spec)
+  end
+
+  # terminate_child returns when the old session process has exited, but the Registry
+  # frees its :unique key only after processing the monitor DOWN, so a fast
+  # bank->relight (or adoption restart) can land here while a DEAD pid still holds
+  # the key and spuriously fail the session. Retry over that window for a dead
+  # holder only; a LIVE holder is a genuine double start and is surfaced as-is.
+  defp start_child_over_registry_sweep(supervisor, spec, attempts \\ 10) do
+    case DynamicSupervisor.start_child(supervisor, spec) do
+      {:error, {:already_started, pid}} = error ->
+        if Process.alive?(pid) or attempts <= 1 do
+          error
+        else
+          Process.sleep(10)
+          start_child_over_registry_sweep(supervisor, spec, attempts - 1)
+        end
+
+      other ->
+        other
+    end
   end
 
   # Start (or restart) a session process from a durable session row + its catalog
