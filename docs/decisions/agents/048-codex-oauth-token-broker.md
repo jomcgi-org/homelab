@@ -1,7 +1,7 @@
 # ADR 048: Codex Subscription OAuth, a Single-Owner Token Broker for Guest Turns
 
 **Author:** jomcgi
-**Status:** Proposed
+**Status:** Accepted
 **Created:** 2026-08-02
 **Extends:** [047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) (the broker direction this applies to a second provider)
 **Preserves:** [023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md) (the concealment boundary: no live credential ever enters a guest)
