@@ -35,6 +35,16 @@ def _load_session(session_id: int) -> tuple[AgentSession | None, list[AgentTurn]
         return row, store.get_turns(db_session, session_id) if row else []
 
 
+def _load_session_row(session_id: int) -> AgentSession | None:
+    with Session(get_engine()) as db_session:
+        return store.get_session(db_session, session_id)
+
+
+def _set_session_status(session_id: int, status: str) -> None:
+    with Session(get_engine()) as db_session:
+        store.update_session_status(db_session, session_id, status)
+
+
 def _ember_session(row: AgentSession) -> EmberSession | None:
     if row.ember_session_id and row.ember_session_token:
         return EmberSession(
@@ -405,7 +415,15 @@ def _activity_values(turns: list[AgentTurn]) -> tuple[list[str], list[str]]:
 
 @mcp.tool
 async def monolith_agent_session_start(prompt: str, model: str | None = None) -> dict:
-    """Start a voice-drivable Claude Code session and queue its first turn."""
+    """Start a voice-drivable coding agent session and queue its first turn.
+
+    Args:
+        prompt: The first message for the session.
+        model: Optional model, which also pins the session's adapter family.
+            Claude family: opus, sonnet, fable. Codex family: luna, terra,
+            sol. Pi family: qwen. Omit for the claude CLI default. Later
+            sends may only name models within the pinned family.
+    """
     try:
         model_family(model)
     except ValueError as exc:
@@ -424,17 +442,26 @@ async def monolith_agent_session_start(prompt: str, model: str | None = None) ->
 async def monolith_agent_session_send(
     session_id: int, message: str, model: str | None = None
 ) -> dict:
-    """Enqueue a message for a session, returning once accepted rather than once complete."""
-    row, _ = await asyncio.to_thread(_load_session, session_id)
+    """Enqueue a message for a session, returning once accepted rather than once complete.
+
+    Args:
+        session_id: The session to send to.
+        message: The message text for the next turn.
+        model: Optional per-turn model within the session's pinned family.
+            Claude family: opus, sonnet, fable. Codex family: luna, terra,
+            sol. Pi family: qwen. Defaults to the session's model.
+    """
+    row = await asyncio.to_thread(_load_session_row, session_id)
     if row is None:
         return {"accepted": False, "error": f"Unknown agent session {session_id}"}
     try:
-        requested_family = (
-            model_family(model) if model is not None else model_family(row.model)
-        )
+        # Both lookups stay inside the try: a session pinned to a model whose
+        # alias has since been retired must produce the readable rejection, not
+        # an uncaught ValueError out of the tool.
+        session_family = model_family(row.model)
+        requested_family = model_family(model) if model is not None else session_family
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
-    session_family = model_family(row.model)
     if requested_family != session_family:
         return {
             "accepted": False,
@@ -447,8 +474,7 @@ async def monolith_agent_session_send(
     turn = await asyncio.to_thread(
         _persist_pending_message, session_id, message, effective_model
     )
-    with Session(get_engine()) as db_session:
-        store.update_session_status(db_session, session_id, "running")
+    await asyncio.to_thread(_set_session_status, session_id, "running")
     _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}
 
