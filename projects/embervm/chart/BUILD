@@ -50,6 +50,7 @@ helm_chart(
         # resolve to the same pinned digest.
         "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
         "scratchPrep.image": "//projects/embervm/scratch-prep:image.info",
+        "tokenBroker.image": "//projects/embervm/tokenbroker/image:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

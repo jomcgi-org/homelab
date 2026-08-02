@@ -39,6 +39,17 @@ spec:
       kind: Deployment
       jsonPointers:
         - /spec/replicas
+    # The token broker owns the OAuth grant Secrets' DATA: the chart declares
+    # each embervm-oauth-grant-* Secret empty (so RBAC resourceNames can scope
+    # to it), and the broker writes the rotating token bundle into it at login
+    # and on every refresh. With selfHeal on, diffing /data would REVERT the
+    # bundle to empty on every sync, silently revoking the grant (the exact
+    # reseed-from-static-copy failure ADR 048 forbids), so data stays out of
+    # the diff for these Secrets.
+    - kind: Secret
+      name: embervm-oauth-grant-codex-cluster
+      jsonPointers:
+        - /data
   syncPolicy:
     automated:
       prune: true

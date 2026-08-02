@@ -1,0 +1,21 @@
+{{- if .Values.tokenBroker.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: codex-token-broker
+  namespace: {{ .Release.Namespace }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "embervm.tokenBroker.selectorLabels" . | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+      toPorts: [{ ports: [{ port: "8080", protocol: TCP }] }]
+  egress:
+    - toFQDNs: [{ matchName: auth.openai.com }]
+      toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
+    - toEntities: [kube-apiserver]
+      toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
+{{- end }}
