@@ -390,11 +390,16 @@ containers:
       {{- range $s := $ctx.Values.egress.secrets }}
       # secretRef ONLY. There is deliberately no literal-value branch: a chart that
       # accepts an inline credential is a chart someone eventually commits one to.
+      # optional: a catalog entry whose secret FIELD does not exist yet is the
+      # supported deferred state (the sidecar keeps the entry dead and DENIES its
+      # hosts); without optional the kubelet fails container creation on the
+      # missing key and wedges the brick roll (observed live, 0.1.350).
       - name: {{ $s.env }}
         valueFrom:
           secretKeyRef:
             name: {{ $s.secretRef.name }}
             key: {{ $s.secretRef.key }}
+            optional: true
       {{- end }}
       {{- end }}
     {{- if $ctx.Values.egress.ca.enabled }}
