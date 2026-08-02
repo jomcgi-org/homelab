@@ -700,7 +700,13 @@ defmodule Embervm.SessionManagerTest do
       %{session_id: created.session_id, snapshot_ref: banked.snapshot_ref, workload: "wl-regular"}
     ]))
 
-    assert {:ok, _response} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "relight"})
+    result = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "relight"})
+    # On failure, surface the session row: terminal_reason/detail name which fail
+    # path fired, which a bare match error hides (this test has flaked in CI).
+    {:ok, row_now} = SessionStore.get(ctx.store, created.session_id)
+    assert match?({:ok, _response}, result),
+           "invoke=#{inspect(result)} session=#{inspect(row_now)}"
+
     running = wait_for_state(ctx, created.session_id, :running)
     assert running.state == :running
     assert running.volume_node_id == nil
