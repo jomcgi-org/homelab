@@ -43,11 +43,7 @@ COVERAGE_ALLOWLIST = frozenset(
         "embervm",  # R0 skeleton (ADR embervm/001), not yet a deployed system; promote to the README when its chart wires to ArgoCD.
         "firecracker",
         "grimoire",
-        "hikes",
-        "loom",
         "model-bench",
-        "ships",
-        "websites",
     }
 )
 
