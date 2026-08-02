@@ -12,7 +12,7 @@ This is a GitOps monorepo where related code and deployment configuration live t
 | `projects/platform/`     | Cluster-critical infrastructure (ArgoCD, Cilium, SigNoz, etc.)          |
 | `projects/home-cluster/` | Auto-generated root kustomization that discovers all deploy/ directories |
 | `bazel/`                 | Build infrastructure (Helm rules, tools, images, semgrep, wrangler)      |
-| `docs/`                  | Design docs, ADRs, and plans                                             |
+| `docs/`                  | Design docs, ADRs, and runbooks                                          |
 
 **Colocation principle:** Each service's deployment configuration (ArgoCD Application, Helm values) lives next to its source code, not in a separate overlays directory. This makes it easy to understand what belongs together.
 
