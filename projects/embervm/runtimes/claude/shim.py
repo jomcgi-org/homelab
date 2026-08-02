@@ -699,7 +699,15 @@ class ClaudeProcess:
                 process.stdin.close()
             except OSError:
                 pass
-        process.wait()
+        # Bounded: most callers close an already-exited process (wait returns
+        # instantly), but the model-change respawn closes a LIVE CLI, and an
+        # unbounded wait there would hang the turn under turn_lock if the CLI
+        # ignores stdin EOF (interrupt() treats the same wait as unsafe).
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         _managed_child_pids.discard(process.pid)
         _reap_orphans()
 
@@ -724,7 +732,11 @@ class ClaudeProcess:
                 message_sent = True
             else:
                 message_sent = False
-            if process is None or process.poll() is not None:
+            # After a model-change respawn the first_message is already in
+            # flight; falling into this branch would _spawn again and deliver
+            # (and bill) the same turn twice if the fresh CLI died between
+            # init and this poll.
+            if not message_sent and (process is None or process.poll() is not None):
                 if process is not None:
                     self._close_process(kill=False)
                 # A request without an id resumes the last session after an
