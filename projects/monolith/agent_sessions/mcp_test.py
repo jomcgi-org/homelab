@@ -649,3 +649,23 @@ def test_turn_status_needs_input_on_permission_denials():
     assert status == "needs_input", (
         f"Turn with permission_denials should be needs_input, got {status}"
     )
+
+
+def test_ember_expires_at_column_is_bigint():
+    """The expiry column must be BigInteger, not Integer.
+
+    It holds epoch MILLISECONDS from the control plane, which overflow int4.
+    This asserts the mapped type rather than round-tripping a value because the
+    test database is SQLite, which stores integers dynamically and therefore
+    cannot reproduce the Postgres overflow this guards against: the production
+    failure was `psycopg.errors.NumericValueOutOfRange` from SQLModel emitting an
+    explicit ::INTEGER cast against a bigint column.
+    """
+    from sqlalchemy import BigInteger
+
+    from agent_sessions.models import AgentSession
+
+    column = AgentSession.__table__.c.ember_session_expires_at
+    assert isinstance(column.type, BigInteger), (
+        "ember_session_expires_at must map to BigInteger; got %r" % column.type
+    )
