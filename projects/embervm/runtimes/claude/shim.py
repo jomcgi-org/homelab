@@ -166,6 +166,18 @@ def _json_line(value):
     return (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8")
 
 
+def _user_message_line(message):
+    return _json_line(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": message}],
+            },
+        }
+    )
+
+
 def voice_summary(result):
     text = result if isinstance(result, str) else str(result or "")
     match = re.search(r"<voice>\s*(.*?)\s*</voice>", text, re.DOTALL)
@@ -441,7 +453,7 @@ class ClaudeProcess:
                 detail = completed.stderr.decode("utf-8", "replace").strip()
                 raise StartupError("git config failed for %s: %s" % (key, detail))
 
-    def _spawn(self, session_id=None):
+    def _spawn(self, session_id=None, first_message=None):
         if self.fatal_error is not None:
             raise StartupError(self.fatal_error)
         if not os.path.isdir(self.workspace):
@@ -511,6 +523,9 @@ class ClaudeProcess:
             args=(process, self.stderr_lines),
             daemon=True,
         ).start()
+        if first_message is not None:
+            process.stdin.write(_user_message_line(first_message))
+            process.stdin.flush()
         # Note: unparseable-line stderr writes are synchronous on the read thread
         # and race the init timeout. This is fine for tens-of-lines Bun panics
         # but could turn thousands-of-lines dumps into a generic init timeout.
@@ -659,23 +674,17 @@ class ClaudeProcess:
                     self._close_process(kill=False)
                 # A request without an id resumes the last session after an
                 # interrupt or relight instead of silently creating a new one.
-                self._spawn(session_id or self.session_id)
+                self._spawn(session_id or self.session_id, first_message=message)
                 process = self.process
+                message_sent = True
+            else:
+                message_sent = False
             if not self.ready():
                 raise StartupError(self.fatal_error or "shim not ready")
             self.current_result = None
-            process.stdin.write(
-                _json_line(
-                    {
-                        "type": "user",
-                        "message": {
-                            "role": "user",
-                            "content": [{"type": "text", "text": message}],
-                        },
-                    }
-                )
-            )
-            process.stdin.flush()
+            if not message_sent:
+                process.stdin.write(_user_message_line(message))
+                process.stdin.flush()
             events = []
             while True:
                 try:

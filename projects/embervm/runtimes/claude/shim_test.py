@@ -78,6 +78,36 @@ for line in sys.stdin:
 """
 
 
+FAKE_CLI_INIT_AFTER_INPUT = r"""#!/usr/bin/env python3
+import json
+import os
+import signal
+import sys
+
+lines_path = os.environ["FAKE_LINES"]
+
+def interrupted(_signum, _frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, interrupted)
+first_line = sys.stdin.readline()
+print(json.dumps({"type": "system", "subtype": "init", "session_id": "delayed-sid",
+                  "model": "fake", "apiKeySource": "none", "mcp_servers": []}), flush=True)
+
+def respond(line):
+    with open(lines_path, "a") as stream:
+        stream.write(line)
+    request = json.loads(line)
+    text = request["message"]["content"][0]["text"]
+    print(json.dumps({"type": "result", "result": "Done <voice>Processed %s.</voice>" % text,
+                      "terminal_reason": "end_turn", "session_id": "delayed-sid"}), flush=True)
+
+respond(first_line)
+for line in sys.stdin:
+    respond(line)
+"""
+
+
 def test_fake_cli_fixture_syntax_is_valid():
     """Verify the FAKE_CLI embedded script is valid Python."""
     ast.parse(FAKE_CLI)
@@ -160,6 +190,44 @@ def test_turn_extracts_voice_activity_and_tolerates_malformed_json(
         {"type": "bash", "command": "git status"},
     ]
     assert manager.ready()
+    manager._close_process(kill=True)
+
+
+def test_first_turn_is_sent_before_delayed_cli_init_and_only_once(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-cli"
+    executable.write_text(FAKE_CLI_INIT_AFTER_INPUT)
+    os.chmod(executable, 0o755)
+    lines_path = tmp_path / "lines.jsonl"
+    monkeypatch.setenv("FAKE_LINES", str(lines_path))
+    monkeypatch.setenv("EMBER_INIT_READ_TIMEOUT", "2")
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    first = manager.turn("first")
+    assert first["terminal_reason"] == "end_turn"
+    assert manager.session_id == "delayed-sid"
+    assert json.loads(lines_path.read_text()) == {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "first"}],
+        },
+    }
+
+    second = manager.turn("second")
+    assert second["terminal_reason"] == "end_turn"
+    assert manager.process.poll() is None
+    assert [
+        json.loads(line)["message"]["content"][0]["text"]
+        for line in lines_path.read_text().splitlines()
+    ] == ["first", "second"]
     manager._close_process(kill=True)
 
 
@@ -568,7 +636,7 @@ def test_cli_crash_is_422(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch)
     original = manager._spawn
 
-    def crash_spawn(session_id=None):
+    def crash_spawn(session_id=None, first_message=None):
         raise RuntimeError("claude crashed during turn, exit code 7")
 
     manager._spawn = crash_spawn
