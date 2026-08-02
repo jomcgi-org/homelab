@@ -1,6 +1,6 @@
 # Observability & Alerting
 
-The homelab has a complete observability stack (SigNoz v0.113, OTel, Linkerd) with a fully operational alerting pipeline. 22 alert rules monitor infrastructure health, application availability, and GitOps state. Alerts are synced to SigNoz via the signoz-dashboard-sidecar and notify through Incident.io.
+The homelab has a complete observability stack (SigNoz v0.113, OTel, Cilium) with a fully operational alerting pipeline. 22 alert rules monitor infrastructure health, application availability, and GitOps state. Alerts are synced to SigNoz via the signoz-dashboard-sidecar and notify through Incident.io.
 
 ## Current State
 

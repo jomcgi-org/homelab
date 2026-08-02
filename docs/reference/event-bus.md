@@ -223,9 +223,9 @@ for the dispatch/identity model and the cron-sweep that backstops missed events.
 - **Per-subject authorization** via the NATS account model — producers and
   consumers get accounts scoped to exactly the subjects they need. Credentials are
   injected via the 1Password Operator at deploy time.
-- **Linkerd-meshed** like all internal traffic, so mTLS is automatic. Per
-  `feedback_linkerd_networkpolicy.md`, do **not** add NetworkPolicies in the NATS
-  namespace.
+- **Cilium-meshed** like all internal traffic (Linkerd is superseded by
+  Cilium). Any policy for the NATS namespace is expressed as a
+  `CiliumNetworkPolicy`, not a plain NetworkPolicy.
 - **Reference-by-ID for large or sensitive payloads.** Keep raw note bodies,
   embeddings, and other large/sensitive content out of the event; carry an ID (and
   an object-store URL if needed) instead. This stays under NATS's 1 MiB message

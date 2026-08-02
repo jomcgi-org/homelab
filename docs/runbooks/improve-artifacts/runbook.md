@@ -9,6 +9,11 @@ summary: Explicit improve loop for artifacts
 
 # improve-artifacts
 
+> **Retired.** goosecracker, the Discord agent whose artifact sessions feed
+> this loop, was decommissioned on 2026-07-28 (ADR 024 records the rationale).
+> There are no new artifacts to sample; this runbook is retained for reference
+> only.
+
 On-demand design-quality feedback loop for goosecracker artifact recipes.
 Sister skill to improve-recipes, which selects on mechanics metrics (wall time,
 owner turns) and is structurally blind to fast, no-follow-up sessions that

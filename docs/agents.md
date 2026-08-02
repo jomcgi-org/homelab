@@ -5,6 +5,12 @@ Discord slash command into a goose run, how that run executes inside an isolated
 Firecracker microVM behind the **fc-invoke** daemon, and how the result (an
 answer, a PR, or a live-hot-reloading artifact) gets back to the thread.
 
+> **Status: decommissioned.** goosecracker, the Discord agent described here,
+> was decommissioned on 2026-07-28. [ADR 024](decisions/agents/024-discord-agent-hosted-model-tiers-and-artifacts.md)
+> records the rationale. The source directories referenced below still exist
+> in-tree, but nothing in this document describes a live system; it is kept as
+> a historical record of how the stack worked.
+
 The whole stack lives in two places:
 
 - **Orchestration + integration** in the monolith (`projects/monolith/goosecracker/`,
