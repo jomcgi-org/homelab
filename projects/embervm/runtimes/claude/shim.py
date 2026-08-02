@@ -841,6 +841,8 @@ class CodexProcess:
         # The CLI state dir must live under the WORKSPACE, not $HOME: the guest's
         # $HOME is on the read-only rootfs and the codex CLI refuses to start when
         # CODEX_HOME does not exist (observed live as a 422 on every codex turn).
+        # The config.toml is regenerated per spawn; a stale workspace cannot pin
+        # an old base URL.
         # The workspace is also where session files must sit for thread resume to
         # survive bank/relight once workspaces ride the durable volume.
         codex_home = os.path.join(self.workspace, ".codex")
@@ -849,6 +851,7 @@ class CodexProcess:
         child_env.update(
             {
                 "CODEX_HOME": codex_home,
+                "OPENAI_API_KEY": "ember-guest-login-gate-dummy-not-a-credential",
                 "HTTPS_PROXY": proxy_url,
                 "HTTP_PROXY": proxy_url,
                 "NO_PROXY": "127.0.0.1,localhost",
@@ -856,9 +859,24 @@ class CodexProcess:
         )
         return child_env
 
+    @staticmethod
+    def _write_model_config(codex_home):
+        config = """model_provider = "ember-openai"
+
+[model_providers.ember-openai]
+name = "ember-openai"
+base_url = "http://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+"""
+        with open(os.path.join(codex_home, "config.toml"), "w") as stream:
+            stream.write(config)
+
     def _spawn(self, message, session_id, model):
         if not os.path.isdir(self.workspace):
             raise StartupError("workspace does not exist: %s" % self.workspace)
+        child_env = self._child_env()
+        self._write_model_config(child_env["CODEX_HOME"])
         model_name, effort = CODEX_MODELS.get(model, CODEX_MODELS[DEFAULT_CODEX_MODEL])
         if session_id:
             command = [self.executable, "exec", "resume", session_id, message]
@@ -883,7 +901,7 @@ class CodexProcess:
             cwd=self.workspace,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=self._child_env(),
+            env=child_env,
             **_cli_privilege_kwargs(),
         )
         output_queue = queue.Queue()

@@ -1125,6 +1125,12 @@ egress:
   #     egressTo: [api.anthropic.com]              # exact hosts, no wildcards
   #     secretRef: {name: <secret>, key: <key>}    # the ONLY delivery path
   #
+  #   - header: Authorization                      # a second provider example
+  #     valuePrefix: "Bearer "
+  #     env: EMBER_OPENAI_API_KEY
+  #     egressTo: [api.openai.com]
+  #     secretRef: {name: <secret>, key: OPENAI_API_KEY}
+  #
   # Nothing here has to match anything in the guest. The guest sends whatever it
   # likes in that header and the sidecar discards it, so there is no byte-identical
   # coupling to keep in sync and a guest cannot authenticate as another account by
