@@ -324,6 +324,11 @@ service NodeService {
   // Stateful bundles reuse EvictSnapshot (R2) unchanged; bundle refs are opaque.
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
 
+  // ArchiveVolume synchronously exports one session workspace to the object
+  // store. It is the durability acknowledgement used before a close/destroy
+  // delete and during a planned drain.
+  rpc ArchiveVolume(ArchiveVolumeRequest) returns (ArchiveVolumeResponse);
+
   // -- Group verbs (R5) -------------------------------------------------------
   //
   // These verbs are the composite-workload vocabulary, ADDITIVE to the task,
@@ -1011,6 +1016,16 @@ message DeleteVolumeRequest {
 }
 
 message DeleteVolumeResponse {}
+
+message ArchiveVolumeRequest {
+  Trace trace = 1;
+  string workload = 2;
+  string lineage_id = 3;
+}
+
+message ArchiveVolumeResponse {
+  bool skipped = 1;
+}
 
 // ---- Group verbs (R5) ------------------------------------------------------
 
@@ -1712,6 +1727,7 @@ enum ArtifactKind {
   ARTIFACT_KIND_STATEFUL = 4;
   ARTIFACT_KIND_GROUP_SET = 5;
   ARTIFACT_KIND_VOLUME = 6;
+  ARTIFACT_KIND_SESSION_WORKSPACE = 7;
 }
 
 // ArtifactRef names exactly one banked artifact for the continuity verbs. kind
@@ -1755,7 +1771,8 @@ message RestoreArtifactRequest {
   // (BASE, SESSION, SERVING, STATEFUL, GROUP_SET) key in the store as
   // <kind>/<vendor>/<workload>/<ref>/<file>; the daemon restores only the
   // vendor-matching copy and fails closed on a mismatch, never a silent cold
-  // boot at this layer. Empty for VOLUME, which is vendor-portable.
+  // boot at this layer. Empty for VOLUME and SESSION_WORKSPACE, which are
+  // vendor-portable filesystem artifacts.
   string vendor = 3;
 }
 

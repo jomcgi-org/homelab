@@ -1694,6 +1694,11 @@ func TestArtifactPrefixVendorLayout(t *testing.T) {
 			ref:  &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "pg"},
 			want: "volume/pg",
 		},
+		{
+			name: "session workspace unvendored",
+			ref:  &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-1"},
+			want: "session-workspace/sbx/lineage-1",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1702,6 +1707,50 @@ func TestArtifactPrefixVendorLayout(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSessionWorkspaceArtifactLocalDir(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-1"}
+	want := filepath.Join(s.cfg.VolumeRoot, "session", "sbx", "lineage-1")
+	if got := s.artifactLocalDir(ref); got != want {
+		t.Fatalf("artifactLocalDir(session workspace) = %q, want %q", got, want)
+	}
+}
+
+func TestArchiveVolume(t *testing.T) {
+	t.Run("happy path and skipped", func(t *testing.T) {
+		fs := newFakeStore()
+		s := newStoreTestServer(t, fs)
+		if err := s.volumes.CreateSession("sbx", "lineage-1", 1<<20); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := s.ArchiveVolume(context.Background(), &nodev1.ArchiveVolumeRequest{Workload: "sbx", LineageId: "lineage-1"})
+		if err != nil || resp.GetSkipped() {
+			t.Fatalf("ArchiveVolume first call = %#v, %v", resp, err)
+		}
+		resp, err = s.ArchiveVolume(context.Background(), &nodev1.ArchiveVolumeRequest{Workload: "sbx", LineageId: "lineage-1"})
+		if err != nil || !resp.GetSkipped() {
+			t.Fatalf("ArchiveVolume repeat = %#v, %v", resp, err)
+		}
+	})
+
+	t.Run("missing image", func(t *testing.T) {
+		s := newStoreTestServer(t, newFakeStore())
+		_, err := s.ArchiveVolume(context.Background(), &nodev1.ArchiveVolumeRequest{Workload: "sbx", LineageId: "gone"})
+		if status.Code(err) != codes.NotFound {
+			t.Fatalf("ArchiveVolume missing = %v, want NotFound", err)
+		}
+	})
+
+	t.Run("nil store", func(t *testing.T) {
+		s := newStoreTestServer(t, newFakeStore())
+		s.store = nil
+		_, err := s.ArchiveVolume(context.Background(), &nodev1.ArchiveVolumeRequest{Workload: "sbx", LineageId: "lineage-1"})
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("ArchiveVolume nil store = %v, want FailedPrecondition", err)
+		}
+	})
 }
 
 // TestArtifactPrefixRefusesEmptyVendorForVendorBoundKind proves a vendor-bound

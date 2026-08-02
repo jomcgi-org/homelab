@@ -37,7 +37,7 @@
         # R3 serving: long-lived HTTP-over-tap VMs, out of scope.
         ~w(StartServing StopServing)a ++
         # R4 stateful: singleton volume-owning VMs + generation pairing, out of scope.
-        ~w(StartStateful StopStateful ResolveStateful DeleteVolume)a ++
+        ~w(StartStateful StopStateful ResolveStateful DeleteVolume ArchiveVolume)a ++
         # R5 groups: composite multi-member workloads, out of scope.
         ~w(CreateGroupNetwork DeleteGroupNetwork StartGroupMember StopGroupMember)a ++
         # R6 continuity: off-node artifact durability, out of scope. ListArtifacts

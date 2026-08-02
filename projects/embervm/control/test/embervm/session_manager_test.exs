@@ -102,6 +102,7 @@ defmodule Embervm.SessionManagerTest do
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
         bank_fun: Keyword.get(opts, :bank_fun, fn _ch, req -> {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}} end),
         relight_fun: Keyword.get(opts, :relight_fun, fn _ch, _req -> {:ok, %RelightResponse{vm_id: "vm-relit"}} end),
+        archive_volume_fun: Keyword.get(opts, :archive_volume_fun, fn _ch, _req -> {:ok, %{skipped: false}} end),
         delete_session_volume_fun: Keyword.get(opts, :delete_session_volume_fun, fn _ch, _req -> {:ok, %{}} end),
         session_opts: session_opts,
         async_writer: writer,
@@ -736,6 +737,40 @@ defmodule Embervm.SessionManagerTest do
     assert :session_expired in op_kinds_for(ctx, created.session_id)
   end
 
+  test "parked persistence expiry archives before deleting its workspace" do
+    parent = self()
+    ctx = start_stack(
+      prime_fun: fake_prime_fun("vm-archive-expiry"),
+      channel_fun: fake_channel_fun(),
+      archive_volume_fun: fn _ch, req -> send(parent, {:archived, req.lineage_id}); {:ok, %{}} end,
+      delete_session_volume_fun: fn _ch, req -> send(parent, {:deleted, req.lineage_id}); {:ok, %{}} end
+    )
+    created = create_persistence_session(ctx, max_lifetime_seconds: -1)
+    park_session(ctx, created)
+    sid = created.session_id
+
+    assert :ok = SessionManager.sweep(ctx.mgr)
+    assert_receive {:archived, ^sid}
+    assert_receive {:deleted, ^sid}
+  end
+
+  test "persistence expiry keeps the workspace when archive fails" do
+    parent = self()
+    ctx = start_stack(
+      prime_fun: fake_prime_fun("vm-archive-fail"),
+      channel_fun: fake_channel_fun(),
+      archive_volume_fun: fn _ch, req -> send(parent, {:archive_failed, req.lineage_id}); {:error, :store_down} end,
+      delete_session_volume_fun: fn _ch, req -> send(parent, {:deleted, req.lineage_id}); {:ok, %{}} end
+    )
+    created = create_persistence_session(ctx, max_lifetime_seconds: -1)
+    park_session(ctx, created)
+    sid = created.session_id
+
+    assert :ok = SessionManager.sweep(ctx.mgr)
+    assert_receive {:archive_failed, ^sid}
+    refute_receive {:deleted, ^sid}
+  end
+
   test "parked_session_can_be_destroyed" do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-destroy"), channel_fun: fake_channel_fun())
     created = create_persistence_session(ctx)
@@ -745,6 +780,23 @@ defmodule Embervm.SessionManagerTest do
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :destroyed
     assert :session_destroyed in op_kinds_for(ctx, created.session_id)
+  end
+
+  test "destroyed parked persistence session archives before deleting its workspace" do
+    parent = self()
+    ctx = start_stack(
+      prime_fun: fake_prime_fun("vm-archive-destroy"),
+      channel_fun: fake_channel_fun(),
+      archive_volume_fun: fn _ch, req -> send(parent, {:archived, req.lineage_id}); {:ok, %{}} end,
+      delete_session_volume_fun: fn _ch, req -> send(parent, {:deleted, req.lineage_id}); {:ok, %{}} end
+    )
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    sid = created.session_id
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, sid)
+    assert_receive {:archived, ^sid}
+    assert_receive {:deleted, ^sid}
   end
 
   test "non_persistence_sessions_unaffected" do
