@@ -325,7 +325,7 @@ actions:
           # of :capture's real inputs: too broad only costs a redundant (cache-hit)
           # build, too narrow silently misses a real regression.
           git fetch origin main --quiet 2>/dev/null || true
-          RENDER_PATHS="projects/monolith/frontend projects/websites/shared pnpm-lock.yaml pnpm-workspace.yaml package.json MODULE.bazel MODULE.bazel.lock"
+          RENDER_PATHS="projects/monolith/frontend pnpm-lock.yaml pnpm-workspace.yaml package.json MODULE.bazel MODULE.bazel.lock"
 
           rm -rf "$VDIR/out" && mkdir -p "$VDIR/out/baseline"
           if git diff --quiet origin/main "$ORIG_SHA" -- $RENDER_PATHS; then
@@ -368,11 +368,12 @@ actions:
           ./projects/monolith/frontend/visual/report-to-pr.sh
 
   # Buck2 rules — builds & tests the Buck2 image/helm rules under buck2/**
-  # (the Buck2 counterparts to bazel/helm + bazel/tools/oci, consumed by the
-  # `loom` repo as an external cell). homelab is otherwise a Bazel repo, so this
-  # action self-installs the pinned buck2 release and checks out the buck2
-  # prelude submodule before building. Local execution only (no buck2 RE yet).
-  # Keep BUCK2_RELEASE aligned with buck2/README.md + loom/.buckconfig.
+  # (the Buck2 counterparts to bazel/helm + bazel/tools/oci; originally
+  # consumed by the `loom` repo as an external cell, since decommissioned).
+  # homelab is otherwise a Bazel repo, so this action self-installs the pinned
+  # buck2 release and checks out the buck2 prelude submodule before building.
+  # Local execution only (no buck2 RE yet).
+  # Keep BUCK2_RELEASE aligned with buck2/README.md.
   - name: "Buck2 rules"
     container_image: "ubuntu-24.04"
     max_retries: 1
@@ -419,7 +420,7 @@ actions:
           # runner already ships them). No C toolchain is needed on the runner:
           # build actions run on BuildBuddy RE (BUCK_PREFER_REMOTE below), where
           # the example Rust binary compiles/links against the RE container's
-          # toolchain — exactly like loom.
+          # toolchain.
           (command -v zstd >/dev/null 2>&1 && command -v curl >/dev/null 2>&1) || \
             ($SUDO apt-get update -qq && $SUDO apt-get install -y -qq zstd curl) || true
 
