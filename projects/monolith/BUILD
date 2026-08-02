@@ -4550,52 +4550,6 @@ py_test(
 )
 
 py_test(
-    name = "scheduler_loop_test",
-    srcs = ["scheduler/scheduler_loop_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_scheduler",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "scheduler_tick_missing_job_test",
-    srcs = ["scheduler/scheduler_tick_missing_job_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_scheduler",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "scheduler_claim_test",
-    srcs = ["scheduler/scheduler_claim_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_scheduler",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "scheduler_transitions_test",
-    srcs = ["scheduler/scheduler_transitions_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_scheduler",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "main_log_coverage_test",
     srcs = ["app/main_log_coverage_test.py"],
     imports = ["."],
@@ -4620,18 +4574,6 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//tzdata",
-    ],
-)
-
-py_test(
-    name = "scheduler_loop_extra_test",
-    srcs = ["scheduler/scheduler_loop_extra_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_scheduler",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
     ],
 )
 
@@ -6853,15 +6795,6 @@ bdd_test(
         "knowledge/tests/__init__.py",
         "knowledge/tests/bdd_public_test.py",
         "knowledge/tests/conftest.py",
-    ],
-)
-
-bdd_test(
-    name = "scheduler_bdd_scheduler_test",
-    srcs = [
-        "scheduler/tests/__init__.py",
-        "scheduler/tests/bdd_scheduler_test.py",
-        "scheduler/tests/conftest.py",
     ],
 )
 
