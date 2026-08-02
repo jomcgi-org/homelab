@@ -1,12 +1,8 @@
 <script>
-  // Both timing figures come from metrics.js so neither is a hardcoded
+  // The timing figure comes from metrics.js so it is not a hardcoded
   // literal: the FIRECRACKER card quotes the trace-derived sandbox restore
-  // (sandboxRestoreMs, the demo it links to), the AGENT PLATFORM card quotes
-  // the agent-workload cold start (agentFirstModelCallMs).
-  import {
-    sandboxRestoreMs,
-    agentFirstModelCallMs,
-  } from "$lib/public/fcstory/metrics.js";
+  // (sandboxRestoreMs, the demo it links to).
+  import { sandboxRestoreMs } from "$lib/public/fcstory/metrics.js";
   import { apps } from "$lib/public/apps.js";
 
   // Live-maps chips render from the shared registry instead of a hardcoded
@@ -94,16 +90,16 @@
           <span class="where">NODE-4</span>
         </div>
         <p>
-          Tag <b>@Bosun</b> in a Discord thread and a <b>goose</b> agent wakes
-          in its own microVM, runs a recipe, and replies with an artifact or a
-          PR. Ambient chat, scheduled routines, and coding agents all dispatch
-          through <b>EmberVM</b> (~{agentFirstModelCallMs}ms to first model
-          call), the workload substrate for semgrep scans, warm HTTP serving,
-          and agent execution.
+          Tag <b>@Bosun</b> in a Discord thread and the chat bot answers: Qwen
+          served from this rack, per-channel and per-user ACLs, and a per-user
+          trust ledger that scores every interaction and soft-locks repeat
+          offenders. Underneath, <b>EmberVM</b> runs one microVM per workload: headless
+          Claude Code sessions, semgrep scans, warm HTTP serving, and a scale-to-zero
+          Postgres.
         </p>
         <div class="clinks">
-          <a class="more" href="/ember/firecracker">how &rarr;</a>
-          <a class="more" href="/docs/projects/firecracker">docs &rarr;</a>
+          <a class="more" href="/ember">how &rarr;</a>
+          <a class="more" href="/docs/projects/embervm">docs &rarr;</a>
         </div>
       </div>
       <div class="callout">
