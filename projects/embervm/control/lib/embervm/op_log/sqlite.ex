@@ -930,6 +930,15 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  defp project(conn, %Op{kind: :session_parking} = op, _seq) do
+    sql = "UPDATE sessions SET state='parking', volume_node_id=?, updated_at=? WHERE session_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [Map.get(op.payload, :volume_node_id), op.ts, op.session_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt), do: :ok
+  end
+
   # session_relit: restored to a live VM from its banked snapshot; back to running.
   # Guarded against terminal states so a deferred async relit append (ADR embervm/014
   # decision 2) that lands after the session was later destroyed/expired/failed

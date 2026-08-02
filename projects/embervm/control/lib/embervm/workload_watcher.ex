@@ -820,7 +820,7 @@ defmodule Embervm.WorkloadWatcher do
     }
   end
 
-  defp parse_persistence(spec, "session") do
+  defp parse_persistence(spec, "session", _workload_name) do
     case Map.get(spec, "persistence") do
       nil -> %{memory: true, filesystem: %{enabled: false, scope: "solo", retention: 0, size_bytes: 0}}
       p when is_map(p) ->
@@ -835,7 +835,13 @@ defmodule Embervm.WorkloadWatcher do
     end
   end
 
-  defp parse_persistence(_spec, _class), do: nil
+  defp parse_persistence(spec, class, workload_name) do
+    if is_map(spec) and is_map(Map.get(spec, "persistence")) do
+      Logger.warning("embervm persistence block ignored for non-session workload", class: class,
+        workload: workload_name)
+    end
+    nil
+  end
 
   # The serving block is REQUIRED for the serving class and FORBIDDEN for task
   # and session (the class-conditional requiredness the OpenAPI schema cannot
@@ -1463,7 +1469,7 @@ defmodule Embervm.WorkloadWatcher do
     resources = Map.get(spec, "resources") || %{}
     invocation = Map.get(spec, "invocation") || %{}
     source = parse_source(spec)
-    persistence = parse_persistence(spec, class)
+    persistence = parse_persistence(spec, class, name)
 
     # The guest's baked env. The image lane reads source.image.initEnv; the zip
     # lane passes the handler symbol as EMBER_HANDLER (the runtime shim reads it

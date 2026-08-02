@@ -768,7 +768,13 @@ func (s *Server) DeleteVolume(_ context.Context, req *nodev1.DeleteVolumeRequest
 	if workload == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: workload required")
 	}
-	if err := s.volumes.Delete(workload); err != nil {
+	var err error
+	if req.GetLineageId() != "" {
+		err = s.volumes.DeleteSession(workload, req.GetLineageId())
+	} else {
+		err = s.volumes.Delete(workload)
+	}
+	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: delete volume for %q: %v", workload, err)
 	}
 	s.signalChange()

@@ -49,7 +49,7 @@ defmodule Embervm.SessionStore do
   # `destroying` still holds a live VM (teardown RPC in flight, ADR embervm/014
   # decision 5): it stays routable/dialable and counts against capacity until the
   # node confirms teardown and the terminal destroyed op fires.
-  @live_states [:creating, :running, :banking, :relighting, :destroying, :parked]
+  @live_states [:creating, :running, :banking, :parking, :relighting, :destroying, :parked]
 
   # -- Client API ------------------------------------------------------------
 
@@ -334,6 +334,7 @@ defmodule Embervm.SessionStore do
     "creating" => :creating,
     "running" => :running,
     "banking" => :banking,
+    "parking" => :parking,
     "banked" => :banked,
     "parked" => :parked,
     "relighting" => :relighting,

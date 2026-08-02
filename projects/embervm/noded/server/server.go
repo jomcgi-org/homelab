@@ -926,6 +926,12 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: base %q not ready (state %s)", ref, base.state)
 	}
+	if req.GetLineageId() == "" && (req.GetVolumeMount() != "" || req.GetVolumeSizeBytes() != 0) {
+		return nil, status.Error(codes.InvalidArgument, "noded: lineage_id required for session volume fields")
+	}
+	if req.GetLineageId() != "" && (req.GetVolumeMount() == "" || req.GetVolumeSizeBytes() == 0) {
+		return nil, status.Error(codes.InvalidArgument, "noded: complete session volume fields required")
+	}
 	// Cheap rejection under real memory pressure (ADR embervm/014 decision 3), read
 	// AFTER the base is resolved (so the workload's mem footprint is known) but
 	// BEFORE the expensive Claim/restore. Prime is vsock-only (no tap), so it is
@@ -952,9 +958,6 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	}
 	volumeDiskPath := req.GetVolumeDiskPath()
 	if req.GetLineageId() != "" {
-		if req.GetVolumeMount() == "" || req.GetVolumeSizeBytes() == 0 {
-			return nil, status.Error(codes.InvalidArgument, "noded: complete session volume fields required")
-		}
 		volumeDiskPath = s.volumes.SessionVolumePath(base.workload, req.GetLineageId())
 		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)

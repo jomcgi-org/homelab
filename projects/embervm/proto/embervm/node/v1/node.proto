@@ -1006,6 +1006,8 @@ message ResolveStatefulResponse {
 message DeleteVolumeRequest {
   Trace trace = 1;
   string workload = 2;
+  // Optional session lineage. When set, delete only this session workspace.
+  string lineage_id = 3;
 }
 
 message DeleteVolumeResponse {}

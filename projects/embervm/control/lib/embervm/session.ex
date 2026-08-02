@@ -135,6 +135,7 @@ defmodule Embervm.Session do
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       assign_fun: Keyword.get(opts, :assign_fun, &default_session_assign/2),
       destroy_fun: Keyword.get(opts, :destroy_fun, &default_destroy/2),
+      rejoin_failure_fun: Keyword.get(opts, :rejoin_failure_fun),
       # FIFO of {from, req} waiting their turn; the head runs when no worker is in
       # flight. `worker` is the {pid, ref, from} of the in-flight invoke, or nil.
       queue: :queue.new(),
@@ -440,20 +441,26 @@ defmodule Embervm.Session do
   # Fail the session (destroy the VM, append session_failed), drain queued callers
   # as :failed, and stop this process. Called on any daemon-level invoke failure.
   defp fail_and_stop(state, reason) do
-    _ = destroy_vm(state)
+    if is_function(state.rejoin_failure_fun, 1) do
+      _ = state.rejoin_failure_fun.(reason)
+      drain_queue_as_failed(state)
+      {:stop, :normal, %{state | queue: :queue.new()}}
+    else
+      _ = destroy_vm(state)
 
-    _ =
-      Embervm.SessionStore.transition(
-        state.session_store,
-        state.session_id,
-        :fail,
-        :session_failed,
-        %{reason: :failed, detail: inspect(reason)},
-        %{}
-      )
+      _ =
+        Embervm.SessionStore.transition(
+          state.session_store,
+          state.session_id,
+          :fail,
+          :session_failed,
+          %{reason: :failed, detail: inspect(reason)},
+          %{}
+        )
 
-    drain_queue_as_failed(state)
-    {:stop, :normal, %{state | queue: :queue.new()}}
+      drain_queue_as_failed(state)
+      {:stop, :normal, %{state | queue: :queue.new()}}
+    end
   end
 
   defp drain_queue_as_failed(state) do

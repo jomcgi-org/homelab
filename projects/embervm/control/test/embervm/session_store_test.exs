@@ -147,7 +147,14 @@ defmodule Embervm.SessionStoreTest do
     {_op_log, store} = start_pair(path)
     {:ok, session} = create(store)
 
-    assert {:ok, parked} = SessionStore.mark(store, session.session_id, :park)
+    # The :park mark is transient, moving to :parking
+    assert {:ok, parking} = SessionStore.mark(store, session.session_id, :park)
+    assert parking.state == :parking
+
+    # The :park_complete transition is durable, moving to :parked
+    assert {:ok, parked} =
+             SessionStore.transition(store, session.session_id, :park_complete, :session_parked, %{}, %{})
+
     assert parked.state == :parked
   end
 
@@ -156,6 +163,7 @@ defmodule Embervm.SessionStoreTest do
     {:ok, session} = create(store, workload: "wl-parked")
 
     assert {:ok, _} = SessionStore.mark(store, session.session_id, :park)
+    # Both :parking (transient) and :parked (after completion) count as live
     assert SessionStore.counts(store, "wl-parked") == %{live: 1, banked: 0}
   end
 
@@ -163,11 +171,15 @@ defmodule Embervm.SessionStoreTest do
     {op_log, store} = start_pair(path)
     {:ok, session} = create(store, node_id: "node-4", vm_id: "vm-1")
 
+    # First mark the transient :park state
+    assert {:ok, _} = SessionStore.mark(store, session.session_id, :park)
+
+    # Then transition to :parked with the volume_node_id persisted
     assert {:ok, parked} =
              SessionStore.transition(
                store,
                session.session_id,
-               :park,
+               :park_complete,
                :session_parked,
                %{reason: "idled", volume_node_id: "node-4"},
                %{volume_node_id: "node-4", node_id: nil, vm_id: nil}
@@ -184,8 +196,19 @@ defmodule Embervm.SessionStoreTest do
   test "parked_abort is a legal transient mark", %{path: path} do
     {_op_log, store} = start_pair(path)
     {:ok, session} = create(store)
+
+    # running -> mark :park -> :parking
     assert {:ok, _} = SessionStore.mark(store, session.session_id, :park)
-    assert {:ok, _} = SessionStore.mark(store, session.session_id, :relight)
+
+    # :parking -> transition :park_complete -> :parked
+    assert {:ok, _} =
+             SessionStore.transition(store, session.session_id, :park_complete, :session_parked, %{}, %{})
+
+    # :parked -> transition :relight -> :relighting
+    assert {:ok, _} =
+             SessionStore.transition(store, session.session_id, :relight, :session_relit, %{}, %{})
+
+    # :relighting -> mark :parked_abort -> :parked (recovery from failed relight)
     assert {:ok, recovered} = SessionStore.mark(store, session.session_id, :parked_abort)
     assert recovered.state == :parked
   end

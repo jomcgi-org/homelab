@@ -60,6 +60,7 @@ defmodule Embervm.SessionManager do
     ArtifactRef,
     BankRequest,
     BankResponse,
+    DeleteVolumeRequest,
     EvictArtifactRequest,
     EvictSnapshotRequest,
     PrimeRequest,
@@ -209,6 +210,7 @@ defmodule Embervm.SessionManager do
       # carry no volume/generation, so no pairing guard applies here. Injected for
       # tests; production dials the real NodeService stub.
       evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
+      delete_session_volume_fun: Keyword.get(opts, :delete_session_volume_fun, &default_delete_session_volume/2),
       # The op-log the restore audit record (:artifact_restored) is appended to.
       # Injected for tests; production uses the configured backend.
       op_log: op_log,
@@ -372,6 +374,25 @@ defmodule Embervm.SessionManager do
     {:noreply, finish_relight(state, session_id, outcome)}
   end
 
+  def handle_info({:rejoin_done, session_id, outcome}, state) do
+    {:noreply, finish_rejoin(state, session_id, outcome)}
+  end
+
+  def handle_info({:rejoin_assign_failed, session_id, reason}, state) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: :running} = session} ->
+        _ = SessionStore.transition(state.session_store, session_id, :park, :session_parking,
+          %{reason: "rejoin delivery failed", volume_node_id: session.volume_node_id}, %{})
+        _ = stop_session_process(state, session_id, session)
+        _ = SessionStore.transition(state.session_store, session_id, :park_complete, :session_parked,
+          %{reason: "rejoin delivery failed", volume_node_id: session.volume_node_id},
+          %{node_id: nil, vm_id: nil})
+        Logger.warning("embervm session rejoin delivery failed", session_id: session_id, reason: inspect(reason))
+        {:noreply, state}
+      _ -> {:noreply, state}
+    end
+  end
+
   # The async bank worker finished: complete the durable transition + failure
   # recovery on this (serialized) process. See finish_bank.
   def handle_info({:bank_done, session_id, node_id, outcome}, state) do
@@ -405,13 +426,14 @@ defmodule Embervm.SessionManager do
                          "ember.principal" => principal
                        }
                      } do
-      lineage_id = Embervm.SessionId.new(state.clock.())
+      minted_lineage_id = Embervm.SessionId.new(state.clock.())
       result =
         with {:ok, entry} <- fetch_session_workload(state, workload),
              :ok <- check_session_cap(state, workload, entry),
              :ok <- check_workload_cap(state, workload, entry),
              :ok <- check_quota(state, principal),
              {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry),
+             lineage_id <- if(persistence_enabled_workload?(entry), do: minted_lineage_id, else: nil),
              {:ok, vm_id} <- claim_or_prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
           # Store the brick's configured_id in the session row and use its instance_id
           # only as the dial key. These fields have different registration provenance.
@@ -509,7 +531,7 @@ defmodule Embervm.SessionManager do
   # dispatcher's own miss path, run inline here since create latency is not the
   # per-invoke hot path). A Prime failure is a create denial, not a crash.
   defp claim_or_prime(state, node_id, workload, snapshot_ref, entry, lineage_id) do
-    if disk_persistence_only_entry?(entry) do
+    if persistence_enabled_workload?(entry) do
       Tracer.set_attributes(%{"ember.pool_hit" => false})
       prime(state, node_id, snapshot_ref, entry, lineage_id)
     else
@@ -527,8 +549,8 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp disk_persistence_only_entry?(%{persistence: %{memory: false, filesystem: %{enabled: true}}}), do: true
-  defp disk_persistence_only_entry?(_), do: false
+  defp persistence_enabled_workload?(%{persistence: %{memory: false, filesystem: %{enabled: true}}}), do: true
+  defp persistence_enabled_workload?(_), do: false
 
   defp prime(state, node_id, snapshot_ref, entry, lineage_id) do
     with {:ok, channel} <- state.channel_fun.(node_id),
@@ -543,12 +565,20 @@ defmodule Embervm.SessionManager do
   defp safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
     p = Map.get(entry, :persistence) || %{}
     fs = Map.get(p, :filesystem) || %{}
-    enabled = Map.get(fs, :enabled, false) and Map.get(p, :memory, true) == false
-    req = %PrimeRequest{trace: %Trace{}, snapshot_ref: snapshot_ref || "",
-      volume_mount: if(enabled, do: "/session", else: ""),
-      volume_size_bytes: if(enabled, do: Map.get(fs, :size_bytes, 0), else: 0),
-      lineage_id: if(enabled, do: lineage_id, else: "")}
-    state.prime_fun.(channel, req)
+    enabled = persistence_enabled_workload?(entry)
+    if enabled and (not is_binary(lineage_id) or lineage_id == "") do
+      {:error, :invalid_lineage_id}
+    else
+      req = %PrimeRequest{
+        trace: %Trace{},
+        snapshot_ref: snapshot_ref || "",
+        volume_mount: if(enabled, do: "/session", else: ""),
+        volume_size_bytes: if(enabled, do: Map.get(fs, :size_bytes, 0), else: 0),
+        lineage_id: if(enabled, do: lineage_id, else: "")
+      }
+
+      state.prime_fun.(channel, req)
+    end
   rescue
     _ -> {:error, :prime_crashed}
   catch
@@ -590,7 +620,7 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp start_session_process(state, session_id, workload, principal, entry, node_id, vm_id, dial_id) do
+  defp start_session_process(state, session_id, workload, principal, entry, node_id, vm_id, dial_id, extra_opts \\ []) do
     child_opts =
       [
         session_id: session_id,
@@ -614,7 +644,7 @@ defmodule Embervm.SessionManager do
         session_store: state.session_store,
         # Register under the session id so the router/manager resolve the pid.
         name: {:via, Registry, {state.registry, session_id}}
-      ] ++ state.session_opts
+      ] ++ state.session_opts ++ extra_opts
 
     spec = %{
       id: session_id,
@@ -630,7 +660,7 @@ defmodule Embervm.SessionManager do
   # entry, used by relight and adoption (which have the row, not the create args).
   # A catalog miss (workload deleted) is surfaced so the caller can fail the session
   # rather than start a process with no config.
-  defp start_session_from_row(state, session, node_id, vm_id, dial_id) do
+  defp start_session_from_row(state, session, node_id, vm_id, dial_id, extra_opts \\ []) do
     case fetch_session_workload(state, session.workload) do
       {:ok, entry} ->
         start_session_process(
@@ -641,7 +671,8 @@ defmodule Embervm.SessionManager do
           entry,
           node_id,
           vm_id,
-          dial_id
+          dial_id,
+          extra_opts
         )
 
       {:error, reason} ->
@@ -802,24 +833,29 @@ defmodule Embervm.SessionManager do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
       when is_binary(node_id) and is_binary(vm_id) ->
-        if disk_persistence_only?(state, session.workload) do
+        if persistence_enabled_workload?(session_workload_entry(state, session.workload)) do
           {reply, state} = park_session(state, session_id)
           case reply do
             {:ok, _} -> {:ok, state}
             other -> {other, state}
           end
         else
-          cond do
-            bank_at_cap?(state, node_id) ->
-              {{:error, :bank_busy}, state}
+          if memory_false_without_filesystem?(state, session.workload) do
+            destroy_live_legacy(state, session)
+            {:ok, state}
+          else
+            cond do
+              bank_at_cap?(state, node_id) ->
+                {{:error, :bank_busy}, state}
 
-            not disk_ok_for_bank?(state, node_id) ->
-            # Fail-closed: with missing/over-watermark disk facts, do NOT bank onto a
-            # possibly-full disk. The session stays live and re-arms its timer.
-            {{:error, :disk_unknown}, state}
+              not disk_ok_for_bank?(state, node_id) ->
+                # Fail-closed: with missing/over-watermark disk facts, do NOT bank onto a
+                # possibly-full disk. The session stays live and re-arms its timer.
+                {{:error, :disk_unknown}, state}
 
-            true ->
-              admit_bank(state, session, node_id, vm_id)
+              true ->
+                admit_bank(state, session, node_id, vm_id)
+            end
           end
         end
 
@@ -839,26 +875,46 @@ defmodule Embervm.SessionManager do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
       when is_binary(node_id) and is_binary(vm_id) ->
-        _ = stop_session_process(state, session_id, session)
-        result = SessionStore.transition(
+        intent = SessionStore.transition(
           state.session_store,
           session_id,
           :park,
-          :session_parked,
+          :session_parking,
           %{reason: "idled", volume_node_id: node_id},
-          %{volume_node_id: node_id, node_id: nil, vm_id: nil}
+          %{volume_node_id: node_id}
         )
-        Logger.info("embervm session parked", session_id: session_id, workload: session.workload, node_id: node_id)
-        {result, state}
+        case intent do
+          {:ok, _} ->
+            # The parking intent is durable before teardown. noded's auto-destroy
+            # timer covers a primed VM only after PrimeAssign, not this park window.
+            case stop_session_process(state, session_id, session) do
+              true ->
+                result = SessionStore.transition(state.session_store, session_id, :park_complete,
+                  :session_parked, %{reason: "idled", volume_node_id: node_id},
+                  %{volume_node_id: node_id, node_id: nil, vm_id: nil})
+                Logger.info("embervm session parked", session_id: session_id, workload: session.workload, node_id: node_id)
+                {result, state}
+              false ->
+                {{:error, :park_teardown_unconfirmed}, state}
+            end
+          error -> {error, state}
+        end
 
       {:ok, _session} -> {{:ok, :not_parked}, state}
       :error -> {{:error, :not_found}, state}
     end
   end
 
-  defp disk_persistence_only?(state, workload) do
+  defp session_workload_entry(state, workload) do
     case WorkloadCatalog.fetch(state.catalog_table, workload) do
-      {:ok, %{persistence: %{memory: false}}} -> true
+      {:ok, entry} -> entry
+      _ -> %{}
+    end
+  end
+
+  defp memory_false_without_filesystem?(state, workload) do
+    case session_workload_entry(state, workload) do
+      %{persistence: %{memory: false, filesystem: fs}} when is_map(fs) -> Map.get(fs, :enabled, false) != true
       _ -> false
     end
   end
@@ -1117,7 +1173,13 @@ defmodule Embervm.SessionManager do
 
     cond do
       session.state == :parked and is_binary(session.volume_node_id) ->
-        rejoin_parked(state, session, from, req)
+        if persistence_enabled_workload?(session_workload_entry(state, session.workload)) do
+          rejoin_parked(state, session, from, req)
+        else
+          _ = destroy_live_legacy(state, session)
+          GenServer.reply(from, {:error, {:gone, "persistence_disabled"}})
+          state
+        end
 
       wake_allowed?(state, principal) ->
         state = record_wake(state, principal)
@@ -1149,9 +1211,6 @@ defmodule Embervm.SessionManager do
     case SessionStore.mark(state.session_store, session.session_id, :relight) do
       {:ok, _} ->
         owner = self()
-        capacity_table = state.capacity_table
-        channel_fun = state.channel_fun
-        relight_fun = state.relight_fun
         volume_node_id = session.volume_node_id
         session_id = session.session_id
 
@@ -1164,10 +1223,9 @@ defmodule Embervm.SessionManager do
                                "ember.principal" => session.principal,
                                "ember.volume_node_id" => volume_node_id
                              }} do
-              with {:ok, _primed_vm_id} <- perform_rejoin_prime(state, volume_node_id, session.workload, session_id),
-                   {:ok, channel} <- safe_channel(channel_fun, volume_node_id),
-                   {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
-                     safe_relight(relight_fun, channel, session) do
+              with {:ok, vm_id} <- perform_rejoin_prime(state, volume_node_id, session.workload, session_id) do
+                # noded's auto-destroy timer covers PrimeAssign after delivery starts.
+                # The CP destroys a successfully primed VM when delivery never starts.
                 {:ok, volume_node_id, vm_id, 0, volume_node_id}
               else
                 {:error, reason} -> {:error, reason}
@@ -1175,7 +1233,7 @@ defmodule Embervm.SessionManager do
               end
             end
 
-          send(owner, {:relight_done, session_id, outcome})
+          send(owner, {:rejoin_done, session_id, outcome})
         end)
 
         state
@@ -1186,19 +1244,44 @@ defmodule Embervm.SessionManager do
   end
 
   defp perform_rejoin_prime(state, volume_node_id, workload, lineage_id) do
-    with {:ok, fact} <- NodeCapacity.fetch(state.capacity_table, volume_node_id),
-         {:ok, entry} <- fetch_session_workload(state, workload),
-         true <- Map.get(fact, :draining, false) == false,
-         need_mib <- Map.get(entry, :mem_mib) || 512,
-         headroom <- Map.get(fact, :mem_headroom_mib),
-         true <- is_nil(headroom) or headroom >= need_mib,
-         workload_entry when is_map(workload_entry) <- Map.get(Map.get(fact, :workloads, %{}), workload),
-         snapshot_ref <- Map.get(workload_entry, :snapshot_ref),
+    with {:ok, entry} <- fetch_session_workload(state, workload),
+         {:ok, [brick | _]} <- Scheduler.place_with_demand(%Request{
+           table: state.capacity_table, node_id: volume_node_id, workload: workload,
+           key: workload, need_mib: Map.get(entry, :mem_mib) || 512,
+           base: {:ready, :snapshot_ref}
+         }),
+         snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
          {:ok, vm_id} <- prime(state, volume_node_id, snapshot_ref, entry, lineage_id) do
       {:ok, vm_id}
     else
       _ -> {:error, :no_capacity}
     end
+  end
+
+  defp finish_rejoin(state, session_id, {:ok, node_id, vm_id, _ms, dial_id}) do
+    session = get_session!(state, session_id)
+    owner = self()
+    failure_fun = fn reason -> send(owner, {:rejoin_assign_failed, session_id, reason}) end
+
+    case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id,
+           dial_id, [rejoin_failure_fun: failure_fun]) do
+      {:ok, pid} ->
+        case SessionStore.transition(state.session_store, session_id, :rejoin_ready, :session_relit,
+               %{volume_node_id: session.volume_node_id}, %{node_id: node_id, vm_id: vm_id}) do
+          {:ok, _} -> drain_relight_into_process(state, session_id, pid)
+          {:error, reason} ->
+            _ = destroy_vm(state, %{node_id: node_id, vm_id: vm_id})
+            drain_relight_waiters(state, session_id, {:error, reason})
+        end
+      {:error, reason} ->
+        _ = destroy_vm(state, %{node_id: node_id, vm_id: vm_id})
+        drain_relight_waiters(state, session_id, {:error, reason})
+    end
+  end
+
+  defp finish_rejoin(state, session_id, {:error, reason}) do
+    _ = SessionStore.mark(state.session_store, session_id, :parked_abort)
+    drain_relight_waiters(state, session_id, {:error, {:relight_failed, reason}})
   end
 
   # Park a caller behind an in-flight relight for its session (FIFO within the
@@ -1691,6 +1774,7 @@ defmodule Embervm.SessionManager do
     facts = NodeCapacity.all(state.capacity_table)
     live_vms = index_session_vms(facts)
     snapshots = index_session_snapshots(facts)
+    nodes_reporting_snaps = nodes_reporting_snapshots(facts)
 
     state = clear_changed_unapplicable(state)
 
@@ -1698,7 +1782,7 @@ defmodule Embervm.SessionManager do
       SessionStore.all(state.session_store)
       |> Enum.reject(&SessionState.terminal?(&1.state))
       |> Enum.reduce(state, fn session, acc ->
-        adopt_one(acc, session, live_vms, snapshots)
+        adopt_one(acc, session, live_vms, snapshots, nodes_reporting_snaps)
       end)
 
     state = evict_orphan_snapshots(state, facts)
@@ -1939,7 +2023,23 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp adopt_one(state, session, live_vms, snapshots) do
+
+  # Determine which nodes CARRY a snapshot report field (authoritative), versus nodes
+  # that have not reported snapshot facts yet (nil/absent). This guards eviction:
+  # a banked session is only evicted on positive evidence that its snapshot is gone,
+  # never on a missing or lagging report.
+  defp nodes_reporting_snapshots(facts) do
+    result = MapSet.new(facts, fn f ->
+      case Map.get(f, :session_snapshots) do
+        nil -> nil
+        _ -> f.configured_id
+      end
+    end)
+    |> MapSet.delete(nil)
+    result
+  end
+
+  defp adopt_one(state, session, live_vms, snapshots, nodes_reporting_snaps) do
     sid = session.session_id
 
     cond do
@@ -1950,6 +2050,12 @@ defmodule Embervm.SessionManager do
         state
 
       session.state == :parked ->
+        state
+
+      session.state == :parking and not Map.has_key?(live_vms, sid) ->
+        _ = SessionStore.transition(state.session_store, sid, :park_complete, :session_parked,
+          %{reason: "idled", volume_node_id: session.volume_node_id},
+          %{node_id: nil, vm_id: nil, volume_node_id: session.volume_node_id})
         state
 
       # This manager has an in-flight bank/relight for the session: it owns the
@@ -1975,11 +2081,13 @@ defmodule Embervm.SessionManager do
       # A session the current node facts cover neither as a VM nor a snapshot. Only
       # reap if the node whose id the session records IS reporting (its absence is
       # then authoritative, the state truly vanished); if that node is not in the
-      # facts at all (a disconnect), leave the session untouched. Under the
-      # node-confirmed-destroy gate a grace window (orphan_grace_ms since the row was
-      # last updated) is honoured first, so an owner-resolved dial that momentarily
-      # omits a just-created VM does not terminalize it (ADR embervm/014 decision 5).
-      node_reporting?(state, session.node_id) and orphan_grace_elapsed?(state, session) ->
+      # facts at all (a disconnect), leave the session untouched. Only treat a snapshot
+      # as vanished when the node's snapshot report is AUTHORITATIVE (the field is
+      # present). Absence of evidence (no snapshot report yet) is not evidence of absence.
+      # Under the node-confirmed-destroy gate a grace window (orphan_grace_ms since
+      # the row was last updated) is honoured first, so an owner-resolved dial that
+      # momentarily omits a just-created VM does not terminalize it (ADR embervm/014).
+      node_reporting?(state, session.node_id) and MapSet.member?(nodes_reporting_snaps, session.node_id) and orphan_grace_elapsed?(state, session) ->
         case session.state do
           :banked ->
             evict_banked(state, session, :snapshot_vanished)
@@ -2192,7 +2300,7 @@ defmodule Embervm.SessionManager do
     SessionStore.all(state.session_store)
     # Only running/banked have an :expire FSM edge; a transient banking/relighting/
     # creating session settles within a sweep and is expired on the next pass.
-    |> Enum.filter(fn s -> s.state in [:running, :banked, :parked] end)
+    |> Enum.filter(fn s -> s.state in [:running, :banked, :parked, :parking] end)
     |> Enum.filter(fn s -> is_integer(s.expires_at) and s.expires_at <= now end)
     |> Enum.reduce(state, fn session, acc -> expire_session(acc, session) end)
   end
@@ -2203,6 +2311,8 @@ defmodule Embervm.SessionManager do
     else
       _ = stop_session_process(state, session.session_id, session)
     end
+
+    delete_session_volume(state, session)
 
     _ =
       SessionStore.transition(
@@ -2482,6 +2592,8 @@ defmodule Embervm.SessionManager do
       _ = stop_session_process(state, session.session_id, session)
     end
 
+    delete_session_volume(state, session)
+
     state = drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
 
     reply =
@@ -2675,6 +2787,33 @@ defmodule Embervm.SessionManager do
   defp default_evict_artifact(channel, %EvictArtifactRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
   end
+
+  defp default_delete_session_volume(channel, %DeleteVolumeRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req)
+  end
+
+  defp delete_session_volume(state, %{volume_node_id: node_id, workload: workload, session_id: lineage_id})
+       when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
+    req = %DeleteVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
+    result =
+      with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+        try do
+          state.delete_session_volume_fun.(channel, req)
+        rescue
+          error -> {:error, error}
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+      end
+
+    case result do
+      {:ok, _} -> :ok
+      other -> Logger.warning("embervm session volume delete failed", workload: workload, lineage_id: lineage_id, reason: inspect(other))
+    end
+    :ok
+  end
+
+  defp delete_session_volume(_state, _session), do: :ok
 
   defp default_clock, do: System.system_time(:millisecond)
 end

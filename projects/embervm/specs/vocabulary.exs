@@ -96,8 +96,14 @@
       # because it covers auth-forbidden and per-principal queue-depth audit kinds;
       # quota.tla treats queue depth as a model bound rather than modeling its
       # denial op. drain is a node-drain concern outside the adoption model's scope.
-      ~w(started vm_destroyed base_built denied drain retried
-         redrive dead_lettered failed)a ++
+      # session_parking/session_parked are the ADR 027 memory:false quadrant's
+      # park intent and completion. They are a session-class durability concern,
+      # outside the adoption pilot and outside bank_relight.tla's bank/relight
+      # generation pairing (a parked session holds a filesystem lineage volume,
+      # not a memory snapshot, so it pairs with no generation).
+      ~w(session_parking session_parked)a ++
+        ~w(started vm_destroyed base_built denied drain retried
+           redrive dead_lettered failed)a ++
         # Remaining R2 session lifecycle kinds still out of scope. The bank/relight,
         # evict, and node-confirmed-destroy kinds moved to `modeled` above (bank_relight.tla,
         # ADR 006 protocol 2). session_created / session_invoked / session_expired /
