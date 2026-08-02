@@ -1742,8 +1742,12 @@ func TestArchiveVolume(t *testing.T) {
 		s.startExportQueue(context.Background())
 		s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-1"})
 		waitForExport(t, fs, "session-workspace/sbx/lineage-1")
+		// A repeat archive re-enqueues rather than short-circuiting on presence:
+		// the workspace key is stable but its content mutates, so only Export's
+		// checksum compare may decide nothing needs uploading. Skipped stays
+		// false; the worker's compare is the idempotency gate.
 		resp, err = s.ArchiveVolume(context.Background(), &nodev1.ArchiveVolumeRequest{Workload: "sbx", LineageId: "lineage-1"})
-		if err != nil || !resp.GetSkipped() {
+		if err != nil || resp.GetSkipped() {
 			t.Fatalf("ArchiveVolume repeat = %#v, %v", resp, err)
 		}
 	})

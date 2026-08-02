@@ -871,11 +871,16 @@ defmodule Embervm.SessionManager do
     end)
 
     # Snapshot after parking completes so sessions that were running when the
-    # drain began are included alongside already-parked lineages.
-    SessionStore.all(state.session_store)
-    |> Enum.filter(&(&1.state == :parked and &1.volume_node_id == node_id))
-    |> Enum.filter(&(persistence_enabled_workload?(session_workload_entry(state, &1.workload))))
-    |> Enum.each(fn session -> _ = archive_session_volume(state, session) end)
+    # drain began are included alongside already-parked lineages. Archive OFF
+    # the manager: the RPC is a fast enqueue-ACK on a healthy node, but an
+    # unresponsive brick would otherwise stall invoke routing for its 10s
+    # deadline once per lineage, serialized on this process.
+    parked =
+      SessionStore.all(state.session_store)
+      |> Enum.filter(&(&1.state == :parked and &1.volume_node_id == node_id))
+      |> Enum.filter(&(persistence_enabled_workload?(session_workload_entry(state, &1.workload))))
+
+    spawn(fn -> Enum.each(parked, fn session -> _ = archive_session_volume(state, session) end) end)
 
     {count, state}
   end

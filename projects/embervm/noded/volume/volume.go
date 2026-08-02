@@ -36,11 +36,14 @@ import (
 // CP-issued blessed_generation (the unblessed case a fresh control plane
 // quarantines on adoption).
 const (
-	volFile              = "vol.img"
-	genFile              = "gen"
-	blessedFile          = "genblessed"
-	leaseFile            = ".blessing-lease"
-	retirementIntentFile = ".retirement-intent"
+	volFile     = "vol.img"
+	genFile     = "gen"
+	blessedFile = "genblessed"
+	leaseFile   = ".blessing-lease"
+	// RetirementIntentFile marks a lineage pending node-owned retirement. Exported
+	// so the artifact exporter can EXCLUDE it: the marker must never ride the S3
+	// artifact, or a restore would resurrect it and retire a live workspace.
+	RetirementIntentFile = ".retirement-intent"
 )
 
 // BlessingLease is the durable, exclusive generation range a brick may use
@@ -533,18 +536,18 @@ func (m *Manager) WriteRetirementIntent(workload, lineageID string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, retirementIntentFile), []byte("retire\n"), 0o600)
+	return os.WriteFile(filepath.Join(dir, RetirementIntentFile), []byte("retire\n"), 0o600)
 }
 
 // HasRetirementIntent reports whether a lineage is pending node-owned retirement.
 func (m *Manager) HasRetirementIntent(workload, lineageID string) bool {
-	_, err := os.Stat(filepath.Join(m.SessionLineageDir(workload, lineageID), retirementIntentFile))
+	_, err := os.Stat(filepath.Join(m.SessionLineageDir(workload, lineageID), RetirementIntentFile))
 	return err == nil
 }
 
 // ClearRetirementIntent removes a completed retirement marker.
 func (m *Manager) ClearRetirementIntent(workload, lineageID string) error {
-	err := os.Remove(filepath.Join(m.SessionLineageDir(workload, lineageID), retirementIntentFile))
+	err := os.Remove(filepath.Join(m.SessionLineageDir(workload, lineageID), RetirementIntentFile))
 	if os.IsNotExist(err) {
 		return nil
 	}

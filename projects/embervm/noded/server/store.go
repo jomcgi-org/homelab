@@ -19,6 +19,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
+	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 )
 
 // artifactStore is the seam the R6 continuity verbs and the async export queue
@@ -375,7 +376,7 @@ func enumerateArtifactFiles(localDir string) ([]string, error) {
 			return nil
 		}
 		name := d.Name()
-		if strings.HasSuffix(name, ".tmp") || name == "meta.json" {
+		if strings.HasSuffix(name, ".tmp") || name == "meta.json" || name == volume.RetirementIntentFile {
 			return nil
 		}
 		rel, rerr := filepath.Rel(localDir, path)
@@ -1151,7 +1152,14 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	// every node re-uploaded ~1 GiB over the sibling's object under the same key.
 	// The startup reconcile sweep already gated on presence; this is the same
 	// policy on the path the control plane actually drives.
-	if s.alreadyDurable(ctx, job.ref, job.key) {
+	//
+	// NEVER for SESSION_WORKSPACE: its key is stable but its content mutates
+	// (single writer, no generation ledger), so presence proves nothing about
+	// freshness. A presence short-circuit here would let completeRetirement
+	// delete newer local bytes while the store still holds an older copy.
+	// Export's own checksum compare is the idempotency gate for this kind.
+	if job.ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE &&
+		s.alreadyDurable(ctx, job.ref, job.key) {
 		s.logger.Info("noded: export skipped, artifact already durable in store",
 			"artifact", job.key, "kind", job.ref.GetKind().String())
 		s.signalChange()
