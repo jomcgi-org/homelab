@@ -270,6 +270,10 @@ defmodule Embervm.SessionManager do
       # Ids already alarmed for being stuck in destroying, so the error logs once
       # per stuck id rather than every reconcile tick (pruned as ids terminalize).
       destroying_alarmed: MapSet.new(),
+      # Session ids whose adoption transition was not applicable, with the state
+      # that produced the warning. A state change makes the warning eligible again.
+      logged_unapplicable: MapSet.new(),
+      unapplicable_states: %{},
       # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2). When on, the
       # Direction-2 orphan reconcile ADOPTS-and-backfills a reported session VM whose
       # store row is absent BUT a durable write is still in flight for it (a young
@@ -1548,6 +1552,8 @@ defmodule Embervm.SessionManager do
     live_vms = index_session_vms(facts)
     snapshots = index_session_snapshots(facts)
 
+    state = clear_changed_unapplicable(state)
+
     state =
       SessionStore.all(state.session_store)
       |> Enum.reject(&SessionState.terminal?(&1.state))
@@ -1831,11 +1837,65 @@ defmodule Embervm.SessionManager do
       # last updated) is honoured first, so an owner-resolved dial that momentarily
       # omits a just-created VM does not terminalize it (ADR embervm/014 decision 5).
       node_reporting?(state, session.node_id) and orphan_grace_elapsed?(state, session) ->
-        fail_session(state, sid, :failed, "vm_and_snapshot_vanished")
-        state
+        case session.state do
+          :banked ->
+            evict_banked(state, session, :snapshot_vanished)
+
+          session_state when session_state in [:running, :banking, :relighting, :creating] ->
+            fail_adopted_session(state, session)
+
+          _ ->
+            state
+        end
 
       true ->
         state
+    end
+  end
+
+  defp clear_changed_unapplicable(state) do
+    sessions = Map.new(SessionStore.all(state.session_store), &{&1.session_id, &1.state})
+
+    Enum.reduce(state.unapplicable_states, state, fn {session_id, logged_state}, acc ->
+      if Map.get(sessions, session_id) == logged_state do
+        acc
+      else
+        %{
+          acc
+          | logged_unapplicable: MapSet.delete(acc.logged_unapplicable, session_id),
+            unapplicable_states: Map.delete(acc.unapplicable_states, session_id)
+        }
+      end
+    end)
+  end
+
+  defp fail_adopted_session(state, session) do
+    case SessionStore.transition(
+           state.session_store,
+           session.session_id,
+           :fail,
+           :session_failed,
+           %{reason: :failed, detail: "vm_and_snapshot_vanished"},
+           %{}
+         ) do
+      {:ok, _} ->
+        state
+
+      {:error, err} ->
+        if MapSet.member?(state.logged_unapplicable, session.session_id) do
+          state
+        else
+          Logger.warning("embervm session fail transition failed",
+            session_id: session.session_id,
+            error: inspect(err)
+          )
+
+          %{
+            state
+            | logged_unapplicable: MapSet.put(state.logged_unapplicable, session.session_id),
+              unapplicable_states: Map.put(state.unapplicable_states, session.session_id, session.state)
+          }
+        end
     end
   end
 

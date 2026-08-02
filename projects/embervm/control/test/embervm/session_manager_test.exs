@@ -667,6 +667,49 @@ defmodule Embervm.SessionManagerTest do
     assert MapSet.member?(:sys.get_state(ctx.mgr).destroying_alarmed, created.session_id)
   end
 
+  test "test_banked_session_with_vanished_vm_and_snapshot_evicts_not_loops" do
+    ctx = start_stack(evict_fun: fn _ch, _req -> {:ok, %{}} end)
+    put_session_workload(ctx, "wl-vanished-banked")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-vanished-banked", "p1")
+    bank_session(ctx, created.session_id)
+    report_empty_node(ctx)
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :evicted
+  end
+
+  test "test_running_session_with_vanished_vm_and_snapshot_fails" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-vanished-running")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-vanished-running", "p1")
+    report_empty_node(ctx)
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :failed
+  end
+
+  test "test_repeated_adoption_sweep_does_not_double_log_unapplicable_transition" do
+    ctx = start_stack(evict_fun: fn _ch, _req -> {:ok, %{}} end)
+    put_session_workload(ctx, "wl-no-double-warning")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-no-double-warning", "p1")
+    bank_session(ctx, created.session_id)
+    report_empty_node(ctx)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        :ok = SessionManager.reconcile(ctx.mgr)
+        :ok = SessionManager.reconcile(ctx.mgr)
+      end)
+
+    hits = (log |> String.split("session fail transition failed") |> length()) - 1
+    assert hits == 0
+  end
+
+
   test "gated: reconcile destroys an orphan reported session VM with no CP row" do
     parent = self()
 
@@ -866,6 +909,24 @@ defmodule Embervm.SessionManagerTest do
 
   # Direct unit tests for transport deadline arithmetic, ensuring the fix
   # (transport timeout EXCEEDS application deadline) cannot be reverted unnoticed.
+  defp bank_session(ctx, session_id) do
+    SessionStore.adopt_state(ctx.store, session_id, :banked)
+  end
+
+  defp report_empty_node(ctx) do
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [],
+      live_vms: 0,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 5_000_000
+    })
+  end
+
   describe "transport_timeout/1" do
     test "non-default positive timeout_ms adds headroom" do
       # Use 45s (non-default) so a hardcoded constant cannot pass by luck.
