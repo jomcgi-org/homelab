@@ -312,6 +312,13 @@ spec:
               value: {{ .Values.agent.discord.defaultServerId | quote }}
             - name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID
               value: {{ .Values.agent.discord.defaultChannelId | quote }}
+            {{- with .Values.agent.discord.agentSessionsChannelId }}
+            # Agent-session turn notifications only. Sessions notify on EVERY
+            # terminal turn by design, so validating the lane would otherwise page
+            # the same channel as real alerts. Unset falls back to the default.
+            - name: MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID
+              value: {{ . | quote }}
+            {{- end }}
             # Owner allowlist for /goosecracker (ADR 024 Task 4). Synced from the
             # discord-bot 1Password item into monolith-chat-secrets (alongside the
             # bot token); the gate fails closed if absent. Sourced from the secret

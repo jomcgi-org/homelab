@@ -242,7 +242,6 @@ async def _notify_terminal(
         level = "info"
     else:
         level = "warn"
-
     thread = row.discord_thread if row is not None else None
     if thread:
         # A thread is a reading surface, so post the VERBATIM result. The voice
@@ -259,15 +258,18 @@ async def _notify_terminal(
             await agent_api.notify(chunk, level=level, channel=thread)
         return
 
-    # No thread bound (MCP or /agents UI): the short voice summary is the right
-    # shape for the default channel, which is a notification surface. The status
-    # prefix stays gated on `row` exactly as before, so this change is confined
-    # to the thread lane.
+    # No thread bound (MCP or /agents UI): the short voice summary goes to the
+    # agent-session notification channel when configured. Unset falls back to
+    # notify()'s default channel.
     if row is not None and status == "needs_input":
         summary = f"Needs input: {summary}"
     elif row is not None and status == "warn":
         summary = f"Warning: {summary}"
-    await agent_api.notify(summary[:2000], level=level, channel=None)
+    await agent_api.notify(
+        summary[:2000],
+        level=level,
+        channel=agent_api.agent_sessions_channel_id(),
+    )
 
 
 def _get_pending_message_sync(session_id: int, turn_seq: int):

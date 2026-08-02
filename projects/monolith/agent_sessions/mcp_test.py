@@ -1156,7 +1156,7 @@ def test_notify_terminal_with_no_terminal_reason_warns(monkeypatch):
     notify_calls = []
 
     async def mock_notify(summary, level, channel=None):
-        notify_calls.append((summary, level))
+        notify_calls.append((summary, level, channel))
 
     monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
 
@@ -1179,7 +1179,7 @@ def test_notify_terminal_with_no_terminal_reason_warns(monkeypatch):
     asyncio.run(run())
 
     assert len(notify_calls) == 1
-    summary, level = notify_calls[0]
+    summary, level, _channel = notify_calls[0]
     assert summary == "Test summary"
     assert level == "warn"
 
@@ -1465,3 +1465,29 @@ def test_session_start_rejects_a_repo_outside_the_catalog(monkeypatch, session):
     # before _persist_session, so a rejected repo leaves no row to clean up.
     assert "session_id" not in result
     assert session.exec(select(AgentSession)).all() == []
+
+
+def test_terminal_notification_uses_the_agent_sessions_channel(monkeypatch):
+    """Session turn notifications must not ring the default alert channel."""
+    monkeypatch.setenv(
+        "MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID", "sessions-chan"
+    )
+    assert mcp.agent_api.agent_sessions_channel_id() == "sessions-chan"
+
+    seen = {}
+
+    async def fake_notify(message, level="info", channel=None):
+        seen["channel"] = channel
+        return {"ok": True}
+
+    monkeypatch.setattr(mcp.agent_api, "notify", fake_notify)
+    asyncio.run(mcp._notify_terminal(_completed_turn("hi"), "summary", "completed"))
+    assert seen["channel"] == "sessions-chan"
+
+
+def test_agent_sessions_channel_unset_falls_back_to_default(monkeypatch):
+    """An unset channel must fall through to notify()'s default, not crash."""
+    monkeypatch.delenv(
+        "MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID", raising=False
+    )
+    assert mcp.agent_api.agent_sessions_channel_id() is None
