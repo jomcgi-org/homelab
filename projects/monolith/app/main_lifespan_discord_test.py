@@ -75,8 +75,6 @@ class TestSingletons:
             patches[2],
             patches[3],
             patches[4],
-            patches[5],
-            patches[6],
         ):
             await _start_singletons(app)
 
@@ -99,8 +97,6 @@ class TestSingletons:
             patch("asyncio.create_task", side_effect=cap),
             patches[0],
             patches[1],
-            patches[2],
-            patches[3],
         ):
             await _start_singletons(app)
 
@@ -123,8 +119,6 @@ class TestSingletons:
             patches[2],
             patches[3],
             patches[4],
-            patches[5],
-            patches[6],
         ):
             await _start_singletons(app)
             await _stop_singletons(app)
