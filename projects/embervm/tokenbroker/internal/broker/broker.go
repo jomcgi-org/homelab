@@ -2,12 +2,9 @@ package broker
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,12 +23,13 @@ type (
 )
 
 type grantState struct {
-	mu         sync.Mutex
-	cond       *sync.Cond
-	refreshing bool
-	lastErr    error
-	lastAccess string
-	lastExpiry time.Time
+	mu            sync.Mutex
+	cond          *sync.Cond
+	refreshing    bool
+	lastErr       error
+	lastAccess    string
+	lastExpiry    time.Time
+	authoritative *store.Grant
 }
 type Broker struct {
 	adapters       map[string]provider.Adapter
@@ -89,7 +87,11 @@ func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (stri
 	s.refreshing = true
 	s.lastErr = nil
 	s.mu.Unlock()
-	access, expiry, err := b.refresh(grantName, ctx)
+	// The refresh must survive an HTTP caller disappearing after the provider has
+	// rotated the refresh token. Callers still wait for this shared round-trip.
+	refreshCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	access, expiry, err := b.refresh(grantName, refreshCtx)
+	cancel()
 	s.mu.Lock()
 	s.refreshing = false
 	s.lastErr = err
@@ -105,6 +107,12 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	s, _ := b.state(grantName)
+	s.mu.Lock()
+	if s.authoritative != nil {
+		grant = *s.authoritative
+	}
+	s.mu.Unlock()
 	if grant.ProviderName == "" {
 		b.mu.RLock()
 		grant.ProviderName = b.grantProviders[grantName]
@@ -120,7 +128,7 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 		return "", time.Time{}, errors.New("no refresh token")
 	}
 	result, err := adapter.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
-	if err != nil && strings.Contains(err.Error(), "refresh_token_reused") {
+	if err != nil && errors.Is(err, provider.ErrRefreshTokenReused) {
 		b.metrics.ReusedRetries.Inc()
 		b.logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
 		grant, err = b.store.LoadGrant(grantName)
@@ -136,20 +144,59 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	grant.Name = grantName
 	grant.TokenBundle.IDToken = result.IDToken
 	grant.TokenBundle.AccessToken = result.AccessToken
+	grant.TokenBundle.ExpiresAt = result.ExpiresAt
 	if result.RefreshToken != "" {
 		grant.TokenBundle.RefreshToken = result.RefreshToken
 	}
 	grant.LastRefresh = time.Now().UTC()
 	grant.TokenBundle.LastRefresh = grant.LastRefresh
-	if err = b.store.SaveGrantIfNewer(grant); err != nil {
+	if err = b.saveRotatedGrant(grantName, grant); err != nil {
+		if errors.Is(err, store.ErrGrantNotNewer) {
+			stored, loadErr := b.store.LoadGrant(grantName)
+			if loadErr != nil {
+				return "", time.Time{}, loadErr
+			}
+			if stored.TokenBundle.AccessToken == "" {
+				return "", time.Time{}, ErrNoGrant
+			}
+			return stored.TokenBundle.AccessToken, stored.TokenBundle.ExpiresAt, nil
+		}
 		b.metrics.RefreshFailures.Inc()
+		b.logger.Error("tokenbroker rotated grant persistence failed", "grant", grantName, "err", err)
 		return "", time.Time{}, err
 	}
-	expires, err := TokenExpiry(grant.TokenBundle.AccessToken)
-	if err != nil {
-		return "", time.Time{}, err
+	return grant.TokenBundle.AccessToken, grant.TokenBundle.ExpiresAt, nil
+}
+
+func (b *Broker) saveRotatedGrant(name string, grant store.Grant) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		err = b.store.SaveGrantIfNewer(grant)
+		if err == nil || errors.Is(err, store.ErrGrantNotNewer) {
+			return err
+		}
+		if attempt < 4 {
+			time.Sleep(time.Duration(1<<attempt) * 2 * time.Second)
+		}
 	}
-	return grant.TokenBundle.AccessToken, expires, nil
+	s, _ := b.state(name)
+	s.mu.Lock()
+	copy := grant
+	s.authoritative = &copy
+	s.mu.Unlock()
+	go b.retryGrantPersistence(name, grant)
+	return err
+}
+
+func (b *Broker) retryGrantPersistence(name string, grant store.Grant) {
+	for {
+		time.Sleep(30 * time.Second)
+		if err := b.store.SaveGrantIfNewer(grant); err == nil || errors.Is(err, store.ErrGrantNotNewer) {
+			return
+		} else {
+			b.logger.Error("tokenbroker rotated grant persistence retry failed", "grant", name, "err", err)
+		}
+	}
 }
 
 func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, time.Time, error) {
@@ -160,13 +207,12 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	if grant.TokenBundle.AccessToken == "" {
+	if grant.TokenBundle.AccessToken == "" || grant.TokenBundle.ExpiresAt.IsZero() {
 		return "", time.Time{}, ErrNoGrant
 	}
-	expires, err := TokenExpiry(grant.TokenBundle.AccessToken)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("parse access token: %w", err)
-	}
+	expires := grant.TokenBundle.ExpiresAt
+	// Codex access tokens are valid for roughly eight days. Refresh at seven days
+	// so a broker outage does not run into the provider's staleness boundary.
 	if time.Until(expires) <= 5*time.Minute || time.Since(grant.LastRefresh) > 7*24*time.Hour {
 		state, stateErr := b.state(grantName)
 		if stateErr != nil {
@@ -186,36 +232,32 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 		if err != nil {
 			return "", time.Time{}, err
 		}
-		expires, err = TokenExpiry(grant.TokenBundle.AccessToken)
-		if err != nil {
-			return "", time.Time{}, err
+		if grant.TokenBundle.ExpiresAt.IsZero() {
+			return "", time.Time{}, ErrNoGrant
 		}
+		expires = grant.TokenBundle.ExpiresAt
 	}
 	return grant.TokenBundle.AccessToken, expires, nil
+}
+
+func (b *Broker) SaveGrant(grant store.Grant) error {
+	s, err := b.state(grant.Name)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refreshing {
+		return errors.New("grant refresh in progress")
+	}
+	err = b.store.SaveGrantIfNewer(grant)
+	if errors.Is(err, store.ErrGrantNotNewer) {
+		return err
+	}
+	return err
 }
 
 var (
 	ErrNoGrant       = errors.New("no_grant")
 	ErrRefreshFailed = errors.New("refresh_failed")
 )
-
-func TokenExpiry(token string) (time.Time, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
-		return time.Time{}, errors.New("not a JWT")
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return time.Time{}, err
-	}
-	var claims struct {
-		Exp int64 `json:"exp"`
-	}
-	if err = json.Unmarshal(raw, &claims); err != nil {
-		return time.Time{}, err
-	}
-	if claims.Exp == 0 {
-		return time.Time{}, errors.New("JWT has no exp")
-	}
-	return time.Unix(claims.Exp, 0), nil
-}

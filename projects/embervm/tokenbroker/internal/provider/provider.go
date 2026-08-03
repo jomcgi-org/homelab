@@ -1,6 +1,12 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+var ErrRefreshTokenReused = errors.New("refresh_token_reused")
 
 type DeviceCodeResponse struct {
 	DeviceAuthID    string `json:"device_auth_id"`
@@ -17,10 +23,12 @@ type AuthorizationCodeResponse struct {
 }
 
 type TokenResponse struct {
-	IDToken      string `json:"id_token"`
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	Error        string `json:"error"`
+	IDToken      string    `json:"id_token"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ExpiresIn    int       `json:"expires_in"`
+	ExpiresAt    time.Time `json:"-"`
+	Error        string    `json:"error"`
 }
 
 type Adapter interface {

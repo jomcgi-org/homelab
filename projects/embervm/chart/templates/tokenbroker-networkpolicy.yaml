@@ -2,7 +2,7 @@
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: codex-token-broker
+  name: {{ include "embervm.tokenBroker.fullname" . }}
   namespace: {{ .Release.Namespace }}
 spec:
   endpointSelector:
@@ -12,10 +12,28 @@ spec:
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            app.kubernetes.io/component: noded
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            app.kubernetes.io/component: noded-brick
       toPorts: [{ ports: [{ port: "8080", protocol: TCP }] }]
   egress:
-    - toFQDNs: [{ matchName: auth.openai.com }]
+    # Cilium's toFQDNs proxy only learns rotating provider IPs when DNS is
+    # allowed with the L7 dns rule. Keep this rule ahead of the FQDN rule.
+    - toEndpoints:
+        - matchLabels:
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+          rules:
+            dns:
+              - matchPattern: "*"
+    {{- range .Values.tokenBroker.grants }}
+    - toFQDNs: [{ matchName: {{ .fqdn | quote }} }]
       toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
+    {{- end }}
     - toEntities: [kube-apiserver]
       toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
 {{- end }}

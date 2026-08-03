@@ -16,6 +16,8 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -59,12 +61,20 @@ func main() {
 		brokerConfigs = append(brokerConfigs, broker.GrantConfig{Name: c.Name, ProviderName: c.ProviderName})
 		configMap[c.Name] = c
 	}
+	m := metrics.New()
+	m.Register(prometheus.DefaultRegisterer)
 	s := &server{store: st, adapters: adapters, configs: configMap, logger: logger}
-	s.broker = broker.New(st, adapters, brokerConfigs, logger, metrics.New())
+	s.broker = broker.New(st, adapters, brokerConfigs, logger, m)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/grants/", s.grants)
 	addr := env("BROKER_LISTEN_ADDR", ":8080")
+	go func() {
+		if metricsErr := http.ListenAndServe(":9090", promhttp.Handler()); metricsErr != nil {
+			logger.Error("metrics server stopped", "err", metricsErr)
+		}
+	}()
 	logger.Info("token broker listening", "addr", addr)
 	if err = http.ListenAndServe(addr, mux); err != nil {
 		logger.Error("server stopped", "err", err)
@@ -153,7 +163,7 @@ func (s *server) pollLogin(name string, adapter provider.Adapter, code provider.
 			err = ex
 		} else {
 			now := time.Now().UTC()
-			err = s.store.SaveGrant(store.Grant{Name: name, ProviderName: s.configs[name].ProviderName, LastRefresh: now, TokenBundle: store.TokenBundle{IDToken: tok.IDToken, AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken, LastRefresh: now}})
+			err = s.broker.SaveGrant(store.Grant{Name: name, ProviderName: s.configs[name].ProviderName, LastRefresh: now, TokenBundle: store.TokenBundle{IDToken: tok.IDToken, AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken, LastRefresh: now, ExpiresAt: tok.ExpiresAt}})
 		}
 	}
 	if err != nil {

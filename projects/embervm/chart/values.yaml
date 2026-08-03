@@ -201,9 +201,13 @@ service:
 tokenBroker:
   enabled: true
   replicas: 1
+  # LOUD CONTRACT: every grant below needs a matching Secret /data
+  # ignoreDifferences entry in deploy/application.yaml, or ArgoCD will erase
+  # the broker's rotating refresh-token bundle during self-heal.
   grants:
     - name: codex-cluster
       provider: codex-chatgpt
+      fqdn: auth.openai.com
   resources:
     requests:
       cpu: 50m

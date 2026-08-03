@@ -13,5 +13,5 @@ rules:
       {{- range .Values.tokenBroker.grants }}
       - embervm-oauth-grant-{{ .name }}
       {{- end }}
-    verbs: [get, update, patch]
+    verbs: [get, update]
 {{- end }}
