@@ -82,6 +82,30 @@ def clear_ember_session(session: Session, session_id: int) -> AgentSession:
     return row
 
 
+def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[int]:
+    """Null the ember binding on every AgentSession bound to ember_id.
+
+    A destroyed EmberVM session can be bound to more than one AgentSession
+    row over its lifetime (retries, resumed turns), so this clears all of
+    them in one commit rather than assuming a single owner. Rows are loaded
+    via exec/select and mutated in place, then committed once; nothing is
+    session.add-ed in a loop.
+
+    Returns the ids of the affected AgentSession rows.
+    """
+    rows = session.exec(
+        select(AgentSession).where(AgentSession.ember_session_id == ember_id)
+    ).all()
+    ids: list[int] = []
+    for row in rows:
+        row.ember_session_id = None
+        row.ember_session_token = None
+        row.ember_session_expires_at = None
+        ids.append(row.id)
+    session.commit()
+    return ids
+
+
 def create_turn(
     session: Session,
     session_id: int,

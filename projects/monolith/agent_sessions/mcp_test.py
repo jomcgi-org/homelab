@@ -783,6 +783,51 @@ def test_broker_login_status_granted_notifies(monkeypatch):
     assert notified and notified[0][1] == "info"
 
 
+def test_session_vms_returns_transport_payload(monkeypatch):
+    payload = {
+        "workload": "claude-runtime",
+        "items": [{"session_id": "s-abc", "state": "parked"}],
+        "total": 1,
+        "limit": 50,
+        "offset": 0,
+    }
+
+    async def fake_list_sessions(limit=50, offset=0):
+        return payload
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+    result = asyncio.run(mcp.monolith_agent_session_vms())
+    assert result == payload
+
+
+def test_session_destroy_clears_matching_binding(monkeypatch, session):
+    row = store.create_session(session, "sid-123", "/workspace", "main")
+    store.set_ember_session(session, row.id, "s-abc", "token-1", None)
+
+    async def fake_destroy_session(ember_session_id):
+        return {"session_id": "s-abc", "state": "destroyed"}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", fake_destroy_session)
+    result = asyncio.run(mcp.monolith_agent_session_destroy("s-abc"))
+
+    assert result["state"] == "destroyed"
+    assert result["cleared_bindings"] == [row.id]
+
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.ember_session_id is None
+    assert reloaded.ember_session_token is None
+
+
+def test_session_destroy_surfaces_transport_error(monkeypatch):
+    async def failing_destroy_session(ember_session_id):
+        raise EmberVMTransportError("boom")
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", failing_destroy_session)
+    result = asyncio.run(mcp.monolith_agent_session_destroy("s-abc"))
+    assert result == {"error": "boom"}
+
+
 def test_broker_login_rejects_bad_grant_and_unset_url(monkeypatch):
     monkeypatch.setenv("EMBER_TOKENBROKER_URL", "http://broker")
     with pytest.raises(ValueError):
