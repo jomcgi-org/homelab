@@ -1213,6 +1213,34 @@ class PiProcess:
                                     if item.get("type") == "text"
                                 )
                                 break
+                    if not result_text:
+                        # A textless terminal event is an ERROR, never an empty
+                        # success: pi normalizes provider failures into the
+                        # assistant message's errorMessage (docs/custom-provider.md),
+                        # and live turns persisted blank records with no error
+                        # anywhere. Surface the errorMessage when present, else
+                        # the raw terminal event, so the cause reaches the turn
+                        # record instead of vanishing.
+                        error_detail = ""
+                        for message_event in reversed(event.get("messages", [])):
+                            if message_event.get("errorMessage"):
+                                error_detail = str(message_event["errorMessage"])
+                                break
+                        if not error_detail:
+                            error_detail = (
+                                "terminal event carried no text: %s"
+                                % (json.dumps(event)[:1500])
+                            )
+                        stderr = _truncate_ring_for_error(self.stderr_lines)
+                        if stderr:
+                            error_detail += "\nCLI stderr:\n%s" % stderr
+                        # Reap before raising: the success path hands the child
+                        # to a reaper thread, and skipping that here leaks a
+                        # zombie the PID-1 orphan reaper must not touch.
+                        CodexProcess._reap_process(process)
+                        raise RuntimeError(
+                            "pi turn produced no output: %s" % error_detail
+                        )
                     record = {
                         "result": result_text,
                         "terminal_reason": terminal_reason,
