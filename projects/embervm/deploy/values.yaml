@@ -329,8 +329,10 @@ claudeRuntimeWorkload:
   # hardening gate merged: sessions ride per-lineage workspace volumes with
   # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
   # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
-  # Re-armed 2026-08-03 on top of the prime-reason instrumentation (#4266):
-  # the first flip denied every create with :no_capacity, which turned out to
-  # be prime/5 flattening its real failure. This attempt is time-boxed: one
-  # probe, read the now-explicit reason, revert immediately if it fails.
-  persistenceEnabled: true
+  # OFF while the cold-boot Prime deadline fix in this PR deploys. The probe
+  # proved the real cause: a persistence Prime cold boots with a fresh 10 GiB
+  # volume and blew elixir-grpc's 10s default deadline, so the CP cancelled
+  # mid-boot ("server_closed_request") and denied the create, while noded
+  # logged "vsock prime did not complete ... context canceled". Re-arm once
+  # this ships.
+  persistenceEnabled: false

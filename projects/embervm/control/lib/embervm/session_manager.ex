@@ -2975,8 +2975,17 @@ defmodule Embervm.SessionManager do
     Embervm.Dispatcher.claim(dispatcher, node_id, workload)
   end
 
+  # A persistence Prime COLD BOOTS with a freshly created workspace volume, so it
+  # runs for the guest's boot-ready budget (60s) rather than a warm restore's
+  # couple of seconds. The elixir-grpc default is 10s, which cancelled every
+  # such Prime mid-boot: the CP saw server_closed_request and denied the create,
+  # and noded logged "vsock prime did not complete ... context canceled". Same
+  # deadline-family trap as #4212/#4215.
+  @prime_cold_boot_timeout_ms 120_000
+
   defp default_prime(channel, %PrimeRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.prime(channel, req)
+    timeout = if req.lineage_id in [nil, ""], do: 30_000, else: @prime_cold_boot_timeout_ms
+    Embervm.Node.V1.NodeService.Stub.prime(channel, req, timeout: timeout)
   end
 
   defp default_bank(channel, %BankRequest{} = req) do
