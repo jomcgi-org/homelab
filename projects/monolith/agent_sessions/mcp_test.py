@@ -740,3 +740,53 @@ def test_ember_expires_at_column_is_bigint():
     assert isinstance(column.type, BigInteger), (
         "ember_session_expires_at must map to BigInteger; got %r" % column.type
     )
+
+
+def test_broker_login_start_surfaces_code_and_notifies(monkeypatch):
+    monkeypatch.setenv("EMBER_TOKENBROKER_URL", "http://broker")
+    calls = []
+    notified = []
+
+    async def fake_request(method, path):
+        calls.append((method, path))
+        return {
+            "verification_url": "https://auth/device",
+            "user_code": "ABCD-EFGH",
+            "expires_in": 900,
+        }
+
+    async def fake_notify(message, level="info"):
+        notified.append((message, level))
+
+    monkeypatch.setattr(mcp, "_broker_request", fake_request)
+    monkeypatch.setattr(mcp.agent_api, "notify", fake_notify)
+    result = asyncio.run(mcp.monolith_codex_broker_login_start())
+    assert result["user_code"] == "ABCD-EFGH"
+    assert calls == [("POST", "/grants/codex-cluster/login/start")]
+    assert "ABCD-EFGH" in notified[0][0] and notified[0][1] == "warn"
+
+
+def test_broker_login_status_granted_notifies(monkeypatch):
+    monkeypatch.setenv("EMBER_TOKENBROKER_URL", "http://broker")
+    notified = []
+
+    async def fake_request(method, path):
+        return {"state": "granted", "detail": ""}
+
+    async def fake_notify(message, level="info"):
+        notified.append((message, level))
+
+    monkeypatch.setattr(mcp, "_broker_request", fake_request)
+    monkeypatch.setattr(mcp.agent_api, "notify", fake_notify)
+    result = asyncio.run(mcp.monolith_codex_broker_login_status())
+    assert result["state"] == "granted"
+    assert notified and notified[0][1] == "info"
+
+
+def test_broker_login_rejects_bad_grant_and_unset_url(monkeypatch):
+    monkeypatch.setenv("EMBER_TOKENBROKER_URL", "http://broker")
+    with pytest.raises(ValueError):
+        asyncio.run(mcp.monolith_codex_broker_login_start(grant="../../etc"))
+    monkeypatch.delenv("EMBER_TOKENBROKER_URL")
+    with pytest.raises(ValueError):
+        asyncio.run(mcp.monolith_codex_broker_login_status())
