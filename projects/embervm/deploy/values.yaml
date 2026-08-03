@@ -325,24 +325,22 @@ egress:
 # session at all. Sizing and the node disk arithmetic are in chart/values.yaml.
 claudeRuntimeWorkload:
   enabled: true
-  # OFF, but read the corrected story before re-arming, because both halves of
-  # what this comment used to say were wrong.
+  # ON. The ADR 027 memory:false/filesystem:true quadrant: sessions ride
+  # per-lineage workspace volumes with park/rejoin instead of memory-snapshot
+  # banking, and raw files in S3 replace multi-GiB snapshots.
   #
-  # The Prime failures were once blamed on noded's lineage-volume path. The real
-  # cause was a session cold boot dropping into /bin/sh, because init= was never
-  # put on its kernel cmdline (#4271, fixed). Create and cold boot are validated
-  # live now: a session on a lineage volume answered a turn and recalled a
-  # codeword across it. Park and rejoin, the half that makes this worth having,
-  # is still unvalidated.
+  # Every earlier failure traced to one bug: a session cold boot dropped into
+  # /bin/sh because init= was never put on its kernel cmdline (#4271). It was
+  # long blamed on noded's lineage-volume Prime path, which was wrong.
   #
-  # The disarm reason was "seven arms left 10 GiB images and filled a node". The
-  # volumes are sparse (noded/volume/volume.go:142 Truncates rather than
-  # zero-fills), so they cost what is written, not 10 GiB each. node-4 reports
-  # DiskPressure False and its scratch is a dedicated NVMe mount, so what filled
-  # is EmberVM's own filesystem, not the host. Rootfs base churn from ~25 chart
-  # publishes in one day is the likelier consumer (#4286).
-  #
-  # Re-arm gate is therefore disk headroom under /var/lib/embervm/scratch, not
-  # code. Lineage volumes drain on their own once sessions hit maxLifetimeSeconds
-  # and the orphan sweep retires them (#4287 lets that run with this flag off).
-  persistenceEnabled: false
+  # The disarm that followed was also diagnosed wrong, twice over. It blamed
+  # "seven arms of 10 GiB workspace images", but the volumes are sparse
+  # (noded/volume/volume.go:142 Truncates rather than zero-fills), and it named
+  # node-4, whose NVMe scratch was 26% used the whole time. What actually filled
+  # was the masters' 35 GiB capped loop scratch, holding FOUR retired 4 GiB
+  # claude-runtime bases each, one per chart publish. The base retention sweep
+  # logs "0 candidates" against them because it only sweeps live registry
+  # entries (#4286). That is the real cost of arming this: every publish leaks
+  # another 4 GiB per brick until the GC is fixed, so watch headroom under
+  # /var/lib/embervm/scratch on node-1/2/3 rather than on node-4.
+  persistenceEnabled: true
