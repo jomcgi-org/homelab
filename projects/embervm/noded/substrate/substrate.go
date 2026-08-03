@@ -50,6 +50,13 @@ type ClaimSpec struct {
 	// ColdBootRootfsPath, when non-empty, is the per-workload base rootfs a
 	// volume-forced cold boot uses instead of the node default; empty for every other path.
 	ColdBootRootfsPath string
+	// ColdBootHarnessInit is the guest entrypoint emitted as init=<path> for a
+	// volume-forced cold boot. WITHOUT it the kernel finds no init and drops to
+	// /bin/sh, so the shim never runs and readiness never arrives: that is
+	// exactly how the first session cold boots failed, silently, since a warm
+	// restore resumes a snapshot where the shim is already running and never
+	// needed this. Empty for every path that does not cold boot a session.
+	ColdBootHarnessInit string
 }
 
 // NICSpec describes the tap network interface a serving-class microVM cold-boots

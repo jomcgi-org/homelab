@@ -1298,3 +1298,14 @@ func TestWarmthRootLayout(t *testing.T) {
 		t.Errorf("DS StatefulDir = %q, want flat %q", d, root+"/stateful")
 	}
 }
+
+func TestBootArgsForCarriesSessionHarnessInit(t *testing.T) {
+	// A session cold boot MUST emit init=: without it the kernel finds no init
+	// and drops to /bin/sh, which is how the first live session cold boots
+	// failed (guest silent, readiness never arrived).
+	d := &Driver{}
+	args := d.bootArgsFor(coldBootSpec{harnessInit: "/usr/local/bin/ember-runtime-guest-init"})
+	if !strings.Contains(args, "init=/usr/local/bin/ember-runtime-guest-init") {
+		t.Fatalf("boot args = %q, want the harness init", args)
+	}
+}
