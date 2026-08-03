@@ -9,11 +9,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -221,6 +223,8 @@ func TestLoadSecretsFailsClosed(t *testing.T) {
 		{"malformed json", "{not json", true},
 		{"entry missing header", `[{"env":"TOK","egressTo":["api.example.com"]}]`, true},
 		{"entry missing egressTo", `[{"header":"Authorization","env":"TOK"}]`, true},
+		{"entry has neither source", `[{"header":"Authorization","egressTo":["api.example.com"]}]`, true},
+		{"entry has both sources", `[{"header":"Authorization","env":"TOK","brokerGrant":"codex-cluster","egressTo":["api.example.com"]}]`, true},
 		{"complete entry", `[{"header":"Authorization","env":"TOK","egressTo":["api.example.com"]}]`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,6 +237,60 @@ func TestLoadSecretsFailsClosed(t *testing.T) {
 				t.Errorf("exited = %v, want %v; a bad catalog must not degrade to no catalog", exited, tc.wantExit)
 			}
 		})
+	}
+}
+
+func TestTokenBrokerCachesAndRefreshes(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = io.WriteString(w, `{"access_token":"token-`+fmt.Sprint(calls)+`","expires_at":"`+time.Now().Add(2*time.Minute).UTC().Format(time.RFC3339)+`"}`)
+	}))
+	defer server.Close()
+	b := newTokenBroker(server.URL)
+	first, _, err := b.token("codex-cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := b.token("codex-cluster")
+	if err != nil || first != second || calls != 1 {
+		t.Fatalf("cached token = %q, %q, calls = %d", first, second, calls)
+	}
+	b.state("codex-cluster").expiresAt = time.Now().Add(59 * time.Second)
+	third, _, err := b.token("codex-cluster")
+	if err != nil || third == first || calls != 2 {
+		t.Fatalf("refreshed token = %q, calls = %d, err = %v", third, calls, err)
+	}
+}
+
+func TestTokenBrokerSingleFlightPerGrant(t *testing.T) {
+	var calls int
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		close(started)
+		<-release
+		_, _ = io.WriteString(w, `{"access_token":"shared","expires_at":"`+time.Now().Add(time.Hour).UTC().Format(time.RFC3339)+`"}`)
+	}))
+	defer server.Close()
+	b := newTokenBroker(server.URL)
+	results := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			_, _, err := b.token("codex-cluster")
+			results <- err
+		}()
+	}
+	<-started
+	close(release)
+	for i := 0; i < 10; i++ {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("broker calls = %d, want 1", calls)
 	}
 }
 

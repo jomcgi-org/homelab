@@ -97,7 +97,8 @@ func main() {
 	// Credential injection (ADR 023 6b): the catalog alone enables the plaintext
 	// lane. The CA is optional and only adds the TLS-MITM lane for guests that speak
 	// https:// to us; an empty catalog leaves the proxy a plain transparent router.
-	secrets := loadSecrets(logger)
+	brokerURL := os.Getenv("EGRESS_TOKEN_BROKER_URL")
+	secrets := loadSecretsWithBroker(logger, brokerURL)
 	var minter *caMinter
 	if caCert, caKey := os.Getenv("EGRESS_CA_CERT_FILE"), os.Getenv("EGRESS_CA_KEY_FILE"); caCert != "" && caKey != "" && len(secrets) > 0 {
 		m, err := newCAMinter(caCert, caKey)
@@ -118,6 +119,7 @@ func main() {
 		extraInternalNets:    extraInternalNets,
 		lookupIP:             net.LookupIP,
 		secrets:              secrets,
+		brokerURL:            brokerURL,
 		minter:               minter,
 		logger:               logger,
 	}
@@ -156,7 +158,8 @@ type proxy struct {
 	// tests).
 	lookupIP func(host string) ([]net.IP, error)
 	// secrets is the credential catalog (ADR 023 6b); empty disables injection.
-	secrets []secretEntry
+	secrets   []secretEntry
+	brokerURL string
 	// minter mints leaf certs from the egress CA for TLS termination; nil disables
 	// the TLS-MITM lane (the plaintext inject lane does not need it).
 	minter *caMinter
@@ -193,6 +196,10 @@ func (p *proxy) handle(client net.Conn) {
 	// Secret-bearing destination: inject the real credential (ADR 023 6b). We only need the first byte to tell TLS from plaintext; the host already
 	// came from the preamble, so no SNI/Host sniffing is required.
 	if sec := p.secretFor(host); sec != nil {
+		if err := sec.resolve(); err != nil {
+			p.logger.Error("egress denied: credential unresolved", "dest", dest, "env", sec.Env, "brokerGrant", sec.BrokerGrant, "err", err)
+			return
+		}
 		// FAIL CLOSED. A credentialed host whose secret has not resolved must be
 		// refused, never tunnelled: the guest addresses this host in CLEARTEXT
 		// (ADR 023 6b), so falling through would put the full request, prompt and
