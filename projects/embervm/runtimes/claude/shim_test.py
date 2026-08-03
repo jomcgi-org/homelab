@@ -162,7 +162,7 @@ if args_path:
         stream.write("\n")
 assert "--provider" in sys.argv
 assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
-assert sys.argv[sys.argv.index("--model") + 1] == "qwen-plus"
+assert sys.argv[sys.argv.index("--model") + 1] == "qwen3.6-27b"
 for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--tools") + 1] == "read,bash,edit,write"
