@@ -324,3 +324,8 @@ egress:
 # session at all. Sizing and the node disk arithmetic are in chart/values.yaml.
 claudeRuntimeWorkload:
   enabled: true
+  # The ADR 027 memory:false/filesystem:true quadrant, armed after the #4241
+  # hardening gate merged: sessions ride per-lineage workspace volumes with
+  # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
+  # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
+  persistenceEnabled: true
