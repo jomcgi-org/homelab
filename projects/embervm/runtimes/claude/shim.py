@@ -96,6 +96,8 @@ CLI_UID_ENV = "EMBER_CLI_UID"
 CLI_GID_ENV = "EMBER_CLI_GID"
 DEFAULT_CLI_UID = 65532
 DEFAULT_CLI_GID = 65532
+PERSISTENCE_MOUNT_PATH_ENV = "EMBER_PERSISTENCE_MOUNT_PATH"
+DEFAULT_PERSISTENCE_MOUNT_PATH = "/session"
 VOICE_PROMPT = (
     "End every response with a single line: <voice>One or two plain sentences, "
     "no markdown, that a person could hear read aloud: what you did and anything "
@@ -126,6 +128,52 @@ def _ensure_cli_dir(path):
     kwargs = _cli_privilege_kwargs()
     if kwargs:
         os.chown(path, kwargs["user"], kwargs["group"])
+
+
+def _persistence_mount_path():
+    """Return the configured persistence mount path."""
+    path = os.environ.get(PERSISTENCE_MOUNT_PATH_ENV)
+    if path:
+        return path
+
+    try:
+        with open("/proc/cmdline") as stream:
+            cmdline = stream.read()
+    except OSError:
+        cmdline = ""
+    for token in cmdline.split():
+        if token.startswith("ember.volume_mount="):
+            configured_path = token.split("=", 1)[1]
+            if configured_path:
+                return configured_path
+
+    # The CR defines this durable volume path, but keep a default for non-init
+    # startup paths that do not provide the boot argument.
+    return DEFAULT_PERSISTENCE_MOUNT_PATH
+
+
+def _ensure_persistence_mountpoint_writable(path):
+    """Make the persistence mountpoint writable by the CLI process."""
+    kwargs = _cli_privilege_kwargs()
+    if not kwargs:
+        return
+
+    try:
+        ownership = os.stat(path)
+    except OSError:
+        return
+
+    if ownership.st_uid == kwargs["user"] and kwargs["group"] == ownership.st_gid:
+        return
+
+    # Only the mountpoint is chowned. Its contents can be a 10 GiB volume, so
+    # recursing would put unbounded work on every boot.
+    #
+    # A failure here is deliberately NOT swallowed. The bug this fixes was
+    # invisible precisely because the CLI fell back to ephemeral storage and
+    # the session looked healthy while persisting nothing, so a mountpoint the
+    # CLI still cannot write is worth failing loudly on (#4291).
+    os.chown(path, kwargs["user"], kwargs["group"])
 
 
 def _truncate_ring_for_error(ring, max_len=1500):
@@ -1334,6 +1382,7 @@ class ProcessManager:
         codex_executable="codex",
         pi_executable="pi",
     ):
+        _ensure_persistence_mountpoint_writable(_persistence_mount_path())
         self.claude = ClaudeProcess(workspace, claude_executable)
         self.codex = CodexProcess(workspace, codex_executable)
         self.pi = PiProcess(workspace, pi_executable)
