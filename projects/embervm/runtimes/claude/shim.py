@@ -985,12 +985,24 @@ class CodexProcess:
         base_url = os.environ.get(
             CODEX_SUBSCRIPTION_BASE_URL_ENV, DEFAULT_CODEX_SUBSCRIPTION_BASE_URL
         )
+        provider_base_url = base_url.rstrip("/") + "/codex/"
         # Subscription backend endpoint over cleartext injection lane (token injection happens at sidecar).
         # chatgpt_base_url must be set too: the CLI's connector client (rmcp
         # transport) builds its URL from chatgpt_base_url, not from the model
         # provider base_url. Left at the https default it bypasses the sidecar's
         # injection lane, presents the guest's placeholder JWT, gets a 401, and
         # the CLI's resulting token refresh attempt aborts the turn (issue #4298).
+        #
+        # The model provider base_url is a different value on purpose. Codex
+        # turn requests get posted to {provider base_url}/responses, and the
+        # subscription backend only serves turns at /backend-api/codex/responses,
+        # not at /backend-api/responses. The rmcp connector client above builds
+        # from chatgpt_base_url at the backend-api root, so the two values must
+        # diverge: chatgpt_base_url stays at the root, provider_base_url gets a
+        # /codex/ suffix. The trailing slash on provider_base_url is load
+        # bearing: it makes both plausible client join behaviors, trimming the
+        # trailing slash and concatenating, or an RFC 3986 Url::join with a
+        # relative segment, land on the same /codex/responses path.
         config = """model_provider = "ember-openai"
 enable_codex_api_key_env = false
 chatgpt_base_url = %s
@@ -999,7 +1011,7 @@ chatgpt_base_url = %s
 name = "ember-openai"
 base_url = %s
 wire_api = "responses"
-""" % (json.dumps(base_url), json.dumps(base_url))
+""" % (json.dumps(base_url), json.dumps(provider_base_url))
         with open(os.path.join(codex_home, "config.toml"), "w") as stream:
             stream.write(config)
 
